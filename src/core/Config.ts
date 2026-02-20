@@ -8,7 +8,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentKitConfig, SessionManagerConfig, JobSchedulerConfig } from './types.js';
+import type { AgentKitConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig } from './types.js';
 
 const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 3;
@@ -152,6 +152,11 @@ export function loadConfig(projectDir?: string): AgentKitConfig {
     relationships: fileConfig.relationships || {
       relationshipsDir: path.join(stateDir, 'relationships'),
       maxRecentInteractions: 20,
+    },
+    feedback: fileConfig.feedback || {
+      enabled: true,
+      webhookUrl: 'https://api.instar.sh/feedback',
+      feedbackFile: path.join(stateDir, 'feedback.json'),
     },
   };
 }

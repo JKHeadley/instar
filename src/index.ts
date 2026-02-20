@@ -8,6 +8,8 @@
 export { SessionManager } from './core/SessionManager.js';
 export { StateManager } from './core/StateManager.js';
 export { RelationshipManager } from './core/RelationshipManager.js';
+export { FeedbackManager } from './core/FeedbackManager.js';
+export { UpdateChecker } from './core/UpdateChecker.js';
 export { loadConfig, detectTmuxPath, detectClaudePath, ensureStateDir } from './core/Config.js';
 
 // Users
@@ -55,4 +57,7 @@ export type {
   RelationshipRecord,
   RelationshipManagerConfig,
   InteractionSummary,
+  FeedbackItem,
+  FeedbackConfig,
+  UpdateInfo,
 } from './core/types.js';

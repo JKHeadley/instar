@@ -13,6 +13,8 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { AgentKitConfig } from '../core/types.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
+import type { FeedbackManager } from '../core/FeedbackManager.js';
+import type { UpdateChecker } from '../core/UpdateChecker.js';
 import { createRoutes } from './routes.js';
 import { corsMiddleware, authMiddleware, errorHandler } from './middleware.js';
 
@@ -29,6 +31,8 @@ export class AgentServer {
     scheduler?: JobScheduler;
     telegram?: TelegramAdapter;
     relationships?: RelationshipManager;
+    feedback?: FeedbackManager;
+    updateChecker?: UpdateChecker;
   }) {
     this.config = options.config;
     this.startTime = new Date();
@@ -47,6 +51,8 @@ export class AgentServer {
       scheduler: options.scheduler ?? null,
       telegram: options.telegram ?? null,
       relationships: options.relationships ?? null,
+      feedback: options.feedback ?? null,
+      updateChecker: options.updateChecker ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);

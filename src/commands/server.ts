@@ -19,6 +19,8 @@ import { JobScheduler } from '../scheduler/JobScheduler.js';
 import { AgentServer } from '../server/AgentServer.js';
 import { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
+import { FeedbackManager } from '../core/FeedbackManager.js';
+import { UpdateChecker } from '../core/UpdateChecker.js';
 import type { Message } from '../core/types.js';
 
 interface StartOptions {
@@ -254,7 +256,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships });
+    // Set up feedback and update checking
+    const feedback = new FeedbackManager(config.feedback);
+    const updateChecker = new UpdateChecker(config.stateDir);
+    console.log(pc.green('  Feedback loop enabled'));
+
+    // Check for updates on startup
+    updateChecker.check().then(info => {
+      if (info.updateAvailable) {
+        console.log(pc.yellow(`  Update available: ${info.currentVersion} → ${info.latestVersion}`));
+        console.log(pc.yellow(`  Run: npm update -g instar`));
+      } else {
+        console.log(pc.green(`  Instar ${info.currentVersion} is up to date`));
+      }
+    }).catch(() => { /* ignore startup check failures */ });
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, updateChecker });
     await server.start();
 
     // Graceful shutdown

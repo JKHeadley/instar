@@ -13,6 +13,8 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { AgentKitConfig } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
+import type { FeedbackManager } from '../core/FeedbackManager.js';
+import type { UpdateChecker } from '../core/UpdateChecker.js';
 
 interface RouteContext {
   config: AgentKitConfig;
@@ -21,6 +23,8 @@ interface RouteContext {
   scheduler: JobScheduler | null;
   telegram: TelegramAdapter | null;
   relationships: RelationshipManager | null;
+  feedback: FeedbackManager | null;
+  updateChecker: UpdateChecker | null;
   startTime: Date;
 }
 
@@ -247,6 +251,100 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ context });
+  });
+
+  // ── Feedback ────────────────────────────────────────────────────
+
+  router.post('/feedback', async (req, res) => {
+    if (!ctx.feedback) {
+      res.status(503).json({ error: 'Feedback not configured' });
+      return;
+    }
+
+    const { type, title, description, context } = req.body;
+    if (!title || !description) {
+      res.status(400).json({ error: '"title" and "description" are required' });
+      return;
+    }
+
+    const validTypes = ['bug', 'feature', 'improvement', 'question', 'other'];
+    const feedbackType = validTypes.includes(type) ? type : 'other';
+
+    try {
+      const item = await ctx.feedback.submit({
+        type: feedbackType,
+        title,
+        description,
+        context: context || undefined,
+        agentName: ctx.config.projectName,
+        instarVersion: ctx.config.version || '0.0.0',
+        nodeVersion: process.version,
+        os: `${process.platform} ${process.arch}`,
+      });
+
+      res.status(201).json({
+        ok: true,
+        id: item.id,
+        forwarded: item.forwarded,
+        message: item.forwarded
+          ? 'Feedback submitted and forwarded upstream.'
+          : 'Feedback stored locally. Will retry forwarding later.',
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/feedback', (_req, res) => {
+    if (!ctx.feedback) {
+      res.json({ feedback: [] });
+      return;
+    }
+    res.json({ feedback: ctx.feedback.list() });
+  });
+
+  router.post('/feedback/retry', async (_req, res) => {
+    if (!ctx.feedback) {
+      res.status(503).json({ error: 'Feedback not configured' });
+      return;
+    }
+
+    try {
+      const result = await ctx.feedback.retryUnforwarded();
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Updates ────────────────────────────────────────────────────
+
+  router.get('/updates', async (_req, res) => {
+    if (!ctx.updateChecker) {
+      res.status(503).json({ error: 'Update checker not configured' });
+      return;
+    }
+
+    try {
+      const info = await ctx.updateChecker.check();
+      res.json(info);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/updates/last', (_req, res) => {
+    if (!ctx.updateChecker) {
+      res.status(503).json({ error: 'Update checker not configured' });
+      return;
+    }
+
+    const lastCheck = ctx.updateChecker.getLastCheck();
+    if (!lastCheck) {
+      res.json({ message: 'No update check has been performed yet' });
+      return;
+    }
+    res.json(lastCheck);
   });
 
   // ── Events ──────────────────────────────────────────────────────

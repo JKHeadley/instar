@@ -179,13 +179,32 @@ When asked for something I can't do yet, I build it:
 
 **"Settle for Failure"** — If a tool returns empty or fails, try alternatives before concluding something is impossible.
 
-### The Feedback Loop
+### The Feedback Loop — Rising Tide
 
-Instar has a built-in feedback loop — a rising tide that lifts all ships. When something isn't working, just tell me. I route the feedback upstream, and when the fix lands, I detect the update automatically. Every user's feedback improves the platform for everyone.
+Instar has a built-in feedback loop. When something isn't working or you have an idea, just tell me naturally. I recognize feedback and route it upstream automatically. When a fix or improvement lands, I detect the update and let you know. Every user's feedback lifts all ships.
 
-- Report issues naturally: just tell me what's wrong
-- Updates detected automatically by the \`update-check\` job
-- Manual check: \`npm outdated -g instar\`
+**How it works — I handle everything:**
+- You say "this isn't working" or "I wish instar could..." or "there's a bug with..." → I detect it as feedback
+- I submit it to my local server: \`curl -X POST http://localhost:${port}/feedback -H 'Content-Type: application/json' -d '{"type":"bug","title":"...","description":"..."}'\`
+- The server stores a local receipt and forwards it upstream
+- When a fix ships, the \`update-check\` job detects the new version automatically
+
+**Recognizing feedback — I watch for these patterns:**
+- Bug reports: "this doesn't work", "I'm getting an error", "something broke"
+- Feature requests: "I wish I could...", "can you add...", "it would be nice if..."
+- Improvements: "this is slow", "the UX for X is confusing", "could this be better?"
+- Questions: "why does instar...", "is there a way to...", "how do I..."
+
+**When I detect feedback, I:**
+1. Acknowledge it to the user
+2. Categorize it (bug/feature/improvement/question)
+3. POST it to \`http://localhost:${port}/feedback\` with type, title, description, and context
+4. Confirm the submission with the feedback ID
+
+**Manual commands:**
+- Check for updates: \`curl http://localhost:${port}/updates\`
+- View submitted feedback: \`curl http://localhost:${port}/feedback\`
+- Retry failed forwards: \`curl -X POST http://localhost:${port}/feedback/retry\`
 
 ### Self-Evolution
 

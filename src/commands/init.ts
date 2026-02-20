@@ -543,7 +543,22 @@ function getDefaultJobs(port: number): object[] {
       enabled: true,
       execute: {
         type: 'prompt',
-        value: 'Check if a newer version of instar is available by running `npm outdated -g instar`. If an update is available, notify the user via Telegram (if configured) with the current and latest version numbers. If already up to date, do nothing.',
+        value: `Check for instar updates: curl http://localhost:${port}/updates. If updateAvailable is true, notify the user via Telegram (if configured) with the current and latest version numbers and suggest running 'npm update -g instar'. If already up to date, do nothing.`,
+      },
+      tags: ['coherence', 'default'],
+    },
+    {
+      slug: 'feedback-retry',
+      name: 'Feedback Retry',
+      description: 'Retry forwarding any feedback that failed to reach upstream.',
+      schedule: '0 */6 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 1,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `Retry forwarding undelivered feedback: curl -X POST http://localhost:${port}/feedback/retry. Report results only if there were items to retry.`,
       },
       tags: ['coherence', 'default'],
     },

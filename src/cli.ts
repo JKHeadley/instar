@@ -29,7 +29,7 @@ const program = new Command();
 program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
-  .version('0.1.8')
+  .version('0.1.9')
   .option('--classic', 'Use the classic inquirer-based setup wizard instead of Claude')
   .action((opts) => runSetup(opts)); // Default: run interactive setup when no subcommand given
 
@@ -89,6 +89,42 @@ addCmd
   .description('Add Claude API quota tracking')
   .action((_opts) => {
     console.log('TODO: Add quota tracking');
+  });
+
+// ── Feedback ─────────────────────────────────────────────────────
+
+program
+  .command('feedback')
+  .description('Submit feedback about Instar (bugs, features, improvements)')
+  .option('--type <type>', 'Feedback type (bug|feature|improvement|question)', 'other')
+  .option('--title <title>', 'Short title')
+  .option('--description <desc>', 'Detailed description')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--port <port>', 'Server port (default: 4040)', parseInt)
+  .action(async (opts) => {
+    const port = opts.port || 4040;
+    const title = opts.title || 'CLI feedback submission';
+    const description = opts.description || opts.title || 'No description provided';
+
+    try {
+      const response = await fetch(`http://localhost:${port}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: opts.type, title, description }),
+      });
+
+      if (response.ok) {
+        const result = await response.json() as { id: string; forwarded: boolean };
+        console.log(`Feedback submitted: ${result.id}`);
+        console.log(`Forwarded upstream: ${result.forwarded ? 'yes' : 'no (will retry later)'}`);
+      } else {
+        console.error(`Failed to submit feedback: ${response.statusText}`);
+        console.error('Is the instar server running? Try: instar server start');
+      }
+    } catch {
+      console.error('Could not connect to instar server. Is it running?');
+      console.error('Start it with: instar server start');
+    }
   });
 
 // ── Server ────────────────────────────────────────────────────────

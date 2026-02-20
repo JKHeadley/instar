@@ -277,6 +277,55 @@ export interface ActivityEvent {
   metadata?: Record<string, unknown>;
 }
 
+// ── Feedback Loop ───────────────────────────────────────────────────
+
+export interface FeedbackItem {
+  /** Unique feedback ID */
+  id: string;
+  /** Feedback type */
+  type: 'bug' | 'feature' | 'improvement' | 'question' | 'other';
+  /** Short title/summary */
+  title: string;
+  /** Detailed description */
+  description: string;
+  /** Agent name that submitted this */
+  agentName: string;
+  /** Instar version the agent is running */
+  instarVersion: string;
+  /** Node.js version */
+  nodeVersion: string;
+  /** Operating system */
+  os: string;
+  /** When this feedback was submitted */
+  submittedAt: string;
+  /** Whether this has been forwarded to the webhook */
+  forwarded: boolean;
+  /** Additional context (error messages, config snippets, etc.) */
+  context?: string;
+}
+
+export interface FeedbackConfig {
+  /** Whether feedback is enabled */
+  enabled: boolean;
+  /** Webhook URL to forward feedback to (default: https://api.instar.sh/feedback) */
+  webhookUrl: string;
+  /** Local feedback storage file */
+  feedbackFile: string;
+}
+
+export interface UpdateInfo {
+  /** Currently installed version */
+  currentVersion: string;
+  /** Latest available version on npm */
+  latestVersion: string;
+  /** Whether an update is available */
+  updateAvailable: boolean;
+  /** When this check was performed */
+  checkedAt: string;
+  /** Changelog URL if available */
+  changelogUrl?: string;
+}
+
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface AgentKitConfig {
@@ -302,6 +351,10 @@ export interface AgentKitConfig {
   authToken?: string;
   /** Relationship tracking config */
   relationships: RelationshipManagerConfig;
+  /** Feedback loop config */
+  feedback: FeedbackConfig;
+  /** Instar version (from package.json) */
+  version?: string;
 }
 
 export interface MessagingAdapterConfig {
