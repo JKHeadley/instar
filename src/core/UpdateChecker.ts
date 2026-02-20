@@ -18,13 +18,22 @@ import type { UpdateInfo, UpdateResult } from './types.js';
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/SageMindAI/instar/releases';
 
+export interface RollbackResult {
+  success: boolean;
+  previousVersion: string;
+  restoredVersion: string;
+  message: string;
+}
+
 export class UpdateChecker {
   private stateDir: string;
   private stateFile: string;
+  private rollbackFile: string;
 
   constructor(stateDir: string) {
     this.stateDir = stateDir;
     this.stateFile = path.join(stateDir, 'state', 'update-check.json');
+    this.rollbackFile = path.join(stateDir, 'state', 'update-rollback.json');
   }
 
   /**
@@ -118,6 +127,11 @@ export class UpdateChecker {
 
     const success = newVersion !== previousVersion && newVersion !== 'unknown';
 
+    // Save rollback info on successful update
+    if (success) {
+      this.saveRollbackInfo(previousVersion, newVersion);
+    }
+
     return {
       success,
       previousVersion,
@@ -128,6 +142,80 @@ export class UpdateChecker {
       restartNeeded: success,
       healthCheck: 'skipped', // Can't check health until after restart
     };
+  }
+
+  /**
+   * Roll back to the previous version.
+   * Only available after a successful update has saved rollback info.
+   */
+  async rollback(): Promise<RollbackResult> {
+    const rollbackInfo = this.getRollbackInfo();
+    if (!rollbackInfo) {
+      return {
+        success: false,
+        previousVersion: this.getInstalledVersion(),
+        restoredVersion: this.getInstalledVersion(),
+        message: 'No rollback info available. A successful update must have occurred first.',
+      };
+    }
+
+    const currentVersion = this.getInstalledVersion();
+
+    try {
+      await this.execAsync('npm', ['install', '-g', `instar@${rollbackInfo.previousVersion}`], 120000);
+    } catch (err) {
+      return {
+        success: false,
+        previousVersion: currentVersion,
+        restoredVersion: currentVersion,
+        message: `Rollback failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // Verify the rollback
+    let restoredVersion: string;
+    try {
+      const output = await this.execAsync('npm', ['list', '-g', 'instar', '--depth=0', '--json'], 15000);
+      const parsed = JSON.parse(output);
+      restoredVersion = parsed?.dependencies?.instar?.version || 'unknown';
+    } catch {
+      restoredVersion = 'unknown';
+    }
+
+    const success = restoredVersion === rollbackInfo.previousVersion;
+
+    if (success) {
+      // Clear rollback info after successful rollback
+      this.clearRollbackInfo();
+    }
+
+    return {
+      success,
+      previousVersion: currentVersion,
+      restoredVersion,
+      message: success
+        ? `Rolled back from v${currentVersion} to v${restoredVersion}.`
+        : `Rollback command ran but version is ${restoredVersion} (expected ${rollbackInfo.previousVersion}).`,
+    };
+  }
+
+  /**
+   * Check if rollback is available.
+   */
+  canRollback(): boolean {
+    return this.getRollbackInfo() !== null;
+  }
+
+  /**
+   * Get rollback info (previous version, current version, when the update happened).
+   */
+  getRollbackInfo(): { previousVersion: string; updatedVersion: string; updatedAt: string } | null {
+    if (!fs.existsSync(this.rollbackFile)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(this.rollbackFile, 'utf-8'));
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -237,6 +325,22 @@ export class UpdateChecker {
     } catch (err) {
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       throw err;
+    }
+  }
+
+  private saveRollbackInfo(previousVersion: string, updatedVersion: string): void {
+    const dir = path.dirname(this.rollbackFile);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(this.rollbackFile, JSON.stringify({
+      previousVersion,
+      updatedVersion,
+      updatedAt: new Date().toISOString(),
+    }, null, 2));
+  }
+
+  private clearRollbackInfo(): void {
+    if (fs.existsSync(this.rollbackFile)) {
+      fs.unlinkSync(this.rollbackFile);
     }
   }
 }

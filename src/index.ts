@@ -11,6 +11,7 @@ export { RelationshipManager } from './core/RelationshipManager.js';
 export { FeedbackManager } from './core/FeedbackManager.js';
 export { DispatchManager } from './core/DispatchManager.js';
 export { UpdateChecker } from './core/UpdateChecker.js';
+export type { RollbackResult } from './core/UpdateChecker.js';
 export { loadConfig, detectTmuxPath, detectClaudePath, detectProjectDir, ensureStateDir } from './core/Config.js';
 
 // Users

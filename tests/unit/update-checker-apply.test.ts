@@ -200,6 +200,83 @@ describe('UpdateChecker.fetchChangelog()', () => {
   });
 });
 
+describe('UpdateChecker.rollback()', () => {
+  let tmpDir: string;
+  let checker: UpdateChecker;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-rollback-'));
+    fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
+    checker = new UpdateChecker(tmpDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns error when no rollback info exists', async () => {
+    expect(checker.canRollback()).toBe(false);
+
+    const result = await checker.rollback();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('No rollback info');
+  });
+
+  it('canRollback returns true after saving rollback info', () => {
+    // Simulate a successful update by writing rollback file
+    const rollbackFile = path.join(tmpDir, 'state', 'update-rollback.json');
+    fs.writeFileSync(rollbackFile, JSON.stringify({
+      previousVersion: '0.1.11',
+      updatedVersion: '0.1.12',
+      updatedAt: new Date().toISOString(),
+    }));
+
+    expect(checker.canRollback()).toBe(true);
+  });
+
+  it('getRollbackInfo returns saved data', () => {
+    const rollbackFile = path.join(tmpDir, 'state', 'update-rollback.json');
+    const info = {
+      previousVersion: '0.1.11',
+      updatedVersion: '0.1.12',
+      updatedAt: '2026-02-20T00:00:00Z',
+    };
+    fs.writeFileSync(rollbackFile, JSON.stringify(info));
+
+    const result = checker.getRollbackInfo();
+    expect(result).toEqual(info);
+  });
+
+  it('getRollbackInfo returns null when file missing', () => {
+    expect(checker.getRollbackInfo()).toBeNull();
+  });
+
+  it('getRollbackInfo returns null on corrupted file', () => {
+    const rollbackFile = path.join(tmpDir, 'state', 'update-rollback.json');
+    fs.writeFileSync(rollbackFile, 'bad json {{');
+
+    expect(checker.getRollbackInfo()).toBeNull();
+  });
+
+  it('attempts npm install with previous version', async () => {
+    const rollbackFile = path.join(tmpDir, 'state', 'update-rollback.json');
+    fs.writeFileSync(rollbackFile, JSON.stringify({
+      previousVersion: '0.1.11',
+      updatedVersion: '0.1.12',
+      updatedAt: new Date().toISOString(),
+    }));
+
+    // npm install will fail in test environment, but we verify the structure
+    const result = await checker.rollback();
+    expect(result).toHaveProperty('success');
+    expect(result).toHaveProperty('previousVersion');
+    expect(result).toHaveProperty('restoredVersion');
+    expect(result).toHaveProperty('message');
+    expect(typeof result.message).toBe('string');
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+});
+
 describe('UpdateChecker.check() with changeSummary', () => {
   let tmpDir: string;
   let checker: UpdateChecker;

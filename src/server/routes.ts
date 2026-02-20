@@ -497,6 +497,27 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  router.post('/updates/rollback', async (_req, res) => {
+    if (!ctx.updateChecker) {
+      res.status(503).json({ error: 'Update checker not configured' });
+      return;
+    }
+
+    if (!ctx.updateChecker.canRollback()) {
+      res.status(409).json({
+        error: 'No rollback available. A successful update must have occurred first.',
+      });
+      return;
+    }
+
+    try {
+      const result = await ctx.updateChecker.rollback();
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Dispatches ───────────────────────────────────────────────────
 
   router.get('/dispatches', async (_req, res) => {
