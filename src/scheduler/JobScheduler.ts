@@ -244,6 +244,12 @@ export class JobScheduler {
     // Don't queue duplicates
     if (this.queue.some(q => q.slug === slug)) return;
 
+    // Cap queue size to prevent unbounded growth
+    if (this.queue.length >= 50) {
+      console.warn(`[scheduler] Queue full (50 items), dropping enqueue for "${slug}"`);
+      return;
+    }
+
     this.queue.push({ slug, reason, queuedAt: new Date().toISOString() });
 
     // Sort by priority — critical first

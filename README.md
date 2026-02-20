@@ -237,7 +237,7 @@ instar status                    # Health check
 | GET | `/sessions/tmux` | List all tmux sessions |
 | GET | `/sessions/:name/output` | Capture session output (`?lines=100`) |
 | POST | `/sessions/:name/input` | Send text to a session |
-| POST | `/sessions/spawn` | Spawn a new session (rate limited) |
+| POST | `/sessions/spawn` | Spawn a new session (rate limited). Body: `name`, `prompt`, optional `model` (`opus`/`sonnet`/`haiku`), optional `jobSlug` |
 | DELETE | `/sessions/:id` | Kill a session |
 | GET | `/jobs` | List jobs + queue |
 | POST | `/jobs/:slug/trigger` | Manually trigger a job |
@@ -245,13 +245,13 @@ instar status                    # Health check
 | GET | `/relationships/stale` | Stale relationships (`?days=14`) |
 | GET | `/relationships/:id` | Get single relationship |
 | DELETE | `/relationships/:id` | Delete a relationship |
-| GET | `/relationships/:id/context` | Get relationship context (XML) |
+| GET | `/relationships/:id/context` | Get relationship context (JSON) |
 | POST | `/feedback` | Submit feedback |
 | GET | `/feedback` | List feedback |
 | POST | `/feedback/retry` | Retry un-forwarded feedback |
 | GET | `/updates` | Check for updates |
 | GET | `/updates/last` | Last update check result |
-| GET | `/events` | Query events (`?limit=50&since=24&type=`) |
+| GET | `/events` | Query events (`?limit=50&since=24&type=`). `since` is hours (1-720), `limit` is count (1-1000) |
 | GET | `/quota` | Quota usage + recommendation |
 | GET | `/telegram/topics` | List topic-session mappings |
 | POST | `/telegram/reply/:topicId` | Send message to a topic |

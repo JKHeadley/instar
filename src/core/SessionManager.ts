@@ -347,6 +347,15 @@ export class SessionManager extends EventEmitter {
       return tmuxSession;
     }
 
+    // Enforce session cap (same check as spawnSession)
+    const runningSessions = this.listRunningSessions();
+    if (runningSessions.length >= this.config.maxSessions) {
+      throw new Error(
+        `Max sessions (${this.config.maxSessions}) reached. ` +
+        `Running: ${runningSessions.map(s => s.name).join(', ')}`
+      );
+    }
+
     // Respect the user's configured auth method (API key or OAuth subscription)
     // Use execFileSync with argument arrays to prevent command injection
     const quotedPath = `'${this.config.claudePath.replace(/'/g, "'\\''")}'`;
@@ -381,6 +390,8 @@ export class SessionManager extends EventEmitter {
         } else {
           console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" after timeout`);
         }
+      }).catch((err) => {
+        console.error(`[SessionManager] Error waiting for Claude ready in "${tmuxSession}": ${err}`);
       });
     }
 

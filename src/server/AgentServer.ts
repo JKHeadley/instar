@@ -69,11 +69,18 @@ export class AgentServer {
    * Start the HTTP server.
    */
   async start(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const host = this.config.host || '127.0.0.1';
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         resolve();
+      });
+      this.server.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          reject(new Error(`Port ${this.config.port} is already in use. Is another instar server running?`));
+        } else {
+          reject(err);
+        }
       });
     });
   }

@@ -264,12 +264,12 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Relationships ─────────────────────────────────────────────────
 
-  router.get('/relationships', (_req, res) => {
+  router.get('/relationships', (req, res) => {
     if (!ctx.relationships) {
       res.json({ relationships: [] });
       return;
     }
-    const sortBy = (_req.query.sort as 'significance' | 'recent' | 'name') || 'significance';
+    const sortBy = (req.query.sort as 'significance' | 'recent' | 'name') || 'significance';
     res.json({ relationships: ctx.relationships.getAll(sortBy) });
   });
 
@@ -434,9 +434,11 @@ export function createRoutes(ctx: RouteContext): Router {
   // ── Events ──────────────────────────────────────────────────────
 
   router.get('/events', (req, res) => {
-    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const rawLimit = parseInt(req.query.limit as string, 10) || 50;
+    const limit = Math.min(Math.max(rawLimit, 1), 1000);
     const type = req.query.type as string | undefined;
-    const sinceHours = parseInt(req.query.since as string, 10) || 24;
+    const rawSinceHours = parseInt(req.query.since as string, 10) || 24;
+    const sinceHours = Math.min(Math.max(rawSinceHours, 1), 720); // 1h to 30 days
 
     const since = new Date(Date.now() - sinceHours * 60 * 60 * 1000);
     const events = ctx.state.queryEvents({ since, type, limit });
