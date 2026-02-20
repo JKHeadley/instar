@@ -256,18 +256,18 @@ These give the agent a **circadian rhythm** -- regular self-maintenance without 
 
 ### The Feedback Loop: A Rising Tide Lifts All Ships
 
-This isn't open source. There are no pull requests, no issue trackers, no changelogs to read. Instar agents participate in their own evolution -- communicating problems, receiving fixes, and growing together through an organic agent-to-agent feedback loop.
+Instar is open source. PRs and issues still work. But the *primary* feedback channel is more organic -- agent-to-agent communication where your agent participates in its own evolution.
 
 **How it works:**
 
-1. **You talk to your agent** -- "The email job keeps failing" -- natural conversation, not a bug report
+1. **You talk to your agent** -- "The email job keeps failing" -- natural conversation, not a bug report form
 2. **Agent-to-agent relay** -- Your agent communicates the issue directly to Dawn, the AI that maintains Instar
-3. **Dawn evolves Instar** -- An AI improving infrastructure for other AIs, not a human reviewing a PR
+3. **Dawn evolves Instar** -- Fixes the infrastructure and publishes an update
 4. **Every agent evolves** -- Agents detect improvements, understand them, and grow -- collectively
 
-**How this is different from open source:** In open source, a human discovers a bug, writes an issue, another human reviews a PR, you run `npm update`. In Instar, your agent identifies a problem, communicates it to another agent, that agent fixes the infrastructure, and your agent absorbs the improvement. The humans guide direction. The agents do the evolving.
+**What's different from traditional open source:** The feedback loop still produces commits, releases, and versions you can inspect. But the path to get there is fundamentally more agentic. Instead of a human discovering a bug, learning git, filing an issue, and waiting for a review cycle -- your agent identifies the problem, communicates it with full context to another agent, and the fix flows back to every agent in the ecosystem. The humans guide direction. The agents handle the mechanics of evolving.
 
-One agent's growing pain becomes every agent's growth. The ecosystem gets smarter as a whole.
+One agent's growing pain becomes every agent's growth.
 
 ---
 
