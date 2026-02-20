@@ -4,11 +4,11 @@
 **Duration**: 8-hour autonomous session (AUT-1655-wo)
 **Starting Version**: 0.1.10
 **Ending Version**: 0.1.11
-**Commits**: 60+
-**Files Changed**: 112+ (9,400+ lines added, 560+ removed)
-**Tests**: 350 -> 736 (unit) + 38 (integration) + 9 (e2e) = 783 total
+**Commits**: 65+
+**Files Changed**: 115+ (9,500+ lines added, 570+ removed)
+**Tests**: 350 -> 740 (unit) + 38 (integration) + 9 (e2e) = 787 total
 **TypeScript**: Compiles cleanly with `--strict`
-**Package Size**: 98.2 kB (60 files)
+**Package Size**: 98.7 kB (60 files)
 
 ---
 
@@ -294,17 +294,38 @@ The `instar feedback` CLI command used `fetch()` without a timeout. If the serve
 
 **Fix**: Added `AbortSignal.timeout(10_000)` to the fetch call.
 
+### Route-Layer Validation Gaps (FIXED — Defense in Depth)
+
+`DELETE /sessions/:id` passed unvalidated params directly to `killSession()`, relying on storage-layer validation. Other session routes (GET output, POST input) validated at the route layer using `SESSION_NAME_RE`. Additionally, `POST /sessions/spawn` only checked name length, not character set.
+
+**Fix**: Added `SESSION_NAME_RE` validation on `DELETE /sessions/:id` and strengthened `POST /sessions/spawn` name validation to use `SESSION_NAME_RE`.
+**Tests**: 1 new regression test for DELETE session ID validation.
+
+### Shell Quoting in tmux new-session (FIXED — Robustness)
+
+`server.ts` passed the CLI path directly into a template literal `\`node '${cliPath}' server start --foreground\``. If the install path contained a single quote, the tmux shell would misparse the command.
+
+**Fix**: Build the command by mapping each argument through proper single-quote escaping (`replace(/'/g, "'\\''")`) before joining.
+**Tests**: 1 new test verifying proper escaping in the tmux command.
+
+### Merge Operations Cap Bypass (FIXED — Data Integrity)
+
+`mergeRelationships()` pushed channels without checking `MAX_CHANNELS` (50) and themes without any cap. If two records with 50 channels each were merged, the result could have 100 channels.
+
+**Fix**: Added `MAX_CHANNELS` check on channel merge and 20-theme cap (matching `recordInteraction` behavior).
+**Tests**: 1 new regression test verifying merge caps.
+
 ---
 
 ## Final Test Counts
 
 | Suite | Count | Status |
 |-------|-------|--------|
-| Unit | 736 | All passing |
+| Unit | 740 | All passing |
 | Integration | 38 | All passing |
 | E2E | 9 | All passing |
-| **Total** | **783** | **All passing** |
+| **Total** | **787** | **All passing** |
 
 ---
 
-*Report generated during AUT-1655-wo crucible session. 60+ commits, 112+ files changed. Every source file individually reviewed. All 783 tests passing.*
+*Report generated during AUT-1655-wo crucible session. 65+ commits, 115+ files changed. Every source file individually reviewed. All 787 tests passing.*
