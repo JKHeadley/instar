@@ -15,6 +15,7 @@ import type { AgentKitConfig } from '../core/types.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { UpdateChecker } from '../core/UpdateChecker.js';
+import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import { createRoutes } from './routes.js';
 import { corsMiddleware, authMiddleware, errorHandler } from './middleware.js';
 
@@ -33,13 +34,14 @@ export class AgentServer {
     relationships?: RelationshipManager;
     feedback?: FeedbackManager;
     updateChecker?: UpdateChecker;
+    quotaTracker?: QuotaTracker;
   }) {
     this.config = options.config;
     this.startTime = new Date();
     this.app = express();
 
     // Middleware
-    this.app.use(express.json());
+    this.app.use(express.json({ limit: '1mb' }));
     this.app.use(corsMiddleware);
     this.app.use(authMiddleware(options.config.authToken));
 
@@ -53,6 +55,7 @@ export class AgentServer {
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,
       updateChecker: options.updateChecker ?? null,
+      quotaTracker: options.quotaTracker ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);

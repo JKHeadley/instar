@@ -60,6 +60,7 @@ export interface MockSessionManager {
   _sessions: Session[];
   _aliveSet: Set<string>;
   _spawnCount: number;
+  _lastSpawnArgs: { name: string; prompt: string; model?: ModelTier; jobSlug?: string; triggeredBy?: string; maxDurationMinutes?: number } | null;
 }
 
 export function createMockSessionManager(): MockSessionManager {
@@ -67,9 +68,11 @@ export function createMockSessionManager(): MockSessionManager {
     _sessions: [],
     _aliveSet: new Set(),
     _spawnCount: 0,
+    _lastSpawnArgs: null,
 
     spawnSession: async (opts) => {
       mock._spawnCount++;
+      mock._lastSpawnArgs = opts;
       const session: Session = {
         id: `mock-${Date.now().toString(36)}-${mock._spawnCount}`,
         name: opts.name,

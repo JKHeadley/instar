@@ -25,7 +25,7 @@ import { detectTmuxPath, detectClaudePath, ensureStateDir } from '../core/Config
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { UserManager } from '../users/UserManager.js';
 import { validateJob } from '../scheduler/JobLoader.js';
-import type { AgentKitConfig, JobDefinition, UserProfile, UserChannel } from '../core/types.js';
+import type { AgentKitConfig, JobDefinition, JobPriority, ModelTier, UserProfile, UserChannel } from '../core/types.js';
 
 /**
  * Launch the conversational setup wizard via Claude Code.
@@ -800,12 +800,12 @@ async function promptForJob(): Promise<JobDefinition> {
     name,
     description,
     schedule,
-    priority: priority as any,
+    priority: priority as JobPriority,
     expectedDurationMinutes: 5,
-    model: model as any,
+    model: model as ModelTier,
     enabled: true,
     execute: {
-      type: executeType as any,
+      type: executeType as 'skill' | 'prompt' | 'script',
       value: executeValue,
     },
   };

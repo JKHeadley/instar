@@ -22,17 +22,20 @@ pnpm test:integration # Integration tests (spawns real sessions)
 
 ```
 src/
-  core/           # Session management, state, config auto-detection
+  core/           # SessionManager, StateManager, Config, FeedbackManager,
+                  # UpdateChecker, RelationshipManager, SleepWakeDetector, types
   scheduler/      # Cron-based job scheduling with quota awareness
-  monitoring/     # Quota tracking, memory pressure, health checks
-  messaging/      # Messaging adapter interface (Telegram, Slack, etc.)
+  monitoring/     # Health checks
+  messaging/      # TelegramAdapter (long-polling, JSONL history)
   users/          # Multi-user identity resolution and permissions
-  server/         # HTTP server for health, status, and messaging APIs
-  commands/       # CLI command implementations
-  templates/      # Templates for `instar init`
+  server/         # HTTP server, routes, middleware (auth, CORS)
+  scaffold/       # Identity bootstrap, template file generation
+  commands/       # CLI: init, setup, server, status, user, job, add, feedback
+  templates/      # Default hook scripts, helper scripts for scaffolding
 tests/
   unit/           # Pure logic tests (no tmux/sessions)
   integration/    # Full system tests (may spawn real sessions)
+  e2e/            # End-to-end lifecycle tests
   fixtures/       # Test data and mock repos
 ```
 

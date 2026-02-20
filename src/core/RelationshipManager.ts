@@ -12,7 +12,7 @@
  * - Context injection before any interaction with a known person
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import type {
@@ -325,7 +325,6 @@ export class RelationshipManager {
   private deleteFile(id: string): void {
     const filePath = join(this.config.relationshipsDir, `${id}.json`);
     try {
-      const { unlinkSync } = require('fs');
       unlinkSync(filePath);
     } catch {
       // File may not exist

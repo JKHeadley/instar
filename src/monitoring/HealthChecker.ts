@@ -5,7 +5,7 @@
  * and disk space. Returns a HealthStatus object.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
@@ -88,15 +88,19 @@ export class HealthChecker {
   private checkTmux(): ComponentHealth {
     const now = new Date().toISOString();
     try {
-      execSync(`${this.config.sessions.tmuxPath} list-sessions 2>/dev/null`, {
+      execFileSync(this.config.sessions.tmuxPath, ['list-sessions'], {
         encoding: 'utf-8',
         timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       return { status: 'healthy', message: 'tmux server responding', lastCheck: now };
     } catch {
       // tmux server not running is ok if no sessions needed
       try {
-        execSync(`${this.config.sessions.tmuxPath} -V`, { encoding: 'utf-8', timeout: 3000 });
+        execFileSync(this.config.sessions.tmuxPath, ['-V'], {
+          encoding: 'utf-8',
+          timeout: 3000,
+        });
         return { status: 'healthy', message: 'tmux available (no server running)', lastCheck: now };
       } catch {
         return { status: 'unhealthy', message: 'tmux binary not found', lastCheck: now };

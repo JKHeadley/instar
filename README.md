@@ -116,7 +116,7 @@ Some claims are less proven: iOS app is "internal preview." Voice wake docs retu
 
 **Runtime depth.** Each session is a full Claude Code instance -- extended thinking, native tools, sub-agents, MCP servers. Not an API wrapper.
 
-**Multi-session orchestration.** 5 parallel jobs, each an independent Claude Code process with its own context and tools.
+**Multi-session orchestration.** Multiple parallel jobs, each an independent Claude Code process with its own context and tools.
 
 **Identity infrastructure.** Hooks re-inject identity on session start, after compaction, and before messaging. The agent doesn't try to remember who it is -- the infrastructure guarantees it. Structure over willpower.
 
@@ -191,7 +191,7 @@ instar server stop
 instar status                    # Health check
 ```
 
-Endpoints: `/health` · `/sessions` · `/jobs` · `/telegram/reply/:topicId`
+Key endpoints: `/health` · `/status` · `/sessions` · `/sessions/spawn` · `/sessions/tmux` · `/jobs` · `/jobs/:slug/trigger` · `/relationships` · `/feedback` · `/updates` · `/events` · `/quota` · `/telegram/reply/:topicId`
 
 ### Identity That Survives Context Death
 
@@ -251,6 +251,7 @@ Ships out of the box:
 | **reflection-trigger** | Every 4h | Sonnet | Reflect on recent work |
 | **relationship-maintenance** | Daily | Sonnet | Review stale relationships |
 | **update-check** | Daily | Haiku | Detect new Instar versions |
+| **feedback-retry** | Every 6h | Haiku | Retry un-forwarded feedback items |
 
 These give the agent a **circadian rhythm** -- regular self-maintenance without user intervention.
 

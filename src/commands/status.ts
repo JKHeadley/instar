@@ -4,7 +4,7 @@
  * Checks for: config, tmux, server, sessions, scheduler.
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import pc from 'picocolors';
 import { loadConfig, detectTmuxPath } from '../core/Config.js';
 import { StateManager } from '../core/StateManager.js';
@@ -35,7 +35,7 @@ export async function showStatus(options: StatusOptions): Promise<void> {
 
   if (tmuxPath) {
     try {
-      execSync(`${tmuxPath} has-session -t '=${serverSessionName}' 2>/dev/null`);
+      execFileSync(tmuxPath, ['has-session', '-t', `=${serverSessionName}`], { stdio: 'ignore' });
       serverRunning = true;
     } catch {
       // not running

@@ -6,7 +6,7 @@
  */
 
 import { Router } from 'express';
-import { execSync as execSyncFn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
@@ -15,6 +15,7 @@ import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { UpdateChecker } from '../core/UpdateChecker.js';
+import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 
 interface RouteContext {
   config: AgentKitConfig;
@@ -25,6 +26,7 @@ interface RouteContext {
   relationships: RelationshipManager | null;
   feedback: FeedbackManager | null;
   updateChecker: UpdateChecker | null;
+  quotaTracker: QuotaTracker | null;
   startTime: Date;
 }
 
@@ -39,7 +41,7 @@ export function createRoutes(ctx: RouteContext): Router {
       status: 'ok',
       uptime: uptimeMs,
       uptimeHuman: formatUptime(uptimeMs),
-      version: '0.1.0',
+      version: ctx.config.version || '0.0.0',
       project: ctx.config.projectName,
     });
   });
@@ -64,8 +66,9 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.get('/sessions', (req, res) => {
     const status = req.query.status as string | undefined;
-    const sessions = status
-      ? ctx.state.listSessions({ status: status as any })
+    const validStatuses = ['starting', 'running', 'completed', 'failed', 'killed'];
+    const sessions = status && validStatuses.includes(status)
+      ? ctx.state.listSessions({ status: status as 'starting' | 'running' | 'completed' | 'failed' | 'killed' })
       : ctx.state.listSessions();
 
     res.json(sessions);
@@ -89,6 +92,10 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: 'Request body must include "text" field' });
       return;
     }
+    if (text.length > 100_000) {
+      res.status(400).json({ error: 'Input text exceeds maximum length (100KB)' });
+      return;
+    }
 
     const success = ctx.sessionManager.sendInput(req.params.name, text);
     if (!success) {
@@ -99,21 +106,29 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ok: true });
   });
 
-  router.post('/sessions/spawn', (req, res) => {
+  router.post('/sessions/spawn', async (req, res) => {
     const { name, prompt, model, jobSlug } = req.body;
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
       return;
     }
+    if (typeof name !== 'string' || name.length > 200) {
+      res.status(400).json({ error: '"name" must be a string under 200 characters' });
+      return;
+    }
+    if (typeof prompt !== 'string' || prompt.length > 500_000) {
+      res.status(400).json({ error: '"prompt" must be a string under 500KB' });
+      return;
+    }
+    if (model && !['opus', 'sonnet', 'haiku'].includes(model)) {
+      res.status(400).json({ error: '"model" must be one of: opus, sonnet, haiku' });
+      return;
+    }
 
     try {
-      const session = ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug });
-      // spawnSession is async but we want to handle errors,
-      // so we use .then/.catch
-      session.then(s => res.status(201).json(s)).catch(err => {
-        res.status(500).json({ error: err.message });
-      });
+      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug });
+      res.status(201).json(session);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -192,8 +207,10 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/sessions/tmux', (_req, res) => {
     try {
       const tmuxPath = ctx.config.sessions.tmuxPath;
-      const output = execSyncFn(`${tmuxPath} list-sessions -F '#{session_name}' 2>/dev/null || true`, {
+      const output = execFileSync(tmuxPath, ['list-sessions', '-F', '#{session_name}'], {
         encoding: 'utf-8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
       }).trim();
 
       const sessions = output
@@ -345,6 +362,21 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(lastCheck);
+  });
+
+  // ── Quota ──────────────────────────────────────────────────────
+
+  router.get('/quota', (_req, res) => {
+    if (!ctx.quotaTracker) {
+      res.json({ status: 'not_configured', usagePercent: null });
+      return;
+    }
+    const state = ctx.quotaTracker.getState();
+    res.json({
+      status: state ? 'ok' : 'no_data',
+      ...(state ?? {}),
+      recommendation: ctx.quotaTracker.getRecommendation(),
+    });
   });
 
   // ── Events ──────────────────────────────────────────────────────

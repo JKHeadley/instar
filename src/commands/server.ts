@@ -8,7 +8,7 @@
  *   topic message → find/spawn session → inject message → session replies via [telegram:N]
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
@@ -296,7 +296,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Check if already running
     try {
-      execSync(`${tmuxPath} has-session -t '=${serverSessionName}' 2>/dev/null`);
+      execFileSync(tmuxPath, ['has-session', '-t', `=${serverSessionName}`], { stdio: 'ignore' });
       console.log(pc.yellow(`Server already running in tmux session: ${serverSessionName}`));
       console.log(`  Attach with: tmux attach -t '=${serverSessionName}'`);
       return;
@@ -308,10 +308,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const cliPath = new URL('../cli.js', import.meta.url).pathname;
 
     const nodeCmd = `node '${cliPath}' server start --foreground`;
-    const cmd = `${tmuxPath} new-session -d -s '${serverSessionName}' -c '${config.projectDir}' '${nodeCmd}'`;
 
     try {
-      execSync(cmd);
+      execFileSync(tmuxPath, ['new-session', '-d', '-s', serverSessionName, '-c', config.projectDir, nodeCmd], { stdio: 'ignore' });
       console.log(pc.green(`Server started in tmux session: ${pc.bold(serverSessionName)}`));
       console.log(`  Port: ${config.port}`);
       console.log(`  Attach: tmux attach -t '=${serverSessionName}'`);
@@ -334,7 +333,7 @@ export async function stopServer(options: { dir?: string }): Promise<void> {
   }
 
   try {
-    execSync(`${tmuxPath} kill-session -t '=${serverSessionName}'`);
+    execFileSync(tmuxPath, ['kill-session', '-t', `=${serverSessionName}`], { stdio: 'ignore' });
     console.log(pc.green(`Server stopped (killed tmux session: ${serverSessionName})`));
   } catch {
     console.log(pc.yellow(`No server running (no tmux session: ${serverSessionName})`));

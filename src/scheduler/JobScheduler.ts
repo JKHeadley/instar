@@ -260,6 +260,7 @@ export class JobScheduler {
       model: job.model,
       jobSlug: job.slug,
       triggeredBy: `scheduler:${reason}`,
+      maxDurationMinutes: job.expectedDurationMinutes,
     }).then(() => {
       // Update job state on success
       const jobState: JobState = {

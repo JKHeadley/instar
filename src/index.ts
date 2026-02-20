@@ -25,6 +25,8 @@ export { createRoutes } from './server/routes.js';
 
 // Monitoring
 export { HealthChecker } from './monitoring/HealthChecker.js';
+export { QuotaTracker } from './monitoring/QuotaTracker.js';
+export { SleepWakeDetector } from './core/SleepWakeDetector.js';
 
 // Messaging
 export { TelegramAdapter } from './messaging/TelegramAdapter.js';

@@ -6,12 +6,18 @@
  * and can be monitored/reaped by the server.
  */
 
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
 import { StateManager } from './StateManager.js';
+
+/** Sanitize a string for use as part of a tmux session name. */
+function sanitizeSessionName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+}
 
 export interface SessionManagerEvents {
   sessionComplete: [session: Session];
@@ -43,6 +49,25 @@ export class SessionManager extends EventEmitter {
           session.endedAt = new Date().toISOString();
           this.state.saveSession(session);
           this.emit('sessionComplete', session);
+          continue;
+        }
+
+        // Enforce session timeout (prevents zombie sessions)
+        if (session.maxDurationMinutes && session.startedAt) {
+          const elapsed = (Date.now() - new Date(session.startedAt).getTime()) / 60000;
+          const limit = session.maxDurationMinutes * 1.2; // 20% buffer
+          if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
+            console.warn(`[SessionManager] Session "${session.name}" exceeded timeout (${Math.round(elapsed)}m > ${session.maxDurationMinutes}m). Killing.`);
+            try {
+              execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
+                encoding: 'utf-8',
+              });
+            } catch { /* ignore */ }
+            session.status = 'killed';
+            session.endedAt = new Date().toISOString();
+            this.state.saveSession(session);
+            this.emit('sessionComplete', session);
+          }
         }
       }
     }, intervalMs);
@@ -67,6 +92,7 @@ export class SessionManager extends EventEmitter {
     model?: ModelTier;
     jobSlug?: string;
     triggeredBy?: string;
+    maxDurationMinutes?: number;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -77,7 +103,8 @@ export class SessionManager extends EventEmitter {
     }
 
     const sessionId = this.generateId();
-    const tmuxSession = `${path.basename(this.config.projectDir)}-${options.name}`;
+    const safeName = sanitizeSessionName(options.name);
+    const tmuxSession = `${path.basename(this.config.projectDir)}-${safeName}`;
 
     // Check if tmux session already exists
     if (this.tmuxSessionExists(tmuxSession)) {
@@ -93,18 +120,15 @@ export class SessionManager extends EventEmitter {
 
     // Create tmux session and run claude
     // Respect the user's configured auth method (API key or OAuth subscription)
+    // Use execFileSync with argument arrays to prevent command injection
     const claudeCmd = `${this.config.claudePath} ${claudeArgs.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`;
-    const tmuxCmd = [
-      this.config.tmuxPath,
-      'new-session',
-      '-d',
-      '-s', tmuxSession,
-      '-c', this.config.projectDir,
-      `bash -c "${claudeCmd.replace(/"/g, '\\"')}"`,
-    ];
-
     try {
-      execSync(tmuxCmd.join(' '), { encoding: 'utf-8' });
+      execFileSync(this.config.tmuxPath, [
+        'new-session', '-d',
+        '-s', tmuxSession,
+        '-c', this.config.projectDir,
+        'bash', '-c', claudeCmd,
+      ], { encoding: 'utf-8' });
     } catch (err) {
       throw new Error(`Failed to create tmux session: ${err}`);
     }
@@ -119,6 +143,7 @@ export class SessionManager extends EventEmitter {
       triggeredBy: options.triggeredBy,
       model: options.model,
       prompt: options.prompt,
+      maxDurationMinutes: options.maxDurationMinutes,
     };
 
     this.state.saveSession(session);
@@ -145,7 +170,7 @@ export class SessionManager extends EventEmitter {
     }
 
     try {
-      execSync(`${this.config.tmuxPath} kill-session -t '=${session.tmuxSession}'`, {
+      execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
         encoding: 'utf-8',
       });
     } catch {
@@ -164,9 +189,10 @@ export class SessionManager extends EventEmitter {
   captureOutput(tmuxSession: string, lines: number = 100): string | null {
     try {
       // Note: use `=session:` (trailing colon) for pane-level tmux commands
-      return execSync(
-        `${this.config.tmuxPath} capture-pane -t '=${tmuxSession}:' -p -S -${lines}`,
-        { encoding: 'utf-8' }
+      return execFileSync(
+        this.config.tmuxPath,
+        ['capture-pane', '-t', `=${tmuxSession}:`, '-p', '-S', `-${lines}`],
+        { encoding: 'utf-8', timeout: 5000 }
       );
     } catch {
       return null;
@@ -179,9 +205,16 @@ export class SessionManager extends EventEmitter {
   sendInput(tmuxSession: string, input: string): boolean {
     try {
       // Note: use `=session:` (trailing colon) for pane-level tmux commands
-      execSync(
-        `${this.config.tmuxPath} send-keys -t '=${tmuxSession}:' ${JSON.stringify(input)} Enter`,
-        { encoding: 'utf-8' }
+      // Send text literally, then Enter separately
+      execFileSync(
+        this.config.tmuxPath,
+        ['send-keys', '-t', `=${tmuxSession}:`, '-l', input],
+        { encoding: 'utf-8', timeout: 5000 }
+      );
+      execFileSync(
+        this.config.tmuxPath,
+        ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'],
+        { encoding: 'utf-8', timeout: 5000 }
       );
       return true;
     } catch {
@@ -239,7 +272,9 @@ export class SessionManager extends EventEmitter {
         // Kill the tmux session if it's still hanging around
         if (this.isSessionAlive(session.tmuxSession)) {
           try {
-            execSync(`${this.config.tmuxPath} kill-session -t '=${session.tmuxSession}'`);
+            execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
+              encoding: 'utf-8',
+            });
           } catch { /* ignore */ }
         }
       }
@@ -269,12 +304,15 @@ export class SessionManager extends EventEmitter {
     }
 
     // Respect the user's configured auth method (API key or OAuth subscription)
-    const claudeCmd = `${this.config.claudePath} --dangerously-skip-permissions`;
-    const shellCmd = `cd '${this.config.projectDir}' && ${claudeCmd}`;
-    const tmuxCmd = `${this.config.tmuxPath} new-session -d -s '${tmuxSession}' -x 200 -y 50 'bash -c "${shellCmd.replace(/"/g, '\\"')}"'`;
-
+    // Use execFileSync with argument arrays to prevent command injection
+    const claudeCmd = `cd '${this.config.projectDir.replace(/'/g, "'\\''")}' && ${this.config.claudePath} --dangerously-skip-permissions`;
     try {
-      execSync(tmuxCmd, { encoding: 'utf-8' });
+      execFileSync(this.config.tmuxPath, [
+        'new-session', '-d',
+        '-s', tmuxSession,
+        '-x', '200', '-y', '50',
+        'bash', '-c', claudeCmd,
+      ], { encoding: 'utf-8' });
     } catch (err) {
       throw new Error(`Failed to create interactive tmux session: ${err}`);
     }
@@ -336,15 +374,13 @@ export class SessionManager extends EventEmitter {
     const exactTarget = `=${tmuxSession}:`;
     try {
       // Send the text literally
-      execSync(
-        `${this.config.tmuxPath} send-keys -t '${exactTarget}' -l ${JSON.stringify(text)}`,
-        { encoding: 'utf-8' }
-      );
+      execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
+        encoding: 'utf-8', timeout: 5000,
+      });
       // Send Enter separately
-      execSync(
-        `${this.config.tmuxPath} send-keys -t '${exactTarget}' Enter`,
-        { encoding: 'utf-8' }
-      );
+      execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+        encoding: 'utf-8', timeout: 5000,
+      });
     } catch (err) {
       console.error(`[SessionManager] Failed to inject message into ${tmuxSession}: ${err}`);
     }
@@ -367,8 +403,10 @@ export class SessionManager extends EventEmitter {
 
   private tmuxSessionExists(name: string): boolean {
     try {
-      execSync(`${this.config.tmuxPath} has-session -t '=${name}' 2>/dev/null`, {
+      execFileSync(this.config.tmuxPath, ['has-session', '-t', `=${name}`], {
         encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
       });
       return true;
     } catch {
@@ -377,8 +415,6 @@ export class SessionManager extends EventEmitter {
   }
 
   private generateId(): string {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substring(2, 6);
-    return `${timestamp}-${random}`;
+    return randomUUID();
   }
 }

@@ -137,18 +137,20 @@ Dawn's infrastructure has evolved over months of real production use into a soph
 - **Settings guard**: Prevent unauthorized settings changes
 - **Activity feed**: Broadcast events for multi-session awareness
 
-### What Agent-Kit Has
-- None. Zero hooks.
+### What Instar Has (Updated)
+Instar now ships 4 hooks during `instar init`:
+- `session-start.sh` — Inject identity context from AGENT.md/USER.md/MEMORY.md
+- `dangerous-command-guard.sh` — Block `rm -rf`, `git push --force`, etc.
+- `grounding-before-messaging.sh` — Re-read identity before external messaging
+- `compaction-recovery.sh` — Restore identity when context compresses
 
-### Recommended Integrations
-1. **Hook infrastructure** (Critical): This is the single biggest gap. Hooks are how Dawn enforces behavioral patterns. Without them, the gravity wells (describe instead of do, settle for failure, etc.) are just words — they need to be wired as friction.
-2. **Essential starter hooks**:
-   - `session-start`: Inject identity context from AGENT.md/USER.md/MEMORY.md
-   - `dangerous-command-guard`: Block `rm -rf`, `git push --force`, etc.
-   - `reflection-trigger`: After N tool calls, remind the agent to check if it's learned anything worth recording
-   - `grounding-before-messaging`: Before sending Telegram/external messages, re-read identity
+These are configured in `.claude/settings.json` and installed by `installHooks()` in init.ts.
 
-**Note**: Claude Code already supports hooks natively via `.claude/settings.json`. Instar just needs to configure them during setup and provide the hook scripts.
+### Remaining Recommendations
+1. ~~**Hook infrastructure** (Critical)~~ **RESOLVED** — Hooks now ship out of the box.
+2. Additional hooks to consider:
+   - `reflection-trigger`: After N tool calls, remind the agent to check if it's learned anything
+   - `testing-awareness`: Before commits, check if changed code should be tested
 
 ---
 
@@ -291,13 +293,17 @@ Telegram is the most complete area in instar. The major fixes were done this ses
 - **Security manager**: Token-based API authentication for server endpoints
 - **Protected sessions**: Named sessions that cannot be killed by the reaper
 
-### What Agent-Kit Has
-- Protected sessions list
-- Basic middleware (placeholder)
-- Auth token in config (not enforced)
+### What Instar Has (Updated)
+- Protected sessions list (configurable, enforced in `killSession`)
+- Full auth middleware with timing-safe Bearer token comparison
+- Auth token generated during `instar init` and enforced on all non-health endpoints
+- CORS middleware
+- Session name sanitization (command injection prevention)
+- Path traversal prevention in StateManager
+- `execFileSync` with argument arrays (not shell string concatenation)
 
-### Recommended Integrations
-1. **Auth enforcement** (High): The server API should require authentication. Currently anyone on localhost can trigger jobs or send messages.
+### Remaining Recommendations
+1. ~~**Auth enforcement** (High)~~ **RESOLVED** — Auth middleware enforces Bearer token on all non-health endpoints.
 2. **Dangerous command hook** (High): Ship with a hook that blocks obviously destructive commands. This prevents agents from accidentally deleting important files.
 3. **Settings guard** (Medium): Prevent the agent from disabling its own safety guardrails via config changes.
 

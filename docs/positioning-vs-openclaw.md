@@ -226,7 +226,7 @@ Spawns the real Claude Code CLI. Never extracts, proxies, or spoofs OAuth tokens
 | **Device apps** | macOS, Android, iOS (preview) | None |
 | **Sandbox** | Docker (3×3 matrix), tool policies, audit CLI | Dangerous command guards, user permissions |
 | **Skills** | 50 bundled + ClawHub marketplace | Project-local + self-creating |
-| **Multi-user** | Yes (group chat, allowlists, per-user routing) | Single user |
+| **Multi-user** | Yes (group chat, allowlists, per-user routing) | Basic multi-user (UserManager, per-user channels) |
 | **Jobs** | Cron with retry, jitter, persistent storage | Full scheduler with topic coupling + coherence jobs |
 | **Hooks** | Plugin hooks, three-tier discovery | Claude Code native hooks (pre/post tool, lifecycle) |
 | **Self-evolution** | SOUL.md + workspace file updates | Full infrastructure self-modification |
@@ -235,7 +235,7 @@ Spawns the real Claude Code CLI. Never extracts, proxies, or spoofs OAuth tokens
 | **Workflows** | Lobster DSL (pipelines, approval gates) | Claude Code skill system |
 | **Model providers** | 12+ (Anthropic, OpenAI, Gemini, Bedrock, etc.) | Claude-only (via Claude Code) |
 | **Deployment** | Docker, Fly.io, Railway, GCP, Hetzner, etc. | tmux on any machine with Node.js |
-| **Testing** | Not documented | 161 tests (unit + integration) |
+| **Testing** | Not documented | 321 tests (unit + integration + e2e) |
 | **Target user** | Anyone wanting AI assistant | Developers building with Claude Code |
 
 ---
@@ -303,4 +303,4 @@ Everything else:
 
 ---
 
-*This document compares Instar (v0.1.6) against OpenClaw as studied from both the open-source repository and full documentation site (docs.openclaw.ai) in February 2026. Both projects are actively evolving.*
+*This document compares Instar (v0.1.10) against OpenClaw as studied from both the open-source repository and full documentation site (docs.openclaw.ai) in February 2026. Both projects are actively evolving.*

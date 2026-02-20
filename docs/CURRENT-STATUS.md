@@ -8,28 +8,33 @@ Persistent autonomy infrastructure for AI agents. Gives Claude Code a persistent
 
 ## Secured Assets
 
-- **npm**: `instar` (latest: 0.1.4) — https://www.npmjs.com/package/instar
-- **GitHub**: https://github.com/SageMindAI/instar (private, under SageMindAI org)
-- **Domain**: `instar.sh` (purchased, not yet pointed anywhere)
+- **npm**: `instar` (latest: 0.1.10) — https://www.npmjs.com/package/instar
+- **GitHub**: https://github.com/SageMindAI/instar (under SageMindAI org)
+- **Domain**: `instar.sh` (purchased; Astro landing page built in `site/`, awaiting deployment)
 - **Source**: `/tmp/instar-src/` on workstation (cloned from GitHub)
 
-## Current Version: 0.1.4
+## Current Version: 0.1.10
 
 ### What's Shipped
-- Full CLI: `instar`, `instar init`, `instar setup`, `instar server start/stop`, `instar status`, `instar user/job add/list`
+- Full CLI: `instar`, `instar init`, `instar setup`, `instar server start/stop`, `instar status`, `instar user/job add/list`, `instar add`, `instar feedback`
 - Conversational setup wizard (launches Claude Code with setup-wizard skill)
 - Classic setup wizard (inquirer-based fallback)
 - Identity bootstrap with thesis explanation and initiative levels (guided/proactive/autonomous)
 - Auto-install prerequisites (tmux, Claude Code) during setup
 - npx-first flow with global install prompt after setup
 - Auth-respecting sessions (removed forced OAuth — supports both API keys and subscription)
-- Session management via tmux (spawn, monitor, kill, reap)
-- Job scheduler with cron, priority levels, model tiering, quota awareness
-- Telegram integration (two-way messaging, topic-per-session, auto-detect chat ID)
-- Relationship tracking (per-person JSON files, cross-platform identity resolution)
+- Session management via tmux (spawn, monitor, kill, reap, timeout enforcement)
+- Job scheduler with cron, priority levels, model tiering, quota awareness config
+- Telegram integration (two-way messaging, topic-per-session, auto-detect chat ID, JSONL history, thread history for respawn, long message file indirection)
+- Relationship tracking (per-person JSON files, cross-platform identity resolution, merge/delete)
 - Health monitoring with periodic checks
+- Feedback loop (FeedbackManager with webhook forwarding, retry, CLI command)
+- Update checker (checks npm registry on startup)
+- Auth middleware (Bearer token enforcement on all non-health endpoints)
+- Sleep/wake detection (timer drift-based, for laptop reliability)
 - Full project scaffolding (AGENT.md, USER.md, MEMORY.md, CLAUDE.md, hooks, scripts)
-- 161 unit tests passing
+- 321 tests passing (unit + integration + e2e)
+- `.npmignore` configured to exclude tests, docs, source, dev files
 
 ### Architecture
 ```
@@ -45,23 +50,30 @@ Persistent autonomy infrastructure for AI agents. Gives Claude Code a persistent
   logs/                 # Server logs
 
 src/
-  core/                 # Config, SessionManager, StateManager, Prerequisites
+  core/                 # Config, SessionManager, StateManager, Prerequisites,
+                        # FeedbackManager, UpdateChecker, RelationshipManager,
+                        # SleepWakeDetector, types
   scheduler/            # JobLoader, JobScheduler
   server/               # AgentServer, routes, middleware
   messaging/            # TelegramAdapter
-  monitoring/           # HealthChecker
+  monitoring/           # HealthChecker, QuotaTracker
   scaffold/             # bootstrap (identity), templates (file generation)
-  commands/             # CLI: init, setup, server, status, user, job
+  templates/            # Default job definitions, hook scripts, helper scripts
+  commands/             # CLI: init, setup, server, status, user, job, add, feedback
   users/                # UserManager
 ```
 
 ### Key Files
 - `src/core/SessionManager.ts` — Spawns/monitors Claude Code sessions in tmux
+- `src/core/FeedbackManager.ts` — Feedback webhook forwarding with retry
+- `src/core/UpdateChecker.ts` — npm registry version checking
+- `src/core/SleepWakeDetector.ts` — Timer drift-based sleep/wake detection
 - `src/commands/setup.ts` — Interactive setup wizard (classic mode)
 - `src/commands/init.ts` — Non-interactive init (fresh project or existing)
 - `src/scaffold/bootstrap.ts` — Identity bootstrap (initiative levels)
-- `.claude/skills/setup-wizard/skill.md` — Conversational wizard prompt
-- `src/scheduler/JobScheduler.ts` — Cron-based job scheduling
+- `.claude/skills/setup-wizard/skill.md` — Conversational wizard prompt (dev only, not in npm)
+- `src/scheduler/JobScheduler.ts` — Cron-based job scheduling with priority
+- `src/server/middleware.ts` — CORS, auth (timing-safe), error handling
 
 ## Strategic Context
 
@@ -83,30 +95,29 @@ src/
 - Instar spawns the official Claude Code CLI — we ARE Claude Code usage
 - We never extract, proxy, or spoof OAuth tokens
 - API keys recommended for production/commercial use
-- Full analysis documented in Telegram topic 1307 thread
 
 ## Design Principles (Earned Through Building)
 
 1. **Agent-first language** — The setup wizard never tells users to memorize CLI commands. After `instar server start`, you talk to your agent. "Ask your agent to create a job" not "run `instar job add`".
 2. **Identity is infrastructure, not a file** — SOUL.md is a file. Instar's identity system is hooks that re-inject identity on session start, after compaction, and before messaging. Structure over willpower.
 3. **Different category from OpenClaw** — They're messaging middleware ("AI assistant everywhere"). We're autonomy infrastructure ("give your agent a body"). Don't try to match their 20+ channels. Win on depth: runtime, multi-session, identity, self-evolution, relationships.
-4. **Full OpenClaw analysis**: `.claude/drafts/openclaw-deep-analysis.md`
 
 ## What Needs Doing
 
 ### Critical (Ship-Blocking)
-- [ ] Point instar.sh domain to something (landing page? GitHub readme?)
-- [ ] License decision (currently UNLICENSED)
+- [ ] Point instar.sh domain to landing page (Astro site built in `site/`, needs Vercel deploy)
+- [x] License decision — MIT (shipped in LICENSE file + package.json)
 - [ ] Make GitHub repo public (currently private)
-- [ ] Landing page / website at instar.sh
 - [x] README polish — OpenClaw comparison section added (0.1.5)
 
 ### Important (Quality)
 - [x] Agent-first language in setup wizard (0.1.6)
-- [ ] Integration tests need real tmux (currently mocked)
-- [ ] E2E test for full lifecycle (init → server start → spawn session → job runs)
+- [x] Integration tests use real tmux (skip if unavailable)
+- [x] E2E test for full lifecycle (implemented in tests/e2e/lifecycle.test.ts)
 - [ ] Error handling for edge cases (tmux server death, Claude Code not logged in)
-- [ ] `.npmignore` to reduce package size (tests, docs shouldn't ship)
+- [x] `.npmignore` to reduce package size (tests, docs, source excluded)
+- [ ] Implement `instar add telegram/email/sentry/quota` subcommands (currently stubs)
+- [x] Quota tracking data source (QuotaTracker reads state file, threshold-based load shedding)
 
 ### Nice to Have
 - [ ] Slack adapter (TelegramAdapter pattern is extensible)
@@ -114,6 +125,9 @@ src/
 - [ ] Email adapter
 - [ ] Web dashboard for monitoring
 - [ ] `instar upgrade` command for self-updating
+- [ ] Voice message transcription (Telegram voice messages currently dropped)
+- [ ] Cross-machine topic routing
+- [ ] Kill audit logging
 
 ### Learned from OpenClaw (worth considering)
 - [ ] DM pairing flow for new contacts (temporary codes with expiry)

@@ -14,6 +14,22 @@ const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 3;
 const DEFAULT_MAX_PARALLEL_JOBS = 2;
 
+function getInstarVersion(): string {
+  try {
+    // Walk up from this file to find package.json
+    let dir = path.dirname(new URL(import.meta.url).pathname);
+    for (let i = 0; i < 5; i++) {
+      const pkgPath = path.join(dir, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        if (pkg.name === 'instar') return pkg.version;
+      }
+      dir = path.dirname(dir);
+    }
+  } catch { /* ignore */ }
+  return '0.0.0';
+}
+
 export function detectTmuxPath(): string | null {
   const candidates = [
     '/opt/homebrew/bin/tmux',  // macOS ARM (Homebrew)
@@ -139,6 +155,7 @@ export function loadConfig(projectDir?: string): AgentKitConfig {
     projectDir: resolvedProjectDir,
     stateDir,
     port: fileConfig.port || DEFAULT_PORT,
+    version: getInstarVersion(),
     sessions,
     scheduler,
     users: fileConfig.users || [],

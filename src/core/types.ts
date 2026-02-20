@@ -25,6 +25,8 @@ export interface Session {
   model?: ModelTier;
   /** The initial prompt/instruction sent to Claude */
   prompt?: string;
+  /** Maximum duration in minutes before the session is killed */
+  maxDurationMinutes?: number;
 }
 
 export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'killed';
@@ -307,7 +309,7 @@ export interface FeedbackItem {
 export interface FeedbackConfig {
   /** Whether feedback is enabled */
   enabled: boolean;
-  /** Webhook URL to forward feedback to (default: https://api.instar.sh/feedback) */
+  /** Webhook URL to forward feedback to (default: https://dawn.bot-me.ai/api/instar/feedback) */
   webhookUrl: string;
   /** Local feedback storage file */
   feedbackFile: string;

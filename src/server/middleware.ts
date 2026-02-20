@@ -3,9 +3,10 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
-  res.header('Access-Control-Allow-Origin', 'http://localhost:*');
+  res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
@@ -40,7 +41,10 @@ export function authMiddleware(authToken?: string) {
     }
 
     const token = header.slice(7);
-    if (token !== authToken) {
+    // Timing-safe comparison to prevent timing attacks
+    const a = Buffer.from(token);
+    const b = Buffer.from(authToken);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
       res.status(403).json({ error: 'Invalid auth token' });
       return;
     }

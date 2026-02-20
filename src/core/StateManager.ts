@@ -17,15 +17,29 @@ export class StateManager {
     this.stateDir = stateDir;
   }
 
+  /** Validate a key/ID contains only safe characters to prevent path traversal. */
+  private validateKey(key: string, label: string = 'key'): void {
+    if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+      throw new Error(`Invalid ${label}: "${key}" — only alphanumeric, hyphens, and underscores allowed`);
+    }
+  }
+
   // ── Session State ───────────────────────────────────────────────
 
   getSession(sessionId: string): Session | null {
+    this.validateKey(sessionId, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${sessionId}.json`);
     if (!fs.existsSync(filePath)) return null;
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch {
+      console.warn(`[StateManager] Corrupted session file: ${filePath}`);
+      return null;
+    }
   }
 
   saveSession(session: Session): void {
+    this.validateKey(session.id, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${session.id}.json`);
     fs.writeFileSync(filePath, JSON.stringify(session, null, 2));
   }
@@ -35,9 +49,14 @@ export class StateManager {
     if (!fs.existsSync(dir)) return [];
 
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-    const sessions: Session[] = files.map(f =>
-      JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'))
-    );
+    const sessions: Session[] = [];
+    for (const f of files) {
+      try {
+        sessions.push(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8')));
+      } catch {
+        console.warn(`[StateManager] Corrupted session file: ${f}`);
+      }
+    }
 
     if (filter?.status) {
       return sessions.filter(s => s.status === filter.status);
@@ -48,12 +67,19 @@ export class StateManager {
   // ── Job State ─────────────────────────────────────────────────
 
   getJobState(slug: string): JobState | null {
+    this.validateKey(slug, 'job slug');
     const filePath = path.join(this.stateDir, 'state', 'jobs', `${slug}.json`);
     if (!fs.existsSync(filePath)) return null;
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch {
+      console.warn(`[StateManager] Corrupted job state file: ${filePath}`);
+      return null;
+    }
   }
 
   saveJobState(state: JobState): void {
+    this.validateKey(state.slug, 'job slug');
     const filePath = path.join(this.stateDir, 'state', 'jobs', `${state.slug}.json`);
     fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
   }
@@ -88,7 +114,12 @@ export class StateManager {
         .filter(Boolean);
 
       for (const line of lines.reverse()) {
-        const event: ActivityEvent = JSON.parse(line);
+        let event: ActivityEvent;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue; // Skip corrupted lines
+        }
 
         if (options.since && new Date(event.timestamp) < options.since) {
           return events; // Past the time window
@@ -107,12 +138,19 @@ export class StateManager {
   // ── Generic Key-Value Store ───────────────────────────────────
 
   get<T>(key: string): T | null {
+    this.validateKey(key, 'state key');
     const filePath = path.join(this.stateDir, 'state', `${key}.json`);
     if (!fs.existsSync(filePath)) return null;
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch {
+      console.warn(`[StateManager] Corrupted state file: ${filePath}`);
+      return null;
+    }
   }
 
   set<T>(key: string, value: T): void {
+    this.validateKey(key, 'state key');
     const filePath = path.join(this.stateDir, 'state', `${key}.json`);
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
