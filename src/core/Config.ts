@@ -110,7 +110,14 @@ export function loadConfig(projectDir?: string): InstarConfig {
   // Load config file if it exists
   let fileConfig: Partial<InstarConfig> = {};
   if (fs.existsSync(configPath)) {
-    fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    try {
+      fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      throw new Error(
+        `Failed to parse ${configPath}: ${err instanceof Error ? err.message : err}\n` +
+        `Check that .instar/config.json contains valid JSON.`
+      );
+    }
   }
 
   const tmuxPath = detectTmuxPath();

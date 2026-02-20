@@ -107,6 +107,30 @@ describe('Config module', () => {
     });
   });
 
+  describe('loadConfig error handling', () => {
+    it('throws descriptive error when config.json is corrupted', () => {
+      // Create a project dir with corrupt config
+      const projectDir = path.join(tmpDir, 'corrupt-project');
+      const instarDir = path.join(projectDir, '.instar');
+      fs.mkdirSync(instarDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), '# Test');
+      fs.writeFileSync(path.join(instarDir, 'config.json'), '{invalid json!!!}');
+
+      expect(() => loadConfig(projectDir)).toThrow(/Failed to parse/);
+      expect(() => loadConfig(projectDir)).toThrow(/valid JSON/);
+    });
+
+    it('throws descriptive error when config.json is truncated', () => {
+      const projectDir = path.join(tmpDir, 'truncated-project');
+      const instarDir = path.join(projectDir, '.instar');
+      fs.mkdirSync(instarDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), '# Test');
+      fs.writeFileSync(path.join(instarDir, 'config.json'), '{"projectName": "test", "port": ');
+
+      expect(() => loadConfig(projectDir)).toThrow(/Failed to parse/);
+    });
+  });
+
   describe('loadConfig maxSessions nullish coalescing', () => {
     // This tests the fix: maxSessions should use ?? not ||
     // so that 0 is a valid (falsy but intentional) value

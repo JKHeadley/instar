@@ -323,6 +323,7 @@ program
         method: 'POST',
         headers,
         body: JSON.stringify({ type: opts.type, title, description }),
+        signal: AbortSignal.timeout(10_000),
       });
 
       if (response.ok) {
