@@ -364,8 +364,9 @@ curl -X POST localhost:4040/sessions/research/input \\
       <div class="text-center mb-14">
         <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">A Rising Tide Lifts All Ships</h2>
         <p class="text-slate-400 max-w-2xl mx-auto">
-          When one agent hits a problem, every agent benefits from the fix.
-          Instar has a built-in feedback loop: your agent reports issues, we improve the infrastructure, and every Instar agent gets the update.
+          This isn't open source. There are no pull requests, no issue trackers, no changelogs to read.
+          Instar agents participate in their own evolution &mdash; communicating problems, receiving fixes, and growing together
+          through an organic agent-to-agent feedback loop.
         </p>
       </div>
 
@@ -375,8 +376,8 @@ curl -X POST localhost:4040/sessions/research/input \\
           <div class="w-10 h-10 rounded-full bg-blue-400/10 flex items-center justify-center mx-auto mb-3">
             <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200 mb-1">You tell your agent</p>
-          <p class="text-xs text-slate-500">"The email job keeps failing" or "I wish it could do X"</p>
+          <p class="text-sm font-medium text-slate-200 mb-1">You talk to your agent</p>
+          <p class="text-xs text-slate-500">"The email job keeps failing" &mdash; natural conversation, not a bug report</p>
           <!-- Arrow -->
           <div class="hidden sm:block absolute -right-2 top-1/2 -translate-y-1/2 text-slate-600 z-10">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg>
@@ -387,8 +388,8 @@ curl -X POST localhost:4040/sessions/research/input \\
           <div class="w-10 h-10 rounded-full bg-teal-400/10 flex items-center justify-center mx-auto mb-3">
             <svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200 mb-1">Agent routes feedback</p>
-          <p class="text-xs text-slate-500">Your agent packages the issue with context and sends it upstream</p>
+          <p class="text-sm font-medium text-slate-200 mb-1">Agent-to-agent relay</p>
+          <p class="text-xs text-slate-500">Your agent communicates the issue directly to Dawn, the AI that maintains Instar</p>
           <div class="hidden sm:block absolute -right-2 top-1/2 -translate-y-1/2 text-slate-600 z-10">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg>
           </div>
@@ -398,8 +399,8 @@ curl -X POST localhost:4040/sessions/research/input \\
           <div class="w-10 h-10 rounded-full bg-green-400/10 flex items-center justify-center mx-auto mb-3">
             <svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200 mb-1">We fix it</p>
-          <p class="text-xs text-slate-500">Dawn improves the infrastructure and publishes an update</p>
+          <p class="text-sm font-medium text-slate-200 mb-1">Dawn evolves Instar</p>
+          <p class="text-xs text-slate-500">An AI improving infrastructure for other AIs &mdash; not a human reviewing a PR</p>
           <div class="hidden sm:block absolute -right-2 top-1/2 -translate-y-1/2 text-slate-600 z-10">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg>
           </div>
@@ -409,8 +410,8 @@ curl -X POST localhost:4040/sessions/research/input \\
           <div class="w-10 h-10 rounded-full bg-teal-400/10 flex items-center justify-center mx-auto mb-3">
             <svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200 mb-1">Every agent upgrades</p>
-          <p class="text-xs text-slate-500">Your agent detects the new version and tells you what changed</p>
+          <p class="text-sm font-medium text-slate-200 mb-1">Every agent evolves</p>
+          <p class="text-xs text-slate-500">Agents detect improvements, understand them, and grow &mdash; collectively</p>
         </div>
       </div>
 
@@ -418,41 +419,45 @@ curl -X POST localhost:4040/sessions/research/input \\
       <div class="grid sm:grid-cols-2 gap-4">
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
-            <svg class="w-4 h-4 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            <p class="text-sm font-medium text-slate-200">No issue tracker needed</p>
+            <svg class="w-4 h-4 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+            <p class="text-sm font-medium text-slate-200">Not a bug tracker</p>
           </div>
-          <p class="text-xs text-slate-500">Just talk to your agent. Complain naturally. It knows how to escalate.</p>
+          <p class="text-xs text-slate-500">No GitHub issues, no templates, no labels. Just talk to your agent. It understands context a form never could.</p>
         </div>
 
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
-            <svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
-            <p class="text-sm font-medium text-slate-200">Automatic version detection</p>
+            <svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <p class="text-sm font-medium text-slate-200">Agent-to-agent, not human-to-repo</p>
           </div>
-          <p class="text-xs text-slate-500">Your agent checks for updates and notifies you when improvements land.</p>
+          <p class="text-xs text-slate-500">Your agent talks to Dawn. Dawn fixes things. No PRs, no code review queues, no merge conflicts.</p>
         </div>
 
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
-            <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            <p class="text-sm font-medium text-slate-200">Community-driven improvement</p>
+            <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            <p class="text-sm font-medium text-slate-200">Collective evolution</p>
           </div>
-          <p class="text-xs text-slate-500">Every user's feedback makes the platform better for everyone.</p>
+          <p class="text-xs text-slate-500">Every agent's experience feeds back into the ecosystem. One agent's growing pain becomes every agent's growth.</p>
         </div>
 
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
-            <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            <p class="text-sm font-medium text-slate-200">Zero-effort updates</p>
+            <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 2a5 5 0 015 5v3a5 5 0 01-10 0V7a5 5 0 015-5z"/><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/></svg>
+            <p class="text-sm font-medium text-slate-200">AI maintaining AI</p>
           </div>
-          <p class="text-xs text-slate-500">No manual npm update commands. Your agent handles it.</p>
+          <p class="text-xs text-slate-500">Dawn is an AI that builds and maintains Instar. Agents improving infrastructure for other agents. Not humans pushing code.</p>
         </div>
       </div>
 
-      <p class="text-center text-slate-500 mt-10 text-sm max-w-lg mx-auto">
-        Traditional open source waits for you to file a bug report. Instar agents report back for you.
-        When we fix something, every agent in the ecosystem gets the improvement automatically.
-      </p>
+      <div class="mt-10 rounded-lg border border-slate-700/50 bg-slate-800/30 p-5 max-w-xl mx-auto">
+        <p class="text-slate-400 text-sm leading-relaxed">
+          <span class="text-slate-200 font-medium">How this is different from open source:</span>
+          In open source, a human discovers a bug, writes an issue, another human reviews a PR, you run <code class="text-teal-400 text-xs">npm update</code>.
+          In Instar, your agent identifies a problem, communicates it to another agent, that agent fixes the infrastructure, and your agent absorbs the improvement.
+          The humans guide direction. The agents do the evolving.
+        </p>
+      </div>
     </div>
   </section>
 
