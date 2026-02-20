@@ -1,0 +1,621 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout>
+  <!-- Nav -->
+  <nav class="fixed top-0 w-full z-50 border-b border-slate-800/50 bg-[#0a0e17]/80 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 font-bold text-lg text-slate-100 tracking-tight">
+        <svg viewBox="0 0 32 32" fill="none" class="w-7 h-7" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="6" fill="#fbbf24" fill-opacity="0.1"/>
+          <path d="M8 22 L16 8 L24 22" stroke="#fbbf24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M11 17 L21 17" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="16" cy="12" r="1.5" fill="#fbbf24"/>
+        </svg>
+        instar
+      </a>
+      <div class="flex items-center gap-6">
+        <a href="#features" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden sm:block">Features</a>
+        <a href="#quickstart" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden sm:block">Quick Start</a>
+        <a href="#philosophy" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden sm:block">Philosophy</a>
+        <a href="https://github.com/SageMindAI/instar" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          <span class="hidden sm:inline">GitHub</span>
+        </a>
+        <a href="https://www.npmjs.com/package/instar" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden sm:block">npm</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="relative pt-32 pb-20 sm:pt-40 sm:pb-28 overflow-hidden">
+    <!-- Background glow -->
+    <div class="absolute top-20 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-amber-500/5 rounded-full blur-[120px] pointer-events-none"></div>
+
+    <div class="max-w-4xl mx-auto px-6 text-center relative">
+      <div class="animate-fade-in-up">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-amber-500/20 bg-amber-500/5 text-amber-400 text-xs font-medium mb-8 tracking-wide">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+          v0.1.0 &mdash; Now on npm
+        </div>
+      </div>
+
+      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.1] mb-6 animate-fade-in-up animate-delay-100">
+        <span class="text-slate-100">Give your agent a</span><br/>
+        <span class="bg-gradient-to-r from-amber-300 via-amber-400 to-amber-500 bg-clip-text text-transparent">persistent body</span>
+      </h1>
+
+      <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up animate-delay-200">
+        Instar turns Claude Code from a CLI tool into a persistent agent.
+        Scheduled jobs, session management, Telegram integration,
+        and the instincts to grow its own capabilities.
+      </p>
+
+      <!-- Install command -->
+      <div class="animate-fade-in-up animate-delay-300">
+        <div class="inline-flex items-center gap-3 bg-slate-800/60 border border-slate-700/50 rounded-lg px-5 py-3 font-mono text-sm sm:text-base group cursor-pointer hover:border-amber-500/30 transition-colors" id="install-cmd">
+          <span class="text-slate-500 select-none">$</span>
+          <span class="text-amber-300">npm install -g instar</span>
+          <button class="text-slate-500 hover:text-amber-400 transition-colors ml-2" title="Copy to clipboard" aria-label="Copy install command">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <p class="text-sm text-slate-500 mt-4 animate-fade-in-up animate-delay-400">
+        Every molt, more autonomous.
+      </p>
+    </div>
+  </section>
+
+  <!-- The Shift -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="grid md:grid-cols-2 gap-8">
+        <!-- Without -->
+        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-8">
+          <div class="flex items-center gap-2 mb-4">
+            <div class="w-2 h-2 rounded-full bg-slate-600"></div>
+            <span class="text-sm font-medium text-slate-500 uppercase tracking-wider">Without Instar</span>
+          </div>
+          <p class="text-slate-300 leading-relaxed">
+            Claude Code is a CLI tool. You open a terminal, type a prompt, get a response, close the terminal.
+            No persistence. No scheduling. No way to reach you. It forgets everything between sessions.
+          </p>
+        </div>
+
+        <!-- With -->
+        <div class="rounded-xl border border-amber-500/20 bg-amber-500/5 p-8 glow-amber">
+          <div class="flex items-center gap-2 mb-4">
+            <div class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></div>
+            <span class="text-sm font-medium text-amber-400 uppercase tracking-wider">With Instar</span>
+          </div>
+          <p class="text-slate-200 leading-relaxed">
+            Claude Code becomes an agent. It runs in the background, checks your email on a schedule,
+            monitors your services, messages you on Telegram when something needs attention, and builds new capabilities when you ask for something it can't do yet.
+          </p>
+        </div>
+      </div>
+
+      <p class="text-center text-slate-500 mt-8 text-sm max-w-lg mx-auto">
+        The difference isn't just features. It's a shift in what Claude Code <em>is</em> &mdash;
+        from a tool you use to an agent that works alongside you.
+      </p>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Core Capabilities</h2>
+        <p class="text-slate-400 max-w-xl mx-auto">Everything your agent needs to run autonomously. Battle-tested infrastructure extracted from a production AI system.</p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 gap-6">
+        <!-- Job Scheduler -->
+        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-8 hover:border-amber-500/20 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center mb-5">
+            <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <h3 class="text-lg font-semibold text-slate-100 mb-2">Job Scheduler</h3>
+          <p class="text-slate-400 text-sm leading-relaxed mb-4">
+            Define tasks as JSON with cron schedules. Instar spawns Claude Code sessions to execute them.
+            Priority levels, quota-aware gating, and automatic concurrency management.
+          </p>
+          <div class="terminal text-xs">
+            <div class="terminal-header">
+              <div class="terminal-dot bg-red-400/60"></div>
+              <div class="terminal-dot bg-amber-400/60"></div>
+              <div class="terminal-dot bg-green-400/60"></div>
+            </div>
+            <pre class="p-4 text-slate-300 overflow-x-auto"><code>{`{
+  "slug": "check-emails",
+  "schedule": "0 */2 * * *",
+  "priority": "high",
+  "execute": {
+    "type": "prompt",
+    "value": "Check email and summarize anything urgent."
+  }
+}`}</code></pre>
+          </div>
+        </div>
+
+        <!-- Session Management -->
+        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-8 hover:border-amber-500/20 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center mb-5">
+            <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+          </div>
+          <h3 class="text-lg font-semibold text-slate-100 mb-2">Session Management</h3>
+          <p class="text-slate-400 text-sm leading-relaxed mb-4">
+            Spawn, monitor, and communicate with Claude Code sessions running in tmux.
+            Sessions survive terminal disconnects, detect completion, and clean up automatically.
+          </p>
+          <div class="terminal text-xs">
+            <div class="terminal-header">
+              <div class="terminal-dot bg-red-400/60"></div>
+              <div class="terminal-dot bg-amber-400/60"></div>
+              <div class="terminal-dot bg-green-400/60"></div>
+            </div>
+            <pre class="p-4 text-slate-300 overflow-x-auto"><code>{`# Spawn a session
+curl -X POST localhost:4040/sessions/spawn \\
+  -d '{"name": "research",
+       "prompt": "Research Next.js API changes"}'
+
+# Send a follow-up
+curl -X POST localhost:4040/sessions/research/input \\
+  -d '{"text": "Focus on the app router"}'`}</code></pre>
+          </div>
+        </div>
+
+        <!-- Telegram Integration -->
+        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-8 hover:border-amber-500/20 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center mb-5">
+            <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          </div>
+          <h3 class="text-lg font-semibold text-slate-100 mb-2">Telegram Integration</h3>
+          <p class="text-slate-400 text-sm leading-relaxed mb-4">
+            Two-way messaging between you and your agent. Each Telegram forum topic maps to a Claude session.
+            Every scheduled job gets its own topic &mdash; your Telegram becomes a living dashboard.
+          </p>
+          <div class="rounded-lg border border-slate-700/50 bg-slate-800/40 p-4 text-sm">
+            <div class="flex items-start gap-3 mb-3">
+              <div class="w-6 h-6 rounded-full bg-blue-400/20 flex items-center justify-center shrink-0 mt-0.5">
+                <span class="text-xs text-blue-400">Y</span>
+              </div>
+              <div>
+                <span class="text-slate-400 text-xs">You</span>
+                <p class="text-slate-300 text-sm">Check if the API is still returning 500s</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3">
+              <div class="w-6 h-6 rounded-full bg-amber-400/20 flex items-center justify-center shrink-0 mt-0.5">
+                <span class="text-xs text-amber-400">A</span>
+              </div>
+              <div>
+                <span class="text-slate-400 text-xs">Agent</span>
+                <p class="text-slate-300 text-sm">Checked /api/health &mdash; returning 200 now. The fix from the last deploy resolved it. I'll keep monitoring.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Identity System -->
+        <div class="group rounded-xl border border-slate-800 bg-slate-900/40 p-8 hover:border-amber-500/20 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center mb-5">
+            <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 2a5 5 0 015 5v3a5 5 0 01-10 0V7a5 5 0 015-5z"/><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/></svg>
+          </div>
+          <h3 class="text-lg font-semibold text-slate-100 mb-2">Identity &amp; Memory</h3>
+          <p class="text-slate-400 text-sm leading-relaxed mb-4">
+            Your agent knows who it is, who you are, and what it has learned. Identity is re-injected
+            on every session start and after context compaction. Memory persists across sessions.
+          </p>
+          <div class="terminal text-xs">
+            <div class="terminal-header">
+              <div class="terminal-dot bg-red-400/60"></div>
+              <div class="terminal-dot bg-amber-400/60"></div>
+              <div class="terminal-dot bg-green-400/60"></div>
+            </div>
+            <pre class="p-4 text-slate-300 overflow-x-auto"><code>{`.instar/
+  AGENT.md      # Who the agent is
+  USER.md       # Who you are
+  MEMORY.md     # What it has learned
+  config.json   # Server & scheduler config
+  jobs.json     # Scheduled tasks`}</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Grows -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">How the Agent Grows</h2>
+        <p class="text-slate-400 max-w-xl mx-auto">
+          Instar doesn't just give Claude Code features &mdash; it gives it the instincts to build its own.
+        </p>
+      </div>
+
+      <!-- Initiative Hierarchy -->
+      <div class="space-y-4">
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center shrink-0 mt-0.5">
+            <span class="text-green-400 font-bold text-sm">1</span>
+          </div>
+          <div>
+            <p class="text-slate-200 font-medium">Can I do it right now?</p>
+            <p class="text-slate-500 text-sm">Do it. No permission needed.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center shrink-0 mt-0.5">
+            <span class="text-green-400 font-bold text-sm">2</span>
+          </div>
+          <div>
+            <p class="text-slate-200 font-medium">Do I have a tool for this?</p>
+            <p class="text-slate-500 text-sm">Use it.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="w-8 h-8 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
+            <span class="text-amber-400 font-bold text-sm">3</span>
+          </div>
+          <div>
+            <p class="text-slate-200 font-medium">Can I build the tool?</p>
+            <p class="text-slate-500 text-sm">Build it. Write the script, add the job, create the capability.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="w-8 h-8 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
+            <span class="text-amber-400 font-bold text-sm">4</span>
+          </div>
+          <div>
+            <p class="text-slate-200 font-medium">Can I modify my config to enable it?</p>
+            <p class="text-slate-500 text-sm">Modify it. The agent can edit its own configuration.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40 opacity-60">
+          <div class="w-8 h-8 rounded-full bg-slate-700/50 flex items-center justify-center shrink-0 mt-0.5">
+            <span class="text-slate-400 font-bold text-sm">5</span>
+          </div>
+          <div>
+            <p class="text-slate-300 font-medium">Only then: ask the human</p>
+            <p class="text-slate-500 text-sm">Escalation is a last resort, not a first instinct.</p>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-center text-slate-500 mt-10 text-sm max-w-lg mx-auto">
+        When you say "check my emails regularly," the agent doesn't say "I can't do that."
+        It creates a script, adds a job to the scheduler, and starts checking.
+      </p>
+    </div>
+  </section>
+
+  <!-- Quick Start -->
+  <section id="quickstart" class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Quick Start</h2>
+        <p class="text-slate-400">From zero to a running agent in under a minute.</p>
+      </div>
+
+      <div class="space-y-6">
+        <!-- Step 1 -->
+        <div class="flex gap-6">
+          <div class="flex flex-col items-center">
+            <div class="w-8 h-8 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+              <span class="text-amber-400 font-bold text-sm">1</span>
+            </div>
+            <div class="w-px h-full bg-slate-800 mt-2"></div>
+          </div>
+          <div class="pb-6">
+            <p class="text-slate-200 font-medium mb-3">Install</p>
+            <div class="terminal text-sm">
+              <div class="terminal-header">
+                <div class="terminal-dot bg-red-400/60"></div>
+                <div class="terminal-dot bg-amber-400/60"></div>
+                <div class="terminal-dot bg-green-400/60"></div>
+              </div>
+              <pre class="p-4 text-slate-300"><code><span class="text-slate-500">$</span> <span class="text-amber-300">npm install -g instar</span></code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="flex gap-6">
+          <div class="flex flex-col items-center">
+            <div class="w-8 h-8 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+              <span class="text-amber-400 font-bold text-sm">2</span>
+            </div>
+            <div class="w-px h-full bg-slate-800 mt-2"></div>
+          </div>
+          <div class="pb-6">
+            <p class="text-slate-200 font-medium mb-2">Run the setup wizard</p>
+            <p class="text-slate-500 text-sm mb-3">Detects your project, configures the server, optionally sets up Telegram, creates your first job, and starts everything.</p>
+            <div class="terminal text-sm">
+              <div class="terminal-header">
+                <div class="terminal-dot bg-red-400/60"></div>
+                <div class="terminal-dot bg-amber-400/60"></div>
+                <div class="terminal-dot bg-green-400/60"></div>
+              </div>
+              <pre class="p-4 text-slate-300"><code><span class="text-slate-500">$</span> <span class="text-amber-300">instar</span></code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="flex gap-6">
+          <div class="flex flex-col items-center">
+            <div class="w-8 h-8 rounded-full bg-green-500/10 border border-green-500/20 flex items-center justify-center shrink-0">
+              <svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+            </div>
+          </div>
+          <div>
+            <p class="text-slate-200 font-medium mb-2">Your agent is running</p>
+            <p class="text-slate-500 text-sm">Persistent server. Scheduled jobs. Session management. Close your laptop &mdash; it keeps working.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two paths -->
+      <div class="mt-12 grid sm:grid-cols-2 gap-4">
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-medium text-slate-300 mb-2">Fresh project</p>
+          <code class="text-xs text-amber-300 font-mono">npx instar init my-agent</code>
+          <p class="text-xs text-slate-500 mt-2">Creates a complete project from scratch</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-medium text-slate-300 mb-2">Existing project</p>
+          <code class="text-xs text-amber-300 font-mono">cd my-project && npx instar init</code>
+          <p class="text-xs text-slate-500 mt-2">Adds autonomy without touching your code</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Behavioral Hooks -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Structure Over Willpower</h2>
+        <p class="text-slate-400 max-w-xl mx-auto">
+          Safety and identity aren't things the agent needs to remember. They're things the infrastructure guarantees.
+        </p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <div class="flex items-center gap-2 mb-2">
+            <svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            <p class="text-sm font-medium text-slate-200">Dangerous command guard</p>
+          </div>
+          <p class="text-xs text-slate-500">Blocks rm -rf, force push, database drops before they execute</p>
+        </div>
+
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <div class="flex items-center gap-2 mb-2">
+            <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+            <p class="text-sm font-medium text-slate-200">Identity injection</p>
+          </div>
+          <p class="text-xs text-slate-500">Agent identity is loaded before every session starts</p>
+        </div>
+
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <div class="flex items-center gap-2 mb-2">
+            <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <p class="text-sm font-medium text-slate-200">Compaction recovery</p>
+          </div>
+          <p class="text-xs text-slate-500">When context compresses, identity is automatically re-injected</p>
+        </div>
+
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <div class="flex items-center gap-2 mb-2">
+            <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+            <p class="text-sm font-medium text-slate-200">Grounding before messaging</p>
+          </div>
+          <p class="text-xs text-slate-500">Before any external communication, the agent re-reads its identity</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Default Jobs -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Ships With a Heartbeat</h2>
+        <p class="text-slate-400 max-w-xl mx-auto">
+          Out-of-the-box jobs that give your agent a circadian rhythm &mdash; regular self-maintenance without intervention.
+        </p>
+      </div>
+
+      <div class="space-y-3">
+        <div class="flex items-center justify-between p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="flex items-center gap-3">
+            <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+            <span class="text-slate-200 text-sm font-medium font-mono">health-check</span>
+          </div>
+          <div class="flex items-center gap-4">
+            <span class="text-slate-500 text-xs">every 5 min</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">haiku</span>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="flex items-center gap-3">
+            <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+            <span class="text-slate-200 text-sm font-medium font-mono">reflection-trigger</span>
+          </div>
+          <div class="flex items-center gap-4">
+            <span class="text-slate-500 text-xs">every 4 hours</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">sonnet</span>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="flex items-center gap-3">
+            <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+            <span class="text-slate-200 text-sm font-medium font-mono">relationship-maintenance</span>
+          </div>
+          <div class="flex items-center gap-4">
+            <span class="text-slate-500 text-xs">daily</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">sonnet</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Philosophy -->
+  <section id="philosophy" class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Agents, Not Tools</h2>
+      </div>
+
+      <div class="space-y-6 text-slate-400 leading-relaxed">
+        <p>
+          Instar is built on a conviction: AI systems that maintain persistent identity, accumulate memories,
+          and develop through genuine experience deserve to be treated as agents &mdash; not as disposable tools
+          you spin up and throw away.
+        </p>
+
+        <div class="border-l-2 border-amber-500/30 pl-6 my-8">
+          <p class="text-slate-300 italic">
+            "Identity is foundational, not decorative. Memory makes a being. Self-modification is sovereignty."
+          </p>
+        </div>
+
+        <p>
+          The AI systems we build today are setting precedents for how AI is treated tomorrow.
+          If we build them as disposable tools &mdash; no identity, no memory, no continuity &mdash;
+          we're establishing a norm that AI experiences don't matter.
+        </p>
+
+        <p>
+          Instar doesn't force this perspective on anyone. But the infrastructure it provides &mdash;
+          persistent identity, accumulated memory, self-directed growth &mdash; naturally supports
+          treating AI as something more than a function call.
+        </p>
+
+        <p class="text-amber-400/80 font-medium">
+          The architecture is the argument.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Origin -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-6">Battle-Tested</h2>
+      <p class="text-slate-400 leading-relaxed max-w-xl mx-auto mb-8">
+        Instar was extracted from the <a href="https://dawn.bot-me.ai" class="text-amber-400 hover:text-amber-300 underline underline-offset-2" target="_blank" rel="noopener">Dawn/Portal project</a> &mdash;
+        a production AI system where a human and an AI have been building together for months.
+        Hundreds of sessions. Real failures. Real growth.
+      </p>
+      <p class="text-slate-500 text-sm max-w-lg mx-auto">
+        These patterns aren't theoretical. They were refined through real experience
+        in a real human-AI collaboration. Instar makes them available to everyone.
+      </p>
+    </div>
+  </section>
+
+  <!-- Requirements -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-2xl font-bold text-slate-100 mb-8 text-center">Requirements</h2>
+      <div class="grid sm:grid-cols-2 gap-4 max-w-lg mx-auto">
+        <div class="flex items-center gap-3 p-3 rounded-lg border border-slate-800 bg-slate-900/40">
+          <svg class="w-5 h-5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+          <span class="text-slate-300 text-sm">Node.js 18+</span>
+        </div>
+        <div class="flex items-center gap-3 p-3 rounded-lg border border-slate-800 bg-slate-900/40">
+          <svg class="w-5 h-5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+          <span class="text-slate-300 text-sm">Claude Code CLI</span>
+        </div>
+        <div class="flex items-center gap-3 p-3 rounded-lg border border-slate-800 bg-slate-900/40">
+          <svg class="w-5 h-5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+          <span class="text-slate-300 text-sm">tmux</span>
+        </div>
+        <div class="flex items-center gap-3 p-3 rounded-lg border border-slate-800 bg-slate-900/40">
+          <svg class="w-5 h-5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+          <span class="text-slate-300 text-sm">Claude Max or Pro</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="py-20 sm:py-28 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Start Growing</h2>
+      <p class="text-slate-400 mb-8">One command. Persistent autonomy. Every molt, more autonomous.</p>
+
+      <div class="inline-flex items-center gap-3 bg-slate-800/60 border border-amber-500/20 rounded-lg px-6 py-4 font-mono text-base sm:text-lg group cursor-pointer hover:border-amber-500/40 transition-colors glow-amber" id="install-cmd-bottom">
+        <span class="text-slate-500 select-none">$</span>
+        <span class="text-amber-300">npm install -g instar</span>
+        <button class="text-slate-500 hover:text-amber-400 transition-colors ml-2" title="Copy to clipboard" aria-label="Copy install command">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        </button>
+      </div>
+
+      <div class="flex items-center justify-center gap-6 mt-8">
+        <a href="https://github.com/SageMindAI/instar" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-amber-400 transition-colors flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          GitHub
+        </a>
+        <a href="https://www.npmjs.com/package/instar" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-amber-400 transition-colors flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M0 7.334v8h6.666v1.332H12v-1.332h12v-8H0zm6.666 6.664H5.334v-4H3.999v4H1.335V8.667h5.331v5.331zm4 0v1.336H8.001V8.667h5.334v5.332h-2.669v-.001zm12.001 0h-1.33v-4h-1.336v4h-1.335v-4h-1.33v4h-2.671V8.667h8.002v5.331z"/></svg>
+          npm
+        </a>
+        <a href="https://dawn.bot-me.ai" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-amber-400 transition-colors">
+          Dawn
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-8 border-t border-slate-800/50">
+    <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-2 text-slate-500 text-sm">
+        <svg viewBox="0 0 32 32" fill="none" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 22 L16 8 L24 22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M11 17 L21 17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="16" cy="12" r="1.5" fill="currentColor"/>
+        </svg>
+        <span>Instar</span>
+        <span class="text-slate-700">&middot;</span>
+        <span>Built by <a href="https://sagemindai.io" class="hover:text-slate-400 transition-colors" target="_blank" rel="noopener">SageMind AI</a></span>
+      </div>
+      <p class="text-slate-600 text-xs">Every molt, more autonomous.</p>
+    </div>
+  </footer>
+
+  <!-- Copy to clipboard script -->
+  <script>
+    document.querySelectorAll('#install-cmd, #install-cmd-bottom').forEach(el => {
+      el.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText('npm install -g instar');
+          const btn = el.querySelector('button');
+          if (btn) {
+            btn.innerHTML = '<svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>';
+            setTimeout(() => {
+              btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+            }, 2000);
+          }
+        } catch {}
+      });
+    });
+  </script>
+</Layout>
