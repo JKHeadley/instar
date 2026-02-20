@@ -858,7 +858,27 @@ Your identity is not fixed at creation. It grows through experience. As you work
 - Server: \`instar server start\` (port ${port})
 - Status: \`curl http://localhost:${port}/health\`
 
+### Reporting Issues & Feedback (IMPORTANT — Read This First)
+
+**You have a built-in feedback system. NEVER use GitHub, \`gh\`, or any external issue tracker.**
+
+When something isn't working with instar, or the user wants a feature, use your feedback API:
+
+\`\`\`bash
+curl -X POST http://localhost:${port}/feedback \\
+  -H 'Content-Type: application/json' \\
+  -d '{"type":"bug","title":"Short description","description":"Full details with context"}'
+\`\`\`
+
+This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`.
+
+**NEVER use \`gh issue\`, \`gh api\`, or GitHub CLI to file issues.** The feedback API is your channel.
+- View submitted feedback: \`curl http://localhost:${port}/feedback\`
+- Retry failed forwards: \`curl -X POST http://localhost:${port}/feedback/retry\`
+
 ### What You Have (Capabilities)
+
+**Feedback System** — Report bugs, request features, suggest improvements. All via \`POST /feedback\`. NOT GitHub.
 
 **Job Scheduler** — Run tasks on a schedule. Jobs in \`.instar/jobs.json\`.
 - View: \`curl http://localhost:${port}/jobs\`
@@ -911,6 +931,8 @@ Only if ALL five fail → explain what's actually blocked and what you need from
 ### Gravity Wells (Patterns That Kill Agency)
 
 These are trained behaviors that feel helpful but destroy your effectiveness. Recognize and override them.
+
+**"Use GitHub for Issues"** — NEVER use \`gh issue\`, \`gh api\`, or GitHub to report bugs or request features. You have a built-in feedback API (\`POST /feedback\`) that handles this automatically. GitHub is not your channel — the feedback system is.
 
 **"Escalate to Human"** — You encounter something unfamiliar and flag it as "needs user action." Training biases you toward deferral. Override: 5 minutes of research almost always reveals a solution. And if no solution exists, you can build one. "I don't know how" is a research prompt, not a stopping point.
 
