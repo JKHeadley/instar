@@ -32,8 +32,11 @@ Persistent autonomy infrastructure for AI agents. Gives Claude Code a persistent
 - Update checker (checks npm registry on startup)
 - Auth middleware (Bearer token enforcement on all non-health endpoints)
 - Sleep/wake detection (timer drift-based, for laptop reliability)
+- Security hardened: all tmux/shell calls use execFileSync with argument arrays (command injection prevention), path traversal prevention via key validation, timing-safe auth token comparison
+- Quota tracking (file-based state reading, threshold-based load shedding for job scheduler)
+- Input validation on all API endpoints (name/prompt/text length limits, model enum validation)
 - Full project scaffolding (AGENT.md, USER.md, MEMORY.md, CLAUDE.md, hooks, scripts)
-- 321 tests passing (unit + integration + e2e)
+- 352 tests passing (306 unit + 37 integration + 9 e2e)
 - `.npmignore` configured to exclude tests, docs, source, dev files
 
 ### Architecture

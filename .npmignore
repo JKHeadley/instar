@@ -17,6 +17,12 @@ vitest.integration.config.ts
 .claude/
 CLAUDE.md
 
+# Landing page site
+site/
+
+# Image assets (referenced via GitHub, not needed in package)
+assets/
+
 # CI
 .github/
 
