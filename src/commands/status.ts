@@ -4,7 +4,7 @@
  * Checks for: config, tmux, server, sessions, scheduler.
  */
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import pc from 'picocolors';
 import { loadConfig, detectTmuxPath } from '../core/Config.js';
 import { StateManager } from '../core/StateManager.js';
@@ -48,8 +48,10 @@ export async function showStatus(options: StatusOptions): Promise<void> {
 
     // Try to hit health endpoint
     try {
-      const resp = execSync(`curl -s http://localhost:${config.port}/health`, { encoding: 'utf-8', timeout: 3000 });
-      const health = JSON.parse(resp);
+      const resp = await fetch(`http://localhost:${config.port}/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      const health = await resp.json() as { uptimeHuman?: string };
       console.log(`    Uptime: ${health.uptimeHuman}`);
     } catch {
       console.log(`    ${pc.yellow('Could not reach health endpoint')}`);

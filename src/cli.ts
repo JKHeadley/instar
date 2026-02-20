@@ -106,10 +106,21 @@ program
     const title = opts.title || 'CLI feedback submission';
     const description = opts.description || opts.title || 'No description provided';
 
+    // Load config to get auth token if available
+    let authToken: string | undefined;
     try {
+      const { loadConfig } = await import('./core/Config.js');
+      const config = loadConfig(opts.dir);
+      authToken = config.authToken;
+    } catch { /* project may not be initialized yet */ }
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
       const response = await fetch(`http://localhost:${port}/feedback`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ type: opts.type, title, description }),
       });
 
