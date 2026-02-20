@@ -340,7 +340,7 @@ export interface AgentKitConfig {
   /** HTTP server port */
   port: number;
   /** HTTP server bind address (default: '127.0.0.1' for security) */
-  host: string;
+  host?: string;
   /** Session manager config */
   sessions: SessionManagerConfig;
   /** Job scheduler config */
@@ -354,9 +354,9 @@ export interface AgentKitConfig {
   /** Auth token for API access (generated during setup) */
   authToken?: string;
   /** Relationship tracking config */
-  relationships: RelationshipManagerConfig;
+  relationships?: RelationshipManagerConfig;
   /** Feedback loop config */
-  feedback: FeedbackConfig;
+  feedback?: FeedbackConfig;
   /** Instar version (from package.json) */
   version?: string;
 }

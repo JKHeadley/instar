@@ -215,8 +215,11 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     const state = new StateManager(config.stateDir);
     const sessionManager = new SessionManager(config.sessions, state);
-    const relationships = new RelationshipManager(config.relationships);
-    console.log(pc.green(`  Relationships loaded: ${relationships.getAll().length} tracked`));
+    let relationships: RelationshipManager | undefined;
+    if (config.relationships) {
+      relationships = new RelationshipManager(config.relationships);
+      console.log(pc.green(`  Relationships loaded: ${relationships.getAll().length} tracked`));
+    }
 
     let scheduler: JobScheduler | undefined;
     if (config.scheduler.enabled) {
@@ -257,9 +260,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Set up feedback and update checking
-    const feedback = new FeedbackManager(config.feedback);
+    let feedback: FeedbackManager | undefined;
+    if (config.feedback) {
+      feedback = new FeedbackManager(config.feedback);
+      console.log(pc.green('  Feedback loop enabled'));
+    }
     const updateChecker = new UpdateChecker(config.stateDir);
-    console.log(pc.green('  Feedback loop enabled'));
 
     // Check for updates on startup
     updateChecker.check().then(info => {
