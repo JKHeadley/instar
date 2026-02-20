@@ -475,6 +475,20 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(lastCheck);
   });
 
+  router.post('/updates/apply', async (_req, res) => {
+    if (!ctx.updateChecker) {
+      res.status(503).json({ error: 'Update checker not configured' });
+      return;
+    }
+
+    try {
+      const result = await ctx.updateChecker.applyUpdate();
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Quota ──────────────────────────────────────────────────────
 
   router.get('/quota', (_req, res) => {

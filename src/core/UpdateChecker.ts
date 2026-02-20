@@ -1,16 +1,22 @@
 /**
- * Update Checker — detects when a newer version of Instar is available.
+ * Update Checker — detects, understands, and applies updates intelligently.
  *
  * Part of the Dawn → Agents push layer: when Dawn publishes an update,
- * agents detect it and notify their users with context about what changed.
+ * agents detect it, understand what changed, communicate with their user,
+ * and optionally apply it automatically.
  *
- * Uses `npm view instar version` to check the registry.
+ * Flow: detect → understand → communicate → execute → verify → report
+ *
+ * Uses `npm view instar version` to check the registry and
+ * GitHub releases API for changelogs.
  */
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { UpdateInfo } from './types.js';
+import type { UpdateInfo, UpdateResult } from './types.js';
+
+const GITHUB_RELEASES_URL = 'https://api.github.com/repos/SageMindAI/instar/releases';
 
 export class UpdateChecker {
   private stateDir: string;
@@ -22,8 +28,7 @@ export class UpdateChecker {
   }
 
   /**
-   * Check npm for the latest version and compare to installed.
-   * Fully async — never blocks the event loop.
+   * Check npm for the latest version, fetch changelog, and compare to installed.
    */
   async check(): Promise<UpdateInfo> {
     const currentVersion = this.getInstalledVersion();
@@ -44,18 +49,114 @@ export class UpdateChecker {
       };
     }
 
+    const updateAvailable = this.isNewer(latestVersion, currentVersion);
+
     const info: UpdateInfo = {
       currentVersion,
       latestVersion,
-      updateAvailable: this.isNewer(latestVersion, currentVersion),
+      updateAvailable,
       checkedAt: new Date().toISOString(),
       changelogUrl: `https://github.com/SageMindAI/instar/releases`,
     };
 
-    // Persist last check
-    this.saveState(info);
+    // Fetch changelog if update is available
+    if (updateAvailable) {
+      try {
+        info.changeSummary = await this.fetchChangelog(latestVersion);
+      } catch {
+        // Non-critical — proceed without changelog
+      }
+    }
 
+    this.saveState(info);
     return info;
+  }
+
+  /**
+   * Apply the update: npm update, verify new version, check health.
+   */
+  async applyUpdate(): Promise<UpdateResult> {
+    const previousVersion = this.getInstalledVersion();
+
+    // Check if there's actually an update available
+    const info = await this.check();
+    if (!info.updateAvailable) {
+      return {
+        success: true,
+        previousVersion,
+        newVersion: previousVersion,
+        message: `Already up to date (v${previousVersion}).`,
+        restartNeeded: false,
+        healthCheck: 'skipped',
+      };
+    }
+
+    try {
+      // Execute npm update
+      await this.execAsync('npm', ['update', '-g', 'instar'], 120000);
+    } catch (err) {
+      return {
+        success: false,
+        previousVersion,
+        newVersion: previousVersion,
+        message: `Update failed: ${err instanceof Error ? err.message : String(err)}`,
+        restartNeeded: false,
+        healthCheck: 'skipped',
+      };
+    }
+
+    // Verify the update was applied by checking npm again
+    let newVersion: string;
+    try {
+      newVersion = await this.execAsync('npm', ['list', '-g', 'instar', '--depth=0', '--json'], 15000);
+      // Parse JSON output to extract version
+      const parsed = JSON.parse(newVersion);
+      newVersion = parsed?.dependencies?.instar?.version || 'unknown';
+    } catch {
+      newVersion = 'unknown';
+    }
+
+    const success = newVersion !== previousVersion && newVersion !== 'unknown';
+
+    return {
+      success,
+      previousVersion,
+      newVersion,
+      message: success
+        ? `Updated from v${previousVersion} to v${newVersion}. ${info.changeSummary || 'Restart to use the new version.'}`
+        : `Update command ran but version didn't change (still v${previousVersion}). May need manual intervention.`,
+      restartNeeded: success,
+      healthCheck: 'skipped', // Can't check health until after restart
+    };
+  }
+
+  /**
+   * Fetch human-readable changelog from GitHub releases.
+   */
+  async fetchChangelog(version: string): Promise<string | undefined> {
+    try {
+      const tag = version.startsWith('v') ? version : `v${version}`;
+      const response = await fetch(`${GITHUB_RELEASES_URL}/tags/${tag}`, {
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'instar-update-checker',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) return undefined;
+
+      const release = await response.json() as { body?: string; name?: string };
+      if (release.body) {
+        // Truncate to first 500 chars for concise summary
+        const summary = release.body.slice(0, 500);
+        return summary.length < release.body.length ? summary + '...' : summary;
+      }
+      if (release.name) return release.name;
+    } catch {
+      // Non-critical
+    }
+    return undefined;
   }
 
   /**

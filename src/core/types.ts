@@ -328,6 +328,23 @@ export interface UpdateInfo {
   checkedAt: string;
   /** Changelog URL if available */
   changelogUrl?: string;
+  /** Human-readable summary of what changed (fetched from GitHub releases) */
+  changeSummary?: string;
+}
+
+export interface UpdateResult {
+  /** Whether the update was successfully applied */
+  success: boolean;
+  /** Version before the update */
+  previousVersion: string;
+  /** Version after the update */
+  newVersion: string;
+  /** Human-readable description of what happened */
+  message: string;
+  /** Whether a restart is needed to use the new version */
+  restartNeeded: boolean;
+  /** Health check result after update */
+  healthCheck?: 'healthy' | 'degraded' | 'unhealthy' | 'skipped';
 }
 
 // ── Server Configuration ────────────────────────────────────────────

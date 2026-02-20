@@ -65,4 +65,5 @@ export type {
   FeedbackItem,
   FeedbackConfig,
   UpdateInfo,
+  UpdateResult,
 } from './core/types.js';

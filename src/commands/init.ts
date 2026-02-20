@@ -569,15 +569,15 @@ function getDefaultJobs(port: number): object[] {
     {
       slug: 'update-check',
       name: 'Update Check',
-      description: 'Check if a newer version of instar is available and notify the user.',
+      description: 'Check if a newer version of instar is available. Understand what changed, notify the user conversationally, and offer to apply the update.',
       schedule: '0 9 * * *',
       priority: 'low',
-      expectedDurationMinutes: 1,
+      expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `Check for instar updates: curl http://localhost:${port}/updates. If updateAvailable is true, notify the user via Telegram (if configured) with the current and latest version numbers and suggest running 'npm update -g instar'. If already up to date, do nothing.`,
+        value: `Check for instar updates: curl http://localhost:${port}/updates. If updateAvailable is false, do nothing. If updateAvailable is true: 1) Read the changeSummary field to understand what changed. 2) Notify the user conversationally via Telegram (if configured) — tell them what version is available, what changed (in plain language, not technical jargon), and ask if they'd like to apply it. 3) If the user approves (or if auto-updates are enabled in config), apply the update: curl -X POST http://localhost:${port}/updates/apply. 4) Report the result — whether it succeeded, what version is now installed, and whether a restart is needed.`,
       },
       tags: ['coherence', 'default'],
     },
