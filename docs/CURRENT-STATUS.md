@@ -41,7 +41,7 @@ Persistent autonomy infrastructure for AI agents. Gives Claude Code a persistent
 - Full project scaffolding (AGENT.md, USER.md, MEMORY.md, CLAUDE.md, hooks, scripts)
 - Temp file cleanup on server start (removes `/tmp/instar-telegram/` files > 7 days old)
 - GitHub Actions CI pipeline (test on PR, publish to npm on tag)
-- 824 tests passing (777 unit + 38 integration + 9 e2e across 82 test files)
+- 835 tests passing (788 unit + 38 integration + 9 e2e across 83 test files)
 - `.npmignore` configured to exclude tests, docs, source, dev files
 
 ### Architecture
