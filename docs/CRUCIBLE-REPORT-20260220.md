@@ -6,7 +6,7 @@
 **Ending Version**: 0.1.11
 **Commits**: 47
 **Files Changed**: 102 (8,574 lines added, 544 removed)
-**Tests**: 350 -> 647 (unit) + 37 (integration) + 9 (e2e) = 693 total
+**Tests**: 350 -> 654 (unit) + 37 (integration) + 9 (e2e) = 700 total
 **TypeScript**: Compiles cleanly with `--strict`
 **Package Size**: 98.2 kB (60 files)
 
@@ -218,8 +218,56 @@ New test areas added:
 
 ## Version Bump
 
-**0.1.10 -> 0.1.11**: Security hardening, data integrity improvements, naming consistency, documentation updates, 297 new tests, production-readiness fixes across all 28 source files.
+**0.1.10 -> 0.1.11**: Security hardening, data integrity improvements, naming consistency, documentation updates, 304+ new tests, production-readiness fixes across all 28 source files.
 
 ---
 
-*Report generated during AUT-1655-wo crucible session. 47 commits, 102 files changed, 8,574 lines added. Every source file individually reviewed. All 693 tests passing.*
+## Late-Stage Findings (Iteration 55+)
+
+### Health Endpoint Auth Bypass (FIXED — Security)
+
+The `/health` endpoint is deliberately excluded from `authMiddleware` (for monitoring tools). But the route handler checked `!!req.headers.authorization` to decide whether to show detailed info (project name, version, memory). This only verified header *existence*, not token *validity*.
+
+**Impact**: Any caller sending `Authorization: Bearer garbage` would see project internals.
+**Fix**: Added proper SHA-256 + `timingSafeEqual` token validation directly in the health handler.
+**Tests**: 4 new regression tests in `health-auth-gating.test.ts`.
+
+### Complete execSync Elimination (FIXED — Security)
+
+The crucible report initially claimed "ALL execSync migrated," but 8 calls remained across 4 files:
+- `Config.ts` (3): `which tmux`, `npm config get prefix`, `which claude`
+- `init.ts` (1): `git init`
+- `setup.ts` (2): `npm install -g instar`, `which instar`
+- `Prerequisites.ts` (2): `which brew`, `installPrerequisite`
+
+All 8 migrated to `execFileSync` with argument arrays. Verified: `grep execSync( src/` returns zero matches.
+
+### Telegram 429 Retry Cap (FIXED — Reliability)
+
+`TelegramAdapter.apiCall()` recursively retried on HTTP 429 with no retry limit. Under persistent rate limiting, this would overflow the call stack. Fixed with `retryCount` parameter capped at 3 retries.
+
+### Job Completion State Tracking (FIXED — Data Integrity)
+
+`JobScheduler.notifyJobComplete()` never updated `lastResult` in job state. The `lastResult` field in `JobState` (typed as `'success' | 'failure' | 'timeout'`) was only ever set to `'failure'` (on spawn failure). Actual job completion never recorded the outcome.
+
+**Fix**: `notifyJobComplete` now updates job state with `lastResult: 'success'` (completed) or `'failure'` (failed/killed), resets/increments `consecutiveFailures`, and always processes the queue (previously gated behind messenger existence).
+**Tests**: 3 new tests for completion state tracking.
+
+### Queue Processing Bug (FIXED — Correctness)
+
+`notifyJobComplete` had `processQueue()` behind a messenger guard (`if (!this.messenger && !this.telegram) return`). If no messaging adapter was configured, the queue would never drain when sessions completed. Fixed by moving `processQueue()` before the messenger check.
+
+---
+
+## Final Test Counts
+
+| Suite | Count | Status |
+|-------|-------|--------|
+| Unit | 654 | All passing |
+| Integration | 37 | All passing |
+| E2E | 9 | All passing |
+| **Total** | **700** | **All passing** |
+
+---
+
+*Report generated during AUT-1655-wo crucible session. 50+ commits, 102+ files changed. Every source file individually reviewed. All 700 tests passing.*

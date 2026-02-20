@@ -336,17 +336,33 @@ export class JobScheduler {
   }
 
   /**
-   * Called when a job's session completes. Captures output and notifies via messenger.
+   * Called when a job's session completes. Updates job state and notifies via messenger.
    */
   async notifyJobComplete(sessionId: string, tmuxSession: string): Promise<void> {
-    if (!this.messenger && !this.telegram) return;
-
     // Find which job this session belongs to by looking up session state
     const session = this.state.getSession(sessionId);
     if (!session?.jobSlug) return;
 
     const job = this.jobs.find(j => j.slug === session.jobSlug);
     if (!job) return;
+
+    // Update job state with completion result
+    const failed = session.status === 'failed' || session.status === 'killed';
+    const existingState = this.state.getJobState(job.slug);
+    const jobState: JobState = {
+      slug: job.slug,
+      lastRun: existingState?.lastRun ?? new Date().toISOString(),
+      lastResult: failed ? 'failure' : 'success',
+      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
+      nextScheduled: this.getNextRun(job.slug),
+    };
+    this.state.saveJobState(jobState);
+
+    // Try to drain the queue now that a slot is available
+    this.processQueue();
+
+    // Skip notifications if no messaging configured
+    if (!this.messenger && !this.telegram) return;
 
     // Capture the last output from the tmux session
     let output = '';
@@ -366,7 +382,7 @@ export class JobScheduler {
       : `${duration}s`;
 
     let summary = `*Job Complete: ${job.name}*\n`;
-    summary += `Status: ${session.status === 'failed' ? 'Failed' : 'Done'}\n`;
+    summary += `Status: ${failed ? 'Failed' : 'Done'}\n`;
     if (duration > 0) summary += `Duration: ${durationStr}\n`;
 
     if (output) {
@@ -378,9 +394,6 @@ export class JobScheduler {
     } else {
       summary += '\n_No output captured (session already closed)_';
     }
-
-    // Try to drain the queue now that a slot is available
-    this.processQueue();
 
     // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
     if (this.telegram && job.topicId) {

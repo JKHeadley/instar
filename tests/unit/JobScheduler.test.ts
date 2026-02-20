@@ -264,4 +264,72 @@ describe('JobScheduler', () => {
       expect(events).toHaveLength(1);
     });
   });
+
+  describe('notifyJobComplete', () => {
+    it('updates job state with success on completed session', async () => {
+      createScheduler();
+      scheduler.start();
+
+      // Trigger a job to create session state
+      scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+
+      // Get the spawned session
+      const sessions = mockSM._sessions;
+      expect(sessions.length).toBeGreaterThan(0);
+      const session = sessions[sessions.length - 1];
+
+      // Simulate session completion
+      session.status = 'completed';
+      project.state.saveSession(session);
+
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+
+      const jobState = project.state.getJobState('health-check');
+      expect(jobState?.lastResult).toBe('success');
+      expect(jobState?.consecutiveFailures).toBe(0);
+    });
+
+    it('updates job state with failure on failed session', async () => {
+      createScheduler();
+      scheduler.start();
+
+      // Trigger a job to create session state
+      scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+
+      const sessions = mockSM._sessions;
+      const session = sessions[sessions.length - 1];
+
+      // Simulate session failure
+      session.status = 'failed';
+      project.state.saveSession(session);
+
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+
+      const jobState = project.state.getJobState('health-check');
+      expect(jobState?.lastResult).toBe('failure');
+      expect(jobState?.consecutiveFailures).toBe(1);
+    });
+
+    it('updates job state with failure on killed session', async () => {
+      createScheduler();
+      scheduler.start();
+
+      scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+
+      const sessions = mockSM._sessions;
+      const session = sessions[sessions.length - 1];
+
+      // Simulate session killed (e.g., timeout)
+      session.status = 'killed';
+      project.state.saveSession(session);
+
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+
+      const jobState = project.state.getJobState('health-check');
+      expect(jobState?.lastResult).toBe('failure');
+    });
+  });
 });
