@@ -24,6 +24,8 @@ import { DispatchManager } from '../core/DispatchManager.js';
 import { UpdateChecker } from '../core/UpdateChecker.js';
 import { registerPort, unregisterPort, startHeartbeat } from '../core/PortRegistry.js';
 import { TelegraphService } from '../publishing/TelegraphService.js';
+import { PrivateViewer } from '../publishing/PrivateViewer.js';
+import { TunnelManager } from '../tunnel/TunnelManager.js';
 import type { Message } from '../core/types.js';
 
 interface StartOptions {
@@ -462,12 +464,42 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Publishing enabled (Telegraph)`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, dispatches, updateChecker, publisher });
+    // Set up private viewer (always enabled — stores rendered markdown locally)
+    const viewer = new PrivateViewer({
+      viewsDir: path.join(config.stateDir, 'views'),
+    });
+    console.log(pc.green(`  Private viewer enabled`));
+
+    // Set up Cloudflare Tunnel if configured
+    let tunnel: TunnelManager | undefined;
+    if (config.tunnel?.enabled) {
+      tunnel = new TunnelManager({
+        enabled: true,
+        type: config.tunnel.type || 'quick',
+        token: config.tunnel.token,
+        port: config.port,
+        stateDir: config.stateDir,
+      });
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, dispatches, updateChecker, publisher, viewer, tunnel });
     await server.start();
+
+    // Start tunnel AFTER server is listening
+    if (tunnel) {
+      try {
+        const tunnelUrl = await tunnel.start();
+        console.log(pc.green(`  Tunnel active: ${pc.bold(tunnelUrl)}`));
+      } catch (err) {
+        console.error(pc.red(`  Tunnel failed: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(pc.yellow(`  Server running locally without tunnel. Fix tunnel config and restart.`));
+      }
+    }
 
     // Graceful shutdown
     const shutdown = async () => {
       console.log('\nShutting down...');
+      if (tunnel) await tunnel.stop();
       stopHeartbeat();
       unregisterPort(config.projectName);
       scheduler?.stop();

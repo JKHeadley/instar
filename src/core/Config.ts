@@ -194,6 +194,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
       feedbackFile: path.join(stateDir, 'feedback.json'),
       ...fileConfig.feedback,
     },
+    tunnel: fileConfig.tunnel,
   };
 }
 
@@ -207,6 +208,7 @@ export function ensureStateDir(stateDir: string): void {
     path.join(stateDir, 'state', 'sessions'),
     path.join(stateDir, 'state', 'jobs'),
     path.join(stateDir, 'relationships'),
+    path.join(stateDir, 'views'),
     path.join(stateDir, 'logs'),
   ];
 

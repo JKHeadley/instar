@@ -41,6 +41,12 @@ export type { TelegramConfig } from './messaging/TelegramAdapter.js';
 // Publishing
 export { TelegraphService, markdownToNodes, parseInline } from './publishing/TelegraphService.js';
 export type { TelegraphConfig, TelegraphNode, TelegraphElement, TelegraphPage, PublishedPage } from './publishing/TelegraphService.js';
+export { PrivateViewer } from './publishing/PrivateViewer.js';
+export type { PrivateView, PrivateViewerConfig } from './publishing/PrivateViewer.js';
+
+// Tunnel
+export { TunnelManager } from './tunnel/TunnelManager.js';
+export type { TunnelConfig, TunnelState } from './tunnel/TunnelManager.js';
 
 // Types
 export type {
@@ -77,5 +83,6 @@ export type {
   DispatchConfig,
   UpdateConfig,
   PublishingConfig,
+  TunnelConfigType,
 } from './core/types.js';
 export type { Dispatch, DispatchCheckResult, DispatchEvaluation, EvaluationDecision, DispatchFeedback, DispatchStats } from './core/DispatchManager.js';

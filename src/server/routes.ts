@@ -1047,7 +1047,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { title, markdown } = req.body;
+    const { title, markdown, pin } = req.body;
     if (!title || typeof title !== 'string' || title.length > 256) {
       res.status(400).json({ error: '"title" must be a string under 256 characters' });
       return;
@@ -1060,12 +1060,17 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"markdown" must be under 500KB' });
       return;
     }
+    if (pin !== undefined && (typeof pin !== 'string' || pin.length < 4 || pin.length > 32)) {
+      res.status(400).json({ error: '"pin" must be a string between 4 and 32 characters' });
+      return;
+    }
 
-    const view = ctx.viewer.create(title, markdown);
+    const view = ctx.viewer.create(title, markdown, pin);
 
     res.status(201).json({
       id: view.id,
       title: view.title,
+      pinProtected: !!view.pinHash,
       localUrl: `/view/${view.id}`,
       tunnelUrl: viewTunnelUrl(view.id),
       createdAt: view.createdAt,
@@ -1089,7 +1094,56 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // PIN-protected views show PIN entry page
+    if (view.pinHash) {
+      const html = ctx.viewer.renderPinPage(view);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+
     // Serve rendered HTML
+    const html = ctx.viewer.renderHtml(view);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  });
+
+  router.post('/view/:id/unlock', (req, res) => {
+    if (!ctx.viewer) {
+      res.status(503).json({ error: 'Private viewer not configured' });
+      return;
+    }
+
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid view ID' });
+      return;
+    }
+
+    const view = ctx.viewer.get(req.params.id);
+    if (!view) {
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+
+    if (!view.pinHash) {
+      // No PIN needed — return content directly
+      const html = ctx.viewer.renderHtml(view);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+
+    const { pin } = req.body;
+    if (!pin || typeof pin !== 'string') {
+      res.status(400).json({ error: '"pin" is required' });
+      return;
+    }
+
+    if (!ctx.viewer.verifyPin(req.params.id, pin)) {
+      res.status(403).json({ error: 'Incorrect PIN' });
+      return;
+    }
+
     const html = ctx.viewer.renderHtml(view);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);

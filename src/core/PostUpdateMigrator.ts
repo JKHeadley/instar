@@ -192,6 +192,38 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
     }
 
+    // Private Viewer + Tunnel section
+    if (!content.includes('Private Viewing') && !content.includes('POST /view')) {
+      const section = `
+**Private Viewing** — Render markdown as auth-gated HTML pages, accessible only through the agent's server (local or via tunnel).
+- Create: \`curl -X POST http://localhost:${port}/view -H 'Content-Type: application/json' -d '{"title":"Report","markdown":"# Private content"}'\`
+- View (HTML): Open \`http://localhost:${port}/view/VIEW_ID\` in a browser
+- List: \`curl http://localhost:${port}/views\`
+- Update: \`curl -X PUT http://localhost:${port}/view/VIEW_ID -H 'Content-Type: application/json' -d '{"title":"Updated","markdown":"# New content"}'\`
+- Delete: \`curl -X DELETE http://localhost:${port}/view/VIEW_ID\`
+
+**Use private views for sensitive content. Use Telegraph for public content.**
+
+**Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
+- Status: \`curl http://localhost:${port}/tunnel\`
+- Configure in \`.instar/config.json\`: \`{"tunnel": {"enabled": true, "type": "quick"}}\`
+- Quick tunnels (default): Zero-config, ephemeral URL (*.trycloudflare.com), no account needed
+- Named tunnels: Persistent custom domain, requires token from Cloudflare dashboard
+- When a tunnel is running, private view responses include a \`tunnelUrl\` with auth token for browser-clickable access
+`;
+      // Insert after Publishing section or before Scripts section
+      const publishIdx = content.indexOf('**Scripts**');
+      if (publishIdx >= 0) {
+        content = content.slice(0, publishIdx) + section + '\n' + content.slice(publishIdx);
+      } else {
+        content += '\n' + section;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Private Viewer + Cloudflare Tunnel section');
+    } else {
+      result.skipped.push('CLAUDE.md: Private Viewer section already present');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -314,6 +346,12 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
   if [ "$HEALTH" = "200" ]; then
     CONTEXT="\${CONTEXT}Instar server is running on port \${PORT}. Query your capabilities: curl http://localhost:\${PORT}/capabilities\\n"
     CONTEXT="\${CONTEXT}IMPORTANT: Before claiming you lack a capability, check /capabilities first.\\n"
+    # Check for new features
+    CAPS=$(curl -s "http://localhost:\${PORT}/capabilities" 2>/dev/null)
+    if echo "$CAPS" | python3 -c "import sys,json; d=json.load(sys.stdin); print('tunnel' if d.get('tunnel',{}).get('enabled') else '')" 2>/dev/null | grep -q tunnel; then
+      TUNNEL_URL=$(echo "$CAPS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tunnel',{}).get('url',''))" 2>/dev/null)
+      [ -n "$TUNNEL_URL" ] && CONTEXT="\${CONTEXT}Cloudflare Tunnel active: $TUNNEL_URL — your server is accessible remotely.\\n"
+    fi
   fi
 fi
 

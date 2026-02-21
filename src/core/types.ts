@@ -395,6 +395,8 @@ export interface InstarConfig {
   updates?: UpdateConfig;
   /** Publishing (Telegraph) config */
   publishing?: PublishingConfig;
+  /** Cloudflare Tunnel config */
+  tunnel?: TunnelConfigType;
   /** Request timeout in milliseconds (default: 30000) */
   requestTimeoutMs?: number;
   /** Instar version (from package.json) */
@@ -410,6 +412,15 @@ export interface PublishingConfig {
   authorName?: string;
   /** Author URL shown on published pages */
   authorUrl?: string;
+}
+
+export interface TunnelConfigType {
+  /** Whether tunnel is enabled */
+  enabled: boolean;
+  /** Tunnel type: 'quick' (ephemeral, no account) or 'named' (persistent, requires token) */
+  type: 'quick' | 'named';
+  /** Cloudflare tunnel token (required for named tunnels) */
+  token?: string;
 }
 
 export interface DispatchConfig {

@@ -18,6 +18,8 @@ import type { DispatchManager } from '../core/DispatchManager.js';
 import type { UpdateChecker } from '../core/UpdateChecker.js';
 import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import type { TelegraphService } from '../publishing/TelegraphService.js';
+import type { PrivateViewer } from '../publishing/PrivateViewer.js';
+import type { TunnelManager } from '../tunnel/TunnelManager.js';
 import { createRoutes } from './routes.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler } from './middleware.js';
 
@@ -39,6 +41,8 @@ export class AgentServer {
     updateChecker?: UpdateChecker;
     quotaTracker?: QuotaTracker;
     publisher?: TelegraphService;
+    viewer?: PrivateViewer;
+    tunnel?: TunnelManager;
   }) {
     this.config = options.config;
     this.startTime = new Date();
@@ -63,6 +67,8 @@ export class AgentServer {
       updateChecker: options.updateChecker ?? null,
       quotaTracker: options.quotaTracker ?? null,
       publisher: options.publisher ?? null,
+      viewer: options.viewer ?? null,
+      tunnel: options.tunnel ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);
