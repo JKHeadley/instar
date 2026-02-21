@@ -3,7 +3,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Restrict CORS to localhost origins only — this is a local management API
@@ -36,6 +36,15 @@ export function authMiddleware(authToken?: string) {
     if (req.path === '/health') {
       next();
       return;
+    }
+
+    // View routes support signed URLs for browser access (see ?sig= below)
+    if (req.path.startsWith('/view/') && req.method === 'GET') {
+      const sig = typeof req.query.sig === 'string' ? req.query.sig : null;
+      if (sig && verifyViewSignature(req.path, sig, authToken)) {
+        next();
+        return;
+      }
     }
 
     const header = req.headers.authorization;
@@ -124,6 +133,24 @@ export function requestTimeout(timeoutMs: number = 30_000) {
     res.on('close', () => { done = true; clearTimeout(timer); });
     next();
   };
+}
+
+/**
+ * HMAC-sign a view path so the URL can be opened in a browser without exposing the auth token.
+ * The signature is path-specific — sharing a signed URL only grants access to that one view.
+ */
+export function signViewPath(viewPath: string, authToken: string): string {
+  return createHmac('sha256', authToken).update(viewPath).digest('hex');
+}
+
+/**
+ * Verify a signed view URL. Returns true if the sig matches the path.
+ */
+function verifyViewSignature(viewPath: string, sig: string, authToken: string): boolean {
+  const expected = createHmac('sha256', authToken).update(viewPath).digest();
+  const provided = Buffer.from(sig, 'hex');
+  if (expected.length !== provided.length) return false;
+  return timingSafeEqual(expected, provided);
 }
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {

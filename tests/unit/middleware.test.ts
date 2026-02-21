@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { authMiddleware, corsMiddleware, errorHandler, rateLimiter } from '../../src/server/middleware.js';
+import { authMiddleware, corsMiddleware, errorHandler, rateLimiter, signViewPath } from '../../src/server/middleware.js';
 
 function createApp(authToken?: string) {
   const app = express();
@@ -10,6 +10,7 @@ function createApp(authToken?: string) {
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/status', (_req, res) => res.json({ sessions: 0 }));
+  app.get('/view/:id', (_req, res) => res.json({ view: 'ok' }));
   app.get('/error', () => { throw new Error('test error'); });
   app.use(errorHandler);
 
@@ -76,6 +77,37 @@ describe('authMiddleware', () => {
         .get('/status')
         .set('Authorization', 'Bearer test-secret');
       expect(res.status).toBe(403);
+    });
+
+    it('allows /view/ routes with valid HMAC signature', async () => {
+      const viewPath = '/view/test-id-123';
+      const sig = signViewPath(viewPath, 'test-secret-token');
+      const res = await request(app).get(`${viewPath}?sig=${sig}`);
+      expect(res.status).toBe(200);
+      expect(res.body.view).toBe('ok');
+    });
+
+    it('blocks /view/ routes with invalid signature', async () => {
+      const res = await request(app).get('/view/test-id-123?sig=bad-signature');
+      expect(res.status).toBe(401);
+    });
+
+    it('blocks /view/ routes with signature for a different path', async () => {
+      const sig = signViewPath('/view/other-id', 'test-secret-token');
+      const res = await request(app).get(`/view/test-id-123?sig=${sig}`);
+      expect(res.status).toBe(401);
+    });
+
+    it('blocks /view/ routes with signature from wrong token', async () => {
+      const sig = signViewPath('/view/test-id-123', 'wrong-secret');
+      const res = await request(app).get(`/view/test-id-123?sig=${sig}`);
+      expect(res.status).toBe(401);
+    });
+
+    it('signed URLs only work for /view/ routes, not other endpoints', async () => {
+      const sig = signViewPath('/status', 'test-secret-token');
+      const res = await request(app).get(`/status?sig=${sig}`);
+      expect(res.status).toBe(401);
     });
   });
 

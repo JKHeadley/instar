@@ -14,7 +14,7 @@ import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig } from '../core/types.js';
-import { rateLimiter } from './middleware.js';
+import { rateLimiter, signViewPath } from './middleware.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
@@ -22,6 +22,8 @@ import type { DispatchManager } from '../core/DispatchManager.js';
 import type { UpdateChecker } from '../core/UpdateChecker.js';
 import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import type { TelegraphService } from '../publishing/TelegraphService.js';
+import type { PrivateViewer } from '../publishing/PrivateViewer.js';
+import type { TunnelManager } from '../tunnel/TunnelManager.js';
 
 export interface RouteContext {
   config: InstarConfig;
@@ -35,6 +37,8 @@ export interface RouteContext {
   updateChecker: UpdateChecker | null;
   quotaTracker: QuotaTracker | null;
   publisher: TelegraphService | null;
+  viewer: PrivateViewer | null;
+  tunnel: TunnelManager | null;
   startTime: Date;
 }
 
@@ -195,6 +199,17 @@ export function createRoutes(ctx: RouteContext): Router {
       publishing: {
         enabled: !!ctx.publisher,
         pageCount: ctx.publisher?.listPages().length ?? 0,
+        warning: 'Telegraph pages are PUBLIC — anyone with the URL can view them.',
+      },
+      privateViewer: {
+        enabled: !!ctx.viewer,
+        viewCount: ctx.viewer?.list().length ?? 0,
+      },
+      tunnel: {
+        enabled: !!ctx.tunnel,
+        running: ctx.tunnel?.isRunning ?? false,
+        url: ctx.tunnel?.url ?? null,
+        type: ctx.config.tunnel?.type ?? null,
       },
       users: {
         count: userCount,
@@ -1008,6 +1023,164 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // ── Private Views (auth-gated rendered markdown) ────────────────
+
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  /** Build a browser-clickable tunnel URL with HMAC signature for auth */
+  function viewTunnelUrl(viewId: string): string | null {
+    const base = ctx.tunnel?.getExternalUrl(`/view/${viewId}`);
+    if (!base) return null;
+    if (ctx.config.authToken) {
+      const viewPath = `/view/${viewId}`;
+      const sig = signViewPath(viewPath, ctx.config.authToken);
+      return `${base}?sig=${sig}`;
+    }
+    return base;
+  }
+
+  router.post('/view', (req, res) => {
+    if (!ctx.viewer) {
+      res.status(503).json({ error: 'Private viewer not configured' });
+      return;
+    }
+
+    const { title, markdown } = req.body;
+    if (!title || typeof title !== 'string' || title.length > 256) {
+      res.status(400).json({ error: '"title" must be a string under 256 characters' });
+      return;
+    }
+    if (!markdown || typeof markdown !== 'string') {
+      res.status(400).json({ error: '"markdown" must be a non-empty string' });
+      return;
+    }
+    if (markdown.length > 500_000) {
+      res.status(400).json({ error: '"markdown" must be under 500KB' });
+      return;
+    }
+
+    const view = ctx.viewer.create(title, markdown);
+
+    res.status(201).json({
+      id: view.id,
+      title: view.title,
+      localUrl: `/view/${view.id}`,
+      tunnelUrl: viewTunnelUrl(view.id),
+      createdAt: view.createdAt,
+    });
+  });
+
+  router.get('/view/:id', (req, res) => {
+    if (!ctx.viewer) {
+      res.status(503).json({ error: 'Private viewer not configured' });
+      return;
+    }
+
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid view ID' });
+      return;
+    }
+
+    const view = ctx.viewer.get(req.params.id);
+    if (!view) {
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+
+    // Serve rendered HTML
+    const html = ctx.viewer.renderHtml(view);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  });
+
+  router.get('/views', (_req, res) => {
+    if (!ctx.viewer) {
+      res.json({ views: [] });
+      return;
+    }
+
+    const views = ctx.viewer.list().map(v => ({
+      id: v.id,
+      title: v.title,
+      localUrl: `/view/${v.id}`,
+      tunnelUrl: viewTunnelUrl(v.id),
+      createdAt: v.createdAt,
+      updatedAt: v.updatedAt,
+    }));
+    res.json({ views });
+  });
+
+  router.put('/view/:id', (req, res) => {
+    if (!ctx.viewer) {
+      res.status(503).json({ error: 'Private viewer not configured' });
+      return;
+    }
+
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid view ID' });
+      return;
+    }
+
+    const { title, markdown } = req.body;
+    if (!title || typeof title !== 'string' || title.length > 256) {
+      res.status(400).json({ error: '"title" must be a string under 256 characters' });
+      return;
+    }
+    if (!markdown || typeof markdown !== 'string') {
+      res.status(400).json({ error: '"markdown" must be a non-empty string' });
+      return;
+    }
+
+    const updated = ctx.viewer.update(req.params.id, title, markdown);
+    if (!updated) {
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+
+    res.json({
+      id: updated.id,
+      title: updated.title,
+      localUrl: `/view/${updated.id}`,
+      tunnelUrl: viewTunnelUrl(updated.id),
+      updatedAt: updated.updatedAt,
+    });
+  });
+
+  router.delete('/view/:id', (req, res) => {
+    if (!ctx.viewer) {
+      res.status(503).json({ error: 'Private viewer not configured' });
+      return;
+    }
+
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid view ID' });
+      return;
+    }
+
+    const deleted = ctx.viewer.delete(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+
+    res.json({ ok: true, deleted: req.params.id });
+  });
+
+  // ── Tunnel Status ──────────────────────────────────────────────
+
+  router.get('/tunnel', (_req, res) => {
+    if (!ctx.tunnel) {
+      res.json({ enabled: false, url: null });
+      return;
+    }
+
+    res.json({
+      enabled: true,
+      running: ctx.tunnel.isRunning,
+      ...ctx.tunnel.state,
+    });
   });
 
   // ── Events ──────────────────────────────────────────────────────
