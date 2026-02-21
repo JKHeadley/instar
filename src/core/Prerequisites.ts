@@ -8,7 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import pc from 'picocolors';
-import { confirm } from '@inquirer/prompts';
+// @inquirer/prompts imported dynamically — requires Node 20.12+
 import { detectTmuxPath, detectClaudePath } from './Config.js';
 
 export interface PrerequisiteResult {
@@ -270,6 +270,7 @@ export async function ensurePrerequisites(): Promise<PrerequisiteCheck> {
     console.log(`  ${pc.red('✗')} ${missing.name} — not found`);
 
     if (missing.canAutoInstall && missing.installCommand) {
+      const { confirm } = await import('@inquirer/prompts');
       const install = await confirm({
         message: `Install ${missing.name}? (${pc.dim(missing.installCommand)})`,
         default: true,

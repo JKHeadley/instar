@@ -8,7 +8,7 @@
  * capabilities. The only choice is how much initiative the agent takes.
  */
 
-import { input, select } from '@inquirer/prompts';
+// @inquirer/prompts imported dynamically — requires Node 20.12+
 import pc from 'picocolors';
 import type { AgentIdentity } from './templates.js';
 
@@ -17,6 +17,7 @@ import type { AgentIdentity } from './templates.js';
  * Returns the agent identity for template generation.
  */
 export async function bootstrapIdentity(projectName: string): Promise<AgentIdentity> {
+  const { input, select } = await import('@inquirer/prompts');
   console.log();
   console.log(pc.bold('  Identity Bootstrap'));
   console.log();
