@@ -86,7 +86,9 @@ async function respawnSessionForTopic(
   }
 
   const storedName = telegram.getTopicName(topicId);
-  const topicName = storedName || targetSession;
+  // Use topic name, not tmux session name — tmux names include the project prefix
+  // which causes cascading names like ai-guy-ai-guy-ai-guy-topic-1 on each respawn.
+  const topicName = storedName || `topic-${topicId}`;
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, topicName);
 
   telegram.registerTopicSession(topicId, newSessionName);

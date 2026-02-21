@@ -437,6 +437,10 @@ export class SessionManager extends EventEmitter {
           execFileSync(this.config.tmuxPath, ['paste-buffer', '-t', exactTarget, '-p'], {
             encoding: 'utf-8', timeout: 5000,
           });
+          // Brief delay to let the terminal process the paste before sending Enter.
+          // Without this, the Enter arrives before paste processing completes and
+          // the message sits in the input buffer without being submitted.
+          execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 });
           // Send Enter to submit
           execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
             encoding: 'utf-8', timeout: 5000,
