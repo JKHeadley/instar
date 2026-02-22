@@ -63,7 +63,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const uptimeMs = Date.now() - ctx.startTime.getTime();
     // Determine if anything is degraded
     const sessions = ctx.sessionManager.listRunningSessions();
-    const maxSessions = ctx.config.maxSessions ?? 3;
+    const maxSessions = ctx.config.sessions?.maxSessions ?? 3;
     const sessionExhausted = sessions.length >= maxSessions;
 
     let totalFailures = 0;
