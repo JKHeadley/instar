@@ -154,21 +154,26 @@ export class SessionManager extends EventEmitter {
       throw new Error(`tmux session "${tmuxSession}" already exists`);
     }
 
-    // Build Claude CLI arguments — no shell intermediary.
-    // tmux new-session executes the command directly (no bash -c needed)
-    // when given as separate arguments after the session options.
+    // Build Claude CLI arguments via bash wrapper.
+    // Must unset CLAUDECODE to prevent "cannot be launched inside another Claude Code session"
+    // error when instar itself runs inside Claude Code.
     const claudeArgs = ['--dangerously-skip-permissions'];
     if (options.model) {
       claudeArgs.push('--model', options.model);
     }
     claudeArgs.push('-p', options.prompt);
 
+    const claudeCmd = [this.config.claudePath, ...claudeArgs]
+      .map(a => a.replace(/'/g, "'\\''"))
+      .map(a => `'${a}'`)
+      .join(' ');
+
     try {
       execFileSync(this.config.tmuxPath, [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', this.config.projectDir,
-        this.config.claudePath, ...claudeArgs,
+        'bash', '-c', `unset CLAUDECODE; exec ${claudeCmd}`,
       ], { encoding: 'utf-8' });
     } catch (err) {
       throw new Error(`Failed to create tmux session: ${err}`);
@@ -437,10 +442,13 @@ export class SessionManager extends EventEmitter {
 
       if (options?.telegramTopicId) {
         // Wrap in bash shell to export env var before Claude starts
+        // Also unset CLAUDECODE to prevent nested Claude Code errors
         const claudeCmd = `${this.config.claudePath} --dangerously-skip-permissions`;
-        tmuxArgs.push('bash', '-c', `export INSTAR_TELEGRAM_TOPIC=${options.telegramTopicId} && exec ${claudeCmd}`);
+        tmuxArgs.push('bash', '-c', `unset CLAUDECODE; export INSTAR_TELEGRAM_TOPIC=${options.telegramTopicId} && exec ${claudeCmd}`);
       } else {
-        tmuxArgs.push(this.config.claudePath, '--dangerously-skip-permissions');
+        // Unset CLAUDECODE to prevent nested Claude Code errors
+        const claudeCmd = `${this.config.claudePath} --dangerously-skip-permissions`;
+        tmuxArgs.push('bash', '-c', `unset CLAUDECODE; exec ${claudeCmd}`);
       }
 
       execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });

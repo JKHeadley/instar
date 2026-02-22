@@ -119,19 +119,19 @@ describe('Session reaping and detection', () => {
       expect(source).toContain('already exists');
     });
 
-    it('passes prompt directly as CLI argument without shell intermediary', () => {
+    it('passes prompt as CLI argument and unsets CLAUDECODE env var', () => {
       source = fs.readFileSync(SOURCE_PATH, 'utf-8');
-      // spawnSession should NOT use bash -c (shell injection risk)
-      // Instead, it passes claude args directly to tmux new-session
+      // spawnSession wraps claude in bash -c to unset CLAUDECODE env var
+      // (prevents "cannot be launched inside another Claude Code session" errors)
       const spawnSection = source.match(/async spawnSession[\s\S]*?this\.state\.saveSession\(session\)/);
       expect(spawnSection).toBeTruthy();
       const body = spawnSection![0];
-      // Should NOT pass 'bash' as an argument to execFileSync
-      expect(body).not.toMatch(/execFileSync\([^)]*'bash'/);
       // Should pass prompt as -p argument
       expect(body).toContain("'-p'");
-      // Should use this.config.claudePath directly
+      // Should use this.config.claudePath
       expect(body).toContain('this.config.claudePath');
+      // Should unset CLAUDECODE to prevent nested Claude Code errors
+      expect(body).toContain('unset CLAUDECODE');
     });
   });
 

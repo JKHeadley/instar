@@ -482,6 +482,13 @@ export class JobScheduler {
       summary += '\n_No output captured (session already closed)_';
     }
 
+    // Skip Telegram notification for successful jobs with no meaningful output
+    // Prevents empty notification spam (e.g., dispatch-check when dispatch is unconfigured)
+    if (!failed && (!output || !output.trim())) {
+      console.log(`[scheduler] Skipping notification for ${job.slug} — no meaningful output`);
+      return;
+    }
+
     // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
     if (this.telegram && job.topicId) {
       try {

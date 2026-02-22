@@ -66,6 +66,9 @@ describe('JobScheduler Telegram notifications', () => {
     };
     sessionManager = new SessionManager(smConfig, state);
 
+    // Mock captureOutput to return non-empty output (no real tmux in tests)
+    vi.spyOn(sessionManager, 'captureOutput').mockReturnValue('Job completed successfully.');
+
     // Write an empty jobs file
     const jobsFile = path.join(tmpDir, 'jobs.json');
     fs.writeFileSync(jobsFile, '[]');
