@@ -1084,8 +1084,8 @@ function getDefaultJobs(port: number): object[] {
       enabled: true,
       gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
       execute: {
-        type: 'prompt',
-        value: `Retry forwarding undelivered feedback: curl -X POST http://localhost:${port}/feedback/retry. Report results only if there were items to retry.`,
+        type: 'script',
+        value: `RESULT=$(curl -s -X POST http://localhost:${port}/feedback/retry 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('retried',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Feedback retry: $COUNT item(s) forwarded." || echo "Feedback retry: nothing pending."`,
       },
       tags: ['coherence', 'default'],
     },
