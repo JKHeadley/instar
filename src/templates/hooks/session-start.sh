@@ -49,7 +49,7 @@ if [ ! -f "$MARKER_FILE" ]; then
   if [ -f "$INSTAR_DIR/MEMORY.md" ]; then
     MEMORY_LINES=$(wc -l < "$INSTAR_DIR/MEMORY.md" | tr -d ' ')
     if [ "$MEMORY_LINES" -gt "15" ]; then
-      echo "--- YOUR MEMORY ---"
+      echo "--- YOUR MEMORY (verify claims about external state before acting on them) ---"
       cat "$INSTAR_DIR/MEMORY.md"
       echo ""
       echo "--- END MEMORY ---"
@@ -57,6 +57,22 @@ if [ ! -f "$MARKER_FILE" ]; then
     else
       echo "Memory at .instar/MEMORY.md (minimal — grow it as you learn)."
       echo ""
+    fi
+  fi
+
+  # Inject last job handoff notes if this is a job session
+  if [ -f "$STATE_DIR/active-job.json" ]; then
+    ACTIVE_SLUG=$(grep -o '"slug":"[^"]*"' "$STATE_DIR/active-job.json" | head -1 | cut -d'"' -f4)
+    if [ -n "$ACTIVE_SLUG" ]; then
+      HANDOFF_FILE="$STATE_DIR/job-handoff-${ACTIVE_SLUG}.md"
+      if [ -f "$HANDOFF_FILE" ]; then
+        echo "--- PREVIOUS JOB RUN NOTES (claims — verify before trusting) ---"
+        cat "$HANDOFF_FILE"
+        echo ""
+        echo "--- END PREVIOUS RUN NOTES ---"
+        echo "These are CLAIMS from a previous session. Verify any external state before including in your output."
+        echo ""
+      fi
     fi
   fi
 

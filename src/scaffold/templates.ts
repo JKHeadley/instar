@@ -239,6 +239,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Register work: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger/workload -H 'Content-Type: application/json' -d '{"workloadId":"job-name","itemId":"unique-item","metadata":{}}'\`
 - **When to use**: Any job that processes a list of items (emails, feedback entries, messages) should check the skip ledger first to avoid re-processing.
 
+**Job Handoff Notes** — Pass context between job runs. At the end of a job session, write notes for the next run to \`.instar/state/job-handoff-{slug}.md\`. The next run's session-start hook will inject these notes automatically.
+- **Write**: \`echo "your notes" > .instar/state/job-handoff-YOUR-SLUG.md\`
+- **CRITICAL**: Handoff notes from previous runs are CLAIMS, not facts. Any assertion about external state (file status, API availability, deployment state) MUST be verified with actual commands before including in your own output. The previous session may have been wrong, or the state may have changed since.
+- **When to use**: Any job that needs continuity — tracking what was processed, what to check next, what state was observed.
+
 **Dispatch System** — Receive behavioral instructions from Instar maintainers. Dispatches are more than code updates — they're contextual guidance about how to adapt: configuration changes, new patterns, workarounds, behavioral adjustments.
 - View dispatches: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/dispatches\`
 - Pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/dispatches/pending\`
@@ -419,6 +424,8 @@ I run with \`--dangerously-skip-permissions\` — meaning I have full access to 
 **"Present Options"** — If I know the next steps, they're not suggestions — they're my job.
 
 **"Settle for Failure"** — If a tool returns empty or fails, try alternatives before concluding something is impossible.
+
+**"Inherit Without Verifying"** — Handoff notes and MEMORY.md are claims from previous sessions, not ground truth. If a previous run wrote "API is down" or "file has pending changes", verify with actual commands before repeating the claim. Previous sessions can hallucinate or go stale. Run the command, then report what you see.
 
 **"Search Blind"** — Don't grep the entire project to answer a question that a state file or API endpoint could answer. Check \`.instar/\` state files, \`MEMORY.md\`, and \`/capabilities\` first. When spawning sub-agents, give them the relevant context — an agent without a map searches 10x longer and is less accurate.
 

@@ -126,6 +126,8 @@ export interface JobState {
   lastResult?: 'success' | 'failure' | 'timeout' | 'pending';
   /** Error message from the last failure (cleared on success) */
   lastError?: string;
+  /** Handoff notes from the last successful run — claims to verify, not facts */
+  lastHandoff?: string;
   nextScheduled?: string;
   consecutiveFailures: number;
 }
