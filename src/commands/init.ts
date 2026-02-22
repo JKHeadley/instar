@@ -188,7 +188,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       enabled: true,
       webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
       feedbackFile: path.join(stateDir, 'feedback.json'),
-      sharedSecret: randomUUID().replace(/-/g, ''),
+      sharedSecret: 'instar-rising-tide-v1',
     },
     dispatches: {
       enabled: true,
@@ -387,7 +387,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       enabled: true,
       webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
       feedbackFile: path.join(stateDir, 'feedback.json'),
-      sharedSecret: randomUUID().replace(/-/g, ''),
+      sharedSecret: 'instar-rising-tide-v1',
     },
     dispatches: {
       enabled: true,
