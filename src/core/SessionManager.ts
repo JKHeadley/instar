@@ -440,10 +440,13 @@ export class SessionManager extends EventEmitter {
 
       if (options?.telegramTopicId) {
         // Wrap in bash shell to export env var before Claude starts
+        // Also unset CLAUDECODE to prevent nested Claude Code errors
         const claudeCmd = `${this.config.claudePath} --dangerously-skip-permissions`;
-        tmuxArgs.push('bash', '-c', `export INSTAR_TELEGRAM_TOPIC=${options.telegramTopicId} && exec ${claudeCmd}`);
+        tmuxArgs.push('bash', '-c', `unset CLAUDECODE; export INSTAR_TELEGRAM_TOPIC=${options.telegramTopicId} && exec ${claudeCmd}`);
       } else {
-        tmuxArgs.push(this.config.claudePath, '--dangerously-skip-permissions');
+        // Unset CLAUDECODE to prevent nested Claude Code errors
+        const claudeCmd = `${this.config.claudePath} --dangerously-skip-permissions`;
+        tmuxArgs.push('bash', '-c', `unset CLAUDECODE; exec ${claudeCmd}`);
       }
 
       execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });
