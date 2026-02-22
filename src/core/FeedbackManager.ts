@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 import type { FeedbackItem, FeedbackConfig } from './types.js';
 
 /** Maximum number of feedback items stored locally. */
@@ -35,12 +35,24 @@ export class FeedbackManager {
   }
 
   /** Standard headers that identify this as a legitimate Instar agent. */
-  private get webhookHeaders(): Record<string, string> {
-    return {
+  private getWebhookHeaders(body: string): Record<string, string> {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'User-Agent': `instar/${this.version} (node/${process.version})`,
       'X-Instar-Version': this.version,
     };
+
+    // HMAC-SHA256 signing if shared secret is configured
+    if (this.config.sharedSecret) {
+      const timestamp = Date.now().toString();
+      const signature = createHmac('sha256', this.config.sharedSecret)
+        .update(`${timestamp}.${body}`)
+        .digest('hex');
+      headers['X-Instar-Signature'] = signature;
+      headers['X-Instar-Timestamp'] = timestamp;
+    }
+
+    return headers;
   }
 
   /** Validate webhook URL is HTTPS and not pointing to internal addresses. */
@@ -88,10 +100,11 @@ export class FeedbackManager {
           context: feedback.context,
           submittedAt: feedback.submittedAt,
         };
+        const body = JSON.stringify(payload);
         const response = await fetch(this.config.webhookUrl, {
           method: 'POST',
-          headers: this.webhookHeaders,
-          body: JSON.stringify(payload),
+          headers: this.getWebhookHeaders(body),
+          body,
           signal: AbortSignal.timeout(10000), // 10s timeout
         });
 
@@ -154,10 +167,11 @@ export class FeedbackManager {
           context: item.context,
           submittedAt: item.submittedAt,
         };
+        const body = JSON.stringify(payload);
         const response = await fetch(this.config.webhookUrl, {
           method: 'POST',
-          headers: this.webhookHeaders,
-          body: JSON.stringify(payload),
+          headers: this.getWebhookHeaders(body),
+          body,
           signal: AbortSignal.timeout(10000),
         });
 

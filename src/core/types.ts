@@ -453,6 +453,8 @@ export interface FeedbackConfig {
   feedbackFile: string;
   /** Instar version — sent in User-Agent and X-Instar-Version headers for endpoint auth */
   version?: string;
+  /** Shared secret for HMAC-SHA256 request signing. Generated during init. */
+  sharedSecret?: string;
 }
 
 export interface UpdateInfo {
