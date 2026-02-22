@@ -362,7 +362,7 @@ export class DispatchExecutor {
       const tmuxSession = await this.sessionManager.spawnSession({
         name: sessionName,
         prompt: fullPrompt,
-        maxMinutes: 10,
+        maxDurationMinutes: 10,
         model: 'haiku',
         jobSlug: 'dispatch-action',
       });
