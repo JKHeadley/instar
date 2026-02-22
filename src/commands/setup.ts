@@ -515,6 +515,18 @@ async function runClassicSetup(): Promise<void> {
       const parsed = JSON.parse(topicResult);
       if (parsed.ok && parsed.result?.message_thread_id) {
         lifelineThreadId = parsed.result.message_thread_id;
+        // Persist lifelineTopicId back to config.json
+        try {
+          const configPath = path.join(stateDir, 'config.json');
+          const rawConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          const tgEntry = rawConfig.messaging?.find((m: { type: string }) => m.type === 'telegram');
+          if (tgEntry?.config) {
+            tgEntry.config.lifelineTopicId = lifelineThreadId;
+            const tmpPath = `${configPath}.${process.pid}.tmp`;
+            fs.writeFileSync(tmpPath, JSON.stringify(rawConfig, null, 2));
+            fs.renameSync(tmpPath, configPath);
+          }
+        } catch { /* non-fatal */ }
       }
     } catch {
       // Non-fatal — greeting will go to General
@@ -532,6 +544,8 @@ async function runClassicSetup(): Promise<void> {
         '- Ask me to create new topics for different tasks or focus areas',
         '- I can proactively create topics when something needs attention',
         '- Lifeline is always here for anything that doesn\'t fit elsewhere',
+        '',
+        '_I run on your computer, so I\'m available as long as it\'s on and awake. If it sleeps, I\'ll pick up messages when it wakes back up._',
         '',
         'What should we work on first?',
       ].join('\n');
@@ -556,7 +570,10 @@ async function runClassicSetup(): Promise<void> {
     const topicNote = lifelineThreadId ? ' in the Lifeline topic' : '';
     console.log(pc.bold(`  All done! ${projectName} just messaged you${topicNote} on Telegram.`));
     console.log(pc.dim('  That\'s your primary channel from here on — no terminal needed.'));
-    console.log(pc.dim('  As long as your computer is running the Instar server, your agent is available.'));
+    console.log();
+    console.log(pc.dim('  Your agent runs on this computer. As long as it\'s on and awake,'));
+    console.log(pc.dim('  your agent is reachable via Telegram. If your computer sleeps or'));
+    console.log(pc.dim('  shuts down, messages will queue and be picked up when it wakes.'));
   } else {
     console.log();
     console.log(pc.bold('  Server is running.'));

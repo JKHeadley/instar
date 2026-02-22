@@ -31,6 +31,7 @@ interface LifelineConfig {
   token: string;
   chatId: string;
   pollIntervalMs?: number;
+  lifelineTopicId?: number;
 }
 
 interface TelegramUpdate {
@@ -56,6 +57,7 @@ export class TelegramLifeline {
   private offsetPath: string;
   private stopHeartbeat: (() => void) | null = null;
   private replayInterval: ReturnType<typeof setInterval> | null = null;
+  private lifelineTopicId: number | null = null;
 
   constructor(projectDir?: string) {
     this.projectConfig = loadConfig(projectDir);
@@ -115,6 +117,12 @@ export class TelegramLifeline {
       );
     } catch { /* non-critical */ }
     this.stopHeartbeat = startHeartbeat(`${this.projectConfig.projectName}-lifeline`);
+
+    // Ensure Lifeline topic exists (auto-recreate if deleted)
+    this.lifelineTopicId = await this.ensureLifelineTopic();
+    if (this.lifelineTopicId) {
+      console.log(pc.green(`  Lifeline topic: ${this.lifelineTopicId}`));
+    }
 
     // Start server supervisor
     const serverStarted = await this.supervisor.start();
@@ -365,10 +373,92 @@ export class TelegramLifeline {
   // ── Notifications ─────────────────────────────────────────
 
   private async notifyServerDown(reason: string): Promise<void> {
-    // Send to General topic (1) — since we don't know which topic the user is watching
-    await this.sendToTopic(1,
+    // Send to Lifeline topic if available, otherwise General
+    const topicId = this.lifelineTopicId ?? 1;
+    await this.sendToTopic(topicId,
       `Server went down: ${reason}\n\nYour messages will be queued until recovery. Use /lifeline status to check.`
     ).catch(() => {});
+  }
+
+  // ── Lifeline Topic ──────────────────────────────────────────
+
+  /**
+   * Ensure the Lifeline topic exists. Recreates if deleted.
+   */
+  private async ensureLifelineTopic(): Promise<number | null> {
+    const existingId = this.config.lifelineTopicId;
+
+    if (existingId) {
+      // Verify it still exists
+      try {
+        await this.apiCall('sendMessage', {
+          chat_id: this.config.chatId,
+          message_thread_id: existingId,
+          text: '🟢 Lifeline connected.',
+        });
+        return existingId;
+      } catch (err) {
+        const errStr = String(err);
+        if (errStr.includes('thread not found') || errStr.includes('TOPIC_DELETED') ||
+            errStr.includes('TOPIC_CLOSED') || errStr.includes('not found')) {
+          console.log(`[Lifeline] Topic ${existingId} was deleted — recreating`);
+        } else {
+          // Non-fatal error (network etc.) — assume it still exists
+          console.warn(`[Lifeline] Topic check failed (non-fatal): ${err}`);
+          return existingId;
+        }
+      }
+    }
+
+    // Create or recreate
+    try {
+      const result = await this.apiCall('createForumTopic', {
+        chat_id: this.config.chatId,
+        name: 'Lifeline',
+        icon_color: 9367192, // green
+      }) as { message_thread_id: number };
+
+      const topicId = result.message_thread_id;
+      this.config.lifelineTopicId = topicId;
+      this.persistLifelineTopicId(topicId);
+      console.log(`[Lifeline] ${existingId ? 'Recreated' : 'Created'} Lifeline topic: ${topicId}`);
+
+      // Send welcome message in new topic
+      await this.sendToTopic(topicId,
+        '🟢 Lifeline connected. This topic is always available — even when the server is down.'
+      );
+
+      return topicId;
+    } catch (err) {
+      console.error(`[Lifeline] Failed to create Lifeline topic: ${err}`);
+      return null;
+    }
+  }
+
+  /**
+   * Persist the Lifeline topic ID to config.json.
+   */
+  private persistLifelineTopicId(topicId: number): void {
+    try {
+      const configPath = path.join(this.projectConfig.projectDir, '.instar', 'config.json');
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const config = JSON.parse(raw);
+        if (Array.isArray(config.messaging)) {
+          const entry = config.messaging.find(
+            (m: { type: string }) => m.type === 'telegram'
+          );
+          if (entry?.config) {
+            entry.config.lifelineTopicId = topicId;
+            const tmpPath = `${configPath}.${process.pid}.tmp`;
+            fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
+            fs.renameSync(tmpPath, configPath);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[Lifeline] Failed to persist lifelineTopicId: ${err}`);
+    }
   }
 
   // ── Telegram API ──────────────────────────────────────────

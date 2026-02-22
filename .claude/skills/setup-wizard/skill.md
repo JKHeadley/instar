@@ -656,8 +656,16 @@ Adapt the tone and examples to the agent's personality and role. Keep it warm an
 After the server is running and the greeting is sent:
 
 > "All done! [Agent name] just messaged you in the Lifeline topic on Telegram. From here on, that's your primary channel — just talk to your agent there."
+
+Then explain the connectivity requirement clearly:
+
+> "One important thing to know: your agent runs on this computer. As long as it's on and awake, your agent is reachable via Telegram."
 >
-> "As long as your computer is running the Instar server, your agent is available."
+> "If your computer goes to sleep or shuts down, Telegram messages will queue up. Your agent will pick them up when it wakes back up."
+>
+> "For always-on access, some users keep a dedicated machine running — but it's not required to get started."
+
+Keep it matter-of-fact, not alarming. The user should understand the tradeoff without feeling like they need a server farm to use this.
 
 **Do NOT present a list of CLI commands or next steps.** The setup wizard's job is done. The user's next action is opening Telegram and replying to their agent.
 
