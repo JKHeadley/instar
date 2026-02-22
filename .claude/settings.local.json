@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(tmux:*)"
+      "Bash(tmux:*)",
+      "mcp__playwright__*"
     ]
+  },
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
   }
 }
