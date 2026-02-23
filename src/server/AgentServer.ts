@@ -3,10 +3,16 @@
  *
  * Provides health checks, session management, job triggering,
  * and event querying over a simple REST API.
+ *
+ * Also serves the dashboard UI at /dashboard and handles
+ * WebSocket connections for real-time terminal streaming.
  */
 
 import express, { type Express } from 'express';
 import type { Server } from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
@@ -26,12 +32,16 @@ import type { EvolutionManager } from '../core/EvolutionManager.js';
 import type { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
 import { createRoutes } from './routes.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler } from './middleware.js';
+import { WebSocketManager } from './WebSocketManager.js';
 
 export class AgentServer {
   private app: Express;
   private server: Server | null = null;
+  private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
   private startTime: Date;
+  private sessionManager: SessionManager;
+  private state: StateManager;
 
   constructor(options: {
     config: InstarConfig;
@@ -54,11 +64,22 @@ export class AgentServer {
   }) {
     this.config = options.config;
     this.startTime = new Date();
+    this.sessionManager = options.sessionManager;
+    this.state = options.state;
     this.app = express();
 
     // Middleware
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(corsMiddleware);
+
+    // Dashboard static files — served BEFORE auth middleware so the page loads
+    // without a token. Auth happens via WebSocket/API calls from the page itself.
+    const dashboardDir = this.resolveDashboardDir();
+    this.app.get('/dashboard', (_req, res) => {
+      res.sendFile(path.join(dashboardDir, 'index.html'));
+    });
+    this.app.use('/dashboard', express.static(dashboardDir));
+
     this.app.use(authMiddleware(options.config.authToken));
     this.app.use(requestTimeout(options.config.requestTimeoutMs));
 
@@ -90,6 +111,22 @@ export class AgentServer {
   }
 
   /**
+   * Resolve the dashboard directory.
+   * In dev: ../../../dashboard (relative to src/server/)
+   * In dist (published): ../../dashboard (relative to dist/server/)
+   */
+  private resolveDashboardDir(): string {
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    // Try dist layout first (package root/dashboard)
+    const fromDist = path.resolve(thisDir, '..', '..', 'dashboard');
+    // Try dev layout (src/server -> project root/dashboard)
+    const fromSrc = path.resolve(thisDir, '..', '..', '..', 'dashboard');
+    if (fs.existsSync(fromDist)) return fromDist;
+    if (fs.existsSync(fromSrc)) return fromSrc;
+    return fromDist;
+  }
+
+  /**
    * Start the HTTP server.
    */
   async start(): Promise<void> {
@@ -97,6 +134,16 @@ export class AgentServer {
       const host = this.config.host || '127.0.0.1';
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        console.log(`[instar] Dashboard: http://${host}:${this.config.port}/dashboard`);
+
+        // Initialize WebSocket manager after server is listening
+        this.wsManager = new WebSocketManager({
+          server: this.server!,
+          sessionManager: this.sessionManager,
+          state: this.state,
+          authToken: this.config.authToken,
+        });
+
         resolve();
       });
       this.server.on('error', (err: NodeJS.ErrnoException) => {
@@ -114,6 +161,12 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    // Shutdown WebSocket manager first
+    if (this.wsManager) {
+      this.wsManager.shutdown();
+      this.wsManager = null;
+    }
+
     return new Promise((resolve) => {
       if (!this.server) {
         resolve();

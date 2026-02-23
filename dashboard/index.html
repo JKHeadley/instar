@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instar Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --bg-panel: #111;
+      --bg-hover: #1a1a1a;
+      --bg-active: #1e2d1e;
+      --border: #222;
+      --text: #ccc;
+      --text-dim: #666;
+      --text-bright: #eee;
+      --accent: #4ade80;
+      --accent-dim: #22c55e;
+      --orange: #f59e0b;
+      --red: #ef4444;
+      --blue: #3b82f6;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Layout */
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      grid-template-columns: 280px 1fr;
+      height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-panel);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-bright);
+      letter-spacing: -0.02em;
+    }
+
+    .header .logo {
+      font-size: 20px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: #0f2f0f;
+      color: var(--accent);
+      border: 1px solid #1a3a1a;
+    }
+
+    .status-badge .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2s infinite;
+    }
+
+    .status-badge.disconnected {
+      background: #2f0f0f;
+      color: var(--red);
+      border-color: #3a1a1a;
+    }
+
+    .status-badge.disconnected .dot {
+      background: var(--red);
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Sidebar */
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: var(--bg-panel);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .sidebar-header h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .session-count {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: var(--border);
+      color: var(--text-dim);
+    }
+
+    .session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .session-item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-bottom: 2px;
+      transition: background 0.15s;
+    }
+
+    .session-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .session-item.active {
+      background: var(--bg-active);
+      border: 1px solid #2a4a2a;
+    }
+
+    .session-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .session-meta .model-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .model-badge.opus { background: #2d1b4e; color: #c084fc; }
+    .model-badge.sonnet { background: #1b2e4e; color: #60a5fa; }
+    .model-badge.haiku { background: #1b3e3e; color: #5eead4; }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--text-dim);
+    }
+
+    .empty-state .icon { font-size: 32px; margin-bottom: 12px; opacity: 0.5; }
+    .empty-state p { font-size: 13px; line-height: 1.5; }
+
+    /* Main panel */
+    .main {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .terminal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-panel);
+      min-height: 44px;
+    }
+
+    .terminal-header .session-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .terminal-header .session-info h3 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-bright);
+    }
+
+    .terminal-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .action-btn {
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: monospace;
+    }
+
+    .action-btn:hover {
+      background: var(--bg-hover);
+      border-color: #333;
+    }
+
+    .action-btn.danger { border-color: #3a1a1a; color: var(--red); }
+    .action-btn.danger:hover { background: #1a0a0a; }
+
+    .terminal-container {
+      flex: 1;
+      padding: 4px;
+      overflow: hidden;
+    }
+
+    .terminal-container .xterm {
+      height: 100%;
+    }
+
+    /* Input bar */
+    .input-bar {
+      display: flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-panel);
+      gap: 8px;
+    }
+
+    .input-bar input {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text-bright);
+      font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .input-bar input:focus {
+      border-color: var(--accent-dim);
+    }
+
+    .input-bar input::placeholder {
+      color: var(--text-dim);
+    }
+
+    .input-bar button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      background: var(--accent-dim);
+      color: #000;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .input-bar button:hover {
+      background: var(--accent);
+    }
+
+    .input-bar button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* No selection state */
+    .no-session {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      gap: 12px;
+    }
+
+    .no-session .icon { font-size: 48px; opacity: 0.3; }
+    .no-session p { font-size: 14px; }
+
+    /* Auth overlay */
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .auth-box {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      width: 360px;
+      text-align: center;
+    }
+
+    .auth-box h2 {
+      font-size: 18px;
+      margin-bottom: 8px;
+      color: var(--text-bright);
+    }
+
+    .auth-box p {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-bottom: 20px;
+    }
+
+    .auth-box input {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text-bright);
+      font-family: monospace;
+      font-size: 14px;
+      outline: none;
+      margin-bottom: 12px;
+    }
+
+    .auth-box input:focus { border-color: var(--accent-dim); }
+
+    .auth-box button {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: none;
+      background: var(--accent-dim);
+      color: #000;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .auth-box button:hover { background: var(--accent); }
+
+    .auth-error {
+      color: var(--red);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #444; }
+  </style>
+</head>
+<body>
+  <!-- Auth overlay -->
+  <div class="auth-overlay" id="authOverlay">
+    <div class="auth-box">
+      <h2>Instar Dashboard</h2>
+      <p>Enter your auth token to connect</p>
+      <input type="password" id="tokenInput" placeholder="Bearer token..." autofocus>
+      <button onclick="authenticate()">Connect</button>
+      <div class="auth-error" id="authError" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Main app -->
+  <div class="app" id="app" style="display:none">
+    <header class="header">
+      <div class="header-left">
+        <span class="logo">&#x1F990;</span>
+        <h1>Instar Dashboard</h1>
+      </div>
+      <div class="status-badge" id="connStatus">
+        <span class="dot"></span>
+        <span id="connText">Connected</span>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Sessions</h2>
+        <span class="session-count" id="sessionCount">0</span>
+      </div>
+      <div class="session-list" id="sessionList">
+        <div class="empty-state" id="emptyState">
+          <div class="icon">&#x1F4AD;</div>
+          <p>No running sessions<br>Sessions will appear here when spawned</p>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main" id="mainPanel">
+      <div class="no-session" id="noSession">
+        <div class="icon">&#x1F5A5;</div>
+        <p>Select a session to view its terminal</p>
+      </div>
+
+      <div id="terminalView" style="display:none">
+        <div class="terminal-header">
+          <div class="session-info">
+            <h3 id="termSessionName">—</h3>
+            <span class="model-badge" id="termModelBadge" style="display:none"></span>
+          </div>
+          <div class="terminal-actions">
+            <button class="action-btn" onclick="sendKey('C-c')" title="Send Ctrl+C">^C</button>
+            <button class="action-btn" onclick="sendKey('Escape')" title="Send Escape">Esc</button>
+            <button class="action-btn" onclick="sendSpecial('y')" title="Send 'y'">y</button>
+            <button class="action-btn" onclick="sendSpecial('n')" title="Send 'n'">n</button>
+          </div>
+        </div>
+        <div class="terminal-container" id="terminalContainer"></div>
+        <div class="input-bar">
+          <input type="text" id="termInput" placeholder="Type a message and press Enter..."
+                 onkeydown="if(event.key==='Enter')sendInput()">
+          <button onclick="sendInput()" id="sendBtn">Send</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script>
+    // ── State ────────────────────────────────────────────────
+    let ws = null;
+    let token = '';
+    let sessions = [];
+    let activeSession = null;
+    let term = null;
+    let fitAddon = null;
+
+    // ── Auth ─────────────────────────────────────────────────
+    function authenticate() {
+      token = document.getElementById('tokenInput').value.trim();
+      if (!token) {
+        showAuthError('Please enter a token');
+        return;
+      }
+
+      // Test token by hitting /health with auth
+      const port = window.location.port || location.port;
+      fetch(`/health`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+        .then(r => {
+          if (r.ok) {
+            localStorage.setItem('instar_token', token);
+            document.getElementById('authOverlay').style.display = 'none';
+            document.getElementById('app').style.display = 'grid';
+            connectWebSocket();
+          } else {
+            showAuthError('Invalid token');
+          }
+        })
+        .catch(() => showAuthError('Cannot connect to server'));
+    }
+
+    function showAuthError(msg) {
+      const el = document.getElementById('authError');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    // Auto-login with stored token
+    const stored = localStorage.getItem('instar_token');
+    if (stored) {
+      token = stored;
+      fetch(`/health`, { headers: { 'Authorization': `Bearer ${token}` } })
+        .then(r => {
+          if (r.ok) {
+            document.getElementById('authOverlay').style.display = 'none';
+            document.getElementById('app').style.display = 'grid';
+            connectWebSocket();
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Enter on token input
+    document.getElementById('tokenInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') authenticate();
+    });
+
+    // ── WebSocket ────────────────────────────────────────────
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT = 10;
+
+    function connectWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
+
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        reconnectAttempts = 0;
+        updateConnectionStatus(true);
+      };
+
+      ws.onclose = () => {
+        updateConnectionStatus(false);
+        // Reconnect with backoff
+        if (reconnectAttempts < MAX_RECONNECT) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+          reconnectAttempts++;
+          setTimeout(connectWebSocket, delay);
+        }
+      };
+
+      ws.onerror = () => {
+        // onclose will fire after this
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          handleMessage(msg);
+        } catch { /* ignore parse errors */ }
+      };
+    }
+
+    function handleMessage(msg) {
+      switch (msg.type) {
+        case 'sessions':
+          sessions = msg.sessions;
+          renderSessionList();
+          break;
+
+        case 'output':
+          if (msg.session === activeSession) {
+            renderTerminalOutput(msg.data);
+          }
+          break;
+
+        case 'session_ended':
+          if (msg.session === activeSession) {
+            // Session ended — show in terminal
+            if (term) {
+              term.writeln('\r\n\x1b[33m--- Session ended ---\x1b[0m');
+            }
+          }
+          break;
+
+        case 'subscribed':
+          // Subscribed confirmation
+          break;
+
+        case 'input_ack':
+          // Input acknowledged
+          break;
+
+        case 'pong':
+          break;
+
+        case 'error':
+          console.error('[ws]', msg.message);
+          break;
+      }
+    }
+
+    function wsSend(msg) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+      }
+    }
+
+    function updateConnectionStatus(connected) {
+      const badge = document.getElementById('connStatus');
+      const text = document.getElementById('connText');
+      if (connected) {
+        badge.className = 'status-badge';
+        text.textContent = 'Connected';
+      } else {
+        badge.className = 'status-badge disconnected';
+        text.textContent = 'Disconnected';
+      }
+    }
+
+    // ── Session List ─────────────────────────────────────────
+    function renderSessionList() {
+      const list = document.getElementById('sessionList');
+      const empty = document.getElementById('emptyState');
+      const count = document.getElementById('sessionCount');
+
+      count.textContent = sessions.length;
+
+      if (sessions.length === 0) {
+        empty.style.display = 'flex';
+        // Clear any existing session items
+        list.querySelectorAll('.session-item').forEach(el => el.remove());
+        return;
+      }
+
+      empty.style.display = 'none';
+
+      // Build session items
+      const existing = new Map();
+      list.querySelectorAll('.session-item').forEach(el => {
+        existing.set(el.dataset.session, el);
+      });
+
+      // Remove sessions no longer running
+      for (const [name, el] of existing) {
+        if (!sessions.find(s => s.tmuxSession === name)) {
+          el.remove();
+        }
+      }
+
+      // Add/update sessions
+      for (const session of sessions) {
+        let el = existing.get(session.tmuxSession);
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'session-item';
+          el.dataset.session = session.tmuxSession;
+          el.onclick = () => selectSession(session.tmuxSession, session);
+          list.appendChild(el);
+        }
+
+        const elapsed = formatElapsed(session.startedAt);
+        const model = session.model || 'sonnet';
+        const isActive = session.tmuxSession === activeSession;
+
+        el.className = `session-item${isActive ? ' active' : ''}`;
+        el.innerHTML = `
+          <div class="session-name">${escapeHtml(session.name)}</div>
+          <div class="session-meta">
+            <span class="model-badge ${model}">${model}</span>
+            <span>${elapsed}</span>
+            ${session.jobSlug ? `<span>${escapeHtml(session.jobSlug)}</span>` : ''}
+          </div>
+        `;
+      }
+    }
+
+    // ── Terminal ──────────────────────────────────────────────
+    function selectSession(tmuxSession, session) {
+      // Unsubscribe from previous
+      if (activeSession) {
+        wsSend({ type: 'unsubscribe', session: activeSession });
+      }
+
+      activeSession = tmuxSession;
+
+      // Update UI
+      document.getElementById('noSession').style.display = 'none';
+      document.getElementById('terminalView').style.display = 'flex';
+      document.getElementById('terminalView').style.flexDirection = 'column';
+      document.getElementById('terminalView').style.height = '100%';
+      document.getElementById('termSessionName').textContent = session.name;
+
+      const badge = document.getElementById('termModelBadge');
+      if (session.model) {
+        badge.textContent = session.model;
+        badge.className = `model-badge ${session.model}`;
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+
+      // Initialize terminal if needed
+      if (!term) {
+        initTerminal();
+      }
+
+      // Clear and subscribe
+      term.clear();
+      wsSend({ type: 'subscribe', session: tmuxSession });
+
+      // Update active state in sidebar
+      renderSessionList();
+
+      // Focus input
+      document.getElementById('termInput').focus();
+    }
+
+    function initTerminal() {
+      const container = document.getElementById('terminalContainer');
+      container.innerHTML = '';
+
+      term = new window.Terminal({
+        theme: {
+          background: '#0a0a0a',
+          foreground: '#ccc',
+          cursor: '#4ade80',
+          selectionBackground: '#264f78',
+          black: '#1e1e1e',
+          red: '#f14c4c',
+          green: '#4ade80',
+          yellow: '#f59e0b',
+          blue: '#3b82f6',
+          magenta: '#c084fc',
+          cyan: '#5eead4',
+          white: '#ccc',
+          brightBlack: '#666',
+          brightRed: '#f87171',
+          brightGreen: '#86efac',
+          brightYellow: '#fde047',
+          brightBlue: '#60a5fa',
+          brightMagenta: '#d8b4fe',
+          brightCyan: '#99f6e4',
+          brightWhite: '#eee',
+        },
+        fontSize: 13,
+        fontFamily: "'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace",
+        cursorBlink: false,
+        cursorStyle: 'underline',
+        scrollback: 10000,
+        convertEol: true,
+      });
+
+      fitAddon = new window.FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(container);
+
+      // Fit on resize
+      const resizeObserver = new ResizeObserver(() => {
+        try { fitAddon.fit(); } catch {}
+      });
+      resizeObserver.observe(container);
+
+      // Initial fit after a tick (container needs to be visible)
+      requestAnimationFrame(() => {
+        try { fitAddon.fit(); } catch {}
+      });
+    }
+
+    function renderTerminalOutput(data) {
+      if (!term) return;
+      // Replace full terminal content with latest capture
+      term.clear();
+      term.write(data);
+      // Auto-scroll to bottom
+      term.scrollToBottom();
+    }
+
+    // ── Input ────────────────────────────────────────────────
+    function sendInput() {
+      const input = document.getElementById('termInput');
+      const text = input.value;
+      if (!text || !activeSession) return;
+
+      wsSend({ type: 'input', session: activeSession, text });
+      input.value = '';
+      input.focus();
+    }
+
+    function sendKey(key) {
+      if (!activeSession) return;
+      wsSend({ type: 'key', session: activeSession, key });
+    }
+
+    function sendSpecial(text) {
+      if (!activeSession) return;
+      // Send literal text without Enter
+      wsSend({ type: 'key', session: activeSession, key: text });
+    }
+
+    // ── Helpers ───────────────────────────────────────────────
+    function formatElapsed(isoStr) {
+      const ms = Date.now() - new Date(isoStr).getTime();
+      const mins = Math.floor(ms / 60000);
+      if (mins < 60) return `${mins}m`;
+      const hrs = Math.floor(mins / 60);
+      const remMins = mins % 60;
+      if (hrs < 24) return `${hrs}h ${remMins}m`;
+      const days = Math.floor(hrs / 24);
+      return `${days}d ${hrs % 24}h`;
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    // ── Keyboard shortcuts ───────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+      // Ctrl+C when terminal focused but not input
+      if (e.key === 'c' && e.ctrlKey && document.activeElement?.id !== 'termInput') {
+        e.preventDefault();
+        sendKey('C-c');
+      }
+    });
+  </script>
+</body>
+</html>
