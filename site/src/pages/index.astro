@@ -78,9 +78,9 @@ import Layout from '../layouts/Layout.astro';
           <div class="flex-1">
             <h3 class="text-lg font-semibold text-slate-100 mb-1">Coming from OpenClaw?</h3>
             <p class="text-slate-400 text-sm leading-relaxed">
-              Anthropic recently banned OAuth token extraction &mdash; the technique OpenClaw relied on.
+              Anthropic restricted OAuth token extraction &mdash; one of the auth methods OpenClaw used.
               Instar is architecturally different: it spawns the real Claude Code CLI using your existing subscription.
-              No token extraction. No API wrappers. No workarounds that might break tomorrow.
+              No token extraction. No workarounds that might break with a policy change.
               <a href="#comparison" class="text-blue-400 hover:text-blue-300 underline underline-offset-2 ml-1">See the comparison &darr;</a>
             </p>
           </div>
@@ -754,7 +754,7 @@ curl -X POST localhost:4040/sessions/research/input \\
                   Full infrastructure self-modification
                 </span>
               </td>
-              <td class="py-3 px-4 text-slate-500">SOUL.md updates</td>
+              <td class="py-3 px-4 text-slate-500">Workspace file updates</td>
             </tr>
           </tbody>
         </table>

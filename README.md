@@ -165,7 +165,7 @@ Each session is a **real Claude Code process** with extended thinking, native to
 
 ## Why Instar (vs OpenClaw)
 
-If you're coming from OpenClaw, NanoClaw, or similar projects broken by Anthropic's OAuth policy change -- Instar is architecturally different.
+If you're coming from OpenClaw, NanoClaw, or similar projects affected by Anthropic's OAuth policy change -- Instar is architecturally different.
 
 ### ToS-compliant by design
 
@@ -209,7 +209,7 @@ Some claims are less proven: iOS app is "internal preview." Voice wake docs retu
 
 **Self-evolution.** The agent modifies its own jobs, hooks, skills, config, and infrastructure. Not just workspace files -- the system itself.
 
-Different tools for different needs. But only one of them works today.
+Different tools for different needs. Different bets on different futures.
 
 > Full comparison: [positioning-vs-openclaw.md](docs/positioning-vs-openclaw.md)
 
