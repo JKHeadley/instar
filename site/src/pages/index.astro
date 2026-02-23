@@ -588,141 +588,105 @@ curl -X POST localhost:4040/sessions/research/input \\
     </div>
   </section>
 
-  <!-- Comparison Table -->
+  <!-- Comparison -->
   <section id="comparison" class="py-20 sm:py-28 border-t border-slate-800/50">
     <div class="max-w-4xl mx-auto px-6">
-      <div class="text-center mb-12">
-        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Instar vs OpenClaw</h2>
-        <p class="text-slate-400 max-w-xl mx-auto">
-          Different tools for different needs. Here's how they compare.
+      <div class="text-center mb-6">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Reach vs Coherence</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto">
+          OpenClaw is an excellent multi-channel AI assistant framework &mdash; it gets AI into 20+ platforms with device apps, voice, and deep per-channel configuration. Both projects support self-modification.
         </p>
       </div>
 
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-slate-700">
-              <th class="text-left py-3 px-4 text-slate-500 font-medium">Dimension</th>
-              <th class="text-left py-3 px-4 text-teal-400 font-semibold">Instar</th>
-              <th class="text-left py-3 px-4 text-slate-400 font-medium">OpenClaw</th>
-            </tr>
-          </thead>
-          <tbody class="text-slate-300">
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Runtime</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Claude Code CLI &mdash; every Anthropic upgrade, free
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">Pi SDK (embedded agent)</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">ToS compliance</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Uses your existing subscription natively
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M12 9v2m0 4h.01M12 2l9.66 16.5H2.34L12 2z"/></svg>
-                  OAuth path restricted by Anthropic
-                </span>
-              </td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Identity system</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Multi-file + hooks + compaction recovery
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">SOUL.md (co-created file)</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Self-evolution</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Modifies its own jobs, hooks, skills, config
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">Workspace file updates</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Auto-updates</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Built-in: detect, apply, restart, notify
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">Manual or opt-in CLI</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Relationships</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Cross-platform identity, significance scoring
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">Flat markdown memory</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Feedback loop</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Agent-to-agent evolution
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">GitHub issues</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Crash recovery</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  Lifeline supervision + message queuing
-                </span>
-              </td>
-              <td class="py-3 px-4 text-slate-500">OS-level restart only</td>
-            </tr>
-            <tr class="border-b border-slate-800/50">
-              <td class="py-3 px-4 text-slate-500">Messaging</td>
-              <td class="py-3 px-4 text-slate-500">Telegram</td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  20+ channels
-                </span>
-              </td>
-            </tr>
-            <tr>
-              <td class="py-3 px-4 text-slate-500">Device apps</td>
-              <td class="py-3 px-4 text-slate-500">
-                <svg class="w-3.5 h-3.5 text-slate-600 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M20 12H4"/></svg>
-                Not yet
-              </td>
-              <td class="py-3 px-4">
-                <span class="inline-flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  macOS, iOS, Android
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="text-center mb-12">
+        <p class="text-slate-400 max-w-2xl mx-auto">
+          Instar makes a different bet: <span class="text-teal-400">self-coherent agents that evolve organically.</span> Not just "can the agent edit files" but &mdash; does the agent know who it is across parallel sessions? Does it remember every relationship? Does it grow through dedicated evolution infrastructure, or incidentally?
+        </p>
       </div>
 
-      <p class="text-center text-slate-500 mt-8 text-sm max-w-lg mx-auto">
-        OpenClaw excels at multi-channel messaging with device apps. Instar excels at giving Claude Code agents
-        genuine autonomy &mdash; deeper identity, self-evolution, and infrastructure that grows with you.
+      <!-- Three pillars -->
+      <div class="grid sm:grid-cols-3 gap-4 mb-12">
+        <div class="rounded-lg border border-teal-500/20 bg-teal-500/5 p-5 text-center">
+          <div class="text-2xl mb-2">&#x1f9ec;</div>
+          <p class="text-sm font-semibold text-teal-300 mb-2">Coherence</p>
+          <p class="text-xs text-slate-400">Identity survives compaction. Parallel sessions share context. Relationships persist across platforms. Memory accumulates across time.</p>
+        </div>
+        <div class="rounded-lg border border-teal-500/20 bg-teal-500/5 p-5 text-center">
+          <div class="text-2xl mb-2">&#x1f331;</div>
+          <p class="text-sm font-semibold text-teal-300 mb-2">Organic Evolution</p>
+          <p class="text-xs text-slate-400">Dedicated infrastructure for proposing improvements, tracking learnings, harvesting insights, and growing through developmental stages.</p>
+        </div>
+        <div class="rounded-lg border border-teal-500/20 bg-teal-500/5 p-5 text-center">
+          <div class="text-2xl mb-2">&#x1f3d7;&#xfe0f;</div>
+          <p class="text-sm font-semibold text-teal-300 mb-2">Structure &gt; Willpower</p>
+          <p class="text-xs text-slate-400">These aren't things the agent is told to do. They're things the infrastructure guarantees. Hooks, not hopes.</p>
+        </div>
+      </div>
+
+      <!-- How it plays out -->
+      <h3 class="text-lg font-semibold text-slate-200 mb-4 text-center">How this plays out in practice</h3>
+
+      <div class="space-y-3 mb-8">
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="shrink-0 mt-0.5">
+            <span class="text-xs font-medium text-slate-500 bg-slate-800 px-2 py-1 rounded">Identity</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-slate-300"><span class="text-teal-400 font-medium">Instar:</span> Hooks re-inject identity on session start, after compaction, and before messaging. All parallel sessions share AGENT.md, MEMORY.md, and relationship context. The agent <em>structurally cannot</em> forget who it is.</p>
+            <p class="text-sm text-slate-500 mt-1"><span class="text-slate-400">OpenClaw:</span> SOUL.md co-created on first run. Agent-editable. Identity depends on the model re-reading the file.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="shrink-0 mt-0.5">
+            <span class="text-xs font-medium text-slate-500 bg-slate-800 px-2 py-1 rounded">Evolution</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-slate-300"><span class="text-teal-400 font-medium">Instar:</span> Evolution queue, learning registry, capability gap tracking, insight harvesting, commitment follow-through. The agent proposes its own improvements, reviews them, and implements them on a schedule.</p>
+            <p class="text-sm text-slate-500 mt-1"><span class="text-slate-400">OpenClaw:</span> Agent can modify SOUL.md and workspace files. Evolution happens ad-hoc rather than through dedicated infrastructure.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="shrink-0 mt-0.5">
+            <span class="text-xs font-medium text-slate-500 bg-slate-800 px-2 py-1 rounded">Relationships</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-slate-300"><span class="text-teal-400 font-medium">Instar:</span> Cross-platform identity resolution. Significance scoring. Context injection before every interaction &mdash; the agent knows <em>who</em> it's talking to, not just <em>what</em> was said.</p>
+            <p class="text-sm text-slate-500 mt-1"><span class="text-slate-400">OpenClaw:</span> Hybrid memory search (BM25 + vector) for retrieving past conversations. Optimized for recall, not relational understanding.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="shrink-0 mt-0.5">
+            <span class="text-xs font-medium text-slate-500 bg-slate-800 px-2 py-1 rounded">Multi-session</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-slate-300"><span class="text-teal-400 font-medium">Instar:</span> Parallel Claude Code sessions in tmux &mdash; each with shared identity, memory, and relationship context. Five jobs running simultaneously, all coherent with each other.</p>
+            <p class="text-sm text-slate-500 mt-1"><span class="text-slate-400">OpenClaw:</span> Multi-session gateway with per-agent workspace and model config. Sessions are independent rather than identity-coherent.</p>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-lg border border-slate-800 bg-slate-900/40">
+          <div class="shrink-0 mt-0.5">
+            <span class="text-xs font-medium text-slate-500 bg-slate-800 px-2 py-1 rounded">Ecosystem</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-slate-300"><span class="text-teal-400 font-medium">Instar:</span> Built-in feedback loop &mdash; agent reports issues, fixes flow to all agents via auto-updater + intelligence dispatches. Every agent's experience improves every other agent.</p>
+            <p class="text-sm text-slate-500 mt-1"><span class="text-slate-400">OpenClaw:</span> ClawHub skill marketplace for sharing capabilities. Community-driven distribution model.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-slate-700/50 bg-slate-800/30 p-5 mb-4">
+        <p class="text-sm text-slate-400 text-center">
+          <span class="text-slate-300 font-medium">Where OpenClaw leads:</span> 20+ messaging channels, native device apps (macOS/iOS/Android), voice &amp; TTS, Docker sandboxing, 12+ model providers, ClawHub marketplace.
+        </p>
+      </div>
+
+      <p class="text-center text-slate-500 text-sm max-w-lg mx-auto">
+        Different bets on different futures. OpenClaw bets on <span class="text-slate-400">reach</span> &mdash; AI everywhere.
+        Instar bets on <span class="text-teal-400">depth</span> &mdash; AI that is genuinely coherent, growing, and autonomous.
       </p>
     </div>
   </section>
