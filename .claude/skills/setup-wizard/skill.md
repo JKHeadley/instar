@@ -646,50 +646,19 @@ If Telegram was set up in Phase 3, install the relay script that lets Claude ses
 mkdir -p .claude/scripts
 ```
 
-Write `.claude/scripts/telegram-reply.sh`:
+**IMPORTANT: Do NOT write a custom telegram-reply.sh.** Instead, copy the canonical version from the instar package:
 
 ```bash
-#!/bin/bash
-# telegram-reply.sh — Send a message back to a Telegram topic via instar server.
-#
-# Usage:
-#   .claude/scripts/telegram-reply.sh TOPIC_ID "message text"
-#   echo "message text" | .claude/scripts/telegram-reply.sh TOPIC_ID
-#   cat <<'EOF' | .claude/scripts/telegram-reply.sh TOPIC_ID
-#   Multi-line message here
-#   EOF
-
-TOPIC_ID=$1
-shift
-
-if [ -z "$TOPIC_ID" ]; then
-  echo "Usage: telegram-reply.sh TOPIC_ID [message]" >&2
-  exit 1
-fi
-
-PORT=<PORT>
-
-# Get message from args or stdin
-if [ $# -gt 0 ]; then
-  MESSAGE="$*"
-else
-  MESSAGE=$(cat)
-fi
-
-if [ -z "$MESSAGE" ]; then
-  echo "No message provided" >&2
-  exit 1
-fi
-
-# Send via instar server API
-curl -s -X POST "http://localhost:${PORT}/telegram/topic/${TOPIC_ID}/send" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg text "$MESSAGE" '{text: $text}')" > /dev/null 2>&1
-
-echo "Sent $(echo "$MESSAGE" | wc -c | tr -d ' ') chars to topic $TOPIC_ID"
+cp "$(dirname "$(which instar 2>/dev/null || echo "$(npm root -g)/instar")")/templates/scripts/telegram-reply.sh" .claude/scripts/telegram-reply.sh 2>/dev/null
 ```
 
-Replace `<PORT>` with the actual server port. Then make it executable:
+If the copy fails (e.g., npx install), write the script using the template at `node_modules/instar/dist/templates/scripts/telegram-reply.sh` as the source. The key details:
+- **Endpoint**: `POST http://localhost:PORT/telegram/reply/TOPIC_ID` (NOT `/telegram/topic/TOPIC_ID/send`)
+- **Auth**: Must read authToken from `.instar/config.json` and include `Authorization: Bearer TOKEN` header
+- **JSON escaping**: Use python3 for proper JSON escaping, not jq (which may not be installed)
+- **Error reporting**: Do NOT pipe curl output to `/dev/null` — check the HTTP status code and report failures
+
+Then make it executable:
 
 ```bash
 chmod +x .claude/scripts/telegram-reply.sh

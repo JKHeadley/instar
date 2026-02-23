@@ -27,6 +27,53 @@ import { registerPort, unregisterPort, startHeartbeat } from '../core/PortRegist
 import { MessageQueue, type QueuedMessage } from './MessageQueue.js';
 import { ServerSupervisor } from './ServerSupervisor.js';
 
+/**
+ * Acquire an exclusive lock file to prevent multiple lifeline instances.
+ * Returns true if lock acquired, false if another instance holds it.
+ */
+function acquireLockFile(lockPath: string): boolean {
+  try {
+    // Check if lock file exists and if the PID is still alive
+    if (fs.existsSync(lockPath)) {
+      const raw = fs.readFileSync(lockPath, 'utf-8');
+      const data = JSON.parse(raw);
+      if (data.pid && typeof data.pid === 'number') {
+        try {
+          // Signal 0 checks if process exists without killing it
+          process.kill(data.pid, 0);
+          // Process still alive — another lifeline is running
+          return false;
+        } catch {
+          // Process is dead — stale lock, we can take over
+          console.log(`[Lifeline] Removing stale lock (PID ${data.pid} is dead)`);
+        }
+      }
+    }
+
+    // Write our PID
+    const tmpPath = `${lockPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    fs.renameSync(tmpPath, lockPath);
+    return true;
+  } catch (err) {
+    console.error(`[Lifeline] Lock acquisition failed: ${err}`);
+    return false;
+  }
+}
+
+function releaseLockFile(lockPath: string): void {
+  try {
+    if (fs.existsSync(lockPath)) {
+      const raw = fs.readFileSync(lockPath, 'utf-8');
+      const data = JSON.parse(raw);
+      // Only remove if we own it
+      if (data.pid === process.pid) {
+        fs.unlinkSync(lockPath);
+      }
+    }
+  } catch { /* best effort */ }
+}
+
 interface LifelineConfig {
   token: string;
   chatId: string;
@@ -58,6 +105,7 @@ export class TelegramLifeline {
   private stopHeartbeat: (() => void) | null = null;
   private replayInterval: ReturnType<typeof setInterval> | null = null;
   private lifelineTopicId: number | null = null;
+  private lockPath: string;
 
   constructor(projectDir?: string) {
     this.projectConfig = loadConfig(projectDir);
@@ -74,6 +122,7 @@ export class TelegramLifeline {
     this.config = telegramConfig.config as unknown as LifelineConfig;
     this.queue = new MessageQueue(this.projectConfig.stateDir);
     this.offsetPath = path.join(this.projectConfig.stateDir, 'lifeline-poll-offset.json');
+    this.lockPath = path.join(this.projectConfig.stateDir, 'lifeline.lock');
 
     this.supervisor = new ServerSupervisor({
       projectDir: this.projectConfig.projectDir,
@@ -107,6 +156,12 @@ export class TelegramLifeline {
     console.log(`  Port: ${this.projectConfig.port}`);
     console.log(`  State: ${this.projectConfig.stateDir}`);
     console.log();
+
+    // Acquire exclusive lock — prevent multiple lifeline instances
+    if (!acquireLockFile(this.lockPath)) {
+      console.error(pc.red('[Lifeline] Another lifeline instance is already running. Exiting.'));
+      process.exit(0); // Clean exit — launchd won't respawn on clean exit with KeepAlive config
+    }
 
     // Register in port registry (lifeline owns the port claim)
     try {
@@ -160,6 +215,7 @@ export class TelegramLifeline {
       if (this.replayInterval) clearInterval(this.replayInterval);
       if (this.stopHeartbeat) this.stopHeartbeat();
       unregisterPort(`${this.projectConfig.projectName}-lifeline`);
+      releaseLockFile(this.lockPath);
       await this.supervisor.stop();
       process.exit(0);
     };

@@ -30,6 +30,8 @@ export class ServerSupervisor extends EventEmitter {
   private restartBackoffMs = 5000;
   private isRunning = false;
   private lastHealthy = 0;
+  private startupGraceMs = 20_000; // 20 seconds grace period after spawn before health checks
+  private spawnedAt = 0;
 
   constructor(options: {
     projectDir: string;
@@ -140,6 +142,7 @@ export class ServerSupervisor extends EventEmitter {
 
       console.log(`[Supervisor] Server started in tmux session: ${this.serverSessionName}`);
       this.isRunning = true;
+      this.spawnedAt = Date.now();
       this.startHealthChecks();
       return true;
     } catch (err) {
@@ -164,6 +167,11 @@ export class ServerSupervisor extends EventEmitter {
     if (this.healthCheckInterval) return;
 
     this.healthCheckInterval = setInterval(async () => {
+      // Skip health checks during startup grace period — server needs time to boot
+      if (this.spawnedAt > 0 && (Date.now() - this.spawnedAt) < this.startupGraceMs) {
+        return;
+      }
+
       try {
         const healthy = await this.checkHealth();
         if (healthy) {
