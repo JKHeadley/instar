@@ -109,6 +109,16 @@ export function createRoutes(ctx: RouteContext): Router {
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
       };
 
+      // System-wide memory state
+      const os = require('node:os');
+      const totalMem = os.totalmem();
+      const freeMem = os.freemem();
+      base.systemMemory = {
+        totalGB: Math.round(totalMem / (1024 ** 3) * 10) / 10,
+        freeGB: Math.round(freeMem / (1024 ** 3) * 10) / 10,
+        usedPercent: Math.round(((totalMem - freeMem) / totalMem) * 1000) / 10,
+      };
+
       // Job health summary
       if (ctx.scheduler) {
         const jobs = ctx.scheduler.getJobs();

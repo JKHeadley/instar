@@ -126,7 +126,7 @@ export class ServerSupervisor extends EventEmitter {
 
     try {
       // Get the instar CLI path
-      const cliPath = new URL('../../cli.js', import.meta.url).pathname;
+      const cliPath = new URL('../cli.js', import.meta.url).pathname;
 
       // --no-telegram: lifeline owns the Telegram connection, server should not poll
       const nodeCmd = ['node', cliPath, 'server', 'start', '--foreground', '--no-telegram']

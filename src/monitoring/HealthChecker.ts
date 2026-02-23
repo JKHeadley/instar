@@ -38,6 +38,7 @@ export class HealthChecker {
     components.tmux = this.checkTmux();
     components.sessions = this.checkSessions();
     components.stateDir = this.checkStateDir();
+    components.memory = this.checkMemory();
 
     if (this.scheduler) {
       components.scheduler = this.checkScheduler();
@@ -157,6 +158,28 @@ export class HealthChecker {
       message: `Running: ${status.enabledJobs} jobs, ${status.queueLength} queued`,
       lastCheck: now,
     };
+  }
+
+  private checkMemory(): ComponentHealth {
+    const now = new Date().toISOString();
+    try {
+      const os = require('node:os');
+      const totalBytes = os.totalmem();
+      const freeBytes = os.freemem();
+      const totalGB = totalBytes / (1024 ** 3);
+      const freeGB = freeBytes / (1024 ** 3);
+      const usedPercent = ((totalBytes - freeBytes) / totalBytes) * 100;
+
+      if (usedPercent >= 90) {
+        return { status: 'unhealthy', message: `Memory critical: ${usedPercent.toFixed(0)}% used (${freeGB.toFixed(1)}GB free)`, lastCheck: now };
+      }
+      if (usedPercent >= 75) {
+        return { status: 'degraded', message: `Memory elevated: ${usedPercent.toFixed(0)}% used (${freeGB.toFixed(1)}GB free)`, lastCheck: now };
+      }
+      return { status: 'healthy', message: `${usedPercent.toFixed(0)}% used (${freeGB.toFixed(1)}GB free / ${totalGB.toFixed(0)}GB total)`, lastCheck: now };
+    } catch (err) {
+      return { status: 'degraded', message: `Memory check failed: ${err instanceof Error ? err.message : String(err)}`, lastCheck: now };
+    }
   }
 
   private checkStateDir(): ComponentHealth {

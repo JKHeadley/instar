@@ -162,7 +162,7 @@ export class TelegramLifeline {
     // Acquire exclusive lock — prevent multiple lifeline instances
     if (!acquireLockFile(this.lockPath)) {
       console.error(pc.red('[Lifeline] Another lifeline instance is already running. Exiting.'));
-      process.exit(0); // Clean exit — launchd won't respawn on clean exit with KeepAlive config
+      process.exit(0); // Clean exit — launchd will restart after ThrottleInterval, acting as a watchdog
     }
 
     // Register in port registry (lifeline owns the port claim)

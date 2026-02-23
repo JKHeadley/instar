@@ -886,10 +886,7 @@ ${argsXml}
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>StandardOutPath</key>
     <string>${escapeXml(path.join(logDir, `${command}-launchd.log`))}</string>
     <key>StandardErrorPath</key>
