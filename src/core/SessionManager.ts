@@ -525,10 +525,28 @@ export class SessionManager extends EventEmitter {
   /**
    * Inject a Telegram message into a tmux session.
    * Short messages go via send-keys; long messages are written to a temp file.
+   *
+   * Image handling: [image:/path] tags from Telegram photo downloads are
+   * transformed into explicit instructions so Claude Code knows to read the
+   * image file (it can natively view images via the Read tool).
    */
   injectTelegramMessage(tmuxSession: string, topicId: number, text: string): void {
     const FILE_THRESHOLD = 500;
-    const taggedText = `[telegram:${topicId}] ${text}`;
+
+    // Transform [image:path] tags into explicit read instructions.
+    // Claude Code can natively view images via the Read tool, but only
+    // if it knows there's an image file to read.
+    const transformed = text.replace(
+      /\[image:([^\]]+)\]/g,
+      (_, imagePath: string) => {
+        if (imagePath === 'download-failed') {
+          return '[User sent a photo but the download failed]';
+        }
+        return `[User sent a photo — read the image file at ${imagePath} to view it]`;
+      }
+    );
+
+    const taggedText = `[telegram:${topicId}] ${transformed}`;
 
     if (taggedText.length <= FILE_THRESHOLD) {
       this.injectMessage(tmuxSession, taggedText);
