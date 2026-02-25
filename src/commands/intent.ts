@@ -1,5 +1,6 @@
 /**
  * `instar intent reflect` — Review recent decisions against stated intent.
+ * `instar intent validate` — Validate agent intent against org constraints.
  *
  * Reads the decision journal and AGENT.md Intent section, then outputs
  * a human-readable summary. This is a local command — no Claude session needed.
@@ -10,6 +11,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { DecisionJournal } from '../core/DecisionJournal.js';
+import { OrgIntentManager } from '../core/OrgIntentManager.js';
 
 interface IntentReflectOptions {
   dir?: string;
@@ -17,11 +19,15 @@ interface IntentReflectOptions {
   limit?: number;
 }
 
+interface IntentValidateOptions {
+  dir?: string;
+}
+
 /**
  * Extract the ## Intent section from AGENT.md content.
  * Returns the section text, or null if not found.
  */
-function extractIntentSection(agentMdContent: string): string | null {
+export function extractIntentSection(agentMdContent: string): string | null {
   const lines = agentMdContent.split('\n');
   let inIntent = false;
   let intentLines: string[] = [];
@@ -102,6 +108,30 @@ export async function intentReflect(options: IntentReflectOptions): Promise<void
     console.log();
   }
 
+  // Show organizational constraints if ORG-INTENT.md exists
+  const orgManager = new OrgIntentManager(config.stateDir);
+  const orgIntent = orgManager.parse();
+
+  if (orgIntent) {
+    console.log(pc.bold('  Organizational Constraints:'));
+    if (orgIntent.constraints.length > 0) {
+      for (const constraint of orgIntent.constraints) {
+        console.log(`    ${pc.yellow('[ORG]')} ${constraint.text}`);
+      }
+    } else {
+      console.log(pc.dim('    No constraints defined in ORG-INTENT.md.'));
+    }
+    console.log();
+
+    if (orgIntent.goals.length > 0) {
+      console.log(pc.bold('  Organizational Goals (defaults):'));
+      for (const goal of orgIntent.goals) {
+        console.log(`    ${pc.blue('[ORG]')} ${goal.text}`);
+      }
+      console.log();
+    }
+  }
+
   // Read decision journal
   const journal = new DecisionJournal(config.stateDir);
   const entries = journal.read({ days, limit });
@@ -157,5 +187,104 @@ export async function intentReflect(options: IntentReflectOptions): Promise<void
   if (entries.length > 20) {
     console.log(pc.dim(`    ... and ${entries.length - 20} more entries (use --limit to see more)`));
     console.log();
+  }
+}
+
+export async function intentValidate(options: IntentValidateOptions): Promise<void> {
+  let config;
+  try {
+    config = loadConfig(options.dir);
+  } catch (err) {
+    console.log(pc.red(`Not initialized: ${err instanceof Error ? err.message : String(err)}`));
+    console.log(`Run ${pc.cyan('instar init')} first.`);
+    process.exit(1);
+    return;
+  }
+
+  console.log(pc.bold(`\n  Intent Validation: ${pc.cyan(config.projectName)}\n`));
+
+  // Check for ORG-INTENT.md
+  const orgManager = new OrgIntentManager(config.stateDir);
+  if (!orgManager.exists()) {
+    console.log(pc.yellow('  No ORG-INTENT.md found.'));
+    console.log(pc.dim('  Create one with: instar intent org-init'));
+    console.log();
+    return;
+  }
+
+  const orgIntent = orgManager.parse();
+  if (!orgIntent) {
+    console.log(pc.yellow('  ORG-INTENT.md exists but contains no real content (template only).'));
+    console.log(pc.dim('  Edit ORG-INTENT.md to add constraints, goals, and values.'));
+    console.log();
+    return;
+  }
+
+  // Check for AGENT.md Intent section
+  const agentMdPath = path.join(config.stateDir, 'AGENT.md');
+  let agentIntentContent: string | null = null;
+
+  if (fs.existsSync(agentMdPath)) {
+    const content = fs.readFileSync(agentMdPath, 'utf-8');
+    agentIntentContent = extractIntentSection(content);
+  }
+
+  if (!agentIntentContent) {
+    console.log(pc.yellow('  No Intent section found in AGENT.md.'));
+    console.log(pc.dim('  Add an ## Intent section to .instar/AGENT.md to enable validation.'));
+    console.log();
+    return;
+  }
+
+  // Display org intent summary
+  console.log(pc.bold(`  Organization: ${pc.cyan(orgIntent.name)}`));
+  console.log(`  Constraints:  ${orgIntent.constraints.length}`);
+  console.log(`  Goals:        ${orgIntent.goals.length}`);
+  console.log();
+
+  // Run validation
+  const result = orgManager.validateAgentIntent(agentIntentContent);
+
+  if (result.valid) {
+    console.log(pc.green('  No conflicts detected between agent intent and org constraints.'));
+    console.log();
+  } else {
+    console.log(pc.red(`  ${result.conflicts.length} conflict(s) detected:\n`));
+
+    for (const conflict of result.conflicts) {
+      const icon = conflict.severity === 'error' ? pc.red('[ERROR]') : pc.yellow('[WARN]');
+      console.log(`    ${icon} ${conflict.description}`);
+      console.log(`      Org constraint: ${pc.dim(conflict.orgConstraint)}`);
+      console.log(`      Agent statement: ${pc.dim(conflict.agentStatement)}`);
+      console.log();
+    }
+
+    // Log conflicts to decision journal
+    const journal = new DecisionJournal(config.stateDir);
+    for (const conflict of result.conflicts) {
+      journal.log({
+        sessionId: 'intent-validate',
+        decision: `Org-agent intent conflict: ${conflict.description}`,
+        principle: 'org-alignment',
+        conflict: true,
+        tags: ['org-intent', 'validation'],
+      });
+    }
+
+    console.log(pc.dim(`  Conflicts logged to decision journal.`));
+    console.log();
+  }
+
+  if (result.warnings.length > 0) {
+    for (const warning of result.warnings) {
+      console.log(pc.yellow(`  Warning: ${warning}`));
+    }
+    console.log();
+  }
+
+  // Exit with code 1 if any errors
+  const hasErrors = result.conflicts.some(c => c.severity === 'error');
+  if (hasErrors) {
+    process.exit(1);
   }
 }

@@ -499,6 +499,24 @@ intentCmd
     return intentReflect(opts);
   });
 
+intentCmd
+  .command('org-init [name]')
+  .description('Create ORG-INTENT.md for organizational intent')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (name, opts) => {
+    const { orgInit } = await import('./commands/org.js');
+    return orgInit({ ...opts, name });
+  });
+
+intentCmd
+  .command('validate')
+  .description('Validate agent intent against org constraints')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { intentValidate } = await import('./commands/intent.js');
+    return intentValidate(opts);
+  });
+
 // ── Feedback ─────────────────────────────────────────────────────
 
 program

@@ -15,6 +15,8 @@ export type { FeedbackQualityResult } from './core/FeedbackManager.js';
 export { EvolutionManager } from './core/EvolutionManager.js';
 export { DecisionJournal } from './core/DecisionJournal.js';
 export type { DecisionJournalStats } from './core/DecisionJournal.js';
+export { OrgIntentManager } from './core/OrgIntentManager.js';
+export type { OrgConstraint, OrgGoal, ParsedOrgIntent, IntentConflict, IntentValidationResult } from './core/OrgIntentManager.js';
 export { DispatchManager } from './core/DispatchManager.js';
 export { UpdateChecker } from './core/UpdateChecker.js';
 export type { RollbackResult, UpdateCheckerConfig } from './core/UpdateChecker.js';

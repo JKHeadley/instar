@@ -2692,6 +2692,49 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Org Intent ─────────────────────────────────────────────────
+
+  router.get('/intent/org', async (_req, res) => {
+    try {
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      const manager = new OrgIntentManager(ctx.config.stateDir);
+      const parsed = manager.parse();
+      res.json(parsed);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read org intent' });
+    }
+  });
+
+  router.get('/intent/validate', async (_req, res) => {
+    try {
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      const manager = new OrgIntentManager(ctx.config.stateDir);
+
+      // Read agent intent from AGENT.md
+      const agentMdPath = path.join(ctx.config.stateDir, 'AGENT.md');
+      let agentIntentContent = '';
+
+      if (fs.existsSync(agentMdPath)) {
+        const content = fs.readFileSync(agentMdPath, 'utf-8');
+        // Extract the Intent section inline (same logic as extractIntentSection)
+        const lines = content.split('\n');
+        let inIntent = false;
+        const intentLines: string[] = [];
+        for (const line of lines) {
+          if (/^##\s+Intent\b/.test(line)) { inIntent = true; intentLines.push(line); continue; }
+          if (inIntent && /^##\s+/.test(line) && !/^###/.test(line)) break;
+          if (inIntent) intentLines.push(line);
+        }
+        agentIntentContent = intentLines.join('\n').trim();
+      }
+
+      const result = manager.validateAgentIntent(agentIntentContent);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to validate intent' });
+    }
+  });
+
   // ── Triage ───────────────────────────────────────────────────────
 
   router.get('/triage/status', (_req, res) => {
