@@ -43,6 +43,8 @@ export interface AutoUpdaterStatus {
   lastCheck: string | null;
   /** Last time we applied an update */
   lastApply: string | null;
+  /** The version that was last successfully applied */
+  lastAppliedVersion: string | null;
   /** Current configuration */
   config: Required<AutoUpdaterConfig>;
   /** Any pending update that hasn't been applied yet */
@@ -59,9 +61,11 @@ export class AutoUpdater {
   private interval: ReturnType<typeof setInterval> | null = null;
   private lastCheck: string | null = null;
   private lastApply: string | null = null;
+  private lastAppliedVersion: string | null = null;
   private lastError: string | null = null;
   private pendingUpdate: string | null = null;
   private isApplying = false;
+  private loopNotified = false;
   private stateFile: string;
 
   constructor(
@@ -142,6 +146,7 @@ export class AutoUpdater {
       running: this.interval !== null,
       lastCheck: this.lastCheck,
       lastApply: this.lastApply,
+      lastAppliedVersion: this.lastAppliedVersion,
       config: { ...this.config },
       pendingUpdate: this.pendingUpdate,
       lastError: this.lastError,
@@ -181,6 +186,32 @@ export class AutoUpdater {
       this.pendingUpdate = info.latestVersion;
       this.saveState();
 
+      // Guard: prevent restart loops when the running binary doesn't pick up updates.
+      // This happens when running from npx cache, a local install, or any location
+      // that npm install -g doesn't update. After applying v0.9.3, the restarted
+      // process still reads its old package.json → detects v0.9.3 as "new" → applies
+      // again → restarts again → infinite loop.
+      if (this.lastAppliedVersion === info.latestVersion) {
+        console.log(
+          `[AutoUpdater] v${info.latestVersion} was already applied in a previous cycle. ` +
+          `The running binary didn't pick up the update — skipping to prevent restart loop.`
+        );
+
+        // Notify the user once (not every tick)
+        if (!this.loopNotified) {
+          this.loopNotified = true;
+          await this.notify(
+            `I already installed v${info.latestVersion} but my running binary didn't pick up the change ` +
+            `(might be running from a cached or local install). ` +
+            `Please restart me from the global binary: instar server start --foreground`
+          );
+        }
+
+        this.pendingUpdate = null;
+        this.saveState();
+        return;
+      }
+
       // Step 2: Auto-apply if configured
       if (!this.config.autoApply) {
         // Just notify — don't apply
@@ -212,6 +243,7 @@ export class AutoUpdater {
 
       // Step 4: Update succeeded
       this.lastApply = new Date().toISOString();
+      this.lastAppliedVersion = result.newVersion;
       this.pendingUpdate = null;
       this.saveState();
 
@@ -425,6 +457,7 @@ export class AutoUpdater {
         const data = JSON.parse(fs.readFileSync(this.stateFile, 'utf-8'));
         this.lastCheck = data.lastCheck ?? null;
         this.lastApply = data.lastApply ?? null;
+        this.lastAppliedVersion = data.lastAppliedVersion ?? null;
         this.lastError = data.lastError ?? null;
         this.pendingUpdate = data.pendingUpdate ?? null;
       }
@@ -440,6 +473,7 @@ export class AutoUpdater {
     const data = {
       lastCheck: this.lastCheck,
       lastApply: this.lastApply,
+      lastAppliedVersion: this.lastAppliedVersion,
       lastError: this.lastError,
       pendingUpdate: this.pendingUpdate,
       savedAt: new Date().toISOString(),
