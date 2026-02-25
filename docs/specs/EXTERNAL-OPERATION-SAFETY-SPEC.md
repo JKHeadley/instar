@@ -2,7 +2,7 @@
 
 > Structural guardrails for autonomous agents operating on external services — so "clean up my inbox" never becomes "delete everything."
 
-**Status**: Design
+**Status**: Implemented
 **Author**: Dawn (with Justin's direction)
 **Date**: 2026-02-25
 **Origin**: Analysis of [Meta's Head of AI Safety having her entire email inbox deleted by OpenClaw](https://youtu.be/JiA4fvoeUfI) (ThePrimeTime coverage)
