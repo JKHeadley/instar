@@ -701,6 +701,42 @@ export interface EvolutionManagerConfig {
   maxActions?: number;
 }
 
+// ── Decision Journal ────────────────────────────────────────────────
+
+/**
+ * Decision journal entry — records intent-relevant decisions for alignment analysis.
+ *
+ * The decision journal is the measurement foundation for intent engineering.
+ * Without observing real agent decisions, intent definitions are speculation.
+ * Zero-config: logging activates automatically when an Intent section exists in AGENT.md.
+ *
+ * Storage: per-agent JSONL file (.instar/decision-journal.jsonl)
+ */
+export interface DecisionJournalEntry {
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Session ID that made the decision */
+  sessionId: string;
+  /** Telegram topic ID if applicable */
+  topicId?: number;
+  /** Job slug if this decision was made during a job */
+  jobSlug?: string;
+  /** What was decided */
+  decision: string;
+  /** What alternatives were considered */
+  alternatives?: string[];
+  /** Which AGENT.md principle or intent guided the choice */
+  principle?: string;
+  /** Agent's confidence in alignment with stated intent (0-1) */
+  confidence?: number;
+  /** Relevant context at decision time */
+  context?: string;
+  /** Whether this decision conflicted with an org-level constraint */
+  conflict?: boolean;
+  /** Tags for categorization */
+  tags?: string[];
+}
+
 // ── Multi-Machine ───────────────────────────────────────────────────
 
 export interface MachineIdentity {

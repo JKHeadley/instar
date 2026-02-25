@@ -482,6 +482,23 @@ memoryCmd
     return memoryStatus(opts);
   });
 
+// ── Intent ────────────────────────────────────────────────────────
+
+const intentCmd = program
+  .command('intent')
+  .description('Intent engineering — review decisions against stated intent');
+
+intentCmd
+  .command('reflect')
+  .description('Review recent decisions against stated intent from AGENT.md')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--days <days>', 'Number of days to review (default: 7)', (v: string) => parseInt(v, 10))
+  .option('--limit <count>', 'Max entries to show (default: 100)', (v: string) => parseInt(v, 10))
+  .action(async (opts) => {
+    const { intentReflect } = await import('./commands/intent.js');
+    return intentReflect(opts);
+  });
+
 // ── Feedback ─────────────────────────────────────────────────────
 
 program

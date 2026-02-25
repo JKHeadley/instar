@@ -12,6 +12,8 @@ export { ClaudeCliIntelligenceProvider } from './core/ClaudeCliIntelligenceProvi
 export { AnthropicIntelligenceProvider } from './core/AnthropicIntelligenceProvider.js';
 export { FeedbackManager } from './core/FeedbackManager.js';
 export { EvolutionManager } from './core/EvolutionManager.js';
+export { DecisionJournal } from './core/DecisionJournal.js';
+export type { DecisionJournalStats } from './core/DecisionJournal.js';
 export { DispatchManager } from './core/DispatchManager.js';
 export { UpdateChecker } from './core/UpdateChecker.js';
 export type { RollbackResult, UpdateCheckerConfig } from './core/UpdateChecker.js';
@@ -176,6 +178,7 @@ export type {
   GapCategory,
   ActionItem,
   EvolutionManagerConfig,
+  DecisionJournalEntry,
   MachineIdentity,
   MachineRegistry,
   MachineRegistryEntry,

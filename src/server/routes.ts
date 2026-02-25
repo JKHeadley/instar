@@ -2565,6 +2565,54 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Intent / Decision Journal ───────────────────────────────────
+
+  router.get('/intent/journal', async (req, res) => {
+    try {
+      const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const journal = new DecisionJournal(ctx.config.stateDir);
+
+      const days = req.query.days ? parseInt(req.query.days as string, 10) : undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+      const jobSlug = req.query.jobSlug as string | undefined;
+
+      const entries = journal.read({ days, limit, jobSlug });
+      res.json({ entries, count: entries.length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read decision journal' });
+    }
+  });
+
+  router.get('/intent/journal/stats', async (_req, res) => {
+    try {
+      const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const journal = new DecisionJournal(ctx.config.stateDir);
+      const stats = journal.stats();
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute journal stats' });
+    }
+  });
+
+  router.post('/intent/journal', async (req, res) => {
+    try {
+      const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const journal = new DecisionJournal(ctx.config.stateDir);
+
+      const { sessionId, decision, ...rest } = req.body || {};
+
+      if (!sessionId || !decision) {
+        res.status(400).json({ error: 'sessionId and decision are required' });
+        return;
+      }
+
+      const entry = journal.log({ sessionId, decision, ...rest });
+      res.status(201).json(entry);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to log decision' });
+    }
+  });
+
   return router;
 }
 
