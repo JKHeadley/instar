@@ -1055,12 +1055,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         // silently returning empty data from a broken instance.
         topicMemory = undefined;
 
+        // Detect native binding error — happens when Node.js version changed since instar was installed
+        // (common with asdf, nvm, or homebrew Node.js version management)
+        const isBindingError = reason.includes('Could not locate the bindings file') ||
+          reason.includes('better-sqlite3') ||
+          reason.includes('was compiled against a different Node.js version');
+        const fixHint = isBindingError
+          ? ` To fix: cd $(npm root -g)/instar && npm rebuild better-sqlite3 (then restart instar server).`
+          : '';
+
         // Report degradation — this is a bug, not "non-critical"
         degradationReporter.report({
           feature: 'TopicMemory',
           primary: 'SQLite-backed conversational memory with summaries and FTS5 search',
           fallback: 'JSONL-based last 20 messages (no summaries, no search)',
-          reason: `TopicMemory init failed: ${reason}`,
+          reason: `TopicMemory init failed: ${reason}${fixHint}`,
           impact: 'Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.',
         });
       }

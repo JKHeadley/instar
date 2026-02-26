@@ -191,8 +191,23 @@ export class UpdateChecker {
     let upgradeGuideNote = '';
     if (success && this.migratorConfig) {
       try {
-        const dirFlag = this.migratorConfig.projectDir ? `--dir ${this.migratorConfig.projectDir}` : '';
-        const output = await this.execAsync('instar', ['migrate', ...(dirFlag ? ['--dir', this.migratorConfig.projectDir] : [])], 30000);
+        // Prefer --dir to scope migration to this project's directory.
+        // Fall back to no --dir if the binary doesn't support the flag
+        // (can happen when PATH resolves to an older binary after auto-update).
+        let output: string;
+        try {
+          const args = ['migrate'];
+          if (this.migratorConfig.projectDir) args.push('--dir', this.migratorConfig.projectDir);
+          output = await this.execAsync('instar', args, 30000);
+        } catch (dirErr) {
+          const dirErrMsg = dirErr instanceof Error ? dirErr.message : String(dirErr);
+          if (dirErrMsg.includes('unknown option') && dirErrMsg.includes('--dir')) {
+            // Old binary in PATH — retry without --dir
+            output = await this.execAsync('instar', ['migrate'], 30000);
+          } else {
+            throw dirErr;
+          }
+        }
         const migration = JSON.parse(output);
         if (migration.upgraded && migration.upgraded.length > 0) {
           migrationSummary = ` Intelligence download: ${migration.upgraded.length} files upgraded (${migration.upgraded.join(', ')}).`;
