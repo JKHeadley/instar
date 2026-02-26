@@ -985,6 +985,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
       });
     }
+
     if (telegramConfig && !skipTelegram && !isStandbyTelegram) {
       telegram = new TelegramAdapter(telegramConfig.config as any, config.stateDir);
       telegram.intelligence = sharedIntelligence ?? null;
@@ -1013,78 +1014,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         }, 10 * 60 * 1000);
         console.log(pc.green('  Quota notifications enabled'));
-      }
-
-      // Initialize TopicMemory — SQLite-backed conversational memory.
-      // Topic history is the primary context for every session.
-      topicMemory = new TopicMemory(config.stateDir);
-      try {
-        try {
-          await topicMemory.open();
-        } catch (openErr) {
-          // Detect native binding error — happens when Node.js version changed since instar was installed
-          // (common with asdf, nvm, or homebrew Node.js version management)
-          const reason = openErr instanceof Error ? openErr.message : String(openErr);
-          const isBindingError = reason.includes('Could not locate the bindings file') ||
-            reason.includes('better-sqlite3') ||
-            reason.includes('was compiled against a different Node.js version');
-
-          if (!isBindingError) throw openErr;
-
-          // Auto-rebuild: recompile better-sqlite3 for the current Node.js version
-          console.log(pc.yellow('  TopicMemory: native binding mismatch — auto-rebuilding better-sqlite3...'));
-          const globalInstarDir = execSync('npm root -g', { encoding: 'utf-8', timeout: 10000 }).trim() + '/instar';
-          execSync('npm rebuild better-sqlite3', {
-            cwd: globalInstarDir,
-            encoding: 'utf-8',
-            timeout: 60000,
-            stdio: 'pipe',
-          });
-          console.log(pc.green('  TopicMemory: better-sqlite3 rebuilt successfully, retrying...'));
-
-          // Retry opening after rebuild
-          topicMemory = new TopicMemory(config.stateDir);
-          await topicMemory.open();
-        }
-
-        // Import existing messages from JSONL (idempotent — only inserts new ones)
-        const jsonlPath = path.join(config.stateDir, 'telegram-messages.jsonl');
-        if (fs.existsSync(jsonlPath)) {
-          const imported = topicMemory.importFromJsonl(jsonlPath);
-          if (imported > 0) {
-            console.log(pc.green(`  TopicMemory: imported ${imported} messages from JSONL`));
-          }
-        }
-
-        const tmStats = topicMemory.stats();
-        console.log(pc.green(`  TopicMemory: ${tmStats.totalMessages} messages, ${tmStats.totalTopics} topics, ${tmStats.topicsWithSummaries} summaries`));
-
-        // Wire dual-write: every message logged to JSONL also goes to SQLite
-        const tm = topicMemory; // Capture for closure (TypeScript narrowing)
-        telegram.onMessageLogged = (entry) => {
-          if (entry.topicId != null && tm) {
-            tm.insertMessage({
-              messageId: entry.messageId,
-              topicId: entry.topicId,
-              text: entry.text,
-              fromUser: entry.fromUser,
-              timestamp: entry.timestamp,
-              sessionName: entry.sessionName,
-            });
-          }
-        };
-      } catch (err) {
-        // @silent-fallback-ok — already uses DegradationReporter
-        const reason = err instanceof Error ? err.message : String(err);
-        topicMemory = undefined;
-
-        degradationReporter.report({
-          feature: 'TopicMemory',
-          primary: 'SQLite-backed conversational memory with summaries and FTS5 search',
-          fallback: 'JSONL-based last 20 messages (no summaries, no search)',
-          reason: `TopicMemory init failed: ${reason}`,
-          impact: 'Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.',
-        });
       }
 
       // Wire up topic → session routing and session management callbacks
@@ -1166,6 +1095,75 @@ export async function startServer(options: StartOptions): Promise<void> {
       ensureAgentUpdatesTopic(telegram, state).catch(err => {
         console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
       });
+    }
+
+    // Initialize TopicMemory whenever Telegram is configured (any mode).
+    // TopicMemory provides session context — needed even when lifeline owns polling.
+    if (telegram) {
+      topicMemory = new TopicMemory(config.stateDir);
+      try {
+        try {
+          await topicMemory.open();
+        } catch (openErr) {
+          const reason = openErr instanceof Error ? openErr.message : String(openErr);
+          const isBindingError = reason.includes('Could not locate the bindings file') ||
+            reason.includes('better-sqlite3') ||
+            reason.includes('was compiled against a different Node.js version');
+
+          if (!isBindingError) throw openErr;
+
+          console.log(pc.yellow('  TopicMemory: native binding mismatch — auto-rebuilding better-sqlite3...'));
+          const globalInstarDir = execSync('npm root -g', { encoding: 'utf-8', timeout: 10000 }).trim() + '/instar';
+          execSync('npm rebuild better-sqlite3', {
+            cwd: globalInstarDir,
+            encoding: 'utf-8',
+            timeout: 60000,
+            stdio: 'pipe',
+          });
+          console.log(pc.green('  TopicMemory: better-sqlite3 rebuilt successfully, retrying...'));
+
+          topicMemory = new TopicMemory(config.stateDir);
+          await topicMemory.open();
+        }
+
+        const jsonlPath = path.join(config.stateDir, 'telegram-messages.jsonl');
+        if (fs.existsSync(jsonlPath)) {
+          const imported = topicMemory.importFromJsonl(jsonlPath);
+          if (imported > 0) {
+            console.log(pc.green(`  TopicMemory: imported ${imported} messages from JSONL`));
+          }
+        }
+
+        const tmStats = topicMemory.stats();
+        console.log(pc.green(`  TopicMemory: ${tmStats.totalMessages} messages, ${tmStats.totalTopics} topics, ${tmStats.topicsWithSummaries} summaries`));
+
+        // Wire dual-write: every message logged to JSONL also goes to SQLite
+        const tm = topicMemory;
+        telegram.onMessageLogged = (entry) => {
+          if (entry.topicId != null && tm) {
+            tm.insertMessage({
+              messageId: entry.messageId,
+              topicId: entry.topicId,
+              text: entry.text,
+              fromUser: entry.fromUser,
+              timestamp: entry.timestamp,
+              sessionName: entry.sessionName,
+            });
+          }
+        };
+      } catch (err) {
+        // @silent-fallback-ok — already uses DegradationReporter
+        const reason = err instanceof Error ? err.message : String(err);
+        topicMemory = undefined;
+
+        degradationReporter.report({
+          feature: 'TopicMemory',
+          primary: 'SQLite-backed conversational memory with summaries and FTS5 search',
+          fallback: 'JSONL-based last 20 messages (no summaries, no search)',
+          reason: `TopicMemory init failed: ${reason}`,
+          impact: 'Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.',
+        });
+      }
     }
 
     sessionManager.startMonitoring();
