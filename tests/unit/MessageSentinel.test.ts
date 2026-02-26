@@ -311,6 +311,26 @@ describe('MessageSentinel', () => {
       expect(result.action.type).toBe('pause-session');
     });
 
+    it('long messages with stop-like words route to LLM (word count gate)', async () => {
+      let llmCalled = false;
+      sentinel = new MessageSentinel({
+        intelligence: {
+          evaluate: async () => {
+            llmCalled = true;
+            return 'normal';
+          },
+        },
+      });
+
+      // This is the exact scenario from the bug report:
+      // "Please stop warning me about any memory issue" should NOT trigger emergency-stop
+      // With LLM wired, it routes through LLM classification instead of defaulting
+      const result = await sentinel.classify('Please stop warning me about any memory issue');
+      expect(result.category).toBe('normal');
+      expect(result.method).toBe('llm');
+      expect(llmCalled).toBe(true);
+    });
+
     it('fast-path takes precedence over LLM', async () => {
       let llmCalled = false;
       sentinel = new MessageSentinel({

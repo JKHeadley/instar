@@ -11,8 +11,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { MessagingAdapter, Message, OutgoingMessage, UserChannel } from '../core/types.js';
+import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -226,6 +227,16 @@ export class TelegramAdapter implements MessagingAdapter {
   private unknownUserRateLimit: Map<number, number> = new Map(); // telegramUserId -> last response timestamp
   private static readonly UNKNOWN_USER_COOLDOWN_MS = 60_000; // 1 minute between responses to same unknown user
 
+  // Notification batching
+  private batcher: NotificationBatcher | null = null;
+
+  // Intelligence provider — gates fallback stall/promise alerts behind LLM confirmation.
+  // Without this, fallback alerts fire purely from timers when StallTriageNurse is unavailable.
+  public intelligence: IntelligenceProvider | null = null;
+
+  // Flush notifications callback — fires when user sends /flush
+  public onFlushNotifications: ((replyTopicId: number) => Promise<void>) | null = null;
+
   constructor(config: TelegramConfig, stateDir: string) {
     this.config = config;
     this.stateDir = stateDir;
@@ -250,6 +261,12 @@ export class TelegramAdapter implements MessagingAdapter {
     console.log(`[telegram] Starting long-polling...`);
     this.poll();
 
+    // Start notification batcher if configured
+    if (this.batcher) {
+      this.batcher.start();
+      console.log('[telegram] Notification batcher started');
+    }
+
     // Start stall detection if configured
     const stallMinutes = this.config.stallTimeoutMinutes ?? 5;
     if (stallMinutes > 0) {
@@ -266,6 +283,15 @@ export class TelegramAdapter implements MessagingAdapter {
     if (this.stallCheckInterval) {
       clearInterval(this.stallCheckInterval);
       this.stallCheckInterval = null;
+    }
+    // Flush and stop the batcher on shutdown
+    if (this.batcher) {
+      try {
+        await this.batcher.flushAll();
+      } catch (err) {
+        console.error('[telegram] Failed to flush batcher on stop:', err);
+      }
+      this.batcher.stop();
     }
   }
 
@@ -348,6 +374,45 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     return { messageId: result.message_id, topicId };
+  }
+
+  /**
+   * Send a notification through the batcher, falling back to direct send.
+   * Use this for internal system notifications that should be batched.
+   */
+  async notifyTopic(topicId: number, text: string, tier: NotificationTier, category: string): Promise<void> {
+    if (this.batcher && this.batcher.isEnabled()) {
+      await this.batcher.enqueue({
+        tier,
+        category,
+        message: text,
+        timestamp: new Date(),
+        topicId,
+      });
+    } else {
+      // No batcher or disabled — send directly
+      await this.sendToTopic(topicId, text);
+    }
+  }
+
+  /**
+   * Configure the notification batcher. Call before start() to enable batching.
+   * The batcher's send function is wired to sendToTopic automatically.
+   */
+  configureBatcher(config?: { summaryIntervalMinutes?: number; digestIntervalMinutes?: number; quietHours?: { enabled: boolean; start: string; end: string } }): NotificationBatcher {
+    this.batcher = new NotificationBatcher({
+      enabled: true,
+      ...config,
+    });
+    this.batcher.setSendFunction((topicId, text) => this.sendToTopic(topicId, text));
+    return this.batcher;
+  }
+
+  /**
+   * Get the notification batcher (if configured).
+   */
+  getBatcher(): NotificationBatcher | null {
+    return this.batcher;
   }
 
   /**
@@ -788,6 +853,59 @@ export class TelegramAdapter implements MessagingAdapter {
     return completionPatterns.some(p => p.test(text));
   }
 
+  /**
+   * LLM gate for fallback stall/promise alerts.
+   *
+   * Before sending a user-facing alert about a stall or expired promise,
+   * check with the intelligence provider whether the alert is warranted.
+   * This prevents false positives when the StallTriageNurse is unavailable.
+   *
+   * Returns true if the alert should be sent, false to suppress.
+   * If no intelligence provider is available, returns true (fail-open for safety).
+   */
+  private async confirmStallAlert(context: {
+    type: 'stall' | 'promise-expired';
+    sessionName: string;
+    messageText: string;
+    minutesElapsed: number;
+    sessionAlive: boolean;
+  }): Promise<boolean> {
+    if (!this.intelligence) return true; // No LLM available → fail-open
+
+    const prompt = [
+      'You are evaluating whether to send an alert to a user about an AI agent session.',
+      '',
+      `Alert type: ${context.type}`,
+      `Session: "${context.sessionName}" (${context.sessionAlive ? 'still running' : 'stopped'})`,
+      `Time elapsed: ${context.minutesElapsed} minutes`,
+      `Context: "${context.messageText}"`,
+      '',
+      'Should we send a user-facing alert about this? Consider:',
+      '- If the session stopped, the user needs to know',
+      '- If the session is still running, it might just be working on a complex task',
+      `- ${context.minutesElapsed} minutes is ${context.minutesElapsed > 15 ? 'a long time' : 'moderate'} for an AI task`,
+      '',
+      'Respond with exactly one word: yes or no.',
+    ].join('\n');
+
+    try {
+      const response = await this.intelligence.evaluate(prompt, {
+        maxTokens: 5,
+        temperature: 0,
+      });
+      const answer = response.trim().toLowerCase();
+      if (answer === 'no') {
+        console.log(`[telegram] LLM suppressed ${context.type} alert for "${context.sessionName}" (${context.minutesElapsed}m)`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // @silent-fallback-ok — LLM intelligence is optional; fail-open to alert user about stalls
+      console.warn(`[telegram] LLM stall confirmation failed, allowing alert:`, err);
+      return true; // Fail-open
+    }
+  }
+
   /** Get all active topic-session mappings (used by SessionMonitor) */
   getActiveTopicSessions(): Map<number, string> {
     return new Map(this.topicToSession);
@@ -888,14 +1006,26 @@ export class TelegramAdapter implements MessagingAdapter {
       }
 
       if (!isQuotaDeath) {
-        const status = alive ? 'running but not responding' : 'no longer running';
         const minutesAgo = Math.round((now - pending.injectedAt) / 60000);
-        this.sendToTopic(
-          pending.topicId,
-          `\u26a0\ufe0f No response after ${minutesAgo} minutes. Session "${pending.sessionName}" is ${status}.\n\nMessage: "${pending.messageText}..."${alive ? '\n\nTry /interrupt to unstick, or /restart to respawn.' : '\n\nSend another message to auto-respawn.'}`,
-        ).catch(err => {
-          console.error(`[telegram] Stall alert failed: ${err}`);
+
+        // LLM gate: confirm alert is warranted before sending user-facing message
+        const shouldAlert = await this.confirmStallAlert({
+          type: 'stall',
+          sessionName: pending.sessionName,
+          messageText: pending.messageText,
+          minutesElapsed: minutesAgo,
+          sessionAlive: alive,
         });
+
+        if (shouldAlert) {
+          const status = alive ? 'running but not responding' : 'no longer running';
+          this.sendToTopic(
+            pending.topicId,
+            `\u26a0\ufe0f No response after ${minutesAgo} minutes. Session "${pending.sessionName}" is ${status}.\n\nMessage: "${pending.messageText}..."${alive ? '\n\nTry /interrupt to unstick, or /restart to respawn.' : '\n\nSend another message to auto-respawn.'}`,
+          ).catch(err => {
+            console.error(`[telegram] Stall alert failed: ${err}`);
+          });
+        }
       }
     }
 
@@ -939,15 +1069,26 @@ export class TelegramAdapter implements MessagingAdapter {
           }
         }
 
-        // Fallback: send user-facing alert
-        if (!alive) {
-          await this.sendToTopic(topicId,
-            `The session stopped unexpectedly after saying "${promise.promiseText}". Sending a new message will auto-spawn a fresh session.`
-          ).catch(() => {});
-        } else {
-          await this.sendToTopic(topicId,
-            `It's been ${Math.round((now - promise.promisedAt) / 60000)} minutes since the session said "${promise.promiseText}" — checking on it now...`
-          ).catch(() => {});
+        // Fallback: LLM-gated user-facing alert
+        const promiseMinutesAgo = Math.round((now - promise.promisedAt) / 60000);
+        const shouldAlertPromise = await this.confirmStallAlert({
+          type: 'promise-expired',
+          sessionName: promise.sessionName,
+          messageText: promise.promiseText,
+          minutesElapsed: promiseMinutesAgo,
+          sessionAlive: alive,
+        });
+
+        if (shouldAlertPromise) {
+          if (!alive) {
+            await this.sendToTopic(topicId,
+              `The session stopped unexpectedly after saying "${promise.promiseText}". Sending a new message will auto-spawn a fresh session.`
+            ).catch(() => {});
+          } else {
+            await this.sendToTopic(topicId,
+              `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
+            ).catch(() => {});
+          }
         }
       }
 
@@ -1129,6 +1270,26 @@ export class TelegramAdapter implements MessagingAdapter {
     if (this.isAttentionTopic(topicId)) {
       const handled = await this.handleAttentionCommand(topicId, text);
       if (handled) return true;
+    }
+
+    // /flush — flush all batched notifications immediately
+    if (cmd === '/flush') {
+      if (this.batcher && this.batcher.isEnabled()) {
+        const flushed = await this.batcher.flushAll();
+        if (flushed > 0) {
+          await this.sendToTopic(topicId, `Flushed ${flushed} batched notification${flushed === 1 ? '' : 's'}.`).catch(() => {});
+        } else {
+          await this.sendToTopic(topicId, 'No batched notifications to flush.').catch(() => {});
+        }
+      } else if (this.onFlushNotifications) {
+        this.onFlushNotifications(topicId).catch(err => {
+          console.error('[telegram] Flush notifications failed:', err);
+          this.sendToTopic(topicId, 'Failed to flush notifications.').catch(() => {});
+        });
+      } else {
+        await this.sendToTopic(topicId, 'Notification batching is not enabled.').catch(() => {});
+      }
+      return true;
     }
 
     // /sessions — list all sessions with claim status

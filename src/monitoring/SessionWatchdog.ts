@@ -22,7 +22,7 @@ function shellExec(cmd: string, timeout = 5000): string {
 }
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
-import type { InstarConfig } from '../core/types.js';
+import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
 
 export enum EscalationLevel {
   Monitoring = 0,
@@ -98,6 +98,12 @@ export class SessionWatchdog extends EventEmitter {
   private stuckThresholdMs: number;
   private pollIntervalMs: number;
 
+  /** Intelligence provider — gates escalation entry with LLM command analysis */
+  intelligence: IntelligenceProvider | null = null;
+
+  /** Temporarily exempted commands (LLM confirmed as legitimate long-running) */
+  private temporaryExclusions = new Set<number>(); // PIDs
+
   constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager) {
     super();
     this.config = config;
@@ -167,7 +173,7 @@ export class SessionWatchdog extends EventEmitter {
       const sessions = this.sessionManager.listRunningSessions();
       for (const session of sessions) {
         try {
-          this.checkSession(session.tmuxSession);
+          await this.checkSession(session.tmuxSession);
         } catch (err) {
           console.error(`[Watchdog] Error checking "${session.tmuxSession}":`, err);
         }
@@ -177,7 +183,7 @@ export class SessionWatchdog extends EventEmitter {
     }
   }
 
-  private checkSession(tmuxSession: string): void {
+  private async checkSession(tmuxSession: string): Promise<void> {
     const existing = this.escalationState.get(tmuxSession);
 
     if (existing && existing.level > EscalationLevel.Monitoring) {
@@ -191,10 +197,20 @@ export class SessionWatchdog extends EventEmitter {
 
     const children = this.getChildProcesses(claudePid);
     const stuckChild = children.find(
-      c => !this.isExcluded(c.command) && c.elapsedMs > this.stuckThresholdMs
+      c => !this.isExcluded(c.command) &&
+           !this.temporaryExclusions.has(c.pid) &&
+           c.elapsedMs > this.stuckThresholdMs
     );
 
     if (stuckChild) {
+      // LLM gate: check if this command is legitimately long-running before escalating
+      const isStuck = await this.isCommandStuck(stuckChild.command, stuckChild.elapsedMs);
+      if (!isStuck) {
+        // LLM says legitimate — temporarily exclude this PID from future checks
+        this.temporaryExclusions.add(stuckChild.pid);
+        return;
+      }
+
       const state: EscalationState = {
         level: EscalationLevel.CtrlC,
         levelEnteredAt: Date.now(),
@@ -213,6 +229,13 @@ export class SessionWatchdog extends EventEmitter {
       this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, 'Sent Ctrl+C', stuckChild);
     } else if (existing) {
       this.escalationState.delete(tmuxSession);
+    }
+
+    // Clean up temporary exclusions for dead processes
+    for (const pid of this.temporaryExclusions) {
+      if (!this.isProcessAlive(pid)) {
+        this.temporaryExclusions.delete(pid);
+      }
     }
   }
 
@@ -272,6 +295,59 @@ export class SessionWatchdog extends EventEmitter {
         this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'Killed tmux session', child);
         this.escalationState.delete(tmuxSession);
         break;
+    }
+  }
+
+  /**
+   * LLM gate: Before entering escalation, ask whether the command is
+   * legitimately long-running or actually stuck. This prevents the watchdog
+   * from killing legitimate builds, installs, or data processing.
+   *
+   * Returns true if the command appears stuck and should be escalated.
+   * Returns false if the LLM thinks it's a legitimate long-running task.
+   * If no LLM is available, returns true (fail-open — stuck commands need recovery).
+   */
+  private async isCommandStuck(command: string, elapsedMs: number): Promise<boolean> {
+    if (!this.intelligence) return true; // No LLM → fail-open
+
+    const elapsedMin = Math.round(elapsedMs / 60000);
+    const prompt = [
+      'You are evaluating whether a running process is stuck or legitimately long-running.',
+      '',
+      `Command: ${command.slice(0, 200)}`,
+      `Running for: ${elapsedMin} minutes`,
+      '',
+      'Legitimate long-running commands include:',
+      '- Package installs (npm install, pip install, cargo build, etc.)',
+      '- Large builds (webpack, tsc with many files, docker build)',
+      '- Database migrations or data processing',
+      '- Test suites (pytest, vitest, jest with many tests)',
+      '- Network operations (curl large files, git clone large repos)',
+      '- Interactive processes (vim, less, ssh sessions)',
+      '',
+      'Likely stuck commands include:',
+      '- Simple commands that should complete in seconds (ls, cat, echo)',
+      '- Commands with no output that normally produce output quickly',
+      '- Processes that appear to be waiting for input that will never come',
+      '',
+      'Is this command stuck or legitimate? Respond with exactly one word: stuck or legitimate.',
+    ].join('\n');
+
+    try {
+      const response = await this.intelligence.evaluate(prompt, {
+        maxTokens: 5,
+        temperature: 0,
+      });
+      const answer = response.trim().toLowerCase();
+      if (answer === 'legitimate') {
+        console.log(`[Watchdog] LLM says "${command.slice(0, 60)}" is legitimate — skipping escalation`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // @silent-fallback-ok — LLM intelligence is optional; fail-open to recover stuck processes
+      console.warn(`[Watchdog] LLM command check failed, assuming stuck:`, err);
+      return true; // Fail-open
     }
   }
 

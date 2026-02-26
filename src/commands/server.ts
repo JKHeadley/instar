@@ -1164,6 +1164,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let watchdog: SessionWatchdog | undefined;
     if (config.monitoring.watchdog?.enabled) {
       watchdog = new SessionWatchdog(config, sessionManager, state);
+      watchdog.intelligence = sharedIntelligence ?? null;
 
       watchdog.on('intervention', (event: any) => {
         if (telegram) {
