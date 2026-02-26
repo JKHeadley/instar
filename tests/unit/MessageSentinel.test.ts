@@ -153,8 +153,8 @@ describe('MessageSentinel', () => {
       expect(result.category).toBe('pause');
     });
 
-    it('"let me think about this" → pause', async () => {
-      const result = await sentinel.classify('let me think about this');
+    it('"let me think" → pause (short, within word gate)', async () => {
+      const result = await sentinel.classify('let me think');
       expect(result.category).toBe('pause');
     });
 
@@ -187,19 +187,54 @@ describe('MessageSentinel', () => {
     });
   });
 
-  describe('fast-path — no false positives', () => {
-    it('"stop by the store later" → normal (no fast-path)', async () => {
-      // "stop by" doesn't match our patterns because "stop" is followed by "by"
-      // which isn't in our exact matches. Regex "stop\b" at start would match though.
-      // This is where LLM classification would help.
+  describe('word count gate — prevents false positives on conversational messages', () => {
+    it('"stop by the store later" → normal (too many words for fast-path)', async () => {
       const result = await sentinel.classify('stop by the store later');
-      // Fast path: "stop" at start matches regex /^stop\b/i
-      // This IS a false positive in fast-path — the LLM layer would catch it
-      // but without LLM, the fast path errs on the side of caution
-      expect(result.category).toBe('emergency-stop');
-      // This is acceptable — better to false-positive stop than false-negative continue
+      // 5 words — exceeds MAX_FAST_PATH_WORDS, skips regex patterns
+      expect(result.category).toBe('normal');
     });
 
+    it('"Please stop warning me about any memory issue" → normal (conversational)', async () => {
+      const result = await sentinel.classify('Please stop warning me about any memory issue. That\'s below 90%.');
+      // The exact message from the bug report — this is an instruction, NOT an emergency
+      expect(result.category).toBe('normal');
+    });
+
+    it('"please stop doing that thing" → normal (5+ words)', async () => {
+      const result = await sentinel.classify('please stop doing that thing');
+      expect(result.category).toBe('normal');
+    });
+
+    it('"stop sending me notifications about this" → normal (6 words)', async () => {
+      const result = await sentinel.classify('stop sending me notifications about this');
+      expect(result.category).toBe('normal');
+    });
+
+    it('"wait I need to check something first" → normal (7 words)', async () => {
+      const result = await sentinel.classify('wait I need to check something first');
+      expect(result.category).toBe('normal');
+    });
+
+    it('"please stop" (short) still triggers emergency-stop', async () => {
+      const result = await sentinel.classify('please stop');
+      // 2 words — within MAX_FAST_PATH_WORDS, regex pattern fires
+      expect(result.category).toBe('emergency-stop');
+    });
+
+    it('"stop it now" (short) still triggers emergency-stop', async () => {
+      const result = await sentinel.classify('stop it now');
+      // 3 words — within limit
+      expect(result.category).toBe('emergency-stop');
+    });
+
+    it('"don\'t do that" (short) still triggers emergency-stop', async () => {
+      const result = await sentinel.classify("don't do that");
+      // 3 words — within limit
+      expect(result.category).toBe('emergency-stop');
+    });
+  });
+
+  describe('fast-path — no false positives', () => {
     it('"can you help me with something?" → normal', async () => {
       const result = await sentinel.classify('can you help me with something?');
       expect(result.category).toBe('normal');

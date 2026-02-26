@@ -17,6 +17,13 @@
  * 1. Fast-path — regex patterns for obvious signals (<5ms)
  * 2. LLM classification — haiku-tier for ambiguous messages (<500ms)
  *
+ * Word count gate (2026-02-26 fix):
+ * Regex patterns ONLY fire on short messages (≤ MAX_FAST_PATH_WORDS).
+ * True emergency signals are short: "stop", "cancel", "please stop".
+ * Longer messages like "Please stop warning me about memory" are
+ * conversational and must go to the LLM or pass through to the session.
+ * Slash commands (/stop, /pause) are exempt — always unambiguous.
+ *
  * Design principle: The entity that evaluates whether to stop must be
  * separate from the entity performing the work.
  */
@@ -73,6 +80,19 @@ export interface SentinelStats {
   /** Emergency stops triggered */
   emergencyStops: number;
 }
+
+// ── Constants ───────────────────────────────────────────────────────
+
+/**
+ * Maximum word count for regex/exact-match fast-path classification.
+ *
+ * Messages longer than this are routed to LLM or passed through.
+ * True emergency signals are short ("stop", "cancel everything", "please stop").
+ * Conversational messages ("please stop warning me about memory") are NOT emergencies.
+ *
+ * Slash commands (/stop, /pause) are exempt — always unambiguous regardless of length.
+ */
+const MAX_FAST_PATH_WORDS = 4;
 
 // ── Fast-Path Patterns ───────────────────────────────────────────────
 
@@ -239,12 +259,17 @@ export class MessageSentinel {
   /**
    * Fast-path classification using pattern matching.
    * Returns null if no pattern matches (falls through to LLM).
+   *
+   * Word count gate: Messages longer than MAX_FAST_PATH_WORDS skip
+   * exact matches and regex patterns. Only slash commands are exempt.
+   * This prevents conversational messages like "please stop warning me
+   * about memory" from being misclassified as emergency stops.
    */
   private fastClassify(message: string): Omit<SentinelClassification, 'method' | 'latencyMs'> | null {
     const trimmed = message.trim();
     const lower = trimmed.toLowerCase();
 
-    // Slash commands — highest priority, unambiguous
+    // Slash commands — highest priority, unambiguous, exempt from word count gate
     if (SLASH_STOP.has(lower)) {
       return {
         category: 'emergency-stop',
@@ -261,6 +286,13 @@ export class MessageSentinel {
         action: { type: 'pause-session' },
         reason: `Slash command: ${lower}`,
       };
+    }
+
+    // Word count gate: longer messages are conversational, not emergency signals.
+    // Route them to LLM classification or pass-through instead.
+    const wordCount = trimmed.split(/\s+/).length;
+    if (wordCount > MAX_FAST_PATH_WORDS) {
+      return null;
     }
 
     // Exact match — emergency stop

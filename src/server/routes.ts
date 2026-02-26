@@ -45,6 +45,7 @@ import type { ExternalOperationGate } from '../core/ExternalOperationGate.js';
 import type { OperationMutability, OperationReversibility } from '../core/ExternalOperationGate.js';
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
+import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 
 export interface RouteContext {
   config: InstarConfig;
@@ -74,6 +75,7 @@ export interface RouteContext {
   operationGate: ExternalOperationGate | null;
   sentinel: MessageSentinel | null;
   adaptiveTrust: AdaptiveTrust | null;
+  memoryMonitor: MemoryPressureMonitor | null;
   startTime: Date;
 }
 
@@ -412,6 +414,71 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Knowledge Base ───────────────────────────────────────────────
+
+  router.post('/knowledge/ingest', async (req, res) => {
+    try {
+      const { KnowledgeManager } = await import('../knowledge/KnowledgeManager.js');
+      const km = new KnowledgeManager(ctx.config.stateDir);
+      const { content, title, url, type, tags, summary } = req.body || {};
+      if (!content || !title) {
+        res.status(400).json({ error: 'content and title are required' });
+        return;
+      }
+      const result = km.ingest(content, { title, url, type, tags, summary });
+
+      // Auto-sync MemoryIndex if available
+      try {
+        const { MemoryIndex } = await import('../memory/MemoryIndex.js');
+        const memoryConfig = (ctx.config as any).memory || {};
+        const index = new MemoryIndex(ctx.config.stateDir, { ...memoryConfig, enabled: true });
+        await index.open();
+        try { index.sync(); } finally { index.close(); }
+      } catch { /* memory index optional */ }
+
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Ingest failed' });
+    }
+  });
+
+  router.get('/knowledge/catalog', async (req, res) => {
+    try {
+      const { KnowledgeManager } = await import('../knowledge/KnowledgeManager.js');
+      const km = new KnowledgeManager(ctx.config.stateDir);
+      const tag = req.query.tag as string | undefined;
+      const sources = km.getCatalog(tag);
+      res.json({ sources });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Catalog failed' });
+    }
+  });
+
+  router.delete('/knowledge/:id', async (req, res) => {
+    try {
+      const { KnowledgeManager } = await import('../knowledge/KnowledgeManager.js');
+      const km = new KnowledgeManager(ctx.config.stateDir);
+      const removed = km.remove(req.params.id);
+      if (!removed) {
+        res.status(404).json({ error: 'Source not found' });
+        return;
+      }
+
+      // Trigger reindex to clean up FTS5 entries
+      try {
+        const { MemoryIndex } = await import('../memory/MemoryIndex.js');
+        const memoryConfig = (ctx.config as any).memory || {};
+        const index = new MemoryIndex(ctx.config.stateDir, { ...memoryConfig, enabled: true });
+        await index.open();
+        try { index.sync(); } finally { index.close(); }
+      } catch { /* memory index optional */ }
+
+      res.json({ removed: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Remove failed' });
+    }
+  });
+
   // ── Status ──────────────────────────────────────────────────────
 
   router.get('/status', (_req, res) => {
@@ -648,6 +715,7 @@ export function createRoutes(ctx: RouteContext): Router {
           { context: 'About to call an external service API (email, calendar, messaging)', action: 'Evaluate through operation gate FIRST (POST /operations/evaluate). The gate classifies risk and decides proceed/plan/block.' },
           { context: 'User says to stop, cancel, or abort', action: 'MessageSentinel intercepts these automatically. For manual classification: POST /sentinel/classify.' },
           { context: 'User says "you don\'t need to ask me about X"', action: 'Grant trust explicitly (POST /trust/grant). Trust persists across sessions.' },
+          { context: 'User asks to adjust memory warning thresholds or stop memory alerts', action: 'Update thresholds (PATCH /monitoring/memory/thresholds with {warning, elevated, critical}). Check current state (GET /monitoring/memory).' },
         ],
       },
     });
@@ -3255,6 +3323,58 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(404).json({ error: 'AdaptiveTrust not configured' });
     }
     res.json(ctx.adaptiveTrust.getChangeLog());
+  });
+
+  // ── Memory Monitoring ──────────────────────────────────────────────
+
+  // GET /monitoring/memory — current memory state and thresholds
+  router.get('/monitoring/memory', (req, res) => {
+    if (!ctx.memoryMonitor) {
+      return res.status(404).json({ error: 'MemoryPressureMonitor not configured' });
+    }
+    res.json({
+      ...ctx.memoryMonitor.getState(),
+      thresholds: ctx.memoryMonitor.getThresholds(),
+    });
+  });
+
+  // PATCH /monitoring/memory/thresholds — update memory warning thresholds at runtime
+  router.patch('/monitoring/memory/thresholds', (req, res) => {
+    if (!ctx.memoryMonitor) {
+      return res.status(404).json({ error: 'MemoryPressureMonitor not configured' });
+    }
+    const { warning, elevated, critical } = req.body;
+    const update: Partial<{ warning: number; elevated: number; critical: number }> = {};
+
+    if (warning !== undefined) {
+      if (typeof warning !== 'number' || warning < 0 || warning > 100) {
+        return res.status(400).json({ error: 'warning must be a number between 0 and 100' });
+      }
+      update.warning = warning;
+    }
+    if (elevated !== undefined) {
+      if (typeof elevated !== 'number' || elevated < 0 || elevated > 100) {
+        return res.status(400).json({ error: 'elevated must be a number between 0 and 100' });
+      }
+      update.elevated = elevated;
+    }
+    if (critical !== undefined) {
+      if (typeof critical !== 'number' || critical < 0 || critical > 100) {
+        return res.status(400).json({ error: 'critical must be a number between 0 and 100' });
+      }
+      update.critical = critical;
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'At least one threshold (warning, elevated, critical) must be provided' });
+    }
+
+    ctx.memoryMonitor.updateThresholds(update);
+    res.json({
+      updated: true,
+      thresholds: ctx.memoryMonitor.getThresholds(),
+      currentState: ctx.memoryMonitor.getState(),
+    });
   });
 
   return router;

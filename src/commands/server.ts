@@ -837,8 +837,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Git sync for multi-machine (awake machines only — standby pulls via cron or manual)
+    // Only attempt git sync if the project directory is actually a git repo.
+    // Standalone agents don't have git repos unless the user explicitly opted in.
     let gitSync: GitSyncManager | undefined;
-    if (coordinator.enabled && coordinator.isAwake) {
+    const isGitRepo = fs.existsSync(path.join(config.projectDir, '.git'));
+    const gitBackupEnabled = config.gitBackup?.enabled !== false; // default: true if not explicitly disabled
+    if (coordinator.enabled && coordinator.isAwake && isGitRepo && gitBackupEnabled) {
       try {
         gitSync = new GitSyncManager({
           projectDir: config.projectDir,
@@ -1517,7 +1521,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Sentinel wired into Telegram message flow'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.

@@ -77,6 +77,7 @@ export class AgentServer {
     operationGate?: import('../core/ExternalOperationGate.js').ExternalOperationGate;
     sentinel?: import('../core/MessageSentinel.js').MessageSentinel;
     adaptiveTrust?: import('../core/AdaptiveTrust.js').AdaptiveTrust;
+    memoryMonitor?: import('../monitoring/MemoryPressureMonitor.js').MemoryPressureMonitor;
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
   }) {
@@ -206,6 +207,7 @@ export class AgentServer {
       operationGate: options.operationGate ?? null,
       sentinel: options.sentinel ?? null,
       adaptiveTrust: options.adaptiveTrust ?? null,
+      memoryMonitor: options.memoryMonitor ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);

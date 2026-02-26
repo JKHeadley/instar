@@ -106,6 +106,33 @@ export class MemoryPressureMonitor extends EventEmitter {
     }
   }
 
+  /**
+   * Update thresholds at runtime (e.g., when a user asks to adjust warning levels).
+   * Re-classifies current state immediately after update.
+   */
+  updateThresholds(thresholds: Partial<{ warning: number; elevated: number; critical: number }>): void {
+    const before = { ...this.thresholds };
+    this.thresholds = { ...this.thresholds, ...thresholds };
+    console.log(`[MemoryPressureMonitor] Thresholds updated: ${JSON.stringify(before)} -> ${JSON.stringify(this.thresholds)}`);
+
+    // Re-classify current state with new thresholds
+    const newState = this.classifyState(this.lastPressurePercent);
+    if (newState !== this.currentState) {
+      const from = this.currentState;
+      this.currentState = newState;
+      this.stateChangedAt = new Date().toISOString();
+      console.log(`[MemoryPressureMonitor] State reclassified: ${from} -> ${newState} (${this.lastPressurePercent.toFixed(1)}%)`);
+      this.emit('stateChange', { from, to: newState, state: this.getState() });
+    }
+  }
+
+  /**
+   * Get current thresholds.
+   */
+  getThresholds(): { warning: number; elevated: number; critical: number } {
+    return { ...this.thresholds };
+  }
+
   getState(): MemoryState {
     return {
       pressurePercent: this.lastPressurePercent,
