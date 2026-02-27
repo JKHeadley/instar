@@ -18,13 +18,11 @@
  *   the old one releases it during shutdown.
  */
 
-import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { UpdateChecker } from './UpdateChecker.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { StateManager } from './StateManager.js';
-import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { LiveConfig } from '../config/LiveConfig.js';
 
 export interface AutoUpdaterConfig {
@@ -67,7 +65,6 @@ export class AutoUpdater {
   private lastError: string | null = null;
   private pendingUpdate: string | null = null;
   private isApplying = false;
-  private loopNotified = false;
   private stateDir: string;
   private stateFile: string;
   private liveConfig: LiveConfig | null = null;
@@ -107,24 +104,9 @@ export class AutoUpdater {
 
     const intervalMs = this.config.checkIntervalMinutes * 60 * 1000;
 
-    // Detect stale binary sources — npx cache and local node_modules don't update
-    // when we run npm install -g, causing restart loops. Auto-apply still works
-    // (installs globally), but auto-restart would loop if we can't find the global binary.
-    // We now have robust binary resolution (findBestBinary), so we only disable
-    // auto-restart for npx — local installs can restart via global binary resolution.
-    const scriptPath = process.argv[1] || '';
-    const runningFromNpx = scriptPath.includes('.npm/_npx') || scriptPath.includes('/_npx/');
-    if (runningFromNpx) {
-      this.config.autoRestart = false;
-      console.warn(
-        '[AutoUpdater] Running from npx cache. Auto-restart disabled — updates will be applied globally.\n' +
-        '[AutoUpdater] The server will use the new version on next restart.'
-      );
-    }
-
     console.log(
       `[AutoUpdater] Started (every ${this.config.checkIntervalMinutes}m, ` +
-      `autoApply: ${this.config.autoApply}, autoRestart: ${this.config.autoRestart})`
+      `autoApply: ${this.config.autoApply})`
     );
 
     // Run first check after a short delay (don't block startup)
@@ -230,35 +212,6 @@ export class AutoUpdater {
       this.pendingUpdate = info.latestVersion;
       this.saveState();
 
-      // Guard: prevent restart loops when the running binary doesn't pick up updates.
-      // This happens when running from npx cache, a local install, or any location
-      // that npm install -g doesn't update. After applying v0.9.3, the restarted
-      // process still reads its old package.json → detects v0.9.3 as "new" → applies
-      // again → restarts again → infinite loop.
-      if (this.lastAppliedVersion === info.latestVersion) {
-        console.log(
-          `[AutoUpdater] v${info.latestVersion} was already applied in a previous cycle. ` +
-          `The running binary didn't pick up the update — attempting recovery restart.`
-        );
-
-        // The previous restart spawned from a stale binary. Try once more with
-        // aggressive path resolution. If this fails, accept current state — never
-        // ask the user to run a command.
-        if (!this.loopNotified) {
-          this.loopNotified = true;
-          await this.notify(
-            `Update to v${info.latestVersion} was installed but the restart loaded a stale binary. ` +
-            `Attempting recovery restart from the correct path...`
-          );
-          await new Promise(r => setTimeout(r, 2000));
-          this.selfRestart();
-        }
-
-        this.pendingUpdate = null;
-        this.saveState();
-        return;
-      }
-
       // Step 2: Auto-apply if configured
       if (!this.config.autoApply) {
         // Notify with actionable instructions — don't leave the user hanging
@@ -297,33 +250,22 @@ export class AutoUpdater {
 
       console.log(`[AutoUpdater] Updated: v${result.previousVersion} → v${result.newVersion}`);
 
-      // Step 5: Notify via Telegram (brief, conversational)
-      // Don't promise a summary unless an upgrade guide exists for the new version.
-      // Versions without guides in upgrades/ will never trigger the upgrade-notify session,
-      // so promising a summary creates a broken commitment.
-      const restartNote = result.restartNeeded && this.config.autoRestart
-        ? ' Restarting now to pick up the changes.'
-        : result.restartNeeded
-          ? ' A restart is needed to use the new version.'
-          : '';
-
-      // Only promise a summary if an upgrade guide exists for the new version.
-      // Without a guide, the upgrade-notify session has nothing to report — don't
-      // make a promise we can't keep.
+      // Step 5: Notify via Telegram
       const guideExists = this.hasUpgradeGuide(result.newVersion);
       const summaryNote = guideExists
         ? ` I'll send you a summary of what's new once I'm back up.`
         : '';
 
-      await this.notify(
-        `Just updated to v${result.newVersion}.${restartNote}${summaryNote}`
-      );
-
-      // Step 6: Self-restart if needed and configured
-      if (result.restartNeeded && this.config.autoRestart) {
+      if (result.restartNeeded) {
+        await this.notify(
+          `Just updated to v${result.newVersion}. Restarting to pick up the changes.${summaryNote}`
+        );
+        // Step 6: Request restart from supervisor (don't self-restart)
         // Brief delay to let the Telegram notification send
         await new Promise(r => setTimeout(r, 2000));
-        this.selfRestart();
+        this.requestRestart(result.newVersion!);
+      } else {
+        await this.notify(`Just updated to v${result.newVersion}.${summaryNote}`);
       }
     } catch (err) {
       this.isApplying = false;
@@ -334,188 +276,39 @@ export class AutoUpdater {
   }
 
   /**
-   * Self-restart the server after an update.
+   * Request a restart from the supervisor by writing a signal file.
    *
-   * Strategy:
-   *   1. Spawn a shell that waits 2 seconds (for port release), then
-   *      starts the new server version using the same CLI arguments.
-   *   2. Send SIGTERM to ourselves to trigger graceful shutdown.
+   * The AutoUpdater's job ends here — the supervisor handles the actual restart.
+   * This eliminates the entire category of self-restart bugs (PATH mismatch,
+   * launchd confusion, binary resolution failures, restart loops).
    *
-   * The 2-second delay ensures the old process has time to release
-   * the port before the new one tries to bind.
+   * Signal file: state/restart-requested.json
+   * The supervisor polls this file during health checks and performs the restart.
    *
-   * If running in tmux, the replacement process inherits the PTY.
-   * If running under a process manager (launchd, systemd), the
-   * manager handles restart automatically after we exit.
+   * If no supervisor is running (standalone foreground mode), the server logs
+   * a notice that a restart is needed. This is strictly better than attempting
+   * self-restart, which can loop or leave the port bound.
    */
-  /**
-   * Find the best available binary path for restart.
-   * Tries multiple strategies, from most reliable to least:
-   *
-   * 1. `npm bin -g` — the actual global bin directory npm uses
-   * 2. `which instar` — PATH-based lookup (excludes npx cache and local node_modules)
-   * 3. `npm prefix -g` + `/bin/instar` — prefix-based lookup
-   * 4. `npm root -g` + `/instar/dist/cli.js` — direct module entry point (nuclear option)
-   * 5. `process.argv` fallback — only if not from npx cache or local node_modules
-   *
-   * Returns { bin, method } or null if no viable path found.
-   */
-  private findBestBinary(): { bin: string; method: string; useNode?: boolean } | null {
-    const isStaleSource = (p: string): boolean =>
-      p.includes('.npm/_npx') || p.includes('/_npx/') || p.includes('node_modules/.bin/');
-
-    // Strategy 1: npm bin -g (most reliable — the actual bin dir npm writes to)
+  private requestRestart(newVersion: string): void {
+    const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
+    const data = {
+      requestedAt: new Date().toISOString(),
+      requestedBy: 'auto-updater',
+      targetVersion: newVersion,
+      previousVersion: this.updateChecker.getInstalledVersion(),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 min TTL
+      pid: process.pid,
+    };
     try {
-      const globalBinDir = execFileSync('npm', ['bin', '-g'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-      const candidate = path.join(globalBinDir, 'instar');
-      if (fs.existsSync(candidate) && !isStaleSource(candidate)) {
-        return { bin: candidate, method: 'npm-bin-g' };
-      }
-    } catch { /* npm bin -g failed */ }
-
-    // Strategy 2: which instar (excludes stale sources)
-    try {
-      const which = execFileSync('which', ['instar'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-      if (which && !isStaleSource(which)) {
-        return { bin: which, method: 'which' };
-      }
-    } catch { /* not found in PATH */ }
-
-    // Strategy 3: npm prefix -g + /bin/instar
-    try {
-      const npmPrefix = execFileSync('npm', ['prefix', '-g'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-      const candidate = path.join(npmPrefix, 'bin', 'instar');
-      if (fs.existsSync(candidate) && !isStaleSource(candidate)) {
-        return { bin: candidate, method: 'npm-prefix-g' };
-      }
-    } catch { /* @silent-fallback-ok — npm prefix, try next strategy */ }
-
-    // Strategy 4: Nuclear — find the installed package's main entry point directly.
-    // This bypasses the bin symlink and runs the module's CLI entry with node.
-    try {
-      const globalRoot = execFileSync('npm', ['root', '-g'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-      const mainEntry = path.join(globalRoot, 'instar', 'dist', 'cli.js');
-      if (fs.existsSync(mainEntry)) {
-        return { bin: mainEntry, method: 'npm-root-g-direct', useNode: true };
-      }
-    } catch { // @silent-fallback-ok — npm root lookup, try next strategy
-    }
-
-    // Strategy 5: process.argv fallback — only if it's not from a stale source
-    const scriptPath = process.argv[1] || '';
-    if (scriptPath && !isStaleSource(scriptPath)) {
-      return { bin: scriptPath, method: 'process-argv', useNode: true };
-    }
-
-    return null;
-  }
-
-  private selfRestart(): void {
-    console.log('[AutoUpdater] Initiating self-restart...');
-
-    const cliArgs = process.argv.slice(2); // skip node + script path
-    const quotedArgs = cliArgs.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-
-    // Check if we're managed by launchd or systemd — if so, just exit cleanly
-    // and let the service manager handle the restart.
-    //
-    // IMPORTANT: When the server is started by the lifeline supervisor (with --no-telegram),
-    // it runs in a tmux session — NOT directly under launchd. The lifeline process is
-    // launchd-managed, but the server is supervisor-managed. Calling process.exit(0) here
-    // would kill the server, and launchd wouldn't restart it (it only watches the lifeline).
-    // The supervisor would eventually notice and restart, but only after the update-restart
-    // flag expires (3 min) — causing unnecessary downtime and restart loops.
-    const supervisorManaged = process.argv.includes('--no-telegram');
-    const managedByLaunchd = !supervisorManaged && (!!process.env.LAUNCHED_BY_LAUNCHD || this.isLaunchdManaged());
-    const managedBySystemd = !supervisorManaged && !!process.env.INVOCATION_ID; // systemd sets this
-
-    if (managedByLaunchd || managedBySystemd) {
-      const manager = managedByLaunchd ? 'launchd' : 'systemd';
-      console.log(`[AutoUpdater] Managed by ${manager} — exiting for automatic restart.`);
-
-      this.writeUpdateRestartFlag();
-      // Just exit — the service manager will restart us from the updated binary
-      process.exit(0);
-      return; // unreachable but makes TypeScript happy
-    }
-
-    // Find the best binary path
-    const found = this.findBestBinary();
-    let cmd: string;
-
-    if (found) {
-      console.log(`[AutoUpdater] Found binary via ${found.method}: ${found.bin}`);
-      const quotedBin = `'${found.bin.replace(/'/g, "'\\''")}'`;
-      if (found.useNode) {
-        cmd = `sleep 2 && exec ${process.execPath} ${quotedBin} ${quotedArgs}`;
-      } else {
-        cmd = `sleep 2 && exec ${quotedBin} ${quotedArgs}`;
-      }
-    } else {
-      // All strategies failed — this is extremely rare. Log it but don't ask the user.
-      console.error('[AutoUpdater] Cannot find any viable binary path for restart.');
-      console.error('[AutoUpdater] Update was applied globally. The server will pick it up on next manual restart.');
-      // Do NOT ask the user to run commands. Just log and continue running.
-      return;
-    }
-
-    try {
-      // Signal the lifeline supervisor that this is a planned restart —
-      // suppresses "server down" alerts during the update window
-      this.writeUpdateRestartFlag();
-
-      const child = spawn('sh', ['-c', cmd], {
-        detached: true,
-        stdio: 'inherit',
-        cwd: process.cwd(),
-        env: process.env,
-      });
-      child.unref();
-
-      console.log('[AutoUpdater] Replacement process spawned. Shutting down...');
-
-      // Trigger graceful shutdown (the SIGTERM handler in server.ts will clean up)
-      process.kill(process.pid, 'SIGTERM');
+      const dir = path.dirname(flagPath);
+      fs.mkdirSync(dir, { recursive: true });
+      const tmpPath = `${flagPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+      fs.renameSync(tmpPath, flagPath);
+      console.log(`[AutoUpdater] Restart requested — supervisor will handle (target: v${newVersion})`);
     } catch (err) {
-      console.error(`[AutoUpdater] Self-restart failed: ${err}`);
-      console.error('[AutoUpdater] Update was applied but manual restart is needed.');
-      DegradationReporter.getInstance().report({
-        feature: 'AutoUpdater.selfRestart',
-        primary: 'Restart agent after auto-update',
-        fallback: 'Old code continues running until manual restart',
-        reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
-        impact: 'Updated code not active — agent runs stale version',
-      });
-    }
-  }
-
-  /**
-   * Check if this server process is managed by macOS launchd.
-   * If so, we can just exit and launchd will restart us.
-   */
-  private isLaunchdManaged(): boolean {
-    if (process.platform !== 'darwin') return false;
-    try {
-      // Look for an instar plist in LaunchAgents
-      const plistDir = path.join(process.env.HOME || '', 'Library', 'LaunchAgents');
-      if (!fs.existsSync(plistDir)) return false;
-      const files = fs.readdirSync(plistDir);
-      return files.some(f => f.startsWith('ai.instar.') && f.endsWith('.plist'));
-    } catch {
-      // @silent-fallback-ok — launchd check returns false
-      return false;
+      console.error(`[AutoUpdater] Failed to write restart request: ${err}`);
+      console.error('[AutoUpdater] Update was applied but a manual restart is needed.');
     }
   }
 
@@ -553,15 +346,6 @@ export class AutoUpdater {
       || 0;
   }
 
-  /**
-   * Get the server port from the update checker config (for notification messages).
-   */
-  private getPort(): number {
-    // The port is available on the UpdateChecker config but not exposed.
-    // Use a reasonable default — agents can find their port from config.
-    return 4040;
-  }
-
   // ── Upgrade guide detection ─────────────────────────────────────────
 
   /**
@@ -583,36 +367,6 @@ export class AutoUpdater {
     } catch {
       // @silent-fallback-ok — logging should never break gate
       return false;
-    }
-  }
-
-  // ── Update restart flag ────────────────────────────────────────────
-
-  /**
-   * Write a flag file to signal the lifeline supervisor that the server
-   * is about to restart for an update. The supervisor checks this flag
-   * before firing "server down" alerts, preventing unnecessary noise.
-   *
-   * The flag has a 3-minute TTL — if the replacement server doesn't
-   * come up by then, it's a real problem and alerts should fire.
-   */
-  private writeUpdateRestartFlag(): void {
-    const flagPath = path.join(this.stateDir, 'state', 'update-restart.json');
-    const data = {
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      targetVersion: this.lastAppliedVersion ?? 'unknown',
-      expiresAt: new Date(Date.now() + 3 * 60 * 1000).toISOString(),
-    };
-    try {
-      const dir = path.dirname(flagPath);
-      fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-      fs.renameSync(tmpPath, flagPath);
-      console.log('[AutoUpdater] Wrote update-restart flag (expires in 3 min)');
-    } catch (err) {
-      console.error(`[AutoUpdater] Failed to write update-restart flag: ${err}`);
     }
   }
 

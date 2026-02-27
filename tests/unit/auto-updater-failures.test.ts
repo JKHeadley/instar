@@ -6,19 +6,6 @@ import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { StateManager } from '../../src/core/StateManager.js';
-import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
-
-// ── Mock child_process before any imports that use it ────────────
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    execFileSync: vi.fn(actual.execFileSync),
-    spawn: vi.fn(actual.spawn),
-  };
-});
-
-import { execFileSync, spawn } from 'node:child_process';
 
 // ── Mock Factories ──────────────────────────────────────────────
 
@@ -77,16 +64,11 @@ function createMockState(overrides?: Record<string, unknown>): StateManager {
 
 describe('AutoUpdater — failure paths', () => {
   let tmpDir: string;
-  const mockedExecFileSync = vi.mocked(execFileSync);
-  const mockedSpawn = vi.mocked(spawn);
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-updater-fail-'));
     fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    DegradationReporter.resetForTesting();
-    mockedExecFileSync.mockReset();
-    mockedSpawn.mockReset();
   });
 
   afterEach(() => {
@@ -95,32 +77,42 @@ describe('AutoUpdater — failure paths', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ── 1. selfRestart fails — spawn throws ─────────────────────
+  // ── 1. requestRestart writes signal file correctly ──────────
 
-  describe('selfRestart fails — spawn throws', () => {
-    it('catches spawn error without crashing, reports degradation', async () => {
-      // Make findBestBinary succeed so we reach the spawn call
-      mockedExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
-        if (cmd === 'npm' && args?.[0] === 'bin') return '/usr/local/bin\n' as any;
-        throw new Error('not found');
-      });
-      // The binary must "exist" for findBestBinary to return it
-      const fakeBin = path.join('/usr/local/bin', 'instar');
-      const origExistsSync = fs.existsSync;
-      vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-        if (String(p) === fakeBin) return true;
-        // Block LaunchAgents detection so selfRestart doesn't call process.exit
-        if (String(p).includes('LaunchAgents')) return false;
-        return origExistsSync(p);
-      });
+  describe('requestRestart — signal file lifecycle', () => {
+    it('writes restart-requested.json with valid structure', async () => {
+      const updater = new AutoUpdater(
+        createMockUpdateChecker(),
+        createMockState(),
+        tmpDir,
+        { autoApply: true, autoRestart: true },
+      );
 
-      // Ensure env-based launchd/systemd detection is disabled
-      delete process.env.LAUNCHED_BY_LAUNCHD;
-      delete process.env.INVOCATION_ID;
+      // Trigger tick which will apply update and call requestRestart
+      await (updater as any).tick();
 
-      mockedSpawn.mockImplementation(() => {
-        throw new Error('ENOENT: spawn failed');
-      });
+      const flagPath = path.join(tmpDir, 'state', 'restart-requested.json');
+      expect(fs.existsSync(flagPath)).toBe(true);
+
+      const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
+      expect(data.requestedBy).toBe('auto-updater');
+      expect(data.targetVersion).toBe('0.9.9');
+      expect(data.previousVersion).toBe('0.9.8');
+      expect(data.expiresAt).toBeDefined();
+      expect(data.pid).toBe(process.pid);
+
+      // TTL should be ~10 minutes in the future
+      const expires = new Date(data.expiresAt).getTime();
+      const now = Date.now();
+      expect(expires).toBeGreaterThan(now);
+      expect(expires).toBeLessThanOrEqual(now + 11 * 60 * 1000);
+    });
+
+    it('does not crash when state dir is read-only', async () => {
+      const stateDir = path.join(tmpDir, 'state');
+      fs.chmodSync(stateDir, 0o444);
+
+      const consoleSpy = vi.spyOn(console, 'error');
 
       const updater = new AutoUpdater(
         createMockUpdateChecker(),
@@ -129,86 +121,19 @@ describe('AutoUpdater — failure paths', () => {
         { autoApply: true, autoRestart: true },
       );
 
-      // Invoke the private tick method which triggers selfRestart after a successful update
-      const tick = (updater as any).tick.bind(updater);
-      await tick();
+      // Should not throw — requestRestart catches write errors
+      await (updater as any).tick();
 
-      // Process should still be alive — the error was caught
-      const status = updater.getStatus();
-      expect(status.lastAppliedVersion).toBe('0.9.9');
+      // Error was logged
+      expect(consoleSpy.mock.calls.some(
+        c => c.join(' ').includes('Failed to write restart request') || c.join(' ').includes('manual restart')
+      )).toBe(true);
 
-      // DegradationReporter should have captured the failure
-      const reporter = DegradationReporter.getInstance();
-      const events = reporter.getEvents();
-      expect(events.some(e => e.feature === 'AutoUpdater.selfRestart')).toBe(true);
+      fs.chmodSync(stateDir, 0o755);
     });
   });
 
-  // ── 2. findBestBinary returns null — all strategies fail ────
-
-  describe('findBestBinary returns null — all strategies fail', () => {
-    it('returns null gracefully when all binary resolution strategies fail', () => {
-      // All execFileSync calls throw
-      mockedExecFileSync.mockImplementation(() => {
-        throw new Error('command not found');
-      });
-
-      // process.argv[1] is from npx cache (stale source — filtered out)
-      const origArgv1 = process.argv[1];
-      process.argv[1] = '/Users/test/.npm/_npx/abc123/node_modules/.bin/instar';
-
-      try {
-        const updater = new AutoUpdater(
-          createMockUpdateChecker(),
-          createMockState(),
-          tmpDir,
-          { autoApply: true, autoRestart: true },
-        );
-
-        const result = (updater as any).findBestBinary();
-        expect(result).toBeNull();
-      } finally {
-        process.argv[1] = origArgv1;
-      }
-    });
-
-    it('selfRestart exits early without spawning when no binary found', async () => {
-      mockedExecFileSync.mockImplementation(() => {
-        throw new Error('command not found');
-      });
-
-      // Block launchd/systemd detection so selfRestart doesn't call process.exit
-      delete process.env.LAUNCHED_BY_LAUNCHD;
-      delete process.env.INVOCATION_ID;
-      const origExistsSync = fs.existsSync;
-      vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-        if (String(p).includes('LaunchAgents')) return false;
-        return origExistsSync(p);
-      });
-
-      const origArgv1 = process.argv[1];
-      process.argv[1] = '/Users/test/.npm/_npx/abc123/node_modules/.bin/instar';
-
-      try {
-        const updater = new AutoUpdater(
-          createMockUpdateChecker(),
-          createMockState(),
-          tmpDir,
-          { autoApply: true, autoRestart: true },
-        );
-
-        // Directly call selfRestart
-        (updater as any).selfRestart();
-
-        // spawn should never have been called
-        expect(mockedSpawn).not.toHaveBeenCalled();
-      } finally {
-        process.argv[1] = origArgv1;
-      }
-    });
-  });
-
-  // ── 3. applyUpdate fails — npm install throws ──────────────
+  // ── 2. applyUpdate fails — npm install throws ──────────────
 
   describe('applyUpdate fails — should not corrupt state', () => {
     it('records error in status and preserves existing state', async () => {
@@ -415,55 +340,7 @@ describe('AutoUpdater — failure paths', () => {
     });
   });
 
-  // ── 7. isLaunchdManaged throws — returns false gracefully ──
-
-  describe('isLaunchdManaged throws — returns false gracefully', () => {
-    it('returns false when readdirSync throws', () => {
-      const updater = new AutoUpdater(
-        createMockUpdateChecker(),
-        createMockState(),
-        tmpDir,
-      );
-
-      // Mock readdirSync to throw for the LaunchAgents directory
-      const origReaddirSync = fs.readdirSync;
-      vi.spyOn(fs, 'readdirSync').mockImplementation((p: fs.PathLike, opts?: any) => {
-        if (String(p).includes('LaunchAgents')) {
-          throw new Error('EACCES: permission denied');
-        }
-        return origReaddirSync(p, opts);
-      });
-
-      // existsSync returns true so we reach readdirSync
-      const origExistsSync = fs.existsSync;
-      vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-        if (String(p).includes('LaunchAgents')) return true;
-        return origExistsSync(p);
-      });
-
-      const result = (updater as any).isLaunchdManaged();
-      expect(result).toBe(false);
-    });
-
-    it('returns false on non-darwin platforms', () => {
-      const originalPlatform = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-
-      try {
-        const updater = new AutoUpdater(
-          createMockUpdateChecker(),
-          createMockState(),
-          tmpDir,
-        );
-        const result = (updater as any).isLaunchdManaged();
-        expect(result).toBe(false);
-      } finally {
-        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-      }
-    });
-  });
-
-  // ── 8. getInstalledVersion returns 0.0.0 — package.json unreadable ──
+  // ── 7. getInstalledVersion returns 0.0.0 — package.json unreadable ──
 
   describe('getInstalledVersion returns 0.0.0 — UpdateChecker fallback', () => {
     it('tick continues normally when checker reports 0.0.0 as current version', async () => {
