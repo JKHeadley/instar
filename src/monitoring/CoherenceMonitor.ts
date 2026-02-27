@@ -76,6 +76,8 @@ export class CoherenceMonitor extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private lastReport: CoherenceReport | null = null;
   private correctionLog: Array<{ timestamp: string; check: string; detail: string }> = [];
+  /** Track which failure signatures have already been notified to suppress spam */
+  private notifiedFailures: Set<string> = new Set();
 
   constructor(config: CoherenceMonitorConfig) {
     super();
@@ -145,6 +147,11 @@ export class CoherenceMonitor extends EventEmitter {
     this.lastReport = report;
     this.emit('check', report);
 
+    // When all checks pass, clear notification suppression so future regressions re-notify
+    if (status === 'coherent') {
+      this.notifiedFailures.clear();
+    }
+
     // Log non-coherent results
     if (status !== 'coherent') {
       const failedChecks = checks.filter(c => !c.passed);
@@ -155,10 +162,15 @@ export class CoherenceMonitor extends EventEmitter {
       }
       if (failed > 0) {
         console.warn(`[CoherenceMonitor] ${failed} incoherence(s) detected: ${failedChecks.map(c => `${c.name}: ${c.message}`).join('; ')}`);
-        // Notify via callback if provided
-        if (this.config.onIncoherence) {
+
+        // Deduplicate notifications: only notify for NEW failures, not repeats
+        const failureSignature = failedChecks.map(c => c.name).sort().join(',');
+        const isNewFailure = !this.notifiedFailures.has(failureSignature);
+
+        if (isNewFailure && this.config.onIncoherence) {
           try {
             this.config.onIncoherence(report);
+            this.notifiedFailures.add(failureSignature);
           } catch (err) {
             console.error(`[CoherenceMonitor] Notification callback failed:`, err);
           }
