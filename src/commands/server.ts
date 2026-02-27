@@ -55,6 +55,10 @@ import { ExternalOperationGate, AUTONOMY_PROFILES } from '../core/ExternalOperat
 import { MessageSentinel } from '../core/MessageSentinel.js';
 import { AdaptiveTrust } from '../core/AdaptiveTrust.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { LiveConfig } from '../config/LiveConfig.js';
+import { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
+import type { PipelineMessage } from '../types/pipeline.js';
+import { toPipeline, toInjection, toLogEntry, formatHistoryLine } from '../types/pipeline.js';
 import type { Message, IntelligenceProvider } from '../core/types.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
@@ -153,7 +157,10 @@ async function spawnSessionForTopic(
         lines.push(`Your task is to continue THIS conversation, not start something new.`);
         lines.push(``);
         for (const m of history) {
-          const sender = m.fromUser ? 'User' : 'Agent';
+          // Use actual sender name if available (multi-user topics), fall back to generic
+          const sender = m.fromUser
+            ? (m.senderName || 'User')
+            : 'Agent';
           const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
           const text = (m.text || '').slice(0, 300);
           lines.push(`[${ts}] ${sender}: ${text}`);
@@ -497,6 +504,30 @@ function wireTelegramCallbacks(
  * Wire up Telegram message routing: topic messages → Claude sessions.
  * This is the core handler that makes Telegram topics work like sessions.
  */
+/**
+ * Convert a loosely-typed Message (from core/types.ts) to a typed PipelineMessage.
+ * This is the bridge between TelegramAdapter's existing Message format and
+ * the new typed pipeline contracts. The types enforce that sender identity,
+ * topic context, and message content are all present and accounted for.
+ */
+function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
+  return {
+    id: msg.id,
+    sender: {
+      telegramUserId: (msg.metadata?.telegramUserId as number) ?? 0,
+      firstName: (msg.metadata?.firstName as string) ?? 'Unknown',
+      username: (msg.metadata?.username as string) ?? undefined,
+    },
+    topicId: (msg.metadata?.messageThreadId as number) ?? 1,
+    topicName,
+    content: msg.content,
+    type: msg.content.startsWith('[voice]') ? 'voice'
+      : msg.content.startsWith('[image:') ? 'photo'
+      : 'text',
+    timestamp: msg.receivedAt,
+  };
+}
+
 function wireTelegramRouting(
   telegram: TelegramAdapter,
   sessionManager: SessionManager,
@@ -535,14 +566,24 @@ function wireTelegramRouting(
       return;
     }
 
+    // ── Pipeline-typed routing ──────────────────────────────────────
+    // Convert to PipelineMessage — types enforce that sender identity
+    // and topic context are present at every stage downstream.
+    const storedTopicName = telegram.getTopicName(topicId) || undefined;
+    const pipeline = messageToPipeline(msg, storedTopicName);
+
     // Route message to corresponding session
     const targetSession = telegram.getSessionForTopic(topicId);
 
     if (targetSession) {
       // Session is mapped — check if it's alive, inject or respawn
       if (sessionManager.isSessionAlive(targetSession)) {
+        // Use toInjection() — types guarantee sender identity is included in the tag
+        const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        sessionManager.injectTelegramMessage(targetSession, topicId, text);
+        sessionManager.injectTelegramMessage(
+          targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName,
+        );
         // Delivery confirmation — let the user know the message reached the session
         telegram.sendToTopic(topicId, `✓ Delivered`).catch(() => {});
         // Track for stall detection
@@ -576,10 +617,10 @@ function wireTelegramRouting(
       // No session mapped — auto-spawn with topic history (same as respawn path).
       // Without history, the agent has no conversational context and gives blind answers.
       console.log(`[telegram→session] No session for topic ${topicId}, auto-spawning with history...`);
-      const storedName = telegram.getTopicName(topicId) || `topic-${topicId}`;
+      const spawnName = storedTopicName || `topic-${topicId}`;
 
       // Use the shared spawn helper that includes topic history
-      spawnSessionForTopic(sessionManager, telegram, storedName, topicId, text, topicMemory).then((newSessionName) => {
+      spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory).then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName);
         telegram.sendToTopic(topicId, `Session starting up — reading your message now. One moment.`).catch(() => {});
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
@@ -740,6 +781,34 @@ export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
   ensureStateDir(config.stateDir);
 
+  // LiveConfig: dynamic config re-reading for long-running server process.
+  // Solves the "Written But Not Re-Read" class of bugs — sessions modify
+  // config.json but the server process never picks up the changes.
+  const liveConfig = new LiveConfig(config.stateDir, {
+    watchPaths: ['updates.autoApply', 'sessions.maxSessions', 'monitoring'],
+  });
+  liveConfig.start();
+
+  // Migration: fix autoApply default bug from init.ts (pre-0.9.47).
+  // init.ts wrote `updates.autoApply: false` despite the intended default being true.
+  // One-time fix: rewrite the config file if autoApply is explicitly false.
+  if (config.updates?.autoApply === false) {
+    try {
+      const configPath = path.join(config.projectDir, '.instar', 'config.json');
+      if (fs.existsSync(configPath)) {
+        const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        if (raw.updates?.autoApply === false) {
+          raw.updates.autoApply = true;
+          fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n');
+          config.updates = { ...config.updates, autoApply: true };
+          console.log(`[migration] Fixed updates.autoApply: false → true (bug in init.ts pre-0.9.47)`);
+        }
+      }
+    } catch (err) {
+      console.error(`[migration] Failed to fix autoApply config:`, err);
+    }
+  }
+
   const serverSessionName = `${config.projectName}-server`;
 
   if (options.foreground) {
@@ -765,7 +834,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     cleanupTelegramTempFiles();
 
     // Run post-update migration on startup — ensures agent knowledge stays current
-    // even if the update was installed externally (e.g., via `npm install -g instar@latest`)
+    // even if the update was installed externally (e.g., via `npm install -g instar@latest`).
+    // This is the SAFETY NET: catches all upgrades regardless of how they were applied.
     try {
       const installedVersion = getInstalledVersion();
       const versionFile = path.join(config.stateDir, 'state', 'last-migrated-version.json');
@@ -788,25 +858,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         const dir = path.dirname(versionFile);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(versionFile, JSON.stringify({ version: installedVersion, migratedAt: new Date().toISOString() }));
+      }
 
-        // Also run upgrade guide processing — ensures pending guide file exists
-        // even if the update was installed without running `instar migrate`.
-        // Skip if a pending guide already exists (from a prior `instar migrate` run).
-        try {
-          const guideProcessor = new UpgradeGuideProcessor({
-            stateDir: config.stateDir,
-            currentVersion: installedVersion,
-            previousVersion: lastMigrated || undefined,
-          });
-          if (!guideProcessor.hasPendingGuide()) {
-            const guideResult = guideProcessor.process();
-            if (guideResult.pendingGuides.length > 0) {
-              console.log(pc.green(`  Upgrade guides pending: ${guideResult.pendingGuides.join(', ')}`));
-            }
-          }
-        } catch (guideErr) {
-          console.log(pc.yellow(`  Upgrade guide check: ${guideErr instanceof Error ? guideErr.message : String(guideErr)}`));
+      // ALWAYS process upgrade guides on startup — regardless of version match.
+      // This is the critical safety net that catches manual `npm install -g` updates
+      // where the auto-updater pipeline was bypassed. UpgradeGuideProcessor handles
+      // deduplication internally via processed-upgrades.json, so re-running is safe.
+      // Removing the old `hasPendingGuide()` guard that caused guides to be skipped.
+      try {
+        const guideProcessor = new UpgradeGuideProcessor({
+          stateDir: config.stateDir,
+          currentVersion: installedVersion || config.version || '0.0.0',
+          previousVersion: lastMigrated || undefined,
+        });
+        const guideResult = guideProcessor.process();
+        if (guideResult.pendingGuides.length > 0) {
+          console.log(pc.green(`  Upgrade guides pending: ${guideResult.pendingGuides.join(', ')}`));
         }
+      } catch (guideErr) {
+        console.log(pc.yellow(`  Upgrade guide check: ${guideErr instanceof Error ? guideErr.message : String(guideErr)}`));
       }
     } catch (err) {
       console.log(pc.yellow(`  Post-update migration check: ${err instanceof Error ? err.message : String(err)}`));
@@ -1367,6 +1437,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         autoRestart: true,
       },
       telegram,
+      liveConfig,
     );
     autoUpdater.start();
 
@@ -1410,19 +1481,27 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Start MemoryPressureMonitor (platform-aware memory tracking)
     const { MemoryPressureMonitor } = await import('../monitoring/MemoryPressureMonitor.js');
-    const memoryMonitor = new MemoryPressureMonitor({});
+    const memoryMonitor = new MemoryPressureMonitor({ stateDir: config.stateDir });
+    let lastMemoryNotification = 0;
+    const MEMORY_NOTIFICATION_COOLDOWN_MS = 5 * 60_000; // 5 minutes between notifications
     memoryMonitor.on('stateChange', ({ from, to, state: memState }: { from: string; to: string; state: any }) => {
       // Gate scheduler spawning on memory pressure
       if (scheduler && (to === 'elevated' || to === 'critical')) {
         console.log(`[MemoryPressure] ${from} -> ${to} — scheduler should respect canSpawnSession()`);
       }
-      // Alert via Telegram attention topic
+      // Alert via Telegram attention topic (with cooldown to prevent spam)
       if (telegram && to !== 'normal') {
-        const attentionTopicId = state.get<number>('agent-attention-topic');
-        if (attentionTopicId) {
-          telegram.sendToTopic(attentionTopicId,
-            `Memory ${to}: ${memState.pressurePercent.toFixed(1)}% used, ${memState.freeGB.toFixed(1)}GB free (trend: ${memState.trend})`
-          ).catch(() => { /* @silent-fallback-ok — notification loss */ });
+        const now = Date.now();
+        if (now - lastMemoryNotification >= MEMORY_NOTIFICATION_COOLDOWN_MS) {
+          lastMemoryNotification = now;
+          const attentionTopicId = state.get<number>('agent-attention-topic');
+          if (attentionTopicId) {
+            telegram.sendToTopic(attentionTopicId,
+              `Memory ${to}: ${memState.pressurePercent.toFixed(1)}% used, ${memState.freeGB.toFixed(1)}GB free (trend: ${memState.trend})`
+            ).catch(() => { /* @silent-fallback-ok — notification loss */ });
+          }
+        } else {
+          console.log(`[MemoryPressure] ${from} -> ${to} (notification suppressed — cooldown)`);
         }
       }
     });
@@ -1464,6 +1543,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     _memoryMonitor = memoryMonitor;
     console.log(pc.green('  Orphan process reaper enabled'));
 
+    // Coherence Monitor — runtime self-awareness for homeostasis.
+    // Periodically checks config coherence, state durability, output sanity,
+    // and feature readiness. Self-corrects where possible, notifies otherwise.
+    const coherenceMonitor = new CoherenceMonitor({
+      stateDir: config.stateDir,
+      liveConfig,
+      port: config.port,
+      onIncoherence: (report) => {
+        const failedChecks = report.checks.filter(c => !c.passed && !c.corrected);
+        const summary = failedChecks.map(c => `• ${c.name}: ${c.message}`).join('\n');
+        const alertTopicId = state.get<number>('agent-attention-topic');
+        if (telegram && alertTopicId) {
+          telegram.sendToTopic(alertTopicId, `⚠️ Coherence alert (${report.failed} issue${report.failed > 1 ? 's' : ''}):\n${summary}`).catch(() => {});
+        }
+      },
+    });
+    coherenceMonitor.start();
+    console.log(pc.green('  Coherence monitor enabled'));
+
     // Start CaffeinateManager (prevents macOS system sleep)
     const { CaffeinateManager } = await import('../core/CaffeinateManager.js');
     const caffeinateManager = new CaffeinateManager({ stateDir: config.stateDir });
@@ -1493,6 +1591,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           await tunnel.stop();
           const tunnelUrl = await tunnel.start();
           console.log(`[SleepWake] Tunnel restarted: ${tunnelUrl}`);
+
+          // Re-broadcast dashboard URL after tunnel restart (quick tunnels get new URL)
+          if (telegram && tunnelUrl) {
+            const tunnelType = config.tunnel?.type || 'quick';
+            await telegram.broadcastDashboardUrl(tunnelUrl, tunnelType as 'quick' | 'named').catch(() => {});
+          }
         } catch (err) {
           console.error(`[SleepWake] Tunnel restart failed:`, err);
         }
@@ -1588,7 +1692,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Sentinel wired into Telegram message flow'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
@@ -1610,6 +1714,52 @@ export async function startServer(options: StartOptions): Promise<void> {
       } catch (err) {
         console.error(pc.red(`  Tunnel failed: ${err instanceof Error ? err.message : String(err)}`));
         console.log(pc.yellow(`  Server running locally without tunnel. Fix tunnel config and restart.`));
+      }
+    }
+
+    // ── Dashboard Topic: always-available link ──────────────────────────
+    // Retroactive: creates the topic on first run for existing agents.
+    // Posts tunnel URL + PIN and pins the message for instant access.
+    if (telegram) {
+      try {
+        const dashTopicId = await telegram.ensureDashboardTopic();
+        if (dashTopicId) {
+          console.log(pc.green(`  Dashboard topic: ${dashTopicId}`));
+
+          // Auto-generate dashboardPin if missing — do this on every startup,
+          // not just during upgrades. The PIN should always exist.
+          if (!config.dashboardPin) {
+            const pin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+            config.dashboardPin = pin;
+            // Persist via LiveConfig so it survives restart
+            liveConfig.set('dashboardPin', pin);
+            console.log(pc.green(`  Auto-generated dashboard PIN: ${pin}`));
+          }
+
+          // Only broadcast if we have a tunnel URL — posting localhost to Telegram
+          // is useless noise. The user can't access localhost remotely.
+          const dashUrl = tunnel?.url;
+          const tunnelType = config.tunnel?.type || 'quick';
+
+          if (dashUrl) {
+            // Pass dashboard PIN to TelegramAdapter so the broadcast includes it
+            const telegramConfig = config.messaging?.find(
+              (m: { type: string }) => m.type === 'telegram'
+            );
+            if (telegramConfig?.config) {
+              (telegramConfig.config as Record<string, unknown>).dashboardPin = config.dashboardPin || '';
+              // Update the adapter's config reference
+              (telegram as unknown as { config: { dashboardPin?: string } }).config.dashboardPin = config.dashboardPin || '';
+            }
+
+            await telegram.broadcastDashboardUrl(dashUrl, tunnelType as 'quick' | 'named');
+          } else {
+            console.log(pc.yellow(`  Dashboard available locally at http://localhost:${config.port}/dashboard (no tunnel configured — not broadcasting to Telegram)`));
+          }
+        }
+      } catch (err) {
+        // @silent-fallback-ok — dashboard topic is nice-to-have
+        console.warn(`[server] Dashboard topic setup failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -1730,6 +1880,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log('\nShutting down...');
       gitSync?.stop();
       coordinator.stop();
+      coherenceMonitor.stop();
       memoryMonitor.stop();
       caffeinateManager.stop();
       sleepWakeDetector.stop();

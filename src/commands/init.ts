@@ -217,7 +217,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       autoApply: false,
     },
     updates: {
-      autoApply: false,
+      autoApply: true,
     },
     safety: {
       level: 1,  // 1 = ask user before risky actions, 2 = agent self-verifies (autonomous)
@@ -479,7 +479,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       autoApply: false,
     },
     updates: {
-      autoApply: false,
+      autoApply: true,
     },
     safety: {
       level: 1,  // 1 = ask user before risky actions, 2 = agent self-verifies (autonomous)

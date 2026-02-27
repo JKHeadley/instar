@@ -77,6 +77,14 @@ This toolkit is meant to be tested against real Claude Code projects. The flow:
 
 ## Standards
 
+- **Structure > Willpower** (THE foundational principle): Never rely on agents "remembering" to follow instructions in long prompts. Bake intelligence into the architecture:
+  - **Session-start hooks** inject context automatically — agents don't need to remember to read files
+  - **Programmatic gates** enforce required steps — critical choices happen in code, not in skill prompts
+  - **Dispatch tables** route decisions to the right source — agents see "when X → look at Y" at every session start
+  - **Behavioral hooks** guard against anti-patterns — deferral detection, grounding-before-messaging, dangerous-command-guard
+  - If a behavior matters, enforce it structurally. A 1,000-line prompt is a wish. A 10-line hook is a guarantee.
+  - This principle applies to ALL design decisions in Instar. When choosing between "add it to the docs" and "enforce it in code" — always choose code.
+
 - **LLM-Supervised Execution** (`docs/LLM-SUPERVISED-EXECUTION.md`): Every critical pipeline must have at minimum a Tier 1 LLM supervisor. Jobs support a `supervision` field (`tier0`, `tier1`, `tier2`) on `JobDefinition`. Tier 1 = Haiku wrapping programmatic tools with validation after every step.
 
 - **Agent Awareness Standard**: Every feature added to Instar MUST include a corresponding update to the CLAUDE.md template (`src/scaffold/templates.ts` → `generateClaudeMd()`). An agent that doesn't know about a capability effectively doesn't have it. This means:
@@ -98,6 +106,14 @@ Authorization: Bearer <authToken>
 The `authToken` is set in `instar.config.json` during setup. Agents calling the local server API from skills/scripts must include this header.
 
 The feedback webhook (`dawn.bot-me.ai/api/instar/feedback`) uses different auth — `User-Agent: instar/<version>` and `X-Instar-Version: <version>` headers for identification. No Bearer token needed for the external feedback endpoint.
+
+- **No Interactive CLI Commands** (CRITICAL — commands WILL HANG FOREVER): Claude Code's Bash tool cannot handle stdin prompts. Any command that asks for a password, confirmation, or input will hang until timeout. There is NO workaround — you cannot type into a running command.
+  - **The `--raw` flag does NOT prevent interactive prompts.** It only changes output format. `bw unlock --raw` STILL HANGS because it still prompts for a password. The password must ALWAYS be a positional argument BEFORE flags.
+  - **NEVER** run: `bw unlock --raw` (no password!), `bw unlock` (no password!), `bw login --raw` (no credentials!), `read -s`, `ssh-keygen` (interactive), `npm init` (interactive)
+  - **ALWAYS** use: `bw unlock "ACTUAL_PASSWORD" --raw`, `bw login "EMAIL" "PASSWORD" --raw`, `ssh-keygen -t ed25519 -f path -N "" -q`, `npm init -y`
+  - **THE PATTERN**: Get user input via conversation FIRST. Then construct the command with their actual input as positional arguments. Never run a command hoping it will prompt the user.
+
+- **No Multi-Choice for Text Input**: AskUserQuestion multi-choice is for DECISIONS between options (pick A or B). NEVER use it to collect free-text input (passwords, emails, tokens, names). When you need text from the user, ask a plain question and wait. Multi-choice for text input makes "Skip" look like the default and buries the actual input option.
 
 ## Key Patterns from Dawn
 

@@ -43,6 +43,8 @@ export interface MemoryPressureMonitorConfig {
   };
   /** Base check interval in ms. Default: 30000 */
   checkIntervalMs?: number;
+  /** State directory for persisting thresholds across restarts */
+  stateDir?: string;
 }
 
 interface PressureReading {
@@ -81,11 +83,18 @@ export class MemoryPressureMonitor extends EventEmitter {
   private currentRatePerMin = 0;
   private thresholds: typeof DEFAULT_THRESHOLDS;
   private baseIntervalMs: number;
+  private stateDir: string | null = null;
 
   constructor(config: MemoryPressureMonitorConfig = {}) {
     super();
+    this.stateDir = config.stateDir ?? null;
+
+    // Load persisted thresholds first, then overlay any explicit config.
+    // Priority: explicit config > persisted file > defaults
+    const persisted = this.loadPersistedThresholds();
     this.thresholds = {
       ...DEFAULT_THRESHOLDS,
+      ...persisted,
       ...config.thresholds,
     };
     this.baseIntervalMs = config.checkIntervalMs ?? 30_000;
@@ -109,11 +118,15 @@ export class MemoryPressureMonitor extends EventEmitter {
   /**
    * Update thresholds at runtime (e.g., when a user asks to adjust warning levels).
    * Re-classifies current state immediately after update.
+   * Persists to disk so changes survive server restarts.
    */
   updateThresholds(thresholds: Partial<{ warning: number; elevated: number; critical: number }>): void {
     const before = { ...this.thresholds };
     this.thresholds = { ...this.thresholds, ...thresholds };
     console.log(`[MemoryPressureMonitor] Thresholds updated: ${JSON.stringify(before)} -> ${JSON.stringify(this.thresholds)}`);
+
+    // Persist to disk so changes survive server restarts
+    this.persistThresholds();
 
     // Re-classify current state with new thresholds
     const newState = this.classifyState(this.lastPressurePercent);
@@ -123,6 +136,44 @@ export class MemoryPressureMonitor extends EventEmitter {
       this.stateChangedAt = new Date().toISOString();
       console.log(`[MemoryPressureMonitor] State reclassified: ${from} -> ${newState} (${this.lastPressurePercent.toFixed(1)}%)`);
       this.emit('stateChange', { from, to: newState, state: this.getState() });
+    }
+  }
+
+  private get thresholdsFilePath(): string | null {
+    if (!this.stateDir) return null;
+    return `${this.stateDir}/state/memory-thresholds.json`;
+  }
+
+  private persistThresholds(): void {
+    const filePath = this.thresholdsFilePath;
+    if (!filePath) return;
+    try {
+      const dir = filePath.replace(/\/[^/]+$/, '');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify({
+        ...this.thresholds,
+        updatedAt: new Date().toISOString(),
+      }, null, 2) + '\n');
+    } catch (err) {
+      console.error(`[MemoryPressureMonitor] Failed to persist thresholds:`, err);
+    }
+  }
+
+  private loadPersistedThresholds(): Partial<typeof DEFAULT_THRESHOLDS> {
+    const filePath = this.thresholdsFilePath;
+    if (!filePath || !fs.existsSync(filePath)) return {};
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const result: Partial<typeof DEFAULT_THRESHOLDS> = {};
+      if (typeof data.warning === 'number') result.warning = data.warning;
+      if (typeof data.elevated === 'number') result.elevated = data.elevated;
+      if (typeof data.critical === 'number') result.critical = data.critical;
+      if (Object.keys(result).length > 0) {
+        console.log(`[MemoryPressureMonitor] Loaded persisted thresholds: ${JSON.stringify(result)}`);
+      }
+      return result;
+    } catch {
+      return {};
     }
   }
 

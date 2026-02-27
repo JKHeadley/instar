@@ -47,6 +47,7 @@ import type { OperationMutability, OperationReversibility } from '../core/Extern
 import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
+import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 
 export interface RouteContext {
@@ -79,6 +80,7 @@ export interface RouteContext {
   adaptiveTrust: AdaptiveTrust | null;
   memoryMonitor: MemoryPressureMonitor | null;
   orphanReaper: OrphanProcessReaper | null;
+  coherenceMonitor: CoherenceMonitor | null;
   semanticMemory: SemanticMemory | null;
   startTime: Date;
 }
@@ -203,6 +205,39 @@ export function createRoutes(ctx: RouteContext): Router {
       unreported: reporter.getUnreportedEvents().length,
       events,
     });
+  });
+
+  /**
+   * Coherence health — runtime self-awareness report.
+   * Checks config drift, state durability, output sanity, and feature readiness.
+   * Where possible, issues are self-corrected.
+   */
+  router.get('/health/coherence', (_req, res) => {
+    if (!ctx.coherenceMonitor) {
+      res.json({ status: 'unavailable', message: 'CoherenceMonitor not initialized' });
+      return;
+    }
+    const report = ctx.coherenceMonitor.getLastReport();
+    if (!report) {
+      res.json({ status: 'pending', message: 'First check has not run yet' });
+      return;
+    }
+    res.json({
+      ...report,
+      corrections: ctx.coherenceMonitor.getCorrectionLog(),
+    });
+  });
+
+  /**
+   * Trigger an on-demand coherence check.
+   */
+  router.post('/health/coherence/check', (_req, res) => {
+    if (!ctx.coherenceMonitor) {
+      res.status(503).json({ error: 'CoherenceMonitor not initialized' });
+      return;
+    }
+    const report = ctx.coherenceMonitor.runCheck();
+    res.json(report);
   });
 
   // ── Agents ─────────────────────────────────────────────────────

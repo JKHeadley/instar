@@ -863,6 +863,17 @@ except: pass
 " 2>/dev/null
       echo "--- END CAPABILITIES ---"
     fi
+
+    # Context dispatch table — structural "when X, look at Y" routing
+    # Structure > Willpower: instead of burying this in a 600-line CLAUDE.md,
+    # inject it at session start so the agent sees it before doing anything.
+    DISPATCH_FILE="$INSTAR_DIR/context/DISPATCH.md"
+    if [ -f "\$DISPATCH_FILE" ]; then
+      echo ""
+      echo "--- CONTEXT DISPATCH (when X arises, read Y) ---"
+      cat "\$DISPATCH_FILE" | head -20
+      echo "--- END CONTEXT DISPATCH ---"
+    fi
   else
     echo ""
     echo "Instar server: NOT RUNNING (port \${PORT})"
@@ -1309,6 +1320,15 @@ try:
 except: pass
 " 2>/dev/null
       echo "--- END CAPABILITIES ---"
+    fi
+
+    # Context dispatch table — structural "when X, read Y" routing
+    DISPATCH_FILE="\$INSTAR_DIR/context/DISPATCH.md"
+    if [ -f "\$DISPATCH_FILE" ]; then
+      echo ""
+      echo "--- CONTEXT DISPATCH (when X arises, read Y) ---"
+      cat "\$DISPATCH_FILE" | head -20
+      echo "--- END CONTEXT DISPATCH ---"
     fi
   else
     echo ""

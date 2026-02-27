@@ -79,6 +79,8 @@ export class AgentServer {
     adaptiveTrust?: import('../core/AdaptiveTrust.js').AdaptiveTrust;
     memoryMonitor?: import('../monitoring/MemoryPressureMonitor.js').MemoryPressureMonitor;
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
+    coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
+    semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
   }) {
@@ -210,6 +212,8 @@ export class AgentServer {
       adaptiveTrust: options.adaptiveTrust ?? null,
       memoryMonitor: options.memoryMonitor ?? null,
       orphanReaper: options.orphanReaper ?? null,
+      coherenceMonitor: options.coherenceMonitor ?? null,
+      semanticMemory: options.semanticMemory ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);

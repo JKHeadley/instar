@@ -649,12 +649,12 @@ export class TelegramLifeline {
     const existingId = this.config.lifelineTopicId;
 
     if (existingId) {
-      // Verify it still exists
+      // Verify it still exists — silently, without spamming the user on every restart.
       try {
-        await this.apiCall('sendMessage', {
+        await this.apiCall('sendChatAction', {
           chat_id: this.config.chatId,
           message_thread_id: existingId,
-          text: '🟢 Lifeline connected.',
+          action: 'typing',
         });
         return existingId;
       } catch (err) {

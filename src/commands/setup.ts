@@ -23,6 +23,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { detectClaudePath, detectGhPath } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import type { SecretBackend } from '../core/SecretManager.js';
 
 /**
  * Launch the conversational setup wizard via Claude Code.
@@ -226,10 +227,11 @@ export async function runSetup(): Promise<void> {
     }
   }
 
-  // Pre-install Playwright browser binaries AND register the MCP server so the
-  // wizard has browser automation available from the start.
+  // Pre-install Playwright browser binaries AND register the MCP server so
+  // ALL Claude Code sessions (including the secret-setup micro-session) have
+  // browser automation available.
   const instarRoot = findInstarRoot();
-  console.log(pc.dim('  Preparing browser automation for Telegram setup...'));
+  console.log(pc.dim('  Preparing browser automation...'));
 
   // Step 1: Ensure .claude/settings.json has Playwright MCP registered
   ensurePlaywrightMcp(instarRoot);
@@ -246,13 +248,31 @@ export async function runSetup(): Promise<void> {
     console.log(pc.dim('  (Browser automation may not be available — the wizard can still guide you manually)'));
   }
 
+  // ── Phase Gate: Secret Management ──────────────────────────────────
+  // Structure > Willpower: secret management MUST be configured before the
+  // main wizard. Uses a Claude Code micro-session (/secret-setup) for a
+  // conversational experience. Gate: main wizard won't start without backend.json.
+  const secretContext = await ensureSecretBackend(claudePath, instarRoot);
+
+  // If Bitwarden session was saved by the secret-setup micro-session, pass it
+  // as an env var so the main wizard can use it for credential restoration.
+  const spawnEnv = { ...process.env };
+  const bwSessionFile = path.join(os.homedir(), '.instar', 'secrets', '.bw-session');
+  if (fs.existsSync(bwSessionFile)) {
+    const bwSession = fs.readFileSync(bwSessionFile, 'utf-8').trim();
+    if (bwSession) {
+      spawnEnv.BW_SESSION = bwSession;
+    }
+  }
+
   // Launch Claude Code from the instar package root (where .claude/skills/ lives)
   const child = spawn(claudePath, [
     '--dangerously-skip-permissions',
-    `/setup-wizard The project to set up is at: ${projectDir}.${gitContext}${detectionContext}`,
+    `/setup-wizard The project to set up is at: ${projectDir}.${gitContext}${detectionContext}${secretContext}`,
   ], {
     cwd: instarRoot,
     stdio: 'inherit',
+    env: spawnEnv,
   });
 
   return new Promise((resolve) => {
@@ -268,6 +288,115 @@ export async function runSetup(): Promise<void> {
       process.exit(1);
     });
   });
+}
+
+// ── Phase Gate: Secret Management ──────────────────────────────────────
+// Structure > Willpower: secret management MUST be configured before the main
+// wizard launches. We use a Claude Code micro-session (/secret-setup skill)
+// for this — conversational, can explain options, can answer questions, can
+// install and configure Bitwarden end-to-end. But SCOPED to one job.
+//
+// The gate: setup.ts won't launch the main wizard until backend.json exists.
+
+/**
+ * Ensure a secret backend is configured before the wizard launches.
+ * Returns context string to pass to the wizard so it knows secrets are handled.
+ *
+ * If backend.json already exists → skip (returns existing choice as context).
+ * If not → spawn a focused Claude Code session with the /secret-setup skill.
+ *   Claude explains options, guides through Bitwarden install/login/unlock,
+ *   configures the backend, and exits. Then we continue.
+ */
+async function ensureSecretBackend(claudePath: string, instarRoot: string): Promise<string> {
+  const backendFile = path.join(os.homedir(), '.instar', 'secrets', 'backend.json');
+
+  // Check if already configured
+  if (fs.existsSync(backendFile)) {
+    try {
+      const pref = JSON.parse(fs.readFileSync(backendFile, 'utf-8'));
+      const backend = pref.backend as SecretBackend;
+      console.log(`  ${pc.green('✓')} Secret management: ${formatBackendName(backend)}`);
+
+      // If Bitwarden, check for saved session and try to restore it
+      let bwSessionContext = '';
+      if (backend === 'bitwarden') {
+        const sessionFile = path.join(os.homedir(), '.instar', 'secrets', '.bw-session');
+        if (fs.existsSync(sessionFile)) {
+          const savedSession = fs.readFileSync(sessionFile, 'utf-8').trim();
+          if (savedSession) {
+            bwSessionContext = ` BW_SESSION is available — Bitwarden vault is unlocked.`;
+          }
+        }
+      }
+
+      return ` SECRET_BACKEND_CONFIGURED="${backend}". Secret management is already set up — skip Phase 2.5.${bwSessionContext}`;
+    } catch {
+      // Corrupted file — fall through to micro-session
+    }
+  }
+
+  // Not configured — launch Claude Code micro-session for secret setup
+  console.log();
+  console.log(pc.bold('  Secret Management'));
+  console.log(pc.dim('  Your agent needs a way to store secrets securely.'));
+  console.log(pc.dim('  Let me walk you through the options...'));
+  console.log();
+
+  // Spawn a focused Claude Code session with the /secret-setup skill
+  const child = spawn(claudePath, [
+    '--dangerously-skip-permissions',
+    '/secret-setup',
+  ], {
+    cwd: instarRoot,
+    stdio: 'inherit',
+  });
+
+  await new Promise<void>((resolve) => {
+    child.on('close', () => resolve());
+    child.on('error', () => resolve());
+  });
+
+  // Verify the micro-session did its job — backend.json must exist now
+  if (fs.existsSync(backendFile)) {
+    try {
+      const pref = JSON.parse(fs.readFileSync(backendFile, 'utf-8'));
+      const backend = pref.backend as SecretBackend;
+      console.log();
+      console.log(`  ${pc.green('✓')} Secret management: ${formatBackendName(backend)}`);
+
+      let bwSessionContext = '';
+      if (backend === 'bitwarden') {
+        const sessionFile = path.join(os.homedir(), '.instar', 'secrets', '.bw-session');
+        if (fs.existsSync(sessionFile)) {
+          bwSessionContext = ` BW_SESSION is available — Bitwarden vault is unlocked.`;
+        }
+      }
+
+      return ` SECRET_BACKEND_CONFIGURED="${backend}". Secret management configured. Skip Phase 2.5.${bwSessionContext}`;
+    } catch {
+      // Fall through
+    }
+  }
+
+  // Micro-session didn't configure a backend — fall back to local
+  console.log();
+  console.log(pc.yellow('  Secret setup was not completed. Using local encrypted store as default.'));
+  console.log(pc.dim('  You can change this later via: instar secrets backend bitwarden'));
+  console.log();
+
+  const { SecretManager } = await import('../core/SecretManager.js');
+  const mgr = new SecretManager({ agentName: '_setup' });
+  mgr.configureBackend('local');
+
+  return ` SECRET_BACKEND_CONFIGURED="local". Secret setup micro-session did not complete — defaulted to local encrypted store. Skip Phase 2.5.`;
+}
+
+function formatBackendName(backend: SecretBackend): string {
+  switch (backend) {
+    case 'bitwarden': return 'Bitwarden';
+    case 'local': return 'Local encrypted store';
+    case 'manual': return 'Manual (paste when prompted)';
+  }
 }
 
 /**

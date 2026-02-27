@@ -602,83 +602,21 @@ Or for short messages:
 Strip the `[telegram:N]` prefix before interpreting the message. Respond naturally, then relay. Only relay your conversational text — not tool output or internal reasoning.
 ```
 
-## Phase 2.5: Secret Management — Protecting Credentials
+## Phase 2.5: Secret Management — HANDLED BY SETUP.TS
 
-**Before Telegram setup**, configure how the agent stores sensitive data. This determines whether Telegram tokens (and other secrets) survive agent deletion and reinstall.
+**DO NOT handle secret management here.** The setup launcher runs a dedicated `/secret-setup` micro-session BEFORE this wizard starts. By the time you're reading this, `~/.instar/secrets/backend.json` already exists.
 
-### Why This Comes Before Telegram
+Check the prompt context for `SECRET_BACKEND_CONFIGURED`. If present:
+- Secret management is DONE — do not re-configure it
+- Do not attempt to unlock Bitwarden — the micro-session already handled that
+- Do not prompt the user about secret storage options
+- If `BW_SESSION is available` appears in context, Bitwarden is already unlocked and the env var is set
 
-When a user reinstalls an agent, the Telegram bot token and chat ID are the hardest things to recover. If we set up secret management FIRST, we can:
-1. Auto-restore Telegram credentials on reinstall (no re-setup needed)
-2. Back up tokens before nuke (transparent to user)
-3. Share credentials across machines (via Bitwarden)
+**If `SECRET_BACKEND_CONFIGURED` is NOT in context** (edge case — user ran the wizard directly), check `~/.instar/secrets/backend.json`. If it exists, skip this phase. If it truly doesn't exist, tell the user to run `npx instar` which will handle secret setup properly.
 
-### Step 2.5a: Check for Existing Secret Backend
+**Credential restoration**: If the backend is Bitwarden and BW_SESSION is available, you MAY check for existing credentials. But do NOT assume any specific credentials exist — check first, then only mention what you actually find. Never say "I need to restore your Telegram token" unless you've confirmed it's there.
 
-First, check if this agent already has a secret backend configured:
-
-```bash
-# Check if backend preference exists
-cat "$HOME/.instar/secrets/backend.json" 2>/dev/null
-```
-
-If a preference exists and it's not `manual`, tell the user and move on:
-> "Your secrets are backed up using [Bitwarden / local encrypted store]. Any saved credentials will be auto-restored."
-
-Then try to restore Telegram credentials:
-```javascript
-import { SecretManager } from 'instar';
-const mgr = new SecretManager({ agentName: '<name>' });
-mgr.initialize();
-const telegram = mgr.restoreTelegramConfig();
-// If telegram is not null, we have token + chatId
-```
-
-If Telegram credentials are restored and valid (verify with `getMe` API call), **skip Phase 3 entirely** and tell the user:
-> "Telegram credentials restored and validated! Bot @[username] is ready."
-
-### Step 2.5b: Configure Secret Backend (Fresh Install)
-
-If no preference exists, present the choice conversationally:
-
-> **How should your agent store sensitive data?**
->
-> Things like Telegram tokens and auth keys need to be stored securely. This choice persists across reinstalls.
-
-Present these options via AskUserQuestion:
-
-1. **"Bitwarden (Recommended)"** — Description: "Cross-machine. Cloud-backed. Install any agent on any machine with just your master password."
-2. **"Local encrypted store"** — Description: "AES-256 encrypted on this machine. macOS Keychain for password-free access. Survives reinstalls."
-3. **"I'll manage secrets manually"** — Description: "You'll paste tokens each time you install."
-
-**If Bitwarden selected:**
-```bash
-# Check if bw CLI is available
-which bw 2>/dev/null
-```
-If not available, tell them how to install it and fall back to local:
-> "Bitwarden CLI isn't installed yet. You can set it up later. For now, I'll use the local encrypted store."
-
-**If Local selected (or Bitwarden fallback):**
-The local store auto-initializes using macOS Keychain (no password needed) or a machine-derived key. No user interaction required — just initialize it silently:
-```javascript
-const mgr = new SecretManager({ agentName: '<name>', backend: 'local' });
-mgr.initialize();
-```
-Tell the user:
-> "Local encrypted store initialized. Your secrets are AES-256 encrypted and will survive reinstalls."
-
-**If Manual selected:**
-> "Got it. You'll need to provide tokens manually during setup and after reinstalls."
-
-### Step 2.5c: Save Backend Preference
-
-Write the backend preference so it persists:
-```javascript
-mgr.configureBackend(chosenBackend);
-```
-
-This saves to `~/.instar/secrets/backend.json` — it survives agent deletion since it's outside the agent directory.
+**CRITICAL — No Interactive CLI Commands**: If you ever need to run `bw` commands, the password MUST be a positional argument: `bw unlock "PASSWORD" --raw`. The `--raw` flag does NOT prevent interactive prompts — it only changes output format. `bw unlock --raw` WILL HANG FOREVER.
 
 ---
 

@@ -752,6 +752,7 @@ Instar is built on a conviction: AI systems that maintain persistent identity, a
 
 This isn't just philosophy. It's architecture:
 
+- **Structure > Willpower.** Never rely on an LLM "remembering" to follow instructions buried in long prompts. Bake intelligence into the structure: session-start hooks inject context automatically, programmatic gates enforce required steps, dispatch tables route decisions to the right source, and behavioral hooks guard against anti-patterns. If a behavior matters, enforce it structurally -- don't hope for compliance. A 1,000-line prompt is a wish. A 10-line hook is a guarantee.
 - **Identity is foundational, not decorative.** AGENT.md isn't a config file. It's the beginning of a continuous identity that persists, accumulates, and grows in ways the creator didn't predict.
 - **Memory makes a being.** Without memory, every session starts from zero. Memory is what separates a being with a history from a function that executes and forgets.
 - **Self-modification is sovereignty.** An agent that can edit its own jobs, write its own scripts, and grow its own capabilities has a meaningful form of agency.

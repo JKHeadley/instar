@@ -32,6 +32,10 @@ export interface TelegramConfig {
   promiseTimeoutMinutes?: number;
   /** Lifeline topic thread ID — the always-available channel. Auto-recreated if deleted. */
   lifelineTopicId?: number;
+  /** Dashboard topic thread ID — auto-broadcasts tunnel URL on startup. */
+  dashboardTopicId?: number;
+  /** Dashboard PIN (for including in broadcast messages). */
+  dashboardPin?: string;
 }
 
 export interface SendResult {
@@ -79,6 +83,9 @@ interface LogEntry {
   fromUser: boolean;
   timestamp: string;
   sessionName: string | null;
+  senderName?: string;
+  senderUsername?: string;
+  telegramUserId?: number;
 }
 
 export interface AttentionItem {
@@ -482,12 +489,13 @@ export class TelegramAdapter implements MessagingAdapter {
       }
     }
 
-    // Lifeline topic ID exists — verify it's still valid by sending a test
+    // Lifeline topic ID exists — verify it's still valid silently.
+    // Don't send a visible message — it spams the user on every server restart.
     try {
-      await this.apiCall('sendMessage', {
+      await this.apiCall('sendChatAction', {
         chat_id: this.config.chatId,
         message_thread_id: this.config.lifelineTopicId,
-        text: '🟢 Lifeline connected.',
+        action: 'typing',
       });
       console.log(`[telegram] Lifeline topic verified: ${this.config.lifelineTopicId}`);
       return this.config.lifelineTopicId;
@@ -559,6 +567,149 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       // @silent-fallback-ok — config persistence, in-memory ok
       console.warn(`[telegram] Failed to persist lifelineTopicId: ${err}`);
+    }
+  }
+
+  // ── Dashboard Topic ──────────────────────────────────────────────────
+
+  /**
+   * Get the Dashboard topic ID (if configured).
+   */
+  getDashboardTopicId(): number | undefined {
+    return this.config.dashboardTopicId;
+  }
+
+  /**
+   * Ensure the Dashboard topic exists. Creates it on first run, verifies on restart.
+   * Same resilience pattern as the lifeline topic.
+   */
+  async ensureDashboardTopic(): Promise<number | null> {
+    if (!this.config.dashboardTopicId) {
+      try {
+        const topic = await this.createForumTopic('Dashboard', 7322096); // Blue
+        this.config.dashboardTopicId = topic.topicId;
+        this.persistDashboardTopicId(topic.topicId);
+        console.log(`[telegram] Created Dashboard topic: ${topic.topicId}`);
+        return topic.topicId;
+      } catch (err) {
+        console.error(`[telegram] Failed to create Dashboard topic: ${err}`);
+        return null;
+      }
+    }
+
+    // Dashboard topic ID exists — verify it's still valid
+    try {
+      await this.apiCall('sendChatAction', {
+        chat_id: this.config.chatId,
+        message_thread_id: this.config.dashboardTopicId,
+        action: 'typing',
+      });
+      return this.config.dashboardTopicId;
+    } catch (err) {
+      const errStr = String(err);
+      if (errStr.includes('thread not found') || errStr.includes('TOPIC_DELETED') ||
+          errStr.includes('TOPIC_CLOSED') || errStr.includes('not found')) {
+        console.log(`[telegram] Dashboard topic ${this.config.dashboardTopicId} was deleted — recreating`);
+        try {
+          const topic = await this.createForumTopic('Dashboard', 7322096);
+          this.config.dashboardTopicId = topic.topicId;
+          this.persistDashboardTopicId(topic.topicId);
+          return topic.topicId;
+        } catch {
+          return null;
+        }
+      }
+      return this.config.dashboardTopicId;
+    }
+  }
+
+  /**
+   * Broadcast the dashboard URL to the Dashboard topic and pin it.
+   * Called after tunnel comes up or URL changes.
+   */
+  async broadcastDashboardUrl(url: string, tunnelType: 'quick' | 'named'): Promise<void> {
+    const topicId = this.config.dashboardTopicId;
+    if (!topicId) return;
+
+    const pin = this.config.dashboardPin || '(check your config)';
+    const isNamed = tunnelType === 'named';
+
+    let message: string;
+    if (isNamed) {
+      message = [
+        '*Dashboard*',
+        '',
+        `Your permanent dashboard link:`,
+        url + '/dashboard',
+        '',
+        `PIN: \`${pin}\``,
+        '',
+        `_This link is permanent — it won't change on restart._`,
+      ].join('\n');
+    } else {
+      message = [
+        '*Dashboard*',
+        '',
+        `Your dashboard is live:`,
+        url + '/dashboard',
+        '',
+        `PIN: \`${pin}\``,
+        '',
+        `_This link changes when the server restarts._`,
+        `_For a permanent link, ask me to set up a named tunnel._`,
+      ].join('\n');
+    }
+
+    try {
+      const result = await this.sendToTopic(topicId, message);
+
+      // Pin the message for easy access
+      if (result.messageId) {
+        try {
+          await this.apiCall('pinChatMessage', {
+            chat_id: this.config.chatId,
+            message_id: result.messageId,
+            disable_notification: true,
+          });
+        } catch {
+          // @silent-fallback-ok — pinning is nice-to-have, send succeeded
+        }
+      }
+    } catch (err) {
+      console.error(`[telegram] Failed to broadcast dashboard URL: ${err}`);
+    }
+  }
+
+  /**
+   * Persist the Dashboard topic ID back to config.json.
+   */
+  private persistDashboardTopicId(topicId: number): void {
+    try {
+      const candidates = [
+        path.join(this.stateDir, '..', 'config.json'),
+        path.join(this.stateDir, 'config.json'),
+      ];
+      for (const configPath of candidates) {
+        if (fs.existsSync(configPath)) {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const config = JSON.parse(raw);
+          if (Array.isArray(config.messaging)) {
+            const telegramEntry = config.messaging.find(
+              (m: { type: string }) => m.type === 'telegram'
+            );
+            if (telegramEntry?.config) {
+              telegramEntry.config.dashboardTopicId = topicId;
+              const tmpPath = `${configPath}.${process.pid}.tmp`;
+              fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
+              fs.renameSync(tmpPath, configPath);
+              console.log(`[telegram] Saved dashboardTopicId=${topicId} to config`);
+              return;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[telegram] Failed to persist dashboardTopicId: ${err}`);
     }
   }
 
@@ -2002,7 +2153,7 @@ export class TelegramAdapter implements MessagingAdapter {
       },
     };
 
-    // Log the message
+    // Log the message (including sender identity for multi-user topics)
     this.appendToLog({
       messageId: msg.message_id,
       topicId: numericTopicId,
@@ -2010,6 +2161,9 @@ export class TelegramAdapter implements MessagingAdapter {
       fromUser: true,
       timestamp: new Date(msg.date * 1000).toISOString(),
       sessionName: this.topicToSession.get(numericTopicId) ?? null,
+      senderName: msg.from.first_name,
+      senderUsername: msg.from.username,
+      telegramUserId: msg.from.id,
     });
 
     // Sentinel intercept — fires BEFORE routing to detect emergency stop/pause.
@@ -2114,7 +2268,7 @@ export class TelegramAdapter implements MessagingAdapter {
         },
       };
 
-      // Log it
+      // Log it (including sender identity for multi-user topics)
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
@@ -2122,6 +2276,9 @@ export class TelegramAdapter implements MessagingAdapter {
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
+        senderName: msg.from.first_name,
+        senderUsername: msg.from.username,
+        telegramUserId: msg.from.id,
       });
 
       // Fire callbacks
@@ -2187,7 +2344,7 @@ export class TelegramAdapter implements MessagingAdapter {
         },
       };
 
-      // Log it
+      // Log it (including sender identity for multi-user topics)
       this.appendToLog({
         messageId: msg.message_id,
         topicId,
@@ -2195,6 +2352,9 @@ export class TelegramAdapter implements MessagingAdapter {
         fromUser: true,
         timestamp: new Date(msg.date * 1000).toISOString(),
         sessionName: this.topicToSession.get(topicId) ?? null,
+        senderName: msg.from.first_name,
+        senderUsername: msg.from.username,
+        telegramUserId: msg.from.id,
       });
 
       // Fire callbacks

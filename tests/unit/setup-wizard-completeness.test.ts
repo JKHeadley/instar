@@ -167,12 +167,20 @@ describe('Setup Wizard Completeness', () => {
 
     const setup = fs.readFileSync(setupPath, 'utf-8');
 
-    it('setup.ts does NOT contain @inquirer/prompts (no classic fallback)', () => {
-      expect(setup).not.toContain('@inquirer/prompts');
+    it('setup.ts does NOT contain runClassicSetup (no classic fallback)', () => {
+      expect(setup).not.toContain('runClassicSetup');
     });
 
-    it('setup.ts does NOT contain runClassicSetup', () => {
-      expect(setup).not.toContain('runClassicSetup');
+    it('setup.ts does NOT contain promptForTelegram (no classic Telegram flow)', () => {
+      expect(setup).not.toContain('promptForTelegram');
+    });
+
+    it('setup.ts uses @inquirer/prompts ONLY via dynamic import for phase gates', () => {
+      // The classic setup imported @inquirer/prompts statically at the top.
+      // Phase gates use dynamic import() — which is fine (one question, not a flow).
+      // This test ensures we didn't regress to a static import.
+      const staticImportPattern = /^import\s+.*from\s+['"]@inquirer\/prompts['"]/m;
+      expect(staticImportPattern.test(setup)).toBe(false);
     });
   });
 });

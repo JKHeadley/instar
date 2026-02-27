@@ -537,7 +537,7 @@ export class SessionManager extends EventEmitter {
    * transformed into explicit instructions so Claude Code knows to read the
    * image file (it can natively view images via the Read tool).
    */
-  injectTelegramMessage(tmuxSession: string, topicId: number, text: string): void {
+  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string): void {
     const FILE_THRESHOLD = 500;
 
     // Transform [image:path] tags into explicit read instructions.
@@ -553,7 +553,21 @@ export class SessionManager extends EventEmitter {
       }
     );
 
-    const taggedText = `[telegram:${topicId}] ${transformed}`;
+    // Include topic name AND sender identity in the tag so the session knows:
+    // 1. Which conversation it's in (even after compaction)
+    // 2. WHO is speaking (critical for multi-user topics)
+    // Format: [telegram:42 "Agent Updates" from Justin] or [telegram:42 from Justin]
+    let topicTag: string;
+    if (topicName && senderName) {
+      topicTag = `[telegram:${topicId} "${topicName}" from ${senderName}]`;
+    } else if (topicName) {
+      topicTag = `[telegram:${topicId} "${topicName}"]`;
+    } else if (senderName) {
+      topicTag = `[telegram:${topicId} from ${senderName}]`;
+    } else {
+      topicTag = `[telegram:${topicId}]`;
+    }
+    const taggedText = `${topicTag} ${transformed}`;
 
     if (taggedText.length <= FILE_THRESHOLD) {
       this.injectMessage(tmuxSession, taggedText);

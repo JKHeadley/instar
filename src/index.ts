@@ -27,6 +27,8 @@ export type { UpgradeNotifyConfig, UpgradeNotifyResult, SessionSpawner, SessionC
 export { PostUpdateMigrator } from './core/PostUpdateMigrator.js';
 export type { MigrationResult, MigratorConfig } from './core/PostUpdateMigrator.js';
 export { loadConfig, detectTmuxPath, detectClaudePath, detectProjectDir, ensureStateDir, resolveAgentDir, standaloneAgentsDir } from './core/Config.js';
+export { LiveConfig } from './config/LiveConfig.js';
+export type { ConfigChange, LiveConfigOptions } from './config/LiveConfig.js';
 export { BackupManager } from './core/BackupManager.js';
 export {
   loadRegistry,
@@ -98,6 +100,7 @@ export type {
 
 // Memory
 export { MemoryIndex } from './memory/MemoryIndex.js';
+export { SemanticMemory } from './memory/SemanticMemory.js';
 export { chunkMarkdown, chunkJson, chunkJsonl, estimateTokens } from './memory/Chunker.js';
 export type { Chunk } from './memory/Chunker.js';
 
@@ -147,6 +150,8 @@ export { FeedbackAnomalyDetector } from './monitoring/FeedbackAnomalyDetector.js
 export type { AnomalyDetectorConfig, AnomalyCheckResult } from './monitoring/FeedbackAnomalyDetector.js';
 export { SessionMonitor } from './monitoring/SessionMonitor.js';
 export type { SessionMonitorConfig, SessionMonitorDeps, SessionMonitorEvents } from './monitoring/SessionMonitor.js';
+export { CoherenceMonitor } from './monitoring/CoherenceMonitor.js';
+export type { CoherenceCheckResult as CoherenceMonitorCheckResult, CoherenceReport, CoherenceMonitorConfig } from './monitoring/CoherenceMonitor.js';
 export { SleepWakeDetector } from './core/SleepWakeDetector.js';
 
 // Messaging
@@ -168,6 +173,16 @@ export type { PrivateView, PrivateViewerConfig } from './publishing/PrivateViewe
 // Tunnel
 export { TunnelManager } from './tunnel/TunnelManager.js';
 export type { TunnelConfig, TunnelState } from './tunnel/TunnelManager.js';
+
+// Pipeline types — typed contracts for message flow
+export type {
+  TelegramSender,
+  TelegramInbound,
+  PipelineMessage,
+  InjectionPayload,
+  PipelineLogEntry,
+} from './types/pipeline.js';
+export { toInbound, toPipeline, toInjection, toLogEntry, formatHistoryLine } from './types/pipeline.js';
 
 // Types
 export type {
