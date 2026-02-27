@@ -170,6 +170,18 @@ export function createRoutes(ctx: RouteContext): Router {
         usedPercent: Math.round(((totalMem - freeMem) / totalMem) * 1000) / 10,
       };
 
+      // Memory pressure state from MemoryPressureMonitor (macOS-accurate via vm_stat).
+      // On macOS, os.freemem() is misleading — wired+compressed+app memory leaves little
+      // "free" even under no real pressure. MemoryPressureMonitor uses platform-native
+      // APIs to classify actual pressure as normal/warning/elevated/critical.
+      if (ctx.memoryMonitor) {
+        const ps = ctx.memoryMonitor.getState();
+        base.memoryPressure = {
+          state: ps.state,
+          pressurePercent: ps.pressurePercent,
+        };
+      }
+
       // Orphan reaper last report (per-process memory visibility)
       if (ctx.orphanReaper) {
         const reaperReport = ctx.orphanReaper.getLastReport();
