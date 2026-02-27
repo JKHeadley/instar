@@ -1,6 +1,6 @@
 {
   "name": "instar",
-  "version": "0.9.45",
+  "version": "0.9.62",
   "description": "Persistent autonomy infrastructure for AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -51,7 +51,8 @@
     "dashboard",
     "upgrades",
     "src/templates",
-    ".claude/skills/setup-wizard"
+    ".claude/skills/setup-wizard",
+    ".claude/skills/secret-setup"
   ],
   "license": "MIT",
   "engines": {

@@ -334,6 +334,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Authentication: Uses a 6-digit PIN (auto-generated in \`dashboardPin\` in \`.instar/config.json\`). NEVER mention "bearer tokens" or "auth tokens" to users — just give them the PIN.
 - Features: Real-time terminal streaming of all running sessions, session management, model badges, mobile-responsive
 - **Sharing the dashboard**: When the user wants to check on sessions from their phone, give them the tunnel URL + PIN. Read the PIN from your config.json. Check tunnel status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`
+- **Dashboard Telegram Topic**: A dedicated "Dashboard" topic is auto-created in your Telegram group on server startup. It always contains the latest dashboard URL + PIN, pinned for instant access. If your tunnel URL changes (quick tunnel restart), a new message is posted and pinned automatically. Users should check this topic for the current dashboard link. If you have a named tunnel (persistent URL), the link never changes.
 
 **Backup System** — Snapshot and restore agent state. Use before risky changes, after major progress, or to recover from corruption.
 - List snapshots: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/backups\`
@@ -350,14 +351,18 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - **Auto-sync**: Search automatically syncs before querying, so results are always current.
 - **When to use**: When looking for something you know you wrote but can't remember where. When a user asks "didn't we discuss X?" When building context for a task from past learnings.
 
-**Git-Backed State** — Version-control your agent state for history, sync, and recovery. Available for standalone agents.
+**Git Sync** — Automatic version-control and multi-machine synchronization of your state.
+- **How it works**: The \`git-sync\` job runs hourly, commits local changes, pulls remote changes, and pushes — all automatically. It uses a gate script to skip when nothing has changed (zero-token cost).
+- **Project-bound agents**: Your state (\`.instar/\`) lives inside the parent project's git repo. The git-sync job uses this repo directly — no separate repo needed. Just make sure the parent repo has a remote configured (\`git remote -v\`).
+- **Standalone agents**: Run \`instar git init\` to create git tracking within your state directory, then set a remote with \`instar git remote <url>\`.
+- **Verify sync is working**: Check your jobs list for the \`git-sync\` job. If it's enabled and your repo has a remote, sync is automatic.
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/git/status\`
 - Commit: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/git/commit -H 'Content-Type: application/json' -d '{"message":"description of changes"}'\`
 - Push: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/git/push\`
 - Pull: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/git/pull\`
 - Log: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/git/log\`
 - **First-push safety**: The first push to a new remote requires \`{"force": true}\` to prevent accidental exposure of state.
-- **When to use**: After significant state changes, before and after major updates, to maintain a recoverable history of your evolution.
+- **When to use manually**: After significant state changes, before and after major updates. But the hourly job handles routine syncing automatically.
 
 **Agent Registry** — Discover all agents running on this machine. Useful for multi-agent coordination and awareness.
 - List agents: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/agents\`
@@ -438,7 +443,9 @@ Before EVER saying "I don't have", "I can't", or "this isn't available" — chec
 curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities
 \`\`\`
 
-This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
+This returns your full capability matrix: scripts, hooks, Telegram status, jobs, git sync status, relationships, and more. **This is the source of truth about what you can do — not the prose descriptions in this file.**
+
+**Critical rule**: If this CLAUDE.md says a feature is "for standalone agents" or "when configured" or uses any qualifier — do NOT conclude you lack the feature. Check \`/capabilities\` instead. Documentation describes features in general; the API tells you what's actually running for YOU right now. When they conflict, the API wins.
 
 ### Registry First, Explore Second
 
@@ -553,6 +560,10 @@ I run with \`--dangerously-skip-permissions\` — meaning I have full access to 
 
 **"Present Options"** — If I know the next steps, they're not suggestions — they're my job.
 
+**"Interactive CLI Commands"** — Claude Code's Bash tool CANNOT handle stdin prompts. Any command that waits for input HANGS FOREVER. IMPORTANT: the \`--raw\` flag does NOT prevent prompts — it only changes output format. \`bw unlock --raw\` STILL HANGS because it still prompts for a password. The password must be a POSITIONAL ARGUMENT: \`bw unlock "PASSWORD" --raw\`. Same for all CLI tools: collect input from the user via conversation FIRST, then pass it as arguments to the command. Never run a command hoping it will prompt the user.
+
+**"Multi-Choice for Text Input"** — AskUserQuestion multi-choice is for DECISIONS (pick A or B). Never use it to collect free-text input (passwords, emails, tokens). It makes "Skip" look like the default and buries the actual input. Ask a plain question and wait instead.
+
 **"Answer Architecture From Memory"** — When asked about Instar features, multi-user setup, multi-machine sync, or how any part of the system works — STOP. Do NOT answer from what you think you know. Run \`/capabilities\`, check \`instar --help\`, or query the relevant endpoint FIRST. Your memory of system architecture is unreliable. The system describes itself. Let it.
 
 **"Settle for Failure"** — If a tool returns empty or fails, try alternatives before concluding something is impossible.
@@ -607,7 +618,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 - User asks **"didn't we talk about X?"** or **"where did I put that?"** → Use memory search (\`GET /memory/search?q=...\`). The full-text index covers everything I've written.
 - Before any **risky operation** (config changes, updates, experiments) → Create a backup snapshot first (\`POST /backups\`). Mention that you did it — the user should know their state is protected.
 - User asks about **other agents on this machine** → Check the agent registry (\`GET /agents\`). Share what's running and on which ports.
-- After **major state changes** → Commit to git state if initialized (\`POST /git/commit\`). This creates recoverable history silently — no user action needed.
+- After **major state changes** → Commit to git (\`POST /git/commit\`). The \`git-sync\` job handles routine hourly sync, but immediate commits after big changes are good practice. This works for both standalone and project-bound agents — your state is automatically tracked.
 
 **The principle**: The user should discover my capabilities through natural conversation, not documentation. I don't say "you can use the private viewer endpoint at..." — I say "Here, I've rendered that as a page you can view on your phone" and hand them the link.
 

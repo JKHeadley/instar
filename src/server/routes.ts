@@ -763,6 +763,36 @@ export function createRoutes(ctx: RouteContext): Router {
         enabled: !!ctx.evolution,
         subsystems: ['proposals', 'learnings', 'gaps', 'actions'],
       },
+      git: (() => {
+        const projectDir = ctx.config.projectDir;
+        const hasGitRepo = fs.existsSync(path.join(projectDir, '.git'));
+        let hasRemote = false;
+        let gitSyncJobEnabled = false;
+        if (hasGitRepo) {
+          try {
+            const remote = execFileSync('git', ['remote'], { cwd: projectDir, stdio: 'pipe' }).toString().trim();
+            hasRemote = remote.length > 0;
+          } catch { /* no remote */ }
+        }
+        if (ctx.scheduler) {
+          const gitJob = ctx.scheduler.getJobs().find((j: any) => j.slug === 'git-sync');
+          gitSyncJobEnabled = !!(gitJob as any)?.enabled;
+        }
+        return {
+          inRepo: hasGitRepo,
+          hasRemote,
+          gitSyncJob: gitSyncJobEnabled,
+          autoSyncing: hasGitRepo && hasRemote && gitSyncJobEnabled,
+          agentType: ctx.config.agentType || 'standalone',
+          hint: hasGitRepo && hasRemote && gitSyncJobEnabled
+            ? 'Git sync is active — your state is automatically committed and pushed hourly.'
+            : hasGitRepo && hasRemote
+              ? 'Git repo with remote exists but git-sync job is not enabled. Enable it in jobs.json.'
+              : hasGitRepo
+                ? 'Git repo exists but no remote configured. Add one with `git remote add origin <url>`.'
+                : 'No git repo. For standalone agents, run `instar git init`. For project-bound, initialize the parent repo.',
+        };
+      })(),
       dispatches: {
         enabled: !!ctx.config.dispatches?.enabled,
         autoDispatch: !!ctx.autoDispatcher,
@@ -2553,8 +2583,16 @@ export function createRoutes(ctx: RouteContext): Router {
 
       if (targetSession && ctx.sessionManager.isSessionAlive(targetSession)) {
         // Session exists and is alive — inject message
+        // Include topic name so session knows which conversation it's in, even after compaction
+        let injectedTopicName: string | undefined;
+        try {
+          if (fs.existsSync(registryPath)) {
+            const reg = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+            injectedTopicName = reg.topicToName?.[String(topicId)] ?? undefined;
+          }
+        } catch { /* fall through without name */ }
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text);
+        ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName);
         res.json({ ok: true, forwarded: true, method: 'registry-inject', session: targetSession });
       } else {
         // No session or session dead — auto-spawn a new one

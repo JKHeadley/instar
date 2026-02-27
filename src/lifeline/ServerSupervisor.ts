@@ -277,9 +277,19 @@ export class ServerSupervisor extends EventEmitter {
     if (this.circuitBroken) return;
 
     // Check if this is a planned restart (e.g., auto-update in progress).
-    // If so, suppress the "server down" alert and don't auto-restart —
-    // the replacement process will come up on its own.
+    // If the flag is active AND the tmux session is dead, the server exited
+    // expecting someone else to restart it. The supervisor should respawn
+    // immediately instead of waiting for the flag to expire.
     if (this.isPlannedRestart()) {
+      if (!this.isServerSessionAlive()) {
+        // Server exited for a planned restart but the tmux session is gone.
+        // Respawn immediately — don't wait for the flag to expire.
+        console.log('[Supervisor] Planned restart detected — server session dead. Respawning immediately.');
+        this.clearPlannedRestartFlag();
+        this.consecutiveFailures = 0;
+        this.spawnServer();
+        return;
+      }
       console.log('[Supervisor] Health check failed but update-restart flag is active — suppressing alert');
       this.consecutiveFailures = 0;
       // Reset grace period so the replacement process has time to start

@@ -25,6 +25,7 @@ import type { UpdateChecker } from './UpdateChecker.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { StateManager } from './StateManager.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import type { LiveConfig } from '../config/LiveConfig.js';
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -69,6 +70,7 @@ export class AutoUpdater {
   private loopNotified = false;
   private stateDir: string;
   private stateFile: string;
+  private liveConfig: LiveConfig | null = null;
 
   constructor(
     updateChecker: UpdateChecker,
@@ -76,12 +78,14 @@ export class AutoUpdater {
     stateDir: string,
     config?: AutoUpdaterConfig,
     telegram?: TelegramAdapter | null,
+    liveConfig?: LiveConfig | null,
   ) {
     this.updateChecker = updateChecker;
     this.state = state;
     this.telegram = telegram ?? null;
     this.stateDir = stateDir;
     this.stateFile = path.join(stateDir, 'state', 'auto-updater.json');
+    this.liveConfig = liveConfig ?? null;
 
     this.config = {
       checkIntervalMinutes: config?.checkIntervalMinutes ?? 30,
@@ -164,6 +168,40 @@ export class AutoUpdater {
   }
 
   /**
+   * Re-read dynamic config values from disk via LiveConfig.
+   * Sessions or external edits may have changed them since startup.
+   *
+   * Uses LiveConfig if available (the preferred path), falls back to
+   * direct file read for backward compatibility.
+   */
+  private reloadDynamicConfig(): void {
+    try {
+      if (this.liveConfig) {
+        // LiveConfig handles mtime checking and caching — just read
+        const diskValue = this.liveConfig.get<boolean>('updates.autoApply', true);
+        if (diskValue !== this.config.autoApply) {
+          console.log(`[AutoUpdater] Config changed: autoApply ${this.config.autoApply} → ${diskValue}`);
+          this.config.autoApply = diskValue;
+        }
+        return;
+      }
+
+      // Fallback: direct file read (for callers that haven't adopted LiveConfig yet)
+      const configPath = path.join(this.stateDir, 'config.json');
+      if (!fs.existsSync(configPath)) return;
+
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const diskValue = raw?.updates?.autoApply;
+      if (typeof diskValue === 'boolean' && diskValue !== this.config.autoApply) {
+        console.log(`[AutoUpdater] Config changed on disk: autoApply ${this.config.autoApply} → ${diskValue}`);
+        this.config.autoApply = diskValue;
+      }
+    } catch {
+      // @silent-fallback-ok — config read failure shouldn't break update cycle
+    }
+  }
+
+  /**
    * One tick of the update loop.
    * Check → optionally apply → notify → optionally restart.
    */
@@ -172,6 +210,9 @@ export class AutoUpdater {
       console.log('[AutoUpdater] Skipping tick — update already in progress');
       return;
     }
+
+    // Re-read dynamic config — sessions may have toggled autoApply
+    this.reloadDynamicConfig();
 
     try {
       // Step 1: Check for updates
@@ -389,8 +430,16 @@ export class AutoUpdater {
 
     // Check if we're managed by launchd or systemd — if so, just exit cleanly
     // and let the service manager handle the restart.
-    const managedByLaunchd = !!process.env.LAUNCHED_BY_LAUNCHD || this.isLaunchdManaged();
-    const managedBySystemd = !!process.env.INVOCATION_ID; // systemd sets this
+    //
+    // IMPORTANT: When the server is started by the lifeline supervisor (with --no-telegram),
+    // it runs in a tmux session — NOT directly under launchd. The lifeline process is
+    // launchd-managed, but the server is supervisor-managed. Calling process.exit(0) here
+    // would kill the server, and launchd wouldn't restart it (it only watches the lifeline).
+    // The supervisor would eventually notice and restart, but only after the update-restart
+    // flag expires (3 min) — causing unnecessary downtime and restart loops.
+    const supervisorManaged = process.argv.includes('--no-telegram');
+    const managedByLaunchd = !supervisorManaged && (!!process.env.LAUNCHED_BY_LAUNCHD || this.isLaunchdManaged());
+    const managedBySystemd = !supervisorManaged && !!process.env.INVOCATION_ID; // systemd sets this
 
     if (managedByLaunchd || managedBySystemd) {
       const manager = managedByLaunchd ? 'launchd' : 'systemd';

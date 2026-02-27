@@ -183,30 +183,45 @@ export class UpdateChecker {
       this.saveRollbackInfo(previousVersion, newVersion);
     }
 
-    // Post-update migration: spawn the NEW binary to run migrations.
+    // Post-update migration: run migrations using the NEW binary.
     // Critical: the old process has stale modules in memory — only the
     // new binary on disk has the latest PostUpdateMigrator entries.
     // This now also processes upgrade guides (Layer 2: intelligent knowledge).
+    //
+    // PATH resolution fix: `npm install -g` may install to a different prefix
+    // than where the running `instar` binary lives (e.g., ASDF vs homebrew).
+    // We resolve the exact installed cli.js from npm's prefix and run it with
+    // the current Node.js process to avoid PATH mismatch issues.
     let migrationSummary = '';
     let upgradeGuideNote = '';
     if (success && this.migratorConfig) {
       try {
-        // Prefer --dir to scope migration to this project's directory.
-        // Fall back to no --dir if the binary doesn't support the flag
-        // (can happen when PATH resolves to an older binary after auto-update).
+        // Resolve the newly installed cli.js path from npm's global prefix
+        let cmd = 'instar';
+        let baseArgs: string[] = [];
+        try {
+          const prefix = await this.execAsync('npm', ['prefix', '-g'], 10000);
+          const cliJs = path.join(prefix, 'lib', 'node_modules', 'instar', 'dist', 'cli.js');
+          if (fs.existsSync(cliJs)) {
+            // Run the exact installed cli.js with the current Node.js runtime
+            cmd = process.execPath;
+            baseArgs = [cliJs];
+          }
+        } catch { /* fall back to PATH resolution */ }
+
         let output: string;
         try {
-          const args = ['migrate'];
+          const args = [...baseArgs, 'migrate'];
           if (this.migratorConfig.projectDir) args.push('--dir', this.migratorConfig.projectDir);
-          output = await this.execAsync('instar', args, 30000);
+          output = await this.execAsync(cmd, args, 30000);
         } catch (dirErr) {
           const dirErrMsg = dirErr instanceof Error ? dirErr.message : String(dirErr);
           const dirErrStderr = (dirErr as Error & { stderr?: string }).stderr || '';
           if (dirErrMsg.includes('unknown option') && dirErrMsg.includes('--dir')) {
-            // Old binary in PATH — retry without --dir
-            output = await this.execAsync('instar', ['migrate'], 30000);
+            // Old binary — retry without --dir
+            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000);
           } else if (dirErrStderr.includes('unknown command')) {
-            // Very old binary in PATH without migrate command — skip CLI migration gracefully.
+            // Very old binary without migrate command — skip CLI migration gracefully.
             // The in-memory migrator still runs as a safety net on server startup.
             output = JSON.stringify({ upgraded: [], errors: [] });
           } else {
