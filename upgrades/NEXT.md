@@ -2,6 +2,29 @@
 
 ## What Changed
 
+### Working Memory Assembly — Right Context at the Right Moment
+
+Your agent now assembles working memory at session start and after compaction. Instead of loading everything or nothing, the system queries your knowledge stores for what's most relevant to the current task and injects it automatically.
+
+**What this means for you:**
+- Session starts with contextually relevant knowledge surfaced from SemanticMemory
+- Recent episode digests (what you worked on in the last 48 hours) appear automatically
+- Person/relationship entities relevant to the current task are included
+- Compaction recovery now also restores relevant working memory — not just identity
+
+**How it works:**
+1. The session-start hook calls `GET /context/working-memory?prompt=<session-goal>`
+2. WorkingMemoryAssembler queries SemanticMemory, EpisodicMemory, and TopicMemory
+3. Results are token-budgeted (800 tokens knowledge + 400 episodes + 300 relationships + 300 topic)
+4. Top 3 entities get full detail, next 7 get compact, rest are name-only
+5. Formatted context is injected before any work begins
+
+**New API endpoint:** `GET /context/working-memory?prompt=<query>&topicId=<id>&sessionId=<id>&limit=<n>`
+
+No configuration required — it works automatically if SemanticMemory or EpisodicMemory is enabled.
+
+---
+
 ### Inter-Agent Messaging — Structured Communication Between Sessions
 
 Previously, Instar sessions running on the same machine had no way to communicate with each other. If session A discovered something session B needed to know, or if a job wanted to notify a running session about an important event, the only option was writing to a shared file and hoping the other session noticed. There was no delivery tracking, no acknowledgment, no threading, and no way to know if the message was ever received.
