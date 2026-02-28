@@ -80,7 +80,7 @@ describe('GitSyncManager.sync() without git repo', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns a clean no-op result when no .git/ directory', () => {
+  it('returns a clean no-op result when no .git/ directory', async () => {
     const gitSync = new GitSyncManager({
       projectDir: tmpDir,
       stateDir: path.join(tmpDir, '.instar'),
@@ -89,7 +89,7 @@ describe('GitSyncManager.sync() without git repo', () => {
       machineId: 'test-machine-001',
     });
 
-    const result = gitSync.sync();
+    const result = await gitSync.sync();
 
     expect(result.pulled).toBe(false);
     expect(result.pushed).toBe(false);
@@ -99,7 +99,7 @@ describe('GitSyncManager.sync() without git repo', () => {
     expect(result.conflicts).toEqual([]);
   });
 
-  it('does not log a security event when no .git/ directory', () => {
+  it('does not log a security event when no .git/ directory', async () => {
     const gitSync = new GitSyncManager({
       projectDir: tmpDir,
       stateDir: path.join(tmpDir, '.instar'),
@@ -108,13 +108,13 @@ describe('GitSyncManager.sync() without git repo', () => {
       machineId: 'test-machine-001',
     });
 
-    gitSync.sync();
+    await gitSync.sync();
 
     // No security log entry — the sync was a no-op, not a real sync
     expect(securityLog.events).toHaveLength(0);
   });
 
-  it('does not throw when no .git/ directory', () => {
+  it('does not throw when no .git/ directory', async () => {
     const gitSync = new GitSyncManager({
       projectDir: tmpDir,
       stateDir: path.join(tmpDir, '.instar'),
@@ -123,6 +123,6 @@ describe('GitSyncManager.sync() without git repo', () => {
       machineId: 'test-machine-001',
     });
 
-    expect(() => gitSync.sync()).not.toThrow();
+    await expect(gitSync.sync()).resolves.not.toThrow();
   });
 });

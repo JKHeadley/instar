@@ -52,6 +52,9 @@ import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
+import type { MessageRouter } from '../messaging/MessageRouter.js';
+import type { MessageType, MessagePriority } from '../messaging/types.js';
+import type { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
 
 export interface RouteContext {
   config: InstarConfig;
@@ -87,6 +90,8 @@ export interface RouteContext {
   commitmentTracker: CommitmentTracker | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
+  messageRouter: MessageRouter | null;
+  workingMemory: WorkingMemoryAssembler | null;
   startTime: Date;
 }
 
@@ -985,6 +990,12 @@ export function createRoutes(ctx: RouteContext): Router {
           'GET /context/:segmentId — load a specific context segment',
         ] : [],
       },
+      workingMemory: {
+        enabled: !!ctx.workingMemory,
+        endpoints: ctx.workingMemory ? [
+          'GET /context/working-memory?prompt=...&jobSlug=...&sessionId=... — token-budgeted context assembly from all memory layers',
+        ] : [],
+      },
       canonicalState: {
         enabled: !!ctx.canonicalState,
         endpoints: ctx.canonicalState ? [
@@ -1175,6 +1186,30 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.contextHierarchy.getDispatchTable());
+  });
+
+  // ── Working Memory Assembly ────────────────────────────────────────
+  //
+  // Token-budgeted context assembly from all memory layers.
+  // NOTE: Must come BEFORE /context/:segmentId to avoid param capture.
+
+  router.get('/context/working-memory', (req, res) => {
+    if (!ctx.workingMemory) {
+      res.status(503).json({ error: 'Working memory assembler not enabled' });
+      return;
+    }
+    try {
+      const { prompt, jobSlug, topicId, sessionId } = req.query;
+      const result = ctx.workingMemory.assemble({
+        prompt: typeof prompt === 'string' ? prompt : undefined,
+        jobSlug: typeof jobSlug === 'string' ? jobSlug : undefined,
+        topicId: topicId ? Number(topicId) : undefined,
+        sessionId: typeof sessionId === 'string' ? sessionId : undefined,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Assembly failed' });
+    }
   });
 
   router.get('/context/:segmentId', (req, res) => {
@@ -3999,6 +4034,111 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(report);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Scan failed' });
+    }
+  });
+
+  // ── Inter-Agent Messaging ──────────────────────────────────────
+
+  const MSG_ID_RE = /^[a-f0-9-]{36}$/;
+
+  router.post('/messages/send', async (req, res) => {
+    if (!ctx.messageRouter) {
+      res.status(503).json({ error: 'Messaging not available' });
+      return;
+    }
+    try {
+      const { from, to, type, priority, subject, body, options } = req.body;
+      if (!from || !to || !type || !priority || !subject || !body) {
+        res.status(400).json({ error: 'Missing required fields: from, to, type, priority, subject, body' });
+        return;
+      }
+      const result = await ctx.messageRouter.send(
+        from,
+        to,
+        type as MessageType,
+        priority as MessagePriority,
+        subject,
+        body,
+        options,
+      );
+      res.status(201).json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Send failed' });
+    }
+  });
+
+  router.post('/messages/ack', async (req, res) => {
+    if (!ctx.messageRouter) {
+      res.status(503).json({ error: 'Messaging not available' });
+      return;
+    }
+    try {
+      const { messageId, sessionId } = req.body;
+      if (!messageId || !sessionId) {
+        res.status(400).json({ error: 'Missing required fields: messageId, sessionId' });
+        return;
+      }
+      await ctx.messageRouter.acknowledge(messageId, sessionId);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Ack failed' });
+    }
+  });
+
+  router.post('/messages/relay-agent', async (req, res) => {
+    if (!ctx.messageRouter) {
+      res.status(503).json({ error: 'Messaging not available' });
+      return;
+    }
+    try {
+      const envelope = req.body;
+      if (!envelope?.message?.id) {
+        res.status(400).json({ error: 'Invalid envelope' });
+        return;
+      }
+      const accepted = await ctx.messageRouter.relay(envelope, 'agent');
+      if (accepted) {
+        res.json({ ok: true });
+      } else {
+        res.status(409).json({ error: 'Relay rejected (loop or duplicate)' });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
+    }
+  });
+
+  router.post('/messages/relay-machine', async (req, res) => {
+    if (!ctx.messageRouter) {
+      res.status(503).json({ error: 'Messaging not available' });
+      return;
+    }
+    try {
+      const envelope = req.body;
+      if (!envelope?.message?.id) {
+        res.status(400).json({ error: 'Invalid envelope' });
+        return;
+      }
+      const accepted = await ctx.messageRouter.relay(envelope, 'machine');
+      if (accepted) {
+        res.json({ ok: true });
+      } else {
+        res.status(409).json({ error: 'Relay rejected (loop or duplicate)' });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
+    }
+  });
+
+  router.get('/messages/stats', async (req, res) => {
+    if (!ctx.messageRouter) {
+      res.status(503).json({ error: 'Messaging not available' });
+      return;
+    }
+    try {
+      const stats = await ctx.messageRouter.getStats();
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Stats failed' });
     }
   });
 

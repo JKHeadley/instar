@@ -225,6 +225,12 @@ export type { RemoteQuotaResult } from './monitoring/QuotaTracker.js';
 export { classifySessionDeath } from './monitoring/QuotaExhaustionDetector.js';
 export { AccountSwitcher } from './monitoring/AccountSwitcher.js';
 export { QuotaNotifier } from './monitoring/QuotaNotifier.js';
+export { KeychainCredentialProvider, ClaudeConfigCredentialProvider, createDefaultProvider, redactToken, redactEmail } from './monitoring/CredentialProvider.js';
+export type { CredentialProvider, ClaudeCredentials, AccountInfo, SecurityLevel } from './monitoring/CredentialProvider.js';
+export { SessionCredentialManager } from './monitoring/SessionCredentialManager.js';
+export type { SessionCredentialAssignment } from './monitoring/SessionCredentialManager.js';
+export { QuotaCollector, RetryHelper, RequestBudget, ConcurrencyLimiter, AdaptivePoller, JsonlParser, classifyToken } from './monitoring/QuotaCollector.js';
+export type { CollectorConfig, RetryConfig, CollectionResult, OAuthUsageResponse, OAuthProfileResponse, PollingState, JsonlTokenCounts, TokenState } from './monitoring/QuotaCollector.js';
 export { StallTriageNurse } from './monitoring/StallTriageNurse.js';
 export type { StallTriageConfig, TreatmentAction, TriageDiagnosis, TriageContext, TriageResult, TriageRecord, TriageEvents, TriageDeps } from './monitoring/StallTriageNurse.types.js';
 export { FeedbackAnomalyDetector } from './monitoring/FeedbackAnomalyDetector.js';
@@ -241,11 +247,64 @@ export { SessionActivitySentinel } from './monitoring/SessionActivitySentinel.js
 export type { SentinelConfig, SentinelReport, SynthesisReport } from './monitoring/SessionActivitySentinel.js';
 export { SleepWakeDetector } from './core/SleepWakeDetector.js';
 
-// Messaging
+// Messaging — Telegram & Notifications
 export { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from './messaging/TelegramAdapter.js';
 export type { TelegramConfig } from './messaging/TelegramAdapter.js';
 export { NotificationBatcher } from './messaging/NotificationBatcher.js';
 export type { NotificationTier, BatchedNotification, BatcherConfig, BatcherStats } from './messaging/NotificationBatcher.js';
+
+// Messaging — Inter-Agent Messaging (Phase 1)
+// Note: MessageType and AgentMessage are aliased to avoid conflict with AgentBus exports.
+// Use InterAgentMessageType/InterAgentMessage for the new messaging system,
+// or import directly from 'instar/messaging/types' for unaliased access.
+export { MessageStore } from './messaging/MessageStore.js';
+export { MessageFormatter } from './messaging/MessageFormatter.js';
+export { MessageDelivery } from './messaging/MessageDelivery.js';
+export type { TmuxOperations } from './messaging/MessageDelivery.js';
+export { MessageRouter } from './messaging/MessageRouter.js';
+export type { MessageRouterConfig } from './messaging/MessageRouter.js';
+export {
+  VALID_TRANSITIONS,
+  ALLOWED_INJECTION_PROCESSES,
+  DEFAULT_TTL,
+  DEFAULT_RETENTION_DAYS,
+  DEFAULT_RATE_LIMITS,
+  THREAD_MAX_DEPTH,
+  THREAD_STALE_MINUTES,
+  MAX_BODY_SIZE,
+  MAX_PAYLOAD_SIZE,
+  MAX_SUBJECT_LENGTH,
+  PAYLOAD_INLINE_THRESHOLD,
+  CLOCK_SKEW_TOLERANCE,
+} from './messaging/types.js';
+export type {
+  MessageType as InterAgentMessageType,
+  MessagePriority,
+  AgentMessage as InterAgentMessage,
+  DeliveryPhase,
+  DeliveryTransition,
+  DeliveryState,
+  BroadcastRecipientState,
+  BroadcastState,
+  SignedPayload,
+  TransportMetadata,
+  MessageEnvelope,
+  InjectionSafety,
+  ThreadStatus,
+  MessageThread,
+  ThreadParticipant,
+  RateLimitConfig,
+  SendMessageOptions,
+  SendResult,
+  MessageFilter,
+  MessagingStats,
+  MessagingConfig,
+  IMessageStore,
+  DeliveryResult,
+  IMessageDelivery,
+  RoutingResult,
+  IMessageRouter,
+} from './messaging/types.js';
 
 // Knowledge
 export { KnowledgeManager } from './knowledge/KnowledgeManager.js';

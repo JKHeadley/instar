@@ -25,7 +25,7 @@
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "check:upgrade-guide": "node scripts/check-upgrade-guide.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build && npm run check:upgrade-guide"
   },
   "keywords": [
     "instar",

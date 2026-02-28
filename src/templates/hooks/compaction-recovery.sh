@@ -76,6 +76,14 @@ if [ -f "$INSTAR_DIR/state/active-job.json" ]; then
   fi
 fi
 
+# Phase F: Core cognitive principles (universal, survive compaction)
+echo "--- COGNITIVE PRINCIPLES (always active) ---"
+echo "1. SUBSTANCE OVER LABELS: Identity is content, not metadata. Different titles/IDs/statuses can hide identical content. Always verify at the content level."
+echo "2. CONTRADICTION = NEW CHECK: When a human contradicts your data, run a DIFFERENT kind of check, not the same one again. The human has information you don't."
+echo "3. CONFIDENCE INVERSION: The more obvious something feels, the more it needs verification. High confidence is where errors hide."
+echo "--- END PRINCIPLES ---"
+echo ""
+
 # Relationships summary
 if [ -d "$INSTAR_DIR/relationships" ]; then
   REL_COUNT=$(ls -1 "$INSTAR_DIR/relationships"/*.json 2>/dev/null | wc -l | tr -d ' ')

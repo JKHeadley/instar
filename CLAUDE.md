@@ -87,6 +87,15 @@ This toolkit is meant to be tested against real Claude Code projects. The flow:
 
 - **LLM-Supervised Execution** (`docs/LLM-SUPERVISED-EXECUTION.md`): Every critical pipeline must have at minimum a Tier 1 LLM supervisor. Jobs support a `supervision` field (`tier0`, `tier1`, `tier2`) on `JobDefinition`. Tier 1 = Haiku wrapping programmatic tools with validation after every step.
 
+- **Testing Integrity Standard** (NON-NEGOTIABLE): Every significant feature requires ALL THREE test tiers. No exceptions.
+  - **Tier 1: Unit Tests** (`tests/unit/`) — Module in isolation with real dependencies. Does the logic work?
+  - **Tier 2: Integration Tests** (`tests/integration/`) — Full HTTP pipeline. Do the API routes work when the feature is available?
+  - **Tier 3: E2E Lifecycle Tests** (`tests/e2e/`) — Production initialization path mirroring `server.ts`. Is the feature actually alive? Returns 200, not 503?
+  - **Wiring integrity tests** are required for every dependency-injected component — verify deps are not null, not no-ops, and delegate to real implementations
+  - **Semantic correctness tests** must cover both sides of every decision boundary with realistic inputs
+  - The Phase 1 "feature is alive" E2E test is the single most important test for any feature with API routes
+  - Full spec: `docs/specs/TESTING-INTEGRITY-SPEC.md` | E2E template: `docs/E2E-TESTING-STANDARD.md`
+
 - **Agent Awareness Standard**: Every feature added to Instar MUST include a corresponding update to the CLAUDE.md template (`src/scaffold/templates.ts` → `generateClaudeMd()`). An agent that doesn't know about a capability effectively doesn't have it. This means:
   1. **API endpoints** — Add to the Capabilities section with curl examples
   2. **Proactive triggers** — Add to Feature Proactivity ("when user does X → use this")

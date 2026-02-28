@@ -16,6 +16,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { MachineIdentityManager } from './MachineIdentity.js';
 import type { SecurityLog } from './SecurityLog.js';
+import type { IntelligenceProvider } from './types.js';
+import { LLMConflictResolver } from './LLMConflictResolver.js';
+import type { ConflictFile, EscalationContext, ResolutionResult } from './LLMConflictResolver.js';
+import { FileClassifier } from './FileClassifier.js';
+import type { ClassificationResult } from './FileClassifier.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -35,6 +40,8 @@ export interface GitSyncConfig {
   autoPush?: boolean;
   /** Debounce interval in ms for auto-commit (default: 30000). */
   debounceMs?: number;
+  /** Intelligence provider for LLM-based conflict resolution. */
+  intelligence?: IntelligenceProvider;
 }
 
 export interface SyncResult {
@@ -79,6 +86,8 @@ export class GitSyncManager {
   private debounceMs: number;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingPaths: Set<string> = new Set();
+  private llmResolver: LLMConflictResolver | null = null;
+  private fileClassifier: FileClassifier;
 
   constructor(config: GitSyncConfig) {
     this.projectDir = config.projectDir;
@@ -88,6 +97,18 @@ export class GitSyncManager {
     this.machineId = config.machineId;
     this.autoPush = config.autoPush ?? true;
     this.debounceMs = config.debounceMs ?? 30_000;
+
+    // Initialize file classifier
+    this.fileClassifier = new FileClassifier({ projectDir: config.projectDir });
+
+    // Initialize LLM resolver if intelligence provider is available
+    if (config.intelligence) {
+      this.llmResolver = new LLMConflictResolver({
+        intelligence: config.intelligence,
+        projectDir: config.projectDir,
+        stateDir: config.stateDir,
+      });
+    }
   }
 
   /**
@@ -97,6 +118,20 @@ export class GitSyncManager {
    */
   isGitRepo(): boolean {
     return fs.existsSync(path.join(this.projectDir, '.git'));
+  }
+
+  /**
+   * Set the intelligence provider for LLM-based conflict resolution.
+   * Can be called after construction when the provider becomes available.
+   */
+  setIntelligence(intelligence: IntelligenceProvider): void {
+    if (!this.llmResolver) {
+      this.llmResolver = new LLMConflictResolver({
+        intelligence,
+        projectDir: this.projectDir,
+        stateDir: this.stateDir,
+      });
+    }
   }
 
   // ── Setup ───────────────────────────────────────────────────────
@@ -136,7 +171,7 @@ export class GitSyncManager {
   /**
    * Full sync: pull → verify → resolve → push.
    */
-  sync(): SyncResult {
+  async sync(): Promise<SyncResult> {
     const result: SyncResult = {
       pulled: false,
       pushed: false,
@@ -166,7 +201,7 @@ export class GitSyncManager {
       // Check for merge conflicts
       if (errMsg.includes('CONFLICT') || errMsg.includes('could not apply')) {
         result.conflicts = this.detectConflicts();
-        this.resolveConflicts(result);
+        await this.resolveConflicts(result);
       }
       DegradationReporter.getInstance().report({
         feature: 'GitSync.pull',
@@ -350,14 +385,98 @@ export class GitSyncManager {
   }
 
   /**
-   * Attempt auto-resolution for known file types.
+   * Attempt auto-resolution for known file types, then escalate to LLM.
+   *
+   * Resolution flow:
+   *   1. Try programmatic strategies (Tier 0) for each file
+   *   2. For remaining conflicts, try LLM resolution (Tier 1 → 2)
+   *   3. If LLM resolves: validate (build/test), rollback on failure
+   *   4. Any still-unresolved files: report as Tier 3 (human escalation)
    */
-  private resolveConflicts(result: SyncResult): void {
-    for (const conflict of result.conflicts) {
-      const resolved = this.tryAutoResolve(conflict);
-      if (resolved) {
-        result.conflicts = result.conflicts.filter(c => c !== conflict);
+  private async resolveConflicts(result: SyncResult): Promise<void> {
+    // Step 1: Classify all conflicts and handle non-LLM strategies first
+    const llmCandidates: string[] = [];
+
+    for (const conflict of [...result.conflicts]) {
+      const classification = this.fileClassifier.classify(conflict);
+
+      switch (classification.strategy) {
+        case 'never-sync':
+        case 'exclude':
+          // These shouldn't be in the repo — accept ours and move on
+          try {
+            this.gitExec(['checkout', '--ours', conflict]);
+            this.gitExec(['add', conflict]);
+            result.conflicts = result.conflicts.filter(c => c !== conflict);
+          } catch {
+            // Leave in conflict list for manual review
+          }
+          break;
+
+        case 'regenerate':
+          // Lockfile — regenerate from manifest
+          {
+            const regenResult = this.fileClassifier.regenerateLockfile(conflict, classification);
+            if (regenResult.success) {
+              result.conflicts = result.conflicts.filter(c => c !== conflict);
+            } else {
+              // Regen failed — escalate to Tier 3 (human)
+              DegradationReporter.getInstance().report({
+                feature: 'GitSync.lockfileRegeneration',
+                primary: `Regenerate ${path.basename(conflict)} via ${classification.regenCommands?.join(' / ') ?? 'package manager'}`,
+                fallback: 'Human must resolve lockfile conflict manually',
+                reason: regenResult.error ?? 'Regeneration failed',
+                impact: `Lockfile ${path.basename(conflict)} remains in conflict state`,
+              });
+            }
+          }
+          break;
+
+        case 'ours-theirs':
+          // Binary file — hash divergence detection
+          {
+            const binaryResult = this.fileClassifier.resolveBinary(conflict);
+            if (binaryResult.resolution === 'ours' || binaryResult.resolution === 'theirs') {
+              try {
+                this.gitExec(['checkout', `--${binaryResult.resolution}`, conflict]);
+                this.gitExec(['add', conflict]);
+                result.conflicts = result.conflicts.filter(c => c !== conflict);
+              } catch {
+                // Leave in conflict list
+              }
+            }
+            // 'conflict' means both sides changed — stays in conflict list for Tier 3
+          }
+          break;
+
+        case 'programmatic':
+          // Tier 0 — existing field-merge, newer-wins, union-by-id
+          {
+            const resolved = this.tryAutoResolve(conflict);
+            if (resolved) {
+              result.conflicts = result.conflicts.filter(c => c !== conflict);
+            } else {
+              // Programmatic failed — eligible for LLM
+              llmCandidates.push(conflict);
+            }
+          }
+          break;
+
+        case 'llm':
+          // Source code, docs — eligible for LLM resolution
+          llmCandidates.push(conflict);
+          break;
       }
+    }
+
+    // Step 2: Tier 1+2 — LLM resolution for remaining eligible conflicts
+    if (llmCandidates.length > 0 && this.llmResolver) {
+      // Replace result.conflicts temporarily with only LLM candidates
+      const nonLlmConflicts = result.conflicts.filter(c => !llmCandidates.includes(c));
+      result.conflicts = llmCandidates;
+      await this.resolveLLMConflicts(result);
+      // Merge back any non-LLM conflicts that weren't resolved above
+      result.conflicts = [...result.conflicts, ...nonLlmConflicts];
     }
 
     if (result.conflicts.length === 0) {
@@ -368,6 +487,204 @@ export class GitSyncManager {
         // May need manual intervention
       }
     }
+  }
+
+  /**
+   * Use LLM intelligence to resolve conflicts that programmatic strategies couldn't handle.
+   */
+  private async resolveLLMConflicts(result: SyncResult): Promise<void> {
+    if (!this.llmResolver) return;
+
+    // Create snapshot tag for rollback
+    const snapshotTag = `sync-snapshot-${Date.now()}`;
+    try {
+      this.gitExec(['tag', snapshotTag]);
+    } catch {
+      // Tag creation failed — proceed without snapshot (degraded safety)
+    }
+
+    const llmResolved: string[] = [];
+    const humanEscalations: ResolutionResult[] = [];
+
+    for (const conflictPath of [...result.conflicts]) {
+      try {
+        const conflict = this.buildConflictFile(conflictPath);
+        if (!conflict) continue;
+
+        const context = this.buildEscalationContext(conflictPath);
+        const resolution = await this.llmResolver.resolve(conflict, context);
+
+        if (resolution.resolved && resolution.resolvedContent) {
+          // Apply the resolution
+          fs.writeFileSync(conflictPath, resolution.resolvedContent);
+          this.gitExec(['add', conflictPath]);
+          llmResolved.push(conflictPath);
+          result.conflicts = result.conflicts.filter(c => c !== conflictPath);
+        } else if (resolution.tier === 3) {
+          humanEscalations.push(resolution);
+        }
+      } catch (err) {
+        // Individual file resolution failure — continue with next file
+        DegradationReporter.getInstance().report({
+          feature: 'GitSync.resolveLLMConflicts',
+          primary: 'LLM conflict resolution',
+          fallback: 'Leave conflict for human review',
+          reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+          impact: `File ${conflictPath} remains in conflict state`,
+        });
+      }
+    }
+
+    // Post-merge validation for LLM-resolved files
+    if (llmResolved.length > 0) {
+      const validationPassed = this.validatePostMerge();
+
+      if (!validationPassed) {
+        // Rollback to snapshot
+        try {
+          this.gitExec(['reset', '--hard', snapshotTag]);
+          // All LLM resolutions are reverted — re-add to conflicts list
+          for (const filePath of llmResolved) {
+            if (!result.conflicts.includes(filePath)) {
+              result.conflicts.push(filePath);
+            }
+          }
+        } catch {
+          // Rollback failed — critical state, report
+          DegradationReporter.getInstance().report({
+            feature: 'GitSync.rollbackSnapshot',
+            primary: 'Rollback to pre-merge snapshot',
+            fallback: 'Manual intervention required',
+            reason: 'git reset --hard failed after validation failure',
+            impact: 'Repository may be in inconsistent state',
+          });
+        }
+      }
+    }
+
+    // Report human escalations
+    for (const escalation of humanEscalations) {
+      DegradationReporter.getInstance().report({
+        feature: 'GitSync.LLMConflictResolution',
+        primary: 'Auto-resolve via LLM (Tier 1 → Tier 2)',
+        fallback: 'Human review required (Tier 3)',
+        reason: escalation.reason ?? 'LLM could not resolve conflict',
+        impact: `File ${escalation.filePath} needs manual resolution. ${escalation.humanSummary ?? ''}`,
+      });
+    }
+
+    // Clean up old snapshot tags (keep last 5)
+    this.cleanupSnapshotTags(5);
+  }
+
+  /**
+   * Build a ConflictFile from a file path in conflict state.
+   */
+  private buildConflictFile(filePath: string): ConflictFile | null {
+    try {
+      const oursContent = this.gitExec(['show', ':2:' + filePath]);
+      const theirsContent = this.gitExec(['show', ':3:' + filePath]);
+      const conflictedContent = fs.readFileSync(filePath, 'utf-8');
+      const relativePath = path.relative(this.projectDir, filePath);
+
+      return { filePath, relativePath, oursContent, theirsContent, conflictedContent };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Build escalation context for Tier 2 (commit messages, related files).
+   */
+  private buildEscalationContext(filePath: string): EscalationContext {
+    const context: EscalationContext = {};
+
+    try {
+      // Get recent commit messages touching this file from each side
+      const oursLog = this.gitExec(['log', '--oneline', '-5', '--', filePath]);
+      context.oursCommitMessages = oursLog.split('\n').filter(l => l.trim()).map(l => l.trim());
+    } catch { /* no commit context available */ }
+
+    try {
+      // Get related files from the same commits
+      const oursFiles = this.gitExec(['diff', '--name-only', 'HEAD~5..HEAD', '--', '.']);
+      context.relatedFiles = {
+        ours: oursFiles.split('\n').filter(l => l.trim() && l !== filePath).slice(0, 10),
+        theirs: [], // Would need MERGE_HEAD context
+      };
+    } catch { /* no related files context */ }
+
+    return context;
+  }
+
+  /**
+   * Run post-merge validation (syntax check, build, tests).
+   * Returns true if validation passes.
+   */
+  private validatePostMerge(): boolean {
+    try {
+      // Read validation config
+      const configPath = path.join(this.stateDir, 'config.json');
+      let validationConfig = { enabled: true, buildCommand: '', testCommand: '', timeout: 300000 };
+
+      if (fs.existsSync(configPath)) {
+        try {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          const pmv = config.sync?.postMergeValidation;
+          if (pmv) {
+            validationConfig = { ...validationConfig, ...pmv };
+          }
+        } catch { /* use defaults */ }
+      }
+
+      if (!validationConfig.enabled) return true;
+
+      // Run build command if configured
+      if (validationConfig.buildCommand) {
+        try {
+          execFileSync('sh', ['-c', validationConfig.buildCommand], {
+            cwd: this.projectDir,
+            timeout: validationConfig.timeout,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+        } catch {
+          return false;
+        }
+      }
+
+      // Run test command if configured
+      if (validationConfig.testCommand) {
+        try {
+          execFileSync('sh', ['-c', validationConfig.testCommand], {
+            cwd: this.projectDir,
+            timeout: validationConfig.timeout,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+        } catch {
+          return false;
+        }
+      }
+
+      return true;
+    } catch {
+      // If we can't even read config, skip validation
+      return true;
+    }
+  }
+
+  /**
+   * Clean up old sync snapshot tags, keeping the most recent N.
+   */
+  private cleanupSnapshotTags(keep: number): void {
+    try {
+      const tags = this.gitExec(['tag', '-l', 'sync-snapshot-*']);
+      const tagList = tags.split('\n').filter(t => t.trim()).sort();
+      if (tagList.length > keep) {
+        for (const tag of tagList.slice(0, tagList.length - keep)) {
+          try { this.gitExec(['tag', '-d', tag]); } catch { /* best effort */ }
+        }
+      }
+    } catch { /* best effort */ }
   }
 
   /**

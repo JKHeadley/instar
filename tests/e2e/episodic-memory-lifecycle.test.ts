@@ -48,7 +48,7 @@ describe('Episodic Memory E2E lifecycle', () => {
   const SESSION_OUTPUT = [
     '$ vitest run tests/unit/episodic-memory.test.ts',
     '',
-    ' DEV  v2.1.9 /Users/test/claude-agent-kit',
+    ' DEV  v2.1.9 /Users/test/instar',
     '',
     ' tests/unit/episodic-memory.test.ts (35 tests) 1245ms',
     '   EpisodicMemory',

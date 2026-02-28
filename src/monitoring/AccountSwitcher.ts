@@ -1,18 +1,18 @@
 /**
- * Account Switcher — swap active Claude Code account via Keychain manipulation.
+ * Account Switcher — swap active Claude Code account via credential provider.
  *
- * Reads/writes the macOS Keychain entry used by Claude Code for OAuth credentials.
+ * Reads/writes credentials through the CredentialProvider abstraction,
+ * supporting macOS Keychain, file-based, and future OS-native stores.
  * Supports fuzzy matching of account names (e.g., "dawn" matches "dawn@sagemindai.io").
  *
  * Ported from Dawn's dawn-server equivalent for general Instar use.
+ * Refactored to use CredentialProvider (Phase 1 of Quota Migration spec).
  */
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-
-const KEYCHAIN_SERVICE = 'Claude Code-credentials';
+import type { CredentialProvider } from './CredentialProvider.js';
+import { createDefaultProvider, redactToken } from './CredentialProvider.js';
 
 interface AccountEntry {
   email: string;
@@ -52,15 +52,24 @@ export interface SwitchResult {
 
 export class AccountSwitcher {
   private registryPath: string;
-  private keychainAccount: string;
+  private provider: CredentialProvider;
 
-  constructor(registryPath?: string) {
-    this.registryPath = registryPath || path.join(
+  constructor(options?: {
+    registryPath?: string;
+    provider?: CredentialProvider;
+  }) {
+    this.registryPath = options?.registryPath || path.join(
       process.env.HOME || '',
       '.dawn-server/account-registry.json'
     );
-    // Get the macOS username for Keychain access
-    this.keychainAccount = os.userInfo().username;
+    this.provider = options?.provider || createDefaultProvider();
+  }
+
+  /**
+   * Get the credential provider being used.
+   */
+  getProvider(): CredentialProvider {
+    return this.provider;
   }
 
   /**
@@ -130,19 +139,15 @@ export class AccountSwitcher {
     const previousAccount = registry.activeAccountEmail;
 
     try {
-      const currentKeychainData = this.readFromKeychain();
-      const newKeychainData = {
-        ...currentKeychainData,
-        claudeAiOauth: {
-          ...currentKeychainData.claudeAiOauth,
-          accessToken: account.cachedOAuth.accessToken,
-        },
-      };
-      this.writeToKeychain(newKeychainData);
+      await this.provider.writeCredentials({
+        accessToken: account.cachedOAuth.accessToken,
+        expiresAt: account.cachedOAuth.expiresAt,
+        email: resolvedEmail,
+      });
     } catch (err) {
       return {
         success: false,
-        message: `Failed to write Keychain: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Failed to write credentials via ${this.provider.platform} provider: ${err instanceof Error ? err.message : String(err)}`,
         previousAccount,
         newAccount: null,
       };
@@ -162,6 +167,32 @@ export class AccountSwitcher {
       message: `Switched to ${name} (${resolvedEmail}). New sessions will use this account.`,
       previousAccount,
       newAccount: resolvedEmail,
+    };
+  }
+
+  /**
+   * Get the credentials for a specific account from the registry.
+   * Does NOT modify global state — for use with session-scoped credential injection.
+   */
+  getAccountCredentials(target: string): {
+    email: string;
+    accessToken: string;
+    expiresAt: number;
+  } | null {
+    const registry = this.loadRegistry();
+    if (!registry) return null;
+
+    const resolvedEmail = this.resolveAccount(target, registry);
+    if (!resolvedEmail) return null;
+
+    const account = registry.accounts[resolvedEmail];
+    if (!account?.cachedOAuth?.accessToken) return null;
+    if (account.cachedOAuth.expiresAt && account.cachedOAuth.expiresAt < Date.now()) return null;
+
+    return {
+      email: resolvedEmail,
+      accessToken: account.cachedOAuth.accessToken,
+      expiresAt: account.cachedOAuth.expiresAt,
     };
   }
 
@@ -218,27 +249,6 @@ export class AccountSwitcher {
     }
 
     return null;
-  }
-
-  private readFromKeychain(): any {
-    const result = execFileSync(
-      'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
-      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
-    return JSON.parse(result.trim());
-  }
-
-  private writeToKeychain(data: any): void {
-    const jsonStr = JSON.stringify(data);
-    const hexStr = Buffer.from(jsonStr).toString('hex');
-    // Use execFileSync with stdin input instead of shell heredoc
-    execFileSync('security', ['-i'], {
-      input: `add-generic-password -U -a "${this.keychainAccount}" -s "${KEYCHAIN_SERVICE}" -X "${hexStr}"\n`,
-      encoding: 'utf-8',
-      timeout: 10000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
   }
 
   private loadRegistry(): AccountRegistry | null {
