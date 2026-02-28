@@ -1409,6 +1409,41 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Topic auto-summarization enabled (on session end)'));
     }
 
+    // Session Activity Sentinel — episodic memory digestion.
+    // Creates mid-session mini-digests via LLM, and session syntheses on completion.
+    let activitySentinel: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel | undefined;
+    if (sharedIntelligence) {
+      const { SessionActivitySentinel } = await import('../monitoring/SessionActivitySentinel.js');
+      activitySentinel = new SessionActivitySentinel({
+        stateDir: config.stateDir,
+        intelligence: sharedIntelligence,
+        getActiveSessions: () => sessionManager.listRunningSessions(),
+        captureSessionOutput: (tmuxSession) => sessionManager.captureOutput(tmuxSession),
+        getTelegramMessages: telegram
+          ? (topicId, since) => telegram!.searchLog({
+              topicId,
+              since: since ? new Date(since) : undefined,
+              limit: 200,
+            })
+          : undefined,
+        getTopicForSession: telegram
+          ? (tmuxSession) => telegram!.getTopicForSession(tmuxSession)
+          : undefined,
+      });
+
+      sessionManager.on('sessionComplete', (session) => {
+        activitySentinel!.synthesizeSession(session).then((report) => {
+          if (report.synthesisCreated) {
+            console.log(`[ActivitySentinel] Session synthesis created for ${session.name}: ${report.digestCount} digests`);
+          }
+        }).catch((err) => {
+          console.error(`[ActivitySentinel] Synthesis failed for ${session.name}: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+
+      console.log(pc.green('  Episodic memory sentinel enabled (LLM-powered digestion)'));
+    }
+
     // Session Watchdog — auto-remediation for stuck commands
     let watchdog: SessionWatchdog | undefined;
     if (config.monitoring.watchdog?.enabled) {
@@ -1873,7 +1908,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Sentinel wired into Telegram message flow'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.

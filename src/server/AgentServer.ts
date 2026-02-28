@@ -82,6 +82,7 @@ export class AgentServer {
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
+    activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
   }) {
@@ -216,6 +217,7 @@ export class AgentServer {
       coherenceMonitor: options.coherenceMonitor ?? null,
       commitmentTracker: options.commitmentTracker ?? null,
       semanticMemory: options.semanticMemory ?? null,
+      activitySentinel: options.activitySentinel ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);

@@ -50,6 +50,7 @@ import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
+import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 
 export interface RouteContext {
@@ -85,6 +86,7 @@ export interface RouteContext {
   coherenceMonitor: CoherenceMonitor | null;
   commitmentTracker: CommitmentTracker | null;
   semanticMemory: SemanticMemory | null;
+  activitySentinel: SessionActivitySentinel | null;
   startTime: Date;
 }
 
@@ -3945,6 +3947,59 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ withdrawn: true, id: req.params.id });
+  });
+
+  // ── Episodic Memory (Activity Sentinel) ──────────────────────────
+
+  router.get('/episodes/stats', (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    const memory = ctx.activitySentinel.getEpisodicMemory();
+    res.json(memory.stats());
+  });
+
+  router.get('/episodes/sessions', (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    const memory = ctx.activitySentinel.getEpisodicMemory();
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
+    res.json(memory.listSyntheses(limit));
+  });
+
+  router.get('/episodes/sessions/:sessionId', (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    const memory = ctx.activitySentinel.getEpisodicMemory();
+    const synthesis = memory.getSynthesis(req.params.sessionId);
+    if (!synthesis) { res.status(404).json({ error: 'Session synthesis not found' }); return; }
+    res.json(synthesis);
+  });
+
+  router.get('/episodes/sessions/:sessionId/activities', (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    const memory = ctx.activitySentinel.getEpisodicMemory();
+    res.json(memory.getSessionActivities(req.params.sessionId));
+  });
+
+  router.get('/episodes/recent', (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    const memory = ctx.activitySentinel.getEpisodicMemory();
+    const hours = req.query.hours ? parseInt(String(req.query.hours), 10) : 24;
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 20;
+    res.json(memory.getRecentActivity(hours, limit));
+  });
+
+  router.get('/episodes/themes/:theme', (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    const memory = ctx.activitySentinel.getEpisodicMemory();
+    res.json(memory.getByTheme(req.params.theme));
+  });
+
+  router.post('/episodes/scan', async (req, res) => {
+    if (!ctx.activitySentinel) { res.status(503).json({ error: 'Activity sentinel not enabled' }); return; }
+    try {
+      const report = await ctx.activitySentinel.scan();
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Scan failed' });
+    }
   });
 
   return router;

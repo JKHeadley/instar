@@ -71,6 +71,35 @@ export type { SecretStoreConfig, Secrets, EncryptedSecretPayload } from './core/
 export { migrateSecrets, mergeConfigWithSecrets } from './core/SecretMigrator.js';
 export { GitSyncManager, mergeRelationship } from './core/GitSync.js';
 export type { GitSyncConfig, SyncResult } from './core/GitSync.js';
+export { LLMConflictResolver } from './core/LLMConflictResolver.js';
+export type {
+  ConflictFile, ResolutionResult, EscalationContext,
+  ResolutionEvent, LLMConflictResolverConfig,
+} from './core/LLMConflictResolver.js';
+export { FileClassifier } from './core/FileClassifier.js';
+export type {
+  FileClass, MergeStrategy, ClassificationResult, FileClassifierConfig,
+} from './core/FileClassifier.js';
+export { WorkLedger } from './core/WorkLedger.js';
+export type {
+  LedgerEntry, LedgerEntryStatus, MachineLedger,
+  OverlapTier, OverlapWarning, WorkLedgerConfig,
+} from './core/WorkLedger.js';
+export { BranchManager } from './core/BranchManager.js';
+export type {
+  TaskBranch, BranchStatus, BranchManagerConfig,
+  MergeResult, BranchWarning,
+} from './core/BranchManager.js';
+export { OverlapGuard } from './core/OverlapGuard.js';
+export type {
+  OverlapAction, OverlapNotificationConfig, ArchitecturalConflict,
+  OverlapCheckResult, OverlapGuardConfig,
+} from './core/OverlapGuard.js';
+export { HandoffManager } from './core/HandoffManager.js';
+export type {
+  HandoffNote, HandoffReason, HandoffWorkItem,
+  HandoffResult, ResumeResult, HandoffManagerConfig,
+} from './core/HandoffManager.js';
 export type { MigrationResult as SecretMigrationResult } from './core/SecretMigrator.js';
 export { GitStateManager } from './core/GitStateManager.js';
 export { ProjectMapper } from './core/ProjectMapper.js';
@@ -98,10 +127,39 @@ export type {
   TrustProfile, ServiceTrust, TrustEntry, TrustHistory,
   TrustChangeEvent, AdaptiveTrustConfig, TrustElevationSuggestion,
 } from './core/AdaptiveTrust.js';
+export { SecretRedactor } from './core/SecretRedactor.js';
+export type {
+  SecretType, RedactionEntry, RedactionResult, RestorationResult,
+  FileExclusionResult, SecretRedactorConfig, SecretPattern,
+} from './core/SecretRedactor.js';
+export { PromptGuard } from './core/PromptGuard.js';
+export type {
+  InjectionThreatLevel, ContentScanResult, InjectionMatch,
+  OutputValidationResult, PromptBoundary, PromptGuardConfig, InjectionPattern,
+} from './core/PromptGuard.js';
+export { LedgerAuth } from './core/LedgerAuth.js';
+export type {
+  AuthScenario, VerificationStatus, SigningResult,
+  VerificationResult, KeyInfo, LedgerAuthConfig,
+} from './core/LedgerAuth.js';
+export { AccessControl } from './core/AccessControl.js';
+export type {
+  UserRole, Permission, AccessCheckResult,
+  UserRoleEntry, AccessControlConfig,
+} from './core/AccessControl.js';
+export { AuditTrail } from './core/AuditTrail.js';
+export type {
+  AuditEventType, AuditEntry, AuditQuery,
+  AuditIntegrityResult, AuditStats, AuditTrailConfig,
+} from './core/AuditTrail.js';
 
 // Memory
 export { MemoryIndex } from './memory/MemoryIndex.js';
 export { SemanticMemory } from './memory/SemanticMemory.js';
+export { EpisodicMemory } from './memory/EpisodicMemory.js';
+export type { ActivityDigest, SessionSynthesis, BoundarySignal, SentinelState } from './memory/EpisodicMemory.js';
+export { ActivityPartitioner } from './memory/ActivityPartitioner.js';
+export type { TelegramLogEntry, ActivityUnit, PartitionInput } from './memory/ActivityPartitioner.js';
 export { chunkMarkdown, chunkJson, chunkJsonl, estimateTokens } from './memory/Chunker.js';
 export type { Chunk } from './memory/Chunker.js';
 
@@ -157,6 +215,8 @@ export { CommitmentTracker } from './monitoring/CommitmentTracker.js';
 export type { Commitment, CommitmentType, CommitmentStatus, CommitmentStore, CommitmentVerificationReport, CommitmentTrackerConfig } from './monitoring/CommitmentTracker.js';
 export { CommitmentSentinel } from './monitoring/CommitmentSentinel.js';
 export type { CommitmentSentinelConfig } from './monitoring/CommitmentSentinel.js';
+export { SessionActivitySentinel } from './monitoring/SessionActivitySentinel.js';
+export type { SentinelConfig, SentinelReport, SynthesisReport } from './monitoring/SessionActivitySentinel.js';
 export { SleepWakeDetector } from './core/SleepWakeDetector.js';
 
 // Messaging
