@@ -1535,4 +1535,46 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
         .expect(401);
     });
   });
+
+  // ── Cross-Machine Transport (Phase 4) ───────────────────────
+
+  describe('cross-machine transport and agent discovery', () => {
+    it('agent A queries outbound queue status', async () => {
+      const res = await request(agentA.app)
+        .get('/messages/outbound')
+        .set('Authorization', `Bearer ${agentA.authToken}`)
+        .expect(200);
+
+      expect(res.body).toHaveProperty('queues');
+      expect(res.body).toHaveProperty('totalPending');
+      expect(typeof res.body.totalPending).toBe('number');
+    });
+
+    it('agent B queries its agent list', async () => {
+      const res = await request(agentB.app)
+        .get('/messages/agents')
+        .set('Authorization', `Bearer ${agentB.authToken}`)
+        .expect(200);
+
+      expect(res.body).toHaveProperty('agents');
+      expect(res.body).toHaveProperty('machine');
+      expect(res.body.machine).toBe(agentB.name);
+      expect(Array.isArray(res.body.agents)).toBe(true);
+    });
+
+    it('outbound cleanup returns false for non-existent messages', async () => {
+      const res = await request(agentA.app)
+        .delete('/messages/outbound/nonexistent-machine/nonexistent-msg')
+        .set('Authorization', `Bearer ${agentA.authToken}`)
+        .expect(200);
+
+      expect(res.body.cleaned).toBe(false);
+    });
+
+    it('cross-machine routes require auth on both agents', async () => {
+      await request(agentA.app).get('/messages/outbound').expect(401);
+      await request(agentB.app).get('/messages/agents').expect(401);
+      await request(agentA.app).delete('/messages/outbound/m/id').expect(401);
+    });
+  });
 });

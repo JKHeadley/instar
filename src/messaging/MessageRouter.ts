@@ -617,10 +617,21 @@ export class MessageRouter implements IMessageRouter {
   }
 
   /**
+   * Public signature verification for git-sync inbound messages.
+   * Skips clock skew check (per spec: git-sync has no timestamp check).
+   */
+  verifyInboundSignature(envelope: MessageEnvelope): { valid: true } | { valid: false; reason: string } {
+    return this.verifyEnvelopeSignature(envelope, { skipClockSkew: true });
+  }
+
+  /**
    * Verify the Ed25519 signature on an incoming cross-machine envelope.
    * Checks: signature present, signer is active, clock skew within tolerance, signature valid.
    */
-  private verifyEnvelopeSignature(envelope: MessageEnvelope): { valid: true } | { valid: false; reason: string } {
+  private verifyEnvelopeSignature(
+    envelope: MessageEnvelope,
+    options?: { skipClockSkew?: boolean },
+  ): { valid: true } | { valid: false; reason: string } {
     if (!this.crossMachine) {
       return { valid: false, reason: 'cross-machine not enabled' };
     }
@@ -637,9 +648,9 @@ export class MessageRouter implements IMessageRouter {
       return { valid: false, reason: `signer ${envelope.transport.signedBy} not active or unknown` };
     }
 
-    // Clock skew check for real-time relay
+    // Clock skew check for real-time relay (skipped for git-sync per spec)
     const tolerance = CLOCK_SKEW_TOLERANCE['relay-machine'];
-    if (tolerance != null) {
+    if (tolerance != null && !options?.skipClockSkew) {
       const envelopeTime = new Date(envelope.transport.timestamp).getTime();
       const skew = Math.abs(Date.now() - envelopeTime);
       if (skew > tolerance) {

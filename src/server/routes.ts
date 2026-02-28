@@ -55,6 +55,7 @@ import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
+import { getOutboundQueueStatus, cleanupDeliveredOutbound, buildAgentList } from '../messaging/GitSyncTransport.js';
 import type { MessageType, MessagePriority, MessageFilter } from '../messaging/types.js';
 import { verifyAgentToken } from '../messaging/AgentTokenManager.js';
 import type { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
@@ -4493,6 +4494,42 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ scores, inFallback: ctx.summarySentinel.isInFallbackMode() });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Route scoring failed' });
+    }
+  });
+
+  // ── Outbound Queue Status (Phase 4: Cross-Machine) ──────────
+
+  router.get('/messages/outbound', async (_req, res) => {
+    try {
+      const status = getOutboundQueueStatus();
+      res.json(status);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Outbound status failed' });
+    }
+  });
+
+  router.delete('/messages/outbound/:machineId/:messageId', async (req, res) => {
+    try {
+      const { machineId, messageId } = req.params;
+      if (!machineId || !messageId) {
+        res.status(400).json({ error: 'Missing machineId or messageId' });
+        return;
+      }
+      const cleaned = cleanupDeliveredOutbound(machineId, messageId);
+      res.json({ cleaned });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Outbound cleanup failed' });
+    }
+  });
+
+  // ── Agent Discovery (Phase 4: Cross-Machine) ──────────────
+
+  router.get('/messages/agents', async (_req, res) => {
+    try {
+      const agents = buildAgentList();
+      res.json({ agents, machine: ctx.config.projectName });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Agent list failed' });
     }
   });
 

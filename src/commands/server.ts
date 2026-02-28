@@ -71,6 +71,7 @@ import type { TmuxOperations } from '../messaging/MessageDelivery.js';
 import { MessageRouter } from '../messaging/MessageRouter.js';
 import { generateAgentToken } from '../messaging/AgentTokenManager.js';
 import { pickupDroppedMessages } from '../messaging/DropPickup.js';
+import { pickupGitSyncMessages } from '../messaging/GitSyncTransport.js';
 import { DeliveryRetryManager } from '../messaging/DeliveryRetryManager.js';
 import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import type { PipelineMessage } from '../types/pipeline.js';
@@ -2054,6 +2055,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (dropResult.rejected > 0) {
       console.warn(pc.yellow(`  Messaging: rejected ${dropResult.rejected} dropped message(s): ${dropResult.rejections.map(r => r.reason).join(', ')}`));
     }
+
+    // Pick up any messages received via git-sync while offline (Phase 4: cross-machine)
+    const localMachineId = coordinator.identity?.machineId;
+    if (localMachineId) {
+      const gitSyncResult = await pickupGitSyncMessages({
+        localMachineId,
+        stateDir: config.stateDir,
+        store: messageStore,
+        verifySignature: crossMachineDeps
+          ? (envelope) => messageRouter.verifyInboundSignature(envelope)
+          : undefined,
+      });
+      if (gitSyncResult.ingested > 0) {
+        console.log(pc.green(`  Git-sync: picked up ${gitSyncResult.ingested} cross-machine message(s)`));
+      }
+      if (gitSyncResult.rejected > 0) {
+        console.warn(pc.yellow(`  Git-sync: rejected ${gitSyncResult.rejected} message(s): ${gitSyncResult.rejections.map(r => r.reason).join(', ')}`));
+      }
+    }
+
     // Start delivery retry manager for automatic retries, watchdog, and TTL expiry
     const retryManager = new DeliveryRetryManager(messageStore, messageDelivery, {
       agentName: config.projectName,

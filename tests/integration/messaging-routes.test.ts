@@ -1452,4 +1452,46 @@ describe('Inter-Agent Messaging API routes', () => {
       expect(res.body.sessionId).toBeDefined();
     });
   });
+
+  // ── Outbound Queue & Agent Discovery Routes (Phase 4) ─────
+
+  describe('cross-machine routes', () => {
+    it('GET /messages/outbound returns queue status', async () => {
+      const res = await request(app)
+        .get('/messages/outbound')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+        .expect(200);
+
+      expect(res.body).toHaveProperty('queues');
+      expect(res.body).toHaveProperty('totalPending');
+      expect(Array.isArray(res.body.queues)).toBe(true);
+    });
+
+    it('GET /messages/agents returns agent list', async () => {
+      const res = await request(app)
+        .get('/messages/agents')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+        .expect(200);
+
+      expect(res.body).toHaveProperty('agents');
+      expect(res.body).toHaveProperty('machine');
+      expect(Array.isArray(res.body.agents)).toBe(true);
+    });
+
+    it('DELETE /messages/outbound/:machineId/:messageId returns cleanup result', async () => {
+      const res = await request(app)
+        .delete('/messages/outbound/fake-machine/fake-message')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+        .expect(200);
+
+      expect(res.body).toHaveProperty('cleaned');
+      expect(res.body.cleaned).toBe(false); // File doesn't exist
+    });
+
+    it('outbound and agent routes require auth', async () => {
+      await request(app).get('/messages/outbound').expect(401);
+      await request(app).get('/messages/agents').expect(401);
+      await request(app).delete('/messages/outbound/m/id').expect(401);
+    });
+  });
 });
