@@ -212,6 +212,28 @@ export class QuotaManager extends EventEmitter {
           sessionsAffected: 0,
           timestamp: new Date().toISOString(),
         } satisfies QuotaMigrationEvent);
+        this.enqueueNotification(
+          `⚠️ Quota migration triggered but no alternative account available. ` +
+          `Enforcement will activate at 90% 5-hour rate.`
+        );
+      });
+
+      this.migrator.on('enforced_pause', (ev) => {
+        this.enqueueNotification(
+          `⚠️ [QUOTA ENFORCEMENT] PAUSE WARNING\n` +
+          `5-hour rate: ${ev.fiveHourPercent}% — no alternative accounts.\n` +
+          `Sent graceful shutdown to ${ev.sessionsSignaled} session(s). Scheduler paused.\n` +
+          `If quota reaches 95%, all sessions will be killed.`
+        );
+      });
+
+      this.migrator.on('enforced_kill', (ev) => {
+        this.enqueueNotification(
+          `🚨 [QUOTA ENFORCEMENT] EMERGENCY STOP\n` +
+          `5-hour rate: ${ev.fiveHourPercent}% — no alternative accounts.\n` +
+          `Killed ${ev.sessionsKilled.length} session(s): ${ev.sessionsKilled.join(', ') || 'none'}.\n` +
+          `Scheduler paused. Manual intervention required.`
+        );
       });
     }
   }

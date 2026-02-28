@@ -43,7 +43,7 @@ export interface MigrationEvent {
   newAccount: string | null;
   sessionsHalted: string[];
   sessionsRestarted: string[];
-  result: 'success' | 'partial' | 'failed' | 'no_alternative' | 'rolled_back';
+  result: 'success' | 'partial' | 'failed' | 'no_alternative' | 'rolled_back' | 'enforced_pause' | 'enforced_kill';
   completedAt: string;
   durationMs: number;
   error?: string;
@@ -125,6 +125,10 @@ export interface SessionMigratorEvents {
   migration_failed: [event: MigrationEvent];
   /** No alternative account available */
   migration_no_target: [event: { reason: string; sourceAccount: string }];
+  /** Quota enforcement: sessions warned to pause (90%+) */
+  enforced_pause: [event: { reason: string; fiveHourPercent: number; sessionsSignaled: number }];
+  /** Quota enforcement: all sessions killed (95%+) */
+  enforced_kill: [event: { reason: string; fiveHourPercent: number; sessionsKilled: string[] }];
   /** Migration was rolled back */
   migration_rollback: [event: MigrationEvent];
   /** State changed (for external monitoring) */
@@ -200,12 +204,21 @@ export class SessionMigrator extends EventEmitter {
       return false;
     }
 
-    // Check cooldown
+    // Check cooldown — but bypass for escalation from enforced_pause to enforced_kill.
+    // If the last event was a 90% warning and quota has risen to 95%+, the kill
+    // must fire immediately regardless of cooldown.
     const history = this.loadHistory();
     if (history.lastMigration) {
       const elapsed = Date.now() - new Date(history.lastMigration.completedAt).getTime();
       if (elapsed < this.thresholds.cooldownMs) {
-        return false;
+        const fiveHour = quotaState.fiveHourPercent ?? 0;
+        const lastWasPause = history.lastMigration.result === 'enforced_pause';
+        const nowCritical = fiveHour >= 95;
+
+        if (!(lastWasPause && nowCritical)) {
+          return false;
+        }
+        // Allow escalation from pause to kill
       }
     }
 
@@ -218,6 +231,7 @@ export class SessionMigrator extends EventEmitter {
     return await this.executeMigration(
       quotaState.activeAccountEmail || null,
       reason,
+      quotaState.fiveHourPercent ?? 0,
     );
   }
 
@@ -248,6 +262,7 @@ export class SessionMigrator extends EventEmitter {
   private async executeMigration(
     activeAccountEmail: string | null,
     reason: string,
+    fiveHourPercent: number = 0,
   ): Promise<boolean> {
     // Acquire lock
     if (!this.acquireLock()) {
@@ -271,15 +286,66 @@ export class SessionMigrator extends EventEmitter {
       // Step 1: Find best alternative account
       const target = this.selectMigrationTarget();
       if (!target) {
-        event.result = 'no_alternative';
-        event.completedAt = new Date().toISOString();
-        event.durationMs = Date.now() - startTime;
-        this.emit('migration_no_target', {
-          reason,
-          sourceAccount: activeAccountEmail || 'unknown',
-        });
-        this.recordMigration(event);
-        return false;
+        // No alternative account — enforce quota protection based on severity.
+        // The entire purpose of the quota system is to prevent hitting the limit,
+        // so we MUST enforce, not just silently record.
+
+        if (fiveHourPercent >= 95) {
+          // CRITICAL: 95%+ — absolute stop. Kill everything to preserve quota.
+          event.result = 'enforced_kill';
+          event.completedAt = new Date().toISOString();
+          event.durationMs = Date.now() - startTime;
+
+          this.deps!.pauseScheduler();
+          const killed = await this.haltRunningSessions();
+          event.sessionsHalted = killed.map(s => s.jobSlug || s.name);
+
+          this.emit('enforced_kill', {
+            reason,
+            fiveHourPercent,
+            sessionsKilled: event.sessionsHalted,
+          });
+
+          this.recordMigration(event);
+          return false;
+
+        } else if (fiveHourPercent >= 90) {
+          // WARNING: 90%+ — send graceful shutdown to sessions, pause scheduler.
+          event.result = 'enforced_pause';
+          event.completedAt = new Date().toISOString();
+          event.durationMs = Date.now() - startTime;
+
+          // Send Ctrl+C to all running sessions
+          const sessions = this.deps!.listRunningSessions();
+          for (const session of sessions) {
+            try {
+              this.deps!.sendKey(session.tmuxSession, 'C-c');
+            } catch { /* @silent-fallback-ok — best-effort signal, session will be killed at 95% if still running */ }
+          }
+
+          this.deps!.pauseScheduler();
+
+          this.emit('enforced_pause', {
+            reason,
+            fiveHourPercent,
+            sessionsSignaled: sessions.length,
+          });
+
+          this.recordMigration(event);
+          return false;
+
+        } else {
+          // Below 90% — warn but don't enforce yet
+          event.result = 'no_alternative';
+          event.completedAt = new Date().toISOString();
+          event.durationMs = Date.now() - startTime;
+          this.emit('migration_no_target', {
+            reason,
+            sourceAccount: activeAccountEmail || 'unknown',
+          });
+          this.recordMigration(event);
+          return false;
+        }
       }
 
       event.newAccount = target.email;

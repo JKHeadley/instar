@@ -542,7 +542,7 @@ export class SessionManager extends EventEmitter {
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number }): Promise<string> {
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; resumeSessionId?: string }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
@@ -601,6 +601,11 @@ export class SessionManager extends EventEmitter {
       }
 
       tmuxArgs.push(this.config.claudePath, '--dangerously-skip-permissions');
+
+      if (options?.resumeSessionId) {
+        tmuxArgs.push('--resume', options.resumeSessionId);
+        console.log(`[SessionManager] Resuming session: ${options.resumeSessionId}`);
+      }
 
       execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });
     } catch (err) {
