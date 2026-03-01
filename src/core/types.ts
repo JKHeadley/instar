@@ -1124,6 +1124,25 @@ export interface MonitoringConfig {
     /** Minimum minutes between user notifications per topic (default: 30) */
     notificationCooldownMinutes?: number;
   };
+  /** System Reviewer — periodic self-monitoring of feature health */
+  systemReview?: {
+    /** Enable the system reviewer (default: true) */
+    enabled?: boolean;
+    /** How often to run scheduled reviews in ms (default: 6 hours) */
+    scheduleMs?: number;
+    /** Which tiers to include in scheduled runs (default: [1, 2, 3]) */
+    scheduledTiers?: number[];
+    /** Whether to auto-submit failures as feedback (default: false) */
+    autoSubmitFeedback?: boolean;
+    /** Whether feedback consent is given (default: false) */
+    feedbackConsentGiven?: boolean;
+    /** Whether to send alerts for critical failures (default: true) */
+    alertOnCritical?: boolean;
+    /** Cooldown between alerts for same probe in ms (default: 1 hour) */
+    alertCooldownMs?: number;
+    /** Probe IDs to skip (default: []) */
+    disabledProbes?: string[];
+  };
 }
 
 /** @deprecated Use InstarConfig instead */

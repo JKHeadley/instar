@@ -89,6 +89,7 @@ export class AgentServer {
     messageRouter?: MessageRouter;
     summarySentinel?: import('../messaging/SessionSummarySentinel.js').SessionSummarySentinel;
     spawnManager?: import('../messaging/SpawnRequestManager.js').SpawnRequestManager;
+    systemReviewer?: import('../monitoring/SystemReviewer.js').SystemReviewer;
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
   }) {
@@ -230,6 +231,7 @@ export class AgentServer {
       messageRouter: options.messageRouter ?? null,
       summarySentinel: options.summarySentinel ?? null,
       spawnManager: options.spawnManager ?? null,
+      systemReviewer: options.systemReviewer ?? null,
       startTime: this.startTime,
     });
     this.app.use(routes);

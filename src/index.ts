@@ -110,6 +110,11 @@ export { ContextHierarchy } from './core/ContextHierarchy.js';
 export type { ContextSegment, ContextHierarchyConfig, ContextDispatchTable } from './core/ContextHierarchy.js';
 export { CanonicalState } from './core/CanonicalState.js';
 export type { QuickFact, AntiPattern, ProjectEntry, CanonicalStateConfig } from './core/CanonicalState.js';
+export { PlatformActivityRegistry } from './core/PlatformActivityRegistry.js';
+export type {
+  PlatformAction, PlatformActionType, PlatformActionStatus,
+  PlatformActivityQuery, PlatformActivitySummary, PlatformActivityRegistryConfig,
+} from './core/PlatformActivityRegistry.js';
 export { ExternalOperationGate, computeRiskLevel, scopeFromCount, AUTONOMY_PROFILES } from './core/ExternalOperationGate.js';
 export type {
   OperationMutability, OperationReversibility, OperationScope, RiskLevel,

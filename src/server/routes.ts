@@ -48,6 +48,7 @@ import type { MessageSentinel } from '../core/MessageSentinel.js';
 import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
+import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
 import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
@@ -102,6 +103,7 @@ export interface RouteContext {
   spawnManager: SpawnRequestManager | null;
   workingMemory: WorkingMemoryAssembler | null;
   quotaManager: QuotaManager | null;
+  systemReviewer: SystemReviewer | null;
   startTime: Date;
 }
 
@@ -132,7 +134,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     const degradations = DegradationReporter.getInstance().getEvents();
-    const isDegraded = sessionExhausted || totalFailures >= 5 || degradations.length > 0;
+    let isDegraded = sessionExhausted || totalFailures >= 5 || degradations.length > 0;
 
     const base: Record<string, unknown> = {
       status: isDegraded ? 'degraded' : 'ok',
@@ -241,6 +243,27 @@ export function createRoutes(ctx: RouteContext): Router {
             lastError: j.state!.lastError,
           })),
         };
+      }
+
+      // System Reviewer health
+      if (ctx.systemReviewer) {
+        const latest = ctx.systemReviewer.getLatest();
+        const health = ctx.systemReviewer.getHealthStatus();
+        base.systemReview = {
+          status: health,
+          lastReview: latest ? {
+            status: latest.status,
+            timestamp: latest.timestamp,
+            passed: latest.stats.passed,
+            failed: latest.stats.failed,
+            skipped: latest.stats.skipped,
+          } : null,
+          probesRegistered: ctx.systemReviewer.getProbeCount(),
+        };
+        // Contribute to overall degradation if critical
+        if (latest?.status === 'critical') {
+          isDegraded = true;
+        }
       }
     }
     res.json(base);
@@ -4555,6 +4578,54 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Message query failed' });
     }
+  });
+
+  // ── System Reviews ────────────────────────────────────────────────
+
+  router.post('/system-reviews', async (req, res) => {
+    if (!ctx.systemReviewer) {
+      res.status(503).json({ error: 'SystemReviewer not available' });
+      return;
+    }
+    try {
+      const { tier, tiers, probeId, probeIds, dryRun } = req.body || {};
+      const report = await ctx.systemReviewer.review({
+        tiers: tiers ?? (tier != null ? [Number(tier)] : undefined),
+        probeIds: probeIds ?? (probeId ? [probeId] : undefined),
+        dryRun: dryRun === true,
+      });
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Review failed' });
+    }
+  });
+
+  router.get('/system-reviews/latest', (_req, res) => {
+    if (!ctx.systemReviewer) {
+      res.status(503).json({ error: 'SystemReviewer not available' });
+      return;
+    }
+    const latest = ctx.systemReviewer.getLatest();
+    res.json(latest ?? { message: 'No reviews yet' });
+  });
+
+  router.get('/system-reviews/history', (req, res) => {
+    if (!ctx.systemReviewer) {
+      res.status(503).json({ error: 'SystemReviewer not available' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const history = ctx.systemReviewer.getHistory(limit);
+    res.json({ count: history.length, reports: history });
+  });
+
+  router.get('/system-reviews/trend', (_req, res) => {
+    if (!ctx.systemReviewer) {
+      res.status(503).json({ error: 'SystemReviewer not available' });
+      return;
+    }
+    const trend = ctx.systemReviewer.getTrend();
+    res.json(trend);
   });
 
   return router;

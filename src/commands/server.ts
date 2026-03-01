@@ -74,6 +74,11 @@ import { pickupDroppedMessages } from '../messaging/DropPickup.js';
 import { pickupGitSyncMessages } from '../messaging/GitSyncTransport.js';
 import { DeliveryRetryManager } from '../messaging/DeliveryRetryManager.js';
 import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
+import { SystemReviewer } from '../monitoring/SystemReviewer.js';
+import { createSessionProbes } from '../monitoring/probes/SessionProbe.js';
+import { createSchedulerProbes } from '../monitoring/probes/SchedulerProbe.js';
+import { createMessagingProbes } from '../monitoring/probes/MessagingProbe.js';
+import { createLifelineProbes } from '../monitoring/probes/LifelineProbe.js';
 import type { PipelineMessage } from '../types/pipeline.js';
 import { toPipeline, toInjection, toLogEntry, formatHistoryLine } from '../types/pipeline.js';
 import type { Message, IntelligenceProvider } from '../core/types.js';
@@ -2130,7 +2135,70 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     console.log(pc.green(`  Inter-agent messaging: enabled (token: ${agentToken.slice(0, 8)}...)${dropSummary}`));
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
+    // ── System Reviewer: self-monitoring feature health ──────────────
+    const systemReviewConfig = config.monitoring?.systemReview;
+    const systemReviewEnabled = systemReviewConfig?.enabled !== false; // default: enabled
+    let systemReviewer: SystemReviewer | undefined;
+    if (systemReviewEnabled) {
+      const alertTopicId = state.get<number>('agent-attention-topic') ?? undefined;
+      systemReviewer = new SystemReviewer(
+        {
+          enabled: true,
+          scheduleMs: systemReviewConfig?.scheduleMs,
+          scheduledTiers: systemReviewConfig?.scheduledTiers,
+          autoSubmitFeedback: systemReviewConfig?.autoSubmitFeedback,
+          feedbackConsentGiven: systemReviewConfig?.feedbackConsentGiven,
+          alertOnCritical: systemReviewConfig?.alertOnCritical,
+          alertCooldownMs: systemReviewConfig?.alertCooldownMs,
+          disabledProbes: systemReviewConfig?.disabledProbes,
+        },
+        {
+          stateDir: config.stateDir,
+          sendAlert: telegram
+            ? (_topicId, text) => {
+                notify('SUMMARY', 'system-review', text, alertTopicId);
+                return Promise.resolve();
+              }
+            : undefined,
+          submitFeedback: feedback
+            ? (item) => feedback!.submit({ ...item, os: `${process.platform} ${process.arch}` })
+            : undefined,
+        },
+      );
+
+      // Register Tier 1 probes with real dependencies
+      const tmuxPath = detectTmuxPath() ?? '/usr/bin/tmux';
+      const probes = [
+        ...createSessionProbes({
+          listRunningSessions: () => sessionManager.listRunningSessions(),
+          getSessionDiagnostics: () => sessionManager.getSessionDiagnostics(),
+          maxSessions: config.sessions?.maxSessions ?? 3,
+          tmuxPath,
+        }),
+        ...createSchedulerProbes({
+          getJobs: () => (scheduler?.getJobs() ?? []).map(j => ({ id: j.slug, name: j.name, enabled: j.enabled })),
+          getStatus: () => scheduler?.getStatus() ?? { running: false, paused: false, jobCount: 0, enabledJobs: 0, queueLength: 0 },
+          jobsFilePath: config.scheduler.jobsFile,
+        }),
+        ...(telegram ? createMessagingProbes({
+          getStatus: () => telegram!.getStatus(),
+          messageLogPath: path.join(config.stateDir, 'telegram-messages.jsonl'),
+          isConfigured: () => true,
+        }) : []),
+        ...createLifelineProbes({
+          getSupervisorStatus: () => ({ running: false, healthy: false, restartAttempts: 0, lastHealthy: 0, coolingDown: false, cooldownRemainingMs: 0, circuitBroken: false, totalFailures: 0, lastCrashOutput: '', circuitBreakerRetryCount: 0, maxCircuitBreakerRetries: 0, inMaintenanceWait: false, maintenanceWaitElapsedMs: 0 }),
+          getQueueLength: () => 0,
+          peekQueue: () => [],
+          lockFilePath: path.join(config.stateDir, 'lifeline.lock'),
+          isEnabled: () => fs.existsSync(path.join(config.stateDir, 'lifeline.lock')),
+        }),
+      ];
+      systemReviewer.registerAll(probes);
+      systemReviewer.start();
+      console.log(pc.green(`  System Reviewer: ${probes.length} probes registered`));
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.

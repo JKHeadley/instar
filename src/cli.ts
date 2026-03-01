@@ -1172,6 +1172,23 @@ program
   .option('-d, --dir <path>', 'Project directory')
   .action(doctor);
 
+// ── System Review ────────────────────────────────────────────────
+
+program
+  .command('review')
+  .description('Run system review — verify features work end-to-end')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('-t, --tier <n>', 'Run only probes in this tier (1-5)')
+  .option('-p, --probe <id>', 'Run a specific probe by ID')
+  .option('--dry-run', 'Show what would run without executing')
+  .option('--history', 'Show past review results')
+  .option('--trend', 'Show trend analysis across recent reviews')
+  .option('--json', 'Output machine-readable JSON')
+  .action(async (opts) => {
+    const { review } = await import('./commands/review.js');
+    await review(opts);
+  });
+
 program
   .command('nuke <name>')
   .description('Completely remove a standalone agent and all its data')
