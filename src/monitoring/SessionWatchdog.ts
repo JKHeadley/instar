@@ -60,11 +60,16 @@ const EXCLUDED_PATTERNS = [
   'playwright-mcp', 'playwright-persistent', '@playwright/mcp',
   'chrome-native-host', 'claude-in-chrome-mcp', 'payments-mcp',
   'mcp-remote', '/mcp/', '.mcp/', 'caffeinate', 'exa-mcp-server',
+  // Shell-snapshot sourcing is session initialization, not a stuck command
+  '.claude/shell-snapshots',
 ];
 
 const EXCLUDED_PREFIXES = [
   '/bin/zsh -c -l source',
   '/bin/bash -c -l source',
+  // Shell-snapshot commands don't always include -l flag
+  '/bin/zsh -c source',
+  '/bin/bash -c source',
 ];
 
 // Escalation delays (ms to wait before advancing to next level)

@@ -134,58 +134,83 @@ describe('StallTriageNurse Enhancements', () => {
 
     // --- Pattern 1: Running bash command ---
 
-    it('detects (running) with bash command as unstick', () => {
+    it('detects (running) with bash command as unstick after 10+ min', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: 'Bash(# Run the build\n  npm run build)\n  (53s · timeout 2m)\n  (running)',
+        waitMinutes: 10,
       }));
       expect(result).not.toBeNull();
       expect(result!.action).toBe('unstick');
       expect(result!.confidence).toBe('high');
     });
 
-    it('detects (running) with python script as unstick', () => {
+    it('detects (running) with python script as unstick after 10+ min', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: 'Bash(python3 scripts/deploy.py --env prod)\n  (running)\n  timeout 5m',
+        waitMinutes: 12,
       }));
       expect(result).not.toBeNull();
       expect(result!.action).toBe('unstick');
     });
 
-    it('detects (running) with curl as unstick', () => {
+    it('detects (running) with curl as unstick after 10+ min', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: 'Bash(curl -s https://api.example.com/health)\n  (running)',
+        waitMinutes: 15,
       }));
       expect(result).not.toBeNull();
       expect(result!.action).toBe('unstick');
     });
 
-    it('detects (running) with node as unstick', () => {
+    it('detects (running) with node as unstick after 10+ min', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: '> Bash(node scripts/migrate.js) (running)',
+        waitMinutes: 10,
       }));
       expect(result).not.toBeNull();
       expect(result!.action).toBe('unstick');
     });
 
-    it('detects (running) with pnpm as unstick', () => {
+    it('detects (running) with pnpm as unstick after 10+ min', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: '> Bash(pnpm test) (running)',
+        waitMinutes: 10,
       }));
       expect(result).not.toBeNull();
       expect(result!.action).toBe('unstick');
     });
 
-    it('detects (running) with shell script as unstick', () => {
+    it('detects (running) with shell script as unstick after 10+ min', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: '> Bash(./deploy.sh --prod) (running)',
+        waitMinutes: 10,
       }));
       expect(result).not.toBeNull();
       expect(result!.action).toBe('unstick');
+    });
+
+    it('does NOT match (running) when waitMinutes < 10 (prevents killing test suites)', () => {
+      // This is the core regression test: (running) is a normal Claude Code indicator
+      // for any executing Bash tool. Test suites, builds, and installs legitimately
+      // take several minutes. The heuristic should NOT fire for short waits.
+      const result = nurse.heuristicDiagnose(makeContext({
+        tmuxOutput: '> Bash(npx vitest run) (running)',
+        waitMinutes: 5,
+      }));
+      expect(result).toBeNull(); // Should fall through to LLM
+    });
+
+    it('does NOT match (running) at default waitMinutes (3)', () => {
+      const result = nurse.heuristicDiagnose(makeContext({
+        tmuxOutput: '> Bash(npm run build) (running)',
+      }));
+      expect(result).toBeNull(); // Default waitMinutes is 3, below threshold
     });
 
     it('does NOT match (running) without recognizable command patterns', () => {
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: 'Some random text (running) without command indicators',
+        waitMinutes: 15,
       }));
       expect(result).toBeNull();
     });
@@ -424,14 +449,24 @@ describe('StallTriageNurse Enhancements', () => {
 
     // --- Pattern priority (first match wins) ---
 
-    it('(running) pattern takes priority over esc-to-interrupt', () => {
+    it('(running) pattern takes priority over esc-to-interrupt when wait >= 10 min', () => {
       // Both patterns present: (running) is checked first
+      const result = nurse.heuristicDiagnose(makeContext({
+        tmuxOutput: 'Bash(npm run build) (running)\nesc to interrupt',
+        waitMinutes: 10,
+      }));
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe('unstick'); // Pattern 1 wins, not Pattern 6
+    });
+
+    it('esc-to-interrupt wins over (running) when wait < 10 min (Pattern 1 gated)', () => {
+      // When waitMinutes < 10, Pattern 1 doesn't fire, so Pattern 6 can match
       const result = nurse.heuristicDiagnose(makeContext({
         tmuxOutput: 'Bash(npm run build) (running)\nesc to interrupt',
         waitMinutes: 5,
       }));
       expect(result).not.toBeNull();
-      expect(result!.action).toBe('unstick'); // Pattern 1 wins, not Pattern 6
+      expect(result!.action).toBe('interrupt'); // Pattern 6 wins because Pattern 1 is gated
     });
 
     it('OAuth pattern takes priority over context exhaustion', () => {
@@ -457,7 +492,7 @@ describe('StallTriageNurse Enhancements', () => {
   // ═══════════════════════════════════════════════════════════
 
   describe('heuristic integration — runs before LLM in diagnose()', () => {
-    it('skips LLM when heuristic matches (running) pattern', async () => {
+    it('skips LLM when heuristic matches (running) pattern (10+ min wait)', async () => {
       (deps.captureSessionOutput as ReturnType<typeof vi.fn>).mockReturnValue(
         '> Bash(curl https://api.example.com/data) (running)'
       );
@@ -467,7 +502,8 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: mockIntelligence as any,
       });
 
-      const result = await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      const result = await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       expect(mockIntelligence.evaluate).not.toHaveBeenCalled();
       expect(result.diagnosis?.action).toBe('unstick');
@@ -545,7 +581,7 @@ describe('StallTriageNurse Enhancements', () => {
       expect(mockIntelligence.evaluate).toHaveBeenCalledTimes(1);
     });
 
-    it('heuristic beats LLM even when LLM would disagree', async () => {
+    it('heuristic beats LLM even when LLM would disagree (10+ min wait)', async () => {
       (deps.captureSessionOutput as ReturnType<typeof vi.fn>).mockReturnValue(
         '> Bash(npm run build) (running)'
       );
@@ -558,10 +594,30 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: statusIntelligence as any,
       });
 
-      const result = await nurse.triage(6, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      const result = await nurse.triage(6, 'sess', 'hello', tenMinAgo);
 
       expect(result.diagnosis?.action).toBe('unstick'); // Heuristic wins
       expect(statusIntelligence.evaluate).not.toHaveBeenCalled();
+    });
+
+    it('LLM handles (running) pattern when wait < 10 min (heuristic gated)', async () => {
+      (deps.captureSessionOutput as ReturnType<typeof vi.fn>).mockReturnValue(
+        '> Bash(npm run build) (running)'
+      );
+
+      const statusIntelligence = createMockIntelligence(diagnosisJson('status_update'));
+
+      const nurse = new StallTriageNurse(deps, {
+        config: TEST_CONFIG,
+        intelligence: statusIntelligence as any,
+      });
+
+      const result = await nurse.triage(7, 'sess', 'hello', Date.now());
+
+      // With short wait, heuristic doesn't fire — LLM handles it
+      expect(statusIntelligence.evaluate).toHaveBeenCalled();
+      expect(result.diagnosis?.action).toBe('status_update');
     });
   });
 
@@ -776,7 +832,8 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: mockIntelligence as any,
       });
 
-      await nurse.triage(1, 'sess', 'check the logs', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'check the logs', tenMinAgo);
 
       const sendInputCalls = (deps.sendInput as ReturnType<typeof vi.fn>).mock.calls;
       const followUpCall = sendInputCalls.find(
@@ -821,7 +878,8 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: mockIntelligence as any,
       });
 
-      await nurse.triage(1, 'sess', 'Can you check the deployment status?', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'Can you check the deployment status?', tenMinAgo);
 
       const sendInputCalls = (deps.sendInput as ReturnType<typeof vi.fn>).mock.calls;
       const followUpCall = sendInputCalls.find(
@@ -908,7 +966,8 @@ describe('StallTriageNurse Enhancements', () => {
       });
 
       // Should not throw even if follow-up fails
-      const result = await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      const result = await nurse.triage(1, 'sess', 'hello', tenMinAgo);
       expect(result).toBeDefined();
       expect(followUpAttempted).toBe(true);
     });
@@ -948,7 +1007,7 @@ describe('StallTriageNurse Enhancements', () => {
       expect(depsWithPT.getStuckProcesses).not.toHaveBeenCalled();
     });
 
-    it('heuristic beats LLM when pattern matches', async () => {
+    it('heuristic beats LLM when pattern matches (10+ min wait)', async () => {
       (deps.captureSessionOutput as ReturnType<typeof vi.fn>).mockReturnValue(
         '> Bash(npm run build) (running)'
       );
@@ -960,7 +1019,8 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: statusIntelligence as any,
       });
 
-      const result = await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      const result = await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       expect(result.diagnosis?.action).toBe('unstick');
       expect(statusIntelligence.evaluate).not.toHaveBeenCalled();
@@ -1124,7 +1184,8 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: mockIntelligence as any,
       });
 
-      const result = await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      const result = await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       expect(result.actionsTaken).toContain('unstick');
       expect(result.actionsTaken).toContain('restart');
@@ -1198,7 +1259,8 @@ describe('StallTriageNurse Enhancements', () => {
         return callCount > 1 ? 'new output with Read( call' : '> Bash(curl) (running)';
       });
 
-      await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       expect(events).toEqual(['started', 'diagnosed', 'treated', 'resolved']);
     });
@@ -1218,7 +1280,8 @@ describe('StallTriageNurse Enhancements', () => {
         escalations.push({ from: data.from, to: data.to });
       });
 
-      await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       expect(escalations.length).toBeGreaterThanOrEqual(1);
       expect(escalations[0].from).toBe('unstick');
@@ -1256,7 +1319,8 @@ describe('StallTriageNurse Enhancements', () => {
         config: { ...TEST_CONFIG, postInterventionDelayMs: 50 },
         intelligence: mockIntelligence as any,
       });
-      await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'hello', tenMinAgo);
       const elapsed = Date.now() - startTime;
 
       // Should have waited at least ~50ms
@@ -1348,10 +1412,11 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: mockIntelligence as any,
       });
 
-      await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       // Second attempt on same topic should hit cooldown
-      const result2 = await nurse.triage(1, 'sess', 'hello again', Date.now());
+      const result2 = await nurse.triage(1, 'sess', 'hello again', tenMinAgo);
       expect(result2.resolved).toBe(false);
       expect(result2.fallbackReason).toBe('cooldown_active');
     });
@@ -1399,7 +1464,8 @@ describe('StallTriageNurse Enhancements', () => {
         intelligence: mockIntelligence as any,
       });
 
-      await nurse.triage(1, 'sess', 'hello', Date.now());
+      const tenMinAgo = Date.now() - 10 * 60_000;
+      await nurse.triage(1, 'sess', 'hello', tenMinAgo);
 
       const history = nurse.getHistory();
       expect(history.length).toBe(1);

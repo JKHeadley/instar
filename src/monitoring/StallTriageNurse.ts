@@ -348,12 +348,19 @@ export class StallTriageNurse extends EventEmitter {
     if (!output) return null;
 
     // Pattern 1: Running bash command with "(running)" indicator
-    if (/\(running\)/i.test(output) && /timeout|etime|\.py|\.sh|curl|npm|node|bash|python|pnpm/i.test(output)) {
+    // NOTE: "(running)" is a NORMAL Claude Code indicator for any executing Bash tool.
+    // Only fire this heuristic if the session has been waiting 10+ minutes, since
+    // test suites, builds, and installs legitimately take several minutes.
+    // For shorter waits, let the LLM diagnose (it's much better at distinguishing
+    // "running test suite" from "hung curl command").
+    if (context.waitMinutes >= 10 &&
+        /\(running\)/i.test(output) &&
+        /timeout|etime|\.py|\.sh|curl|npm|node|bash|python|pnpm/i.test(output)) {
       return {
-        summary: 'Bash command running with (running) indicator — likely hung process',
+        summary: `Bash command running with (running) indicator for ${context.waitMinutes}+ minutes — likely hung process`,
         action: 'unstick',
         confidence: 'high',
-        userMessage: `Session "${context.sessionName}" has a command that appears stuck. Sending Ctrl+C to recover...`,
+        userMessage: `Session "${context.sessionName}" has a command that appears stuck (${context.waitMinutes} min). Sending Ctrl+C to recover...`,
       };
     }
 
