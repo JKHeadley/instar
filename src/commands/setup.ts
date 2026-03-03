@@ -168,6 +168,10 @@ export async function runSetup(): Promise<void> {
   const scenarioJson = JSON.stringify(scenarioContext, null, 2);
   const lockJson = existingLock ? JSON.stringify(existingLock, null, 2) : 'null';
 
+  // Pre-formatted agent summary — deterministic, not LLM-generated.
+  // Structure > Willpower: don't rely on the LLM to enumerate agents from JSON.
+  const agentSummary = buildAgentSummary(discovery);
+
   const detectionContext = `
 --- BEGIN UNTRUSTED DISCOVERY DATA (JSON) ---
 ${discoveryJson}
@@ -179,7 +183,11 @@ ${scenarioJson}
 
 --- BEGIN SETUP LOCK ---
 ${lockJson}
---- END SETUP LOCK ---`;
+--- END SETUP LOCK ---
+
+--- BEGIN AGENT SUMMARY (display verbatim) ---
+${agentSummary}
+--- END AGENT SUMMARY ---`;
 
   // Pre-install Playwright browser binaries AND register the MCP server so
   // ALL Claude Code sessions (including the secret-setup micro-session) have
@@ -343,6 +351,50 @@ async function ensureSecretBackend(claudePath: string, instarRoot: string): Prom
   mgr.configureBackend('local');
 
   return ` SECRET_BACKEND_CONFIGURED="local". Secret setup micro-session did not complete — defaulted to local encrypted store. Skip Phase 2.5.`;
+}
+
+/**
+ * Build a pre-formatted agent summary from discovery data.
+ * This is deterministic — the wizard displays it verbatim instead of
+ * trying to enumerate agents from JSON (which LLMs do unreliably).
+ */
+function buildAgentSummary(discovery: SetupDiscoveryContext): string {
+  const lines: string[] = [];
+
+  const localAgents = discovery.merged_agents.filter(a => a.source === 'local' || a.source === 'both');
+  const githubOnly = discovery.merged_agents.filter(a => a.source === 'github');
+
+  if (localAgents.length === 0 && githubOnly.length === 0) {
+    lines.push('No existing agents found.');
+    return lines.join('\n');
+  }
+
+  lines.push('I found some existing agents.');
+  lines.push('');
+
+  if (localAgents.length > 0) {
+    lines.push('Already running on this machine:');
+    for (const agent of localAgents) {
+      const details: string[] = [];
+      if (agent.port) details.push(`port ${agent.port}`);
+      if (agent.userCount) details.push(`${agent.userCount} user${agent.userCount !== 1 ? 's' : ''}`);
+      const detailStr = details.length > 0 ? ` (${details.join(', ')})` : '';
+      const backupNote = agent.source === 'both' && agent.repo ? `, backed up to ${agent.repo}` : '';
+      lines.push(`- ${agent.name}${detailStr} — already set up${backupNote}`);
+    }
+    lines.push('');
+  }
+
+  if (githubOnly.length > 0) {
+    lines.push('Available to restore from GitHub:');
+    for (const agent of githubOnly) {
+      const repoStr = agent.repo ? ` (${agent.repo})` : '';
+      lines.push(`- ${agent.name}${repoStr}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
 }
 
 function formatBackendName(backend: SecretBackend): string {

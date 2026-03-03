@@ -117,35 +117,14 @@ Present:
 
 ### Entry Point B: No Agent in CWD (existingAgentInCWD=false)
 
-Check `merged_agents` from discovery data.
+**CRITICAL: Display the AGENT SUMMARY block verbatim.** The prompt includes a `--- BEGIN AGENT SUMMARY ---` block with a pre-formatted listing of all discovered agents. Display this text exactly as-is. Do NOT generate your own agent listing from the JSON — LLMs unreliably enumerate lists from structured data.
 
-**CRITICAL: Every agent in `merged_agents` MUST appear in the options.** Don't mention an agent in the summary text but leave it out of the options — that confuses users. The summary and options must be consistent.
-
-**Local agents that are already running on this machine are informational only.** Don't offer them as options (there's nothing to set up — they're already running). But DO explain why they're not actionable so the user isn't confused:
-
-If merged agents exist, present using `AskUserQuestion`. The options list should include:
+Then offer `AskUserQuestion` options. Build the options list from `merged_agents` in the JSON:
 - One "Restore [name]" option for each GitHub-only agent (source='github')
-- One "Manage [name]" option for each local-only agent that might need reconfiguration
-- For agents that appear both locally and on GitHub (source='both'), show as "Manage [name]" with note about backup
+- One "Restore [name]" option for each agent with source='both' that isn't in the current directory
 - "Start fresh" as the last option
 
-Example with both local and GitHub agents:
-
-> I found some existing agents.
->
-> Already running on this machine:
-> - **ai-guy** (port 4040, 1 user) — already set up
->
-> Available to restore from GitHub:
-> - **personal-bot** (you/instar-personal-bot)
-> - **work-agent** (SageMindAI/instar-work-agent)
-
-Then offer AskUserQuestion options:
-1. **Restore personal-bot** — Clone from GitHub and set it up here
-2. **Restore work-agent** — Clone from GitHub and set it up here
-3. **Start fresh** — Set up a brand new agent
-
-Only include "Manage [name]" for local agents if the user navigated here expecting to reconfigure one. For most flows, just noting they exist is sufficient — the user came here to set up something NEW.
+**Every agent with a "Restore" option MUST also appear in the AGENT SUMMARY.** The summary is pre-built to ensure this — just display it verbatim.
 
 If user picks a restore option → Go to [Restore Flow](#restore-flow)
 If "Start fresh" → continue to fresh install.
