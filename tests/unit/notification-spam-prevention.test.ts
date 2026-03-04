@@ -453,5 +453,63 @@ describe('Job quiet mode (on-alert)', () => {
 
     expect(prompt).not.toContain('NOTIFICATION PROTOCOL');
   });
+
+  it('cleans up stale topic mappings for on-alert jobs on startup', async () => {
+    const mockTelegram = {
+      sendToTopic: vi.fn().mockResolvedValue(undefined),
+      findOrCreateForumTopic: vi.fn().mockResolvedValue({ topicId: 42, name: 'test', reused: false }),
+      closeForumTopic: vi.fn().mockResolvedValue(true),
+    };
+    scheduler.setTelegram(mockTelegram as unknown as TelegramAdapter);
+
+    // Simulate stale topic mappings from before on-alert was the default
+    state.set('job-topic-mappings', { 'stale-job': 777 });
+
+    // Inject an on-alert job (undefined telegramNotify) with the stale topicId
+    injectJobs([{ slug: 'stale-job', name: 'Stale Job', topicId: 777 }]);
+
+    // Call ensureJobTopics (private, via start)
+    const ensureJobTopics = (scheduler as unknown as {
+      ensureJobTopics: (jobs: JobDefinition[]) => Promise<void>;
+    }).ensureJobTopics;
+    const jobs = (scheduler as unknown as { jobs: JobDefinition[] }).jobs;
+    await ensureJobTopics.call(scheduler, jobs);
+
+    // Should have closed the stale topic
+    expect(mockTelegram.closeForumTopic).toHaveBeenCalledWith(777);
+
+    // Should have removed the mapping
+    const mappings = state.get<Record<string, number>>('job-topic-mappings');
+    expect(mappings?.['stale-job']).toBeUndefined();
+
+    // Should have cleared the topicId on the job
+    expect(jobs[0].topicId).toBeUndefined();
+  });
+
+  it('does NOT clean up topics for telegramNotify: true jobs', async () => {
+    const mockTelegram = {
+      sendToTopic: vi.fn().mockResolvedValue(undefined),
+      findOrCreateForumTopic: vi.fn().mockResolvedValue({ topicId: 42, name: 'test', reused: false }),
+      closeForumTopic: vi.fn().mockResolvedValue(true),
+    };
+    scheduler.setTelegram(mockTelegram as unknown as TelegramAdapter);
+
+    state.set('job-topic-mappings', { 'loud-job': 888 });
+
+    injectJobs([{ slug: 'loud-job', name: 'Loud Job', topicId: 888, telegramNotify: true }]);
+
+    const ensureJobTopics = (scheduler as unknown as {
+      ensureJobTopics: (jobs: JobDefinition[]) => Promise<void>;
+    }).ensureJobTopics;
+    const jobs = (scheduler as unknown as { jobs: JobDefinition[] }).jobs;
+    await ensureJobTopics.call(scheduler, jobs);
+
+    // Should NOT have closed the topic — it's an always-notify job
+    expect(mockTelegram.closeForumTopic).not.toHaveBeenCalled();
+
+    // Mapping should still exist
+    const mappings = state.get<Record<string, number>>('job-topic-mappings');
+    expect(mappings?.['loud-job']).toBe(888);
+  });
 });
 

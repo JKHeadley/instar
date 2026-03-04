@@ -674,7 +674,22 @@ export class JobScheduler {
       // Skip eager topic creation for silent or on-alert jobs.
       // On-alert jobs get topics created lazily when they first have something to report.
       const mode = this.getNotifyMode(job);
-      if (mode === 'never' || mode === 'on-alert') continue;
+      if (mode === 'never' || mode === 'on-alert') {
+        // Clean up stale topic mappings from before on-alert was the default.
+        // Older versions created topics eagerly for ALL jobs. Close and remove them.
+        const staleTopicId = job.topicId || mappings[job.slug];
+        if (staleTopicId) {
+          console.log(`[scheduler] Cleaning up stale topic for on-alert job "${job.slug}" (topic ${staleTopicId})`);
+          try {
+            await this.telegram.closeForumTopic(staleTopicId);
+          } catch {
+            // @silent-fallback-ok — topic may already be closed or deleted, cleanup is best-effort
+          }
+          delete mappings[job.slug];
+          job.topicId = undefined;
+        }
+        continue;
+      }
 
       // If job already has a topicId (from jobs.json or previous mapping), use it
       if (job.topicId) {
