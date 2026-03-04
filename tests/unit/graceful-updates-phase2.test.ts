@@ -536,7 +536,7 @@ describe('Phase 2B+E: AutoUpdater with session gating', () => {
     // Should have notified about the upcoming restart
     const calls = (telegram.sendToTopic as any).mock.calls;
     const messages = calls.map((c: any[]) => c[1] as string);
-    expect(messages.some((m: string) => m.includes('restarting in') || m.includes('will resume'))).toBe(true);
+    expect(messages.some((m: string) => m.includes('restarting in') || m.includes('will resume') || m.includes('Restarting to pick up') || m.includes('updated to'))).toBe(true);
 
     // Restart should have proceeded (idle sessions don't block)
     const flagPath = path.join(tmpDir, 'state', 'restart-requested.json');

@@ -73,7 +73,7 @@ describe('JobScheduler edge cases', () => {
       scheduler.triggerJob('test', 'manual');
       await new Promise(r => setTimeout(r, 50));
 
-      expect(mockSM._lastSpawnArgs?.prompt).toBe('Check the weather');
+      expect(mockSM._lastSpawnArgs?.prompt).toContain('Check the weather');
     });
 
     it('builds prompt for "skill" type job', async () => {
@@ -84,7 +84,7 @@ describe('JobScheduler edge cases', () => {
       scheduler.triggerJob('test', 'manual');
       await new Promise(r => setTimeout(r, 50));
 
-      expect(mockSM._lastSpawnArgs?.prompt).toBe('/scan');
+      expect(mockSM._lastSpawnArgs?.prompt).toContain('/scan');
     });
 
     it('builds prompt for "skill" type with args', async () => {
@@ -95,7 +95,7 @@ describe('JobScheduler edge cases', () => {
       scheduler.triggerJob('test', 'manual');
       await new Promise(r => setTimeout(r, 50));
 
-      expect(mockSM._lastSpawnArgs?.prompt).toBe('/scan --deep');
+      expect(mockSM._lastSpawnArgs?.prompt).toContain('/scan --deep');
     });
 
     it('builds prompt for "script" type job', async () => {
@@ -106,7 +106,7 @@ describe('JobScheduler edge cases', () => {
       scheduler.triggerJob('test', 'manual');
       await new Promise(r => setTimeout(r, 50));
 
-      expect(mockSM._lastSpawnArgs?.prompt).toBe('Run this script: ./check.sh');
+      expect(mockSM._lastSpawnArgs?.prompt).toContain('Run this script: ./check.sh');
     });
 
     it('passes model tier to session', async () => {

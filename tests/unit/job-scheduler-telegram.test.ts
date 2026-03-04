@@ -99,6 +99,7 @@ describe('JobScheduler Telegram notifications', () => {
       model: j.model ?? 'sonnet' as const,
       execute: j.execute ?? { type: 'prompt' as const, value: 'test' },
       topicId: j.topicId,
+      telegramNotify: j.telegramNotify,
     }));
     // Access private field to inject jobs
     (scheduler as unknown as { jobs: JobDefinition[] }).jobs = fullJobs as JobDefinition[];
@@ -190,6 +191,9 @@ describe('JobScheduler Telegram notifications', () => {
       };
       scheduler.setTelegram(mockTelegram as unknown as import('../../src/messaging/TelegramAdapter.js').TelegramAdapter);
 
+      // captureOutput must return non-empty text — empty output is silently skipped
+      vi.spyOn(sessionManager, 'captureOutput').mockReturnValue('Job completed successfully.');
+
       injectJobs([{ slug: 'tg-job', name: 'TG Job', topicId: 42, telegramNotify: true }]);
       const session = createSession({ jobSlug: 'tg-job', status: 'completed' });
 
@@ -208,6 +212,8 @@ describe('JobScheduler Telegram notifications', () => {
       };
       scheduler.setTelegram(mockTelegram as unknown as import('../../src/messaging/TelegramAdapter.js').TelegramAdapter);
 
+      vi.spyOn(sessionManager, 'captureOutput').mockReturnValue('Job completed successfully.');
+
       injectJobs([{ slug: 'recreate-job', name: 'Recreate Job', topicId: 42, telegramNotify: true }]);
       const session = createSession({ jobSlug: 'recreate-job', status: 'completed' });
 
@@ -225,6 +231,8 @@ describe('JobScheduler Telegram notifications', () => {
         send: vi.fn().mockResolvedValue(undefined),
       };
       scheduler.setMessenger(mockMessenger);
+
+      vi.spyOn(sessionManager, 'captureOutput').mockReturnValue('Job completed successfully.');
 
       injectJobs([{ slug: 'msg-job', name: 'Msg Job', telegramNotify: true }]);
       const session = createSession({ jobSlug: 'msg-job', status: 'completed' });
@@ -270,6 +278,8 @@ describe('JobScheduler Telegram notifications', () => {
         createForumTopic: vi.fn(),
       };
       scheduler.setTelegram(mockTelegram as unknown as import('../../src/messaging/TelegramAdapter.js').TelegramAdapter);
+
+      vi.spyOn(sessionManager, 'captureOutput').mockReturnValue('Job completed successfully.');
 
       injectJobs([{ slug: 'dur-job', name: 'Duration Job', topicId: 10, telegramNotify: true }]);
       // Create session that started 5 minutes ago

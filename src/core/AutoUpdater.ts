@@ -594,6 +594,11 @@ export class AutoUpdater {
         this.lastError = data.lastError ?? null;
         this.pendingUpdate = data.pendingUpdate ?? null;
         this.pendingUpdateDetectedAt = data.pendingUpdateDetectedAt ?? null;
+        // Restore dedup state — these MUST survive restarts to prevent notification loops.
+        // Before v0.12.10, these were in-memory only, causing the notification spam
+        // that repeated on every server restart.
+        this.notifiedVersionMismatch = data.notifiedVersionMismatch ?? null;
+        this.lastNotifiedRestartVersion = data.lastNotifiedRestartVersion ?? null;
         // Don't restore coalescingUntil — the timer is in-memory only.
         // On restart, if there's still a pendingUpdate, the next tick()
         // will re-detect it and start a fresh coalescing timer.
@@ -615,6 +620,9 @@ export class AutoUpdater {
       pendingUpdate: this.pendingUpdate,
       pendingUpdateDetectedAt: this.pendingUpdateDetectedAt,
       coalescingUntil: this.coalescingUntil,
+      // Persist dedup state — prevents notification loops across restarts
+      notifiedVersionMismatch: this.notifiedVersionMismatch,
+      lastNotifiedRestartVersion: this.lastNotifiedRestartVersion,
       savedAt: new Date().toISOString(),
     };
 

@@ -405,6 +405,38 @@ export class ServerSupervisor extends EventEmitter {
 
       console.log(`[Supervisor] Restart requested by ${data.requestedBy} for v${data.targetVersion}`);
 
+      // RESTART LOOP DETECTION: If we've already restarted for this version,
+      // the binary isn't actually updating (npx cache mismatch). Don't loop.
+      const restartCountFile = path.join(this.stateDir!, 'state', 'restart-version-count.json');
+      let restartCount = 0;
+      try {
+        if (fs.existsSync(restartCountFile)) {
+          const countData = JSON.parse(fs.readFileSync(restartCountFile, 'utf-8'));
+          if (countData.targetVersion === data.targetVersion) {
+            restartCount = (countData.count ?? 0);
+          }
+        }
+      } catch { /* fresh count */ }
+
+      if (restartCount >= 2) {
+        console.log(`[Supervisor] Restart loop detected — already restarted ${restartCount}x for v${data.targetVersion}. Skipping.`);
+        try { fs.unlinkSync(flagPath); } catch { /* ignore */ }
+        // Clean up the count file so it doesn't block future real updates
+        try { fs.unlinkSync(restartCountFile); } catch { /* ignore */ }
+        return;
+      }
+
+      // Increment restart count for this version
+      try {
+        const stateSubdir = path.join(this.stateDir!, 'state');
+        fs.mkdirSync(stateSubdir, { recursive: true });
+        fs.writeFileSync(restartCountFile, JSON.stringify({
+          targetVersion: data.targetVersion,
+          count: restartCount + 1,
+          lastRestartAt: new Date().toISOString(),
+        }));
+      } catch { /* best-effort */ }
+
       // Enter maintenance wait if this is a planned restart (suppress serverDown alerts)
       if (data.plannedRestart) {
         this.maintenanceWaitStartedAt = Date.now();

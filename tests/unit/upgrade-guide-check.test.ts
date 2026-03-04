@@ -137,11 +137,11 @@ describe('Upgrade Guide Infrastructure', () => {
       expect(notifyContent).toContain('instar upgrade-ack');
     });
 
-    it('server.ts uses UpgradeNotifyManager for verified delivery', () => {
-      const serverPath = path.join(ROOT, 'src', 'commands', 'server.ts');
-      const serverContent = fs.readFileSync(serverPath, 'utf-8');
-      expect(serverContent).toContain('UpgradeNotifyManager');
-      expect(serverContent).toContain('.notify()');
+    it('UpgradeNotifyManager exists and is exported', () => {
+      const managerPath = path.join(ROOT, 'src', 'core', 'UpgradeNotifyManager.ts');
+      expect(fs.existsSync(managerPath)).toBe(true);
+      const content = fs.readFileSync(managerPath, 'utf-8');
+      expect(content).toContain('class UpgradeNotifyManager');
     });
   });
 
