@@ -104,9 +104,14 @@ if [ -f "$CONFIG_FILE" ]; then
 
     # Inject recent Telegram messages after compaction — thread context is often
     # the first thing lost in compaction; re-injecting it immediately restores continuity.
+    # Use INSTAR_TELEGRAM_TOPIC (the actual session topic) first, fall back to lifeline topic.
     HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/health" 2>/dev/null)
     if [ "$HEALTH" = "200" ]; then
-      LIFELINE_TOPIC=$(python3 -c "
+      TOPIC_FOR_CONTEXT="${INSTAR_TELEGRAM_TOPIC:-}"
+
+      # Fall back to lifeline topic if no session topic set
+      if [ -z "$TOPIC_FOR_CONTEXT" ]; then
+        TOPIC_FOR_CONTEXT=$(python3 -c "
 import json, sys
 try:
     cfg = json.load(open('$CONFIG_FILE'))
@@ -122,50 +127,72 @@ try:
 except Exception:
     pass
 " 2>/dev/null)
+      fi
 
-      if [ -n "$LIFELINE_TOPIC" ]; then
+      if [ -n "$TOPIC_FOR_CONTEXT" ]; then
         AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
         if [ -n "$AUTH_TOKEN" ]; then
           RECENT_MSGS=$(curl -s \
             -H "Authorization: Bearer ${AUTH_TOKEN}" \
-            "http://localhost:${PORT}/telegram/topics/${LIFELINE_TOPIC}/messages?limit=10" 2>/dev/null)
+            "http://localhost:${PORT}/telegram/topics/${TOPIC_FOR_CONTEXT}/messages?limit=15" 2>/dev/null)
         else
           RECENT_MSGS=$(curl -s \
-            "http://localhost:${PORT}/telegram/topics/${LIFELINE_TOPIC}/messages?limit=10" 2>/dev/null)
+            "http://localhost:${PORT}/telegram/topics/${TOPIC_FOR_CONTEXT}/messages?limit=15" 2>/dev/null)
         fi
 
-        MSG_COUNT=$(echo "$RECENT_MSGS" | python3 -c "
+        # Format messages and detect unanswered user messages
+        echo "$RECENT_MSGS" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
-    print(len(msgs))
-except:
-    print(0)
-" 2>/dev/null)
+    if not msgs:
+        sys.exit(0)
 
-        if [ -n "$MSG_COUNT" ] && [ "$MSG_COUNT" -gt "0" ] 2>/dev/null; then
-          echo ""
-          echo "--- RECENT TELEGRAM CONTEXT (restoring after compaction, last ${MSG_COUNT} messages) ---"
-          echo "$RECENT_MSGS" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    msgs = data.get('messages', [])
+    print()
+    print('--- RECENT TELEGRAM CONTEXT (restoring after compaction, last %d messages) ---' % len(msgs))
+
     for m in msgs:
         ts = m.get('timestamp', '')[:16].replace('T', ' ')
-        direction = m.get('direction', 'in')
+        from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
-        sender = 'User' if direction == 'in' else 'Agent'
-        if len(text) > 200:
-            text = text[:197] + '...'
+        sender = 'User' if from_user else 'Agent'
+        if len(text) > 300:
+            text = text[:297] + '...'
         print(f'[{ts}] {sender}: {text}')
-except Exception as e:
+
+    # Detect unanswered user messages
+    pending_user = []
+    for m in msgs:
+        text = m.get('text', '').strip()
+        if not text:
+            continue
+        from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
+        if from_user:
+            pending_user.append(m)
+        else:
+            pending_user = []
+
+    if pending_user:
+        print()
+        print('!' * 60)
+        print('UNANSWERED MESSAGE(S) FROM USER:')
+        for pm in pending_user:
+            pm_text = pm.get('text', '')[:200]
+            pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+            print(f'  [{pm_ts}] \"{pm_text}\"')
+        print()
+        print('You MUST address these messages substantively. Do NOT respond')
+        print('with just a greeting or generic reply. If the latest message')
+        print('is a follow-up like \"hello?\" or \"please respond\", address')
+        print('the EARLIER unanswered message — that is what the user is')
+        print('waiting for.')
+        print('!' * 60)
+    print()
+    print('--- END TELEGRAM CONTEXT ---')
+except Exception:
     pass
 " 2>/dev/null
-          echo "--- END TELEGRAM CONTEXT ---"
-          echo "Continuity restored. Resume the conversation naturally."
-        fi
       fi
     fi
   fi
