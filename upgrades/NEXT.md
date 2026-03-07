@@ -1,28 +1,26 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
+<!-- Valid values: patch, minor, major -->
+<!-- patch = bug fixes, refactors, test additions, doc updates -->
+<!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
+<!-- major = breaking changes to existing APIs or behavior -->
 
 ## What Changed
 
-WhatsApp Baileys pairing is now fully automated during setup wizard. Instead of telling users to "check the server logs for a pairing code" and run `tmux attach`, the wizard now:
-
-1. Starts the server automatically
-2. Opens a browser with the dashboard QR code (or WhatsApp Web as fallback)
-3. Walks the user through scanning the QR with their phone
-4. Polls the connection status and confirms when paired
-5. Falls back to pairing code method if QR fails
-6. Falls back to manual relay of pairing code if no browser tools available
-
-The wizard also sends a WhatsApp greeting message after pairing (mirroring the Telegram Lifeline greeting), and does NOT declare "All done" until WhatsApp is actually connected.
+<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
+<!-- Write this for the AGENT — they need to understand the system deeply. -->
 
 ## What to Tell Your User
 
-- **WhatsApp setup is now hands-free**: "Setting up WhatsApp is now just as smooth as Telegram — the wizard handles everything automatically. You just scan a QR code when prompted."
+<!-- Write talking points the agent should relay to their user. -->
+<!-- This should be warm, conversational, user-facing — not a changelog. -->
+<!-- Focus on what THEY can now do, not internal plumbing. -->
+
+- **[Feature name]**: "[Brief, friendly description of what this means for the user]"
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Browser-automated WhatsApp QR pairing | Automatic during setup wizard when Baileys is selected |
-| WhatsApp greeting on setup completion | Automatic — agent introduces itself via WhatsApp |
-| QR → pairing code fallback | Automatic if QR scanning fails after 2 minutes |
+| [Capability] | [Endpoint, command, or "automatic"] |

@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-03-07T19:05:25.547Z",
-  "instarVersion": "0.12.20",
+  "generatedAt": "2026-03-07T19:14:02.219Z",
+  "instarVersion": "0.12.21",
   "entryCount": 166,
   "entries": {
     "hook:session-start": {
@@ -295,7 +295,7 @@
       "type": "skill",
       "domain": "skills",
       "sourcePath": ".claude/skills/setup-wizard/skill.md",
-      "contentHash": "7cd0c49f7ed3b7a8bd962f981c52d62c5dedfa7e95dfdc0ce40206f303400f70",
+      "contentHash": "b21b0c7e57c0fb346ad444912a1842139aed902fc3a91c76fe2d3242917d77e2",
       "since": "2025-01-01"
     },
     "route-group:health": {
