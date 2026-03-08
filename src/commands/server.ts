@@ -1052,6 +1052,45 @@ async function ensureAgentUpdatesTopic(
 }
 
 /**
+ * Pre-flight check: ensure better-sqlite3 native bindings are compiled for the current Node.js version.
+ *
+ * Both TopicMemory and SemanticMemory use better-sqlite3. When Telegram is not configured,
+ * TopicMemory never initializes, so the TopicMemory-embedded rebuild logic never runs.
+ * SemanticMemory then fails with "Could not locate the bindings file."
+ *
+ * This runs ONCE at startup, before any SQLite subsystem initializes, making the rebuild
+ * unconditionally available to all consumers.
+ */
+async function ensureSqliteBindings(): Promise<void> {
+  try {
+    await import('better-sqlite3');
+    // Bindings loaded OK — nothing to do.
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const isBindingError =
+      reason.includes('Could not locate the bindings file') ||
+      reason.includes('better-sqlite3') ||
+      reason.includes('was compiled against a different Node.js version');
+
+    if (!isBindingError) return; // Not a binding issue — let subsystems handle it.
+
+    console.log(pc.yellow('  better-sqlite3: native binding mismatch detected — auto-rebuilding for current Node.js version...'));
+    try {
+      const globalInstarDir = execSync('npm root -g', { encoding: 'utf-8', timeout: 10000 }).trim() + '/instar';
+      execSync('npm rebuild better-sqlite3', {
+        cwd: globalInstarDir,
+        encoding: 'utf-8',
+        timeout: 60000,
+        stdio: 'pipe',
+      });
+      console.log(pc.green('  better-sqlite3: rebuilt successfully — SQLite subsystems will use updated bindings.'));
+    } catch (rebuildErr) {
+      console.log(pc.yellow(`  better-sqlite3: rebuild failed (${rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr)}). SQLite subsystems may degrade.`));
+    }
+  }
+}
+
+/**
  * Clean up stale temp files from /tmp/instar-telegram/.
  * Removes files older than 7 days to prevent unbounded accumulation.
  */
@@ -1309,6 +1348,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Clean up stale Telegram temp files on startup
     cleanupTelegramTempFiles();
+
+    // Pre-flight: ensure better-sqlite3 bindings are compiled for the current Node.js version.
+    // Must run before TopicMemory or SemanticMemory initialize. See ensureSqliteBindings() for rationale.
+    await ensureSqliteBindings();
 
     // Run post-update migration on startup — ensures agent knowledge stays current
     // even if the update was installed externally (e.g., via `npm install -g instar@latest`).
@@ -2345,6 +2388,43 @@ export async function startServer(options: StartOptions): Promise<void> {
     _memoryMonitor = memoryMonitor;
     console.log(pc.green('  Orphan process reaper enabled'));
 
+    // Hook Event Receiver — receives HTTP hook events from Claude Code sessions
+    const { HookEventReceiver } = await import('../monitoring/HookEventReceiver.js');
+    const hookEventReceiver = new HookEventReceiver({ stateDir: config.stateDir });
+    console.log(pc.green('  Hook event receiver enabled'));
+
+    // Subagent Tracker — monitors subagent lifecycle via hook events
+    const { SubagentTracker } = await import('../monitoring/SubagentTracker.js');
+    const subagentTracker = new SubagentTracker({ stateDir: config.stateDir });
+    console.log(pc.green('  Subagent tracker enabled'));
+
+    // Worktree Monitor — detects orphaned worktrees after sessions complete
+    const { WorktreeMonitor } = await import('../monitoring/WorktreeMonitor.js');
+    const worktreeMonitor = new WorktreeMonitor({
+      projectDir: config.projectDir,
+      stateDir: config.stateDir,
+      pollIntervalMs: 300_000, // 5 minutes
+      alertCallback: async (msg: string) => {
+        notify('IMMEDIATE', 'system', msg);
+      },
+    });
+    worktreeMonitor.start();
+
+    // Wire worktree scan to session completion
+    sessionManager.on('sessionComplete', async (session: import('../core/types.js').Session) => {
+      try {
+        await worktreeMonitor.onSessionComplete(session);
+      } catch (err) {
+        console.error('[WorktreeMonitor] Post-session scan failed:', err);
+      }
+    });
+    console.log(pc.green('  Worktree monitor enabled (post-session + periodic)'));
+
+    // Instructions Verifier — tracks which CLAUDE.md files loaded
+    const { InstructionsVerifier } = await import('../monitoring/InstructionsVerifier.js');
+    const instructionsVerifier = new InstructionsVerifier({ stateDir: config.stateDir });
+    console.log(pc.green('  Instructions verifier enabled'));
+
     // Coherence Monitor — runtime self-awareness for homeostasis.
     // Periodically checks config coherence, state durability, output sanity,
     // and feature readiness. Self-corrects where possible, notifies otherwise.
@@ -2799,7 +2879,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  System Reviewer: ${probes.length} probes registered`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, whatsappBusinessBackend, messageBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
