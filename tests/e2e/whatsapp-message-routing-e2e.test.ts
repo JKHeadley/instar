@@ -684,4 +684,150 @@ describe('WhatsApp Message Routing E2E', () => {
       expect(cliSrc).toMatch(/import.*restartServer.*from.*server/);
     });
   });
+
+  // ══════════════════════════════════════════════════════
+  // 9. LID JID HANDLING (WhatsApp Linked Identity)
+  // ══════════════════════════════════════════════════════
+
+  describe('LID JID handling', () => {
+    const LID_JID = '272404173598970@lid';
+
+    it('jidToPhone returns null for @lid JIDs', async () => {
+      const { jidToPhone } = await import('../../src/messaging/shared/PhoneUtils.js');
+      expect(jidToPhone(LID_JID)).toBeNull();
+    });
+
+    it('isJid recognizes @lid JIDs', async () => {
+      const { isJid } = await import('../../src/messaging/shared/PhoneUtils.js');
+      expect(isJid(LID_JID)).toBe(true);
+    });
+
+    it('isLidJid correctly identifies LID JIDs', async () => {
+      const { isLidJid } = await import('../../src/messaging/shared/PhoneUtils.js');
+      expect(isLidJid(LID_JID)).toBe(true);
+      expect(isLidJid('14155552671@s.whatsapp.net')).toBe(false);
+      expect(isLidJid('120363187170797617@g.us')).toBe(false);
+    });
+
+    it('adapter maps @lid JID to connected phone number', async () => {
+      // The adapter was connected with phone '+14155551234' in beforeAll.
+      // The authorized numbers include +14155552671 but we need the connected
+      // phone to be authorized for the LID mapping to pass auth.
+      const lidAdapter = new WhatsAppAdapter(
+        {
+          backend: 'baileys',
+          authorizedNumbers: ['+14155551234'],
+          requireConsent: false,
+        } as Record<string, unknown>,
+        project.stateDir,
+      );
+
+      await lidAdapter.start();
+      lidAdapter.setBackendCapabilities({
+        sendText: vi.fn().mockResolvedValue(undefined),
+      });
+      // Set connected phone — this is what @lid JIDs map to
+      await lidAdapter.setConnectionState('connected', '14155551234');
+
+      const received: Message[] = [];
+      lidAdapter.onMessage(async (msg) => received.push(msg));
+
+      await lidAdapter.handleIncomingMessage(
+        LID_JID,
+        `lid-msg-${Date.now()}`,
+        'Self-chat from phone',
+        'User',
+      );
+
+      expect(received.length).toBe(1);
+      expect(received[0].userId).toBe('+14155551234');
+      await lidAdapter.stop();
+    });
+
+    it('adapter rejects @lid JID when no phone number is set and auth is restricted', async () => {
+      const lidAdapter = new WhatsAppAdapter(
+        {
+          backend: 'baileys',
+          authorizedNumbers: ['+14155551234'], // Only allow a specific number
+          requireConsent: false,
+        } as Record<string, unknown>,
+        project.stateDir,
+      );
+
+      await lidAdapter.start();
+      lidAdapter.setBackendCapabilities({
+        sendText: vi.fn().mockResolvedValue(undefined),
+      });
+      // Don't set connection state — phoneNumber remains null
+      // So @lid won't map to a real phone, and the fake number from LID
+      // won't be in authorizedNumbers → auth gate rejects it.
+
+      const received: Message[] = [];
+      lidAdapter.onMessage(async (msg) => received.push(msg));
+
+      await lidAdapter.handleIncomingMessage(
+        LID_JID,
+        `lid-drop-${Date.now()}`,
+        'Should be rejected by auth',
+        'User',
+      );
+
+      // Without phone mapping, LID produces a fake number not in authorizedNumbers
+      expect(received.length).toBe(0);
+      await lidAdapter.stop();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════
+  // 10. SELF-CHAT & OUTBOUND MESSAGE ID TRACKING
+  // ══════════════════════════════════════════════════════
+
+  describe('Self-chat support', () => {
+    it('BaileysBackend tracks sent message IDs in sendText capability', () => {
+      const baileysBackendSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../src/messaging/backends/BaileysBackend.ts'),
+        'utf-8',
+      );
+      // Should track sent message IDs
+      expect(baileysBackendSrc).toContain('sentMessageIds');
+      expect(baileysBackendSrc).toContain('sent.key.id');
+      expect(baileysBackendSrc).toContain('this.sentMessageIds.add(');
+    });
+
+    it('BaileysBackend filters by sentMessageIds instead of blanket fromMe', () => {
+      const baileysBackendSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../src/messaging/backends/BaileysBackend.ts'),
+        'utf-8',
+      );
+      // Should NOT have blanket fromMe filter
+      expect(baileysBackendSrc).not.toContain('if (!msg.message || msg.key.fromMe) continue');
+      // Should check sentMessageIds instead
+      expect(baileysBackendSrc).toContain('this.sentMessageIds.has(msg.key.id)');
+    });
+
+    it('BaileysBackend accepts both notify and append message types', () => {
+      const baileysBackendSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../src/messaging/backends/BaileysBackend.ts'),
+        'utf-8',
+      );
+      expect(baileysBackendSrc).toContain("m.type !== 'notify' && m.type !== 'append'");
+    });
+
+    it('BaileysBackend has sent IDs size limit to prevent memory leak', () => {
+      const baileysBackendSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../src/messaging/backends/BaileysBackend.ts'),
+        'utf-8',
+      );
+      expect(baileysBackendSrc).toContain('SENT_IDS_MAX_SIZE');
+    });
+
+    it('WhatsAppAdapter maps @lid to connected phone in handleIncomingMessage', () => {
+      const adapterSrc = fs.readFileSync(
+        path.resolve(__dirname, '../../src/messaging/WhatsAppAdapter.ts'),
+        'utf-8',
+      );
+      expect(adapterSrc).toContain("jid.endsWith('@lid')");
+      expect(adapterSrc).toContain('this.phoneNumber');
+    });
+  });
 });

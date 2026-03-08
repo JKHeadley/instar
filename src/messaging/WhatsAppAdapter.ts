@@ -329,6 +329,11 @@ export class WhatsAppAdapter implements MessagingAdapter {
       }
     }
 
+    // Clear stall tracking for this channel (agent responded)
+    // Use both channelId and jid to ensure we match however the channel was tracked
+    this.stallDetector.clearStallForChannel(jid);
+    if (jid !== channelId) this.stallDetector.clearStallForChannel(channelId);
+
     // Track outbound for stall detection (promise tracking)
     const sessionName = this.registry.getSessionForChannel(channelId);
     if (sessionName) {
@@ -399,7 +404,16 @@ export class WhatsAppAdapter implements MessagingAdapter {
       this.capabilities.sendReadReceipt(jid, messageId, msgKey).catch(() => {});
     }
 
-    const phoneNumber = jidToPhone(jid) ?? jid;
+    let phoneNumber = jidToPhone(jid) ?? jid;
+
+    // LID JID workaround: WhatsApp's Linked Identity format (e.g. 272404173598970@lid)
+    // doesn't contain the real phone number. jidToPhone() returns null for these.
+    // For self-chat messages (the primary personal-agent use case), the LID always
+    // belongs to the connected user, so map it to the known phone number.
+    if (jid.endsWith('@lid') && this.phoneNumber) {
+      phoneNumber = '+' + this.phoneNumber;
+    }
+
     let normalizedPhone: string;
     try {
       normalizedPhone = normalizePhoneNumber(phoneNumber);

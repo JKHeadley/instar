@@ -73,6 +73,11 @@ export function phoneToJid(phone: string): string {
 export function jidToPhone(jid: string): string | null {
   if (!jid) return null;
 
+  // LID JIDs (Linked Identity, e.g. 272404173598970@lid) don't contain real
+  // phone numbers — the digits are an opaque WhatsApp internal ID.
+  // Return null so callers know they need special handling.
+  if (jid.endsWith('@lid')) return null;
+
   // Handle both JID format and plain numbers
   const match = jid.match(/^(\d+)@/);
   if (match) {
@@ -95,7 +100,15 @@ export function jidToPhone(jid: string): string | null {
  * Check if a string looks like a WhatsApp JID.
  */
 export function isJid(input: string): boolean {
-  return /@s\.whatsapp\.net$/.test(input) || /@g\.us$/.test(input);
+  return /@s\.whatsapp\.net$/.test(input) || /@g\.us$/.test(input) || /@lid$/.test(input);
+}
+
+/**
+ * Check if a JID is a LID (Linked Identity) JID.
+ * LID JIDs don't contain real phone numbers — they use WhatsApp's internal ID.
+ */
+export function isLidJid(input: string): boolean {
+  return /@lid$/.test(input);
 }
 
 /**

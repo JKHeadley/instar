@@ -63,6 +63,11 @@ export class BaileysBackend {
   private socket: any = null; // Baileys WASocket
   private _pairingCodeRequested = false;
 
+  // Outbound message ID tracking — used to distinguish bot-sent messages
+  // from user-sent self-chat messages (both have fromMe=true).
+  private sentMessageIds = new Set<string>();
+  private static readonly SENT_IDS_MAX_SIZE = 5000;
+
   constructor(
     adapter: WhatsAppAdapter,
     config: Required<BaileysConfig>,
@@ -174,7 +179,22 @@ export class BaileysBackend {
           const sock = this.socket;
           const capabilities: BackendCapabilities = {
             sendText: async (jid, text) => {
-              await sock?.sendMessage(jid, { text });
+              const sent = await sock?.sendMessage(jid, { text });
+              // Track outbound message ID to prevent feedback loops.
+              // When we receive this message back (fromMe=true, type=append),
+              // we'll skip it instead of processing it as a user command.
+              if (sent?.key?.id) {
+                this.sentMessageIds.add(sent.key.id);
+                if (this.sentMessageIds.size > BaileysBackend.SENT_IDS_MAX_SIZE) {
+                  const excess = this.sentMessageIds.size - BaileysBackend.SENT_IDS_MAX_SIZE;
+                  let count = 0;
+                  for (const id of this.sentMessageIds) {
+                    if (count >= excess) break;
+                    this.sentMessageIds.delete(id);
+                    count++;
+                  }
+                }
+              }
             },
             sendTyping: async (jid) => {
               await sock?.sendPresenceUpdate('composing', jid);
@@ -265,11 +285,18 @@ export class BaileysBackend {
       });
 
       // Message events
+      // Accept both 'notify' (real-time incoming) and 'append' (outbound echoes, self-chat).
+      // History sync messages are filtered by other types we don't accept.
       this.socket.ev.on('messages.upsert', (m: any) => {
-        if (m.type !== 'notify') return;
+        if (m.type !== 'notify' && m.type !== 'append') return;
 
         for (const msg of m.messages) {
-          if (!msg.message || msg.key.fromMe) continue;
+          if (!msg.message) continue;
+
+          // Filter outbound echoes by checking if we sent this message.
+          // Self-chat messages from the user's phone also have fromMe=true,
+          // but their IDs won't be in our sentMessageIds set.
+          if (msg.key.fromMe && this.sentMessageIds.has(msg.key.id)) continue;
 
           const jid = msg.key.remoteJid;
           if (!jid) continue;
