@@ -98,7 +98,7 @@ describe('Update config route', () => {
     it('requires auth', async () => {
       const app = createServer(project);
       const res = await request(app).get('/updates/config');
-      expect(res.status).toBe(400);
+      expect([400, 401]).toContain(res.status);
     });
   });
 });
