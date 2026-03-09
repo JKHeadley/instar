@@ -84,3 +84,45 @@ export type {
   ThreadHistoryMessage,
   ThreadHistoryResult,
 } from './ThreadlineMCPServer.js';
+
+// Phase 6A: A2A Gateway
+export { AgentCard } from './AgentCard.js';
+export type {
+  AgentCardConfig,
+  AgentCardSkill,
+  GeneratedAgentCard,
+} from './AgentCard.js';
+
+export { ContextThreadMap } from './ContextThreadMap.js';
+export type {
+  ContextThreadMapping,
+  ContextThreadMapConfig,
+} from './ContextThreadMap.js';
+
+export { ComputeMeter } from './ComputeMeter.js';
+export type {
+  ComputeBudget,
+  ComputeMeterConfig,
+  MeterCheckResult,
+} from './ComputeMeter.js';
+
+export { SessionLifecycle } from './SessionLifecycle.js';
+export type {
+  SessionState,
+  SessionEntry,
+  SessionLifecycleConfig,
+  SessionCapacityResult,
+  SessionStats,
+} from './SessionLifecycle.js';
+
+export { A2AGateway, A2A_ERROR_CODES } from './A2AGateway.js';
+export type {
+  A2AGatewayConfig,
+  A2AGatewayDeps,
+  GatewaySendParams,
+  GatewayResponse,
+  GatewayHistoryMessage,
+  A2AErrorResponse,
+  A2AMetrics,
+  AuditEntry,
+} from './A2AGateway.js';
