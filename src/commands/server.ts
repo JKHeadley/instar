@@ -1066,10 +1066,20 @@ async function ensureAgentUpdatesTopic(
  * This runs ONCE at startup, before any SQLite subsystem initializes, making the rebuild
  * unconditionally available to all consumers.
  */
-async function ensureSqliteBindings(): Promise<void> {
+/**
+ * Returns true if a rebuild was performed and a process restart is needed.
+ *
+ * ESM module import failures are cached in Node.js's module registry. Once
+ * `import('better-sqlite3')` fails, subsequent imports by SemanticMemory,
+ * TopicMemory etc. get the same cached error — even after a successful rebuild.
+ * The only way to clear the cache is to restart the process so all subsystems
+ * start fresh with the rebuilt bindings.
+ */
+async function ensureSqliteBindings(): Promise<boolean> {
   try {
     await import('better-sqlite3');
     // Bindings loaded OK — nothing to do.
+    return false;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     const isBindingError =
@@ -1077,7 +1087,7 @@ async function ensureSqliteBindings(): Promise<void> {
       reason.includes('better-sqlite3') ||
       reason.includes('was compiled against a different Node.js version');
 
-    if (!isBindingError) return; // Not a binding issue — let subsystems handle it.
+    if (!isBindingError) return false; // Not a binding issue — let subsystems handle it.
 
     console.log(pc.yellow('  better-sqlite3: native binding mismatch detected — auto-rebuilding for current Node.js version...'));
     try {
@@ -1088,9 +1098,11 @@ async function ensureSqliteBindings(): Promise<void> {
         timeout: 60000,
         stdio: 'pipe',
       });
-      console.log(pc.green('  better-sqlite3: rebuilt successfully — SQLite subsystems will use updated bindings.'));
+      console.log(pc.green('  better-sqlite3: rebuilt successfully — restarting to apply (ESM module cache must be cleared).'));
+      return true; // Restart needed — ESM cache holds the stale failure
     } catch (rebuildErr) {
       console.log(pc.yellow(`  better-sqlite3: rebuild failed (${rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr)}). SQLite subsystems may degrade.`));
+      return false;
     }
   }
 }
@@ -1356,7 +1368,12 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Pre-flight: ensure better-sqlite3 bindings are compiled for the current Node.js version.
     // Must run before TopicMemory or SemanticMemory initialize. See ensureSqliteBindings() for rationale.
-    await ensureSqliteBindings();
+    // If rebuild occurred, we must restart — ESM caches the import failure and won't retry.
+    const sqliteRebuildRequired = await ensureSqliteBindings();
+    if (sqliteRebuildRequired) {
+      console.log(pc.yellow('  Restarting server to apply SQLite rebuild. Server will be back online momentarily.'));
+      process.exit(0);
+    }
 
     // Run post-update migration on startup — ensures agent knowledge stays current
     // even if the update was installed externally (e.g., via `npm install -g instar@latest`).
