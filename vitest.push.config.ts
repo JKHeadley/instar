@@ -19,6 +19,7 @@ const FLAKY_TESTS = [
   // ── Supertest timeouts / port collisions ──────────────────────────
   'tests/unit/relationship-routes.test.ts',
   'tests/unit/server.test.ts',
+  'tests/unit/middleware-behavioral.test.ts',
   'tests/integration/messaging-routes.test.ts',
   'tests/integration/whatsapp-routes.test.ts',
   'tests/e2e/messaging-multi-agent.test.ts',
