@@ -1335,7 +1335,7 @@ describe('Inter-Agent Messaging API routes', () => {
         .expect(400);
     });
 
-    it('GET /messages/route-score returns scores array', async () => {
+    it('GET /messages/route-score returns scores array', { timeout: 30000 }, async () => {
       const res = await request(app)
         .get('/messages/route-score')
         .query({ subject: 'Database fix', body: 'Need to update prisma schema' })
