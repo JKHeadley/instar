@@ -702,5 +702,120 @@ describe('QuotaCollector', () => {
     expect(status.limit).toBe(60);
     expect(status.remaining).toBe(60);
     expect(status.used).toBe(0);
+    expect(status.oauthCircuitBreaker.open).toBe(false);
+    expect(status.oauthCircuitBreaker.consecutive429s).toBe(0);
+  });
+
+  describe('OAuth circuit breaker', () => {
+    it('trips after 3 consecutive 429 responses', async () => {
+      await provider.writeCredentials({
+        accessToken: 'test-token',
+        expiresAt: Date.now() + 3600000,
+      });
+
+      // Return 429 on every call
+      const mock429 = vi.fn(async () => ({
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '0']]),
+        json: async () => ({}),
+      } as unknown as Response));
+
+      const collector = new QuotaCollector(provider, tracker, {
+        fetchFn: mock429,
+        jsonlFallback: { enabled: false },
+        retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+      });
+
+      // 3 consecutive polls trigger the circuit breaker
+      await collector.collect();
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.open).toBe(false);
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.consecutive429s).toBe(1);
+
+      await collector.collect();
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.consecutive429s).toBe(2);
+
+      await collector.collect();
+      // Breaker trips on 3rd consecutive 429
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.open).toBe(true);
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.consecutive429s).toBe(3);
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.backoffUntil).not.toBeNull();
+    });
+
+    it('skips OAuth when circuit breaker is open', async () => {
+      await provider.writeCredentials({
+        accessToken: 'test-token',
+        expiresAt: Date.now() + 3600000,
+      });
+
+      const fetchSpy = vi.fn(async () => ({
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '0']]),
+        json: async () => ({}),
+      } as unknown as Response));
+
+      const collector = new QuotaCollector(provider, tracker, {
+        fetchFn: fetchSpy,
+        jsonlFallback: { enabled: false },
+        retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+      });
+
+      // Trip the circuit breaker
+      await collector.collect();
+      await collector.collect();
+      await collector.collect();
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.open).toBe(true);
+
+      const callsBefore = fetchSpy.mock.calls.length;
+
+      // With circuit open, subsequent collects should NOT attempt OAuth
+      await collector.collect();
+      expect(fetchSpy.mock.calls.length).toBe(callsBefore); // No new fetch calls
+    });
+
+    it('resets circuit breaker on successful OAuth response', async () => {
+      await provider.writeCredentials({
+        accessToken: 'test-token',
+        expiresAt: Date.now() + 3600000,
+      });
+
+      let callCount = 0;
+      const mockFetch = vi.fn(async () => {
+        callCount++;
+        if (callCount <= 2) {
+          return {
+            ok: false,
+            status: 429,
+            headers: new Map([['retry-after', '0']]),
+            json: async () => ({}),
+          } as unknown as Response;
+        }
+        // 3rd+ call returns success (with proper OAuthUsageResponse structure)
+        return {
+          ok: true,
+          status: 200,
+          headers: new Map(),
+          json: async () => ({
+            seven_day: { utilization: 0.2, resets_at: null },
+          }),
+        } as unknown as Response;
+      });
+
+      const collector = new QuotaCollector(provider, tracker, {
+        fetchFn: mockFetch,
+        jsonlFallback: { enabled: false },
+        retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+      });
+
+      await collector.collect(); // 429 — count=1
+      await collector.collect(); // 429 — count=2
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.consecutive429s).toBe(2);
+
+      // Success — should reset counter
+      await collector.collect();
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.consecutive429s).toBe(0);
+      expect(collector.getBudgetStatus().oauthCircuitBreaker.open).toBe(false);
+    });
   });
 });

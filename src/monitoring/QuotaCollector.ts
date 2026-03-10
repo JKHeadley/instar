@@ -525,6 +525,15 @@ export class QuotaCollector extends EventEmitter {
   private fetchFn: typeof globalThis.fetch;
   private lastCollectionAt: Date | null = null;
   private lastCollectionDurationMs = 0;
+  /**
+   * Cross-poll circuit breaker for OAuth 429s.
+   * When 3+ consecutive polls receive 429, we stop hitting the OAuth API
+   * for `oauthBackoffUntil` ms to avoid a runaway retry loop.
+   */
+  private oauthConsecutive429s = 0;
+  private oauthBackoffUntil: number | null = null;
+  private static readonly OAUTH_429_TRIP_COUNT = 3;
+  private static readonly OAUTH_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 
   constructor(
     provider: CredentialProvider,
@@ -589,9 +598,14 @@ export class QuotaCollector extends EventEmitter {
       }
 
       // Step 2: Try OAuth API
-      if (this.config.oauthEnabled && creds?.accessToken && tokenState !== 'expired') {
+      const oauthCircuitOpen =
+        this.oauthBackoffUntil !== null && Date.now() < this.oauthBackoffUntil;
+      if (this.config.oauthEnabled && creds?.accessToken && tokenState !== 'expired' && !oauthCircuitOpen) {
         try {
           const oauthResult = await this.collectFromOAuth(creds.accessToken);
+          // Any non-throwing response means the OAuth endpoint is reachable — reset circuit breaker
+          this.oauthConsecutive429s = 0;
+          this.oauthBackoffUntil = null;
           if (oauthResult) {
             result = {
               ...result,
@@ -606,6 +620,20 @@ export class QuotaCollector extends EventEmitter {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           errors.push(`OAuth collection failed: ${msg}`);
+
+          // Circuit breaker: track consecutive 429s to prevent runaway polling
+          if (msg.includes('429')) {
+            this.oauthConsecutive429s++;
+            if (this.oauthConsecutive429s >= QuotaCollector.OAUTH_429_TRIP_COUNT) {
+              this.oauthBackoffUntil = Date.now() + QuotaCollector.OAUTH_BACKOFF_MS;
+              const backoffMin = Math.round(QuotaCollector.OAUTH_BACKOFF_MS / 60000);
+              errors.push(
+                `OAuth circuit breaker tripped after ${this.oauthConsecutive429s} consecutive 429s — ` +
+                `pausing OAuth for ${backoffMin} minutes`,
+              );
+            }
+          }
+
           DegradationReporter.getInstance().report({
             feature: 'QuotaCollector.collect.oauth',
             primary: 'Collect quota data from Anthropic OAuth API',
@@ -706,12 +734,18 @@ export class QuotaCollector extends EventEmitter {
   /**
    * Get request budget status.
    */
-  getBudgetStatus(): { used: number; remaining: number; limit: number; resetsAt: string } {
+  getBudgetStatus(): { used: number; remaining: number; limit: number; resetsAt: string; oauthCircuitBreaker: { open: boolean; consecutive429s: number; backoffUntil: string | null } } {
+    const now = Date.now();
     return {
       used: this.budget.used,
       remaining: this.budget.remaining,
       limit: this.config.requestBudgetPer5Min,
       resetsAt: this.budget.resetsAt.toISOString(),
+      oauthCircuitBreaker: {
+        open: this.oauthBackoffUntil !== null && now < this.oauthBackoffUntil,
+        consecutive429s: this.oauthConsecutive429s,
+        backoffUntil: this.oauthBackoffUntil ? new Date(this.oauthBackoffUntil).toISOString() : null,
+      },
     };
   }
 
