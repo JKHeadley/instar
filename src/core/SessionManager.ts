@@ -670,11 +670,19 @@ export class SessionManager extends EventEmitter {
     this.state.saveSession(session);
 
     // Wait for Claude to be ready, then send the initial message
+    // Resume sessions load large JONSLs which trigger TUI redraws — use longer timeout
+    // and a stabilization delay to avoid injecting text that gets wiped by the redraw.
+    const readyTimeout = options?.resumeSessionId ? 60000 : 30000;
     if (initialMessage) {
-      this.waitForClaudeReady(tmuxSession).then((ready) => {
+      this.waitForClaudeReady(tmuxSession, readyTimeout).then((ready) => {
         if (ready) {
-          this.injectMessage(tmuxSession, initialMessage);
-          console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars)`);
+          // Stabilization delay: Claude's TUI may redraw after loading large JONSLs,
+          // clearing any text injected too early. Wait for the redraw to settle.
+          const stabilizationMs = options?.resumeSessionId ? 5000 : 0;
+          setTimeout(() => {
+            this.injectMessage(tmuxSession, initialMessage);
+            console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars${stabilizationMs ? ', after stabilization delay' : ''})`);
+          }, stabilizationMs);
         } else {
           console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
           // Still try to inject — Claude might be ready but prompt detection failed
@@ -934,10 +942,13 @@ export class SessionManager extends EventEmitter {
         console.error(`[SessionManager] Session "${tmuxSession}" died during startup`);
         return false;
       }
-      const output = this.captureOutput(tmuxSession, 10);
-      // Check for Claude Code's specific prompt character (❯)
-      // Avoid matching generic shell prompts (> and $) which cause false positives
-      if (output && output.includes('❯')) {
+      const output = this.captureOutput(tmuxSession, 5);
+      // Check only the last 3 lines for Claude Code's prompt character (❯).
+      // Checking all captured lines can false-positive on ❯ appearing in prior output
+      // (e.g., during TUI redraw of a resumed session's history).
+      const lines = (output || '').split('\n').filter(l => l.trim());
+      const tail = lines.slice(-3).join('\n');
+      if (tail.includes('❯') || tail.includes('bypass permissions')) {
         console.log(`[SessionManager] Claude ready in "${tmuxSession}" after ${Date.now() - start}ms`);
         return true;
       }
