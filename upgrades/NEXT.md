@@ -1,4 +1,4 @@
-# Upgrade Guide — vNEXT
+# Upgrade Guide — v0.17.11
 
 <!-- bump: minor -->
 
