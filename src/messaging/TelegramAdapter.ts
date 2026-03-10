@@ -2343,31 +2343,8 @@ export class TelegramAdapter implements MessagingAdapter {
       return true;
     }
 
-    // /new <topic name> — create a new forum topic
-    const newMatch = text.match(/^\/new\s+(.+)$/i);
-    if (newMatch) {
-      const topicName = newMatch[1].trim();
-      if (!topicName) {
-        await this.sendToTopic(topicId, 'Please include a topic name — e.g. /new Persistent Job History').catch(() => {});
-        return true;
-      }
-
-      try {
-        const emoji = selectTopicEmoji(topicName);
-        const styledName = `${emoji} ${topicName}`;
-        const result = await this.findOrCreateForumTopic(styledName, TOPIC_STYLE.SESSION.color);
-
-        if (result.reused) {
-          await this.sendToTopic(topicId, `Topic "${topicName}" already exists (topic ${result.topicId}).`).catch(() => {});
-        } else {
-          await this.sendToTopic(topicId, `Created topic "${styledName}" (topic ${result.topicId}).`).catch(() => {});
-        }
-      } catch (err) {
-        console.error('[telegram] /new topic creation failed:', err);
-        await this.sendToTopic(topicId, `Couldn't create topic "${topicName}". Try again in a moment.`).catch(() => {});
-      }
-      return true;
-    }
+    // /new is handled in server.ts onTopicMessage — it needs sessionManager
+    // access to spawn a session in the new topic. Don't intercept it here.
 
     return false;
   }
