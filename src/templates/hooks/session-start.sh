@@ -162,4 +162,56 @@ if [ -n "$JOB_TOPIC_ID" ]; then
   echo ""
 fi
 
+# Inject known blocker resolutions from active job's commonBlockers
+if [ -f "$INSTAR_DIR/state/active-job.json" ]; then
+  python3 -c "
+import json, sys
+from datetime import datetime, timezone
+try:
+    data = json.load(open('$INSTAR_DIR/state/active-job.json'))
+    blockers = data.get('commonBlockers') or {}
+    if not blockers:
+        sys.exit(0)
+    now = datetime.now(timezone.utc)
+    active = []
+    for key, b in blockers.items():
+        if b.get('status') == 'pending':
+            continue
+        exp = b.get('expiresAt')
+        if exp:
+            try:
+                exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                if exp_dt < now:
+                    continue
+            except:
+                pass
+        active.append(b)
+    if not active:
+        sys.exit(0)
+    print('=== KNOWN BLOCKER RESOLUTIONS ===')
+    print('These are pre-confirmed solutions. Use them BEFORE escalating to the human.')
+    print()
+    for b in active:
+        print(f'  BLOCKER: {b[\"description\"]}')
+        print(f'  RESOLUTION: {b[\"resolution\"]}')
+        tools = b.get('toolsNeeded')
+        if tools:
+            print(f'  TOOLS: {\", \".join(tools)}')
+        creds = b.get('credentials')
+        if creds:
+            if isinstance(creds, list):
+                print(f'  CREDENTIALS: {\", \".join(creds)}')
+            else:
+                print(f'  CREDENTIALS: {creds}')
+        count = b.get('successCount', 0)
+        if count:
+            print(f'  CONFIRMED: {count} time(s)')
+        print()
+    print('=== END KNOWN BLOCKER RESOLUTIONS ===')
+    print()
+except Exception:
+    sys.exit(0)
+" 2>/dev/null
+fi
+
 exit 0

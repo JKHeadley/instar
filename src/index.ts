@@ -147,9 +147,13 @@ export type { CapabilityMap, CapabilityDomain, Capability, CapabilityType, Capab
 export { ScopeVerifier } from './core/ScopeVerifier.js';
 export type { ScopeVerifierConfig, ScopeVerificationResult, ScopeCheck, TopicProjectBinding, HighRiskAction } from './core/ScopeVerifier.js';
 export { CoherenceGate } from './core/CoherenceGate.js';
-export type { CoherenceGateOptions, EvaluateRequest, EvaluateResponse, AuditViolation } from './core/CoherenceGate.js';
+export type { CoherenceGateOptions, EvaluateRequest, EvaluateResponse, AuditViolation, ResearchTriggerContext } from './core/CoherenceGate.js';
 export { CapabilityRegistryGenerator } from './core/CapabilityRegistryGenerator.js';
 export type { StoredCapabilityRegistry } from './core/CapabilityRegistryGenerator.js';
+export { BlockerLearningLoop } from './core/BlockerLearningLoop.js';
+export type { BlockerResolution, LearningLoopConfig, ReuseSummary } from './core/BlockerLearningLoop.js';
+export { ResearchRateLimiter } from './core/ResearchRateLimiter.js';
+export type { ResearchRateLimiterConfig, RateLimitDecision } from './core/ResearchRateLimiter.js';
 export { ContextHierarchy } from './core/ContextHierarchy.js';
 export type { ContextSegment, ContextHierarchyConfig, ContextDispatchTable } from './core/ContextHierarchy.js';
 export { CanonicalState } from './core/CanonicalState.js';

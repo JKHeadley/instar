@@ -28,6 +28,10 @@ import { CapabilityAccuracyReviewer } from './reviewers/capability-accuracy.js';
 import { UrlValidityReviewer } from './reviewers/url-validity.js';
 import { ValueAlignmentReviewer } from './reviewers/value-alignment.js';
 import { InformationLeakageReviewer } from './reviewers/information-leakage.js';
+import { EscalationResolutionReviewer } from './reviewers/escalation-resolution.js';
+import type { EscalationReviewContext, EscalationReviewResult } from './reviewers/escalation-resolution.js';
+import type { CapabilityRegistry, CommonBlocker } from './types.js';
+import { ResearchRateLimiter } from './ResearchRateLimiter.js';
 import { RecipientResolver, type RecipientContext } from './RecipientResolver.js';
 import { CustomReviewerLoader } from './CustomReviewerLoader.js';
 import type { ResponseReviewConfig, ChannelReviewConfig } from './types.js';
@@ -45,6 +49,10 @@ export interface EvaluateRequest {
     recipientId?: string;
     isExternalFacing?: boolean;
     transcriptPath?: string;
+    capabilityRegistry?: CapabilityRegistry;
+    jobBlockers?: Record<string, CommonBlocker>;
+    autonomyLevel?: 'cautious' | 'supervised' | 'collaborative' | 'autonomous';
+    isResearchSession?: boolean;
   };
 }
 
@@ -62,6 +70,8 @@ export interface EvaluateResponse {
   _gateResult?: GateResult;
   /** Internal: outcome for decision matrix tracking */
   _outcome?: string;
+  /** Internal: whether a research agent was triggered */
+  _researchTriggered?: boolean;
 }
 
 export interface AuditViolation {
@@ -79,12 +89,21 @@ interface SessionRetryState {
   createdAt: number;
 }
 
+export interface ResearchTriggerContext {
+  blockerDescription: string;
+  capabilities?: CapabilityRegistry;
+  jobSlug?: string;
+  sessionId: string;
+}
+
 export interface CoherenceGateOptions {
   config: ResponseReviewConfig;
   stateDir: string;
   apiKey: string;
   relationships?: { getContextForPerson(id: string): string | null } | null;
   adaptiveTrust?: { getProfile(): any } | null;
+  /** Callback fired when a research agent should be spawned (fire-and-forget). */
+  onResearchTriggered?: (context: ResearchTriggerContext) => void;
 }
 
 // ── Category Mapping (reviewer → generic category for agent feedback) ─
@@ -98,6 +117,7 @@ const REVIEWER_CATEGORY_MAP: Record<string, string> = {
   'url-validity': 'ACCURACY ISSUE',
   'value-alignment': 'ALIGNMENT ISSUE',
   'information-leakage': 'ALIGNMENT ISSUE',
+  'escalation-resolution': 'ESCALATION ISSUE',
 };
 
 /** Violation types for retry exhaustion handling */
@@ -128,11 +148,15 @@ export class CoherenceGate {
   private valueDocCache: ValueDocCache | null = null;
   private reviewHistory: AuditLogEntry[] = [];
   private proposals: ReviewProposal[] = [];
+  private researchRateLimiter: ResearchRateLimiter;
+  private onResearchTriggered?: (context: ResearchTriggerContext) => void;
   private static RETENTION_DAYS = 30;
 
   constructor(options: CoherenceGateOptions) {
     this.config = options.config;
     this.stateDir = options.stateDir;
+    this.onResearchTriggered = options.onResearchTriggered;
+    this.researchRateLimiter = new ResearchRateLimiter({ stateDir: options.stateDir });
 
     // Initialize PEL
     this.pel = new PolicyEnforcementLayer(options.stateDir);
@@ -255,7 +279,7 @@ export class CoherenceGate {
     const valueDocs = this.loadValueDocs();
 
     // ── Step 6: Build review context ─────────────────────────────
-    const reviewCtx: ReviewContext = {
+    const reviewCtx: EscalationReviewContext = {
       message,
       channel: context.channel,
       isExternalFacing: isExternal,
@@ -271,6 +295,10 @@ export class CoherenceGate {
         formality: recipientContext.formality,
         themes: recipientContext.themes,
       } : undefined,
+      capabilityRegistry: context.capabilityRegistry,
+      autonomyLevel: context.autonomyLevel,
+      jobBlockers: context.jobBlockers,
+      isResearchSession: context.isResearchSession,
     };
 
     // ── Step 7: Gate reviewer ────────────────────────────────────
@@ -316,6 +344,29 @@ export class CoherenceGate {
         const criticality = this.config.reviewerCriticality?.[reviewerName] ?? 'standard';
         if (criticality === 'high') {
           highCritTimeout = true;
+        }
+      }
+    }
+
+    // ── Step 8b: Check for research trigger signals ────────────
+    let researchTriggered = false;
+    for (const result of settled) {
+      const escalationResult = result as EscalationReviewResult;
+      if (escalationResult.needsResearch && escalationResult.researchContext) {
+        const rateLimitDecision = this.researchRateLimiter.check(
+          escalationResult.researchContext.blockerDescription,
+        );
+        if (rateLimitDecision.allowed && this.onResearchTriggered) {
+          this.researchRateLimiter.record(
+            escalationResult.researchContext.blockerDescription,
+            sessionId,
+          );
+          this.onResearchTriggered({
+            blockerDescription: escalationResult.researchContext.blockerDescription,
+            capabilities: escalationResult.researchContext.capabilities,
+            sessionId,
+          });
+          researchTriggered = true;
         }
       }
     }
@@ -383,6 +434,7 @@ export class CoherenceGate {
         _auditViolations: auditViolations,
         _gateResult: gateResult,
         _outcome: 'pass',
+        _researchTriggered: researchTriggered || undefined,
       };
     }
 
@@ -395,6 +447,7 @@ export class CoherenceGate {
         _auditViolations: auditViolations,
         _gateResult: gateResult,
         _outcome: 'pass-warn',
+        _researchTriggered: researchTriggered || undefined,
       };
     }
 
@@ -490,6 +543,7 @@ export class CoherenceGate {
       { name: 'url-validity', cls: UrlValidityReviewer },
       { name: 'value-alignment', cls: ValueAlignmentReviewer },
       { name: 'information-leakage', cls: InformationLeakageReviewer },
+      { name: 'escalation-resolution', cls: EscalationResolutionReviewer },
     ];
 
     for (const { name, cls } of reviewerDefs) {

@@ -120,6 +120,8 @@ export interface CommonBlocker {
   lastUsedAt?: string;
   /** Number of times this resolution has been successfully applied */
   successCount?: number;
+  /** Who resolved this blocker ('agent' | 'research-agent' | 'human') */
+  resolvedBy?: string;
   /** Session ID that added this blocker (for learning loop provenance) */
   addedFrom?: string;
   /** ISO timestamp when this blocker was added */

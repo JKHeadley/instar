@@ -329,6 +329,8 @@ describe('CoherenceGate', () => {
           'capability-accuracy': { enabled: false, mode: 'block' },
           'url-validity': { enabled: false, mode: 'block' },
           'value-alignment': { enabled: false, mode: 'block' },
+          'information-leakage': { enabled: false, mode: 'block' },
+          'escalation-resolution': { enabled: false, mode: 'block' },
         },
       });
       vi.stubGlobal('fetch', mockFetchSequence([

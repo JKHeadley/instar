@@ -155,6 +155,11 @@ export function validateJob(job: unknown, index?: number): void {
   if (j.grounding !== undefined) {
     validateGrounding(j.grounding, prefix);
   }
+
+  // CommonBlockers — validate structure if present
+  if (j.commonBlockers !== undefined) {
+    validateCommonBlockers(j.commonBlockers, prefix);
+  }
 }
 
 /**
@@ -195,6 +200,97 @@ function validateGrounding(grounding: unknown, prefix: string): void {
       if (typeof q !== 'string' || !q.trim()) {
         throw new Error(`${prefix}: grounding.questions entries must be non-empty strings`);
       }
+    }
+  }
+}
+
+/**
+ * Validate commonBlockers configuration structure.
+ * CommonBlockers are Record<string, CommonBlocker> — keyed object of pre-confirmed resolutions.
+ */
+export function validateCommonBlockers(blockers: unknown, prefix: string): void {
+  if (!blockers || typeof blockers !== 'object' || Array.isArray(blockers)) {
+    throw new Error(`${prefix}: "commonBlockers" must be a plain object (Record<string, CommonBlocker>) if provided`);
+  }
+
+  const b = blockers as Record<string, unknown>;
+  const keys = Object.keys(b);
+
+  if (keys.length > 20) {
+    throw new Error(`${prefix}: "commonBlockers" has ${keys.length} entries, max is 20`);
+  }
+
+  for (const key of keys) {
+    const entry = b[key];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`${prefix}: commonBlockers["${key}"] must be an object`);
+    }
+
+    const e = entry as Record<string, unknown>;
+
+    // Required fields
+    if (typeof e.description !== 'string' || !e.description.toString().trim()) {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "description" is required and must be a non-empty string`);
+    }
+    if (typeof e.resolution !== 'string' || !e.resolution.toString().trim()) {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "resolution" is required and must be a non-empty string`);
+    }
+
+    // Status (optional — defaults to 'confirmed' at runtime)
+    if (e.status !== undefined) {
+      const validStatuses = ['confirmed', 'pending', 'expired'];
+      if (typeof e.status !== 'string' || !validStatuses.includes(e.status)) {
+        throw new Error(`${prefix}: commonBlockers["${key}"] "status" must be one of ${validStatuses.join(', ')}, got "${e.status}"`);
+      }
+    }
+
+    // Optional fields
+    if (e.toolsNeeded !== undefined) {
+      if (!Array.isArray(e.toolsNeeded)) {
+        throw new Error(`${prefix}: commonBlockers["${key}"] "toolsNeeded" must be an array of strings if provided`);
+      }
+      for (const t of e.toolsNeeded) {
+        if (typeof t !== 'string') {
+          throw new Error(`${prefix}: commonBlockers["${key}"] "toolsNeeded" entries must be strings`);
+        }
+      }
+    }
+
+    if (e.credentials !== undefined) {
+      if (typeof e.credentials !== 'string' && !Array.isArray(e.credentials)) {
+        throw new Error(`${prefix}: commonBlockers["${key}"] "credentials" must be a string or array of strings if provided`);
+      }
+      if (Array.isArray(e.credentials)) {
+        for (const c of e.credentials) {
+          if (typeof c !== 'string') {
+            throw new Error(`${prefix}: commonBlockers["${key}"] "credentials" entries must be strings`);
+          }
+        }
+      }
+    }
+
+    if (e.addedFrom !== undefined && typeof e.addedFrom !== 'string') {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "addedFrom" must be a string if provided`);
+    }
+
+    if (e.addedAt !== undefined && typeof e.addedAt !== 'string') {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "addedAt" must be a string (ISO date) if provided`);
+    }
+
+    if (e.confirmedAt !== undefined && typeof e.confirmedAt !== 'string') {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "confirmedAt" must be a string (ISO date) if provided`);
+    }
+
+    if (e.expiresAt !== undefined && typeof e.expiresAt !== 'string') {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "expiresAt" must be a string (ISO date) if provided`);
+    }
+
+    if (e.lastUsedAt !== undefined && typeof e.lastUsedAt !== 'string') {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "lastUsedAt" must be a string (ISO date) if provided`);
+    }
+
+    if (e.successCount !== undefined && typeof e.successCount !== 'number') {
+      throw new Error(`${prefix}: commonBlockers["${key}"] "successCount" must be a number if provided`);
     }
   }
 }
