@@ -41,10 +41,18 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
         '--setting-sources', 'user',
       ];
 
+      // Strip Claude Code session markers to prevent "nested session" error.
+      // When instar runs inside (or is started from) a Claude Code session, these
+      // env vars propagate to child processes. The Claude CLI refuses to run if
+      // CLAUDECODE is set. SessionManager already does this for tmux spawning.
+      const childEnv = { ...process.env };
+      delete childEnv.CLAUDECODE;
+      delete childEnv.CLAUDE_SESSION_ID;
+
       const child = execFile(this.claudePath, args, {
         timeout: DEFAULT_TIMEOUT_MS,
         maxBuffer: 1024 * 1024, // 1MB
-        env: { ...process.env },
+        env: childEnv,
       }, (error, stdout, stderr) => {
         if (error) {
           // Timeout or other error — return empty so caller can fall back
