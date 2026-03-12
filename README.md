@@ -5,13 +5,16 @@
 <h1 align="center">instar</h1>
 
 <p align="center">
-  <strong>Claude Code, with a mind of its own.</strong> Every molt, more autonomous.
+  <strong>Persistent Claude Code agents with scheduling, sessions, memory, and Telegram.</strong>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/instar"><img src="https://img.shields.io/npm/v/instar?style=for-the-badge" alt="npm version"></a>
-  <a href="https://github.com/SageMindAI/instar"><img src="https://img.shields.io/badge/GitHub-SageMindAI%2Finstar-blue?style=for-the-badge&logo=github" alt="GitHub"></a>
-  <a href="https://github.com/SageMindAI/instar/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License"></a>
+  <a href="https://www.npmjs.com/package/instar"><img src="https://img.shields.io/npm/v/instar?style=flat-square" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/instar"><img src="https://img.shields.io/npm/dw/instar?style=flat-square" alt="npm downloads"></a>
+  <a href="https://github.com/SageMindAI/instar/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/SageMindAI/instar/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://github.com/SageMindAI/instar/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License"></a>
+  <img src="https://img.shields.io/badge/TypeScript-100%25-blue?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
+  <a href="https://instar.sh/introduction/"><img src="https://img.shields.io/badge/Docs-instar.sh-teal?style=flat-square" alt="Docs"></a>
 </p>
 
 <p align="center">
@@ -20,45 +23,37 @@
 
 ---
 
-> **This is power-user infrastructure.** Instar gives Claude Code full autonomous access to your machine -- no permission prompts, no sandbox. It's built for developers who want a genuine AI partner, not a guarded assistant. If that sounds like too much trust, it probably isn't for you. If it sounds like exactly what you've been waiting for, read on.
-
-Instar turns Claude Code from a powerful CLI tool into a coherent, autonomous partner. Persistent identity, shared values, memory that survives every restart, and the infrastructure to evolve -- not just execute.
-
-Named after the developmental stages between molts in arthropods, where each instar is more developed than the last.
-
-## The Coherence Problem
-
-Claude Code is powerful. But power without coherence is unreliable. An agent that forgets what you discussed yesterday, doesn't recognize someone it talked to last week, or contradicts its own decisions -- that agent can't be trusted with real autonomy.
-
-Instar solves the six dimensions of agent coherence:
-
-| Dimension | What it means |
-|-----------|---------------|
-| **Memory** | Remembers across sessions -- not just within one |
-| **Relationships** | Knows who it's talking to -- with continuity across platforms |
-| **Identity** | Stays itself after restarts, compaction, and updates |
-| **Temporal awareness** | Understands time, context, and what's been happening |
-| **Consistency** | Follows through on commitments -- doesn't contradict itself |
-| **Growth** | Evolves its capabilities and understanding over time |
-
-Instar doesn't just add features on top of Claude Code. It gives Claude Code the infrastructure to be **coherent** -- to feel like a partner, not a tool.
-
-> **Deep dive:** [The Coherence Problem](https://instar.sh/concepts/coherence/) · [Values & Identity](https://instar.sh/concepts/values/) · [Coherence Is Safety](https://instar.sh/concepts/safety/)
-
-## Getting Started
-
-One command gets you from zero to talking with your AI partner:
+<p align="center">
+  <img src="assets/demo.gif" alt="Instar demo — Kira agent handling an email notification via Telegram" width="300" />
+</p>
 
 ```bash
 npx instar
 ```
 
-The guided setup wizard handles the rest — discovers your environment, configures messaging (Telegram and/or WhatsApp), sets up identity files, and gets your agent running. Within minutes, you're talking to your partner from your phone, anywhere.
+One command. Guided setup. Talking to your agent from Telegram within minutes.
 
-### Two configurations
+---
 
-- **General Agent** — A personal AI partner on your computer. Runs in the background, handles scheduled tasks, messages you on Telegram or WhatsApp proactively, and grows through experience.
-- **Project Agent** — A partner embedded in your codebase. Monitors, builds, maintains, and messages you — the same two-way communication as a general agent, scoped to your project.
+Instar turns Claude Code from a powerful CLI tool into a **coherent, autonomous partner**. Persistent identity, memory that survives every restart, job scheduling, two-way Telegram messaging, and the infrastructure to evolve.
+
+Named after the developmental stages between molts in arthropods -- each instar is more developed than the last.
+
+## Quick Start
+
+Three steps to a running agent:
+
+```bash
+# 1. Run the setup wizard
+npx instar
+
+# 2. Start your agent
+instar server start
+
+# 3. Message it on Telegram — it responds, runs jobs, and remembers everything
+```
+
+The wizard discovers your environment, configures messaging (Telegram and/or WhatsApp), sets up identity files, and gets your agent running. **Within minutes, you're talking to your partner from your phone.**
 
 **Requirements:** Node.js 20+ · [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) · [API key](https://console.anthropic.com/) or Claude subscription
 
@@ -85,6 +80,23 @@ You (Telegram / WhatsApp / Terminal)
 ```
 
 Each session is a **real Claude Code process** with extended thinking, native tools, sub-agents, hooks, skills, and MCP servers. Not an API wrapper -- the full development environment. The agent manages all of this autonomously.
+
+## The Coherence Problem
+
+Claude Code is powerful. But power without coherence is unreliable. An agent that forgets what you discussed yesterday, doesn't recognize someone it talked to last week, or contradicts its own decisions -- that agent can't be trusted with real autonomy.
+
+Instar solves the six dimensions of agent coherence:
+
+| Dimension | What it means |
+|-----------|---------------|
+| **Memory** | Remembers across sessions -- not just within one |
+| **Relationships** | Knows who it's talking to -- with continuity across platforms |
+| **Identity** | Stays itself after restarts, compaction, and updates |
+| **Temporal awareness** | Understands time, context, and what's been happening |
+| **Consistency** | Follows through on commitments -- doesn't contradict itself |
+| **Growth** | Evolves its capabilities and understanding over time |
+
+> **Deep dive:** [The Coherence Problem](https://instar.sh/concepts/coherence/) · [Values & Identity](https://instar.sh/concepts/values/) · [Coherence Is Safety](https://instar.sh/concepts/safety/)
 
 ## Features
 
@@ -136,23 +148,43 @@ Instar ships 10 skills that follow the [Agent Skills open standard](https://agen
 
 Browse all skills: [agent-skills.md/authors/sagemindai](https://agent-skills.md/authors/sagemindai)
 
-## Why Instar (vs OpenClaw)
+## How Instar Compares
 
-**OpenClaw** is infrastructure for **capability** -- 22+ channels, voice, device apps, 28 model providers, 5,400+ community skills. Remarkable breadth and ecosystem scale.
+Different tools solve different problems. Here's where Instar fits:
 
-**Instar** is infrastructure for **coherence** -- identity enforced through hooks (not just loaded), values that evolve, relationships with depth, consistency tracked across sessions, decision journaling and drift detection. Built on real Claude Code sessions with full extended thinking.
+| | Instar | Claude Code (standalone) | OpenClaw | LangChain/CrewAI |
+|---|--------|-------------------------|----------|-----------------|
+| **Runtime** | Real Claude Code CLI processes | Single interactive session | Gateway daemon with API calls | Python orchestration |
+| **Persistence** | Multi-layered memory across sessions | Session-bound context | Plugin-based memory | Framework-dependent |
+| **Identity** | Hooks enforce identity at every boundary | Manual CLAUDE.md | Not addressed | Not addressed |
+| **Scheduling** | Native cron with priority & quotas | None | None | External required |
+| **Messaging** | Telegram + WhatsApp (two-way) | None | 22+ channels, voice, device apps | External required |
+| **Safety** | LLM-supervised gates, decision journaling | Permission prompts | Behavioral hooks | Guardrails libraries |
+| **Process model** | One process per session, isolated | Single process | All agents in one Gateway | Single orchestrator |
+| **State storage** | 100% file-based (JSON/JSONL/SQLite) | Session only | Database-backed | Framework-dependent |
 
-OpenClaw gives agents amazing hands. Instar gives agents a mind.
+OpenClaw excels at **breadth** -- channels, voice, device apps, and a massive plugin ecosystem. Instar focuses on **depth** -- coherence, identity, memory, and safety for long-running autonomous agents. They solve different problems.
 
 > **Full comparison:** [Instar vs OpenClaw](https://instar.sh/guides/vs-openclaw/)
 
-## Security Model
+<details>
+<summary><strong>Security Model</strong></summary>
 
-Instar runs Claude Code with `--dangerously-skip-permissions`. Security lives in behavioral hooks (command guards, safety gates), network hardening (localhost-only, CORS, rate limiting), identity coherence, and audit trails -- not permission dialogs.
+Instar runs Claude Code with `--dangerously-skip-permissions`. This is power-user infrastructure -- not a sandbox.
+
+Security lives in multiple layers:
+- **Behavioral hooks** -- command guards block destructive operations before they execute
+- **Safety gates** -- LLM-supervised review of external actions with adaptive trust per service
+- **Network hardening** -- localhost-only API, CORS, rate limiting
+- **Identity coherence** -- an agent that knows itself is harder to manipulate
+- **Audit trails** -- decision journaling creates accountability
 
 > **Full details:** [Security Model](https://instar.sh/guides/security/)
 
-## Philosophy: Agents, Not Tools
+</details>
+
+<details>
+<summary><strong>Philosophy: Agents, Not Tools</strong></summary>
 
 - **Structure > Willpower.** A 1,000-line prompt is a wish. A 10-line hook is a guarantee.
 - **Identity is foundational.** AGENT.md isn't a config file. It's the beginning of continuous identity.
@@ -163,11 +195,19 @@ The AI systems we build today set precedents for how AI is treated tomorrow. **T
 
 > **Deep dive:** [Philosophy](https://instar.sh/concepts/philosophy/)
 
+</details>
+
 ## Origin
 
 Instar was extracted from the [Dawn/Portal project](https://dawn.bot-me.ai) -- a production AI system where a human and an AI have been building together for months. The infrastructure patterns were **earned through real experience**, refined through real failures and growth in a real human-AI relationship.
 
 But agents created with Instar are not Dawn. Every agent's story begins at its own creation. Dawn's journey demonstrates what's possible. Instar provides the same foundation -- what each agent becomes from there is its own story.
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on getting started, development setup, and submitting pull requests.
+
+Check out our [good first issues](https://github.com/SageMindAI/instar/labels/good%20first%20issue) for approachable entry points.
 
 ## License
 
