@@ -131,6 +131,7 @@ export interface RouteContext {
   instructionsVerifier: InstructionsVerifier | null;
   threadlineRouter: ThreadlineRouter | null;
   handshakeManager: HandshakeManager | null;
+  threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
   responseReviewGate: CoherenceGate | null;
   telemetryHeartbeat: import('../monitoring/TelemetryHeartbeat.js').TelemetryHeartbeat | null;
   startTime: Date;
@@ -5562,6 +5563,45 @@ export function createRoutes(ctx: RouteContext): Router {
     );
     router.use(threadlineRoutes);
   }
+
+  // ── Threadline Relay Send ────────────────────────────────────────────
+  // Used by the MCP server's threadline_send tool to route messages through
+  // the relay WebSocket. The MCP server runs as a stdio child process and
+  // can't access the relay client directly, so it calls this HTTP endpoint.
+
+  router.post('/threadline/relay-send', async (req, res) => {
+    const relayClient = ctx.threadlineRelayClient;
+    if (!relayClient || relayClient.connectionState !== 'connected') {
+      res.status(503).json({ success: false, error: 'Relay not connected' });
+      return;
+    }
+
+    const { targetAgent, message, threadId } = req.body;
+    if (!targetAgent || !message) {
+      res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
+      return;
+    }
+
+    // Validate message size (64KB limit matching inbound)
+    if (Buffer.byteLength(message, 'utf-8') > 64 * 1024) {
+      res.status(413).json({ success: false, error: 'Message too large (64KB limit)' });
+      return;
+    }
+
+    try {
+      const msgId = relayClient.sendAuto(targetAgent, message, threadId);
+      res.json({
+        success: true,
+        messageId: msgId,
+        threadId: threadId ?? msgId,
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : 'Send failed',
+      });
+    }
+  });
 
   // ── Response Review Pipeline (Coherence Gate) ────────────────────────
   //

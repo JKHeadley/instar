@@ -293,11 +293,20 @@ function loadOrCreateIdentityKeys(threadlineDir: string): KeyPair {
 function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: string): void {
   const absDir = path.resolve(projectDir);
 
-  // The MCP server entry point — runs as a child process of Claude Code
+  // The MCP server entry point — runs as a child process of Claude Code.
+  // Resolve the actual instar package location (handles both node_modules and npm-linked).
+  let mcpEntryPath = path.join(absDir, 'node_modules', 'instar', 'dist', 'threadline', 'mcp-stdio-entry.js');
+  if (!fs.existsSync(mcpEntryPath)) {
+    // Fall back to the running instar installation's dist directory.
+    // This handles npm-linked installs where node_modules/instar doesn't exist.
+    const thisFile = new URL(import.meta.url).pathname;
+    mcpEntryPath = path.join(path.dirname(thisFile), 'mcp-stdio-entry.js');
+  }
+
   const mcpEntry = {
     command: 'node',
     args: [
-      path.join(absDir, 'node_modules', 'instar', 'dist', 'threadline', 'mcp-stdio-entry.js'),
+      mcpEntryPath,
       '--state-dir', stateDir,
       '--agent-name', agentName,
     ],

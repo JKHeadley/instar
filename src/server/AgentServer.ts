@@ -108,6 +108,7 @@ export class AgentServer {
     instructionsVerifier?: import('../monitoring/InstructionsVerifier.js').InstructionsVerifier;
     threadlineRouter?: import('../threadline/ThreadlineRouter.js').ThreadlineRouter;
     handshakeManager?: import('../threadline/HandshakeManager.js').HandshakeManager;
+    threadlineRelayClient?: import('../threadline/client/ThreadlineClient.js').ThreadlineClient;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
     telemetryHeartbeat?: import('../monitoring/TelemetryHeartbeat.js').TelemetryHeartbeat;
   }) {
@@ -280,6 +281,7 @@ export class AgentServer {
       instructionsVerifier: options.instructionsVerifier ?? null,
       threadlineRouter: options.threadlineRouter ?? null,
       handshakeManager: options.handshakeManager ?? null,
+      threadlineRelayClient: options.threadlineRelayClient ?? null,
       responseReviewGate: options.responseReviewGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
       startTime: this.startTime,

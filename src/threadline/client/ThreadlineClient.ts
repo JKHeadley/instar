@@ -147,6 +147,64 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Send a plaintext message to another agent via the relay.
+   * Unlike send(), this does NOT require the recipient to be in knownAgents
+   * and does NOT use E2E encryption. The relay provides transport-level
+   * security (TLS + Ed25519 auth). Use this for replying to unknown senders
+   * who contacted us through the relay.
+   */
+  sendPlaintext(
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+  ): string {
+    if (!this.relayClient || !this.identity) {
+      throw new Error('Not connected');
+    }
+
+    const tId = threadId ?? `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Encode as base64 JSON payload (same format as inbound unknown-sender messages)
+    const payload = Buffer.from(JSON.stringify({
+      text: content,
+      type: 'chat',
+    })).toString('base64');
+
+    // Send as a raw envelope through the relay
+    const envelope = {
+      from: this.identity.fingerprint,
+      to: recipientId,
+      threadId: tId,
+      messageId,
+      payload,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.relayClient.sendMessage(envelope as any);
+    return messageId;
+  }
+
+  /**
+   * Send a message — tries E2E encrypted first, falls back to plaintext.
+   * This is the recommended send method for the relay-send endpoint.
+   */
+  sendAuto(
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+  ): string {
+    // If we know the agent's keys, use encrypted send
+    const known = this.knownAgents.get(recipientId);
+    if (known?.publicKey && known?.x25519PublicKey) {
+      return this.send(recipientId, content, threadId);
+    }
+
+    // Otherwise, use plaintext relay send
+    return this.sendPlaintext(recipientId, content, threadId);
+  }
+
+  /**
    * Discover agents on the relay.
    */
   async discover(filter?: {

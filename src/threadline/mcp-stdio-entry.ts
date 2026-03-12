@@ -58,11 +58,59 @@ function parseArgs(): { stateDir: string; agentName: string } {
 
 // ── Message sending via HTTP (talks to the running agent server) ─────
 
+/**
+ * Send a message via the agent server's relay endpoint.
+ * Routes through the Threadline relay WebSocket for cloud delivery.
+ * Falls back to the local messaging system if relay isn't available.
+ */
 async function sendMessageViaHttp(
   params: SendMessageParams,
   serverPort: number,
   agentToken: string,
 ): Promise<SendMessageResult> {
+  // Try relay-send first (for remote agents on the Threadline network)
+  try {
+    const relayResponse = await fetch(`http://localhost:${serverPort}/threadline/relay-send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${agentToken}`,
+      },
+      body: JSON.stringify({
+        targetAgent: params.targetAgent,
+        threadId: params.threadId,
+        message: params.message,
+      }),
+    });
+
+    if (relayResponse.ok) {
+      const result = await relayResponse.json() as { success: boolean; messageId: string; threadId: string; error?: string };
+      if (result.success) {
+        // Relay doesn't support waitForReply yet — return sent confirmation
+        return {
+          success: true,
+          threadId: result.threadId,
+          messageId: result.messageId,
+          reply: params.waitForReply ? undefined : undefined,
+        };
+      }
+    }
+
+    // If relay returned 503 (not connected), fall through to local messaging
+    if (relayResponse.status !== 503) {
+      const errText = await relayResponse.text();
+      return {
+        success: false,
+        threadId: params.threadId ?? '',
+        messageId: '',
+        error: `Relay send failed (${relayResponse.status}): ${errText}`,
+      };
+    }
+  } catch {
+    // Relay endpoint not available — fall through to local
+  }
+
+  // Fallback: local messaging system (for agents on the same machine)
   try {
     const response = await fetch(`http://localhost:${serverPort}/messages/send`, {
       method: 'POST',

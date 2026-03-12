@@ -31,7 +31,7 @@ const DEFAULTS: RelayRateLimitConfig = {
   perIPPerMinute: 120,
   globalPerMinute: 5000,
   discoveryPerMinute: 10,
-  authAttemptsPerMinute: 5,
+  authAttemptsPerMinute: 100,
 };
 
 export class RelayRateLimiter {

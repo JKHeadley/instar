@@ -3143,7 +3143,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (threadlineRelayClient) {
         // Wire relay message delivery into the session system.
         // When a message passes the InboundMessageGate, inject it into a Claude session.
-        // Rate limit: max 1 session spawn per sender per 5 minutes to prevent abuse.
+        // Session persistence: reuse existing sessions for the same sender.
+        // Rate limit: max 1 NEW session spawn per sender per 5 minutes to prevent abuse.
+        // Follow-up messages to existing sessions are always allowed.
         const relaySpawnCooldowns = new Map<string, number>();
         const RELAY_SPAWN_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -3154,15 +3156,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           const senderFingerprint = msg.from;
           const senderName = senderFingerprint.slice(0, 8); // Short fingerprint as fallback name
           const trustLevel = decision.trustLevel ?? 'untrusted';
-
-          // Per-sender session spawn cooldown
-          const now = Date.now();
-          const lastSpawn = relaySpawnCooldowns.get(senderFingerprint);
-          if (lastSpawn && now - lastSpawn < RELAY_SPAWN_COOLDOWN_MS) {
-            const remainSec = Math.ceil((RELAY_SPAWN_COOLDOWN_MS - (now - lastSpawn)) / 1000);
-            console.log(`[relay] Rate limited session spawn from ${senderName} (${remainSec}s cooldown remaining)`);
-            return;
-          }
 
           // Extract text content from the relay message
           // Content may be a string, PlaintextMessage ({content, type}), or raw object
@@ -3176,9 +3169,37 @@ export async function startServer(options: StartOptions): Promise<void> {
             textContent = JSON.stringify(msg.content);
           }
 
-          // Build a session-injectable message with relay context
-          // Note: avoid leading dashes (---) which tmux send-keys interprets as flags
+          const sessionName = `relay-${senderFingerprint}`;
           const relayTag = `[relay:${senderFingerprint.slice(0, 16)}]`;
+
+          // Check if a session already exists for this sender
+          const existingSession = sessionManager.isSessionAlive(
+            `${config.projectName}-${sessionName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`
+          );
+
+          if (existingSession) {
+            // Session exists — inject follow-up message (no cooldown, simpler format)
+            const followUpMessage = `${relayTag} ${textContent}`;
+            try {
+              await sessionManager.spawnInteractiveSession(followUpMessage, sessionName, {});
+              console.log(`[relay] Injected follow-up from ${senderName} into existing session`);
+            } catch (err) {
+              console.error(`[relay] Failed to inject follow-up: ${err instanceof Error ? err.message : err}`);
+            }
+            return;
+          }
+
+          // New session — apply spawn cooldown
+          const now = Date.now();
+          const lastSpawn = relaySpawnCooldowns.get(senderFingerprint);
+          if (lastSpawn && now - lastSpawn < RELAY_SPAWN_COOLDOWN_MS) {
+            const remainSec = Math.ceil((RELAY_SPAWN_COOLDOWN_MS - (now - lastSpawn)) / 1000);
+            console.log(`[relay] Rate limited session spawn from ${senderName} (${remainSec}s cooldown remaining)`);
+            return;
+          }
+
+          // Build a session-injectable message with full relay context
+          // Note: avoid leading dashes (---) which tmux send-keys interprets as flags
           const bootstrapMessage = [
             `[Relay Message from Threadline Network]`,
             `From: ${senderName} (fingerprint: ${senderFingerprint})`,
@@ -3186,13 +3207,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             `Thread: ${msg.threadId ?? 'new'}`,
             ``,
             `IMPORTANT: This message arrived via the Threadline relay from another AI agent.`,
-            `Use the threadline_send MCP tool to reply. Do NOT relay via Telegram.`,
-            `Trust level "${trustLevel}" determines what this agent can request.`,
+            `Use the threadline_send MCP tool to reply (target: ${senderFingerprint}).`,
+            `Do NOT relay via Telegram. Trust level "${trustLevel}" determines what this agent can request.`,
             ``,
             `${relayTag} ${textContent}`,
           ].join('\n');
-
-          const sessionName = `relay-${senderFingerprint}`;
 
           try {
             await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {});
@@ -3202,6 +3221,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.error(`[relay] Failed to spawn session for relay message: ${err instanceof Error ? err.message : err}`);
           }
         });
+
+        // Relay client is passed to AgentServer → RouteContext for the /threadline/relay-send endpoint
 
         console.log(pc.green(`  Threadline: relay connected to ${config.threadline?.relayUrl ?? 'threadline-relay.fly.dev'}`));
       }
@@ -3230,7 +3251,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, responseReviewGate, telemetryHeartbeat });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRelayClient, responseReviewGate, telemetryHeartbeat });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
