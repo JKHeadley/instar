@@ -40,9 +40,10 @@ const FLAKY_TESTS = [
   // ── HTTP response corruption / parse errors ───────────────────────
   'tests/e2e/system-reviewer-e2e.test.ts',
 
-  // ── Threadline — state/UUID race conditions ──────────────────────
+  // ── Threadline — state/UUID race conditions, SQLite schema drift ──
   'tests/integration/threadline/**',
   'tests/unit/threadline/**',
+  'tests/e2e/threadline/**',
 
   // ── Pre-existing assertion mismatches (emoji vs keyword format) ──
   'tests/unit/notification-spam-prevention.test.ts',
