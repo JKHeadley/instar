@@ -694,7 +694,7 @@ Skills would be namespaced: `/instar:evolve`, `/instar:learn`, etc.
 
 **But: this is a FUTURE architecture, not a current need.**
 
-The plugin system is designed for distribution and sharing. Instar already handles its own distribution via npm (`npm install instar`) and `instar init`. Converting to a plugin model would be a significant architectural shift that changes:
+The plugin system is designed for distribution and sharing. Instar already handles its own distribution via npm (`npx instar`) and `instar init`. Converting to a plugin model would be a significant architectural shift that changes:
 - How skills are discovered (plugin namespacing vs direct `/skill-name`)
 - How hooks are installed (plugin hooks.json vs init.ts file writes)
 - How updates work (plugin update vs npm update + init)
@@ -716,7 +716,7 @@ The bigger opportunity: Instar could host a MARKETPLACE of community-contributed
    Instar's local skill model works alongside plugins. No conflicts — they're parallel systems.
 
 2. **Evaluate Instar-as-plugin architecture** (LOW PRIORITY — future):
-   Could Instar's core components (hooks, skills, agent definitions) be packaged as a Claude Code plugin? This would simplify installation for new users: `/plugin install instar` instead of `npm install instar && instar init`. Major architectural shift — needs dedicated design work.
+   Could Instar's core components (hooks, skills, agent definitions) be packaged as a Claude Code plugin? This would simplify installation for new users: `/plugin install instar` instead of `npx instar`. Major architectural shift — needs dedicated design work.
 
 3. **Consider community skill marketplace** (LOW PRIORITY — future):
    Host a GitHub-based marketplace where Instar users share agent-authored skills. Natural fit with Claude Code's marketplace model. Depends on user base growth.

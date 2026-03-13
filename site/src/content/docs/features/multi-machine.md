@@ -17,10 +17,10 @@ Word-based pairing codes (WORD-WORD-NNNN) with ECDH key exchange and SAS verific
 
 ```bash
 # On machine A
-instar machines pair        # Generates a pairing code
+instar pair                 # Generates a pairing code
 
 # On machine B
-instar machines join CODE   # Joins using the code
+instar join <url>           # Joins the mesh (--code <code>)
 ```
 
 ## Encrypted Sync
@@ -36,5 +36,10 @@ Distributed heartbeat coordination with split-brain detection. If the primary ma
 Primary-machine-writes-only enforcement prevents conflicts. Secondary machines queue changes until they can sync.
 
 ```bash
-instar machines whoami      # Show this machine's identity
+instar whoami               # Show this machine's identity
+instar machines             # List all paired machines
+instar wakeup               # Transfer awake role to this machine
+instar leave                # Remove this machine from the mesh
 ```
+
+Note: `whoami`, `pair`, `join`, `wakeup`, and `leave` are top-level commands, not subcommands of `machines`.

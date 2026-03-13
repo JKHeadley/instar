@@ -57,7 +57,7 @@ The namespace model is designed to support per-user encryption keys. When implem
 - `user-delete` would destroy the key, making data unrecoverable
 - This provides cryptographic guarantees beyond filesystem deletion
 
-Phase 4 provides namespace isolation and DSAR tooling. Phase 5 adds encryption at rest.
+Phase 4 (implemented as of v0.13.0) provides namespace isolation and DSAR tooling. Phase 5 adds encryption at rest.
 
 ## Retention Policy
 

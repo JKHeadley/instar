@@ -56,9 +56,9 @@ Traditional PRs are welcome too — this is still open source. The code is here,
 ```bash
 git clone https://github.com/SageMindAI/instar.git
 cd instar
-npm install
-npm run build
-npm test
+pnpm install       # or npm install
+pnpm build         # or npm run build
+pnpm test          # or npm test
 ```
 
 Good areas for human PRs:

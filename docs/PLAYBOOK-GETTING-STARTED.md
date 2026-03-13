@@ -151,7 +151,7 @@ Next Session (better context)
 
 ### Static vs Dynamic Injection
 
-**Phase 4 (current)**: Static injection. Context is assembled at session start and injected into the system prompt. Simple, predictable, zero mid-session complexity.
+**Phase 4 (current as of v0.13.0)**: Static injection. Context is assembled at session start and injected into the system prompt. Simple, predictable, zero mid-session complexity.
 
 **Future**: Dynamic injection. Context refreshed mid-session based on task signals. More powerful, more complex. Requires hook integration.
 
@@ -256,6 +256,5 @@ instar playbook status --json | jq '.health'
 
 ## Related
 
-- [Context Engineering Architecture Spec](../docs/specs/context-engineering-integration.md)
-- [Phase 4 Instar Packaging Spec](../docs/specs/context-engineering-phase4-instar-packaging.md)
+- [Contextual Dispatch Integration Spec](../docs/specs/PROP-contextual-dispatch-integration.md)
 - ACE Paper: "Agentic Context Engineering" (Zhang et al., Stanford/SambaNova, ICLR 2026)

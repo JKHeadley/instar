@@ -16,33 +16,36 @@ Everything is file-based. No external database, no cloud dependencies.
   USER.md                 # User context (who am I working with?)
   MEMORY.md               # Persistent learnings across sessions
   hooks/                  # Behavioral scripts
-    dangerous-command-guard.py
-    external-operation-gate.js
-    grounding-before-messaging.sh
-    session-start.sh
-    compaction-recovery.sh
-    deferral-detector.js
-    post-action-reflection.js
+    instar/               # Instar-managed hooks
+      dangerous-command-guard.py
+      external-operation-gate.js
+      grounding-before-messaging.sh
+      session-start.sh
+      compaction-recovery.sh
+      deferral-detector.js
+      post-action-reflection.js
+      telegram-topic-context.sh
+  scripts/                # Agent infrastructure scripts
+    serendipity-capture.sh  # Sub-agent finding capture (HMAC, validation, atomic write)
+  skills/                 # Built-in + agent-created skills
+  playbook/               # Context engineering playbooks (if initialized)
   state/                  # Runtime state
     sessions/             # Active session tracking
     jobs/                 # Job execution history
-    evolution/            # Evolution queue, learnings, gaps, actions (JSON)
-    serendipity/          # Pending serendipity findings (JSON + patches)
+    evolution/            # Evolution queue, learnings, gaps, actions (created on demand)
+    serendipity/          # Pending serendipity findings (created on demand)
       processed/          # Triaged findings (promoted or dismissed)
       invalid/            # Failed HMAC verification
-    journal/              # Decision journal entries (JSONL)
-  context/                # Tiered context segments (auto-generated)
+    journal/              # Decision journal entries (created on demand)
   relationships/          # Per-person relationship files (JSON)
+  views/                  # Dashboard view state
   memory.db               # SQLite: topic memory + full-text search index
   logs/                   # Server logs
+  shadow-install/         # Auto-updater shadow install directory
 
 .claude/                  # Claude Code configuration
   settings.json           # Hook registrations
   scripts/                # Health watchdog, Telegram relay, smart-fetch
-
-.instar/scripts/          # Agent infrastructure scripts
-  serendipity-capture.sh  # Sub-agent finding capture (HMAC, validation, atomic write)
-  skills/                 # Built-in + agent-created skills
 ```
 
 ## Key Files
@@ -60,6 +63,8 @@ Everything is file-based. No external database, no cloud dependencies.
 ## State Files
 
 All runtime state lives in `.instar/state/` as JSON files the agent can read and modify directly. This is deliberate -- the agent has full access to its own state.
+
+Some state subdirectories (`evolution/`, `serendipity/`, `journal/`) are created on demand by their respective modules rather than during initial setup.
 
 ## Why File-Based?
 

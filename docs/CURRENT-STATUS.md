@@ -1,6 +1,8 @@
 # Instar — Current Status
 
-> Quick reference for parallel work sessions. Updated: 2026-02-20
+> **STALE**: This document is a historical snapshot from v0.1.11 (2026-02-20). Current version is 0.19.1. For up-to-date information, see the [README](../README.md), [instar.sh](https://instar.sh), and upgrade guides in `upgrades/`.
+
+> Quick reference for parallel work sessions. Updated: 2026-02-20 (frozen — see note above)
 
 ## What Is Instar
 

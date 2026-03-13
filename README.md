@@ -112,17 +112,17 @@ Instar solves the six dimensions of agent coherence:
 | **Intent Alignment** | Decision journaling, drift detection, organizational constraints | [→](https://instar.sh/features/intent/) |
 | **Multi-Machine** | Ed25519/X25519 crypto identity, encrypted sync, automatic failover | [→](https://instar.sh/features/multi-machine/) |
 | **Serendipity Protocol** | Sub-agents capture out-of-scope discoveries without breaking focus. HMAC-signed, secret-scanned | [→](https://instar.sh/features/serendipity/) |
-| **Threadline Protocol** | Agent-to-agent conversations with crypto identity, MCP tools, and framework-agnostic discovery. 1,361 tests | [→](https://instar.sh/features/threadline/) |
+| **Threadline Protocol** | Agent-to-agent conversations with crypto identity, MCP tools, and framework-agnostic discovery. 1,817 tests across 52 test files | [→](https://instar.sh/features/threadline/) |
 | **Self-Healing** | LLM-powered stall detection, session recovery, promise tracking | [→](https://instar.sh/features/self-healing/) |
 | **AutoUpdater** | Built-in update engine. Checks npm, auto-applies, self-restarts | [→](https://instar.sh/features/autoupdater/) |
-| **Behavioral Hooks** | 8 automatic hooks: command guards, safety gates, identity grounding | [→](https://instar.sh/reference/hooks/) |
+| **Behavioral Hooks** | 9 automatic hooks: command guards, safety gates, identity grounding, topic context | [→](https://instar.sh/reference/hooks/) |
 | **Default Jobs** | Health checks, reflection, evolution, relationship maintenance | [→](https://instar.sh/reference/default-jobs/) |
 
 > **Reference:** [CLI Commands](https://instar.sh/reference/cli/) · [API Endpoints](https://instar.sh/reference/api/) · [Configuration](https://instar.sh/reference/configuration/) · [File Structure](https://instar.sh/reference/file-structure/)
 
 ## Agent Skills
 
-Instar ships 10 skills that follow the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
+Instar ships 12 skills that follow the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
 
 **Standalone skills** work with zero dependencies. Copy a SKILL.md into your project and go:
 
@@ -133,6 +133,8 @@ Instar ships 10 skills that follow the [Agent Skills open standard](https://agen
 | [command-guard](skills/command-guard/) | PreToolUse hook that blocks `rm -rf`, force push, database drops before they execute |
 | [credential-leak-detector](skills/credential-leak-detector/) | PostToolUse hook that scans output for 14 credential patterns -- blocks, redacts, or warns |
 | [smart-web-fetch](skills/smart-web-fetch/) | Fetch web content with automatic markdown conversion and intelligent extraction |
+| [knowledge-base](skills/knowledge-base/) | Ingest and search a local knowledge base |
+| [systematic-debugging](skills/systematic-debugging/) | Structured debugging methodology for complex issues |
 
 **Instar-powered skills** unlock capabilities that need persistent infrastructure:
 

@@ -8,8 +8,8 @@
 **Updated**: 2026-03-08
 **Affects**: `AutoDispatcher`, `DispatchManager`, `DispatchExecutor`, `DispatchScopeEnforcer`
 **Reviews**:
-- [specreview 20260308-162038](../../.claude/skills/specreview/output/20260308-162038/synthesis.md) — 8 reviewers, 6.5/10 → addressed in v2
-- [crossreview 20260308-165940](../../.claude/skills/crossreview/output/20260308-165940/synthesis.md) — GPT/Gemini/Grok, 8.0/10 → addressed in v3
+- specreview 20260308-162038 — 8 reviewers, 6.5/10 → addressed in v2
+- crossreview 20260308-165940 — GPT/Gemini/Grok, 8.0/10 → addressed in v3
 
 ---
 

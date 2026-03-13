@@ -3,16 +3,14 @@ title: Configuration
 description: Configuration reference for Instar agents.
 ---
 
-All configuration lives in `.instar/config.json`, created during setup and editable at any time.
+All configuration lives in `.instar/config.json`, created during setup and editable at any time. All keys are top-level (no nesting under section objects).
 
 ## Server
 
 ```json
 {
-  "server": {
-    "port": 4040,
-    "host": "127.0.0.1"
-  }
+  "port": 4040,
+  "host": "127.0.0.1"
 }
 ```
 
@@ -20,30 +18,28 @@ All configuration lives in `.instar/config.json`, created during setup and edita
 |-------|---------|-------------|
 | `port` | 4040 | Server port |
 | `host` | 127.0.0.1 | Bind address (localhost only by default) |
+| `requestTimeoutMs` | 30000 | Request timeout in milliseconds |
 
-## Telegram
+## Messaging
 
-```json
-{
-  "telegram": {
-    "botToken": "...",
-    "chatId": -100...,
-    "topicAutoCreate": true
-  }
-}
-```
-
-## WhatsApp
+Telegram, WhatsApp, and other adapters are configured via a `messaging` array:
 
 ```json
 {
-  "whatsapp": {
-    "enabled": true
-  }
+  "messaging": [
+    {
+      "type": "telegram",
+      "botToken": "...",
+      "chatId": -100...
+    },
+    {
+      "type": "whatsapp"
+    }
+  ]
 }
 ```
 
-WhatsApp state is managed internally via the Baileys library.
+Each entry specifies an adapter `type` and its adapter-specific options. WhatsApp state is managed internally via the Baileys library.
 
 ## Scheduler
 
@@ -60,31 +56,93 @@ WhatsApp state is managed internally via the Baileys library.
 
 ```json
 {
-  "auth": {
-    "token": "..."
-  }
+  "authToken": "..."
 }
 ```
 
-The auth token is used for API authentication. Generated during setup.
+The auth token is a top-level key, generated during setup. Used for API authentication via `Bearer` header.
 
-## Serendipity Protocol
+For dashboard web access, a simpler `dashboardPin` is also available:
 
 ```json
 {
-  "serendipity": {
-    "enabled": true,
-    "maxPerSession": 5
+  "dashboardPin": "1234"
+}
+```
+
+## Sessions
+
+```json
+{
+  "sessions": {
+    "maxConcurrent": 5,
+    "timeoutMinutes": 120
   }
 }
 ```
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `true` | Enable/disable the serendipity capture protocol |
-| `maxPerSession` | `5` | Maximum findings a sub-agent can capture per session |
+## Safety & Autonomy
 
-The protocol is opt-out — enabled by default. Findings are stored in `.instar/state/serendipity/`.
+```json
+{
+  "safety": { ... },
+  "agentAutonomy": { ... },
+  "autonomyProfile": "supervised",
+  "externalOperations": { ... }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `safety` | Safety configuration for autonomous operation |
+| `agentAutonomy` | Agent autonomy configuration |
+| `autonomyProfile` | Unified autonomy level: `cautious`, `supervised`, `collaborative`, `autonomous` |
+| `externalOperations` | External operation safety -- gate, sentinel, trust |
+
+## Response Review (Coherence Gate)
+
+```json
+{
+  "responseReview": {
+    "enabled": true,
+    "mode": "observe"
+  }
+}
+```
+
+See [Coherence Gate](/features/coherence-gate/) for full configuration options.
+
+## Threadline
+
+```json
+{
+  "threadline": { ... }
+}
+```
+
+Configures the Threadline relay for inter-agent communication. See [Threadline Protocol](/features/threadline/) for details.
+
+## Additional Config Keys
+
+| Key | Description |
+|-----|-------------|
+| `monitoring` | Health monitoring configuration |
+| `relationships` | Relationship tracking config |
+| `feedback` | Feedback loop config |
+| `dispatches` | Dispatch (intelligence broadcast) config |
+| `gitBackup` | Git backup config (opt-in for standalone agents) |
+| `updates` | Update configuration (auto-updater behavior) |
+| `publishing` | Publishing (Telegraph) config |
+| `tunnel` | Cloudflare Tunnel config |
+| `evolution` | Evolution system configuration |
+| `multiMachine` | Multi-machine coordination config |
+| `agentType` | `standalone` or `project-bound` |
+| `userRegistrationPolicy` | User registration policy |
+| `inputGuard` | Cross-topic injection defense |
+| `notifications` | Notification preferences for autonomy events |
+| `dashboard` | Dashboard configuration |
+| `onboarding` | Controls what data is collected during user registration |
+| `recoveryKey` | Recovery key for admin self-recovery |
 
 ## Identity Files
 
@@ -99,8 +157,8 @@ These aren't in config.json but are critical configuration:
 
 ## Jobs
 
-Jobs are defined in `.instar/jobs.json`. See [Job Scheduler](/features/scheduler) for the format.
+Jobs are defined in `.instar/jobs.json`. See [Job Scheduler](/features/scheduler/) for the format.
 
 ## Hooks
 
-Behavioral hooks are installed in `.claude/settings.json` and scripts live in `.instar/hooks/` and `.claude/scripts/`. See [Hooks reference](/reference/hooks) for details.
+Behavioral hooks are installed in `.claude/settings.json` and scripts live in `.instar/hooks/` and `.claude/scripts/`. See [Hooks reference](/reference/hooks/) for details.

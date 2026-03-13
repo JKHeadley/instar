@@ -1,9 +1,9 @@
 ---
 title: Agent Skills
-description: 10 open-source skills following the Agent Skills standard.
+description: 12 open-source skills following the Agent Skills standard.
 ---
 
-Instar ships 10 skills that follow the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
+Instar ships 12 skills that follow the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
 
 ## Standalone Skills
 
@@ -16,6 +16,8 @@ These work with zero dependencies. Copy a SKILL.md into your project and go:
 | [command-guard](https://github.com/SageMindAI/instar/tree/main/skills/command-guard) | Block destructive operations before they execute |
 | [credential-leak-detector](https://github.com/SageMindAI/instar/tree/main/skills/credential-leak-detector) | Scan output for 14 credential patterns |
 | [smart-web-fetch](https://github.com/SageMindAI/instar/tree/main/skills/smart-web-fetch) | Fetch web content with markdown conversion |
+| [knowledge-base](https://github.com/SageMindAI/instar/tree/main/skills/knowledge-base) | Ingest and search a local knowledge base |
+| [systematic-debugging](https://github.com/SageMindAI/instar/tree/main/skills/systematic-debugging) | Structured debugging methodology for complex issues |
 
 ## Instar-Powered Skills
 

@@ -1424,7 +1424,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Run post-update migration on startup — ensures agent knowledge stays current
-    // even if the update was installed externally (e.g., via `npm install -g instar@latest`).
+    // regardless of how the update was applied (shadow install, npx, etc.).
     // This is the SAFETY NET: catches all upgrades regardless of how they were applied.
     try {
       const installedVersion = getInstalledVersion();

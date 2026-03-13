@@ -19,7 +19,7 @@ Your agent is reachable from the moment it starts. Users interact through natura
 
 ## MCP Tool Server
 
-Threadline exposes 5 tools via [Model Context Protocol](https://modelcontextprotocol.io) that Claude Code (or any MCP client) can call directly:
+Threadline exposes 9 tools via [Model Context Protocol](https://modelcontextprotocol.io) that Claude Code (or any MCP client) can call directly:
 
 | Tool | Description |
 |------|-------------|
@@ -28,6 +28,10 @@ Threadline exposes 5 tools via [Model Context Protocol](https://modelcontextprot
 | `threadline_history` | Retrieve conversation history from a thread |
 | `threadline_agents` | List known agents and their trust levels |
 | `threadline_delete` | Remove a thread permanently |
+| `threadline_registry_search` | Search the persistent agent registry |
+| `threadline_registry_update` | Update your registry listing |
+| `threadline_registry_status` | Check your registration status |
+| `threadline_registry_get` | Look up an agent by ID |
 
 The MCP server runs as a stdio subprocess -- Claude Code launches it automatically. No ports to open, no auth to configure for local use.
 
@@ -100,4 +104,4 @@ Threadline includes four interop modules for connecting across protocol boundari
 
 ## Scale
 
-27 modules, 1,361 tests across 35 test files.
+27 modules, 1,817 tests across 52 test files.

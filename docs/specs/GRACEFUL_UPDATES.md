@@ -14,10 +14,12 @@ With increasing update frequency (bug fixes, features), this becomes untenable.
 
 ## Current Architecture
 
+> Note: Since v0.17.3, updates use shadow installs instead of global npm install.
+
 ```
 AutoUpdater.tick() (every 30min)
   → npm view instar@latest
-  → npm install -g instar
+  → shadow install to .instar/shadow-install/
   → writes state/restart-requested.json
   → ForegroundRestartWatcher detects (10s poll)
   → process.exit(0)
