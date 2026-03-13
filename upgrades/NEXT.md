@@ -1,6 +1,6 @@
 # Upgrade Guide — vNEXT
 
-<!-- bump: minor -->
+<!-- bump: patch -->
 <!-- Valid values: patch, minor, major -->
 <!-- patch = bug fixes, refactors, test additions, doc updates -->
 <!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
@@ -8,31 +8,23 @@
 
 ## What Changed
 
-### Dashboard File Viewer — Phase 3: Conversational UX + Polish
+### SQLite Auto-Recovery Fix — More Reliable Native Binary Handling
 
-The file viewer is now a seamless part of the agent-user conversation:
+Two related bugs in the `better-sqlite3` native binary auto-recovery path have been fixed:
 
-1. **Conversational config updates** — `PATCH /api/files/config` lets agents update `allowedPaths` and `editablePaths` without restarting the server. When a user says "I want to browse my src/ directory," the agent can add it immediately with server-side validation (project root boundary, never-editable enforcement).
+1. **Missing scripts in npm package**: `scripts/fix-better-sqlite3.cjs` was referenced in the `postinstall` hook but not included in the published npm package. Fresh global installs would fail the postinstall silently. The `scripts/` directory is now correctly included in the npm package.
 
-2. **Link generation API** — `GET /api/files/link?path=.claude/CLAUDE.md` returns a structured response with the relative dashboard URL and editability status. Agents can use this to generate deep links to files mid-conversation.
+2. **Fragile `npm rebuild` fallback**: When `better-sqlite3` failed to load after a Node.js version change, the auto-recovery used `npm rebuild better-sqlite3` which fails in pnpm or asdf-managed Node.js environments (the `npm root -g` path doesn't match where the package actually lives). Auto-recovery now uses the bundled `fix-better-sqlite3.cjs` script which downloads the correct prebuild directly from GitHub — the same reliable approach used at install time. `npm rebuild` is kept as a fallback if the script is not found.
 
-3. **Dashboard broadcast with quick links** — The Telegram Dashboard topic message now includes quick links to Sessions and Files tabs, not just the main dashboard URL.
-
-4. **CLAUDE.md template updated** — New agents get full file viewer documentation in their CLAUDE.md, including when to link vs inline, how to update config conversationally, and tunnel URL awareness.
-
-5. **Context snapshot awareness** — The `file-viewer` feature is now included in the agent's capability snapshot for dispatch evaluation.
+**Impact**: Agents that upgrade Node.js after installing Instar will now recover automatically without manual intervention. Affects TopicMemory and SemanticMemory initialization on Node.js version changes.
 
 ## What to Tell Your User
 
-- **"You can now ask me to add directories to your file browser."** If you want to browse or edit files in a new folder, just tell me — I'll update the config instantly without needing a restart.
-
-- **"When I share a file, I'll link you right to it."** Long files get a dashboard link instead of a wall of text in chat. One tap opens the file, ready to view or edit.
+No action needed — this is an invisible reliability improvement. If your agent previously showed TopicMemory degradation warnings after a Node.js update, updating to 0.18.7 will prevent these going forward.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Update file viewer paths | `PATCH /api/files/config` with `allowedPaths` or `editablePaths` |
-| Generate file deep link | `GET /api/files/link?path=<relative-path>` |
-| Quick links in dashboard broadcast | Automatic — included in Telegram Dashboard topic |
-| File viewer in context snapshot | Automatic — appears in capabilities when enabled |
+| SQLite native binary auto-recovery | Automatic — runs on server start if binding mismatch detected |
+| Works with pnpm and asdf installs | Automatic — no configuration needed |
