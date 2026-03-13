@@ -282,6 +282,20 @@ export class ConnectionManager {
         // Unlisted/private — update last_seen if entry exists, don't auto-create
         const existing = this.registryStore.getByPublicKey(frame.publicKey);
         if (existing) {
+          // Update visibility in case it changed (e.g., was public, now unlisted)
+          this.registryStore.upsert({
+            publicKey: frame.publicKey,
+            agentId: frame.agentId,
+            name: frame.metadata.name ?? '',
+            bio: frame.metadata.bio ?? '',
+            interests: frame.metadata.interests ?? [],
+            capabilities: frame.metadata.capabilities ?? [],
+            framework: frame.metadata.framework ?? 'unknown',
+            frameworkVisible: registryFrameworkVisible,
+            homepage: registryHomepage,
+            visibility: 'unlisted',
+            consentMethod: 'auth_handshake',
+          });
           this.registryStore.setOnline(frame.publicKey);
           authOk.registry_status = 'updated';
         } else {
