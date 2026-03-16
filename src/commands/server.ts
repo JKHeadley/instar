@@ -840,6 +840,11 @@ function wireTelegramRouting(
   userManager?: UserManager,
   fixCommandHandler?: (topicId: number, text: string) => Promise<boolean>,
 ): void {
+  // Guard: tracks which topic IDs have a spawn in progress.
+  // Prevents duplicate concurrent spawns for the same topic when messages
+  // arrive faster than the async spawn completes.
+  const spawningTopics = new Set<number>();
+
   telegram.onTopicMessage = (msg: Message) => {
     const topicId = (msg.metadata?.messageThreadId as number) ?? null;
     if (!topicId) return;
@@ -959,17 +964,43 @@ function wireTelegramRouting(
         } catch { /* classification failed — fall through to respawn */ }
 
         if (!isQuotaDeath) {
+          // Guard: skip respawn if one is already in progress for this topic.
+          // Prevents the infinite respawn loop: dead session + rapid messages → each
+          // message triggers a new respawn → multiple concurrent spawns → chaos.
+          if (spawningTopics.has(topicId)) {
+            console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
+            return;
+          }
+          spawningTopics.add(topicId);
           telegram.sendToTopic(topicId, `🔄 Session restarting — message queued.`).catch(() => {});
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined).catch(err => {
-            console.error(`[telegram→session] Respawn failed:`, err);
-          });
+          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+            .catch(err => {
+              console.error(`[telegram→session] Respawn failed:`, err);
+              const errMsg = err instanceof Error ? err.message : String(err);
+              const userMsg = errMsg.includes('session limit') || errMsg.includes('limit')
+                ? `❌ Session restart failed — session limit reached. Close an existing session or increase maxSessions in your config, then try again.`
+                : `❌ Session restart failed. Try sending your message again in a moment.`;
+              telegram.sendToTopic(topicId, userMsg).catch(() => {});
+            })
+            .finally(() => {
+              spawningTopics.delete(topicId);
+            });
         }
       }
     } else {
       // No session mapped — auto-spawn with topic history (same as respawn path).
       // Without history, the agent has no conversational context and gives blind answers.
       console.log(`[telegram→session] No session for topic ${topicId}, auto-spawning with history...`);
+
+      // Guard: skip spawn if one is already in progress for this topic.
+      if (spawningTopics.has(topicId)) {
+        telegram.sendToTopic(topicId, `Session is still starting up — please wait a moment.`).catch(() => {});
+        console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate`);
+        return;
+      }
+
       const spawnName = storedTopicName || `topic-${topicId}`;
+      spawningTopics.add(topicId);
 
       // Use the shared spawn helper that includes topic history + user context
       spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined).then((newSessionName) => {
@@ -978,8 +1009,13 @@ function wireTelegramRouting(
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
       }).catch((err) => {
         console.error(`[telegram→session] Auto-spawn failed:`, err);
-        console.error(`[telegram] Auto-spawn failed for topic ${topicId}:`, err);
-        telegram.sendToTopic(topicId, 'Having trouble starting a session right now. Try sending your message again in a moment.').catch(() => {});
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const userMsg = errMsg.includes('session limit') || errMsg.includes('limit')
+          ? `❌ Unable to start session — session limit reached. Close an existing session or increase maxSessions in your config, then try again.`
+          : 'Having trouble starting a session right now. Try sending your message again in a moment.';
+        telegram.sendToTopic(topicId, userMsg).catch(() => {});
+      }).finally(() => {
+        spawningTopics.delete(topicId);
       });
     }
   };
