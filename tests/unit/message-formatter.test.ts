@@ -79,8 +79,8 @@ describe('MessageFormatter', () => {
     it('includes reply and ack instructions', () => {
       const msg = makeMessage({ id: 'msg-reply-test' });
       const result = formatter.formatInline(msg);
-      expect(result).toContain('/msg reply msg-reply-test');
-      expect(result).toContain('/msg ack msg-reply-test');
+      expect(result).toContain('threadline_send');
+      expect(result).toContain('Message ID: msg-reply-test');
     });
 
     it('uses delimiter lines for visual separation', () => {
