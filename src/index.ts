@@ -81,6 +81,7 @@ export {
   allocatePort,
   validateAgentName,
   listInstances,
+  forceRemoveRegistryLock,
 } from './core/AgentRegistry.js';
 export { MachineIdentityManager, generateSigningKeyPair, generateEncryptionKeyPair, generateMachineId, sign, verify, ensureGitignore, base64ToSigningPem, base64ToEncryptionPem } from './core/MachineIdentity.js';
 export { SecurityLog } from './core/SecurityLog.js';

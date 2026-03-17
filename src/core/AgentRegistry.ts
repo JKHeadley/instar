@@ -374,16 +374,53 @@ export function heartbeat(agentPath: string): void {
 }
 
 /**
+ * Force-remove a stale registry lock file.
+ * Used as a recovery mechanism when proper-lockfile's stale detection fails
+ * (e.g., after a mutex crash leaves the lock in an inconsistent state).
+ */
+export function forceRemoveRegistryLock(): boolean {
+  const lockPath = registryPath() + '.lock';
+  try {
+    if (fs.existsSync(lockPath)) {
+      fs.rmSync(lockPath, { recursive: true, force: true });
+      console.log(`[AgentRegistry] Force-removed stale lock: ${lockPath}`);
+      return true;
+    }
+  } catch (err) {
+    console.error(`[AgentRegistry] Failed to force-remove lock: ${err}`);
+  }
+  return false;
+}
+
+/**
  * Start a periodic heartbeat. Returns a cleanup function.
+ * Tracks consecutive failures and force-removes the registry lock after
+ * repeated failures — recovers from crash-induced stale locks.
  */
 export function startHeartbeat(agentPath: string, intervalMs: number = 60_000): () => void {
   const canonicalPath = path.resolve(agentPath);
+  let consecutiveFailures = 0;
+  const MAX_FAILURES_BEFORE_RECOVERY = 3;
 
   const interval = setInterval(() => {
     try {
       heartbeat(canonicalPath);
+      consecutiveFailures = 0;
     } catch (err) {
-      console.error(`[AgentRegistry] Heartbeat failed: ${err}`);
+      consecutiveFailures++;
+      if (consecutiveFailures >= MAX_FAILURES_BEFORE_RECOVERY) {
+        console.warn(`[AgentRegistry] ${consecutiveFailures} consecutive heartbeat failures — forcing lock recovery`);
+        forceRemoveRegistryLock();
+        try {
+          heartbeat(canonicalPath);
+          consecutiveFailures = 0;
+          console.log('[AgentRegistry] Heartbeat recovered after lock cleanup');
+        } catch (retryErr) {
+          console.error(`[AgentRegistry] Heartbeat still failing after recovery: ${retryErr}`);
+        }
+      } else {
+        console.error(`[AgentRegistry] Heartbeat failed (${consecutiveFailures}/${MAX_FAILURES_BEFORE_RECOVERY}): ${err}`);
+      }
     }
   }, intervalMs);
 
@@ -495,7 +532,9 @@ export function startHeartbeatByName(projectName: string, intervalMs: number = 6
   const registry = loadRegistry();
   const entry = registry.entries.find(e => e.name === projectName);
   if (!entry) {
-    // Fall back: just do a name-based heartbeat update
+    // Fall back: just do a name-based heartbeat update with recovery
+    let consecutiveFailures = 0;
+    const MAX_FAILURES_BEFORE_RECOVERY = 3;
     const interval = setInterval(() => {
       try {
         withLockSync(reg => {
@@ -505,8 +544,16 @@ export function startHeartbeatByName(projectName: string, intervalMs: number = 6
             e.pid = process.pid;
           }
         });
+        consecutiveFailures = 0;
       } catch (err) {
-        console.error(`[AgentRegistry] Heartbeat failed: ${err}`);
+        consecutiveFailures++;
+        if (consecutiveFailures >= MAX_FAILURES_BEFORE_RECOVERY) {
+          console.warn(`[AgentRegistry] ${consecutiveFailures} consecutive heartbeat failures — forcing lock recovery`);
+          forceRemoveRegistryLock();
+          consecutiveFailures = 0;
+        } else {
+          console.error(`[AgentRegistry] Heartbeat failed (${consecutiveFailures}/${MAX_FAILURES_BEFORE_RECOVERY}): ${err}`);
+        }
       }
     }, intervalMs);
     return () => clearInterval(interval);

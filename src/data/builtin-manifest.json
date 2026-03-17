@@ -1,7 +1,7 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-03-17T04:13:38.434Z",
+  "generatedAt": "2026-03-17T04:31:40.221Z",
   "instarVersion": "0.23.5",
   "entryCount": 170,
   "entries": {

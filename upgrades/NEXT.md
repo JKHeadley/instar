@@ -1,21 +1,35 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
+<!-- Valid values: patch, minor, major -->
+<!-- patch = bug fixes, refactors, test additions, doc updates -->
+<!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
+<!-- major = breaking changes to existing APIs or behavior -->
 
 ## What Changed
 
-**Bug fix: MessageSentinel LLM classifier no longer misclassifies conversational "hold on" as pause.**
-
-- Fixed MessageSentinel LLM classifier prompt: moved "hold on let me think" from the pause examples to the normal (conversational) examples. Messages like "hold on let me think" (5+ words that bypass the fast-path word gate) were being sent to the LLM which classified them as `pause` because the prompt listed this exact phrase as a pause example. The fix adds a KEY DISTINCTION instruction and clearer directive-only pause examples.
-- Fixed the fresh-install integration test to expect 21 default jobs (was 20) after the identity-review job was added to the default job set in the previous release. No runtime behavior changed — the test expectation was simply out of date.
-- Updated blog page with images, corrected publish date, synced with latest draft, and added canonical URL metadata.
+<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
+<!-- Write this for the AGENT — they need to understand the system deeply. -->
 
 ## What to Tell Your User
 
-- **Reliability**: "Fixed a false positive where saying 'hold on let me think' (or similar conversational phrases) could accidentally pause your agent session. The MessageSentinel now correctly distinguishes between user thought-narration and actual pause directives."
+<!-- Write talking points the agent should relay to their user. -->
+<!-- This should be warm, conversational, user-facing — not a changelog. -->
+<!-- Focus on what THEY can now do, not internal plumbing. -->
+<!--                                                                    -->
+<!-- PROHIBITED in this section (will fail validation):                 -->
+<!--   camelCase config keys: silentReject, maxRetries, telegramNotify -->
+<!--   Inline code backtick references like silentReject: false        -->
+<!--   Fenced code blocks                                              -->
+<!--   Instructions to edit files or run commands                      -->
+<!--                                                                    -->
+<!-- CORRECT style: "I can turn that on for you" not "set X to false"  -->
+<!-- The agent relays this to their user — keep it human.              -->
+
+- **[Feature name]**: "[Brief, friendly description of what this means for the user]"
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| No behavior changes | This is a bug fix release |
+| [Capability] | [Endpoint, command, or "automatic"] |
