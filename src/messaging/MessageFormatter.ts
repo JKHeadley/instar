@@ -58,8 +58,8 @@ export class MessageFormatter {
 
     // Footer with reply/ack instructions
     lines.push(DELIMITER);
-    lines.push(`Reply: /msg reply ${message.id} <your response>`);
-    lines.push(`Ack: /msg ack ${message.id}`);
+    lines.push(`Reply: Use the threadline_send MCP tool with the sender's agentId and threadId to reply.`);
+    lines.push(`Message ID: ${message.id}`);
     lines.push(DELIMITER);
 
     return lines.join('\n');

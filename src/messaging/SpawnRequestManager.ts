@@ -66,8 +66,8 @@ You have {pending_count} pending message(s) to process.
 After addressing these messages, you may continue with other work
 or end your session if no further action is needed.
 
-Use /msg reply <id> <response> to respond to messages.
-Use /msg send <agent> <message> to send new messages.`;
+Use the threadline_send MCP tool to respond to messages. Include the threadId to maintain conversation context.
+Use threadline_send with the target agentId to send new messages.`;
 
 // ── Implementation ──────────────────────────────────────────────
 

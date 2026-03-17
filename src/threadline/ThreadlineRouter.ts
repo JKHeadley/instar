@@ -93,7 +93,7 @@ Subject: {latest_subject}
 {latest_body}
 ---
 
-Respond to this message. Use /msg reply <id> <response> to send your reply.`;
+Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}" and include the threadId "{thread_id}" to send your reply.`;
 
 // ── Implementation ──────────────────────────────────────────────
 
