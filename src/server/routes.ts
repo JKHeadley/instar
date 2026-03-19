@@ -3955,6 +3955,37 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  // ── Dashboard Refresh ────────────────────────────────────────────
+  // Re-broadcasts the dashboard URL to Telegram (edit-in-place).
+  // Designed to be called by a lightweight cron job so the pinned
+  // dashboard link never goes stale.
+
+  router.post('/telegram/dashboard-refresh', async (_req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (!ctx.tunnel) {
+      res.status(503).json({ error: 'Tunnel not running', action: 'skipped' });
+      return;
+    }
+
+    const tunnelUrl = ctx.tunnel.url;
+    if (!tunnelUrl) {
+      res.status(503).json({ error: 'Tunnel has no URL yet', action: 'skipped' });
+      return;
+    }
+
+    const tunnelType = (ctx.config.tunnel?.type === 'named' ? 'named' : 'quick') as 'quick' | 'named';
+
+    try {
+      await ctx.telegram.broadcastDashboardUrl(tunnelUrl, tunnelType);
+      res.json({ action: 'refreshed', url: tunnelUrl, tunnelType });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Events ──────────────────────────────────────────────────────
 
   router.get('/events', (req, res) => {
