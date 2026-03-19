@@ -1584,7 +1584,7 @@ export class TelegramLifeline {
     return (result as TelegramUpdate[]) ?? [];
   }
 
-  private async apiCall(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private async apiCall(method: string, params: Record<string, unknown>, retryCount = 0): Promise<unknown> {
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     const controller = new AbortController();
@@ -1603,6 +1603,22 @@ export class TelegramLifeline {
     }
 
     if (!response.ok) {
+      // Handle 429 Too Many Requests — respect Telegram's retry_after
+      if (response.status === 429) {
+        if (retryCount >= 3) {
+          throw new Error(`Telegram API rate limited (429) after ${retryCount} retries`);
+        }
+        try {
+          const errorData = await response.json() as { parameters?: { retry_after?: number } };
+          const retryAfter = errorData?.parameters?.retry_after ?? 5;
+          console.warn(`[Lifeline] Rate limited on ${method}, waiting ${retryAfter}s (retry ${retryCount + 1}/3)...`);
+          await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+          return this.apiCall(method, params, retryCount + 1);
+        } catch (retryErr) {
+          if (retryErr instanceof Error && retryErr.message.includes('after')) throw retryErr;
+          throw new Error(`Telegram API rate limited (429)`);
+        }
+      }
       const text = await response.text();
       throw new Error(`Telegram API error (${response.status}): ${text}`);
     }
