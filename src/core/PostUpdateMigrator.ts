@@ -298,6 +298,84 @@ export class PostUpdateMigrator {
   }
 
   /**
+   * Migrate HTTP hook URLs to include INSTAR_SESSION_ID query parameter.
+   * This enables the server to map Claude Code's session_id to the instar session,
+   * which is required for subagent-aware zombie cleanup (prevents killing sessions
+   * that are waiting for subagent results).
+   *
+   * Finds HTTP hooks with URLs ending in /hooks/events (no query params) and
+   * appends ?instar_sid=${INSTAR_SESSION_ID}. Also adds INSTAR_SESSION_ID to
+   * allowedEnvVars if missing.
+   */
+  private migrateHttpHookSessionId(
+    hooks: Record<string, unknown[]>,
+    result: MigrationResult,
+  ): boolean {
+    let patched = false;
+
+    for (const hookEntries of Object.values(hooks)) {
+      if (!Array.isArray(hookEntries)) continue;
+
+      for (const entry of hookEntries) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        const entryObj = entry as Record<string, unknown>;
+
+        // Handle entries with nested hooks arrays (matcher-based entries)
+        if (Array.isArray(entryObj.hooks)) {
+          for (const hook of entryObj.hooks) {
+            if (typeof hook !== 'object' || hook === null) continue;
+            const hookObj = hook as Record<string, unknown>;
+
+            if (hookObj.type !== 'http' || typeof hookObj.url !== 'string') continue;
+
+            // Update URL: add ?instar_sid= if the URL hits /hooks/events without it
+            if (hookObj.url.includes('/hooks/events') && !hookObj.url.includes('instar_sid')) {
+              hookObj.url = hookObj.url.replace(
+                '/hooks/events',
+                '/hooks/events?instar_sid=${INSTAR_SESSION_ID}',
+              );
+              patched = true;
+            }
+
+            // Add INSTAR_SESSION_ID to allowedEnvVars if missing
+            if (Array.isArray(hookObj.allowedEnvVars)) {
+              const envVars = hookObj.allowedEnvVars as string[];
+              if (!envVars.includes('INSTAR_SESSION_ID')) {
+                envVars.push('INSTAR_SESSION_ID');
+                patched = true;
+              }
+            }
+          }
+        }
+
+        // Handle direct hook entries (not nested)
+        if (entryObj.type === 'http' && typeof entryObj.url === 'string') {
+          if (entryObj.url.includes('/hooks/events') && !entryObj.url.includes('instar_sid')) {
+            entryObj.url = (entryObj.url as string).replace(
+              '/hooks/events',
+              '/hooks/events?instar_sid=${INSTAR_SESSION_ID}',
+            );
+            patched = true;
+          }
+          if (Array.isArray(entryObj.allowedEnvVars)) {
+            const envVars = entryObj.allowedEnvVars as string[];
+            if (!envVars.includes('INSTAR_SESSION_ID')) {
+              envVars.push('INSTAR_SESSION_ID');
+              patched = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (patched) {
+      result.upgraded.push('.claude/settings.json: added INSTAR_SESSION_ID to HTTP hook URLs (subagent-aware zombie cleanup)');
+    }
+
+    return patched;
+  }
+
+  /**
    * Patch CLAUDE.md with any new sections that don't exist yet.
    * Only adds — never modifies or removes existing content.
    */
@@ -872,6 +950,13 @@ The user has been talking to you (possibly for days). A generic greeting like "H
     }
     if (hooks.Stop) {
       this.migrateSettingsHookPaths(hooks.Stop as unknown[], result);
+      patched = true;
+    }
+
+    // Add INSTAR_SESSION_ID to HTTP hook URLs — enables subagent-aware zombie cleanup.
+    // Without this, the server can't map Claude Code's session_id to the instar session,
+    // and zombie cleanup may kill sessions that are waiting for subagent results.
+    if (this.migrateHttpHookSessionId(hooks, result)) {
       patched = true;
     }
 

@@ -112,6 +112,15 @@ This toolkit is meant to be tested against real Claude Code projects. The flow:
 
   The principle: agents interact with users conversationally, not through CLIs. If the template doesn't mention a feature, no agent will ever surface it. The template IS the agent's awareness.
 
+- **Migration Parity Standard**: Any change to agent-installed files (`.claude/settings.json` hooks, `.instar/config.json` defaults, CLAUDE.md template sections, hook scripts) MUST include a corresponding post-update migration in `PostUpdateMigrator.ts`. New agents get changes via `init`, but existing agents only get them through migrations. A feature that only works for new agents is a broken feature.
+  1. **Hook template changes** (`src/data/http-hook-templates.ts`) — Add a migration in `migrateSettings()` that patches existing `.claude/settings.json`
+  2. **Config defaults** — Add to `migrateConfig()` with existence checks (only add missing fields)
+  3. **CLAUDE.md sections** — Add to `migrateClaudeMd()` with content-sniffing guards
+  4. **Hook scripts** — Add to `migrateHooks()` with path migration logic
+  5. **Idempotency** — Every migration must be safe to run multiple times (check before patching)
+
+  The principle: instar agents update in place. If `PostUpdateMigrator` doesn't know about a change, deployed agents will silently run stale configurations. This is how the zombie-cleanup-kills-active-sessions bug happened — and why we enforce this structurally with CI.
+
 ## API Authentication
 
 All HTTP API endpoints (except `/health` basic check) require a Bearer token:

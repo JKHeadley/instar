@@ -544,6 +544,7 @@ async function respawnSessionForTopic(
   latestMessage?: string,
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
+  recoveryPrompt?: string,
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
@@ -565,7 +566,13 @@ async function respawnSessionForTopic(
   // which causes cascading names like ai-guy-ai-guy-ai-guy-topic-1 on each respawn.
   const topicName = storedName || `topic-${topicId}`;
 
-  const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, latestMessage, topicMemory, userProfile);
+  // If this is a recovery respawn, prepend the recovery context to the message
+  // so the session knows what happened and can avoid repeating the failure.
+  const effectiveMessage = recoveryPrompt
+    ? `${recoveryPrompt}\n\n${latestMessage || 'Session recovered — continue where you left off.'}`
+    : latestMessage;
+
+  const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, effectiveMessage, topicMemory, userProfile);
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
   await telegram.sendToTopic(topicId, `Session respawned.`);
@@ -2791,6 +2798,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { SubagentTracker } = await import('../monitoring/SubagentTracker.js');
     const subagentTracker = new SubagentTracker({ stateDir: config.stateDir });
     console.log(pc.green('  Subagent tracker enabled'));
+
+    // Wire subagent awareness into zombie cleanup — prevents killing sessions
+    // that are idle at the prompt but waiting for subagent results.
+    const MAX_SUBAGENT_WAIT_MS = 60 * 60_000; // 60 minutes — stale subagent safety cap
+    sessionManager.setSubagentChecker((session: import('../core/types.js').Session) => {
+      if (!session.claudeSessionId) return false;
+      const active = subagentTracker.getActiveSubagents(session.claudeSessionId);
+      if (active.length === 0) return false;
+      // Safety cap: if ALL active subagents have been running > 60 minutes,
+      // treat them as stale (likely missed a SubagentStop event) and allow the kill.
+      const now = Date.now();
+      const allStale = active.every(a =>
+        now - new Date(a.startedAt).getTime() > MAX_SUBAGENT_WAIT_MS,
+      );
+      if (allStale) {
+        console.warn(`[SessionManager] Session "${session.name}" has ${active.length} stale subagent(s) (>60m). Allowing zombie kill.`);
+        return false;
+      }
+      return true;
+    });
 
     // Worktree Monitor — detects orphaned worktrees after sessions complete
     const { WorktreeMonitor } = await import('../monitoring/WorktreeMonitor.js');

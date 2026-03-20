@@ -77,7 +77,7 @@ describe('HTTP Hook Templates', () => {
       for (const entries of Object.values(settings)) {
         for (const entry of entries) {
           for (const hook of entry.hooks) {
-            expect(hook.url).toBe('http://localhost:4567/hooks/events');
+            expect(hook.url).toBe('http://localhost:4567/hooks/events?instar_sid=${INSTAR_SESSION_ID}');
             expect(hook.url).not.toContain('${INSTAR_SERVER_URL}');
           }
         }

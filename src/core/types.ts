@@ -27,6 +27,8 @@ export interface Session {
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
   maxDurationMinutes?: number;
+  /** Claude Code's own session UUID (from hook events). Populated lazily on first hook event. */
+  claudeSessionId?: string;
 }
 
 export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'killed';

@@ -83,6 +83,9 @@ export class SessionManager extends EventEmitter {
   /** Track when each session was first seen idle at the Claude prompt. Key = session ID */
   private idlePromptSince = new Map<string, number>();
 
+  /** Optional callback to check if a session has active subagents (prevents false zombie kills) */
+  private subagentChecker?: (session: Session) => boolean;
+
   constructor(config: SessionManagerConfig, state: StateManager) {
     super();
     this.config = config;
@@ -96,6 +99,36 @@ export class SessionManager extends EventEmitter {
   setInputGuard(guard: InputGuard, registryPath: string): void {
     this.inputGuard = guard;
     this.registryPath = registryPath;
+  }
+
+  /**
+   * Set the subagent checker callback for zombie cleanup awareness.
+   * When set, the zombie cleanup will skip sessions that have active subagents.
+   * Must be called after SubagentTracker is constructed.
+   */
+  setSubagentChecker(checker: (session: Session) => boolean): void {
+    this.subagentChecker = checker;
+  }
+
+  /**
+   * Associate a Claude Code session UUID with an instar session.
+   * Called when the first hook event arrives from a Claude Code session,
+   * allowing SubagentTracker lookups to bridge the two ID spaces.
+   */
+  setClaudeSessionId(instarSessionId: string, claudeSessionId: string): void {
+    const sessions = this.state.listSessions({ status: 'running' });
+    const session = sessions.find(s => s.id === instarSessionId);
+    if (session && !session.claudeSessionId) {
+      session.claudeSessionId = claudeSessionId;
+      this.state.saveSession(session);
+    }
+  }
+
+  /**
+   * Find a running session by its instar session ID.
+   */
+  getSessionById(instarSessionId: string): Session | undefined {
+    return this.state.listSessions({ status: 'running' }).find(s => s.id === instarSessionId);
   }
 
   /**
@@ -211,6 +244,13 @@ export class SessionManager extends EventEmitter {
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
           if (isIdleAtPrompt) {
+            // Check if this session has active subagents — if so, it's not actually
+            // idle, it's waiting for subagent results. Skip the zombie kill.
+            if (this.subagentChecker?.(session)) {
+              this.idlePromptSince.delete(session.id);
+              continue;
+            }
+
             const now = Date.now();
             if (!this.idlePromptSince.has(session.id)) {
               this.idlePromptSince.set(session.id, now);
@@ -299,6 +339,7 @@ export class SessionManager extends EventEmitter {
         '-s', tmuxSession,
         '-c', this.config.projectDir,
         '-e', 'CLAUDECODE=', // Prevent nested Claude Code detection
+        '-e', `INSTAR_SESSION_ID=${sessionId}`, // Expose instar session ID to hook events
         '-e', 'ANTHROPIC_API_KEY=', // Clear stale/invalid API keys — agents use Claude subscription
         // Isolate database credentials — spawned sessions must never inherit production
         // database URLs from the parent shell. This prevents accidental schema changes
@@ -680,6 +721,9 @@ export class SessionManager extends EventEmitter {
       );
     }
 
+    // Generate session ID before tmux spawn so we can pass it as env var
+    const interactiveSessionId = this.generateId();
+
     // Spawn Claude in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
     // This avoids shell injection risks and handles claudePath with spaces.
@@ -690,6 +734,7 @@ export class SessionManager extends EventEmitter {
         '-c', this.config.projectDir,
         '-x', '200', '-y', '50',
         '-e', 'CLAUDECODE=', // Prevent nested Claude Code detection
+        '-e', `INSTAR_SESSION_ID=${interactiveSessionId}`, // Expose instar session ID to hook events
         '-e', 'ANTHROPIC_API_KEY=', // Clear stale/invalid API keys — agents use Claude subscription
         // Isolate database credentials — spawned sessions must never inherit production
         // database URLs from the parent shell. (Learned from Portal incident 2026-02-22)
@@ -718,7 +763,7 @@ export class SessionManager extends EventEmitter {
 
     // Track it in state (with default timeout — interactive sessions shouldn't hang forever)
     const session: Session = {
-      id: this.generateId(),
+      id: interactiveSessionId,
       name: name || tmuxSession,
       status: 'running',
       tmuxSession,
@@ -778,6 +823,9 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Cannot create triage session with protected name: ${tmuxSession}`);
     }
 
+    // Generate session ID before tmux spawn so we can pass it as env var
+    const triageSessionId = this.generateId();
+
     // Kill existing triage session if present (triage sessions are ephemeral)
     if (this.tmuxSessionExists(tmuxSession)) {
       try {
@@ -794,6 +842,7 @@ export class SessionManager extends EventEmitter {
         '-c', this.config.projectDir,
         '-x', '200', '-y', '50',
         '-e', 'CLAUDECODE=',
+        '-e', `INSTAR_SESSION_ID=${triageSessionId}`,
         '-e', 'ANTHROPIC_API_KEY=',
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
@@ -822,7 +871,7 @@ export class SessionManager extends EventEmitter {
 
     // Track it but with a shorter timeout (triage sessions should be brief)
     const session: Session = {
-      id: this.generateId(),
+      id: triageSessionId,
       name,
       status: 'running',
       tmuxSession,

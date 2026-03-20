@@ -438,6 +438,18 @@ export function createRoutes(ctx: RouteContext): Router {
       reflectionMetrics.recordToolCall();
     }
 
+    // Bridge instar session ID ↔ Claude Code session ID.
+    // Hook URLs include ?instar_sid=<INSTAR_SESSION_ID> set via tmux env var.
+    // On the first hook event from a session, this populates claudeSessionId on
+    // the instar Session record, enabling SubagentTracker lookups.
+    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
+    if (instarSid && payload.session_id && ctx.sessionManager) {
+      const session = ctx.sessionManager.getSessionById(instarSid);
+      if (session && !session.claudeSessionId) {
+        ctx.sessionManager.setClaudeSessionId(instarSid, payload.session_id);
+      }
+    }
+
     // Dispatch to specialized trackers
     if (ctx.subagentTracker && payload.session_id) {
       if (payload.event === 'SubagentStart' && payload.agent_id && payload.agent_type) {

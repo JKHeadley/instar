@@ -32,7 +32,7 @@ export interface HttpHookTemplate {
  * Base URL template — resolved at install time to the actual server port.
  * Uses INSTAR_SERVER_URL env var which is set in session-start.sh.
  */
-const BASE_URL = '${INSTAR_SERVER_URL}/hooks/events';
+const BASE_URL = '${INSTAR_SERVER_URL}/hooks/events?instar_sid=${INSTAR_SESSION_ID}';
 
 /**
  * All HTTP hook templates for observability events.
@@ -57,7 +57,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -67,7 +67,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -77,7 +77,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -87,7 +87,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -97,7 +97,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -107,7 +107,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -117,7 +117,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -127,7 +127,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
   {
@@ -137,7 +137,7 @@ export const HTTP_HOOK_TEMPLATES: HttpHookTemplate[] = [
       url: BASE_URL,
       timeout: 5,
       headers: { Authorization: 'Bearer ${INSTAR_AUTH_TOKEN}' },
-      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN'],
+      allowedEnvVars: ['INSTAR_SERVER_URL', 'INSTAR_AUTH_TOKEN', 'INSTAR_SESSION_ID'],
     },
   },
 ];
