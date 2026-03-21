@@ -46,6 +46,8 @@ export interface TopicMessage {
 export interface TopicSummary {
   topicId: number;
   summary: string;
+  /** One-line description of the topic's current focus (soft awareness, not a constraint) */
+  purpose: string | null;
   messageCountAtSummary: number;
   lastMessageId: number;
   updatedAt: string;
@@ -72,6 +74,8 @@ export interface TopicSearchResult {
 export interface TopicContext {
   /** Rolling summary of the full conversation (null if none generated yet) */
   summary: string | null;
+  /** One-line description of the topic's current focus (null if not yet generated) */
+  purpose: string | null;
   /** Recent messages (most recent N) */
   recentMessages: TopicMessage[];
   /** Total message count for this topic */
@@ -80,7 +84,7 @@ export interface TopicContext {
   topicName: string | null;
 }
 
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 
 /**
  * Map a raw SQLite row to a TopicMessage with proper type coercion.
@@ -223,6 +227,7 @@ export class TopicMemory {
       CREATE TABLE IF NOT EXISTS topic_summaries (
         topic_id INTEGER PRIMARY KEY,
         summary TEXT NOT NULL,
+        purpose TEXT,
         message_count_at_summary INTEGER NOT NULL DEFAULT 0,
         last_message_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
@@ -302,6 +307,17 @@ export class TopicMemory {
       try {
         this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_privacy ON messages(privacy_scope)');
       } catch { /* index may already exist */ }
+    }
+
+    if (currentVersion < '4') {
+      // Migration v3 → v4: Add purpose column to topic_summaries
+      // Purpose tracks the topic's current focus for soft session awareness.
+      const columns = this.db.prepare("PRAGMA table_info(topic_summaries)").all() as Array<{ name: string }>;
+      const columnNames = new Set(columns.map(c => c.name));
+
+      if (!columnNames.has('purpose')) {
+        this.db.exec('ALTER TABLE topic_summaries ADD COLUMN purpose TEXT');
+      }
     }
   }
 
@@ -422,7 +438,7 @@ export class TopicMemory {
    * This is the primary context loader for session spawning.
    */
   getTopicContext(topicId: number, recentLimit: number = 20): TopicContext {
-    if (!this.db) return { summary: null, recentMessages: [], totalMessages: 0, topicName: null };
+    if (!this.db) return { summary: null, purpose: null, recentMessages: [], totalMessages: 0, topicName: null };
 
     const summary = this.getTopicSummary(topicId);
     const recentMessages = this.getRecentMessages(topicId, recentLimit);
@@ -430,6 +446,7 @@ export class TopicMemory {
 
     return {
       summary: summary?.summary ?? null,
+      purpose: summary?.purpose ?? null,
       recentMessages,
       totalMessages: meta?.messageCount ?? 0,
       topicName: meta?.topicName ?? null,
@@ -535,7 +552,8 @@ export class TopicMemory {
     if (!this.db) return null;
 
     const row = this.db.prepare(`
-      SELECT topic_id AS topicId, summary, message_count_at_summary AS messageCountAtSummary,
+      SELECT topic_id AS topicId, summary, purpose,
+             message_count_at_summary AS messageCountAtSummary,
              last_message_id AS lastMessageId, updated_at AS updatedAt
       FROM topic_summaries
       WHERE topic_id = ?
@@ -547,18 +565,19 @@ export class TopicMemory {
   /**
    * Save or update a rolling summary for a topic.
    */
-  saveTopicSummary(topicId: number, summary: string, messageCount: number, lastMessageId: number): void {
+  saveTopicSummary(topicId: number, summary: string, messageCount: number, lastMessageId: number, purpose?: string | null): void {
     if (!this.db) return;
 
     this.db.prepare(`
-      INSERT INTO topic_summaries (topic_id, summary, message_count_at_summary, last_message_id, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO topic_summaries (topic_id, summary, purpose, message_count_at_summary, last_message_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(topic_id) DO UPDATE SET
         summary = excluded.summary,
+        purpose = excluded.purpose,
         message_count_at_summary = excluded.message_count_at_summary,
         last_message_id = excluded.last_message_id,
         updated_at = excluded.updated_at
-    `).run(topicId, summary, messageCount, lastMessageId, new Date().toISOString());
+    `).run(topicId, summary, purpose ?? null, messageCount, lastMessageId, new Date().toISOString());
   }
 
   /**
@@ -778,6 +797,10 @@ export class TopicMemory {
       lines.push(`Topic: ${topicName}`);
     }
 
+    if (summary?.purpose) {
+      lines.push(`Current focus: ${summary.purpose}`);
+    }
+
     if (summary) {
       lines.push('');
       lines.push('CONVERSATION SUMMARY:');
@@ -825,6 +848,10 @@ export class TopicMemory {
 
     if (ctx.topicName) {
       lines.push(`Topic: ${ctx.topicName}`);
+    }
+
+    if (ctx.purpose) {
+      lines.push(`Current focus: ${ctx.purpose}`);
     }
 
     if (ctx.summary) {

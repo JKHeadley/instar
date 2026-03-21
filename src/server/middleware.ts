@@ -11,7 +11,7 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
-  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
@@ -32,8 +32,20 @@ export function authMiddleware(authToken?: string) {
       return;
     }
 
-    // Health endpoint is always public
+    // Health endpoint is always public (Phase 0 migration: will require auth in future)
     if (req.path === '/health') {
+      next();
+      return;
+    }
+
+    // Ping endpoint is always public (lightweight health check for external monitors)
+    if (req.path === '/ping') {
+      next();
+      return;
+    }
+
+    // SSE endpoints handle auth inline (supports both header and query param for EventSource)
+    if (req.path === '/jobs/events') {
       next();
       return;
     }
@@ -190,6 +202,23 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
   const provided = Buffer.from(sig, 'hex');
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
+}
+
+/**
+ * Security headers for dashboard paths — prevents clickjacking, MIME-sniffing,
+ * and restricts resource loading to trusted sources.
+ */
+export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
+  if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
+    res.header('X-Frame-Options', 'DENY');
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'",
+    );
+    res.header('Referrer-Policy', 'no-referrer');
+  }
+  next();
 }
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {

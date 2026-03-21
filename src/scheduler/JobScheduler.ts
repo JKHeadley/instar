@@ -27,6 +27,7 @@ import { TOPIC_STYLE } from '../messaging/TelegramAdapter.js';
 import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { JobClaimManager } from './JobClaimManager.js';
+import type { TopicMemory } from '../memory/TopicMemory.js';
 
 interface QueuedJob {
   slug: string;
@@ -90,6 +91,9 @@ export class JobScheduler {
 
   /** Optional IntegrationGate for post-completion learning consolidation */
   private integrationGate: IntegrationGate | null = null;
+
+  /** Optional TopicMemory for topic-aware job sessions */
+  private topicMemory: TopicMemory | null = null;
 
   constructor(
     config: JobSchedulerConfig,
@@ -171,6 +175,14 @@ export class JobScheduler {
    */
   setIntegrationGate(gate: IntegrationGate): void {
     this.integrationGate = gate;
+  }
+
+  /**
+   * Set the TopicMemory for topic-aware job sessions.
+   * When set, jobs bound to a topic receive awareness context about the topic's focus.
+   */
+  setTopicMemory(topicMemory: TopicMemory): void {
+    this.topicMemory = topicMemory;
   }
 
   /**
@@ -583,6 +595,29 @@ export class JobScheduler {
       case 'script':
         base = `Run this script: ${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
+    }
+
+    // Inject topic awareness for jobs bound to a Telegram topic.
+    // This is soft guidance — the job knows where its output will be posted
+    // and what the topic's recent focus has been, so it can stay contextually relevant.
+    if (job.topicId && this.topicMemory?.isReady()) {
+      try {
+        const summary = this.topicMemory.getTopicSummary(job.topicId);
+        const meta = this.topicMemory.getTopicMeta(job.topicId);
+        if (summary?.purpose || meta?.topicName) {
+          const awarenessLines: string[] = ['[TOPIC AWARENESS]'];
+          awarenessLines.push(`This session is bound to Telegram topic${meta?.topicName ? ` "${meta.topicName}"` : ` ${job.topicId}`}.`);
+          if (summary?.purpose) {
+            awarenessLines.push(`Recent focus: ${summary.purpose}`);
+          }
+          awarenessLines.push('Your output will be posted to this topic. Keep your results relevant to this context.');
+          awarenessLines.push('If your work product doesn\'t fit this topic, note that in your output rather than posting unrelated content.');
+          awarenessLines.push('[/TOPIC AWARENESS]');
+          base = `${awarenessLines.join(' ')}\n\n${base}`;
+        }
+      } catch {
+        // @silent-fallback-ok — topic awareness is non-critical
+      }
     }
 
     // Inject handoff notes from the last execution (continuity between runs)

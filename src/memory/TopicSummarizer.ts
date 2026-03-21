@@ -29,6 +29,8 @@ export interface TopicSummarizerConfig {
 export interface SummarizeResult {
   topicId: number;
   summary: string;
+  /** One-line description of the topic's current focus */
+  purpose: string | null;
   messagesProcessed: number;
   isUpdate: boolean;
   durationMs: number;
@@ -67,6 +69,11 @@ function buildSummaryPrompt(
   lines.push('- Write in present tense for current state, past tense for completed work');
   lines.push('- DO NOT include meta-commentary about the summarization itself');
   lines.push('');
+  lines.push('FORMAT: Your response MUST start with a PURPOSE line, then a blank line, then the summary.');
+  lines.push('The PURPOSE is a single sentence describing what this topic is currently about — its recent focus.');
+  lines.push('It should reflect what the conversation has evolved into, not just the original topic name.');
+  lines.push('Example: PURPOSE: Debugging OAuth token refresh failures in the quota collector');
+  lines.push('');
 
   if (existingSummary) {
     lines.push('EXISTING SUMMARY (update this with the new messages below):');
@@ -90,9 +97,25 @@ function buildSummaryPrompt(
   }
 
   lines.push('');
-  lines.push('Write the updated conversation summary:');
+  lines.push('Write the PURPOSE line followed by the updated conversation summary:');
 
   return lines.join('\n');
+}
+
+/**
+ * Parse a PURPOSE line from the LLM response.
+ * Expected format: "PURPOSE: Some description\n\nSummary text..."
+ * Gracefully handles missing PURPOSE line — returns the full text as body.
+ */
+function parsePurposeFromResponse(text: string): { purpose: string | null; body: string } {
+  const match = text.match(/^PURPOSE:[ \t]*(.+?)[ \t]*(?:\r?\n|$)/i);
+  if (!match) {
+    return { purpose: null, body: text };
+  }
+  const purpose = match[1].trim();
+  // Strip the PURPOSE line (and any following blank lines) from the body
+  const body = text.slice(match[0].length).replace(/^\s*\n/, '').trim();
+  return { purpose: purpose || null, body: body || text };
 }
 
 export class TopicSummarizer {
@@ -146,6 +169,9 @@ export class TopicSummarizer {
       throw new Error(`Summary generation returned empty/invalid result for topic ${topicId}`);
     }
 
+    // Parse purpose from the response (first line starting with "PURPOSE:")
+    const { purpose, body } = parsePurposeFromResponse(summary.trim());
+
     // Get the last message ID for tracking what's been summarized
     const lastMessage = newMessages[newMessages.length - 1];
     const totalMessages = this.topicMemory.getMessageCount(topicId);
@@ -153,14 +179,16 @@ export class TopicSummarizer {
     // Save the summary
     this.topicMemory.saveTopicSummary(
       topicId,
-      summary.trim(),
+      body,
       totalMessages,
       lastMessage?.messageId ?? existingSummary?.lastMessageId ?? 0,
+      purpose,
     );
 
     return {
       topicId,
-      summary: summary.trim(),
+      summary: body,
+      purpose,
       messagesProcessed: messagesToProcess.length,
       isUpdate: !!existingSummary,
       durationMs: Date.now() - startTime,
@@ -195,5 +223,5 @@ export class TopicSummarizer {
   }
 }
 
-// Export the prompt builder for testing
-export { buildSummaryPrompt };
+// Export helpers for testing
+export { buildSummaryPrompt, parsePurposeFromResponse };

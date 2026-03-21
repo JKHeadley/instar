@@ -193,6 +193,10 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Health ──────────────────────────────────────────────────────
 
+  router.get('/ping', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+
   router.get('/health', (req, res) => {
     const uptimeMs = Date.now() - ctx.startTime.getTime();
     // Determine if anything is degraded
@@ -2417,6 +2421,244 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Manual Job Trigger (Dashboard) ─────────────────────────────
+  //
+  // Rate-limited manual job trigger with security logging.
+  // Used by the dashboard — stricter than /jobs/:slug/trigger.
+
+  const manualTriggerLastRun = new Map<string, number>();
+  let manualTriggerConcurrent = 0;
+  const MANUAL_TRIGGER_MAX_CONCURRENT = 5;
+
+  router.post('/jobs/:slug/run', (req, res) => {
+    const { slug } = req.params;
+
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    if (!ctx.scheduler) {
+      res.status(503).json({ error: 'Scheduler not running' });
+      return;
+    }
+
+    const job = ctx.scheduler.getJobs().find(j => j.slug === slug);
+    if (!job) {
+      res.status(404).json({ error: `Job not found: ${slug}` });
+      return;
+    }
+
+    const jobState = ctx.state.getJobState(slug);
+    if (jobState?.lastResult === 'pending') {
+      res.status(409).json({ error: 'Job is already running' });
+      return;
+    }
+
+    // Rate limit: minimum interval based on job's expected duration (in ms)
+    const minIntervalMs = (job.expectedDurationMinutes ?? 5) * 60 * 1000;
+    const lastTrigger = manualTriggerLastRun.get(slug);
+    if (lastTrigger && Date.now() - lastTrigger < minIntervalMs) {
+      const retryAfterSec = Math.ceil((minIntervalMs - (Date.now() - lastTrigger)) / 1000);
+      res.status(429).json({
+        error: 'Too soon — job was manually triggered recently',
+        retryAfterSeconds: retryAfterSec,
+      });
+      return;
+    }
+
+    // Global concurrency cap
+    if (manualTriggerConcurrent >= MANUAL_TRIGGER_MAX_CONCURRENT) {
+      res.status(429).json({ error: 'Too many concurrent manual triggers' });
+      return;
+    }
+
+    try {
+      manualTriggerConcurrent++;
+      manualTriggerLastRun.set(slug, Date.now());
+
+      const result = ctx.scheduler.triggerJob(slug, 'dashboard-manual');
+      const runId = `manual-${slug}-${Date.now().toString(36)}`;
+
+      // Decrement concurrent counter after a reasonable time
+      // (the job itself is tracked by the scheduler, this just gates manual triggers)
+      setTimeout(() => { manualTriggerConcurrent = Math.max(0, manualTriggerConcurrent - 1); }, 5000);
+
+      // Security log
+      try {
+        const securityEntry = JSON.stringify({
+          timestamp: new Date().toISOString(),
+          action: 'job-run',
+          slug,
+          source: 'dashboard',
+          ip: req.ip,
+          result,
+        });
+        fs.appendFileSync(path.join(ctx.config.stateDir, 'security.jsonl'), securityEntry + '\n');
+      } catch {
+        // Security logging failure is non-fatal
+      }
+
+      res.status(202).json({ status: 'accepted', runId, result, message: 'Job queued for execution' });
+    } catch (err) {
+      manualTriggerConcurrent = Math.max(0, manualTriggerConcurrent - 1);
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Job Enable/Disable (Dashboard) ────────────────────────────
+
+  router.patch('/jobs/:slug', (req, res) => {
+    const { slug } = req.params;
+
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    if (!ctx.scheduler) {
+      res.status(503).json({ error: 'Scheduler not running' });
+      return;
+    }
+
+    // Allow-list: only { enabled: boolean } is accepted
+    const body = req.body;
+    const allowedKeys = ['enabled'];
+    const bodyKeys = Object.keys(body || {});
+    if (bodyKeys.length === 0 || bodyKeys.some(k => !allowedKeys.includes(k))) {
+      res.status(400).json({ error: 'Only { enabled: boolean } is accepted' });
+      return;
+    }
+    if (typeof body.enabled !== 'boolean') {
+      res.status(400).json({ error: '"enabled" must be a boolean' });
+      return;
+    }
+
+    const job = ctx.scheduler.getJobs().find(j => j.slug === slug);
+    if (!job) {
+      res.status(404).json({ error: `Job not found: ${slug}` });
+      return;
+    }
+
+    // Update the job's enabled state in the jobs.json config file
+    try {
+      const jobsFile = ctx.config.scheduler.jobsFile ?? path.join(ctx.config.stateDir, '..', 'jobs.json');
+      if (fs.existsSync(jobsFile)) {
+        const jobsData = JSON.parse(fs.readFileSync(jobsFile, 'utf-8'));
+        const jobEntry = (jobsData.jobs || jobsData).find((j: { slug: string }) => j.slug === slug);
+        if (jobEntry) {
+          jobEntry.enabled = body.enabled;
+          fs.writeFileSync(jobsFile, JSON.stringify(jobsData, null, 2) + '\n');
+        }
+      }
+    } catch (err) {
+      res.status(500).json({ error: `Failed to update job config: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+
+    // Security log
+    try {
+      const securityEntry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        action: 'job-toggle',
+        slug,
+        enabled: body.enabled,
+        source: 'dashboard',
+        ip: req.ip,
+      });
+      fs.appendFileSync(path.join(ctx.config.stateDir, 'security.jsonl'), securityEntry + '\n');
+    } catch {
+      // Security logging failure is non-fatal
+    }
+
+    res.json({ slug, enabled: body.enabled, message: `Job ${body.enabled ? 'enabled' : 'disabled'}` });
+  });
+
+  // ── Job Events (SSE) ──────────────────────────────────────────
+  //
+  // Server-Sent Events stream for real-time job state changes.
+  // Auth checked inline since SSE connections don't go through normal middleware cleanly.
+
+  router.get('/jobs/events', (req, res) => {
+    // Inline auth check for SSE — supports both Authorization header and ?token= query param
+    // (EventSource API cannot send custom headers, so token in query is required for browser SSE)
+    if (ctx.config.authToken) {
+      let tokenValue: string | undefined;
+      const header = req.headers.authorization;
+      if (header?.startsWith('Bearer ')) {
+        tokenValue = header.slice(7);
+      } else if (typeof req.query.token === 'string') {
+        tokenValue = req.query.token;
+      }
+      if (!tokenValue) {
+        res.status(401).json({ error: 'Missing Authorization header or token query param' });
+        return;
+      }
+      const ha = createHash('sha256').update(tokenValue).digest();
+      const hb = createHash('sha256').update(ctx.config.authToken).digest();
+      if (!timingSafeEqual(ha, hb)) {
+        res.status(403).json({ error: 'Invalid token' });
+        return;
+      }
+    }
+
+    // Set SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    let eventId = 0;
+
+    // Send retry directive on first message
+    res.write(`retry: 1000\n\n`);
+
+    // Heartbeat every 15 seconds
+    const heartbeat = setInterval(() => {
+      eventId++;
+      res.write(`id: ${eventId}\nevent: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+    }, 15_000);
+
+    // Send initial state snapshot
+    if (ctx.scheduler) {
+      eventId++;
+      const jobs = ctx.scheduler.getJobs().map(job => {
+        const jobState = ctx.state.getJobState(job.slug);
+        return { slug: job.slug, name: job.name, enabled: job.enabled, state: jobState };
+      });
+      res.write(`id: ${eventId}\nevent: snapshot\ndata: ${JSON.stringify({ jobs, ts: Date.now() })}\n\n`);
+    }
+
+    // Poll for job state changes every 5 seconds and emit deltas
+    let lastStates = new Map<string, string>();
+    if (ctx.scheduler) {
+      for (const job of ctx.scheduler.getJobs()) {
+        const st = ctx.state.getJobState(job.slug);
+        if (st) lastStates.set(job.slug, JSON.stringify(st));
+      }
+    }
+
+    const poller = setInterval(() => {
+      if (!ctx.scheduler) return;
+      for (const job of ctx.scheduler.getJobs()) {
+        const st = ctx.state.getJobState(job.slug);
+        const stStr = st ? JSON.stringify(st) : '';
+        const prev = lastStates.get(job.slug) ?? '';
+        if (stStr !== prev) {
+          lastStates.set(job.slug, stStr);
+          eventId++;
+          res.write(`id: ${eventId}\nevent: job-state\ndata: ${JSON.stringify({ slug: job.slug, state: st, ts: Date.now() })}\n\n`);
+        }
+      }
+    }, 5_000);
+
+    // Cleanup on close
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      clearInterval(poller);
+    });
+  });
+
   // ── Job Run History ─────────────────────────────────────────────
 
   router.get('/jobs/history', (_req, res) => {
@@ -2428,14 +2670,20 @@ export function createRoutes(ctx: RouteContext): Router {
     const history = ctx.scheduler.getRunHistory();
     const sinceHours = parseInt(_req.query.sinceHours as string) || undefined;
     const result = _req.query.result as string | undefined;
+    const slug = _req.query.slug as string | undefined;
     const limit = Math.min(parseInt(_req.query.limit as string) || 50, 500);
     const offset = parseInt(_req.query.offset as string) || 0;
+
+    if (slug && !JOB_SLUG_RE.test(slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
 
     const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error'];
     const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' : undefined;
 
-    const data = history.query({ sinceHours, result: resultFilter, limit, offset });
-    const stats = history.allStats(sinceHours);
+    const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
+    const stats = slug ? history.stats(slug, sinceHours) : history.allStats(sinceHours);
 
     res.json({ ...data, stats });
   });
@@ -2769,6 +3017,38 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const item = ctx.telegram.getAttentionItem(req.params.id);
     res.json(item);
+  });
+
+  router.delete('/attention/:id', async (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+
+    const item = ctx.telegram.getAttentionItem(req.params.id);
+    if (!item) {
+      res.status(404).json({ error: 'Attention item not found' });
+      return;
+    }
+
+    // Soft-delete: mark as DONE
+    await ctx.telegram.updateAttentionStatus(req.params.id, 'DONE');
+
+    // Security log
+    try {
+      const securityEntry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        action: 'attention-dismiss',
+        itemId: req.params.id,
+        source: 'dashboard',
+        ip: req.ip,
+      });
+      fs.appendFileSync(path.join(ctx.config.stateDir, 'security.jsonl'), securityEntry + '\n');
+    } catch {
+      // Security logging failure is non-fatal
+    }
+
+    res.json({ id: req.params.id, deleted: true });
   });
 
   // ── WhatsApp ────────────────────────────────────────────────────
@@ -4743,13 +5023,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { topicId, summary, messageCount, lastMessageId } = req.body || {};
+    const { topicId, summary, purpose, messageCount, lastMessageId } = req.body || {};
     if (typeof topicId !== 'number' || typeof summary !== 'string') {
       res.status(400).json({ error: 'topicId (number) and summary (string) required' });
       return;
     }
 
-    ctx.topicMemory.saveTopicSummary(topicId, summary, messageCount ?? 0, lastMessageId ?? 0);
+    ctx.topicMemory.saveTopicSummary(topicId, summary, messageCount ?? 0, lastMessageId ?? 0, purpose ?? null);
     res.json({ saved: true, topicId });
   });
 
@@ -6993,6 +7273,109 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     res.json({ ok: true, deleted: true });
+  });
+
+  // ── Prompt Gate API ─────────────────────────────────────────────
+
+  /**
+   * GET /prompt-gate/log — Audit log of prompt gate actions.
+   * Returns recent auto-approve and relay events.
+   */
+  router.get('/prompt-gate/log', (req, res) => {
+    const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10), 500);
+    const logPath = path.join(ctx.config.stateDir, 'prompt-gate-audit.jsonl');
+    try {
+      if (!fs.existsSync(logPath)) {
+        res.json({ entries: [], total: 0 });
+        return;
+      }
+      const lines = fs.readFileSync(logPath, 'utf-8').trim().split('\n').filter(Boolean);
+      const entries = lines.slice(-limit).reverse().map(line => {
+        try { return JSON.parse(line); } catch { return null; }
+      }).filter(Boolean);
+      res.json({ entries, total: lines.length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read audit log' });
+    }
+  });
+
+  /**
+   * GET /prompt-gate/topic/:topicId/override — Get per-topic prompt gate overrides.
+   */
+  router.get('/prompt-gate/topic/:topicId/override', (req, res) => {
+    const topicId = parseInt(req.params.topicId, 10);
+    if (isNaN(topicId)) {
+      res.status(400).json({ error: 'topicId must be a number' });
+      return;
+    }
+    const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+    try {
+      const data = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+      const overrides = data.topicOverrides?.[String(topicId)] ?? { autoApproveAll: false, relayAll: false };
+      res.json({ topicId, overrides });
+    } catch {
+      res.json({ topicId, overrides: { autoApproveAll: false, relayAll: false } });
+    }
+  });
+
+  /**
+   * PUT /prompt-gate/topic/:topicId/override — Set per-topic prompt gate overrides.
+   * Body: { autoApproveAll?: boolean, relayAll?: boolean }
+   */
+  router.put('/prompt-gate/topic/:topicId/override', (req, res) => {
+    const topicId = parseInt(req.params.topicId, 10);
+    if (isNaN(topicId)) {
+      res.status(400).json({ error: 'topicId must be a number' });
+      return;
+    }
+    const { autoApproveAll, relayAll } = req.body ?? {};
+    if (autoApproveAll !== undefined && typeof autoApproveAll !== 'boolean') {
+      res.status(400).json({ error: 'autoApproveAll must be a boolean' });
+      return;
+    }
+    if (relayAll !== undefined && typeof relayAll !== 'boolean') {
+      res.status(400).json({ error: 'relayAll must be a boolean' });
+      return;
+    }
+
+    const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+    try {
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(fs.readFileSync(registryPath, 'utf-8')); } catch { /* new file */ }
+
+      if (!data.topicOverrides) data.topicOverrides = {};
+      const overrides = (data.topicOverrides as Record<string, unknown>);
+      const existing = (overrides[String(topicId)] ?? {}) as Record<string, boolean>;
+
+      if (autoApproveAll !== undefined) existing.autoApproveAll = autoApproveAll;
+      if (relayAll !== undefined) existing.relayAll = relayAll;
+      overrides[String(topicId)] = existing;
+
+      fs.writeFileSync(registryPath, JSON.stringify(data, null, 2));
+      res.json({ ok: true, topicId, overrides: existing });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save override' });
+    }
+  });
+
+  /**
+   * GET /prompt-gate/status — Current prompt gate status for all sessions.
+   * Returns which sessions have pending prompts, their type, and duration.
+   */
+  router.get('/prompt-gate/status', (_req, res) => {
+    if (!ctx.telegram) {
+      res.json({ enabled: false, sessions: [] });
+      return;
+    }
+    // The detailed status comes from the TelegramAdapter's pendingPromptReply map
+    // For now, return basic status
+    const promptGateConfig = ctx.config.monitoring?.promptGate;
+    res.json({
+      enabled: !!promptGateConfig?.enabled,
+      autoApproveEnabled: !!promptGateConfig?.autoApprove?.enabled,
+      dryRun: !!promptGateConfig?.dryRun,
+      ownerId: promptGateConfig?.ownerId ?? null,
+    });
   });
 
   return router;

@@ -106,6 +106,24 @@ describe('Session reaping and detection', () => {
     });
   });
 
+  describe('zombie cleanup — process-tree activity check', () => {
+    it('checks for active processes before killing', () => {
+      source = fs.readFileSync(SOURCE_PATH, 'utf-8');
+      // The zombie cleanup must use hasActiveProcesses to determine true idleness
+      expect(source).toContain('hasActiveProcesses(session.tmuxSession)');
+    });
+
+    it('only kills when both idle prompt AND no active processes', () => {
+      source = fs.readFileSync(SOURCE_PATH, 'utf-8');
+      // The idle check combines prompt pattern match with process tree check
+      const monitorSection = source.match(/Idle detection[\s\S]*?Session is active/);
+      expect(monitorSection).toBeTruthy();
+      const body = monitorSection![0];
+      expect(body).toContain('hasActiveProcesses');
+      expect(body).toContain('idlePromptSince.delete');
+    });
+  });
+
   describe('spawnSession', () => {
     it('enforces max sessions limit', () => {
       source = fs.readFileSync(SOURCE_PATH, 'utf-8');

@@ -40,7 +40,7 @@ import { createRoutes } from './routes.js';
 import { createFileRoutes } from './fileRoutes.js';
 import { mountWhatsAppWebhooks } from '../messaging/backends/WhatsAppWebhookRoutes.js';
 import { createMachineRoutes } from './machineRoutes.js';
-import { corsMiddleware, authMiddleware, requestTimeout, errorHandler } from './middleware.js';
+import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 
 export class AgentServer {
@@ -130,6 +130,9 @@ export class AgentServer {
     // Middleware
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(corsMiddleware);
+
+    // Dashboard security headers — set before static serving so they apply to all dashboard responses
+    this.app.use(dashboardSecurityHeaders);
 
     // Dashboard static files — served BEFORE auth middleware so the page loads
     // without a token. Auth happens via WebSocket/API calls from the page itself.

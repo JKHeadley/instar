@@ -23,6 +23,9 @@ import { StallDetector, type StallEvent } from './shared/StallDetector.js';
 import { CommandRouter } from './shared/CommandRouter.js';
 import { AuthGate } from './shared/AuthGate.js';
 import { MessagingEventBus } from './shared/MessagingEventBus.js';
+import { CallbackRegistry, isAllowedButtonKey } from '../core/CallbackRegistry.js';
+import type { DetectedPrompt } from '../monitoring/PromptGate.js';
+import { sanitizeForPrompt } from '../monitoring/SessionRecovery.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -47,6 +50,21 @@ export interface TelegramConfig {
   dashboardPin?: string;
   /** Content validation configuration — validates outbound messages against topic purpose */
   contentValidation?: ContentValidationConfig;
+  /** Prompt Gate configuration for Telegram relay */
+  promptGate?: {
+    /** Telegram user ID of the session owner (only this user can respond to prompts) */
+    ownerId?: number;
+    /** Timeout in seconds for relay responses (default: 300 = 5 min) */
+    relayTimeoutSeconds?: number;
+  };
+}
+
+/** Tracks a pending text reply for a Prompt Gate relay (no-button prompts) */
+interface PendingPromptReply {
+  prompt: DetectedPrompt;
+  relayMessageId: number;
+  createdAt: number;
+  reminderSent?: boolean;
 }
 
 export interface SendResult {
@@ -91,6 +109,16 @@ interface TelegramUpdate {
       mime_type?: string;
       file_size?: number;
     };
+  };
+  callback_query?: {
+    id: string;
+    from: { id: number; first_name: string; username?: string };
+    message?: {
+      message_id: number;
+      chat: { id: number };
+      message_thread_id?: number;
+    };
+    data?: string;
   };
 }
 
@@ -335,6 +363,20 @@ export class TelegramAdapter implements MessagingAdapter {
   // Flush notifications callback — fires when user sends /flush
   public onFlushNotifications: ((replyTopicId: number) => Promise<void>) | null = null;
 
+  // Prompt Gate — relay prompts to Telegram and handle responses
+  private callbackRegistry: CallbackRegistry;
+  private pendingPromptReply = new Map<number, PendingPromptReply>(); // topicId → pending
+  private promptGateDisclosureSent = new Set<number>(); // topicIds that have seen the disclosure
+
+  /** Callback to inject a response into a tmux session. Wired by server.ts. */
+  public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
+  /** Callback to inject text input into a tmux session. Wired by server.ts. */
+  public onPromptTextResponse: ((sessionName: string, text: string) => boolean) | null = null;
+  /** Callback when relay lease should extend idle timeout for a session */
+  public onRelayLeaseStart: ((sessionName: string) => void) | null = null;
+  /** Callback when relay lease is released (response received or timeout) */
+  public onRelayLeaseEnd: ((sessionName: string) => void) | null = null;
+
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
   private sharedRegistry: SessionChannelRegistry | null = null;
@@ -358,6 +400,15 @@ export class TelegramAdapter implements MessagingAdapter {
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
+
+    // Initialize Prompt Gate callback registry
+    const relayTimeoutMs = (config.promptGate?.relayTimeoutSeconds ?? 300) * 1000;
+    this.callbackRegistry = new CallbackRegistry({
+      maxEntries: 500,
+      maxAgeMs: relayTimeoutMs,
+      pruneIntervalMs: 60_000,
+    });
+    this.callbackRegistry.start();
 
     // Initialize shared modules when feature flags are enabled
     if (SHARED_INFRA_FLAGS.useSharedMessageLogger) {
@@ -2995,9 +3046,15 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Process a single Telegram update (text, voice, or photo).
+   * Process a single Telegram update (text, voice, photo, or callback query).
    */
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    // Handle callback queries from inline keyboard buttons (Prompt Gate)
+    if (update.callback_query) {
+      await this.processCallbackQuery(update.callback_query);
+      return;
+    }
+
     const msg = update.message;
     if (!msg) return;
 
@@ -3119,6 +3176,12 @@ export class TelegramAdapter implements MessagingAdapter {
         console.error(`[sentinel] Intercept error: ${err}`);
         // On sentinel error, fall through to normal routing (fail-open for message delivery)
       }
+    }
+
+    // Prompt Gate — intercept replies to relay messages (text-input prompts)
+    if (this.pendingPromptReply.has(numericTopicId) && text) {
+      const handled = this.handlePendingPromptReply(numericTopicId, msg);
+      if (handled) return;
     }
 
     // Fire topic message callback (always fires — General topic falls back to ID 1)
@@ -3364,11 +3427,383 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  // ── Prompt Gate: Telegram Relay ───────────────────────────────────
+
+  /**
+   * Relay a detected prompt to a Telegram topic with inline keyboard buttons.
+   * For prompts with options: sends buttons. For questions: sends text asking for reply.
+   * Returns the Telegram message ID of the relay message.
+   */
+  async relayPrompt(topicId: number, prompt: DetectedPrompt): Promise<number> {
+    // First-use disclosure (once per topic)
+    if (!this.promptGateDisclosureSent.has(topicId)) {
+      await this.sendToTopic(topicId,
+        'Prompt Gate is now active for this topic. Session prompts will appear here ' +
+        'for you to respond to. Note: prompt text is sent through Telegram\'s servers. ' +
+        'Avoid including credentials or sensitive data in your replies.'
+      ).catch(() => {});
+      this.promptGateDisclosureSent.add(topicId);
+    }
+
+    const text = this.formatPromptMessage(prompt);
+
+    let result: { message_id: number };
+
+    if (prompt.options && prompt.options.length > 0) {
+      // Build inline keyboard buttons
+      const keyboard = prompt.options.map(opt => {
+        const token = this.callbackRegistry.register({
+          sessionName: prompt.sessionName,
+          promptId: prompt.id,
+          key: opt.key,
+        });
+        return {
+          text: opt.label,
+          callback_data: JSON.stringify({ id: token }),
+        };
+      });
+
+      // Group into rows of max 3 buttons
+      const rows: Array<typeof keyboard> = [];
+      for (let i = 0; i < keyboard.length; i += 3) {
+        rows.push(keyboard.slice(i, i + 3));
+      }
+
+      result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        reply_markup: { inline_keyboard: rows },
+        parse_mode: 'Markdown',
+      }) as { message_id: number };
+    } else {
+      // No options — text reply expected (clarifying question)
+      result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        parse_mode: 'Markdown',
+      }) as { message_id: number };
+    }
+
+    // Track pending reply for text-input prompts
+    this.pendingPromptReply.set(topicId, {
+      prompt,
+      relayMessageId: result.message_id,
+      createdAt: Date.now(),
+    });
+
+    // Notify session manager to extend idle timeout (relay lease)
+    if (this.onRelayLeaseStart) {
+      this.onRelayLeaseStart(prompt.sessionName);
+    }
+
+    console.log(`[prompt-gate] Relayed ${prompt.type} prompt to topic ${topicId} (msg ${result.message_id})`);
+    return result.message_id;
+  }
+
+  /**
+   * Format a detected prompt into Telegram-friendly text.
+   * Differentiates by prompt type and escapes Markdown special chars.
+   */
+  private formatPromptMessage(prompt: DetectedPrompt): string {
+    const escapedSummary = this.escapeMarkdown(prompt.summary);
+
+    switch (prompt.type) {
+      case 'permission':
+        return `\u{23F3} *Your agent is waiting — approve or decline:*\n\n"${escapedSummary}"`;
+      case 'plan':
+        return `\u{23F3} *Agent plan ready — do you want to proceed?*\n\n"${escapedSummary}"`;
+      case 'question':
+        return `\u{23F3} *Your agent has a question:*\n\n"${escapedSummary}"\n\nReply to this message with your answer.`;
+      case 'confirmation':
+        return `\u{23F3} *Your agent needs confirmation:*\n\n"${escapedSummary}"`;
+      case 'selection':
+        return `\u{23F3} *Your agent needs you to choose:*\n\n"${escapedSummary}"`;
+      default:
+        return `\u{23F3} *Session needs your input:*\n\n"${escapedSummary}"`;
+    }
+  }
+
+  /**
+   * Escape Markdown special characters for Telegram.
+   */
+  private escapeMarkdown(text: string): string {
+    return text
+      .replace(/\\/g, '\\\\')
+      .replace(/\*/g, '\\*')
+      .replace(/_/g, '\\_')
+      .replace(/`/g, '\\`')
+      .replace(/\[/g, '\\[');
+  }
+
+  /**
+   * Handle a Telegram callback query from an inline keyboard button press.
+   */
+  private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    if (!query.data) {
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Invalid button data',
+      }).catch(() => {});
+      return;
+    }
+
+    // Authorization check: verify sender is the configured owner
+    const ownerId = this.config.promptGate?.ownerId;
+    if (ownerId && query.from.id !== ownerId) {
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Only the session owner can respond to prompts',
+      }).catch(() => {});
+      // Do NOT resolve the token — preserve it for the real owner
+      return;
+    }
+
+    // Parse callback data
+    let tokenId: string;
+    try {
+      const data = JSON.parse(query.data);
+      tokenId = data.id;
+      if (!tokenId || typeof tokenId !== 'string') throw new Error('missing id');
+    } catch {
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Invalid callback data',
+      }).catch(() => {});
+      return;
+    }
+
+    // Resolve the token
+    const context = this.callbackRegistry.resolve(tokenId);
+
+    if (!context) {
+      // Stale button (server restarted, or entry pruned)
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Session expired \u2014 check the dashboard',
+      }).catch(() => {});
+      if (query.message) {
+        await this.editMessageWithRetry(
+          query.message.message_id,
+          '\u274C Session expired before response received'
+        );
+      }
+      return;
+    }
+
+    // Validate the key against the allowlist
+    if (!isAllowedButtonKey(context.key)) {
+      console.warn(`[prompt-gate] Rejected non-allowlisted button key: ${context.key}`);
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Invalid response key',
+      }).catch(() => {});
+      return;
+    }
+
+    // Answer the callback (removes loading spinner on button)
+    await this.apiCall('answerCallbackQuery', {
+      callback_query_id: query.id,
+      text: 'Sent to session',
+    }).catch(() => {});
+
+    // Update the message to show which option was chosen
+    if (query.message) {
+      await this.editMessageWithRetry(
+        query.message.message_id,
+        `\u2705 Responded: ${context.key}`
+      );
+    }
+
+    // Clear pending reply for this topic (if any)
+    const topicId = query.message?.message_thread_id;
+    if (topicId) {
+      this.pendingPromptReply.delete(topicId);
+    }
+
+    // Release relay lease
+    if (this.onRelayLeaseEnd) {
+      this.onRelayLeaseEnd(context.sessionName);
+    }
+
+    // Inject the response into the session
+    if (this.onPromptResponse) {
+      const sent = this.onPromptResponse(context.sessionName, context.key);
+      if (!sent) {
+        console.warn(`[prompt-gate] Failed to send key "${context.key}" to session "${context.sessionName}"`);
+      }
+    } else {
+      console.warn(`[prompt-gate] No onPromptResponse handler — cannot inject response`);
+    }
+
+    console.log(`[prompt-gate] Callback resolved: session="${context.sessionName}" key="${context.key}"`);
+  }
+
+  /**
+   * Handle a text reply to a Prompt Gate relay message (for text-input prompts).
+   * Returns true if the message was intercepted, false to fall through to normal routing.
+   */
+  private handlePendingPromptReply(
+    topicId: number,
+    msg: NonNullable<TelegramUpdate['message']>,
+  ): boolean {
+    const pending = this.pendingPromptReply.get(topicId);
+    if (!pending) return false;
+
+    // Check timeout (2x relay timeout)
+    const relayTimeoutMs = (this.config.promptGate?.relayTimeoutSeconds ?? 300) * 2000;
+    if (Date.now() - pending.createdAt > relayTimeoutMs) {
+      this.pendingPromptReply.delete(topicId);
+      // Release relay lease
+      if (this.onRelayLeaseEnd) {
+        this.onRelayLeaseEnd(pending.prompt.sessionName);
+      }
+      return false; // Expired — fall through to normal routing
+    }
+
+    // Verify sender is the authorized owner
+    const ownerId = this.config.promptGate?.ownerId;
+    if (ownerId && msg.from.id !== ownerId) {
+      return false; // Not the owner — fall through to normal routing
+    }
+
+    // Verify this is a reply-to the relay message
+    if (msg.reply_to_message?.message_id !== pending.relayMessageId) {
+      return false; // Not replying to the prompt — fall through
+    }
+
+    // Intercept the reply
+    this.pendingPromptReply.delete(topicId);
+
+    // Release relay lease
+    if (this.onRelayLeaseEnd) {
+      this.onRelayLeaseEnd(pending.prompt.sessionName);
+    }
+
+    // Sanitize the input
+    const sanitized = sanitizeForPrompt(msg.text ?? '', 512);
+    if (!sanitized) {
+      console.warn(`[prompt-gate] Empty text reply after sanitization, topic ${topicId}`);
+      return true; // Still consume the message — don't route it as a new message
+    }
+
+    // Inject the text into the session
+    if (this.onPromptTextResponse) {
+      const sent = this.onPromptTextResponse(pending.prompt.sessionName, sanitized);
+      if (!sent) {
+        console.warn(`[prompt-gate] Failed to send text to session "${pending.prompt.sessionName}"`);
+      }
+    } else {
+      console.warn(`[prompt-gate] No onPromptTextResponse handler — cannot inject text`);
+    }
+
+    // Update the relay message to show it was answered
+    this.editMessageWithRetry(
+      pending.relayMessageId,
+      `\u2705 Answered: "${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''}"`
+    ).catch(() => {});
+
+    console.log(`[prompt-gate] Text reply intercepted: session="${pending.prompt.sessionName}" text="${sanitized.slice(0, 50)}"`);
+    return true;
+  }
+
+  /**
+   * Edit a Telegram message with retry on failure.
+   * Uses exponential backoff (1s, 2s, 4s) for up to 3 attempts.
+   */
+  private async editMessageWithRetry(messageId: number, text: string, retries = 3): Promise<void> {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        await this.apiCall('editMessageText', {
+          chat_id: this.config.chatId,
+          message_id: messageId,
+          text,
+        });
+        return;
+      } catch (err) {
+        if (attempt < retries - 1) {
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        } else {
+          console.warn(`[prompt-gate] Failed to edit message ${messageId} after ${retries} attempts: ${err}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Clean up Prompt Gate state for a session (call when session ends).
+   */
+  cleanupPromptGate(sessionName: string): void {
+    // Remove all callback registry entries for this session
+    this.callbackRegistry.removeForSession(sessionName);
+
+    // Clear any pending replies for topics bound to this session
+    for (const [topicId, pending] of this.pendingPromptReply) {
+      if (pending.prompt.sessionName === sessionName) {
+        this.pendingPromptReply.delete(topicId);
+        // Update the relay message
+        this.editMessageWithRetry(
+          pending.relayMessageId,
+          '\u274C Session ended before response received'
+        ).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Proactively prune expired relay prompts and send timeout messages.
+   * Call periodically (e.g. every 60s) to handle cases where no new message
+   * arrives to trigger the expiry check in handlePendingPromptReply.
+   */
+  async pruneExpiredRelays(): Promise<void> {
+    const relayTimeoutMs = (this.config.promptGate?.relayTimeoutSeconds ?? 300) * 1000;
+    const reminderMs = relayTimeoutMs; // Send reminder at 1x timeout
+    const expiryMs = relayTimeoutMs * 2; // Expire at 2x timeout
+    const now = Date.now();
+
+    for (const [topicId, pending] of this.pendingPromptReply) {
+      const age = now - pending.createdAt;
+
+      if (age > expiryMs) {
+        // Expired — update message and clean up
+        this.pendingPromptReply.delete(topicId);
+        this.editMessageWithRetry(
+          pending.relayMessageId,
+          '\u23f0 Prompt expired — no response received. Check the dashboard to respond manually.'
+        ).catch(() => {});
+
+        // Release relay lease
+        if (this.onRelayLeaseEnd) {
+          this.onRelayLeaseEnd(pending.prompt.sessionName);
+        }
+
+        // Clean up callback registry entries for this prompt
+        this.callbackRegistry.removeForSession(pending.prompt.sessionName);
+
+        console.log(`[prompt-gate] Relay expired for topic ${topicId} (${Math.round(age / 1000)}s)`);
+      } else if (age > reminderMs && !pending.reminderSent) {
+        // Send reminder
+        await this.sendToTopic(topicId,
+          '\u23f3 Still waiting for your response on the prompt above.'
+        ).catch(() => {});
+        pending.reminderSent = true;
+      }
+    }
+  }
+
+  /**
+   * Stop the callback registry (call on adapter shutdown).
+   */
+  stopPromptGate(): void {
+    this.callbackRegistry.stop();
+  }
+
   private async getUpdates(): Promise<TelegramUpdate[]> {
     const result = await this.apiCall('getUpdates', {
       offset: this.lastUpdateId + 1,
       timeout: 30,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
     });
 
     return (result as TelegramUpdate[]) ?? [];

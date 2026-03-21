@@ -1478,6 +1478,443 @@
       color: var(--text);
     }
 
+    /* ── Vital Signs Strip ────────────────────────────────── */
+    .vital-signs {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+      margin-right: 12px;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .vital-signs .vital {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    .vital-signs .vital:hover {
+      background: var(--bg-hover);
+    }
+
+    .vital-signs .vital-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .vital-signs .vital-icon {
+      font-size: 10px;
+      flex-shrink: 0;
+      width: 12px;
+      text-align: center;
+    }
+
+    .vital-signs .vital-bar {
+      width: 48px;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .vital-signs .vital-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.5s, background 0.5s;
+    }
+
+    .vital-signs .vital.warn { color: var(--orange); }
+    .vital-signs .vital.crit { color: var(--red); }
+    .vital-signs .vital-sep {
+      width: 1px;
+      height: 14px;
+      background: var(--border);
+    }
+
+    /* ── Jobs Tab ─────────────────────────────────────────── */
+    .jobs-container {
+      display: flex;
+      grid-column: 1 / -1;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .jobs-sidebar {
+      width: 320px;
+      min-width: 320px;
+      border-right: 1px solid var(--border);
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .jobs-sidebar-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .jobs-sidebar-header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+
+    .jobs-filter-bar {
+      display: flex;
+      gap: 4px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .jobs-filter-chip {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .jobs-filter-chip:hover {
+      border-color: var(--text-dim);
+      color: var(--text);
+    }
+
+    .jobs-filter-chip.active {
+      background: var(--accent-dim);
+      border-color: var(--accent-dim);
+      color: #000;
+    }
+
+    .jobs-sort {
+      font-size: 11px;
+      background: var(--bg);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 4px;
+      margin-left: auto;
+    }
+
+    .jobs-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .job-item {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .job-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .job-item.active {
+      background: var(--bg-active);
+      border-left: 2px solid var(--accent);
+    }
+
+    .job-item-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .job-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .job-status-dot.healthy { background: var(--accent); }
+    .job-status-dot.warn { background: var(--orange); }
+    .job-status-dot.failing { background: var(--red); }
+    .job-status-dot.disabled { background: #444; }
+    .job-status-dot.running { background: var(--blue); animation: pulse 1.5s infinite; }
+
+    .job-item-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-bright);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .job-failure-count {
+      font-size: 11px;
+      color: var(--red);
+      font-weight: 600;
+    }
+
+    .job-item-meta {
+      margin-top: 3px;
+      margin-left: 16px;
+      font-size: 11px;
+      color: var(--text-dim);
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .job-item-meta .model-badge {
+      font-size: 10px;
+      padding: 0 5px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+
+    .job-item-meta .priority-badge {
+      font-size: 10px;
+      padding: 0 5px;
+      border-radius: 3px;
+    }
+
+    .priority-badge.critical { border: 1px solid var(--red); color: var(--red); }
+    .priority-badge.high { border: 1px solid var(--orange); color: var(--orange); }
+
+    .job-item-status {
+      margin-top: 3px;
+      margin-left: 16px;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    /* Jobs detail panel */
+    .jobs-detail {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .jobs-detail-empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    .jobs-detail-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+    }
+
+    .job-detail-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .job-detail-header h3 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+    }
+
+    .job-detail-header .job-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    .job-detail-header .job-meta-line {
+      font-size: 11px;
+      color: var(--text-dim);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .job-detail-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .job-run-btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--accent-dim);
+      background: transparent;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .job-run-btn:hover:not(:disabled) {
+      background: var(--accent-dim);
+      color: #000;
+    }
+
+    .job-run-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .job-run-btn.running {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    .job-toggle {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      background: #333;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+      border: none;
+    }
+
+    .job-toggle.enabled {
+      background: var(--accent-dim);
+    }
+
+    .job-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 0.2s;
+    }
+
+    .job-toggle.enabled::after {
+      transform: translateX(16px);
+    }
+
+    /* Job state card */
+    .job-state-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+
+    .job-state-card .state-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      color: var(--text-dim);
+    }
+
+    .job-state-card .state-row .state-val {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .job-state-card .state-row .state-val.error {
+      color: var(--red);
+    }
+
+    .job-state-card .state-row .state-val.success {
+      color: var(--accent);
+    }
+
+    /* Job history table */
+    .job-history-section h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 10px;
+    }
+
+    .job-history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .job-history-table th {
+      text-align: left;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-dim);
+      font-weight: 500;
+      font-size: 11px;
+    }
+
+    .job-history-table td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .result-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .result-badge.success { background: #0f2f0f; color: var(--accent); }
+    .result-badge.failure, .result-badge.error { background: #2f0f0f; color: var(--red); }
+    .result-badge.spawn-error { background: #2f1f0f; color: var(--orange); }
+    .result-badge.timeout { background: #2f2f0f; color: #eab308; }
+    .result-badge.pending { background: #0f1f2f; color: var(--blue); animation: pulse 1.5s infinite; }
+    .result-badge.skipped { background: #1a1a1a; color: #666; }
+
+    /* Run sparkline */
+    .job-sparkline {
+      display: flex;
+      gap: 1px;
+      margin-bottom: 16px;
+    }
+
+    .job-sparkline .spark {
+      width: 6px;
+      height: 16px;
+      border-radius: 1px;
+    }
+
+    .spark.s-success { background: var(--accent-dim); }
+    .spark.s-failure, .spark.s-error { background: var(--red); }
+    .spark.s-spawn-error { background: var(--orange); }
+    .spark.s-timeout { background: #eab308; }
+    .spark.s-pending { background: var(--blue); }
+    .spark.s-skipped { background: #333; }
+
     /* ── Mobile responsive ─────────────────────────────────── */
     @media (max-width: 768px) {
       .app {
@@ -1662,6 +2099,45 @@
         min-height: 44px;
         padding: 10px 16px;
       }
+
+      /* Vital signs mobile */
+      .vital-signs {
+        display: none;
+      }
+
+      /* Jobs tab mobile */
+      .jobs-container {
+        flex-direction: column;
+      }
+
+      .jobs-sidebar {
+        width: 100%;
+        min-width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        max-height: none;
+      }
+
+      .app.jobs-detail-active .jobs-sidebar {
+        display: none;
+      }
+
+      .app:not(.jobs-detail-active) .jobs-detail {
+        display: none;
+      }
+
+      .job-item {
+        padding: 12px 14px;
+      }
+
+      .job-detail-header {
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .jobs-detail-content {
+        padding: 14px;
+      }
     }
   </style>
 </head>
@@ -1687,7 +2163,29 @@
           <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
           <button class="tab" data-tab="files" onclick="switchTab('files')">Files</button>
           <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Drop Zone</button>
+          <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
         </nav>
+      </div>
+      <div class="vital-signs" id="vitalSigns">
+        <div class="vital" id="vitalServer" onclick="switchTab('jobs')" title="Server status">
+          <span class="vital-dot" id="vitalServerDot" style="background:var(--accent)"></span>
+          <span id="vitalServerText">Healthy</span>
+        </div>
+        <span class="vital-sep"></span>
+        <div class="vital" id="vitalSessions" onclick="switchTab('sessions')" title="Active sessions">
+          <span class="vital-icon">&#x25CB;</span>
+          <span id="vitalSessionsText">0/0</span>
+        </div>
+        <span class="vital-sep"></span>
+        <div class="vital" id="vitalMemory" title="Memory pressure">
+          <span id="vitalMemoryText">Mem 0%</span>
+          <div class="vital-bar"><div class="vital-bar-fill" id="vitalMemoryBar" style="width:0%;background:var(--accent)"></div></div>
+        </div>
+        <span class="vital-sep"></span>
+        <div class="vital" id="vitalJobs" onclick="switchTab('jobs')" title="Failing jobs" style="display:none">
+          <span class="vital-icon" style="color:var(--red)">&#x26A0;</span>
+          <span id="vitalJobsText" style="color:var(--red)">0 failing</span>
+        </div>
       </div>
       <button class="wa-status-btn" id="waStatusBtn" onclick="toggleQrPanel()">WhatsApp</button>
       <div class="status-badge" id="connStatus">
@@ -1775,7 +2273,6 @@
         </div>
       </div>
     </div>
-  </div>
 
   <!-- Toast notifications -->
   <div class="toast-container" id="toastContainer"></div>
@@ -1855,6 +2352,39 @@
     </div>
   </div>
 
+    <!-- Jobs tab -->
+    <div class="jobs-container" id="jobsTab" style="display:none">
+      <div class="jobs-sidebar">
+        <div class="jobs-sidebar-header">
+          <h2>Jobs</h2>
+          <select class="jobs-sort" id="jobsSort" onchange="renderJobList()">
+            <option value="status">Sort: Status</option>
+            <option value="priority">Sort: Priority</option>
+            <option value="name">Sort: Name</option>
+            <option value="lastRun">Sort: Last Run</option>
+          </select>
+        </div>
+        <div class="jobs-filter-bar" id="jobsFilterBar">
+          <button class="jobs-filter-chip active" data-filter="all" onclick="setJobFilter('all')">All</button>
+          <button class="jobs-filter-chip" data-filter="failing" onclick="setJobFilter('failing')">Failing</button>
+          <button class="jobs-filter-chip" data-filter="disabled" onclick="setJobFilter('disabled')">Disabled</button>
+        </div>
+        <div class="jobs-list" id="jobsList">
+          <div style="padding:20px;color:var(--text-dim);text-align:center">Loading jobs...</div>
+        </div>
+      </div>
+      <div class="jobs-detail" id="jobsDetail">
+        <div class="jobs-detail-empty" id="jobsDetailEmpty">
+          <div style="text-align:center">
+            <div style="font-size:24px;margin-bottom:8px">&#x2699;</div>
+            <p>Select a job to view details</p>
+          </div>
+        </div>
+        <div class="jobs-detail-content" id="jobsDetailContent" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- WhatsApp QR panel (hidden by default) -->
   <div class="wa-qr-backdrop" id="waQrBackdrop" style="display:none" onclick="closeQrPanel()"></div>
   <div class="wa-qr-panel" id="waQrPanel" style="display:none">
@@ -1923,6 +2453,7 @@
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
             startWaPolling();
+            startVitalSigns();
           } else {
             showAuthError('Incorrect PIN');
           }
@@ -1947,6 +2478,7 @@
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
             startWaPolling();
+            startVitalSigns();
           }
         })
         .catch(() => {});
@@ -2018,10 +2550,23 @@
               // No meaningful new content — we've hit the buffer limit
               historyExhausted = true;
             }
+            // Calculate how many new lines were prepended so we can
+            // restore the user's approximate scroll position after rewrite.
+            const addedLines = Math.max(0, newLineCount - oldLineCount);
+            const buf = term.buffer.active;
+            const prevViewportY = buf.viewportY;
+
             // Rewrite terminal with expanded history
             term.clear();
             term.write(msg.data);
-            // Don't auto-scroll — user is reading history
+
+            // Restore scroll position: shift down by the number of new lines
+            // so the user sees the same content they were looking at.
+            requestAnimationFrame(() => {
+              const newY = prevViewportY + addedLines;
+              term.scrollToLine(Math.min(newY, term.buffer.active.baseY));
+            });
+
             historyLoading = false;
             hideHistorySpinner();
           }
@@ -2172,6 +2717,11 @@
       }
 
       activeSession = tmuxSession;
+      userIsFollowing = true; // Reset scroll tracking on session switch
+      historyLinesLoaded = 2000; // Reset history state for new session
+      historyLoading = false;
+      historyExhausted = false;
+      hideHistorySpinner();
 
       // Mobile: show terminal, hide sidebar
       document.getElementById('app').classList.add('terminal-active');
@@ -2248,7 +2798,7 @@
         fontFamily: "'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace",
         cursorBlink: false,
         cursorStyle: 'underline',
-        scrollback: 10000,
+        scrollback: 50000,
         convertEol: true,
       });
 
@@ -2266,15 +2816,152 @@
       requestAnimationFrame(() => {
         try { fitAddon.fit(); } catch {}
       });
+
+      // Track user scroll position for auto-follow behavior.
+      // When user scrolls up, stop auto-following. When they scroll
+      // back near the bottom, resume following.
+      // Also trigger history loading when user scrolls near the top.
+      term.onScroll(() => {
+        const buf = term.buffer.active;
+        const atBottom = buf.baseY === 0 || (buf.baseY - buf.viewportY) <= 3;
+
+        if (atBottom && !userIsFollowing) {
+          // User scrolled back to bottom — resume following and apply pending output
+          userIsFollowing = true;
+          if (pendingOutputData) {
+            const data = pendingOutputData;
+            pendingOutputData = null;
+            term.clear();
+            term.write(data);
+            term.scrollToBottom();
+          }
+        } else if (!atBottom) {
+          userIsFollowing = false;
+        }
+
+        // Infinite scroll: load more history when scrolled near the top
+        if (buf.viewportY <= 10 && !historyLoading && !historyExhausted && activeSession) {
+          loadMoreHistory();
+        }
+      });
+
+      // Also listen on the xterm viewport DOM element for wheel events.
+      // term.onScroll doesn't fire when the user is already at the scroll
+      // boundary — the wheel event lets us detect "trying to scroll past the top."
+      const xtermViewport = container.querySelector('.xterm-viewport');
+      if (xtermViewport) {
+        xtermViewport.addEventListener('wheel', (e) => {
+          // Scrolling up while near top → load more history
+          if (e.deltaY < 0) {
+            const buf = term.buffer.active;
+            if (buf.viewportY <= 10 && !historyLoading && !historyExhausted && activeSession) {
+              loadMoreHistory();
+            }
+          }
+          // Scrolling down — check if we hit bottom to resume
+          if (e.deltaY > 0 && !userIsFollowing) {
+            const buf = term.buffer.active;
+            const atBottom = buf.baseY === 0 || (buf.baseY - buf.viewportY) <= 5;
+            if (atBottom) {
+              userIsFollowing = true;
+              if (pendingOutputData) {
+                const data = pendingOutputData;
+                pendingOutputData = null;
+                term.clear();
+                term.write(data);
+                term.scrollToBottom();
+              }
+            }
+          }
+        }, { passive: true });
+      }
     }
+
+    /** Request more terminal history from the server */
+    function loadMoreHistory() {
+      if (historyLoading || historyExhausted || !activeSession) return;
+      const nextBatch = Math.min(historyLinesLoaded + 5000, 50000);
+      if (nextBatch <= historyLinesLoaded) {
+        historyExhausted = true;
+        return;
+      }
+      historyLoading = true;
+      showHistorySpinner();
+      wsSend({ type: 'history', session: activeSession, lines: nextBatch });
+    }
+
+    function showHistorySpinner() {
+      let spinner = document.getElementById('historySpinner');
+      if (!spinner) {
+        spinner = document.createElement('div');
+        spinner.id = 'historySpinner';
+        spinner.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:10;background:var(--bg-secondary);color:var(--text-muted);padding:4px 12px;border-radius:4px;font-size:11px;opacity:0.9;';
+        spinner.textContent = 'Loading history…';
+        const container = document.getElementById('terminalContainer');
+        if (container) container.style.position = 'relative';
+        container?.appendChild(spinner);
+      }
+      spinner.style.display = 'block';
+    }
+
+    function hideHistorySpinner() {
+      const spinner = document.getElementById('historySpinner');
+      if (spinner) spinner.style.display = 'none';
+    }
+
+    /** Track whether user is near the bottom of terminal output */
+    let userIsFollowing = true;
+    /** Pending output data received while user is scrolled up — applied when they return to bottom */
+    let pendingOutputData = null;
 
     function renderTerminalOutput(data) {
       if (!term) return;
-      // Replace full terminal content with latest capture
+
+      // If user is scrolled up reading history, DON'T rewrite the terminal.
+      // Cache the latest data and apply it when they scroll back to the bottom.
+      // This prevents the "jumping around" problem caused by clear()+write() every 500ms.
+      if (!userIsFollowing) {
+        pendingOutputData = data;
+        showResumeButton();
+        return;
+      }
+
+      // User is following — apply the update
+      hideResumeButton();
       term.clear();
       term.write(data);
-      // Auto-scroll to bottom
       term.scrollToBottom();
+    }
+
+    /** Show a "Resume live output" button when updates are paused */
+    function showResumeButton() {
+      let btn = document.getElementById('resumeBtn');
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.id = 'resumeBtn';
+        btn.textContent = '▼ Resume live output';
+        btn.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:10;background:var(--accent);color:#000;border:none;padding:6px 16px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600;opacity:0.95;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+        btn.onclick = () => {
+          userIsFollowing = true;
+          if (pendingOutputData) {
+            const data = pendingOutputData;
+            pendingOutputData = null;
+            term.clear();
+            term.write(data);
+            term.scrollToBottom();
+          }
+          hideResumeButton();
+        };
+        const container = document.getElementById('terminalContainer');
+        if (container) container.style.position = 'relative';
+        container?.appendChild(btn);
+      }
+      btn.style.display = 'block';
+    }
+
+    function hideResumeButton() {
+      const btn = document.getElementById('resumeBtn');
+      if (btn) btn.style.display = 'none';
     }
 
     function goBack() {
@@ -2570,11 +3257,51 @@
       }
     });
 
-    // ── Tab System ─────────────────────────────────────────────
+    // ── Tab System (Data-Driven Registry) ──────────────────────
     let currentTab = 'sessions';
+
+    const TAB_REGISTRY = [
+      {
+        id: 'sessions',
+        panels: ['sessionsTab', 'mainPanel'],
+        display: ['', ''],
+        onActivate: null,
+      },
+      {
+        id: 'files',
+        panels: ['filesTab'],
+        display: ['flex'],
+        onActivate: () => { if (!fileTreeLoaded) loadFileTree(); },
+      },
+      {
+        id: 'dropzone',
+        panels: ['dropzoneTab'],
+        display: ['flex'],
+        onActivate: () => {
+          setTimeout(() => document.getElementById('dzContent')?.focus(), 100);
+          loadDzSessions();
+          loadDzHistory();
+        },
+      },
+      {
+        id: 'jobs',
+        panels: ['jobsTab'],
+        display: ['flex'],
+        onActivate: () => {
+          if (!jobsLoaded) loadJobs();
+          connectJobsSSE();
+        },
+        onDeactivate: () => { disconnectJobsSSE(); },
+      },
+    ];
 
     function switchTab(tabName) {
       if (tabName === currentTab) return;
+
+      // Deactivate current tab
+      const prevTab = TAB_REGISTRY.find(t => t.id === currentTab);
+      if (prevTab?.onDeactivate) prevTab.onDeactivate();
+
       currentTab = tabName;
 
       // Update tab buttons
@@ -2582,34 +3309,24 @@
         btn.classList.toggle('active', btn.dataset.tab === tabName);
       });
 
-      // Toggle tab content visibility
-      const sessionsTab = document.getElementById('sessionsTab');
-      const mainPanel = document.getElementById('mainPanel');
-      const filesTab = document.getElementById('filesTab');
-      const dropzoneTab = document.getElementById('dropzoneTab');
-
-      sessionsTab.style.display = 'none';
-      mainPanel.style.display = 'none';
-      filesTab.style.display = 'none';
-      dropzoneTab.style.display = 'none';
-
-      if (tabName === 'sessions') {
-        sessionsTab.style.display = '';
-        mainPanel.style.display = '';
-      } else if (tabName === 'files') {
-        filesTab.style.display = 'flex';
-        // Load file tree on first switch
-        if (!fileTreeLoaded) loadFileTree();
-      } else if (tabName === 'dropzone') {
-        dropzoneTab.style.display = 'flex';
-        // Auto-focus textarea
-        setTimeout(() => document.getElementById('dzContent')?.focus(), 100);
-        // Load session list and paste history
-        loadDzSessions();
-        loadDzHistory();
+      // Hide all panels
+      for (const tab of TAB_REGISTRY) {
+        for (const panelId of tab.panels) {
+          const el = document.getElementById(panelId);
+          if (el) el.style.display = 'none';
+        }
       }
 
-      // Update URL
+      // Show active tab panels
+      const activeTab = TAB_REGISTRY.find(t => t.id === tabName);
+      if (activeTab) {
+        activeTab.panels.forEach((panelId, i) => {
+          const el = document.getElementById(panelId);
+          if (el) el.style.display = activeTab.display[i] || '';
+        });
+        if (activeTab.onActivate) activeTab.onActivate();
+      }
+
       updateFileUrl();
     }
 
@@ -3492,6 +4209,528 @@
       d.textContent = s;
       return d.innerHTML;
     }
+
+    // ── Vital Signs Strip ──────────────────────────────────────
+    let vitalSignsInterval = null;
+
+    function startVitalSigns() {
+      pollVitalSigns();
+      vitalSignsInterval = setInterval(pollVitalSigns, 30000);
+    }
+
+    async function pollVitalSigns() {
+      try {
+        const resp = await fetch('/health', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!resp.ok) return;
+        const h = await resp.json();
+
+        // Server status
+        const serverDot = document.getElementById('vitalServerDot');
+        const serverText = document.getElementById('vitalServerText');
+        const serverVital = document.getElementById('vitalServer');
+        if (h.status === 'ok') {
+          serverDot.style.background = 'var(--accent)';
+          serverText.textContent = h.uptimeHuman || 'Healthy';
+          serverVital.className = 'vital';
+        } else {
+          serverDot.style.background = 'var(--orange)';
+          serverText.textContent = 'Degraded';
+          serverVital.className = 'vital warn';
+        }
+
+        // Sessions
+        const sessEl = document.getElementById('vitalSessionsText');
+        const sessVital = document.getElementById('vitalSessions');
+        const cur = h.sessions?.current ?? 0;
+        const max = h.sessions?.max ?? 0;
+        sessEl.textContent = cur + '/' + max;
+        if (cur >= max) {
+          sessVital.className = 'vital warn';
+        } else {
+          sessVital.className = 'vital';
+        }
+
+        // Memory
+        const memPct = h.memoryPressure?.pressurePercent ?? h.systemMemory?.usedPercent ?? 0;
+        const memText = document.getElementById('vitalMemoryText');
+        const memBar = document.getElementById('vitalMemoryBar');
+        const memVital = document.getElementById('vitalMemory');
+        memText.textContent = 'Mem ' + Math.round(memPct) + '%';
+        memBar.style.width = Math.min(memPct, 100) + '%';
+        if (memPct >= 75) {
+          memBar.style.background = 'var(--red)';
+          memVital.className = 'vital crit';
+        } else if (memPct >= 60) {
+          memBar.style.background = 'var(--orange)';
+          memVital.className = 'vital warn';
+        } else {
+          memBar.style.background = 'var(--accent)';
+          memVital.className = 'vital';
+        }
+
+        // Failing jobs
+        const failing = h.jobs?.failing || [];
+        const jobsVital = document.getElementById('vitalJobs');
+        const jobsText = document.getElementById('vitalJobsText');
+        if (failing.length > 0) {
+          jobsVital.style.display = 'flex';
+          jobsText.textContent = failing.length + ' failing';
+        } else {
+          jobsVital.style.display = 'none';
+        }
+
+        // Update tab badge
+        const jobCount = document.getElementById('tabJobCount');
+        if (jobCount) {
+          const total = h.jobs?.total ?? 0;
+          if (failing.length > 0) {
+            jobCount.textContent = failing.length;
+            jobCount.style.background = 'var(--red)';
+            jobCount.style.color = '#fff';
+          } else {
+            jobCount.textContent = total;
+            jobCount.style.background = '';
+            jobCount.style.color = '';
+          }
+        }
+      } catch (e) {
+        // Vital signs polling failure is silent
+      }
+    }
+
+    // ── Jobs Tab ─────────────────────────────────────────────────
+    let jobsLoaded = false;
+    let jobsData = [];
+    let selectedJob = null;
+    let jobFilter = 'all';
+    let jobsSSE = null;
+
+    const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+
+    function cronToHuman(cron) {
+      try {
+        if (!cron || typeof cron !== 'string') return cron || '—';
+        const parts = cron.trim().split(/\s+/);
+        if (parts.length < 5) return cron;
+        const [min, hour, dom, mon, dow] = parts;
+
+        // */N * * * * → Every N minutes
+        if (/^\*\/(\d+)$/.test(min) && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
+          const n = parseInt(min.slice(2));
+          return n === 1 ? 'Every minute' : 'Every ' + n + ' min';
+        }
+        // 0 */N * * * → Every N hours
+        if (min === '0' && /^\*\/(\d+)$/.test(hour) && dom === '*' && mon === '*' && dow === '*') {
+          const n = parseInt(hour.slice(2));
+          return n === 1 ? 'Every hour' : 'Every ' + n + 'h';
+        }
+        // 0 N * * * → Daily at N:00
+        if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && dow === '*') {
+          const h = parseInt(hour);
+          const m = parseInt(min);
+          const time = (h % 12 || 12) + (m ? ':' + String(m).padStart(2, '0') : '') + (h >= 12 ? ' PM' : ' AM');
+          return 'Daily at ' + time;
+        }
+        // 0 N * * D → Day at N:00
+        if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && /^\d+$/.test(dow)) {
+          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const h = parseInt(hour);
+          const time = (h % 12 || 12) + (h >= 12 ? ' PM' : ' AM');
+          return (days[parseInt(dow)] || dow) + ' at ' + time;
+        }
+        // * * * * * → Every minute
+        if (min === '*' && hour === '*') return 'Every minute';
+        // 0 * * * * → Every hour
+        if (min === '0' && hour === '*') return 'Every hour';
+        return cron;
+      } catch {
+        return cron;
+      }
+    }
+
+    async function loadJobs() {
+      jobsLoaded = true;
+      try {
+        const data = await apiFetch('/jobs');
+        const jobs = data.jobs || data;
+        jobsData = Array.isArray(jobs) ? jobs : [];
+        renderJobList();
+      } catch (e) {
+        document.getElementById('jobsList').innerHTML =
+          '<div style="padding:20px;color:var(--red);text-align:center">Failed to load jobs</div>';
+      }
+    }
+
+    function setJobFilter(filter) {
+      jobFilter = filter;
+      document.querySelectorAll('.jobs-filter-chip').forEach(c => {
+        c.classList.toggle('active', c.dataset.filter === filter);
+      });
+      renderJobList();
+    }
+
+    function renderJobList() {
+      const list = document.getElementById('jobsList');
+      const sort = document.getElementById('jobsSort').value;
+
+      let filtered = jobsData.filter(j => {
+        if (jobFilter === 'failing') {
+          const s = j.state || {};
+          return (s.consecutiveFailures || 0) > 0;
+        }
+        if (jobFilter === 'disabled') return !j.enabled;
+        return true;
+      });
+
+      // Sort
+      filtered.sort((a, b) => {
+        const sa = a.state || {};
+        const sb = b.state || {};
+        if (sort === 'status') {
+          const fa = sa.consecutiveFailures || 0;
+          const fb = sb.consecutiveFailures || 0;
+          if (fb !== fa) return fb - fa; // Failing first
+          return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+        }
+        if (sort === 'priority') {
+          return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+        }
+        if (sort === 'name') return (a.slug || '').localeCompare(b.slug || '');
+        if (sort === 'lastRun') {
+          const ta = sa.lastRun ? new Date(sa.lastRun).getTime() : 0;
+          const tb = sb.lastRun ? new Date(sb.lastRun).getTime() : 0;
+          return tb - ta;
+        }
+        return 0;
+      });
+
+      if (filtered.length === 0) {
+        list.innerHTML = '<div style="padding:20px;color:var(--text-dim);text-align:center">No jobs match filter</div>';
+        return;
+      }
+
+      list.innerHTML = filtered.map(j => {
+        const s = j.state || {};
+        const failures = s.consecutiveFailures || 0;
+        const isRunning = s.lastResult === 'pending';
+        let dotClass = 'healthy';
+        if (!j.enabled) dotClass = 'disabled';
+        else if (isRunning) dotClass = 'running';
+        else if (failures >= 3) dotClass = 'failing';
+        else if (failures > 0) dotClass = 'warn';
+
+        const schedule = cronToHuman(j.schedule);
+        const lastResult = s.lastResult || '—';
+        const lastTime = s.lastRun ? timeAgo(new Date(s.lastRun)) : 'never';
+        const isActive = selectedJob === j.slug ? ' active' : '';
+
+        const priorityBadge = (j.priority === 'critical' || j.priority === 'high')
+          ? '<span class="priority-badge ' + esc(j.priority) + '">' + esc(j.priority) + '</span>' : '';
+
+        return '<div class="job-item' + isActive + '" onclick="selectJob(\'' + esc(j.slug) + '\')">'
+          + '<div class="job-item-top">'
+          + '<span class="job-status-dot ' + dotClass + '"></span>'
+          + '<span class="job-item-name">' + esc(j.slug) + '</span>'
+          + (failures > 0 ? '<span class="job-failure-count">' + failures + ' fail</span>' : '')
+          + '</div>'
+          + '<div class="job-item-meta">'
+          + '<span>' + esc(schedule) + '</span>'
+          + '<span class="model-badge">' + esc(j.model || '—') + '</span>'
+          + priorityBadge
+          + '</div>'
+          + '<div class="job-item-status">'
+          + '<span>' + esc(lastResult) + '</span> &middot; <span>' + esc(lastTime) + '</span>'
+          + '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    async function selectJob(slug) {
+      selectedJob = slug;
+      renderJobList(); // Update active highlight
+
+      const job = jobsData.find(j => j.slug === slug);
+      if (!job) return;
+
+      const detail = document.getElementById('jobsDetailContent');
+      const empty = document.getElementById('jobsDetailEmpty');
+      empty.style.display = 'none';
+      detail.style.display = '';
+
+      // Mobile: show detail
+      document.getElementById('app').classList.add('jobs-detail-active');
+
+      const s = job.state || {};
+      const failures = s.consecutiveFailures || 0;
+      const schedule = cronToHuman(job.schedule);
+      const lastResult = s.lastResult || '—';
+      const lastTime = s.lastRun ? timeAgo(new Date(s.lastRun)) : 'never';
+      const nextTime = s.nextScheduled ? timeAgo(new Date(s.nextScheduled)).replace(' ago', '') : '—';
+      const isRunning = s.lastResult === 'pending';
+
+      let statusText = 'Healthy';
+      let statusClass = 'success';
+      if (!job.enabled) { statusText = 'Disabled'; statusClass = ''; }
+      else if (failures >= 3) { statusText = 'Failing (' + failures + ' consecutive)'; statusClass = 'error'; }
+      else if (failures > 0) { statusText = 'Warning (' + failures + ' failures)'; statusClass = 'error'; }
+      else if (isRunning) { statusText = 'Running'; statusClass = ''; }
+
+      const tags = (job.tags || []).map(t => esc(t)).join(', ') || '—';
+
+      detail.innerHTML = '<div class="job-detail-header">'
+        + '<div>'
+        + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px">&larr;</button>'
+        + '<h3>' + esc(job.slug) + '</h3>'
+        + '<div class="job-desc">' + esc(job.description || job.name || '') + '</div>'
+        + '<div class="job-meta-line">'
+        + '<span>' + esc(job.schedule) + ' (' + esc(schedule) + ')</span>'
+        + '<span class="model-badge">' + esc(job.model || '—') + '</span>'
+        + (job.priority ? '<span class="priority-badge ' + esc(job.priority) + '">' + esc(job.priority) + '</span>' : '')
+        + '<span>Tags: ' + tags + '</span>'
+        + '</div></div>'
+        + '<div class="job-detail-actions">'
+        + '<button class="job-run-btn" id="jobRunBtn" onclick="runJob(\'' + esc(job.slug) + '\')"'
+        + (isRunning ? ' disabled' : '') + '>'
+        + (isRunning ? 'Running...' : 'Run Now') + '</button>'
+        + '<button class="job-toggle' + (job.enabled ? ' enabled' : '') + '" id="jobToggle" '
+        + 'onclick="toggleJob(\'' + esc(job.slug) + '\', ' + (!job.enabled) + ')" '
+        + 'title="' + (job.enabled ? 'Disable' : 'Enable') + '"></button>'
+        + '</div></div>'
+        + '<div class="job-state-card">'
+        + '<div class="state-row"><span>Status</span><span class="state-val ' + statusClass + '">' + esc(statusText) + '</span></div>'
+        + '<div class="state-row"><span>Last Run</span><span class="state-val">' + esc(lastTime) + '</span></div>'
+        + '<div class="state-row"><span>Last Result</span><span class="state-val ' + (lastResult === 'success' ? 'success' : failures > 0 ? 'error' : '') + '">' + esc(lastResult) + '</span></div>'
+        + (s.lastError ? '<div class="state-row"><span>Error</span><span class="state-val error">' + esc(s.lastError) + '</span></div>' : '')
+        + '<div class="state-row"><span>Next Run</span><span class="state-val">' + esc(nextTime) + '</span></div>'
+        + '</div>'
+        + '<div id="jobSparkline" class="job-sparkline"></div>'
+        + '<div class="job-history-section"><h4>Run History</h4>'
+        + '<div id="jobHistoryTable">Loading...</div></div>';
+
+      // Show back button on mobile
+      if (window.innerWidth <= 768) {
+        detail.querySelector('.back-btn').style.display = 'inline-block';
+      }
+
+      // Load history
+      loadJobHistory(slug);
+    }
+
+    function jobsGoBack() {
+      document.getElementById('app').classList.remove('jobs-detail-active');
+      selectedJob = null;
+      document.getElementById('jobsDetailContent').style.display = 'none';
+      document.getElementById('jobsDetailEmpty').style.display = '';
+      renderJobList();
+    }
+
+    async function loadJobHistory(slug) {
+      try {
+        const data = await apiFetch('/jobs/' + encodeURIComponent(slug) + '/history?limit=50');
+        const runs = data.runs || [];
+        const table = document.getElementById('jobHistoryTable');
+        const sparkline = document.getElementById('jobSparkline');
+
+        // Sparkline
+        if (runs.length > 0) {
+          sparkline.innerHTML = runs.slice().reverse().slice(-50).map(r => {
+            const cls = 's-' + (r.result || 'pending');
+            const title = (r.result || '?') + ' — ' + new Date(r.startedAt || r.completedAt).toLocaleTimeString();
+            return '<div class="spark ' + cls + '" title="' + esc(title) + '"></div>';
+          }).join('');
+        }
+
+        if (runs.length === 0) {
+          table.innerHTML = '<div style="color:var(--text-dim)">No run history</div>';
+          return;
+        }
+
+        table.innerHTML = '<table class="job-history-table">'
+          + '<thead><tr><th>Time</th><th>Result</th><th>Duration</th><th>Error</th></tr></thead>'
+          + '<tbody>' + runs.slice(0, 100).map(r => {
+            const time = r.startedAt ? new Date(r.startedAt).toLocaleTimeString() : '—';
+            const result = r.result || '—';
+            const dur = r.durationSeconds != null ? r.durationSeconds + 's'
+              : r.durationMs != null ? Math.round(r.durationMs / 1000) + 's' : '—';
+            const error = r.error ? esc(r.error).substring(0, 80) : '—';
+            return '<tr>'
+              + '<td>' + esc(time) + '</td>'
+              + '<td><span class="result-badge ' + esc(result) + '">' + esc(result) + '</span></td>'
+              + '<td>' + esc(dur) + '</td>'
+              + '<td style="color:var(--text-dim);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + error + '</td>'
+              + '</tr>';
+          }).join('') + '</tbody></table>';
+      } catch (e) {
+        document.getElementById('jobHistoryTable').innerHTML =
+          '<div style="color:var(--red)">Failed to load history</div>';
+      }
+    }
+
+    // ── Run Now / Enable-Disable ─────────────────────────────────
+
+    async function runJob(slug) {
+      const btn = document.getElementById('jobRunBtn');
+      if (!btn) return;
+      btn.disabled = true;
+      btn.classList.add('running');
+      btn.textContent = 'Running...';
+      const startTime = Date.now();
+
+      // Update elapsed timer
+      const timer = setInterval(() => {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        btn.textContent = 'Running... ' + elapsed + 's';
+      }, 1000);
+
+      try {
+        const resp = await fetch('/jobs/' + encodeURIComponent(slug) + '/run', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        });
+        const data = await resp.json();
+
+        if (resp.status === 409) {
+          clearInterval(timer);
+          btn.textContent = 'Already running';
+          setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; btn.classList.remove('running'); }, 3000);
+          return;
+        }
+        if (resp.status === 429) {
+          clearInterval(timer);
+          btn.textContent = 'Rate limited';
+          setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; btn.classList.remove('running'); }, 3000);
+          return;
+        }
+        if (!resp.ok) {
+          clearInterval(timer);
+          btn.textContent = 'Error';
+          setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; btn.classList.remove('running'); }, 3000);
+          return;
+        }
+
+        // Poll for completion (SSE handles live updates, but poll as fallback)
+        const runId = data.runId;
+        let attempts = 0;
+        const pollCompletion = setInterval(async () => {
+          attempts++;
+          if (attempts > 60) { // 120s timeout
+            clearInterval(pollCompletion);
+            clearInterval(timer);
+            btn.textContent = 'Still running...';
+            setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; btn.classList.remove('running'); }, 3000);
+            return;
+          }
+          try {
+            await loadJobs(); // Refresh job states
+            const job = jobsData.find(j => j.slug === slug);
+            if (job && job.state && job.state.lastResult !== 'pending') {
+              clearInterval(pollCompletion);
+              clearInterval(timer);
+              btn.classList.remove('running');
+              btn.textContent = job.state.lastResult === 'success' ? 'Done!' : job.state.lastResult;
+              if (selectedJob === slug) loadJobHistory(slug);
+              setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; }, 3000);
+            }
+          } catch {}
+        }, 2000);
+      } catch (e) {
+        clearInterval(timer);
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; btn.classList.remove('running'); }, 3000);
+      }
+    }
+
+    async function toggleJob(slug, enabled) {
+      // Confirmation for critical/high priority jobs
+      const job = jobsData.find(j => j.slug === slug);
+      if (job && !enabled && (job.priority === 'critical' || job.priority === 'high')) {
+        if (!confirm('Disable ' + slug + '? This is a ' + job.priority + '-priority job.')) return;
+      }
+
+      try {
+        const resp = await fetch('/jobs/' + encodeURIComponent(slug), {
+          method: 'PATCH',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        if (resp.ok) {
+          await loadJobs();
+          if (selectedJob === slug) selectJob(slug);
+        }
+      } catch {}
+    }
+
+    // ── Jobs SSE ─────────────────────────────────────────────────
+
+    function connectJobsSSE() {
+      if (jobsSSE) return; // Already connected
+      try {
+        // EventSource doesn't support custom headers, so pass token as query param
+        jobsSSE = new EventSource('/jobs/events?token=' + encodeURIComponent(token));
+
+        jobsSSE.addEventListener('snapshot', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.jobs) {
+              // Merge SSE snapshot into existing jobs data
+              for (const sj of data.jobs) {
+                const existing = jobsData.find(j => j.slug === sj.slug);
+                if (existing && sj.state) {
+                  existing.state = sj.state;
+                  if (sj.enabled !== undefined) existing.enabled = sj.enabled;
+                }
+              }
+              renderJobList();
+              if (selectedJob) {
+                const job = jobsData.find(j => j.slug === selectedJob);
+                if (job) selectJob(selectedJob);
+              }
+            }
+          } catch {}
+        });
+
+        jobsSSE.addEventListener('job-state', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            const job = jobsData.find(j => j.slug === data.slug);
+            if (job && data.state) {
+              job.state = data.state;
+              renderJobList();
+              if (selectedJob === data.slug) selectJob(data.slug);
+            }
+          } catch {}
+        });
+
+        jobsSSE.onerror = () => {
+          // SSE will auto-reconnect, but clean up if tab switches away
+          if (currentTab !== 'jobs') {
+            disconnectJobsSSE();
+          }
+        };
+      } catch {
+        // SSE not supported or connection failed — fall back to polling
+        jobsSSE = null;
+      }
+    }
+
+    function disconnectJobsSSE() {
+      if (jobsSSE) {
+        jobsSSE.close();
+        jobsSSE = null;
+      }
+    }
+
+    // Handle tab visibility — close SSE when tab is backgrounded
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        disconnectJobsSSE();
+      } else if (currentTab === 'jobs') {
+        connectJobsSSE();
+        loadJobs(); // Resync on return
+      }
+      // Always refresh vital signs on tab focus
+      if (!document.hidden) pollVitalSigns();
+    });
 
     // Listen for WebSocket paste events
     const origWsOnMessage = ws?.onmessage;

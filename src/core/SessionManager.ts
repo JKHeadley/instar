@@ -41,6 +41,7 @@ export interface SessionDiagnostics {
 }
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
+import type { InputDetector } from '../monitoring/PromptGate.js';
 
 const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
@@ -60,6 +61,19 @@ const IDLE_PROMPT_PATTERNS = [
   'shift+tab to cycle',
   'auto-accept edits',
   // The bare prompt character at end of output (after stripping ANSI)
+];
+
+/**
+ * Process names that are always running in a Claude Code session (MCP servers, etc.)
+ * These do NOT indicate activity — they're background infrastructure.
+ */
+const BASELINE_PROCESS_PATTERNS = [
+  /\bplaywright-mcp\b/,
+  /\bplaywright\/mcp\b/,
+  /\bmcp-stdio-entry\b/,
+  /\bmcp.*server\b/i,
+  /\bcaffeinate\b/,
+  /\bnpm exec\b.*mcp/,
 ];
 
 /** Sanitize a string for use as part of a tmux session name. */
@@ -86,6 +100,12 @@ export class SessionManager extends EventEmitter {
   /** Optional callback to check if a session has active subagents (prevents false zombie kills) */
   private subagentChecker?: (session: Session) => boolean;
 
+  /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
+  private promptDetector?: InputDetector;
+
+  /** Sessions with active relay leases (prompt relayed, waiting for response) — extends idle timeout */
+  private relayLeases = new Map<string, number>(); // session ID → lease expiry timestamp
+
   constructor(config: SessionManagerConfig, state: StateManager) {
     super();
     this.config = config;
@@ -108,6 +128,35 @@ export class SessionManager extends EventEmitter {
    */
   setSubagentChecker(checker: (session: Session) => boolean): void {
     this.subagentChecker = checker;
+  }
+
+  /**
+   * Set the Prompt Gate InputDetector for prompt monitoring.
+   * When set, monitorTick() will capture output and feed it to the detector.
+   */
+  setPromptDetector(detector: InputDetector): void {
+    this.promptDetector = detector;
+    // Clean up detector state when sessions end
+    this.on('sessionComplete', (session: Session) => {
+      detector.cleanup(session.tmuxSession);
+      this.relayLeases.delete(session.id);
+    });
+  }
+
+  /**
+   * Grant a relay lease to a session — extends idle timeout while waiting for
+   * a Telegram relay response. Prevents the zombie killer from killing sessions
+   * that are legitimately waiting for user input.
+   */
+  grantRelayLease(sessionId: string, durationMs: number): void {
+    this.relayLeases.set(sessionId, Date.now() + durationMs);
+  }
+
+  /**
+   * Clear a relay lease (prompt was answered or timed out).
+   */
+  clearRelayLease(sessionId: string): void {
+    this.relayLeases.delete(sessionId);
   }
 
   /**
@@ -236,31 +285,34 @@ export class SessionManager extends EventEmitter {
           }
         }
 
-        // Idle prompt detection — kill sessions sitting at the Claude prompt too long.
-        // This catches "zombie" sessions: Claude finished its work but never exited,
-        // sitting at the input prompt consuming a session slot.
+        // Idle detection — kill sessions that are truly stopped.
+        // A session is idle when: (1) the terminal shows idle prompt patterns,
+        // AND (2) no non-baseline child processes are running. This is the ground
+        // truth — no exemptions needed for subagents, topic bindings, or relay leases.
+        // If the process tree shows work, the session is active. Period.
         if (!this.config.protectedSessions.includes(session.tmuxSession)) {
           const output = this.captureOutput(session.tmuxSession, 5);
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
-          if (isIdleAtPrompt) {
-            // Check if this session has active subagents — if so, it's not actually
-            // idle, it's waiting for subagent results. Skip the zombie kill.
-            if (this.subagentChecker?.(session)) {
-              this.idlePromptSince.delete(session.id);
-              continue;
+          // ── Prompt Gate: feed captured output to InputDetector ──
+          if (this.promptDetector && output) {
+            const fullOutput = this.captureOutput(session.tmuxSession, 50);
+            if (fullOutput) {
+              this.promptDetector.onCapture(session.tmuxSession, fullOutput);
             }
+          }
 
+          // Two conditions must BOTH be true for idle: prompt pattern + no active processes
+          const isActuallyIdle = isIdleAtPrompt && !this.hasActiveProcesses(session.tmuxSession);
+
+          if (isActuallyIdle) {
             const now = Date.now();
             if (!this.idlePromptSince.has(session.id)) {
               this.idlePromptSince.set(session.id, now);
             } else {
               const idleMs = now - this.idlePromptSince.get(session.id)!;
               if (idleMs > IDLE_PROMPT_KILL_MINUTES * 60_000) {
-                console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m. Killing zombie.`);
-                // Emit beforeSessionKill BEFORE destroying the tmux session so
-                // listeners (e.g. TopicResumeMap) can discover the Claude UUID while
-                // the session is still alive.
+                console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes. Killing zombie.`);
                 this.emit('beforeSessionKill', session);
                 try {
                   await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
@@ -492,6 +544,81 @@ export class SessionManager extends EventEmitter {
     session.endedAt = new Date().toISOString();
     this.state.saveSession(session);
     return true;
+  }
+
+  /**
+   * Check if a tmux session has active (non-baseline) child processes.
+   * Returns true if the session is doing real work — running tools, bash commands,
+   * subagents, etc. Returns false if only baseline processes (MCP servers, caffeinate)
+   * are running, meaning the session is truly idle.
+   *
+   * This is the ground truth for whether a session is active — it doesn't care about
+   * terminal output patterns, topic bindings, or subagent trackers. If the process
+   * tree shows work happening, the session is active. Period.
+   */
+  hasActiveProcesses(tmuxSession: string): boolean {
+    try {
+      // Get the tmux pane's shell PID
+      const panePid = execFileSync(
+        this.config.tmuxPath,
+        ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
+        { encoding: 'utf-8', timeout: 5000 }
+      ).trim();
+
+      if (!panePid || !/^\d+$/.test(panePid)) return false;
+
+      // Get all descendant processes of the pane PID
+      // Use ps to find all processes whose parent is in our tree
+      const psOutput = execFileSync(
+        'ps', ['-eo', 'pid,ppid,command'],
+        { encoding: 'utf-8', timeout: 5000 }
+      );
+
+      // Build a map of PID → { ppid, command }
+      const processes = new Map<string, { ppid: string; command: string }>();
+      for (const line of psOutput.split('\n').slice(1)) { // skip header
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        if (match) {
+          processes.set(match[1], { ppid: match[2], command: match[3] });
+        }
+      }
+
+      // Walk the tree: find all descendants of panePid
+      const descendants: Array<{ pid: string; command: string }> = [];
+      const queue = [panePid];
+      while (queue.length > 0) {
+        const parentPid = queue.shift()!;
+        for (const [pid, info] of processes) {
+          if (info.ppid === parentPid && pid !== panePid) {
+            descendants.push({ pid, command: info.command });
+            queue.push(pid);
+          }
+        }
+      }
+
+      // Filter out baseline processes
+      const activeProcesses = descendants.filter(p => {
+        return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
+      });
+
+      // The Claude Code node process itself is always running — that's the main process.
+      // We care about processes BEYOND Claude itself and its baseline children.
+      // Claude's main process is the direct child of the pane PID.
+      // Filter it out: it's typically `node` or `claude` running the main Claude binary.
+      const nonClaude = activeProcesses.filter(p => {
+        const proc = processes.get(p.pid);
+        // Direct child of pane PID running claude/node is the main process
+        if (proc?.ppid === panePid) {
+          return !/\bclaude\b/.test(p.command) && !/\bnode\b.*\bclaude\b/.test(p.command);
+        }
+        return true;
+      });
+
+      return nonClaude.length > 0;
+    } catch {
+      // If we can't check processes, assume active (fail-safe: don't kill)
+      return true;
+    }
   }
 
   /**

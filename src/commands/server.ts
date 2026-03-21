@@ -1783,6 +1783,80 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Telemetry: enabled (${config.monitoring.telemetry.level || 'basic'} level, every ${Math.round((config.monitoring.telemetry.intervalMs || 21600000) / 3600000)}h)`));
     }
 
+    // ── Prompt Gate: detect and handle interactive prompts in sessions ──
+    const promptGateConfig = config.monitoring?.promptGate;
+    if (promptGateConfig?.enabled) {
+      const { InputDetector } = await import('../monitoring/PromptGate.js');
+      const { InputClassifier } = await import('../monitoring/InputClassifier.js');
+      const { AutoApprover } = await import('../core/AutoApprover.js');
+
+      const detector = new InputDetector({
+        detectionWindowLines: promptGateConfig.detectionWindowLines ?? 50,
+        enabled: true,
+      });
+
+      const classifier = new InputClassifier({
+        projectDir: config.sessions.projectDir,
+        autoApprove: {
+          enabled: promptGateConfig.autoApprove?.enabled ?? false,
+          fileCreation: promptGateConfig.autoApprove?.fileCreation ?? true,
+          fileEdits: promptGateConfig.autoApprove?.fileEdits ?? true,
+          planApproval: promptGateConfig.autoApprove?.planApproval ?? true,
+        },
+        dryRun: promptGateConfig.dryRun ?? false,
+        intelligence: sharedIntelligence,
+      });
+
+      const autoApprover = new AutoApprover({
+        stateDir: config.stateDir,
+        logRetentionDays: promptGateConfig.logRetentionDays ?? 30,
+        verboseLogging: promptGateConfig.verboseLogging ?? false,
+        sendKey: (tmuxSession, key) => sessionManager.sendKey(tmuxSession, key),
+      });
+
+      // Wire detector into SessionManager
+      sessionManager.setPromptDetector(detector);
+
+      // Handle detected prompts: classify → auto-approve or relay to Telegram
+      detector.on('prompt', async (prompt: import('../monitoring/PromptGate.js').DetectedPrompt) => {
+        try {
+          const classification = await classifier.classify(prompt);
+
+          if (classification.action === 'auto-approve') {
+            const handled = autoApprover.handle(prompt, classification);
+            if (handled) {
+              // Clear dedup so detector is ready for the next prompt
+              detector.onInputSent(prompt.sessionName);
+              return;
+            }
+            // If handle() returned false, fall through to relay
+          }
+
+          // Relay to Telegram if adapter is available and session has a topic binding
+          if (classification.action === 'relay' || classification.action === 'auto-approve') {
+            if (telegram) {
+              const topicId = telegram.getTopicForSession(prompt.sessionName);
+              if (topicId) {
+                try {
+                  await telegram.relayPrompt(topicId, prompt);
+                  console.log(`[PromptGate] Relayed ${prompt.type} prompt to topic ${topicId}`);
+                } catch (relayErr) {
+                  console.error(`[PromptGate] Relay failed: ${relayErr instanceof Error ? relayErr.message : relayErr}`);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`[PromptGate] Classification error: ${err instanceof Error ? err.message : err}`);
+        }
+      });
+
+      const mode = promptGateConfig.autoApprove?.enabled
+        ? (promptGateConfig.dryRun ? 'dry-run' : 'auto-approve')
+        : 'detect-only';
+      console.log(pc.green(`  Prompt Gate: enabled (mode: ${mode})`));
+    }
+
     let scheduler: JobScheduler | undefined;
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
@@ -1841,6 +1915,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
+
+      // Wire Prompt Gate callbacks — connect Telegram relay responses to sessions
+      if (promptGateConfig?.enabled) {
+        telegram.onPromptResponse = (sessionName, key) => sessionManager.sendKey(sessionName, key);
+        telegram.onPromptTextResponse = (sessionName, text) => sessionManager.sendInput(sessionName, text);
+        telegram.onRelayLeaseStart = (sessionName) => {
+          // Find the session by tmux name and grant a relay lease
+          const sessions = sessionManager.listRunningSessions();
+          const session = sessions.find(s => s.tmuxSession === sessionName);
+          if (session) {
+            const leaseMs = (promptGateConfig.relayTimeoutSeconds ?? 300) * 2 * 1000;
+            sessionManager.grantRelayLease(session.id, leaseMs);
+          }
+        };
+        telegram.onRelayLeaseEnd = (sessionName) => {
+          const sessions = sessionManager.listRunningSessions();
+          const session = sessions.find(s => s.tmuxSession === sessionName);
+          if (session) {
+            sessionManager.clearRelayLease(session.id);
+          }
+        };
+        // Periodic relay timeout checker (every 60s)
+        const relayPruneTimer = setInterval(() => {
+          telegram!.pruneExpiredRelays().catch(err => {
+            console.error(`[PromptGate] Relay prune error: ${err instanceof Error ? err.message : err}`);
+          });
+        }, 60_000);
+        if (relayPruneTimer.unref) relayPruneTimer.unref();
+        console.log(pc.green('  Prompt Gate: Telegram relay wired'));
+      }
 
       // Wire NotificationBatcher to Telegram and start batching
       notificationBatcher.setSendFunction(
@@ -1996,6 +2100,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (scheduler) {
         scheduler.setMessenger(telegram);
         scheduler.setTelegram(telegram);
+        if (topicMemory?.isReady()) {
+          scheduler.setTopicMemory(topicMemory);
+        }
       }
 
       // Ensure Agent Attention topic exists (the agent's direct line to the user)

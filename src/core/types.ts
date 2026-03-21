@@ -1768,6 +1768,34 @@ export interface MonitoringConfig {
   };
   /** Opt-in anonymous telemetry — sends usage heartbeats to help improve Instar */
   telemetry?: TelemetryConfig;
+  /** Prompt Gate — detect and handle interactive prompts in sessions */
+  promptGate?: {
+    /** Enable prompt detection (default: false) */
+    enabled?: boolean;
+    /** Lines from buffer tail to examine (default: 50) */
+    detectionWindowLines?: number;
+    /** Auto-approve configuration */
+    autoApprove?: {
+      /** Enable auto-approval (default: false, opt-in) */
+      enabled?: boolean;
+      /** Auto-approve file creation in project dir (default: true) */
+      fileCreation?: boolean;
+      /** Auto-approve file edits in project dir (default: true) */
+      fileEdits?: boolean;
+      /** Auto-approve plan mode (default: true) */
+      planApproval?: boolean;
+    };
+    /** Dry-run: log what would be auto-approved without acting (default: false) */
+    dryRun?: boolean;
+    /** Include human-readable summary in audit log (default: false) */
+    verboseLogging?: boolean;
+    /** Audit log retention in days (default: 30) */
+    logRetentionDays?: number;
+    /** Telegram user ID authorized to respond to relayed prompts */
+    ownerId?: number;
+    /** Relay timeout in seconds (default: 300) */
+    relayTimeoutSeconds?: number;
+  };
 }
 
 export type TelemetryLevel = 'basic' | 'usage';
