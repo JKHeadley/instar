@@ -259,6 +259,8 @@ export function loadConfig(projectDir?: string): InstarConfig {
       'Session ended',
       'Interrupted by user',
     ],
+    authToken: fileConfig.authToken as string | undefined,
+    port: (fileConfig.port as number | undefined) ?? 4040,
   };
 
   const scheduler: JobSchedulerConfig = {
@@ -266,9 +268,9 @@ export function loadConfig(projectDir?: string): InstarConfig {
     enabled: fileConfig.scheduler?.enabled ?? false,
     maxParallelJobs: fileConfig.scheduler?.maxParallelJobs ?? DEFAULT_MAX_PARALLEL_JOBS,
     quotaThresholds: fileConfig.scheduler?.quotaThresholds || {
-      normal: 50,
-      elevated: 70,
-      critical: 85,
+      normal: 75,
+      elevated: 85,
+      critical: 92,
       shutdown: 95,
     },
   };

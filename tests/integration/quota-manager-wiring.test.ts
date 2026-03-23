@@ -239,7 +239,9 @@ describe('QuotaManager Integration', () => {
       quotaFile,
       thresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
     });
-    tracker.updateState({ usagePercent: 30, lastUpdated: new Date().toISOString() });
+    // Set quota above 50% so migration blocking kicks in
+    // (migration only blocks when there's actual quota pressure)
+    tracker.updateState({ usagePercent: 60, lastUpdated: new Date().toISOString() });
 
     const migrator = new SessionMigrator({ stateDir: tmpDir });
     const notifier = new QuotaNotifier(tmpDir);
@@ -250,13 +252,14 @@ describe('QuotaManager Integration', () => {
       { tracker, migrator, notifier },
     );
 
-    // Normal: allowed
+    // Normal: allowed (no migration)
     expect(manager.canSpawnSession('medium').allowed).toBe(true);
 
     // Simulate migration in progress by setting internal state
     // (In production, checkAndMigrate sets this)
     (migrator as any).migrationState = { status: 'halting', sourceAccount: 'a', targetAccount: 'b', haltedSessions: [], restartedSessions: [] };
 
+    // Migration + quota pressure = blocked
     expect(manager.canSpawnSession('medium').allowed).toBe(false);
     expect(manager.canSpawnSession('medium').reason).toContain('Migration in progress');
 

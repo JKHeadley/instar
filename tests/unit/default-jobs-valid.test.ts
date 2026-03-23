@@ -97,7 +97,6 @@ describe('Default Jobs Validation', () => {
     const guardianSlugs = [
       'degradation-digest',
       'state-integrity-check',
-      'memory-hygiene',
       'guardian-pulse',
       'session-continuity-check',
     ];
@@ -108,8 +107,14 @@ describe('Default Jobs Validation', () => {
 
       // Look for the tags array — prompts can be very long so search a wide window
       const section = content.slice(slugIndex, slugIndex + 5000);
-      expect(section).toContain("'guardian'");
+      expect(section).toContain("'cat:guardian'");
     }
+
+    // memory-hygiene exists but is classified as cat:maintenance
+    const hygieneIndex = content.indexOf("slug: 'memory-hygiene'");
+    expect(hygieneIndex).toBeGreaterThan(-1);
+    const hygieneSection = content.slice(hygieneIndex, hygieneIndex + 5000);
+    expect(hygieneSection).toContain("'cat:maintenance'");
   });
 
   it('guardian-pulse has high priority (meta-monitor should run reliably)', () => {

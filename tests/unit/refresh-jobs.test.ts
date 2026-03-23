@@ -170,30 +170,26 @@ describe('refreshJobs()', () => {
   });
 
   describe('port configuration in job templates', () => {
-    it('substitutes the configured port into guardian job prompts and gates', () => {
+    it('substitutes the configured port into guardian job gates', () => {
       const customPort = 5555;
       project = createTestProject({ port: customPort, jobs: [makeJob('health-check')] });
       refreshHooksAndSettings(project.dir, project.stateDir);
 
       const updatedJobs = JSON.parse(fs.readFileSync(project.jobsPath, 'utf-8')) as Array<{
         slug: string;
-        execute?: { value?: string };
+        execute?: { type?: string; value?: string };
         gate?: string;
       }>;
 
-      // Find a guardian job that references the port
+      // Find a guardian job that references the port in its gate
       const stateCheck = updatedJobs.find(j => j.slug === 'state-integrity-check');
       expect(stateCheck).toBeDefined();
 
       // The gate should reference the configured port
-      if (stateCheck?.gate) {
-        expect(stateCheck.gate).toContain(String(customPort));
-      }
+      expect(stateCheck!.gate).toContain(String(customPort));
 
-      // The prompt should reference the configured port
-      if (stateCheck?.execute?.value) {
-        expect(stateCheck.execute.value).toContain(String(customPort));
-      }
+      // Guardian jobs now use type: 'skill' — execute value is a skill name, not a port-bearing command
+      expect(stateCheck!.execute!.type).toBe('skill');
     });
 
     it('uses default port 4321 when config is missing', () => {
@@ -320,7 +316,6 @@ describe('refreshJobs()', () => {
       const guardianSlugs = [
         'degradation-digest',
         'state-integrity-check',
-        'memory-hygiene',
         'guardian-pulse',
         'session-continuity-check',
       ];
@@ -329,9 +324,13 @@ describe('refreshJobs()', () => {
         const job = jobs.find(j => j.slug === slug);
         expect(job, `guardian job ${slug} should exist`).toBeDefined();
         expect(job!.tags, `guardian job ${slug} should have tags`).toBeDefined();
-        expect(job!.tags).toContain('guardian');
-        expect(job!.tags).toContain('default');
+        expect(job!.tags).toContain('cat:guardian');
       }
+
+      // memory-hygiene exists but is classified as cat:maintenance
+      const hygiene = jobs.find(j => j.slug === 'memory-hygiene');
+      expect(hygiene, 'memory-hygiene should exist').toBeDefined();
+      expect(hygiene!.tags).toContain('cat:maintenance');
     });
 
     it('guardian-pulse is high priority', () => {

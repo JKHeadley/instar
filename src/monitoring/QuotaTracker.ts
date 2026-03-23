@@ -84,9 +84,9 @@ export class QuotaTracker {
    * - 5-hour >= 95%: block ALL spawns (sessions will immediately fail)
    * - 5-hour >= 80%: only critical priority
    * - Weekly >= shutdown (e.g. 95%): no jobs
-   * - Weekly >= critical (e.g. 80%): critical only
-   * - Weekly >= elevated (e.g. 60%): high+ only
-   * - Weekly >= normal (e.g. 50%): medium+ only
+   * - Weekly >= critical (e.g. 92%): critical only
+   * - Weekly >= elevated (e.g. 85%): high+ only
+   * - Weekly >= normal (e.g. 75%): medium+ only
    *
    * If quota data is unavailable or stale, defaults to allowing all jobs
    * (fail-open — better to run than to silently stop).

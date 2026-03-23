@@ -293,7 +293,8 @@ export class JobScheduler {
       return 'skipped';
     }
 
-    if (!this.canRunJob(job.priority)) {
+    // Script jobs bypass quota gating — they don't consume LLM tokens
+    if (job.execute.type !== 'script' && !this.canRunJob(job.priority)) {
       this.skipLedger.recordSkip(slug, 'quota');
       this.state.appendEvent({
         type: 'job_skipped',

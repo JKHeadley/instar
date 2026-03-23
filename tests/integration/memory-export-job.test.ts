@@ -149,7 +149,7 @@ describe('Memory Export Job (integration)', () => {
     expect(job).toBeDefined();
     expect(job!.enabled).toBe(true);
     expect(job!.model).toBe('haiku');
-    expect(job!.priority).toBe('low');
+    expect(job!.priority).toBe('medium');
   });
 
   // ─── Job triggering ─────────────────────────────────────────────

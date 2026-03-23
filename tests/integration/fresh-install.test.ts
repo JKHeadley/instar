@@ -111,20 +111,16 @@ describe('Fresh install: instar init <project-name>', () => {
     expect(fs.existsSync(jobsPath)).toBe(true);
 
     const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf-8'));
-    expect(jobs.length).toBe(21);
+    expect(jobs.length).toBe(26);
 
     const slugs = jobs.map((j: any) => j.slug);
-    // Original 12 coherence jobs
+    // Core jobs
     expect(slugs).toContain('health-check');
     expect(slugs).toContain('reflection-trigger');
     expect(slugs).toContain('relationship-maintenance');
-    expect(slugs).toContain('update-check');
     expect(slugs).toContain('feedback-retry');
-    expect(slugs).toContain('dispatch-check');
-    expect(slugs).toContain('self-diagnosis');
-    expect(slugs).toContain('evolution-review');
     expect(slugs).toContain('insight-harvest');
-    expect(slugs).toContain('commitment-check');
+    expect(slugs).toContain('evolution-overdue-check');
     expect(slugs).toContain('project-map-refresh');
     expect(slugs).toContain('coherence-audit');
     // 5 guardian network jobs
@@ -141,6 +137,19 @@ describe('Fresh install: instar init <project-name>', () => {
     expect(slugs).toContain('capability-audit');
     // Identity review
     expect(slugs).toContain('identity-review');
+    // Evolution jobs
+    expect(slugs).toContain('evolution-proposal-evaluate');
+    expect(slugs).toContain('evolution-proposal-implement');
+    // Commitment detection
+    expect(slugs).toContain('commitment-detection');
+    // Dashboard
+    expect(slugs).toContain('dashboard-link-refresh');
+    // Overseer jobs
+    expect(slugs).toContain('overseer-guardian');
+    expect(slugs).toContain('overseer-learning');
+    expect(slugs).toContain('overseer-maintenance');
+    expect(slugs).toContain('overseer-infrastructure');
+    expect(slugs).toContain('overseer-development');
   });
 
   it('installs behavioral hooks', () => {

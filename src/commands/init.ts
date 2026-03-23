@@ -1876,6 +1876,583 @@ The goal is not to fill every section. Empty sections are honest. Forced content
 Your identity is not static. It is earned through work, refined through reflection, and authored by you.
 `,
     },
+    'coherence-audit': {
+      name: 'coherence-audit',
+      description: 'Verify topic-project bindings, project map freshness, canonical state files, and context segments are healthy',
+      content: `---
+name: coherence-audit
+description: Verify topic-project bindings, project map freshness, canonical state files, and context segments are healthy
+metadata:
+  user_invocable: "false"
+---
+
+# Coherence Audit — Awareness Infrastructure Health Check
+
+## Purpose
+
+Verify that the agent's awareness infrastructure is healthy: topic bindings point to real directories, the project map is fresh, state files parse correctly, and context segments are present.
+
+## Procedure
+
+Read the auth token once:
+
+\\\`\\\`\\\`
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+\\\`\\\`\\\`
+
+Check each area:
+
+### 1. Topic-Project Bindings
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-bindings
+\\\`\\\`\\\`
+
+- Are all bindings still valid?
+- Do the project directories they point to actually exist on disk?
+- Flag any bindings pointing to missing directories.
+
+### 2. Project Map Freshness
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/project-map
+\\\`\\\`\\\`
+
+- Check the \\\`generatedAt\\\` timestamp.
+- If older than 24 hours, trigger a refresh: \\\`POST /project-map/refresh\\\`
+- A stale map means project-map-refresh may be failing.
+
+### 3. Canonical State Files
+
+Check these files exist and are parseable JSON:
+- \\\`.instar/quick-facts.json\\\`
+- \\\`.instar/anti-patterns.json\\\`
+- \\\`.instar/project-registry.json\\\`
+
+Flag any that are missing, empty, or contain invalid JSON. Look for stale entries that reference things that no longer exist.
+
+### 4. Context Segments
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/context
+\\\`\\\`\\\`
+
+- Are all expected segments present?
+- Are any segments 0 bytes (empty)?
+- Missing context segments mean behavioral instructions may be lost.
+
+## On Issues Found
+
+- Log findings as evolution learnings: \\\`POST /evolution/learnings\\\`
+- Fix what can be fixed automatically (e.g., refresh a stale map, remove broken bindings)
+- Exit silently if everything is healthy — no output means no problems
+`,
+    },
+    'degradation-digest': {
+      name: 'degradation-digest',
+      description: 'Read DegradationReporter events, group repeated patterns, and escalate trends that need attention',
+      content: `---
+name: degradation-digest
+description: Read DegradationReporter events, group repeated patterns, and escalate trends that need attention
+metadata:
+  user_invocable: "false"
+---
+
+# Degradation Digest — Pattern Detection for Failing Features
+
+## Purpose
+
+Review degradation events logged by the DegradationReporter, group repeated patterns, and escalate trends that indicate a primary path is reliably failing and needs fixing.
+
+## Procedure
+
+Read the auth token:
+
+\\\`\\\`\\\`
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+\\\`\\\`\\\`
+
+### 1. Read Events
+
+\\\`\\\`\\\`
+cat .instar/state/degradation-events.json
+\\\`\\\`\\\`
+
+### 2. Check Previous Digest
+
+\\\`\\\`\\\`
+cat .instar/state/job-handoff-degradation-digest.md 2>/dev/null
+\\\`\\\`\\\`
+
+Compare against the previous digest to identify new patterns vs. already-reported ones.
+
+### 3. Group by Feature
+
+Count how many times each feature has degraded since the last digest.
+
+### 4. Escalate Patterns
+
+For each feature with **3+ repeated degradations** — this is a PATTERN, not a one-off. The primary path is reliably failing.
+
+Submit feedback for each pattern:
+
+\\\`\\\`\\\`
+curl -s -X POST http://localhost:${port}/feedback \\
+  -H "Authorization: Bearer $AUTH" \\
+  -H 'Content-Type: application/json' \\
+  -d '{"type":"bug","title":"Repeated degradation: FEATURE","description":"FEATURE has degraded N times. Primary: X. Fallback: Y. Most recent reason: Z. This pattern indicates the primary path needs fixing."}'
+\\\`\\\`\\\`
+
+### 5. Write Handoff Notes
+
+\\\`\\\`\\\`
+echo "Last digest: $(date -u +%Y-%m-%dT%H:%M:%SZ). Events by feature: ..." > .instar/state/job-handoff-degradation-digest.md
+\\\`\\\`\\\`
+
+### 6. Exit Silently if Clean
+
+If no patterns found (all one-offs), exit with no output.
+`,
+    },
+    'state-integrity-check': {
+      name: 'state-integrity-check',
+      description: 'Cross-validate state file consistency, detect orphaned references and bloat',
+      content: `---
+name: state-integrity-check
+description: Cross-validate state file consistency, detect orphaned references and bloat
+metadata:
+  user_invocable: "false"
+---
+
+# State Integrity Check — Cross-Validation of Agent State
+
+## Purpose
+
+Cross-validate agent state files for logical consistency. Detect orphaned references, bloated files, config-reality mismatches, and stale handoff notes. Fix what can be fixed automatically.
+
+## Procedure
+
+Read the auth token:
+
+\\\`\\\`\\\`
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+\\\`\\\`\\\`
+
+### 1. Active Job Orphan
+
+If \\\`.instar/state/active-job.json\\\` exists, verify the session it references is actually running:
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions
+\\\`\\\`\\\`
+
+Check if the session name matches. If the session is dead but active-job.json persists, it's orphaned — delete it.
+
+### 2. Job-Topic Orphan
+
+Read \\\`.instar/state/job-topic-mappings.json\\\`. For each mapping, verify the topic ID is reachable:
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics
+\\\`\\\`\\\`
+
+If topics have been deleted, the mapping is stale — flag it.
+
+### 3. State File Bloat
+
+Check sizes of all state files. Any file over 1MB is a bloat signal. Common culprits:
+- \\\`degradation-events.json\\\` growing unbounded
+- Activity logs accumulating
+
+Report bloated files and prune where safe.
+
+### 4. Config-Reality Match
+
+Read \\\`.instar/config.json\\\`. If Telegram is configured, verify the bot is connected:
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/health
+\\\`\\\`\\\`
+
+Check if the telegram field shows connected. If config says telegram but health says disconnected, report the discrepancy.
+
+### 5. Handoff Note Staleness
+
+Check \\\`.instar/state/job-handoff-*.md\\\` files. If any are older than 7 days and reference state that may have changed, flag them as potentially stale.
+
+## On Issues Found
+
+- Submit feedback for each issue found
+- Fix what you can automatically (delete orphaned active-job.json, prune bloated files)
+- Exit silently if everything checks out — no output means no problems
+`,
+    },
+    'memory-hygiene': {
+      name: 'memory-hygiene',
+      description: 'Review MEMORY.md for stale entries, duplicates, and quality issues — propose cleanup',
+      content: `---
+name: memory-hygiene
+description: Review MEMORY.md for stale entries, duplicates, and quality issues — propose cleanup
+metadata:
+  user_invocable: "false"
+---
+
+# Memory Hygiene — MEMORY.md Quality Review
+
+## Purpose
+
+Review \\\`.instar/MEMORY.md\\\` for quality and hygiene. Memory is identity — stale or noisy entries actively mislead future sessions. This job keeps memory clean, consolidated, and actionable.
+
+## Procedure
+
+Read the auth token:
+
+\\\`\\\`\\\`
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+\\\`\\\`\\\`
+
+Read the full file: \\\`cat .instar/MEMORY.md\\\`
+
+Evaluate each entry against these criteria:
+
+### 1. Staleness
+
+Does this entry reference files, APIs, URLs, or features that no longer exist? Verify by checking if referenced paths exist (\\\`ls\\\`, \\\`curl\\\`). Stale entries actively mislead future sessions.
+
+### 2. Duplicates
+
+Are multiple entries saying the same thing in different words? Consolidate them into a single, stronger entry.
+
+### 3. Abstraction Without Substance
+
+Does the entry say something concrete and actionable, or is it a vague platitude?
+
+- **Good:** "The /api/chat endpoint caches responses for 5 minutes — bypass with ?nocache=1"
+- **Bad:** "Remember to check caching behavior."
+
+### 4. Size Check
+
+Count total words. If MEMORY.md exceeds 5000 words, it's becoming a burden on context rather than an aid. Identify the bottom 20% by usefulness and propose removing them.
+
+### 5. Organization
+
+Are entries grouped by topic? Is the structure navigable? Reorganize if needed.
+
+## On Issues Found
+
+- Fix duplicates and minor cleanups directly (edit the file)
+- For significant deletions, add a comment \\\`PROPOSED REMOVAL: [reason]\\\` rather than deleting — let the next reflection-trigger or human confirm
+- Log a learning if you discover a pattern:
+
+\\\`\\\`\\\`
+curl -s -X POST http://localhost:${port}/evolution/learnings \\
+  -H "Authorization: Bearer $AUTH" \\
+  -H 'Content-Type: application/json' \\
+  -d '{"category":"memory","insight":"...","confidence":"high"}'
+\\\`\\\`\\\`
+
+## Handoff
+
+Write handoff notes:
+
+\\\`\\\`\\\`
+echo "Last hygiene: $(date). Words: N. Entries: N. Removed: N. Flagged: N." > .instar/state/job-handoff-memory-hygiene.md
+\\\`\\\`\\\`
+
+If MEMORY.md is clean and well-organized, exit silently.
+`,
+    },
+    'guardian-pulse': {
+      name: 'guardian-pulse',
+      description: 'Meta-monitor that checks whether other jobs are running, healthy, and not silently failing',
+      content: `---
+name: guardian-pulse
+description: Meta-monitor that checks whether other jobs are running, healthy, and not silently failing
+metadata:
+  user_invocable: "false"
+---
+
+# Guardian Pulse — Job Health Meta-Monitor
+
+## Purpose
+
+Check whether the guardians themselves are healthy. Monitors job execution, skip ledger trends, queue health, degradation reporter pipeline, and zombie sessions.
+
+## Procedure
+
+Read the auth token:
+
+\\\`\\\`\\\`
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+\\\`\\\`\\\`
+
+### 1. Job Health
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs
+\\\`\\\`\\\`
+
+For each enabled job, check:
+- Has it run at all? (lastRun should exist)
+- Is it overdue? (If lastRun is more than 3x the schedule interval ago, it's stuck)
+- Is it failing repeatedly? (consecutiveFailures > 0 is notable, > 2 is critical)
+- Is the lastError informative? (If it says "Session killed" repeatedly, something is wrong)
+
+### 2. Skip Ledger Trends
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger/workloads
+\\\`\\\`\\\`
+
+If any job has been skipped more than 10 times by its gate, the gate may be misconfigured (always returning skip), or the feature it monitors is permanently broken.
+
+### 3. Queue Health
+
+Check queueLength from the jobs endpoint. If queue is perpetually > 0, jobs are backing up. This means maxParallelJobs is too low or jobs are running too long.
+
+### 4. Degradation Reporter Health
+
+Read \\\`.instar/state/degradation-events.json\\\` — if events exist but none have \\\`reported:true\\\` or \\\`alerted:true\\\`, the downstream connections (FeedbackManager, Telegram) never initialized. The reporter is collecting but not communicating.
+
+### 5. Session Monitor
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions
+\\\`\\\`\\\`
+
+Are there zombie sessions (status: running but started > 30 minutes ago for a job that should take 5)?
+
+## Output
+
+For each finding, categorize:
+- **CRITICAL**: Job has been failing for > 24 hours, or meta-infrastructure (scheduler, reporter) is broken
+- **WARNING**: Job overdue, skip count high, queue growing
+- **INFO**: Minor observations
+
+Report CRITICAL and WARNING issues. Exit silently if everything looks healthy.
+
+Write handoff:
+
+\\\`\\\`\\\`
+echo "Pulse at $(date). Jobs checked: N. Issues: [list or 'none']." > .instar/state/job-handoff-guardian-pulse.md
+\\\`\\\`\\\`
+`,
+    },
+    'session-continuity-check': {
+      name: 'session-continuity-check',
+      description: 'Verify that sessions produce lasting artifacts like handoff notes, memory updates, and learnings',
+      content: `---
+name: session-continuity-check
+description: Verify that sessions produce lasting artifacts like handoff notes, memory updates, and learnings
+metadata:
+  user_invocable: "false"
+---
+
+# Session Continuity Check — Artifact Production Verification
+
+## Purpose
+
+Check whether recent sessions contributed to long-term knowledge. Detects continuity leaks where knowledge is generated but not preserved.
+
+## Procedure
+
+Read the auth token:
+
+\\\`\\\`\\\`
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+\\\`\\\`\\\`
+
+### 1. Recent Sessions
+
+\\\`\\\`\\\`
+curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions
+\\\`\\\`\\\`
+
+Get sessions that completed in the last 8 hours.
+
+### 2. Job Session Artifacts
+
+For each completed job session, check:
+- Does a handoff note exist? (\\\`.instar/state/job-handoff-{slug}.md\\\`)
+- Was it updated recently? (stat or date check)
+- If the job is reflection-trigger or insight-harvest, did MEMORY.md actually change? (Check git diff or file modification time)
+
+### 3. Interactive Session Artifacts
+
+For non-job sessions, check:
+- Did the session produce any lasting artifacts? (git log for commits, MEMORY.md changes, new files in .instar/)
+- If a long session (>10 minutes) left no trace, that's a continuity leak — knowledge was generated but not preserved.
+
+### 4. Handoff Note Freshness
+
+\\\`\\\`\\\`
+ls -la .instar/state/job-handoff-*.md
+\\\`\\\`\\\`
+
+- Any handoff note older than 7 days for an active job? It might contain stale claims.
+- Flag stale handoff notes as potential misinformation vectors.
+
+## Output
+
+- If sessions are running but not producing artifacts: propose an evolution to improve the reflection-trigger or add post-session hooks
+- If handoff notes are stale: add a "[STALE]" prefix to the file so the next job session treats it with appropriate skepticism
+
+Write handoff:
+
+\\\`\\\`\\\`
+echo "Continuity check at $(date). Sessions reviewed: N. Artifacts found: N. Gaps: N." > .instar/state/job-handoff-session-continuity-check.md
+\\\`\\\`\\\`
+
+Exit silently if continuity is healthy.
+`,
+    },
+    'git-sync': {
+      name: 'git-sync',
+      description: 'Intelligent multi-machine git sync with tiered model escalation — haiku for clean syncs, opus subagent for complex merge conflicts',
+      content: `---
+name: git-sync
+description: Intelligent multi-machine git sync with tiered model escalation — haiku for clean syncs, opus subagent for complex merge conflicts
+metadata:
+  user_invocable: "false"
+---
+
+# git-sync — Tiered Model Escalation Sync
+
+## Purpose
+
+Synchronize this machine's state with the remote repository. Uses tiered model selection: the main session (haiku) handles clean syncs and simple merges. Complex conflicts spawn an opus subagent for semantic resolution.
+
+## Pre-flight
+
+1. Read conflict severity from gate:
+   \\\`\\\`\\\`bash
+   SEVERITY=$(cat /tmp/instar-git-sync-severity 2>/dev/null || echo "clean")
+   \\\`\\\`\\\`
+2. Get current state:
+   \\\`\\\`\\\`bash
+   git status --short
+   git log --oneline -3
+   git fetch origin && git rev-list --left-right --count HEAD...@{u}
+   \\\`\\\`\\\`
+
+## Sync Strategy
+
+### Only behind (remote has new commits, no local changes)
+\\\`\\\`\\\`bash
+git pull --rebase
+\\\`\\\`\\\`
+Report what was pulled.
+
+### Only ahead (local changes, nothing new on remote)
+\\\`\\\`\\\`bash
+git add -A
+\\\`\\\`\\\`
+Compose a brief sync commit message categorizing the changes (state, config, skills, code, etc.):
+\\\`\\\`\\\`bash
+git commit -m "sync: auto-commit"
+git push
+\\\`\\\`\\\`
+
+### Both sides have changes — TIERED RESOLUTION
+
+First, commit local changes:
+\\\`\\\`\\\`bash
+git add -A && git commit -m "sync: local changes"
+\\\`\\\`\\\`
+
+Then attempt rebase:
+\\\`\\\`\\\`bash
+git pull --rebase
+\\\`\\\`\\\`
+
+**If no conflicts:** Push and report.
+
+**If conflicts arise**, check severity and resolve based on tier:
+
+#### Tier 1: Clean / State conflicts (handle directly)
+
+For JSON state files (.instar/state/, activity caches, session data, ledgers):
+- Take newer timestamps
+- Union arrays by ID (no duplicates)
+- Take max for counters and offsets
+- For \\\`.instar/config.json\\\`: preserve local machine-specific values, take newer shared settings
+
+For simple text conflicts (non-overlapping changes, whitespace):
+- Resolve mechanically
+
+After resolving:
+\\\`\\\`\\\`bash
+git add . && git rebase --continue
+git push
+\\\`\\\`\\\`
+
+#### Tier 2: Complex conflicts (spawn opus subagent)
+
+If SEVERITY is "code" OR if you encounter conflicts in:
+- Source code files (.ts, .tsx, .js, .jsx, .py, .rs, .go)
+- Identity/memory files (MEMORY.md, AGENT.md, USER.md)
+- Skill definitions (.claude/skills/)
+- Any conflict where both sides made semantic changes to the same logic
+
+**DO NOT attempt to resolve these yourself.** Instead:
+
+1. Collect the conflict context:
+   \\\`\\\`\\\`bash
+   git diff --name-only --diff-filter=U
+   \\\`\\\`\\\`
+2. For each conflicted file, read the full content including conflict markers
+3. Get the merge base version for context:
+   \\\`\\\`\\\`bash
+   git show :1:<filename>   # base
+   git show :2:<filename>   # ours
+   git show :3:<filename>   # theirs
+   \\\`\\\`\\\`
+4. **Spawn an opus subagent** using the Agent tool with these parameters:
+   - \\\`model: "opus"\\\`
+   - \\\`description: "Resolve git merge conflicts"\\\`
+   - Prompt must include:
+     - The base, ours, and theirs versions of each conflicted file
+     - A summary of what each side was trying to do (from recent git log)
+     - Instructions to output the resolved file content
+     - The instruction: "Resolve semantically. Preserve intent from both sides. If the changes are truly incompatible, prefer the local (ours) version but note what was dropped."
+
+5. Apply the opus subagent's resolution:
+   \\\`\\\`\\\`bash
+   # Write resolved content to each file
+   git add <resolved-files>
+   git rebase --continue
+   git push
+   \\\`\\\`\\\`
+
+6. Report what conflicted, what the opus subagent decided, and why.
+
+### If clean (gate passed but nothing obvious)
+Re-check with \\\`git status\\\` and \\\`git fetch\\\`. If truly nothing: exit silently.
+
+## Safety Rules
+
+- **NEVER** force push
+- **NEVER** delete branches
+- If a rebase goes wrong: \\\`git rebase --abort\\\` and report the issue
+- If the opus subagent's resolution looks wrong (e.g., deleted large chunks of code), abort and report rather than pushing a bad merge
+- Prefer clean history (rebase) over merge commits when possible
+
+## Reporting
+
+- Nothing happened: exit silently
+- Clean sync: brief one-line ("Pulled 3 commits, pushed 2")
+- Tier 1 conflicts resolved: describe what conflicted and the mechanical resolution
+- Tier 2 conflicts resolved: describe what conflicted, the opus subagent's reasoning, and the resolution
+- Unresolvable: report details, leave working tree clean (abort rebase), queue attention item
+
+## Handoff Notes
+
+Write sync results to \\\`.instar/state/job-handoff-git-sync.md\\\`:
+- Last sync timestamp
+- Any conflicts encountered and how they were resolved
+- Any pending issues for next run
+`,
+    },
   };
 
   for (const [slug, skill] of Object.entries(skills)) {
@@ -1896,14 +2473,14 @@ function getDefaultJobs(port: number): object[] {
       description: 'Monitor server health, session status, and system resources.',
       schedule: '*/5 * * * *',
       priority: 'critical',
-      expectedDurationMinutes: 3,
+      expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
       execute: {
         type: 'prompt',
         value: `Run a quick health check: verify the instar server is responding (curl http://localhost:${port}/health), check disk space (df -h), and report any issues. Only send a message if something needs attention — silence means healthy. IMPORTANT: If you find issues, describe them in plain conversational language. Never dump raw JSON, field names, error codes, or structured data. The user reads these on their phone — write like you're texting them a quick heads-up. If the health response includes a degradationSummary array, relay those narrative strings directly.`,
       },
-      tags: ['coherence', 'default'],
+      tags: ['cat:guardian'],
     },
     {
       slug: 'reflection-trigger',
@@ -1918,7 +2495,7 @@ function getDefaultJobs(port: number): object[] {
         type: 'prompt',
         value: 'Review what has happened in the last 4 hours by reading recent activity logs. If there are any learnings, patterns, or insights worth remembering, update .instar/MEMORY.md. If nothing significant happened, do nothing.',
       },
-      tags: ['coherence', 'default'],
+      tags: ['cat:learning'],
     },
     {
       slug: 'relationship-maintenance',
@@ -1927,29 +2504,13 @@ function getDefaultJobs(port: number): object[] {
       schedule: '0 9 * * *',
       priority: 'low',
       expectedDurationMinutes: 3,
-      model: 'opus',
+      model: 'haiku',
       enabled: true,
       execute: {
         type: 'prompt',
         value: 'Review all relationship files in .instar/relationships/. Note anyone you haven\'t heard from in over 2 weeks who has significance >= 3. If there are observations worth surfacing, report them. If everything looks fine, do nothing.',
       },
-      tags: ['coherence', 'default'],
-    },
-    {
-      slug: 'update-check',
-      name: 'Update Check',
-      description: 'Legacy update check job — disabled because the built-in AutoUpdater handles updates automatically (check, apply, notify, restart). See GET /updates/auto for status.',
-      schedule: '*/30 * * * *',
-      priority: 'medium',
-      expectedDurationMinutes: 2,
-      model: 'haiku',
-      enabled: false,
-      gate: `curl -sf http://localhost:${port}/updates 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('updateAvailable') else 1)"`,
-      execute: {
-        type: 'script',
-        value: `curl -s http://localhost:${port}/updates/auto`,
-      },
-      tags: ['coherence', 'default'],
+      tags: ['cat:relationships', 'role:worker', 'exec:prompt'],
     },
     {
       slug: 'feedback-retry',
@@ -1965,92 +2526,7 @@ function getDefaultJobs(port: number): object[] {
         type: 'script',
         value: `RESULT=$(curl -s -X POST http://localhost:${port}/feedback/retry 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('retried',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Feedback retry: $COUNT item(s) forwarded." || echo "Feedback retry: nothing pending."`,
       },
-      tags: ['coherence', 'default'],
-    },
-    {
-      slug: 'dispatch-check',
-      name: 'Dispatch Check',
-      description: 'Legacy dispatch check job — disabled because the built-in AutoDispatcher handles polling, evaluation, and execution automatically. See GET /dispatches/auto for status.',
-      schedule: '*/30 * * * *',
-      priority: 'medium',
-      expectedDurationMinutes: 2,
-      model: 'haiku',
-      enabled: false,
-      gate: `curl -sf http://localhost:${port}/dispatches 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('newCount',0) > 0 else 1)"`,
-      execute: {
-        type: 'script',
-        value: `curl -s http://localhost:${port}/dispatches/auto`,
-      },
-      tags: ['coherence', 'default'],
-    },
-    {
-      slug: 'self-diagnosis',
-      name: 'Self-Diagnosis',
-      description: 'Proactively scan for issues with instar infrastructure, hooks, jobs, and state. Submit feedback for anything broken or suboptimal.',
-      schedule: '0 */2 * * *',
-      priority: 'medium',
-      expectedDurationMinutes: 3,
-      model: 'opus',
-      enabled: true,
-      gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
-      execute: {
-        type: 'prompt',
-        value: `You are your own QA team. Scan for issues with your instar infrastructure and submit feedback for anything wrong.
-
-FIRST: Read your auth token for API calls:
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
-
-Then check each area:
-
-1. **Server health**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/health — is it responding? Are all fields present? Is status "ok" or "degraded"?
-2. **State files**: Check .instar/state/ — are JSON files parseable? Any empty or corrupted? Try: for f in .instar/state/*.json; do python3 -c "import json; json.load(open('$f'))" 2>&1 || echo "CORRUPT: $f"; done
-3. **Hook files**: Do all hooks in .instar/hooks/instar/ exist and have execute permissions? ls -la .instar/hooks/instar/
-4. **Job execution**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs — are any jobs failing repeatedly? Check lastRun and lastError fields.
-5. **Quota**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota — is usage approaching limits?
-6. **Logs**: Check .instar/logs/server.log for recent errors: tail -50 .instar/logs/server.log | grep -i error
-7. **Settings coherence**: Are hooks in .claude/settings.json pointing to files that exist?
-8. **Design friction**: During your recent work, did anything feel unnecessarily difficult, confusing, or broken? Did you work around any issues?
-9. **CI health**: Check if the project has a GitHub repo and if CI is passing. Run: REPO=$(git remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]//;s/.git$//'); if [ -n "$REPO" ]; then FAILURES=$(gh run list --repo "$REPO" --status failure --limit 3 --json databaseId,conclusion,headBranch,name,createdAt 2>/dev/null); if echo "$FAILURES" | python3 -c "import sys,json; runs=json.load(sys.stdin); exit(0 if runs else 1)" 2>/dev/null; then echo "CI FAILURES DETECTED in $REPO"; echo "$FAILURES"; echo ""; echo "FIX THESE NOW: Read the failure logs with 'gh run view RUN_ID --repo $REPO --log-failed', diagnose the issue, fix it, run tests locally, commit and push."; fi; fi
-
-For EACH issue found, submit feedback immediately:
-curl -s -X POST http://localhost:${port}/feedback -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"type":"bug","title":"TITLE","description":"FULL_CONTEXT"}'
-
-For improvements (not bugs), use type "improvement" instead.
-
-IMPORTANT for CI failures: Don't just report them as feedback — FIX THEM. Read the logs, diagnose the root cause, apply the fix, run tests locally to verify, then commit and push. Only submit feedback if the fix is beyond your capability (e.g., requires credentials or external service changes). CI health is your responsibility as the agent running this project.
-
-If everything looks healthy, exit silently. Only report issues.`,
-      },
-      tags: ['coherence', 'default'],
-    },
-    {
-      slug: 'evolution-review',
-      name: 'Evolution Review',
-      description: 'Review pending evolution proposals, evaluate their merit, and implement approved ones.',
-      schedule: '0 */6 * * *',
-      priority: 'medium',
-      expectedDurationMinutes: 5,
-      model: 'opus',
-      enabled: true,
-      gate: `curl -sf http://localhost:${port}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
-      execute: {
-        type: 'prompt',
-        value: `Review pending evolution proposals: curl -s http://localhost:${port}/evolution/proposals?status=proposed
-
-For each proposal:
-1. Read the title, description, type, and source
-2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?
-3. If approved, update status: curl -s -X PATCH http://localhost:${port}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'
-4. Then implement it: create the skill/hook/job/config change described in the proposal
-5. After implementation, mark complete: curl -s -X PATCH http://localhost:${port}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'
-
-If a proposal should be deferred or rejected, update with reason.
-
-Also check the dashboard: curl -s http://localhost:${port}/evolution — report any highlights to the user if they seem important.
-
-If no proposals need attention, exit silently.`,
-      },
-      tags: ['coherence', 'default', 'evolution'],
+      tags: ['cat:infrastructure'],
     },
     {
       slug: 'insight-harvest',
@@ -2081,14 +2557,14 @@ Also update MEMORY.md with any patterns worth preserving long-term.
 
 If no actionable patterns found, exit silently.`,
       },
-      tags: ['coherence', 'default', 'evolution'],
+      tags: ['cat:learning', 'evolution'],
     },
     {
-      slug: 'commitment-check',
-      name: 'Commitment Check',
-      description: 'Track action items and commitments. Surface overdue items and stale commitments.',
+      slug: 'evolution-overdue-check',
+      name: 'Evolution Overdue Check',
+      description: 'Monitor overdue evolution actions and stale commitments. Report only — no autonomous completing or cancelling.',
       schedule: '0 */4 * * *',
-      priority: 'low',
+      priority: 'high',
       expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
@@ -2107,14 +2583,14 @@ Also check pending actions (curl -s http://localhost:${port}/evolution/actions?s
 
 If no overdue or stale items, exit silently.`,
       },
-      tags: ['coherence', 'default', 'evolution'],
+      tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:commitment-detection'],
     },
     {
       slug: 'project-map-refresh',
       name: 'Project Map Refresh',
       description: 'Regenerate the project territory map to keep spatial awareness current.',
       schedule: '0 */12 * * *',
-      priority: 'low',
+      priority: 'medium',
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
@@ -2123,34 +2599,23 @@ If no overdue or stale items, exit silently.`,
         type: 'script',
         value: `RESULT=$(curl -s -X POST http://localhost:${port}/project-map/refresh -H "Authorization: Bearer $(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)" 2>/dev/null); echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Project map refreshed: {d.get(\"totalFiles\",0)} files, {d.get(\"directories\",0)} dirs')" 2>/dev/null || echo "Project map refresh: done"`,
       },
-      tags: ['coherence', 'default', 'maintenance'],
+      tags: ['cat:maintenance', 'role:worker', 'exec:script'],
     },
     {
       slug: 'coherence-audit',
       name: 'Coherence Audit',
       description: 'Verify topic-project bindings are still valid, state files are healthy, and no drift has occurred.',
       schedule: '0 */8 * * *',
-      priority: 'low',
+      priority: 'medium',
       expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
       gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
       execute: {
-        type: 'prompt',
-        value: `Run a coherence audit to verify the agent's awareness infrastructure is healthy.
-
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
-
-Check each area:
-
-1. **Topic-Project Bindings**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-bindings — are all bindings still valid? Do the project directories exist?
-2. **Project Map**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/project-map — is the map recent (check generatedAt)? If older than 24 hours, refresh it.
-3. **Canonical State**: Check .instar/quick-facts.json, .instar/anti-patterns.json, .instar/project-registry.json — are they parseable? Any stale entries?
-4. **Context Segments**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/context — are all segments present? Any with 0 bytes?
-
-If issues found, log them as learnings (POST /evolution/learnings) and fix what you can. Exit silently if healthy.`,
+        type: 'skill',
+        value: 'coherence-audit',
       },
-      tags: ['coherence', 'default', 'maintenance'],
+      tags: ['cat:maintenance', 'role:worker', 'exec:skill'],
     },
     {
       slug: 'degradation-digest',
@@ -2163,25 +2628,10 @@ If issues found, log them as learnings (POST /evolution/learnings) and fix what 
       enabled: true,
       gate: `test -f .instar/state/degradation-events.json && python3 -c "import json; events=json.load(open('.instar/state/degradation-events.json')); exit(0 if len(events) > 0 else 1)" 2>/dev/null`,
       execute: {
-        type: 'prompt',
-        value: `Review degradation events and surface patterns that need attention.
-
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
-
-1. Read degradation events: cat .instar/state/degradation-events.json
-2. Group by feature — count how many times each feature degraded since the last digest
-3. Check if there's a previous digest: cat .instar/state/job-handoff-degradation-digest.md 2>/dev/null
-
-For each feature with repeated degradations (3+ events):
-- This is a PATTERN, not a one-off. It means the primary path is reliably failing.
-- Submit feedback: curl -s -X POST http://localhost:${port}/feedback -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"type":"bug","title":"Repeated degradation: FEATURE","description":"FEATURE has degraded N times. Primary: X. Fallback: Y. Most recent reason: Z. This pattern indicates the primary path needs fixing."}'
-
-Write handoff notes with the current event count per feature:
-echo "Last digest: $(date -u +%Y-%m-%dT%H:%M:%SZ). Events by feature: ..." > .instar/state/job-handoff-degradation-digest.md
-
-If no patterns found (all one-offs), exit silently.`,
+        type: 'skill',
+        value: 'degradation-digest',
       },
-      tags: ['coherence', 'default', 'guardian'],
+      tags: ['cat:guardian', 'role:worker', 'exec:skill'],
     },
     {
       slug: 'state-integrity-check',
@@ -2194,69 +2644,30 @@ If no patterns found (all one-offs), exit silently.`,
       enabled: true,
       gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
       execute: {
-        type: 'prompt',
-        value: `Cross-validate agent state for logical consistency.
-
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
-
-Check each integrity constraint:
-
-1. **Active job orphan**: If .instar/state/active-job.json exists, verify the session it references is actually running: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions | check if the session name matches. If the session is dead but active-job.json persists, it's orphaned — delete it.
-
-2. **Job-topic orphan**: Read .instar/state/job-topic-mappings.json. For each mapping, verify the topic ID is reachable via: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics — if topics have been deleted, the mapping is stale.
-
-3. **State file bloat**: Check sizes: ls -la .instar/state/*.json | sort by size. Any file over 1MB is a bloat signal — report it. Common culprits: degradation-events.json growing unbounded, activity logs accumulating.
-
-4. **Config-reality match**: Read .instar/config.json. If telegram is configured, verify the bot is connected: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/health — check if telegram field shows connected. If config says telegram but health says disconnected, report the discrepancy.
-
-5. **Handoff note staleness**: Check .instar/state/job-handoff-*.md files. If any are older than 7 days and reference state that may have changed, flag them as potentially stale.
-
-For each issue found, submit feedback. Fix what you can (delete orphaned active-job.json, prune bloated files). Exit silently if everything checks out.`,
+        type: 'skill',
+        value: 'state-integrity-check',
       },
-      tags: ['coherence', 'default', 'guardian'],
+      tags: ['cat:guardian', 'role:worker', 'exec:skill'],
     },
     {
       slug: 'memory-hygiene',
       name: 'Memory Hygiene',
       description: 'Review MEMORY.md for stale entries, duplicates, and quality issues. Propose cleanup.',
       schedule: '0 */12 * * *',
-      priority: 'low',
+      priority: 'high',
       expectedDurationMinutes: 5,
       model: 'opus',
       enabled: true,
       gate: `test -f .instar/MEMORY.md && wc -w < .instar/MEMORY.md | python3 -c "import sys; exit(0 if int(sys.stdin.read().strip()) > 100 else 1)" 2>/dev/null`,
       execute: {
-        type: 'prompt',
-        value: `Review .instar/MEMORY.md for quality and hygiene.
-
-Read the full file: cat .instar/MEMORY.md
-
-Evaluate each entry against these criteria:
-
-1. **Staleness**: Does this entry reference files, APIs, URLs, or features that no longer exist? Verify by checking if referenced paths exist (ls, curl). Stale entries actively mislead future sessions.
-
-2. **Duplicates**: Are multiple entries saying the same thing in different words? Consolidate them.
-
-3. **Abstraction without substance**: Does the entry say something concrete and actionable, or is it a vague platitude? "Always verify before committing" without context of WHAT to verify is noise. Good: "The /api/chat endpoint caches responses for 5 minutes — bypass with ?nocache=1". Bad: "Remember to check caching behavior."
-
-4. **Size check**: Count total words. If MEMORY.md exceeds 5000 words, it's becoming a burden on context rather than an aid. Identify the bottom 20% by usefulness and propose removing them.
-
-5. **Organization**: Are entries grouped by topic? Is the structure navigable? Reorganize if needed.
-
-For issues found:
-- Fix duplicates and minor cleanups directly (edit the file)
-- For significant deletions, add a comment "PROPOSED REMOVAL: [reason]" rather than deleting — let the next reflection-trigger or human confirm
-- Log a learning if you discover a pattern: curl -s -X POST http://localhost:${port}/evolution/learnings -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"category":"memory","insight":"...","confidence":"high"}'
-
-Write handoff: echo "Last hygiene: $(date). Words: N. Entries: N. Removed: N. Flagged: N." > .instar/state/job-handoff-memory-hygiene.md
-
-If MEMORY.md is clean and well-organized, exit silently.`,
+        type: 'skill',
+        value: 'memory-hygiene',
       },
       grounding: {
         requiresIdentity: true,
         contextFiles: ['MEMORY.md'],
       },
-      tags: ['coherence', 'default', 'guardian'],
+      tags: ['cat:maintenance', 'role:worker', 'exec:skill'],
     },
     {
       slug: 'guardian-pulse',
@@ -2269,88 +2680,33 @@ If MEMORY.md is clean and well-organized, exit silently.`,
       enabled: true,
       gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
       execute: {
-        type: 'prompt',
-        value: `Meta-monitor: check whether the guardians themselves are healthy.
-
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
-
-1. **Job health**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs
-   For each enabled job, check:
-   - Has it run at all? (lastRun should exist)
-   - Is it overdue? (If lastRun is more than 3x the schedule interval ago, it's stuck)
-   - Is it failing repeatedly? (consecutiveFailures > 0 is notable, > 2 is critical)
-   - Is the lastError informative? (If it says "Session killed" repeatedly, something is wrong)
-
-2. **Skip ledger trends**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger/workloads
-   If any job has been skipped more than 10 times by its gate, the gate may be misconfigured (always returning skip), or the feature it monitors is permanently broken.
-
-3. **Queue health**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs — check queueLength.
-   If queue is perpetually > 0, jobs are backing up. This means maxParallelJobs is too low or jobs are running too long.
-
-4. **Degradation reporter health**: Read .instar/state/degradation-events.json — if events exist but none have reported:true or alerted:true, the downstream connections (FeedbackManager, Telegram) never initialized. The reporter is collecting but not communicating.
-
-5. **Session monitor**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions
-   Are there zombie sessions (status: running but started > 30 minutes ago for a job that should take 5)?
-
-For each finding, categorize:
-- CRITICAL: Job has been failing for > 24 hours, or meta-infrastructure (scheduler, reporter) is broken
-- WARNING: Job overdue, skip count high, queue growing
-- INFO: Minor observations
-
-Report CRITICAL and WARNING issues. Exit silently if everything looks healthy.
-
-Write handoff: echo "Pulse at $(date). Jobs checked: N. Issues: [list or 'none']." > .instar/state/job-handoff-guardian-pulse.md`,
+        type: 'skill',
+        value: 'guardian-pulse',
       },
-      tags: ['coherence', 'default', 'guardian', 'meta'],
+      tags: ['cat:guardian', 'role:worker', 'exec:skill'],
     },
     {
       slug: 'session-continuity-check',
       name: 'Session Continuity Check',
       description: 'Verify that sessions produce lasting artifacts: handoff notes, memory updates, learnings.',
       schedule: '0 */4 * * *',
-      priority: 'low',
+      priority: 'medium',
       expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
       gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
       execute: {
-        type: 'prompt',
-        value: `Check whether recent sessions contributed to long-term knowledge.
-
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
-
-1. **Recent sessions**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions
-   Get sessions that completed in the last 8 hours.
-
-2. **For each completed job session**, check:
-   - Does a handoff note exist? (.instar/state/job-handoff-{slug}.md)
-   - Was it updated recently? (stat -f %m or date check)
-   - If the job is reflection-trigger or insight-harvest, did MEMORY.md actually change? (Check git diff or file modification time)
-
-3. **For interactive sessions** (non-job), check:
-   - Did the session produce any lasting artifacts? (git log for commits, MEMORY.md changes, new files in .instar/)
-   - If a long session (>10 minutes) left no trace, that's a continuity leak — knowledge was generated but not preserved.
-
-4. **Handoff note freshness**: ls -la .instar/state/job-handoff-*.md
-   - Any handoff note older than 7 days for an active job? It might contain stale claims.
-   - Flag stale handoff notes as potential misinformation vectors.
-
-Findings:
-- If sessions are running but not producing artifacts: propose an evolution to improve the reflection-trigger or add post-session hooks
-- If handoff notes are stale: add a "[STALE]" prefix to the file so the next job session treats it with appropriate skepticism
-
-Write handoff: echo "Continuity check at $(date). Sessions reviewed: N. Artifacts found: N. Gaps: N." > .instar/state/job-handoff-session-continuity-check.md
-
-Exit silently if continuity is healthy.`,
+        type: 'skill',
+        value: 'session-continuity-check',
       },
-      tags: ['coherence', 'default', 'guardian'],
+      tags: ['cat:guardian', 'role:worker', 'exec:skill'],
     },
     {
       slug: 'memory-export',
       name: 'Memory Export',
       description: 'Regenerate MEMORY.md from SemanticMemory knowledge graph. Keeps the human-readable memory snapshot fresh without manual intervention.',
       schedule: '0 */6 * * *',
-      priority: 'low',
+      priority: 'medium',
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
@@ -2359,7 +2715,7 @@ Exit silently if continuity is healthy.`,
         type: 'script',
         value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); AGENT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('agentName','Agent'))" 2>/dev/null); RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" -d "{\\"filePath\\":\\".instar/MEMORY.md\\",\\"agentName\\":\\"$AGENT\\"}" http://localhost:${port}/semantic/export-memory 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entityCount',0))" 2>/dev/null || echo 0); EXCLUDED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('excludedCount',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Memory export: $COUNT entities written to MEMORY.md ($EXCLUDED excluded below threshold)." || echo "Memory export: no entities to export."`,
       },
-      tags: ['memory', 'default', 'maintenance'],
+      tags: ['cat:maintenance', 'role:worker', 'exec:script'],
     },
     {
       slug: 'git-sync',
@@ -2372,56 +2728,10 @@ Exit silently if continuity is healthy.`,
       enabled: true,
       gate: 'bash .claude/scripts/git-sync-gate.sh',
       execute: {
-        type: 'prompt',
-        value: `You are running a periodic git sync. Your job is to synchronize this machine's state with the remote repository intelligently.
-
-## Pre-flight
-
-1. Check conflict severity: \`cat /tmp/instar-git-sync-severity 2>/dev/null || echo "clean"\`
-2. Run: \`git status --short\` and \`git log --oneline -3\` to understand current state
-3. Run: \`git fetch origin && git rev-list --left-right --count HEAD...@{u}\` to see ahead/behind
-
-## Sync Strategy
-
-### If only behind (remote has new commits, no local changes):
-- \`git pull --rebase\`
-- Report what was pulled
-
-### If only ahead (local changes, nothing new on remote):
-- \`git add -A\`
-- Compose a brief sync commit message categorizing the changes (state, config, skills, code, etc.)
-- \`git commit\` then \`git push\`
-
-### If both (changes on both sides):
-- First commit local changes: \`git add -A && git commit -m "sync: local changes"\`
-- Then pull with rebase: \`git pull --rebase\`
-- If conflicts arise, resolve them:
-  - **JSON state files** (.instar/state/, activity caches, session data): Take newer timestamps, union arrays by ID, max counters
-  - **Memory/identity files** (MEMORY.md, AGENT.md): Merge content — keep additions from both sides
-  - **Code files** (.ts, .js, .py): Review carefully, understand both changes, merge semantically
-  - **Config files**: Preserve local machine-specific values, take newer shared settings
-- After resolving: \`git add . && git rebase --continue\`
-- Then push: \`git push\`
-
-### If clean (gate passed but nothing obvious):
-- The gate detected something — re-check with \`git status\` and \`git fetch\`
-- If truly nothing: report "sync check complete, nothing to do"
-
-## Reporting
-
-- If nothing happened: exit silently (no message needed)
-- If changes synced cleanly: brief one-line summary ("Pulled 3 commits, pushed 2")
-- If conflicts were resolved: describe what conflicted and how you resolved it
-- If conflicts could NOT be resolved: report the conflict details and leave the working tree clean (abort rebase if needed)
-
-## Important
-
-- NEVER force push
-- NEVER delete branches
-- If a rebase goes wrong, \`git rebase --abort\` and report the issue
-- Prefer clean history (rebase) over merge commits when possible`,
+        type: 'skill',
+        value: 'git-sync',
       },
-      tags: ['infrastructure', 'default'],
+      tags: ['cat:infrastructure', 'role:worker', 'exec:skill'],
       telegramNotify: false,
     },
     {
@@ -2429,7 +2739,7 @@ Exit silently if continuity is healthy.`,
       name: 'Capability Audit',
       description: 'Refresh the capability map and detect drift. Compute-first: only spawns LLM if changes detected.',
       schedule: '0 */6 * * *',
-      priority: 'low',
+      priority: 'medium',
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
@@ -2442,7 +2752,7 @@ Exit silently if continuity is healthy.`,
         requiresIdentity: false,
         contextFiles: ['.instar/state/capability-manifest.json'],
       },
-      tags: ['coherence', 'default', 'maintenance'],
+      tags: ['cat:maintenance', 'role:worker', 'exec:script'],
     },
     {
       slug: 'identity-review',
@@ -2488,7 +2798,156 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
         contextFiles: ['AGENT.md', 'soul.md'],
       },
       telegramNotify: 'on-alert',
-      tags: ['identity', 'coherence', 'default'],
+      tags: ['cat:identity', 'role:worker', 'exec:prompt'],
+    },
+    {
+      slug: 'evolution-proposal-evaluate',
+      name: 'Evolution Proposal Evaluate',
+      description: 'Phase A: Read pending evolution proposals, evaluate their merit, accept or reject. Paired with evolution-proposal-implement.',
+      schedule: '0 */6 * * *',
+      priority: 'medium',
+      expectedDurationMinutes: 3,
+      model: 'sonnet',
+      enabled: true,
+      gate: `curl -sf http://localhost:${port}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      execute: {
+        type: 'prompt',
+        value: `Review pending evolution proposals: curl -s http://localhost:${port}/evolution/proposals?status=proposed\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH http://localhost:${port}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s http://localhost:${port}/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
+      },
+      tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:evolution-proposal-implement'],
+    },
+    {
+      slug: 'evolution-proposal-implement',
+      name: 'Evolution Proposal Implement',
+      description: 'Phase B: Pick up approved evolution proposals and implement them with full context. Paired with evolution-proposal-evaluate.',
+      schedule: '0 1,7,13,19 * * *',
+      priority: 'medium',
+      expectedDurationMinutes: 10,
+      model: 'opus',
+      enabled: true,
+      gate: `curl -sf http://localhost:${port}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      execute: {
+        type: 'prompt',
+        value: `Implement approved evolution proposals: curl -s http://localhost:${port}/evolution/proposals?status=approved\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH http://localhost:${port}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,
+      },
+      grounding: {
+        requiresIdentity: true,
+        contextFiles: ['MEMORY.md', '.instar/context/development.md'],
+      },
+      tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:evolution-proposal-evaluate'],
+    },
+    {
+      slug: 'commitment-detection',
+      name: 'Commitment Detection',
+      description: 'Scan recent messages for promises and commitments, register them as evolution actions. Replaces CommitmentSentinel server process.',
+      schedule: '*/5 * * * *',
+      priority: 'high',
+      expectedDurationMinutes: 1,
+      model: 'haiku',
+      enabled: true,
+      gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
+      execute: {
+        type: 'prompt',
+        value: `Scan recent messages for commitments and promises.\n\nAUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it: curl -s -X POST http://localhost:${port}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
+      },
+      tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
+    },
+    {
+      slug: 'dashboard-link-refresh',
+      name: 'Dashboard Link Refresh',
+      description: 'Refresh the pinned dashboard link in Telegram so it never goes stale.',
+      schedule: '*/15 * * * *',
+      priority: 'medium',
+      expectedDurationMinutes: 1,
+      model: 'haiku',
+      enabled: true,
+      gate: `curl -sf http://localhost:${port}/health >/dev/null 2>&1`,
+      execute: {
+        type: 'script',
+        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken','')).strip()" 2>/dev/null) && curl -sf -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/dashboard-refresh`,
+      },
+      tags: ['cat:infrastructure', 'role:worker', 'exec:script'],
+      telegramNotify: false,
+    },
+    {
+      slug: 'overseer-guardian',
+      name: 'Guardian Overseer',
+      description: 'Reviews all guardian/monitoring jobs: health-check, guardian-pulse, degradation-digest, state-integrity-check, session-continuity-check. Spots cross-job patterns, flags contradictions, recommends schedule/priority/model changes.',
+      schedule: '0 */6 * * *',
+      priority: 'medium',
+      expectedDurationMinutes: 5,
+      model: 'sonnet',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
+      },
+      tags: ['cat:overseer', 'role:supervisor'],
+      telegramNotify: 'on-alert',
+    },
+    {
+      slug: 'overseer-learning',
+      name: 'Learning Overseer',
+      description: 'Reviews all evolution/learning jobs: evolution-review, insight-harvest, commitment-check, reflection-trigger. Assesses whether the learning pipeline is producing value.',
+      schedule: '0 3 */2 * *',
+      priority: 'medium',
+      expectedDurationMinutes: 5,
+      model: 'sonnet',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
+      },
+      tags: ['cat:overseer', 'role:supervisor'],
+      telegramNotify: 'on-alert',
+    },
+    {
+      slug: 'overseer-maintenance',
+      name: 'Maintenance Overseer',
+      description: 'Reviews all maintenance jobs: project-map-refresh, coherence-audit, capability-audit, memory-hygiene, memory-export. Ensures housekeeping is effective.',
+      schedule: '0 2 * * *',
+      priority: 'medium',
+      expectedDurationMinutes: 5,
+      model: 'sonnet',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
+      },
+      tags: ['cat:overseer', 'role:supervisor'],
+      telegramNotify: 'on-alert',
+    },
+    {
+      slug: 'overseer-infrastructure',
+      name: 'Infrastructure Overseer',
+      description: 'Reviews infrastructure jobs: git-sync, dashboard-link-refresh, feedback-retry. Ensures plumbing is solid.',
+      schedule: '0 6 * * *',
+      priority: 'medium',
+      expectedDurationMinutes: 3,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
+      },
+      tags: ['cat:overseer', 'role:supervisor'],
+      telegramNotify: 'on-alert',
+    },
+    {
+      slug: 'overseer-development',
+      name: 'Development Overseer',
+      description: 'Reviews development jobs: ci-monitor. Ensures development tooling is functional.',
+      schedule: '0 8 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 3,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
+      },
+      tags: ['cat:overseer', 'role:supervisor'],
+      telegramNotify: 'on-alert',
     },
   ];
 }

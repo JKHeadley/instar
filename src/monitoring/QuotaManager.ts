@@ -375,15 +375,36 @@ export class QuotaManager extends EventEmitter {
   /**
    * Check if a session can be spawned at a given priority.
    * Considers both quota thresholds and migration state.
+   *
+   * Order matters: check quota thresholds FIRST, then migration state.
+   * A stale migration state (e.g., from a crash) should not block jobs
+   * when quota is healthy. Migration is a quota-saving measure — if
+   * quota is fine, migration concerns are irrelevant.
    */
   canSpawnSession(priority?: string): { allowed: boolean; reason: string } {
-    // Block during migration
-    if (this.migrator?.isMigrating()) {
-      return { allowed: false, reason: 'Migration in progress — session spawning blocked' };
+    // Check quota thresholds first
+    const trackerResult = this.tracker.shouldSpawnSession(priority as any);
+    if (!trackerResult.allowed) {
+      return trackerResult;
     }
 
-    // Delegate to tracker's threshold logic
-    return this.tracker.shouldSpawnSession(priority as any);
+    // During migration, block only if there's actual quota pressure.
+    // This prevents stale migration state (from crashes) from permanently
+    // blocking all jobs when quota is healthy.
+    if (this.migrator?.isMigrating()) {
+      const state = this.tracker.getState();
+      const weeklyPressure = state != null && state.usagePercent >= 50;
+      const fiveHourPressure = state != null &&
+        typeof state.fiveHourPercent === 'number' &&
+        state.fiveHourPercent >= 50;
+
+      if (weeklyPressure || fiveHourPressure) {
+        return { allowed: false, reason: 'Migration in progress — session spawning blocked' };
+      }
+      // Quota is healthy despite "migrating" state — allow spawn
+    }
+
+    return trackerResult;
   }
 
   // ── Internal: collection cycle ───────────────────────────────────

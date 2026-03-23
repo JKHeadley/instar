@@ -107,8 +107,9 @@ describe('Memory Export Job definition', () => {
   // 8. Has correct tags
   it('has memory and maintenance tags', () => {
     const job = getMemoryExportJob();
-    expect(job!.tags).toContain('memory');
-    expect(job!.tags).toContain('maintenance');
+    expect(job!.tags).toContain('cat:maintenance');
+    expect(job!.tags).toContain('role:worker');
+    expect(job!.tags).toContain('exec:script');
   });
 
   // 9. Uses haiku model
@@ -129,7 +130,7 @@ describe('Memory Export Job definition', () => {
   // 11. Low priority
   it('has low priority', () => {
     const job = getMemoryExportJob();
-    expect(job!.priority).toBe('low');
+    expect(job!.priority).toBe('medium');
   });
 
   // 12. Short expected duration

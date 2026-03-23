@@ -13,7 +13,7 @@ import path from 'node:path';
 import type { QuotaState } from '../core/types.js';
 
 const WEEKLY_THRESHOLDS = {
-  warning: 70,
+  warning: 75,
   critical: 85,
   limit: 95,
 } as const;
@@ -85,9 +85,9 @@ export class QuotaNotifier {
 
     if (currentLevel && currentLevel !== this.state.lastWeeklyLevel) {
       const labels: Record<string, string> = {
-        warning: `We've used about ${percent}% of this week's quota — still plenty of room, just keeping you posted.`,
-        critical: `Weekly quota is at ${percent}%. I'll start being more selective about which tasks need new sessions.`,
-        limit: `We've hit the weekly quota limit (${percent}%). New sessions may not start until the quota resets.`,
+        warning: `Weekly quota is at ${percent}%. Low-priority jobs will be held back from here. You can adjust these thresholds in config if you want different cutoffs.`,
+        critical: `Weekly quota is at ${percent}%. Only high-priority and critical jobs will run now. Let me know if you want to adjust the thresholds.`,
+        limit: `We've hit the weekly quota limit (${percent}%). No new sessions will start until the quota resets.`,
       };
       await this.send(labels[currentLevel]);
       this.state.lastWeeklyLevel = currentLevel;

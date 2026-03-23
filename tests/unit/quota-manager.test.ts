@@ -193,7 +193,19 @@ describe('QuotaManager', () => {
     expect(tracker.shouldSpawnSession).toHaveBeenCalledWith('medium');
   });
 
-  it('blocks spawning during migration', () => {
+  it('blocks spawning during migration with quota pressure', () => {
+    // Migration only blocks when there's quota pressure (usagePercent >= 50)
+    manager.stop();
+    const pressuredTracker = createMockTracker({ usagePercent: 60 });
+    manager = new QuotaManager(
+      { stateDir: '/tmp/test-state' },
+      {
+        tracker: pressuredTracker as any,
+        collector: collector as any,
+        migrator: migrator as any,
+        notifier: notifier as any,
+      },
+    );
     migrator.isMigrating.mockReturnValue(true);
     const result = manager.canSpawnSession('critical');
     expect(result.allowed).toBe(false);

@@ -189,7 +189,7 @@ describe('Credential Migration Lifecycle (e2e)', () => {
     // Notification should fire
     await notifier.checkAndNotify(state);
     expect(notifications.length).toBeGreaterThan(0);
-    expect(notifications.some(n => n.includes('more selective') || n.includes('quota limit'))).toBe(true);
+    expect(notifications.some(n => n.includes('high-priority') || n.includes('quota limit'))).toBe(true);
 
     // ── STEP 2: Simulate running sessions on Dawn's account ──
     const dawnCreds = switcher.getAccountCredentials('dawn');
@@ -377,7 +377,7 @@ describe('Credential Migration Lifecycle (e2e)', () => {
     // Check notifications at different levels
     const states: QuotaState[] = [
       { usagePercent: 65, lastUpdated: new Date().toISOString() },   // Below all thresholds
-      { usagePercent: 72, lastUpdated: new Date().toISOString() },   // Warning
+      { usagePercent: 78, lastUpdated: new Date().toISOString() },   // Warning (75%+)
       { usagePercent: 88, lastUpdated: new Date().toISOString() },   // Critical
       { usagePercent: 96, lastUpdated: new Date().toISOString() },   // Limit
     ];
@@ -390,8 +390,8 @@ describe('Credential Migration Lifecycle (e2e)', () => {
 
     // Should have notifications for warning, critical, and limit crossings
     expect(notifications.length).toBe(3); // warning, critical, limit
-    expect(notifications[0]).toContain('still plenty of room');
-    expect(notifications[1]).toContain('more selective');
+    expect(notifications[0]).toContain('Low-priority jobs');
+    expect(notifications[1]).toContain('high-priority');
     expect(notifications[2]).toContain('quota limit');
   });
 
