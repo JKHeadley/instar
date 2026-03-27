@@ -1,5 +1,6 @@
 import { ClaudeCliIntelligenceProvider } from './ClaudeCliIntelligenceProvider.js';
 import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js';
+import { AnthropicIntelligenceProvider } from './AnthropicIntelligenceProvider.js';
 import type { IntelligenceProvider, SessionManagerConfig } from './types.js';
 
 type RuntimeIntelligenceConfig = Pick<SessionManagerConfig, 'runtime' | 'runtimePath' | 'runtimeHome' | 'claudePath'>;
@@ -13,6 +14,12 @@ export function createRuntimeIntelligenceProvider(
 
   if (config.claudePath) {
     return new ClaudeCliIntelligenceProvider(config.claudePath);
+  }
+
+  // Fallback to Anthropic API if available
+  const anthropicProvider = AnthropicIntelligenceProvider.fromEnv();
+  if (anthropicProvider) {
+    return anthropicProvider;
   }
 
   return null;

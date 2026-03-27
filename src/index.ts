@@ -15,6 +15,8 @@ export { AnthropicIntelligenceProvider } from './core/AnthropicIntelligenceProvi
 export { createRuntimeIntelligenceProvider, describeRuntimeIntelligence } from './core/RuntimeIntelligenceProvider.js';
 export { ANTHROPIC_MODELS, CLI_MODEL_FLAGS, resolveModelId, resolveCliFlag, getValidTiers, isValidTier } from './core/models.js';
 export type { ModelTierName, AnthropicModelId } from './core/models.js';
+export { analyzeTask, shouldOverrideWithComplexityBudget, ROUTING_WEIGHTS } from './core/TaskClassifier.js';
+export type { TaskClassification, TaskContext } from './core/TaskClassifier.js';
 export { FeedbackManager } from './core/FeedbackManager.js';
 export type { FeedbackQualityResult } from './core/FeedbackManager.js';
 export { EvolutionManager } from './core/EvolutionManager.js';

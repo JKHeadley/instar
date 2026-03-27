@@ -97,6 +97,9 @@ export class SessionManager extends EventEmitter {
   /** Track when each session was first seen idle at the runtime prompt. Key = session ID */
   private idlePromptSince = new Map<string, number>();
 
+  /** Track pending Codex session ID tracking timers to cancel on session completion. Key = instar session ID */
+  private codexTrackingTimers = new Map<string, ReturnType<typeof setInterval>>();
+
   /** Throttle stale session cleanup to every 5 minutes */
   private lastCleanupAt = 0;
 
@@ -127,6 +130,15 @@ export class SessionManager extends EventEmitter {
       claudePath: config.claudePath || config.runtimePath || 'claude',
     };
     this.state = state;
+
+    // Clean up Codex session tracking timers when sessions complete
+    this.on('sessionComplete', (session: Session) => {
+      const timer = this.codexTrackingTimers.get(session.id);
+      if (timer) {
+        clearInterval(timer);
+        this.codexTrackingTimers.delete(session.id);
+      }
+    });
   }
 
   /**
@@ -370,14 +382,17 @@ export class SessionManager extends EventEmitter {
       if (match) {
         this.setRuntimeSessionId(instarSessionId, match);
         clearInterval(timer);
+        this.codexTrackingTimers.delete(instarSessionId);
         return;
       }
 
       if (Date.now() - startedAt > timeoutMs) {
         clearInterval(timer);
+        this.codexTrackingTimers.delete(instarSessionId);
       }
     }, pollIntervalMs);
 
+    this.codexTrackingTimers.set(instarSessionId, timer);
     timer.unref();
   }
 

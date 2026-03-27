@@ -134,10 +134,25 @@ export function buildTriageRuntimeCommand(
 export function isRuntimeReady(config: SessionManagerConfig, output: string): boolean {
   const trimmed = output.trim();
   if (config.runtime === 'codex') {
-    // Codex prompt rendering is less stable than Claude's TUI markers across
-    // platforms, so treat any visible prompt or normal terminal cursor state
-    // as ready enough for injection.
-    return trimmed.length > 0;
+    // Codex: Look for actual prompt indicators rather than any output.
+    // Codex uses '>' as its primary prompt, and may show status messages.
+    // Avoid false positives from startup banners or version strings.
+    const lines = trimmed.split('\n');
+    const lastLine = lines[lines.length - 1] || '';
+
+    // Check for Codex prompt (>), not just any output
+    if (lastLine.match(/^\s*>\s*$/) || lastLine.endsWith('> ')) {
+      return true;
+    }
+
+    // Also accept output that ends with a newline followed by nothing
+    // (indicates prompt is waiting), but require at least some output
+    // to avoid triggering on initial startup
+    if (trimmed.length > 10 && trimmed.endsWith('\n')) {
+      return true;
+    }
+
+    return false;
   }
 
   return trimmed.includes('❯') || trimmed.includes('bypass permissions');
@@ -145,7 +160,9 @@ export function isRuntimeReady(config: SessionManagerConfig, output: string): bo
 
 export function idlePromptPatterns(config: SessionManagerConfig): string[] {
   if (config.runtime === 'codex') {
-    return [];
+    // Codex idle patterns: at the Codex prompt waiting for input
+    // The '> ' pattern indicates Codex is waiting at its prompt
+    return ['> '];
   }
 
   return [
