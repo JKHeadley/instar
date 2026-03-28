@@ -363,6 +363,14 @@ addCmd
   });
 
 addCmd
+  .command('slack')
+  .description('Add Slack messaging adapter (tokens entered interactively)')
+  .action(async () => {
+    const { addSlack } = await import('./commands/slack-cli.js');
+    return addSlack();
+  });
+
+addCmd
   .command('sentry')
   .description('Add Sentry error monitoring')
   .option('--dsn <dsn>', 'Sentry DSN')

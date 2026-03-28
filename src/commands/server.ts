@@ -2658,7 +2658,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       );
 
       // Wire nurse into TelegramAdapter stall detection
+      // Note: presenceProxy may be set later — use late-binding check
       telegram.onStallDetected = async (topicId, sessionName, messageText, injectedAt) => {
+        // If PresenceProxy Tier 3 is actively handling this topic, defer to it
+        if (presenceProxy) {
+          const proxyState = presenceProxy.getState(topicId);
+          if (proxyState && proxyState.tier3FiredAt && !proxyState.cancelled) {
+            const tier3Age = Date.now() - proxyState.tier3FiredAt;
+            if (tier3Age < 60_000) {
+              console.log(`[StallTriageNurse] Deferring — PresenceProxy Tier 3 active for topic ${topicId}`);
+              return { resolved: false };
+            }
+          }
+        }
         const result = await triageNurse!.triage(topicId, sessionName, messageText, injectedAt, 'telegram_stall');
         return { resolved: result.resolved };
       };
@@ -3149,6 +3161,127 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
       commitmentSentinel.start();
       console.log(pc.green('  Commitment sentinel enabled (LLM-powered)'));
+    }
+
+    // Presence Proxy — Intelligent Response Standby (tiered status updates)
+    let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
+    if (sharedIntelligence && telegram) {
+      try {
+        const { PresenceProxy } = await import('../monitoring/PresenceProxy.js');
+        const { execSync: shellExecSync } = await import('child_process');
+
+        const messagesLogPath = path.join(config.stateDir, 'telegram-messages.jsonl');
+
+        presenceProxy = new PresenceProxy({
+          stateDir: config.stateDir,
+          intelligence: sharedIntelligence,
+          agentName: config.projectName ?? 'the agent',
+          hasAgentRespondedSince: (topicId, sinceMs) => {
+            // Read last ~50 lines of the messages log and check for agent responses
+            try {
+              const content = fs.readFileSync(messagesLogPath, 'utf-8');
+              const lines = content.trim().split('\n').slice(-50);
+              const sinceIso = new Date(sinceMs).toISOString();
+              for (const line of lines) {
+                try {
+                  const msg = JSON.parse(line);
+                  if (msg.topicId === topicId && !msg.fromUser && msg.timestamp > sinceIso) {
+                    // Skip proxy messages and system messages (delivery confirmations, session lifecycle)
+                    const t = (msg.text || '').trim();
+                    const isSystem = t === '✓ Delivered' || t.startsWith('✓ Delivered')
+                      || t.startsWith('🔄 Session restarting') || t === 'Session respawned.'
+                      || t === 'Session terminated.' || t.startsWith('Send a new message to start')
+                      || t.startsWith('🔭 [Standby]') || t.startsWith('🔭 [Presence]');
+                    if (!isSystem) {
+                      return true;
+                    }
+                  }
+                } catch { /* skip malformed lines */ }
+              }
+              return false;
+            } catch {
+              return false;
+            }
+          },
+          captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
+          getSessionForTopic: (topicId) => telegram!.getSessionForTopic(topicId),
+          isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          sendMessage: async (topicId, text, metadata) => {
+            const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${config.authToken}`,
+              },
+              body: JSON.stringify({ text, metadata }),
+            });
+            if (!response.ok) {
+              throw new Error(`Reply failed: ${response.status}`);
+            }
+          },
+          getAuthorizedUserIds: () => {
+            const ids = config.messaging?.[0]?.config?.authorizedUserIds;
+            if (Array.isArray(ids)) return ids;
+            const ownerId = config.monitoring?.promptGate?.ownerId;
+            return ownerId ? [ownerId] : [];
+          },
+          getProcessTree: (sessionName) => {
+            try {
+              const panePid = shellExecSync(
+                `tmux display-message -t '=${sessionName}' -p '#{pane_pid}' 2>/dev/null`
+              ).toString().trim();
+              if (!panePid) return [];
+              const childPids = shellExecSync(
+                `pgrep -P ${panePid} 2>/dev/null`
+              ).toString().trim();
+              if (!childPids) return [];
+              const pids = childPids.split('\n').filter(Boolean).join(',');
+              const psOutput = shellExecSync(
+                `ps -o pid=,command= -p ${pids} 2>/dev/null`
+              ).toString().trim();
+              if (!psOutput) return [];
+              return psOutput.split('\n').map(line => {
+                const match = line.trim().match(/^(\d+)\s+(.+)$/);
+                return match ? { pid: parseInt(match[1], 10), command: match[2] } : null;
+              }).filter((p): p is { pid: number; command: string } => p !== null);
+            } catch {
+              return [];
+            }
+          },
+          triggerManualTriage: triageNurse
+            ? async (topicId, sessionName) => {
+                await triageNurse!.triage(topicId, sessionName, '', Date.now(), 'manual');
+              }
+            : undefined,
+        });
+
+        // Hook into Telegram's onMessageLogged callback (always active, unlike EventBus which requires a feature flag)
+        const existingCallback = telegram.onMessageLogged;
+        telegram.onMessageLogged = (entry) => {
+          // Call existing callback first (TopicMemory dual-write)
+          if (existingCallback) {
+            existingCallback(entry);
+          }
+          // Forward to PresenceProxy
+          presenceProxy!.onMessageLogged({
+            messageId: entry.messageId,
+            channelId: entry.topicId?.toString() ?? '',
+            text: entry.text,
+            fromUser: entry.fromUser,
+            timestamp: entry.timestamp,
+            sessionName: entry.sessionName,
+            senderName: entry.senderName,
+            senderUsername: entry.senderUsername,
+            platformUserId: entry.telegramUserId?.toString(),
+          });
+        };
+
+        presenceProxy.start();
+        console.log(pc.green('  Presence Proxy enabled (🔭 [Standby])'));
+      } catch (err) {
+        console.error(`[PresenceProxy] Failed to initialize:`, err);
+      }
     }
 
     // Start CaffeinateManager (prevents macOS system sleep)

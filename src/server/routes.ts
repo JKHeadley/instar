@@ -134,6 +134,7 @@ export interface RouteContext {
   trustElevationTracker: TrustElevationTracker | null;
   autonomousEvolution: AutonomousEvolution | null;
   whatsapp: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter | null;
+  slack: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null;
   messageBridge: import('../messaging/shared/MessageBridge.js').MessageBridge | null;
   hookEventReceiver: HookEventReceiver | null;
   worktreeMonitor: WorktreeMonitor | null;
@@ -3216,6 +3217,80 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.telegram.getLogStats());
   });
 
+  // ── Slack ──────────────────────────────────────────────────────
+
+  router.post('/slack/reply/:channelId', async (req, res) => {
+    if (!ctx.slack) {
+      res.status(503).json({ error: 'Slack not configured' });
+      return;
+    }
+
+    const { channelId } = req.params;
+    const { text, thread_ts } = req.body;
+    if (!text || typeof text !== 'string') {
+      res.status(400).json({ error: '"text" field required' });
+      return;
+    }
+
+    try {
+      const ts = await ctx.slack.sendToChannel(channelId, text, { thread_ts });
+      res.json({ ok: true, topicId: channelId, ts });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/slack/channels', async (req, res) => {
+    if (!ctx.slack) {
+      res.status(503).json({ error: 'Slack not configured' });
+      return;
+    }
+
+    try {
+      const channels = await ctx.slack.api.call('conversations.list', {
+        types: 'public_channel,private_channel',
+        exclude_archived: req.query.include_archived !== 'true',
+        limit: 200,
+      });
+      res.json({ ok: true, channels: channels.channels ?? [] });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post('/slack/channels', async (req, res) => {
+    if (!ctx.slack) {
+      res.status(503).json({ error: 'Slack not configured' });
+      return;
+    }
+
+    const { name, is_private } = req.body;
+    if (!name || typeof name !== 'string') {
+      res.status(400).json({ error: '"name" field required' });
+      return;
+    }
+
+    try {
+      const channelId = await ctx.slack.createChannel(name, is_private);
+      res.json({ ok: true, channelId });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/slack/channels/:channelId/messages', (req, res) => {
+    if (!ctx.slack) {
+      res.status(503).json({ error: 'Slack not configured' });
+      return;
+    }
+
+    const { channelId } = req.params;
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 30, 100);
+
+    const messages = ctx.slack.getChannelMessages(channelId, limit);
+    res.json({ ok: true, messages, count: messages.length });
+  });
+
   // ── Attention Queue ─────────────────────────────────────────────
 
   router.post('/attention', async (req, res) => {
@@ -4647,6 +4722,13 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     const tunnelType = (ctx.config.tunnel?.type === 'named' ? 'named' : 'quick') as 'quick' | 'named';
+
+    // Named tunnels have permanent URLs — skip periodic refresh calls since
+    // the URL never changes. The initial broadcast on server startup is sufficient.
+    if (tunnelType === 'named') {
+      res.json({ action: 'skipped', reason: 'named tunnel — URL is permanent', url: tunnelUrl, tunnelType });
+      return;
+    }
 
     try {
       await ctx.telegram.broadcastDashboardUrl(tunnelUrl, tunnelType);

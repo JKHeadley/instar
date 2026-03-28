@@ -14,6 +14,7 @@
  * Agent names are display labels only — NOT unique.
  */
 
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -462,6 +463,21 @@ export function getAgent(agentPath: string): AgentRegistryEntry | null {
 }
 
 /**
+ * Synchronously check if a TCP port is free by probing for listeners.
+ * Uses lsof on macOS/Linux to detect if any process is bound to the port.
+ * Returns true if the port is available, false if it's in use.
+ */
+function isPortFreeSync(port: number): boolean {
+  try {
+    // lsof exits 0 if a listener is found, 1 if not
+    execSync(`lsof -iTCP:${port} -sTCP:LISTEN -P -n`, { stdio: 'ignore' });
+    return false; // lsof found a listener → port is in use
+  } catch {
+    return true; // lsof found nothing → port is free
+  }
+}
+
+/**
  * Allocate a free port from the range, avoiding conflicts.
  * If the agent already has a port, return that port.
  */
@@ -480,12 +496,11 @@ export function allocatePort(
       return existing.port;
     }
 
-    // Find the first free port in range (only running entries claim ports)
-    const usedPorts = new Set(
-      registry.entries.filter(e => e.status === 'running').map(e => e.port),
-    );
+    // Collect ALL registered ports (any status) to avoid conflicts with
+    // agents that may still be running but have stale registry entries
+    const usedPorts = new Set(registry.entries.map(e => e.port));
     for (let port = rangeStart; port <= rangeEnd; port++) {
-      if (!usedPorts.has(port)) {
+      if (!usedPorts.has(port) && isPortFreeSync(port)) {
         return port;
       }
     }
@@ -586,12 +601,11 @@ export function allocatePortByName(
       return existing.port;
     }
 
-    // Find the first free port in range (only running entries claim ports)
-    const usedPorts = new Set(
-      registry.entries.filter(e => e.status === 'running').map(e => e.port),
-    );
+    // Collect ALL registered ports (any status) to avoid conflicts with
+    // agents that may still be running but have stale registry entries
+    const usedPorts = new Set(registry.entries.map(e => e.port));
     for (let port = rangeStart; port <= rangeEnd; port++) {
-      if (!usedPorts.has(port)) {
+      if (!usedPorts.has(port) && isPortFreeSync(port)) {
         return port;
       }
     }

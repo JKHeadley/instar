@@ -104,6 +104,7 @@ export class AgentServer {
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
     whatsapp?: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter;
+    slack?: import('../messaging/slack/SlackAdapter.js').SlackAdapter;
     whatsappBusinessBackend?: import('../messaging/backends/BusinessApiBackend.js').BusinessApiBackend;
     messageBridge?: import('../messaging/shared/MessageBridge.js').MessageBridge;
     hookEventReceiver?: import('../monitoring/HookEventReceiver.js').HookEventReceiver;
@@ -291,6 +292,7 @@ export class AgentServer {
       trustElevationTracker: options.trustElevationTracker ?? null,
       autonomousEvolution: options.autonomousEvolution ?? null,
       whatsapp: options.whatsapp ?? null,
+      slack: options.slack ?? null,
       messageBridge: options.messageBridge ?? null,
       hookEventReceiver: options.hookEventReceiver ?? null,
       worktreeMonitor: options.worktreeMonitor ?? null,
