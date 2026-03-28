@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# slack-reply.sh — Send a message to a Slack channel via the instar server.
+#
+# Usage:
+#   slack-reply.sh CHANNEL_ID "message text"
+#   echo "message" | slack-reply.sh CHANNEL_ID
+#   cat <<'EOF' | slack-reply.sh CHANNEL_ID
+#   Multi-line message here
+#   EOF
+
+set -euo pipefail
+
+CHANNEL_ID="$1"
+shift
+
+# Read message from args or stdin
+if [ $# -gt 0 ]; then
+  MESSAGE="$*"
+else
+  MESSAGE="$(cat)"
+fi
+
+if [ -z "$MESSAGE" ]; then
+  echo "Error: no message text provided" >&2
+  exit 1
+fi
+
+# Get port from env or config
+PORT="${INSTAR_PORT:-}"
+AUTH=""
+
+if [ -f ".instar/config.json" ]; then
+  if [ -z "$PORT" ]; then
+    CONFIG_PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',''))" 2>/dev/null)
+    [ -n "$CONFIG_PORT" ] && PORT="$CONFIG_PORT"
+  fi
+  AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+fi
+
+PORT="${PORT:-4042}"
+
+# JSON-escape the message
+ESCAPED=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< "$MESSAGE" 2>/dev/null)
+# Fallback to basic bash escaping if python unavailable
+if [ -z "$ESCAPED" ]; then
+  ESCAPED="\"$(echo "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
+fi
+
+# Send via Instar server
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+  "http://localhost:${PORT}/slack/reply/${CHANNEL_ID}" \
+  -H "Content-Type: application/json" \
+  ${AUTH:+-H "Authorization: Bearer $AUTH"} \
+  -d "{\"text\": ${ESCAPED}}")
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "Sent ${#MESSAGE} chars to channel ${CHANNEL_ID}"
+else
+  echo "Failed (HTTP ${HTTP_CODE}): ${BODY}" >&2
+  exit 1
+fi

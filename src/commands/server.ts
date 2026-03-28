@@ -2372,6 +2372,72 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── Slack adapter initialization ─────────────────────────────────
+    let slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | undefined;
+
+    const slackConfig = config.messaging?.find(m => m.type === 'slack' && m.enabled);
+    if (slackConfig) {
+      try {
+        const { SlackAdapter } = await import('../messaging/slack/index.js');
+        slackAdapter = new SlackAdapter(slackConfig.config as Record<string, unknown>, config.stateDir);
+
+        // Wire message handler — inject Slack messages into sessions
+        slackAdapter.onMessage(async (message) => {
+          const channelId = message.channel.identifier;
+          const isDM = message.metadata?.isDM as boolean;
+          const threadTs = message.metadata?.threadTs as string | undefined;
+          const senderName = message.metadata?.senderName as string || 'User';
+
+          // Build injection tag
+          const prefix = `[slack:${channelId}]`;
+
+          // Write context file for the session
+          const tmpDir = '/tmp/instar-slack';
+          fs.mkdirSync(tmpDir, { recursive: true });
+          const ctxPath = path.join(tmpDir, `ctx-${channelId}-${Date.now()}.txt`);
+          const history = slackAdapter!.getChannelMessages(channelId, 30);
+
+          const contextData = JSON.stringify({
+            topicId: channelId,
+            channelName: channelId,
+            messages: history.map(m => ({
+              ts: m.ts,
+              sender: m.user,
+              senderId: m.user,
+              fromUser: true,
+              text: m.text,
+            })),
+            unansweredCount: 0,
+            relayInstructions: `cat <<'EOF' | .claude/scripts/slack-reply.sh ${channelId}\nYour response text here\nEOF`,
+          }, null, 2);
+          fs.writeFileSync(ctxPath, contextData);
+
+          const bootstrapMessage = `${prefix} ${message.content} (IMPORTANT: Read ${ctxPath} for thread history and Slack relay instructions — you MUST relay your response back.)`;
+
+          // Route: DMs go to lifeline session, channels spawn/find sessions
+          const targetSession = isDM ? 'lifeline' : undefined;
+          sessionManager.spawnInteractiveSession(bootstrapMessage, targetSession).catch(err => {
+            console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
+          });
+        });
+
+        await slackAdapter.start();
+        console.log(pc.green(`  Slack connected (workspace: ${(slackConfig.config as Record<string, unknown>).workspaceName || 'unknown'})`));
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error(pc.red(`  Slack init failed: ${reason}`));
+        slackAdapter = undefined;
+
+        degradationReporter.report({
+          feature: 'Slack',
+          primary: 'Slack messaging adapter',
+          fallback: 'Other messaging channels',
+          reason: `Slack init failed: ${reason}`,
+          impact: 'Slack messaging unavailable.',
+        });
+      }
+    }
+
     // Initialize SemanticMemory — the knowledge graph that unifies all memory systems.
     // Uses the same better-sqlite3 as TopicMemory; shares the rebuild path.
     let semanticMemory: SemanticMemory | undefined;
@@ -3191,7 +3257,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     const isSystem = t === '✓ Delivered' || t.startsWith('✓ Delivered')
                       || t.startsWith('🔄 Session restarting') || t === 'Session respawned.'
                       || t === 'Session terminated.' || t.startsWith('Send a new message to start')
-                      || t.startsWith('🔭 [Standby]') || t.startsWith('🔭 [Presence]');
+                      || t.startsWith('🔭');
                     if (!isSystem) {
                       return true;
                     }
@@ -3976,7 +4042,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }, { description: 'Feature discovery state and behavioral contract summary' });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, listenerManager: listenerManager ?? undefined, responseReviewGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, liveConfig });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, listenerManager: listenerManager ?? undefined, responseReviewGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, liveConfig });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.

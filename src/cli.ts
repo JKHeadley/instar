@@ -382,6 +382,20 @@ addCmd
   .option('--state-file <path>', 'Path to quota state file (default: .instar/state/quota.json)')
   .action((opts) => addQuota(opts));
 
+// ── Remove ──────────────────────────────────────────────────────
+
+const removeAdapterCmd = program
+  .command('remove')
+  .description('Remove capabilities from the agent');
+
+removeAdapterCmd
+  .command('slack')
+  .description('Remove Slack messaging adapter and purge associated data')
+  .action(async () => {
+    const { removeSlack } = await import('./commands/slack-cli.js');
+    return removeSlack();
+  });
+
 // ── Backup ───────────────────────────────────────────────────────
 
 const backupCmd = program

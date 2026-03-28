@@ -269,8 +269,137 @@ export class ServerSupervisor extends EventEmitter {
     return this.spawnServer();
   }
 
+  // ── Pre-spawn self-healing ──────────────────────────────────────
+  //
+  // Before starting the server, check prerequisites and fix common issues
+  // that would otherwise cause the server to crash immediately. This makes
+  // `/lifeline restart` actually useful for recovery — not just a blind retry.
+
+  /**
+   * Run preflight checks and attempt to fix broken prerequisites.
+   * Returns a summary of what was healed (empty string if nothing needed fixing).
+   */
+  private preflightSelfHeal(): string {
+    if (!this.stateDir) return '';
+
+    const healed: string[] = [];
+
+    // 1. Shadow install — the most common failure mode.
+    //    If the shadow install is missing or corrupt, the server can't start at all.
+    const shadowDir = path.join(this.stateDir, 'shadow-install');
+    const shadowCli = path.join(shadowDir, 'node_modules', 'instar', 'dist', 'cli.js');
+
+    if (!fs.existsSync(shadowCli)) {
+      console.log('[Supervisor] Preflight: shadow install missing — attempting reinstall');
+      try {
+        // Find a working npm binary
+        const npmPath = this.findNpmPath();
+        if (npmPath) {
+          const result = spawnSync(npmPath, ['install', 'instar', '--prefix', shadowDir], {
+            encoding: 'utf-8',
+            timeout: 60_000,
+            cwd: this.projectDir,
+          });
+          if (result.status === 0 && fs.existsSync(shadowCli)) {
+            healed.push('shadow install restored');
+            console.log('[Supervisor] Preflight: shadow install restored successfully');
+          } else {
+            console.error(`[Supervisor] Preflight: npm install failed (exit ${result.status}): ${(result.stderr || '').slice(-200)}`);
+          }
+        } else {
+          console.error('[Supervisor] Preflight: no npm binary found — cannot restore shadow install');
+        }
+      } catch (err) {
+        console.error(`[Supervisor] Preflight: shadow install repair failed: ${err}`);
+      }
+    }
+
+    // 2. Node symlink — if broken, the launchd boot wrapper will fail on next restart.
+    const nodeSymlink = path.join(this.stateDir, 'bin', 'node');
+    try {
+      if (!fs.existsSync(nodeSymlink) || spawnSync(nodeSymlink, ['--version'], { timeout: 5000 }).status !== 0) {
+        console.log('[Supervisor] Preflight: node symlink missing or broken — attempting fix');
+        const nodePath = this.findNodePath();
+        if (nodePath) {
+          fs.mkdirSync(path.dirname(nodeSymlink), { recursive: true });
+          try { fs.unlinkSync(nodeSymlink); } catch { /* may not exist */ }
+          fs.symlinkSync(nodePath, nodeSymlink);
+          healed.push('node symlink repaired');
+          console.log(`[Supervisor] Preflight: node symlink → ${nodePath}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Supervisor] Preflight: node symlink check failed: ${err}`);
+    }
+
+    // 3. Stale lifeline lock — can prevent the lifeline from restarting properly.
+    const lockFile = path.join(this.stateDir, 'state', 'lifeline.lock');
+    try {
+      if (fs.existsSync(lockFile)) {
+        const lockAge = Date.now() - fs.statSync(lockFile).mtimeMs;
+        if (lockAge > 10 * 60_000) { // 10 minutes
+          fs.unlinkSync(lockFile);
+          healed.push('stale lifeline lock removed');
+          console.log(`[Supervisor] Preflight: removed stale lifeline lock (${Math.round(lockAge / 60_000)}m old)`);
+        }
+      }
+    } catch { /* ignore */ }
+
+    if (healed.length > 0) {
+      const summary = healed.join(', ');
+      console.log(`[Supervisor] Preflight self-heal: ${summary}`);
+      return summary;
+    }
+    return '';
+  }
+
+  /**
+   * Find a working npm binary. Checks common locations.
+   */
+  private findNpmPath(): string | null {
+    // Try the node that's running us — npm is usually a sibling
+    const currentNodeDir = path.dirname(process.execPath);
+    const siblingNpm = path.join(currentNodeDir, 'npm');
+    if (fs.existsSync(siblingNpm)) return siblingNpm;
+
+    // Common paths
+    for (const candidate of ['/opt/homebrew/bin/npm', '/usr/local/bin/npm']) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+
+    // Fall back to PATH lookup
+    try {
+      const which = spawnSync('which', ['npm'], { encoding: 'utf-8', timeout: 5000 });
+      if (which.status === 0 && which.stdout.trim()) return which.stdout.trim();
+    } catch { /* ignore */ }
+
+    return null;
+  }
+
+  /**
+   * Find a working node binary. Checks common locations.
+   */
+  private findNodePath(): string | null {
+    // Current process is always valid
+    if (process.execPath) return process.execPath;
+
+    for (const candidate of ['/opt/homebrew/bin/node', '/usr/local/bin/node']) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+
+    try {
+      const which = spawnSync('which', ['node'], { encoding: 'utf-8', timeout: 5000 });
+      if (which.status === 0 && which.stdout.trim()) return which.stdout.trim();
+    } catch { /* ignore */ }
+
+    return null;
+  }
+
   private spawnServer(): boolean {
     if (!this.tmuxPath) return false;
+
+    // Run preflight self-heal before every spawn attempt
+    this.preflightSelfHeal();
 
     try {
       // Get the instar CLI path — resolution order:
