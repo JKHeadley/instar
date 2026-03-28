@@ -1805,6 +1805,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const detector = new InputDetector({
         detectionWindowLines: promptGateConfig.detectionWindowLines ?? 50,
         enabled: true,
+        intelligence: sharedIntelligence ?? undefined,
       });
 
       const classifier = new InputClassifier({

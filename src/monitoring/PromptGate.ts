@@ -36,6 +36,8 @@ export interface InputDetectorConfig {
   detectionWindowLines: number;
   /** Enable/disable detection */
   enabled: boolean;
+  /** LLM provider for intelligent prompt detection (falls back to regex-only if not set) */
+  intelligence?: import('../core/types.js').IntelligenceProvider;
 }
 
 // ── ANSI Stripping ─────────────────────────────────────────────────
@@ -104,41 +106,10 @@ const PROMPT_PATTERNS: Array<{
     },
   },
 
-  // Plan approval: Claude Code plan prompt
-  // Matches both old format ("Plan:" + "Do you want to proceed?")
-  // and current format ("written up a plan" + "Would you like to proceed?")
-  // Uses fullWindow because plan text + options can span >5 lines
-  {
-    type: 'plan',
-    test(lines, fullWindow) {
-      // Check the full detection window since plan prompts span many lines
-      const searchLines = fullWindow ?? lines;
-      const joined = searchLines.join('\n');
-      const hasPlanHeader = /Plan:/i.test(joined) || /written up a plan/i.test(joined);
-      const hasProceedQuestion = /(?:Do|Would) you (?:want|like) to proceed/i.test(joined);
-      if (!hasPlanHeader || !hasProceedQuestion) return null;
-
-      // Extract numbered options if present (Claude Code plan prompt format)
-      const options: PromptOption[] = [];
-      for (const line of searchLines) {
-        const optMatch = line.match(/^\s*[❯\s]*(\d)\.\s+(.+)$/);
-        if (optMatch) {
-          options.push({ key: optMatch[1], label: optMatch[2].trim() });
-        }
-      }
-
-      // Fall back to y/n if no numbered options found
-      if (options.length === 0) {
-        options.push({ key: 'y', label: 'Approve' }, { key: 'n', label: 'Reject' });
-      }
-
-      return {
-        type: 'plan',
-        summary: 'Plan approval requested',
-        options,
-      };
-    },
-  },
+  // Plan approval — REMOVED: regex-based detection was too brittle and produced
+  // false positives (e.g., matching git commit messages). Plan detection is now
+  // handled by the LLM-based InputDetector path (see llmDetect method).
+  // Keeping the type in the catalog for classification/relay compatibility.
 
   // Confirmation: "Esc to cancel · Tab to amend"
   {
@@ -243,6 +214,9 @@ export class InputDetector extends EventEmitter {
   private rejectedFingerprints = new Map<string, number>();
   private static readonly REJECTED_COOLING_MS = 60_000;
 
+  /** Track pending LLM detection calls to prevent overlap */
+  private pendingLlmDetection = new Set<string>();
+
   constructor(private config: InputDetectorConfig) {
     super();
   }
@@ -279,46 +253,158 @@ export class InputDetector extends EventEmitter {
     // Some prompts (plans) span more than 5 lines, so pass full window too
     const tailLines = lines.slice(-5);
 
-    // --- Pattern matching ---
+    // --- Pattern matching (simple structural patterns: y/n, Esc to cancel, etc.) ---
     for (const pattern of PROMPT_PATTERNS) {
       const match = pattern.test(tailLines, lines);
       if (!match) continue;
 
-      // Fingerprint for dedup
-      const fingerprint = this.fingerprint(sessionName, match.type, tailLines.join('\n'));
+      const result = this.emitIfNew(sessionName, match, tailLines);
+      if (result) return result;
+    }
 
-      // Check rejected cooling
-      const rejectedExpiry = this.rejectedFingerprints.get(fingerprint);
-      if (rejectedExpiry && Date.now() < rejectedExpiry) continue;
-
-      // Check dedup
-      const emitted = this.emittedPrompts.get(sessionName) ?? new Set();
-      if (emitted.has(fingerprint)) continue;
-
-      // Check post-emission cooldown
+    // --- LLM-based detection (catches everything regex misses) ---
+    // Only fire if: intelligence provider available, no pending LLM call for this session,
+    // output has been stable for 3+ captures (strong quiescence signal), and cooldown allows
+    const stableCount = this.stableCount.get(sessionName) ?? 0;
+    if (this.config.intelligence && !this.pendingLlmDetection.has(sessionName) && stableCount >= 2) {
       const lastEmit = this.lastEmissionTime.get(sessionName);
-      if (lastEmit && Date.now() - lastEmit < InputDetector.COOLDOWN_MS) continue;
-
-      // Emit the prompt
-      const prompt: DetectedPrompt = {
-        type: match.type,
-        raw: tailLines.join('\n'),
-        summary: match.summary,
-        options: match.options,
-        sessionName,
-        detectedAt: Date.now(),
-        id: randomBytes(6).toString('base64url'), // 8-char URL-safe ID
-      };
-
-      emitted.add(fingerprint);
-      this.emittedPrompts.set(sessionName, emitted);
-      this.lastEmissionTime.set(sessionName, Date.now());
-
-      this.emit('prompt', prompt);
-      return prompt;
+      if (!lastEmit || Date.now() - lastEmit >= InputDetector.COOLDOWN_MS) {
+        this.pendingLlmDetection.add(sessionName);
+        this.llmDetect(sessionName, lines).catch(err => {
+          console.error(`[PromptGate] LLM detection error for ${sessionName}: ${err.message}`);
+        }).finally(() => {
+          this.pendingLlmDetection.delete(sessionName);
+        });
+      }
     }
 
     return null;
+  }
+
+  /**
+   * Emit a detected prompt if it passes dedup/cooldown checks.
+   */
+  private emitIfNew(sessionName: string, match: PatternMatch, tailLines: string[]): DetectedPrompt | null {
+    const fingerprint = this.fingerprint(sessionName, match.type, tailLines.join('\n'));
+
+    // Check rejected cooling
+    const rejectedExpiry = this.rejectedFingerprints.get(fingerprint);
+    if (rejectedExpiry && Date.now() < rejectedExpiry) return null;
+
+    // Check dedup
+    const emitted = this.emittedPrompts.get(sessionName) ?? new Set();
+    if (emitted.has(fingerprint)) return null;
+
+    // Check post-emission cooldown
+    const lastEmit = this.lastEmissionTime.get(sessionName);
+    if (lastEmit && Date.now() - lastEmit < InputDetector.COOLDOWN_MS) return null;
+
+    const prompt: DetectedPrompt = {
+      type: match.type,
+      raw: tailLines.join('\n'),
+      summary: match.summary,
+      options: match.options,
+      sessionName,
+      detectedAt: Date.now(),
+      id: randomBytes(6).toString('base64url'),
+    };
+
+    emitted.add(fingerprint);
+    this.emittedPrompts.set(sessionName, emitted);
+    this.lastEmissionTime.set(sessionName, Date.now());
+
+    this.emit('prompt', prompt);
+    return prompt;
+  }
+
+  /**
+   * LLM-based prompt detection. Asks Haiku to analyze terminal output
+   * and determine if the session is waiting for user input.
+   * Fires asynchronously — emits 'prompt' event if detected.
+   */
+  private async llmDetect(sessionName: string, lines: string[]): Promise<void> {
+    const intelligence = this.config.intelligence;
+    if (!intelligence) return;
+
+    // Sanitize: take last 20 lines, strip any remaining ANSI
+    const context = lines.slice(-20).join('\n').slice(0, 3000);
+
+    const prompt = `You are analyzing terminal output from a Claude Code AI agent session to determine if the session is waiting for user input.
+
+Terminal output (last 20 lines):
+<terminal>
+${context}
+</terminal>
+
+Is this terminal waiting for user input? Analyze carefully:
+- Look for questions directed at the user (ending with ?)
+- Look for numbered options (1. Yes  2. No  3. ...)
+- Look for y/n confirmation prompts
+- Look for "Press Enter", "Esc to cancel", "Do you want to proceed", "Would you like to proceed"
+- Look for plan approval prompts with options
+- Look for permission requests (create/edit/delete files)
+- Look for any cursor waiting at a prompt
+
+If the terminal is NOT waiting for input (e.g., it's actively running code, showing logs, or displaying output), respond with exactly: NO_PROMPT
+
+If the terminal IS waiting for input, respond with a JSON object (no markdown fences):
+{
+  "type": "plan" | "permission" | "question" | "confirmation" | "selection",
+  "summary": "Brief human-readable description of what's being asked",
+  "options": [
+    {"key": "1", "label": "Description of option 1"},
+    {"key": "2", "label": "Description of option 2"}
+  ]
+}
+
+For yes/no prompts, use: [{"key": "y", "label": "Yes"}, {"key": "n", "label": "No"}]
+For Enter/Escape prompts: [{"key": "Enter", "label": "Confirm"}, {"key": "Escape", "label": "Cancel"}]
+
+IMPORTANT: Only detect REAL interactive prompts. Do NOT detect:
+- Text in file content being displayed
+- Questions in code comments or documentation
+- Error messages that contain question marks
+- Output from running processes`;
+
+    try {
+      const response = await intelligence.evaluate(prompt, {
+        model: 'fast',
+        maxTokens: 500,
+        temperature: 0,
+      });
+
+      const trimmed = response.trim();
+      if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) return;
+
+      // Parse JSON response
+      let parsed: { type: PromptType; summary: string; options?: Array<{ key: string; label: string }> };
+      try {
+        // Handle potential markdown fences
+        const jsonStr = trimmed.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        return; // Malformed response — skip
+      }
+
+      // Validate type
+      const validTypes: PromptType[] = ['plan', 'permission', 'question', 'confirmation', 'selection'];
+      if (!validTypes.includes(parsed.type)) return;
+
+      // Validate options keys against allowlist
+      const allowedKeys = new Set(['1', '2', '3', '4', '5', 'y', 'n', 'Enter', 'Escape']);
+      const options = (parsed.options ?? []).filter(o => allowedKeys.has(o.key));
+
+      const tailLines = lines.slice(-5);
+      const match: PatternMatch = {
+        type: parsed.type,
+        summary: parsed.summary?.slice(0, 200) ?? 'Input requested',
+        options: options.length > 0 ? options : undefined,
+      };
+
+      this.emitIfNew(sessionName, match, tailLines);
+    } catch {
+      // LLM call failed — silent fallback (regex-only detection continues)
+    }
   }
 
   /**
