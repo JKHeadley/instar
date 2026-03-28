@@ -1388,6 +1388,67 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Inject an iMessage into a tmux session.
+   * Tags with [imessage:SENDER] and handles long messages via temp files.
+   * Tracks injection for stall detection (uses a synthetic numeric topicId
+   * derived from hashing the sender identifier).
+   */
+  injectIMessageMessage(tmuxSession: string, sender: string, text: string, senderName?: string): void {
+    const FILE_THRESHOLD = 500;
+
+    // Generate a stable numeric ID from sender for pendingInjections tracking
+    // (pendingInjections uses topicId: number, so we hash the sender string)
+    let senderHash = 0;
+    for (let i = 0; i < sender.length; i++) {
+      senderHash = ((senderHash << 5) - senderHash + sender.charCodeAt(i)) | 0;
+    }
+    const syntheticTopicId = Math.abs(senderHash);
+
+    this.pendingInjections.set(tmuxSession, { topicId: syntheticTopicId, injectedAt: Date.now(), text: text.slice(0, 200) });
+
+    // Build tag: [imessage:+14081234567 from Justin]
+    const safeName = senderName ? senderName.replace(/[\[\]]/g, '') : undefined;
+    const nameTag = safeName ? ` from ${safeName}` : '';
+    const tag = `[imessage:${sender}${nameTag}]`;
+    const taggedText = `${tag} ${text}`;
+
+    if (taggedText.length <= FILE_THRESHOLD) {
+      this.injectMessage(tmuxSession, taggedText);
+      return;
+    }
+
+    // Write full message to temp file
+    const tmpDir = path.join('/tmp', 'instar-imessage');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+    const filename = `msg-${senderSlug}-${Date.now()}.txt`;
+    const filepath = path.join(tmpDir, filename);
+    fs.writeFileSync(filepath, taggedText);
+
+    const ref = `${tag} [Long message saved to ${filepath} — read it to see the full message]`;
+    this.injectMessage(tmuxSession, ref);
+  }
+
+  /**
+   * Clear the injection tracker for an iMessage sender.
+   * Called from the /imessage/reply/:recipient route.
+   */
+  clearIMessageInjectionTracker(sender: string): void {
+    // Compute the same hash used in injectIMessageMessage
+    let senderHash = 0;
+    for (let i = 0; i < sender.length; i++) {
+      senderHash = ((senderHash << 5) - senderHash + sender.charCodeAt(i)) | 0;
+    }
+    const syntheticTopicId = Math.abs(senderHash);
+
+    for (const [session, info] of this.pendingInjections) {
+      if (info.topicId === syntheticTopicId) {
+        this.pendingInjections.delete(session);
+      }
+    }
+  }
+
+  /**
    * Send text to a tmux session via send-keys, with Input Guard protection.
    *
    * When an InputGuard is configured, messages are checked for provenance

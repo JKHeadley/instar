@@ -135,6 +135,7 @@ export interface RouteContext {
   autonomousEvolution: AutonomousEvolution | null;
   whatsapp: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter | null;
   slack: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null;
+  imessage: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter | null;
   messageBridge: import('../messaging/shared/MessageBridge.js').MessageBridge | null;
   hookEventReceiver: HookEventReceiver | null;
   worktreeMonitor: WorktreeMonitor | null;
@@ -1396,6 +1397,22 @@ export function createRoutes(ctx: RouteContext): Router {
       bidirectional: hasTelegramConfig && hasTelegramReplyScript && !!ctx.telegram,
     };
 
+    // iMessage
+    const hasIMessageConfig = ctx.config.messaging?.some(m => m.type === 'imessage' && m.enabled) ?? false;
+    const imessage = {
+      configured: hasIMessageConfig,
+      adapter: !!ctx.imessage,
+      connected: ctx.imessage?.getConnectionInfo().state === 'connected',
+      endpoints: ctx.imessage ? [
+        'GET /imessage/status',
+        'POST /imessage/reply/:recipient — log outbound + clear stall (called by imessage-reply.sh)',
+        'GET /imessage/chats',
+        'GET /imessage/chats/:chatId/history',
+        'GET /imessage/search?q=...',
+        'GET /imessage/log-stats',
+      ] : [],
+    };
+
     // Jobs
     let jobCount = 0;
     let jobSlugs: string[] = [];
@@ -1434,6 +1451,7 @@ export function createRoutes(ctx: RouteContext): Router {
       scripts,
       hooks,
       telegram,
+      imessage,
       scheduler: {
         enabled: ctx.config.scheduler.enabled,
         jobCount,
@@ -3618,6 +3636,116 @@ export function createRoutes(ctx: RouteContext): Router {
       ...ctx.messageBridge.getStatus(),
       links: ctx.messageBridge.getLinks(),
     });
+  });
+
+  // ── iMessage ─────────────────────────────────────────────────────
+
+  router.get('/imessage/status', (_req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+    res.json(ctx.imessage.getConnectionInfo());
+  });
+
+  // Reply notification endpoint — called by imessage-reply.sh AFTER sending via imsg CLI.
+  // Does NOT send the message (that was done directly by the script).
+  // Logs the outbound message and clears stall tracking.
+  router.post('/imessage/reply/:recipient', (req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+
+    const { recipient } = req.params;
+    if (!recipient) {
+      res.status(400).json({ error: 'recipient parameter required' });
+      return;
+    }
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      res.status(400).json({ error: '"text" field required' });
+      return;
+    }
+
+    // Log outbound message
+    ctx.imessage.logOutboundMessage(recipient, text);
+
+    // Clear stall tracking for this sender
+    ctx.imessage.clearStallForSender(recipient);
+
+    // Also clear in SessionManager if available
+    if (ctx.sessionManager && 'clearIMessageInjectionTracker' in ctx.sessionManager) {
+      (ctx.sessionManager as any).clearIMessageInjectionTracker(recipient);
+    }
+
+    res.json({ ok: true, recipient, logged: true });
+  });
+
+  router.get('/imessage/chats', async (req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+
+    const limit = parseInt(req.query.limit as string) || 20;
+    try {
+      const chats = await ctx.imessage.listChats(limit);
+      res.json(chats);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/imessage/chats/:chatId/history', async (req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+
+    const { chatId } = req.params;
+    const limit = parseInt(req.query.limit as string) || 50;
+    try {
+      const history = await ctx.imessage.getChatHistory(chatId, limit);
+      res.json(history);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/imessage/log-stats', (_req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+
+    try {
+      const stats = ctx.imessage.messageLogger.getStats();
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/imessage/search', (_req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+
+    const query = (_req.query.q as string || '').trim();
+    if (!query) {
+      res.status(400).json({ error: 'q parameter required' });
+      return;
+    }
+
+    const limit = parseInt(_req.query.limit as string) || 50;
+    try {
+      const results = ctx.imessage.messageLogger.search({ query, limit });
+      res.json({ results, count: results.length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── Relationships ─────────────────────────────────────────────────
