@@ -67,7 +67,7 @@ export interface RoutingScore {
 
 // ── Constants ───────────────────────────────────────────────────
 
-const DEFAULT_SCAN_INTERVAL_MS = 30_000;
+const DEFAULT_SCAN_INTERVAL_MS = 60_000;
 const DEFAULT_CAPTURE_LINES = 100;
 const DEFAULT_STALENESS_MINUTES = 10;
 const DEFAULT_MISROUTE_THRESHOLD = 3;

@@ -1916,6 +1916,212 @@
     .spark.s-skipped { background: #333; }
 
     /* ── Discovery Tab ──────────────────────────────────────── */
+    /* Systems Tab */
+    .systems-container {
+      grid-column: 1 / -1;
+      overflow-y: auto;
+      background: var(--bg);
+      padding: 20px;
+    }
+
+    .systems-main {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .systems-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .systems-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+
+    .systems-refresh {
+      font-size: 11px;
+      padding: 4px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+    }
+
+    .systems-refresh:hover {
+      border-color: var(--text-dim);
+      color: var(--text);
+    }
+
+    .systems-summary {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .systems-summary-card {
+      flex: 1;
+      min-width: 140px;
+      padding: 14px 18px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .systems-summary-card .summary-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+
+    .systems-summary-card .summary-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    .systems-section {
+      margin-bottom: 24px;
+    }
+
+    .systems-section h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 12px;
+    }
+
+    .systems-category {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+
+    .systems-category-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .systems-category-header:hover {
+      background: var(--bg-hover);
+    }
+
+    .systems-category-arrow {
+      font-size: 10px;
+      color: var(--text-dim);
+      transition: transform 0.2s;
+      width: 12px;
+    }
+
+    .systems-category.expanded .systems-category-arrow {
+      transform: rotate(90deg);
+    }
+
+    .systems-category-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .systems-category-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-bright);
+      flex: 1;
+    }
+
+    .systems-category-count {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .systems-category-body {
+      display: none;
+      padding: 0 16px 12px;
+      gap: 8px;
+    }
+
+    .systems-category.expanded .systems-category-body {
+      display: flex;
+      flex-wrap: wrap;
+    }
+
+    .systems-process-card {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      min-width: 200px;
+    }
+
+    .systems-process-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .systems-process-name {
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .systems-process-status {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-left: auto;
+    }
+
+    .systems-events {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .systems-event-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .systems-event-row:last-child {
+      border-bottom: none;
+    }
+
+    .systems-event-time {
+      color: var(--text-dim);
+      white-space: nowrap;
+      font-size: 11px;
+      min-width: 60px;
+    }
+
+    .systems-event-text {
+      color: var(--text);
+      flex: 1;
+    }
+
     .discovery-container {
       grid-column: 1 / -1;
       overflow-y: auto;
@@ -2433,6 +2639,7 @@
           <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Drop Zone</button>
           <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
           <button class="tab" data-tab="discovery" onclick="switchTab('discovery')">Discovery</button>
+          <button class="tab" data-tab="systems" onclick="switchTab('systems')">Systems</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -2650,6 +2857,26 @@
           </div>
         </div>
         <div class="jobs-detail-content" id="jobsDetailContent" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Systems Tab -->
+    <div class="systems-container" id="systemsTab" style="display:none">
+      <div class="systems-main">
+        <div class="systems-header">
+          <h2>Systems Status</h2>
+          <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
+        </div>
+        <div class="systems-summary" id="systemsSummary">
+          <div style="padding:20px;color:var(--text-dim);text-align:center">Loading...</div>
+        </div>
+        <div class="systems-categories" id="systemsCategories"></div>
+        <div class="systems-section">
+          <h3>Recent Degradation Events</h3>
+          <div class="systems-events" id="systemsEvents">
+            <div style="padding:12px;color:var(--text-dim);text-align:center">No events</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3613,6 +3840,12 @@
         panels: ['discoveryTab'],
         display: ['flex'],
         onActivate: () => { if (!discoveryLoaded) loadDiscovery(); },
+      },
+      {
+        id: 'systems',
+        panels: ['systemsTab'],
+        display: ['flex'],
+        onActivate: () => { loadSystems(); },
       },
     ];
 
@@ -5233,6 +5466,114 @@
           </span>
         </div>`;
       }).join('');
+    }
+
+    // ── Systems Tab ──────────────────────────────────────────────
+    let systemsData = null;
+
+    async function loadSystems() {
+      try {
+        systemsData = await apiFetch('/systems/status');
+        renderSystems();
+      } catch (e) {
+        document.getElementById('systemsSummary').innerHTML =
+          '<div style="padding:20px;color:var(--red);text-align:center">Failed to load systems status</div>';
+      }
+    }
+
+    function renderSystems() {
+      if (!systemsData) return;
+      const { uptime, categories, recentEvents } = systemsData;
+
+      // Summary
+      let totalProcesses = 0;
+      let healthyProcesses = 0;
+      let errorProcesses = 0;
+      for (const cat of categories) {
+        for (const p of cat.processes) {
+          totalProcesses++;
+          if (p.status === 'running') healthyProcesses++;
+          if (p.status === 'error') errorProcesses++;
+        }
+      }
+      const uptimeStr = formatUptimeClient(uptime);
+
+      document.getElementById('systemsSummary').innerHTML = `
+        <div class="systems-summary-card">
+          <div class="summary-value" style="color:var(--accent)">${healthyProcesses}/${totalProcesses}</div>
+          <div class="summary-label">Processes Healthy</div>
+        </div>
+        <div class="systems-summary-card">
+          <div class="summary-value" style="color:${errorProcesses > 0 ? 'var(--red)' : 'var(--text-dim)'}">${errorProcesses}</div>
+          <div class="summary-label">Errors</div>
+        </div>
+        <div class="systems-summary-card">
+          <div class="summary-value">${esc(uptimeStr)}</div>
+          <div class="summary-label">Uptime</div>
+        </div>
+        <div class="systems-summary-card">
+          <div class="summary-value">${recentEvents.length}</div>
+          <div class="summary-label">Recent Events</div>
+        </div>`;
+
+      // Categories
+      const catEl = document.getElementById('systemsCategories');
+      catEl.innerHTML = categories.map(cat => {
+        const running = cat.processes.filter(p => p.status === 'running').length;
+        const hasError = cat.processes.some(p => p.status === 'error');
+        const hasDisabled = cat.processes.some(p => p.status === 'not tracked' || p.status === 'disabled');
+        const dotColor = hasError ? 'var(--red)' : (running === 0 ? 'var(--text-dim)' : (hasDisabled ? 'var(--orange)' : 'var(--accent)'));
+
+        const processCards = cat.processes.map(p => {
+          const pDotColor = p.status === 'running' ? 'var(--accent)' :
+                            p.status === 'error' ? 'var(--red)' :
+                            p.status === 'disabled' ? 'var(--orange)' : 'var(--text-dim)';
+          return `<div class="systems-process-card">
+            <span class="systems-process-dot" style="background:${pDotColor}"></span>
+            <span class="systems-process-name">${esc(p.name)}</span>
+            <span class="systems-process-status">${esc(p.status)}</span>
+          </div>`;
+        }).join('');
+
+        return `<div class="systems-category" data-cat="${esc(cat.id)}">
+          <div class="systems-category-header" onclick="toggleSystemsCategory(this)">
+            <span class="systems-category-arrow">&#9654;</span>
+            <span class="systems-category-dot" style="background:${dotColor}"></span>
+            <span class="systems-category-name">${esc(cat.name)}</span>
+            <span class="systems-category-count">${running}/${cat.processes.length} active</span>
+          </div>
+          <div class="systems-category-body">${processCards}</div>
+        </div>`;
+      }).join('');
+
+      // Events
+      const eventsEl = document.getElementById('systemsEvents');
+      if (recentEvents.length === 0) {
+        eventsEl.innerHTML = '<div style="padding:12px;color:var(--text-dim);text-align:center">No degradation events</div>';
+      } else {
+        eventsEl.innerHTML = recentEvents.map(e => {
+          const time = e.timestamp ? new Date(e.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+          return `<div class="systems-event-row">
+            <span class="systems-event-time">${esc(time)}</span>
+            <span class="systems-event-text">${esc(e.narrative || e.subsystem || 'Unknown event')}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    function toggleSystemsCategory(headerEl) {
+      const cat = headerEl.closest('.systems-category');
+      cat.classList.toggle('expanded');
+    }
+
+    function formatUptimeClient(ms) {
+      const s = Math.floor(ms / 1000);
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (d > 0) return d + 'd ' + h + 'h';
+      if (h > 0) return h + 'h ' + m + 'm';
+      return m + 'm';
     }
 
     // Handle tab visibility — close SSE when tab is backgrounded

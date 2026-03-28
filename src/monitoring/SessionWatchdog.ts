@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 
 /** Drop-in replacement for execSync that avoids its security concerns. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -554,6 +555,7 @@ export class SessionWatchdog extends EventEmitter {
         fs.mkdirSync(dir, { recursive: true });
       }
       fs.appendFileSync(this.logPath, JSON.stringify(event) + '\n');
+      maybeRotateJsonl(this.logPath); // 10MB default, keep 75%
     } catch {
       // @silent-fallback-ok — persistence failure is non-critical
     }

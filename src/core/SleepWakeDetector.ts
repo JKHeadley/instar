@@ -17,11 +17,17 @@ export interface SleepWakeDetectorConfig {
   driftThresholdMs?: number;
 }
 
+export interface WakeEvent {
+  sleepDurationSeconds: number;
+  timestamp: string;
+}
+
 export class SleepWakeDetector extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private lastTick: number = Date.now();
   private checkIntervalMs: number;
   private driftThresholdMs: number;
+  private wakeHistory: WakeEvent[] = [];
 
   constructor(config: SleepWakeDetectorConfig = {}) {
     super();
@@ -41,7 +47,10 @@ export class SleepWakeDetector extends EventEmitter {
       if (elapsed > this.driftThresholdMs) {
         const sleepDuration = Math.round((elapsed - this.checkIntervalMs) / 1000);
         console.log(`[SleepWakeDetector] Wake detected after ~${sleepDuration}s sleep`);
-        this.emit('wake', { sleepDurationSeconds: sleepDuration, timestamp: new Date().toISOString() });
+        const event: WakeEvent = { sleepDurationSeconds: sleepDuration, timestamp: new Date().toISOString() };
+        this.wakeHistory.push(event);
+        if (this.wakeHistory.length > 100) this.wakeHistory.shift();
+        this.emit('wake', event);
       }
     }, this.checkIntervalMs);
     this.interval.unref(); // Don't prevent process exit in CLI contexts
@@ -52,5 +61,16 @@ export class SleepWakeDetector extends EventEmitter {
       clearInterval(this.interval);
       this.interval = null;
     }
+  }
+
+  /** Get wake event stats for telemetry reporting. */
+  getStats(sinceMs?: number): { wakeCount: number; totalSleepSeconds: number; longestSleepSeconds: number } {
+    const since = sinceMs ?? 0;
+    const relevant = this.wakeHistory.filter(e => new Date(e.timestamp).getTime() >= since);
+    return {
+      wakeCount: relevant.length,
+      totalSleepSeconds: relevant.reduce((sum, e) => sum + e.sleepDurationSeconds, 0),
+      longestSleepSeconds: relevant.length > 0 ? Math.max(...relevant.map(e => e.sleepDurationSeconds)) : 0,
+    };
   }
 }

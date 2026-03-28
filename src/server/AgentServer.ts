@@ -146,59 +146,61 @@ export class AgentServer {
 
     // PIN-based dashboard unlock — exchanges a short PIN for the auth token.
     // Placed before auth middleware so the dashboard can call it without a token.
-    // Register PIN unlock endpoint if we have both a PIN and an auth token.
-    // Both are auto-generated on server start, so this should always be true
-    // for properly initialized servers. Log a warning if either is missing.
-    if (!options.config.dashboardPin || !options.config.authToken) {
-      console.warn('[dashboard] Missing dashboardPin or authToken — PIN authentication will be unavailable.');
-    }
-    if (options.config.dashboardPin && options.config.authToken) {
-      const pinAttempts = new Map<string, { count: number; resetAt: number }>();
-      const MAX_ATTEMPTS = 5;
-      const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
+    // Route is registered unconditionally so it works even when dashboardPin is
+    // generated after AgentServer construction (first-boot timing issue).
+    // Config values are checked at request time via this.config which may be
+    // updated by LiveConfig/PostUpdateMigrator after construction.
+    const pinAttempts = new Map<string, { count: number; resetAt: number }>();
+    const MAX_ATTEMPTS = 5;
+    const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
+    const configRef = this.config;
 
-      this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
-        const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
+      if (!configRef.dashboardPin || !configRef.authToken) {
+        res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
+        return;
+      }
 
-        // Rate limit by IP
-        const now = Date.now();
-        let entry = pinAttempts.get(ip);
-        if (entry && now > entry.resetAt) {
-          pinAttempts.delete(ip);
-          entry = undefined;
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+
+      // Rate limit by IP
+      const now = Date.now();
+      let entry = pinAttempts.get(ip);
+      if (entry && now > entry.resetAt) {
+        pinAttempts.delete(ip);
+        entry = undefined;
+      }
+      if (entry && entry.count >= MAX_ATTEMPTS) {
+        res.status(429).json({ error: 'Too many attempts. Try again later.' });
+        return;
+      }
+
+      const { pin } = req.body;
+      if (!pin || typeof pin !== 'string') {
+        res.status(400).json({ error: 'Missing PIN' });
+        return;
+      }
+
+      const ha = createHash('sha256').update(pin).digest();
+      const hb = createHash('sha256').update(configRef.dashboardPin).digest();
+      if (!timingSafeEqual(ha, hb)) {
+        // Track failed attempt
+        if (!entry) {
+          entry = { count: 0, resetAt: now + WINDOW_MS };
+          pinAttempts.set(ip, entry);
         }
-        if (entry && entry.count >= MAX_ATTEMPTS) {
-          res.status(429).json({ error: 'Too many attempts. Try again later.' });
-          return;
-        }
+        entry.count++;
+        const remaining = MAX_ATTEMPTS - entry.count;
+        res.status(403).json({
+          error: 'Incorrect PIN',
+          attemptsRemaining: remaining,
+        });
+        return;
+      }
 
-        const { pin } = req.body;
-        if (!pin || typeof pin !== 'string') {
-          res.status(400).json({ error: 'Missing PIN' });
-          return;
-        }
-
-        const ha = createHash('sha256').update(pin).digest();
-        const hb = createHash('sha256').update(options.config.dashboardPin!).digest();
-        if (!timingSafeEqual(ha, hb)) {
-          // Track failed attempt
-          if (!entry) {
-            entry = { count: 0, resetAt: now + WINDOW_MS };
-            pinAttempts.set(ip, entry);
-          }
-          entry.count++;
-          const remaining = MAX_ATTEMPTS - entry.count;
-          res.status(403).json({
-            error: 'Incorrect PIN',
-            attemptsRemaining: remaining,
-          });
-          return;
-        }
-
-        // PIN correct — return the auth token
-        res.json({ token: options.config.authToken });
-      });
-    }
+      // PIN correct — return the auth token
+      res.json({ token: configRef.authToken });
+    });
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
     // their own machineAuth scheme (Ed25519 signatures, not bearer tokens).

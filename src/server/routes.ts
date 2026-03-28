@@ -3139,7 +3139,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: 'topicId must be a number' });
       return;
     }
-    const { text } = req.body;
+    const { text, metadata } = req.body;
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });
       return;
@@ -3150,9 +3150,13 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     try {
-      await ctx.telegram.sendToTopic(topicId, text);
-      // Clear injection tracker — the agent has responded to this topic
-      ctx.sessionManager.clearInjectionTracker(topicId);
+      const isProxy = metadata?.isProxy === true;
+      await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
+      // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
+      // Proxy messages should not reset stall detection timers
+      if (!isProxy) {
+        ctx.sessionManager.clearInjectionTracker(topicId);
+      }
       res.json({ ok: true, topicId });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -5717,6 +5721,137 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Triage failed' });
     }
+  });
+
+  // ── Systems Status (aggregated subsystem overview) ────────────────
+
+  router.get('/systems/status', (_req, res) => {
+    const uptimeMs = Date.now() - ctx.startTime.getTime();
+
+    interface ProcessInfo {
+      name: string;
+      enabled: boolean;
+      status: 'running' | 'disabled' | 'error' | 'not tracked';
+      details?: unknown;
+    }
+
+    interface Category {
+      id: string;
+      name: string;
+      processes: ProcessInfo[];
+    }
+
+    function proc(name: string, subsystem: unknown, statusFn?: () => unknown): ProcessInfo {
+      if (!subsystem) return { name, enabled: false, status: 'not tracked' };
+      try {
+        const details = statusFn ? statusFn() : undefined;
+        return { name, enabled: true, status: 'running', details };
+      } catch {
+        return { name, enabled: true, status: 'error' };
+      }
+    }
+
+    const categories: Category[] = [
+      {
+        id: 'session-management',
+        name: 'Session Management & Recovery',
+        processes: [
+          proc('SessionWatchdog', ctx.watchdog, () => ctx.watchdog?.getStatus()),
+          proc('StallTriageNurse', ctx.triageNurse, () => ctx.triageNurse?.getStatus()),
+          proc('SessionActivitySentinel', ctx.activitySentinel),
+          proc('SessionSummarySentinel', ctx.summarySentinel),
+          proc('SpawnRequestManager', ctx.spawnManager),
+        ],
+      },
+      {
+        id: 'coherence-integrity',
+        name: 'Coherence & Integrity',
+        processes: [
+          proc('CoherenceMonitor', ctx.coherenceMonitor, () => ctx.coherenceMonitor?.getLastReport()),
+          proc('CoherenceGate (Scope)', ctx.coherenceGate),
+          proc('ResponseReviewGate', ctx.responseReviewGate),
+          proc('CanonicalState', ctx.canonicalState),
+          proc('InstructionsVerifier', ctx.instructionsVerifier),
+        ],
+      },
+      {
+        id: 'resource-monitoring',
+        name: 'Resource Monitoring',
+        processes: [
+          proc('MemoryPressureMonitor', ctx.memoryMonitor, () => ctx.memoryMonitor?.getState()),
+          proc('OrphanProcessReaper', ctx.orphanReaper, () => ctx.orphanReaper?.getLastReport()),
+          proc('QuotaTracker', ctx.quotaTracker, () => ctx.quotaTracker?.getState()),
+          proc('QuotaManager', ctx.quotaManager),
+        ],
+      },
+      {
+        id: 'scheduling-jobs',
+        name: 'Scheduling & Jobs',
+        processes: [
+          proc('JobScheduler', ctx.scheduler),
+          proc('CommitmentTracker', ctx.commitmentTracker, () => ({ active: ctx.commitmentTracker?.getActive().length ?? 0 })),
+        ],
+      },
+      {
+        id: 'messaging-communication',
+        name: 'Messaging & Communication',
+        processes: [
+          proc('Telegram', ctx.telegram),
+          proc('WhatsApp', ctx.whatsapp),
+          proc('MessageBridge', ctx.messageBridge),
+          proc('MessageRouter', ctx.messageRouter),
+        ],
+      },
+      {
+        id: 'knowledge-memory',
+        name: 'Knowledge & Memory',
+        processes: [
+          proc('TopicMemory', ctx.topicMemory),
+          proc('SemanticMemory', ctx.semanticMemory),
+          proc('WorkingMemoryAssembler', ctx.workingMemory),
+          proc('SelfKnowledgeTree', ctx.selfKnowledgeTree),
+        ],
+      },
+      {
+        id: 'safety-trust',
+        name: 'Safety & Trust',
+        processes: [
+          proc('ExternalOperationGate', ctx.operationGate),
+          proc('MessageSentinel', ctx.sentinel),
+          proc('AdaptiveTrust', ctx.adaptiveTrust),
+          proc('AutonomyManager', ctx.autonomyManager),
+        ],
+      },
+      {
+        id: 'evolution-discovery',
+        name: 'Evolution & Discovery',
+        processes: [
+          proc('EvolutionManager', ctx.evolution),
+          proc('AutonomousEvolution', ctx.autonomousEvolution),
+          proc('CapabilityMapper', ctx.capabilityMapper),
+          proc('CoverageAuditor', ctx.coverageAuditor),
+        ],
+      },
+      {
+        id: 'infrastructure',
+        name: 'Infrastructure & Networking',
+        processes: [
+          proc('TunnelManager', ctx.tunnel),
+          proc('WorktreeMonitor', ctx.worktreeMonitor),
+          proc('ThreadlineRouter', ctx.threadlineRouter),
+          proc('SystemReviewer', ctx.systemReviewer, () => ctx.systemReviewer?.getHealthStatus()),
+        ],
+      },
+    ];
+
+    // Recent degradation events
+    const allEvents = DegradationReporter.getInstance().getEvents();
+    const recentEvents = allEvents.slice(-20).reverse().map(e => ({
+      ...e,
+      narrative: DegradationReporter.narrativeFor(e),
+    }));
+
+    res.json({ uptime: uptimeMs, categories, recentEvents });
   });
 
   // ── External Operation Safety ────────────────────────────────────
