@@ -757,7 +757,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * Send a message to a specific forum topic.
    * Returns the Telegram message ID for delivery confirmation.
    */
-  async sendToTopic(topicId: number, text: string, options?: { silent?: boolean }): Promise<SendResult> {
+  async sendToTopic(topicId: number, text: string, options?: { silent?: boolean; skipStallClear?: boolean }): Promise<SendResult> {
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
       text,
@@ -787,7 +787,10 @@ export class TelegramAdapter implements MessagingAdapter {
     });
 
     // Clear stall tracking for this topic (agent responded)
-    this.clearStallForTopic(topicId);
+    // Skip for proxy messages — PresenceProxy messages should NOT reset stall timers
+    if (!options?.skipStallClear) {
+      this.clearStallForTopic(topicId);
+    }
 
     // Promise tracking — detect agent "working on it" messages that need follow-through
     const sessionName = this.topicToSession.get(topicId);
