@@ -2546,7 +2546,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Write to a temp file and send via tmux to avoid escaping issues
                 const msgFile = path.join(tmpDir, `inject-${Date.now()}.txt`);
                 fs.writeFileSync(msgFile, bootstrapMessage);
-                execSync(`tmux send-keys -t '=${existingSession}' "$(cat '${msgFile}')" Enter`, { timeout: 5000 });
+                execSync(`tmux send-keys -t '=${existingSession}:' "$(cat '${msgFile}')" Enter`, { timeout: 5000 });
                 fs.unlinkSync(msgFile);
               } catch (injectErr) {
                 console.error(`[slack→session] Injection failed: ${injectErr instanceof Error ? injectErr.message : injectErr}`);

@@ -3146,7 +3146,7 @@
 
         el.innerHTML = `
           <div class="session-name-row">
-            <div class="session-name">${escapeHtml(session.name)}</div>
+            <div class="session-name">${escapeHtml(session.platformName || session.name)}</div>
             <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>
           </div>
           <div class="session-meta">

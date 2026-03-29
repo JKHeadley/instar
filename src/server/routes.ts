@@ -2344,12 +2344,14 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
-      // Add platform indicator
+      // Add platform indicator and display name
       if (ctx.telegram) {
         const topicId = ctx.telegram.getTopicForSession?.(s.tmuxSession);
         if (topicId) {
           result.platform = 'telegram';
           result.platformId = topicId;
+          const topicName = ctx.telegram.getTopicName?.(topicId);
+          if (topicName) result.platformName = topicName;
         }
       }
       if (!result.platform && ctx.slack) {
@@ -2357,6 +2359,8 @@ export function createRoutes(ctx: RouteContext): Router {
         if (channelId) {
           result.platform = 'slack';
           result.platformId = channelId;
+          const registry = ctx.slack.getChannelRegistry();
+          if (registry[channelId]?.channelName) result.platformName = registry[channelId].channelName;
         }
       }
       if (!result.platform) {

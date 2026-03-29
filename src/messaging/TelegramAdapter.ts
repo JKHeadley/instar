@@ -3106,8 +3106,10 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Auto-capture topic name from reply_to_message
     if (msg.reply_to_message?.forum_topic_created?.name) {
-      if (!this.topicToName.has(numericTopicId)) {
-        this.topicToName.set(numericTopicId, msg.reply_to_message.forum_topic_created.name);
+      const currentName = this.topicToName.get(numericTopicId);
+      const realName = msg.reply_to_message.forum_topic_created.name;
+      if (!currentName || /^topic-\d+$/.test(currentName)) {
+        this.topicToName.set(numericTopicId, realName);
         this.saveRegistry();
       }
     }

@@ -10,6 +10,40 @@ import path from 'node:path';
 import readline from 'node:readline';
 import pc from 'picocolors';
 
+/**
+ * Check if Slack event subscriptions are configured by connecting via WebSocket
+ * and looking for event-related payloads. A connected WebSocket that receives
+ * a hello with connection_info suggests events are wired up.
+ */
+async function checkEventSubscriptions(wsUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      ws.close();
+      resolve(false);
+    }, 5000);
+
+    const ws = new WebSocket(wsUrl);
+
+    ws.addEventListener('message', (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data));
+        // Socket Mode sends a hello event on connect. If it includes
+        // connection_info.app_id, the app has event subscriptions configured.
+        if (data.type === 'hello' && data.connection_info) {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(true);
+        }
+      } catch { /* ignore parse errors */ }
+    });
+
+    ws.addEventListener('error', () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+  });
+}
+
 function readLine(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
@@ -129,6 +163,37 @@ export async function addSlack(): Promise<void> {
     console.log(`  Workspace: ${authData.team}`);
     console.log(`  Authorized user: ${authData.user_id}`);
     console.log();
+
+    // Check if event subscriptions are configured by connecting via WebSocket
+    // and waiting briefly for the hello event
+    console.log(pc.dim('Checking event subscriptions...'));
+    const wsUrl = connData.url as string;
+    let eventsConfigured = false;
+    try {
+      eventsConfigured = await checkEventSubscriptions(wsUrl);
+    } catch { /* best-effort check */ }
+
+    if (!eventsConfigured) {
+      console.log();
+      console.log(pc.yellow('⚠  Event subscriptions may not be configured.'));
+      console.log(pc.yellow('   Your bot can send messages but won\'t receive them without event subscriptions.'));
+      console.log();
+      console.log('   Go to: ' + pc.cyan(`https://api.slack.com/apps → Your App → Event Subscriptions`));
+      console.log('   1. Enable Events');
+      console.log('   2. Subscribe to bot events:');
+      console.log(`      ${pc.dim('message.channels')}  — messages in public channels`);
+      console.log(`      ${pc.dim('message.groups')}    — messages in private channels`);
+      console.log(`      ${pc.dim('message.im')}        — direct messages`);
+      console.log(`      ${pc.dim('app_mention')}       — @mentions of your bot`);
+      console.log('   3. Save Changes');
+      console.log();
+      console.log('   Or recreate the app using a manifest (includes subscriptions automatically):');
+      console.log(`   ${pc.cyan('https://api.slack.com/apps?new_app=1')}`);
+      console.log();
+    } else {
+      console.log(pc.green('  Event subscriptions are configured'));
+    }
+
     console.log(`Restart the server to apply: ${pc.cyan('instar server stop && instar server start')}`);
 
   } catch (err) {
