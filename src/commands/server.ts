@@ -1144,6 +1144,11 @@ function wireIMessageRouting(
   sessionManager: SessionManager,
 ): void {
   const spawningSenders = new Set<string>();
+  // Queue messages that arrive while a spawn is in progress.
+  // On startup with lookback, multiple messages arrive at once — the first triggers
+  // a spawn, the rest must wait. Without queuing, they inject into a session that
+  // isn't ready yet, causing it to crash.
+  const pendingMessages = new Map<string, Array<{ text: string; senderName?: string }>>();
 
   // Wire session alive check for stall detection
   imessage.setIsSessionAlive((sessionName) => sessionManager.isSessionAlive(sessionName));
@@ -1210,72 +1215,82 @@ function wireIMessageRouting(
     // Check for existing session
     const targetSession = imessage.getSessionForSender(sender);
 
+    // If a spawn is in progress for this sender, queue the message
+    if (spawningSenders.has(senderNorm)) {
+      const queue = pendingMessages.get(senderNorm) || [];
+      queue.push({ text, senderName });
+      pendingMessages.set(senderNorm, queue);
+      console.log(`[imessage→session] Queued message during spawn (${queue.length} pending): "${text.slice(0, 60)}"`);
+      return;
+    }
+
     if (targetSession && sessionManager.isSessionAlive(targetSession)) {
       // Session alive — inject directly
       console.log(`[imessage→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
       sessionManager.injectIMessageMessage(targetSession, sender, text, senderName);
       imessage.trackMessageInjection(sender, targetSession, text);
     } else {
-      // Session dead or missing — spawn a new one, then inject the message
-      // CRITICAL: Spawn WITHOUT an initial message, then inject AFTER the session
-      // is alive. Passing the message into spawnInteractiveSession uses an internal
-      // injection path that kills sessions. Spawning empty + injecting separately
-      // (the same path used for subsequent messages) keeps sessions alive.
-      if (spawningSenders.has(senderNorm)) {
-        console.log(`[imessage→session] Spawn already in progress for ${(imessage.constructor as any).maskIdentifier?.(sender) || sender}`);
-        return;
-      }
+      // Session dead or missing — spawn a new one, then inject
       spawningSenders.add(senderNorm);
       try {
-        const action = targetSession ? 'respawning' : 'auto-spawning';
-        console.log(`[imessage→session] ${action} session for ${(imessage.constructor as any).maskIdentifier?.(sender) || sender}...`);
+        console.log(`[imessage→session] Spawning session for ${(imessage.constructor as any).maskIdentifier?.(sender) || sender}...`);
 
         // Write context + relay instructions to temp file
-        const bootstrap = buildIMessageBootstrap(sender, text, senderName,
+        buildIMessageBootstrap(sender, text, senderName,
           imessage.getConversationContext(sender, 30) || undefined);
 
-        // Spawn empty session (no initial message — this stays alive)
+        // Spawn empty session (no initial message — avoids the broken internal injection path)
         const sessionName = `im-${sender.replace(/[^a-zA-Z0-9]/g, '').slice(-6)}`;
         const newSession = await sessionManager.spawnInteractiveSession(
-          undefined,  // NO initial message
+          undefined,
           sessionName,
         );
         imessage.registerSession(sender, newSession);
 
-        // Wait for Claude to be ready, then inject via the normal message path
-        // This is the same injection method used for subsequent messages (proven to work)
+        // Wait for Claude to be ready before injecting
         const waitStart = Date.now();
-        const maxWait = 30_000;
-        const checkInterval = 500;
-        let injected = false;
+        const maxWait = 90_000;
+        let ready = false;
 
         while (Date.now() - waitStart < maxWait) {
-          await new Promise(r => setTimeout(r, checkInterval));
+          await new Promise(r => setTimeout(r, 500));
           if (!sessionManager.isSessionAlive(newSession)) {
             console.error(`[imessage→session] Session "${newSession}" died during startup`);
             break;
           }
-          // Check if Claude's prompt is visible (session is ready for input)
           const output = sessionManager.captureOutput(newSession, 20);
           if (output && (output.includes('❯') || output.includes('bypass permissions') || /\/effort/.test(output))) {
-            // Ready — inject the message
-            await new Promise(r => setTimeout(r, 1000)); // stabilization
-            sessionManager.injectIMessageMessage(newSession, sender, text, senderName);
-            imessage.trackMessageInjection(sender, newSession, text);
-            injected = true;
-            console.log(`[imessage→session] Spawned "${newSession}" and injected message (${Date.now() - waitStart}ms)`);
+            ready = true;
             break;
           }
         }
 
-        if (!injected && sessionManager.isSessionAlive(newSession)) {
-          // Timeout but session alive — inject anyway
+        if (ready) {
+          await new Promise(r => setTimeout(r, 1500)); // stabilization
+          // Inject the triggering message
           sessionManager.injectIMessageMessage(newSession, sender, text, senderName);
           imessage.trackMessageInjection(sender, newSession, text);
-          console.log(`[imessage→session] Spawned "${newSession}" — injected after timeout (session alive)`);
+          console.log(`[imessage→session] Spawned "${newSession}" and injected (${Date.now() - waitStart}ms)`);
+
+          // Drain queued messages (arrived during spawn)
+          const queued = pendingMessages.get(senderNorm) || [];
+          if (queued.length > 0) {
+            // Combine queued messages into one injection to avoid flooding
+            const combined = queued.map(q => q.text).join('\n');
+            await new Promise(r => setTimeout(r, 2000)); // let Claude process first message
+            sessionManager.injectIMessageMessage(newSession, sender, combined, senderName);
+            console.log(`[imessage→session] Drained ${queued.length} queued messages into "${newSession}"`);
+          }
+          pendingMessages.delete(senderNorm);
+        } else if (sessionManager.isSessionAlive(newSession)) {
+          // Timeout but alive — inject anyway
+          sessionManager.injectIMessageMessage(newSession, sender, text, senderName);
+          console.log(`[imessage→session] Spawned "${newSession}" — injected after timeout`);
+          pendingMessages.delete(senderNorm);
         }
       } catch (err) {
         console.error(`[imessage→session] Spawn failed:`, err);
+        pendingMessages.delete(senderNorm);
       } finally {
         spawningSenders.delete(senderNorm);
       }

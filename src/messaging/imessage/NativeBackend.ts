@@ -130,8 +130,13 @@ export class NativeBackend extends EventEmitter {
 
       this.stmtMaxRowId = this.db.prepare('SELECT MAX(ROWID) AS max_id FROM message');
 
+      // Start from a lookback window so recent messages are processed on startup.
+      // Without this, messages that arrived while the server was down are silently
+      // skipped — the adapter only sees messages with ROWID > lastRowId.
+      // A 50-message lookback ensures we catch anything from the last few hours.
       const maxRow = this.stmtMaxRowId.get() as { max_id: number } | undefined;
-      this.lastRowId = maxRow?.max_id ?? 0;
+      const maxId = maxRow?.max_id ?? 0;
+      this.lastRowId = Math.max(0, maxId - 50);
 
       this._setState('connected');
       this._startPolling();

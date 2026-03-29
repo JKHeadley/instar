@@ -276,6 +276,14 @@ export class SessionManager extends EventEmitter {
     try {
       const running = this.state.listSessions({ status: 'running' });
       for (const session of running) {
+        // Grace period: don't check sessions that started less than 15 seconds ago.
+        // Claude Code takes several seconds to start — the process might not be
+        // visible in tmux yet when the monitor runs its first check.
+        if (session.startedAt) {
+          const ageMs = Date.now() - new Date(session.startedAt).getTime();
+          if (ageMs < 15_000) continue;
+        }
+
         const alive = await this.isSessionAliveAsync(session.tmuxSession);
         if (!alive) {
           // Check if this session had a pending Telegram injection that never got a response
@@ -613,7 +621,7 @@ export class SessionManager extends EventEmitter {
         timeout: 5000,
       });
     } catch {
-      // @silent-fallback-ok — session existence check
+      // tmux session doesn't exist — it's dead
       return false;
     }
 
@@ -633,7 +641,12 @@ export class SessionManager extends EventEmitter {
         if (startCmd && startCmd !== paneCmd) {
           return true;
         }
+        console.log(`[SessionManager] Session "${tmuxSession}" has bare shell (${paneCmd}) — marking dead. start_command: ${startCmd}`);
         return false;
+      }
+      // Unknown command — log it and assume alive
+      if (paneCmd) {
+        console.log(`[SessionManager] Session "${tmuxSession}" has unknown pane command: "${paneCmd}" — assuming alive`);
       }
       return true;
     } catch {
@@ -1641,6 +1654,8 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Detect whether Claude Code's prompt is visible in a tmux session.
+   * Also auto-accepts consent dialogs that block startup.
+   *
    * Checks multiple indicators across a wider capture window to handle
    * varying TUI layouts (different terminal sizes, large banners, etc.)
    */
@@ -1652,6 +1667,26 @@ export class SessionManager extends EventEmitter {
 
     const lines = output.split('\n').filter(l => l.trim());
     if (lines.length === 0) return false;
+
+    // Auto-accept consent/ToS dialogs that block startup.
+    // Claude Code shows "1. No, exit / 2. Yes, I accept" on first run or after updates.
+    // If we don't accept, any injected text selects "No" and crashes the session.
+    const fullText = lines.join('\n');
+    if (fullText.includes('Yes, I accept') && fullText.includes('No, exit')) {
+      console.log(`[SessionManager] Consent dialog detected in "${tmuxSession}" — auto-accepting`);
+      try {
+        // Press Down to select "Yes, I accept", then Enter to confirm
+        execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Down'], {
+          encoding: 'utf-8', timeout: 5000,
+        });
+        execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'], {
+          encoding: 'utf-8', timeout: 5000,
+        });
+      } catch {
+        // Best-effort — if this fails, the session will be stuck but not crashed
+      }
+      return false; // Not ready yet — will be ready on next poll
+    }
 
     // Check the last 6 non-blank lines for readiness indicators.
     // Claude Code's TUI shows: prompt (❯), status bar (bypass permissions / model info),
