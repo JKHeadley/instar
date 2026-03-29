@@ -3289,6 +3289,20 @@ export function createRoutes(ctx: RouteContext): Router {
 
     try {
       const ts = await ctx.slack.sendToChannel(channelId, text, { thread_ts });
+
+      // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)
+      if (ctx.slack.onMessageLogged) {
+        ctx.slack.onMessageLogged({
+          messageId: ts,
+          channelId,
+          text,
+          fromUser: false,
+          timestamp: new Date().toISOString(),
+          sessionName: null,
+          platform: 'slack',
+        });
+      }
+
       res.json({ ok: true, topicId: channelId, ts });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
