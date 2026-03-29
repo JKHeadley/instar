@@ -56,7 +56,22 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      - name: Check if NEXT.md has content to publish
+        id: guide-check
+        run: |
+          if [ ! -f "upgrades/NEXT.md" ]; then
+            echo "No NEXT.md found — nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif grep -q '\[Feature name\]' upgrades/NEXT.md && grep -q '\[Capability\]' upgrades/NEXT.md; then
+            echo "NEXT.md is still a template — nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "NEXT.md has content — proceeding with publish"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Determine next version
+        if: steps.guide-check.outputs.skip != 'true'
         id: bump
         run: |
           # Derive next version from what's actually on npm, not from package.json.
@@ -75,6 +90,7 @@ jobs:
           echo "Bumped npm $NPM_VERSION → $NEXT"
 
       - name: Rename NEXT.md to version-specific guide
+        if: steps.guide-check.outputs.skip != 'true'
         run: |
           if [ -f "upgrades/NEXT.md" ]; then
             mv upgrades/NEXT.md "upgrades/${{ steps.bump.outputs.version }}.md"
@@ -84,15 +100,18 @@ jobs:
           fi
 
       - name: Check upgrade guide
+        if: steps.guide-check.outputs.skip != 'true'
         run: node scripts/check-upgrade-guide.js
         continue-on-error: false
 
       - name: Publish to npm
+        if: steps.guide-check.outputs.skip != 'true'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Commit version bump & tag
+        if: steps.guide-check.outputs.skip != 'true'
         env:
           HUSKY: '0'
         run: |
