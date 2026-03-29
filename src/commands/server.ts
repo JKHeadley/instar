@@ -3491,20 +3491,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               throw new Error(`Reply failed: ${response.status}`);
             }
 
-            // Mirror standby messages to the CORRECT Slack channel (not attention channel).
-            // PresenceProxy fires with a Telegram topicId. We need to find the session
-            // bound to that topic, then find the Slack channel bound to that session.
-            if (_slackAdapter && text.startsWith('🔭')) {
-              // Find which session owns this Telegram topic
-              const sessionName = telegram?.getSessionForTopic?.(topicId);
-              if (sessionName) {
-                // Find the Slack channel bound to that session
-                const mirrorChannelId = _slackAdapter.getChannelForSession(sessionName);
-                if (mirrorChannelId) {
-                  _slackAdapter.sendToChannel(mirrorChannelId, text).catch(() => {});
-                }
-              }
-            }
+            // Slack standby is now handled directly via its own PresenceProxy wiring
+            // (Slack onMessageLogged → synthetic ID → PresenceProxy → sendMessage → Slack channel).
+            // No more Telegram→Slack mirroring — that caused standby spam when only Telegram was active.
           },
           getAuthorizedUserIds: () => {
             const ids = config.messaging?.[0]?.config?.authorizedUserIds;
