@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { GitSyncManager } from '../../src/core/GitSync.js';
 import type { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import type { SecurityLog } from '../../src/core/SecurityLog.js';
@@ -52,8 +53,22 @@ describe('GitSyncManager.isGitRepo()', () => {
     expect(gitSync.isGitRepo()).toBe(false);
   });
 
-  it('returns true when .git/ exists', () => {
+  it('returns false when .git/ exists but repo has no commits', () => {
     fs.mkdirSync(path.join(tmpDir, '.git'));
+
+    const gitSync = new GitSyncManager({
+      projectDir: tmpDir,
+      stateDir: path.join(tmpDir, '.instar'),
+      identityManager: makeMockIdentityManager(),
+      securityLog: makeMockSecurityLog(),
+      machineId: 'test-machine-001',
+    });
+
+    expect(gitSync.isGitRepo()).toBe(false);
+  });
+
+  it('returns true when .git/ exists and repo has commits', () => {
+    execSync('git init && git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore' });
 
     const gitSync = new GitSyncManager({
       projectDir: tmpDir,
