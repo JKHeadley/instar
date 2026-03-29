@@ -71,7 +71,12 @@ export class NativeBackend extends EventEmitter {
     try {
       const Database = (await import('better-sqlite3')).default;
 
-      this.db = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+      // Open without readonly flag — readonly mode cannot read the WAL (write-ahead log).
+      // Messages.app writes to WAL continuously; new messages only appear in WAL until
+      // a checkpoint flushes them to the main db file. query_only pragma prevents writes
+      // while still allowing WAL reads.
+      this.db = new Database(this.dbPath, { fileMustExist: true });
+      this.db.pragma('query_only = ON');
 
       this.stmtNewMessages = this.db.prepare(`
         SELECT m.ROWID, m.guid, m.text, m.date, m.is_from_me, m.service,
