@@ -3405,6 +3405,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Presence Proxy — Intelligent Response Standby (tiered status updates)
+    // Slack bridge: PresenceProxy uses numeric topicIds internally. For Slack channels,
+    // we assign stable negative synthetic IDs and route sendMessage to the correct platform.
+    const slackProxyChannelMap = new Map<number, string>(); // syntheticId -> Slack channelId
+    function slackChannelToSyntheticId(channelId: string): number {
+      // Stable hash: sum of char codes, negated to avoid Telegram topic ID collisions
+      let hash = 0;
+      for (let i = 0; i < channelId.length; i++) {
+        hash = ((hash << 5) - hash + channelId.charCodeAt(i)) | 0;
+      }
+      const syntheticId = -(Math.abs(hash) + 1); // Always negative, never 0
+      slackProxyChannelMap.set(syntheticId, channelId);
+      return syntheticId;
+    }
+
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {
       try {
@@ -3445,9 +3459,24 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
-          getSessionForTopic: (topicId) => telegram!.getSessionForTopic(topicId),
+          getSessionForTopic: (topicId) => {
+            // Check if this is a Slack synthetic ID
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              return _slackAdapter.getSessionForChannel(slackChId) ?? null;
+            }
+            return telegram!.getSessionForTopic(topicId);
+          },
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
           sendMessage: async (topicId, text, metadata) => {
+            // Check if this is a Slack synthetic ID (negative = Slack channel)
+            const slackChannelId = slackProxyChannelMap.get(topicId);
+            if (slackChannelId && _slackAdapter) {
+              // Route directly to Slack channel
+              await _slackAdapter.sendToChannel(slackChannelId, text);
+              return;
+            }
+
             // Send to Telegram
             const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
             const response = await fetch(url, {
@@ -3470,9 +3499,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               const sessionName = telegram?.getSessionForTopic?.(topicId);
               if (sessionName) {
                 // Find the Slack channel bound to that session
-                const slackChannelId = _slackAdapter.getChannelForSession(sessionName);
-                if (slackChannelId) {
-                  _slackAdapter.sendToChannel(slackChannelId, text).catch(() => {});
+                const mirrorChannelId = _slackAdapter.getChannelForSession(sessionName);
+                if (mirrorChannelId) {
+                  _slackAdapter.sendToChannel(mirrorChannelId, text).catch(() => {});
                 }
               }
             }
@@ -3535,6 +3564,31 @@ export async function startServer(options: StartOptions): Promise<void> {
         };
 
         presenceProxy.start();
+
+        // Wire Slack's onMessageLogged into PresenceProxy (if Slack is active)
+        if (_slackAdapter) {
+          const existingSlackCallback = _slackAdapter.onMessageLogged;
+          _slackAdapter.onMessageLogged = (entry) => {
+            if (existingSlackCallback) {
+              existingSlackCallback(entry);
+            }
+            // Convert Slack channelId to synthetic numeric ID for PresenceProxy
+            if (!entry.channelId) return;
+            const syntheticId = slackChannelToSyntheticId(String(entry.channelId));
+            presenceProxy!.onMessageLogged({
+              messageId: typeof entry.messageId === 'number' ? entry.messageId : parseInt(String(entry.messageId), 10) || 0,
+              channelId: syntheticId.toString(),
+              text: entry.text,
+              fromUser: entry.fromUser,
+              timestamp: entry.timestamp,
+              sessionName: entry.sessionName,
+              senderName: entry.senderName,
+              platformUserId: entry.platformUserId != null ? String(entry.platformUserId) : undefined,
+            });
+          };
+          console.log(pc.green('  Presence Proxy wired to Slack'));
+        }
+
         console.log(pc.green('  Presence Proxy enabled (🔭 [Standby])'));
       } catch (err) {
         console.error(`[PresenceProxy] Failed to initialize:`, err);
