@@ -3156,8 +3156,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // StallTriageNurse — LLM-powered session recovery (uses shared intelligence)
+    // Platform-aware: works with Telegram topics AND Slack channels
     let triageNurse: StallTriageNurse | undefined;
-    if (config.monitoring.triage?.enabled && telegram) {
+    if (config.monitoring.triage?.enabled && (telegram || _slackAdapter)) {
       triageNurse = new StallTriageNurse(
         {
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
@@ -3165,16 +3166,43 @@ export async function startServer(options: StartOptions): Promise<void> {
           sendKey: (name, key) => sessionManager.sendKey(name, key),
           sendInput: (name, text) => sessionManager.sendInput(name, text),
           getTopicHistory: (topicId, limit) => {
-            const entries = telegram!.getTopicHistory(topicId, limit);
-            return entries.map(e => ({
-              text: e.text,
-              fromUser: e.fromUser,
-              timestamp: e.timestamp,
-            }));
+            // Check if this is a Slack synthetic ID
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
+              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+            }
+            if (telegram) {
+              const entries = telegram.getTopicHistory(topicId, limit);
+              return entries.map(e => ({ text: e.text, fromUser: e.fromUser, timestamp: e.timestamp }));
+            }
+            return [];
           },
-          sendToTopic: (topicId, text) => telegram!.sendToTopic(topicId, text),
-          respawnSession: (name, topicId, options) => respawnSessionForTopic(sessionManager, telegram!, name, topicId, undefined, topicMemory, undefined, undefined, options),
-          clearStallForTopic: (topicId) => telegram!.clearStallTracking(topicId),
+          sendToTopic: async (topicId, text) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              await _slackAdapter.sendToChannel(slackChId, text);
+              return;
+            }
+            if (telegram) await telegram.sendToTopic(topicId, text);
+          },
+          respawnSession: (name, topicId, options) => {
+            if (telegram) {
+              return respawnSessionForTopic(sessionManager, telegram, name, topicId, undefined, topicMemory, undefined, undefined, options);
+            }
+            // Slack respawn: kill and let next message trigger fresh session
+            const stuckSession = sessionManager.listRunningSessions().find(s => s.tmuxSession === name);
+            if (stuckSession) sessionManager.killSession(stuckSession.id);
+            return Promise.resolve();
+          },
+          clearStallForTopic: (topicId) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              _slackAdapter.clearStallTracking(slackChId);
+              return;
+            }
+            if (telegram) telegram.clearStallTracking(topicId);
+          },
         },
         {
           config: config.monitoring.triage,
@@ -3183,9 +3211,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
       );
 
-      // Wire nurse into TelegramAdapter stall detection
+      // Wire nurse into stall detection — both Telegram and Slack
       // Note: presenceProxy may be set later — use late-binding check
-      telegram.onStallDetected = async (topicId, sessionName, messageText, injectedAt) => {
+      const stallTriageHandler = async (topicId: number, sessionName: string, messageText: string, injectedAt: number) => {
         // If PresenceProxy Tier 3 is actively handling this topic, defer to it
         if (presenceProxy) {
           const proxyState = presenceProxy.getState(topicId);
@@ -3201,12 +3229,17 @@ export async function startServer(options: StartOptions): Promise<void> {
         return { resolved: result.resolved };
       };
 
+      if (telegram) {
+        telegram.onStallDetected = stallTriageHandler;
+      }
+
       console.log(pc.green('  Stall Triage Nurse enabled'));
     }
 
     // TriageOrchestrator — next-gen session recovery with scoped Claude Code sessions
+    // Platform-aware: works with Telegram topics AND Slack channels
     let triageOrchestrator: TriageOrchestrator | undefined;
-    if (config.monitoring.triageOrchestrator?.enabled && telegram) {
+    if (config.monitoring.triageOrchestrator?.enabled && (telegram || _slackAdapter)) {
       triageOrchestrator = new TriageOrchestrator(
         {
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
@@ -3214,16 +3247,33 @@ export async function startServer(options: StartOptions): Promise<void> {
           sendKey: (name, key) => sessionManager.sendKey(name, key),
           sendInput: (name, text) => sessionManager.sendInput(name, text),
           getTopicHistory: (topicId, limit) => {
-            const entries = telegram!.getTopicHistory(topicId, limit);
-            return entries.map(e => ({
-              text: e.text,
-              fromUser: e.fromUser,
-              timestamp: e.timestamp,
-            }));
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
+              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+            }
+            if (telegram) {
+              const entries = telegram.getTopicHistory(topicId, limit);
+              return entries.map(e => ({ text: e.text, fromUser: e.fromUser, timestamp: e.timestamp }));
+            }
+            return [];
           },
-          sendToTopic: (topicId, text) => telegram!.sendToTopic(topicId, text),
-          respawnSession: (name, topicId, options) => respawnSessionForTopic(sessionManager, telegram!, name, topicId, undefined, topicMemory, undefined, undefined, options),
-          clearStallForTopic: (topicId) => telegram!.clearStallTracking(topicId),
+          sendToTopic: async (topicId, text) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) { await _slackAdapter.sendToChannel(slackChId, text); return; }
+            if (telegram) await telegram.sendToTopic(topicId, text);
+          },
+          respawnSession: (name, topicId, options) => {
+            if (telegram) return respawnSessionForTopic(sessionManager, telegram, name, topicId, undefined, topicMemory, undefined, undefined, options);
+            const stuckSession = sessionManager.listRunningSessions().find(s => s.tmuxSession === name);
+            if (stuckSession) sessionManager.killSession(stuckSession.id);
+            return Promise.resolve();
+          },
+          clearStallForTopic: (topicId) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) { _slackAdapter.clearStallTracking(slackChId); return; }
+            if (telegram) telegram.clearStallTracking(topicId);
+          },
           spawnTriageSession: (name, options) => sessionManager.spawnTriageSession(name, options),
           getTriageSessionUuid: (sessionName) => {
             return _topicResumeMap?.findUuidForSession(sessionName) ?? undefined;
@@ -3266,36 +3316,41 @@ export async function startServer(options: StartOptions): Promise<void> {
       );
 
       // TriageOrchestrator takes over stall detection from StallTriageNurse
-      telegram.onStallDetected = async (topicId, sessionName, messageText, injectedAt) => {
+      const triageStallHandler = async (topicId: number, sessionName: string, messageText: string, injectedAt: number) => {
         const result = await triageOrchestrator!.activate(topicId, sessionName, 'stall_detector', messageText, injectedAt);
         return { resolved: result.resolved };
       };
 
-      // Cancel triage when stall tracking clears (session responded)
-      const origClearStall = telegram.clearStallTracking.bind(telegram);
-      telegram.clearStallTracking = (topicId: number) => {
-        origClearStall(topicId);
-        triageOrchestrator!.onTargetSessionResponded(topicId);
-      };
+      if (telegram) {
+        telegram.onStallDetected = triageStallHandler;
 
-      // Wire /triage command
-      telegram.onGetTriageStatus = (topicId) => {
-        const ts = triageOrchestrator!.getTriageState(topicId);
-        if (!ts) return null;
-        return {
-          active: true,
-          classification: ts.classification,
-          checkCount: ts.checkCount,
-          lastCheck: new Date(ts.lastCheckAt).toISOString(),
+        // Cancel triage when stall tracking clears (session responded)
+        const origClearStall = telegram.clearStallTracking.bind(telegram);
+        telegram.clearStallTracking = (topicId: number) => {
+          origClearStall(topicId);
+          triageOrchestrator!.onTargetSessionResponded(topicId);
         };
-      };
+
+        // Wire /triage command
+        telegram.onGetTriageStatus = (topicId) => {
+          const ts = triageOrchestrator!.getTriageState(topicId);
+          if (!ts) return null;
+          return {
+            active: true,
+            classification: ts.classification,
+            checkCount: ts.checkCount,
+            lastCheck: new Date(ts.lastCheckAt).toISOString(),
+          };
+        };
+      }
 
       console.log(pc.green('  Triage Orchestrator enabled (replaces Stall Triage Nurse for stall detection)'));
     }
 
     // SessionRecovery — fast mechanical recovery (JSONL analysis, no LLM)
+    // Platform-aware: works with Telegram topics AND Slack channels
     let sessionRecovery: SessionRecovery | undefined;
-    if (telegram) {
+    if (telegram || _slackAdapter) {
       sessionRecovery = new SessionRecovery(
         { enabled: true, projectDir: config.projectDir },
         {
@@ -3309,6 +3364,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch { return null; }
           },
           killSession: (name) => {
+            // Route through SessionManager to fire beforeSessionKill hook
+            const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === name);
+            if (session) { sessionManager.killSession(session.id); return; }
+            // Fallback: direct tmux kill for untracked sessions
             try {
               const tmux = detectTmuxPath();
               if (!tmux) return;
@@ -3316,33 +3375,78 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch { /* may already be dead */ }
           },
           respawnSession: async (topicId, _sessionName, recoveryPrompt) => {
-            const targetSession = telegram!.getSessionForTopic(topicId);
-            if (!targetSession) return;
-            await respawnSessionForTopic(sessionManager, telegram!, targetSession, topicId, undefined, topicMemory, undefined, recoveryPrompt, { silent: true });
+            // Check Slack first (synthetic IDs are negative)
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              // Slack respawn: kill existing, next message triggers fresh session
+              const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === _sessionName);
+              if (session) sessionManager.killSession(session.id);
+              return;
+            }
+            if (telegram) {
+              const targetSession = telegram.getSessionForTopic(topicId);
+              if (!targetSession) return;
+              await respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, undefined, topicMemory, undefined, recoveryPrompt, { silent: true });
+            }
           },
-          sendToTopic: async (topicId, message) => { await telegram!.sendToTopic(topicId, message); },
+          sendToTopic: async (topicId, message) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) { await _slackAdapter.sendToChannel(slackChId, message); return; }
+            if (telegram) await telegram.sendToTopic(topicId, message);
+          },
         },
       );
       console.log(pc.green('  Session Recovery enabled (mechanical fast-path)'));
     }
 
     // SessionMonitor — proactive session health monitoring
+    // Platform-aware: monitors both Telegram and Slack sessions
     let sessionMonitor: SessionMonitor | undefined;
-    if (telegram) {
+    if (telegram || _slackAdapter) {
       sessionMonitor = new SessionMonitor(
         {
-          getActiveTopicSessions: () => telegram!.getActiveTopicSessions(),
+          getActiveTopicSessions: () => {
+            const sessions = new Map<number, string>();
+            // Telegram topic sessions
+            if (telegram && telegram.getActiveTopicSessions) {
+              const telegramSessions = telegram.getActiveTopicSessions();
+              for (const [topicId, sessionName] of telegramSessions) {
+                sessions.set(topicId, sessionName);
+              }
+            }
+            // Slack channel sessions (using synthetic IDs)
+            if (_slackAdapter) {
+              const registry = _slackAdapter.getChannelRegistry();
+              for (const [channelId, entry] of Object.entries(registry)) {
+                const syntheticId = slackChannelToSyntheticId(channelId);
+                sessions.set(syntheticId, entry.sessionName);
+              }
+            }
+            return sessions;
+          },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
           getTopicHistory: (topicId, limit) => {
-            const history = telegram!.getMessageLog?.();
-            if (!history) return [];
-            return history
-              .filter((m: any) => m.topicId === topicId)
-              .slice(-limit)
-              .map((m: any) => ({ text: m.text, fromUser: m.fromUser, timestamp: m.timestamp }));
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) {
+              const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
+              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+            }
+            if (telegram) {
+              const history = telegram.getMessageLog?.();
+              if (!history) return [];
+              return history
+                .filter((m: any) => m.topicId === topicId)
+                .slice(-limit)
+                .map((m: any) => ({ text: m.text, fromUser: m.fromUser, timestamp: m.timestamp }));
+            }
+            return [];
           },
-          sendToTopic: (topicId, text) => telegram!.sendToTopic(topicId, text),
+          sendToTopic: async (topicId, text) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId && _slackAdapter) { await _slackAdapter.sendToChannel(slackChId, text); return; }
+            if (telegram) await telegram.sendToTopic(topicId, text);
+          },
           triggerTriage: triageOrchestrator
             ? async (topicId, sessionName, reason) => {
                 const result = await triageOrchestrator!.activate(topicId, sessionName, 'watchdog', reason, Date.now());

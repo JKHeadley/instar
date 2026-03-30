@@ -489,6 +489,10 @@ export class PresenceProxy {
   // ─── Tier Scheduling ───────────────────────────────────────────────────
 
   private scheduleTier(topicId: number, tier: 1 | 2 | 3, delayMs: number): void {
+    // Don't schedule if state no longer exists or was cancelled
+    const currentState = this.states.get(topicId);
+    if (!currentState || currentState.cancelled) return;
+
     const key = `${topicId}-tier${tier}`;
 
     // Clear any existing timer for this tier
@@ -614,7 +618,9 @@ export class PresenceProxy {
     // Add to conversation history
     state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
 
-    // Schedule Tier 2
+    // Schedule Tier 2 — re-check cancelled after async sendProxyMessage
+    // (agent may have responded while we were sending the tier 1 message)
+    if (state.cancelled) return;
     const remainingToTier2 = this.tier2DelayMs - (Date.now() - state.userMessageAt);
     if (remainingToTier2 > 0) {
       this.scheduleTier(topicId, 2, remainingToTier2);
@@ -677,7 +683,8 @@ export class PresenceProxy {
 
     state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
 
-    // Schedule Tier 3
+    // Schedule Tier 3 — re-check cancelled after async sendProxyMessage
+    if (state.cancelled) return;
     const remainingToTier3 = this.tier3DelayMs - (Date.now() - state.userMessageAt);
     if (remainingToTier3 > 0) {
       this.scheduleTier(topicId, 3, remainingToTier3);

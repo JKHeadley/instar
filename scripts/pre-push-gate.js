@@ -122,6 +122,34 @@ if (latestPublished) {
   }
 }
 
+// ── 3. Test file change check ─────────────────────────────────────────
+// If source files changed, at least one test file should also change.
+// This prevents shipping code changes without regression tests.
+
+try {
+  const { execSync } = await import('node:child_process');
+  // Get files changed since the remote tracking branch
+  const remoteBranch = execSync('git rev-parse --abbrev-ref @{u} 2>/dev/null || echo origin/main', { encoding: 'utf-8' }).trim();
+  const changedFiles = execSync(`git diff --name-only ${remoteBranch}...HEAD 2>/dev/null || git diff --name-only HEAD~1`, { encoding: 'utf-8' })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+
+  const srcChanges = changedFiles.filter(f => f.startsWith('src/') && f.endsWith('.ts'));
+  const testChanges = changedFiles.filter(f => f.includes('tests/') && f.endsWith('.test.ts'));
+
+  if (srcChanges.length > 0 && testChanges.length === 0) {
+    warnings.push(
+      `${srcChanges.length} source file(s) changed but no test files were added or modified. ` +
+      `Every code change should include regression tests. Files changed:\n` +
+      srcChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
+      (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
+    );
+  }
+} catch {
+  // Git commands may fail in CI or detached HEAD — skip gracefully
+}
+
 // ── Report ────────────────────────────────────────────────────────────
 
 if (errors.length > 0 || warnings.length > 0) {
