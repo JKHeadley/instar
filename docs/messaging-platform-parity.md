@@ -127,14 +127,14 @@
 | # | Feature | Description | Telegram | Slack | WhatsApp |
 |---|---------|-------------|----------|-------|----------|
 | 6.1 | Stall tracking | Track injected messages, alert if no response within timeout | Yes (5min default) | Yes (v0.25.0: trackMessageInjection, 5min default) | - |
-| 6.2 | LLM-gated stall alerts | Confirm stall with Haiku before alerting user (prevents false positives) | Yes | No | - |
-| 6.3 | Promise tracking | Detect "give me a minute" patterns, alert if not followed through | Yes (10min default) | No | - |
+| 6.2 | LLM-gated stall alerts | Confirm stall with Haiku before alerting user (prevents false positives) | Yes | Yes (v0.25.4: intelligence provider wired in server.ts, fail-open) | - |
+| 6.3 | Promise tracking | Detect "give me a minute" patterns, alert if not followed through | Yes (10min default) | Yes (v0.25.4: pendingPromises map, 10min default, routes.ts trackPromise) | - |
 | 6.4 | Stall triage (StallTriageNurse) | LLM-powered diagnosis and recovery | Yes | Yes (v0.25.3: platform-agnostic callbacks) | - |
 | 6.5 | Triage orchestrator | Advanced multi-step triage with diagnostic sessions | Yes | Yes (v0.25.3: synthetic channel ID mapping) | - |
 | 6.6 | `/interrupt` command | Send Escape to unstick session | Yes | Yes (v0.25.0: !interrupt) | - |
 | 6.7 | `/restart` command | Kill and respawn session | Yes | Yes (v0.25.0: !restart) | - |
-| 6.8 | `/triage` command | Show triage status | Yes | No | - |
-| 6.9 | Session death classification | Classify exit cause (quota, timeout, error) | Yes | No | - |
+| 6.8 | `/triage` command | Show triage status | Yes | Yes (v0.25.4: !triage via onGetTriageStatus callback) | - |
+| 6.9 | Session death classification | Classify exit cause (quota, timeout, error) | Yes | Yes (v0.25.4: onClassifySessionDeath callback) | - |
 
 ---
 
@@ -151,7 +151,7 @@
 | 7.7 | `/restart` | Kill and respawn session | Yes | Yes (v0.25.0: !restart) | - |
 | 7.8 | `/status` | Show adapter status | Yes | Yes (v0.25.0: !status via getStatus()) | - |
 | 7.9 | `/flush` | Flush batched notifications | Yes | No | - |
-| 7.10 | `/triage` | Show triage status | Yes | No | - |
+| 7.10 | `/triage` | Show triage status | Yes | Yes (v0.25.4: !triage) | - |
 | 7.11 | `/switch-account` or `/sa` | Switch active Claude account | Yes | No | - |
 | 7.12 | `/quota` or `/q` | Show quota summary | Yes | No | - |
 | 7.13 | `/login` | Seamless OAuth login | Yes | No | - |
@@ -367,4 +367,5 @@
 | 2.0 | 2026-03-30 | v0.25.0: Closed 17/20 gaps. Voice, stall detection, commands, standby, TopicMemory, Sentinel, notifications, unknown user handling |
 | 2.1 | 2026-03-30 | v0.25.2: Prompt Gate relay for Slack (Block Kit buttons); resume heartbeat covers Slack sessions; graceful shutdown saves Slack resume UUIDs; watchdog alerts route to Slack |
 | 2.2 | 2026-03-30 | v0.25.3: StallTriageNurse (6.4), TriageOrchestrator (6.5), SessionRecovery, SessionMonitor all platform-agnostic — now cover Slack sessions |
+| 2.3 | 2026-03-30 | v0.25.4: Closed 4 stall detection gaps — LLM-gated stall alerts (6.2), promise tracking (6.3), !triage command (6.8, 7.10), session death classification (6.9) |
 | 1.1 | 2026-03-29 | v0.24.29: stuck session recovery (kill & respawn); Slack context file format changed from JSON to human-readable thread history; ring buffer now stores bot messages and backfills from Slack API on startup |
