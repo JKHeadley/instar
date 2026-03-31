@@ -281,6 +281,8 @@ describe('two-machine job coordination (4A + 4C)', () => {
     relayMessages(machineA.bus, machineB.bus);
 
     // Machine B tries to trigger the same job — should be skipped
+    // Clear spy to isolate from any background cron triggers that may have fired
+    vi.mocked(machineB.sessionManager!.spawnSession).mockClear();
     const resultB = machineB.scheduler!.triggerJob('daily-sync', 'manual');
     expect(resultB).toBe('skipped');
     expect(machineB.sessionManager!.spawnSession).not.toHaveBeenCalled();
@@ -317,6 +319,8 @@ describe('two-machine job coordination (4A + 4C)', () => {
     relayMessages(machineA.bus, machineB.bus);
 
     // B claims health-check (different job)
+    // Clear spy to isolate from any background cron triggers that may have fired
+    vi.mocked(machineB.sessionManager!.spawnSession).mockClear();
     const resultB = machineB.scheduler!.triggerJob('health-check', 'manual');
     expect(resultB).toBe('triggered');
     expect(machineB.sessionManager!.spawnSession).toHaveBeenCalledTimes(1);
