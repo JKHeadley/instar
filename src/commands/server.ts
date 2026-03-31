@@ -1231,6 +1231,9 @@ function wireIMessageRouting(
     const senderName = (msg.metadata?.senderName as string) ?? undefined;
     const senderNorm = sender.toLowerCase();
 
+    // Skip empty messages (reactions, read receipts, lookback artifacts)
+    if (!text || !text.trim()) return;
+
     // Check for existing session
     const targetSession = imessage.getSessionForSender(sender);
 
