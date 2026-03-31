@@ -1130,62 +1130,54 @@ function wireWhatsAppRouting(
 }
 
 /**
- * Wire iMessage message routing — follows Slack/Telegram session patterns.
+ * Wire iMessage message routing — mirrors Telegram's session patterns exactly.
  *
- * Routes incoming iMessages to Claude Code sessions:
- * 1. Existing alive session → inject message with context file reference
- * 2. Existing dead session → respawn with full conversation context
- * 3. No session → auto-spawn with context bootstrap
+ * Routes incoming iMessages to Claude Code sessions using the same flow as Telegram:
+ * 1. Existing alive session → injectIMessageMessage (with pendingInjections tracking)
+ * 2. Existing dead session → respawn via spawnInteractiveSession(bootstrapMessage)
+ * 3. No session → auto-spawn via spawnInteractiveSession(bootstrapMessage)
  *
- * Context injection follows the Slack adapter pattern:
- * - Every message writes a context file with conversation history + relay instructions
- * - The injected message references this file so the session sees full context
- * - Both user AND agent messages are included in history (from chat.db)
+ * Key design: the bootstrap message (with inline context) is passed as the
+ * initialMessage to spawnInteractiveSession, which handles wait-for-ready and
+ * injection internally — the same code path that Telegram uses successfully.
  */
 function wireIMessageRouting(
   imessage: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter,
   sessionManager: SessionManager,
 ): void {
   const spawningSenders = new Set<string>();
-  // Queue messages that arrive while a spawn is in progress.
-  // On startup with lookback, multiple messages arrive at once — the first triggers
-  // a spawn, the rest must wait. Without queuing, they inject into a session that
-  // isn't ready yet, causing it to crash.
-  const pendingMessages = new Map<string, Array<{ text: string; senderName?: string }>>();
 
   // Wire session alive check for stall detection
   imessage.setIsSessionAlive((sessionName) => sessionManager.isSessionAlive(sessionName));
 
-  /**
-   * Build context file + single-line injection message for an iMessage session.
-   *
-   * Follows the Slack adapter pattern: writes a context file containing thread
-   * history + relay instructions, returns a single-line message referencing it.
-   * This is used for BOTH new spawns AND injections into existing sessions,
-   * ensuring the session always has access to conversation history.
-   */
-  function buildIMessageInjection(sender: string, text: string, senderName?: string, isRespawn = false): string {
-    const replyScript = '.claude/scripts/imessage-reply.sh';
+  const replyScript = '.claude/scripts/imessage-reply.sh';
 
+  /**
+   * Build a bootstrap message for spawning an iMessage session.
+   * Follows Telegram's spawnSessionForTopic pattern: context is INLINE in the
+   * bootstrap message, not a file reference. For long messages, writes to a temp
+   * file with a strong read instruction (matching Telegram's BOOTSTRAP_FILE_THRESHOLD).
+   */
+  function buildBootstrapMessage(sender: string, text: string, senderName?: string): string {
     // Get conversation history from chat.db (includes both user AND agent messages)
     const conversationContext = imessage.getConversationContext(sender, 30);
 
-    const lines: string[] = [];
+    const parts: string[] = [];
 
-    // Thread history section (matches Slack's context format)
     if (conversationContext) {
-      lines.push(conversationContext);
-      lines.push('');
-      if (isRespawn) {
-        lines.push('CONTINUATION — You are resuming an EXISTING conversation via iMessage.');
-        lines.push('Read the history above carefully before responding.');
-        lines.push('Your response MUST continue the conversation above. Do NOT introduce yourself.');
-        lines.push('');
-      }
+      parts.push(
+        `CONTINUATION — You are resuming an EXISTING conversation via iMessage.`,
+        `Read the context below before responding.`,
+        ``,
+        conversationContext,
+        ``,
+        `IMPORTANT: Your response MUST acknowledge and continue the conversation above. Do NOT introduce yourself or ask "how can I help" — the user has been talking to you. Pick up where the conversation left off.`,
+        ``,
+      );
     }
 
-    // Session instructions
-    lines.push(
+    // iMessage relay instructions
+    parts.push(
       `--- iMessage SESSION (${sender}) ---`,
       `This is a PERSISTENT conversational session via iMessage.`,
       `MANDATORY: After EVERY response, relay your message back to the user:`,
@@ -1198,29 +1190,27 @@ function wireIMessageRouting(
       `Strip the [imessage:...] prefix before interpreting messages.`,
       `Only relay conversational text — not tool output or internal reasoning.`,
       `--- END iMessage SESSION ---`,
+      ``,
+      `The user's latest message:`,
+      `[imessage:${sender}${senderName ? ` from ${senderName}` : ''}] ${text}`,
     );
 
-    // Write to temp file — same pattern as Slack/Telegram
-    const tmpDir = '/tmp/instar-imessage';
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
-    const ctxPath = path.join(tmpDir, `ctx-${senderSlug}-${Date.now()}.txt`);
-    fs.writeFileSync(ctxPath, lines.join('\n'));
+    let bootstrapMessage = parts.join('\n');
 
-    // Build single-line injection referencing the context file
-    const safeName = senderName ? senderName.replace(/[\[\]]/g, '').trim().slice(0, 64) : undefined;
-    const tag = `[imessage:${sender}${safeName ? ` from ${safeName}` : ''}]`;
-    const fullMessage = `${tag} ${text} (IMPORTANT: Read ${ctxPath} for iMessage session instructions and conversation history — you MUST relay your response back via the reply script.)`;
-
-    // Long messages: write to temp file and inject reference (matches Slack pattern)
-    const FILE_THRESHOLD = 500;
-    if (fullMessage.length > FILE_THRESHOLD) {
-      const msgFilePath = path.join(tmpDir, `msg-${senderSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
-      fs.writeFileSync(msgFilePath, fullMessage);
-      return `${tag} [Long message saved to ${msgFilePath} — read it to see the full message]`;
+    // Large bootstrap messages: write to temp file with strong read instruction
+    // (matches Telegram's BOOTSTRAP_FILE_THRESHOLD pattern)
+    const BOOTSTRAP_FILE_THRESHOLD = 500;
+    if (bootstrapMessage.length > BOOTSTRAP_FILE_THRESHOLD) {
+      const tmpDir = '/tmp/instar-imessage';
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+      const filepath = path.join(tmpDir, `bootstrap-${senderSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+      fs.writeFileSync(filepath, bootstrapMessage);
+      console.log(`[imessage→session] Bootstrap too large (${bootstrapMessage.length} chars), wrote to ${filepath}`);
+      bootstrapMessage = `[IMPORTANT: Read ${filepath} — it contains your full session context, conversation history, and the user's latest message. You MUST read this file before responding.]`;
     }
 
-    return fullMessage;
+    return bootstrapMessage;
   }
 
   imessage.onMessage(async (msg) => {
@@ -1237,87 +1227,37 @@ function wireIMessageRouting(
     // Check for existing session
     const targetSession = imessage.getSessionForSender(sender);
 
-    // If a spawn is in progress for this sender, queue the message
+    // Guard: skip if spawn already in progress for this sender
     if (spawningSenders.has(senderNorm)) {
-      const queue = pendingMessages.get(senderNorm) || [];
-      queue.push({ text, senderName });
-      pendingMessages.set(senderNorm, queue);
-      console.log(`[imessage→session] Queued message during spawn (${queue.length} pending): "${text.slice(0, 60)}"`);
+      console.log(`[imessage→session] Spawn already in progress for ${senderNorm} — skipping`);
       return;
     }
 
     if (targetSession && sessionManager.isSessionAlive(targetSession)) {
-      // Session registered and tmux session exists — verify it's actually responsive
-      const ready = await sessionManager.waitForClaudeReady(targetSession, 15_000);
-      if (ready) {
-        // Session alive and ready — inject with context
-        console.log(`[imessage→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        const bootstrapMessage = buildIMessageInjection(sender, text, senderName);
-        sessionManager.injectMessage(targetSession, bootstrapMessage);
-        imessage.trackMessageInjection(sender, targetSession, text);
-        return;
-      }
-      // Session stuck or unresponsive — kill it and fall through to respawn
-      console.warn(`[imessage→session] Session ${targetSession} not ready after 15s — killing and respawning`);
-      try {
-        const stuckSession = sessionManager.listRunningSessions().find(s => s.tmuxSession === targetSession);
-        if (stuckSession) sessionManager.killSession(stuckSession.id);
-      } catch { /* ok if already dead */ }
-    }
-
-    {
-      // Session dead or missing — spawn a new one with full context
+      // Session alive — inject directly (same as Telegram's injectTelegramMessage path)
+      console.log(`[imessage→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
+      sessionManager.injectIMessageMessage(targetSession, sender, text, senderName);
+      imessage.trackMessageInjection(sender, targetSession, text);
+    } else {
+      // Session dead or missing — spawn with full context (same as Telegram's spawnSessionForTopic)
       spawningSenders.add(senderNorm);
-      try {
-        console.log(`[imessage→session] Spawning session for ${(imessage.constructor as any).maskIdentifier?.(sender) || sender}...`);
 
-        // Build the bootstrap message with conversation context
-        const bootstrapMessage = buildIMessageInjection(sender, text, senderName, true);
+      const sessionName = `im-${sender.replace(/[^a-zA-Z0-9]/g, '').slice(-6)}`;
+      const bootstrapMessage = buildBootstrapMessage(sender, text, senderName);
 
-        // Spawn empty session (no initial message — avoids the broken internal injection path)
-        const sessionName = `im-${sender.replace(/[^a-zA-Z0-9]/g, '').slice(-6)}`;
-        const newSession = await sessionManager.spawnInteractiveSession(
-          undefined,
-          sessionName,
-        );
-        imessage.registerSession(sender, newSession);
-
-        // Wait for Claude to be ready (matches Slack's waitForClaudeReady pattern)
-        const waitStart = Date.now();
-        const ready = await sessionManager.waitForClaudeReady(newSession, 90_000);
-
-        if (ready) {
-          // Inject the bootstrap message (includes context file reference)
-          sessionManager.injectMessage(newSession, bootstrapMessage);
-          imessage.trackMessageInjection(sender, newSession, text);
-          console.log(`[imessage→session] Spawned "${newSession}" and injected (${Date.now() - waitStart}ms)`);
-
-          // Drain queued messages (arrived during spawn)
-          const queued = pendingMessages.get(senderNorm) || [];
-          if (queued.length > 0) {
-            await new Promise(r => setTimeout(r, 2000)); // let Claude process first message
-            for (const q of queued) {
-              const queuedMessage = buildIMessageInjection(sender, q.text, q.senderName);
-              sessionManager.injectMessage(newSession, queuedMessage);
-            }
-            console.log(`[imessage→session] Drained ${queued.length} queued messages into "${newSession}"`);
-          }
-          pendingMessages.delete(senderNorm);
-        } else if (sessionManager.isSessionAlive(newSession)) {
-          // Timeout but alive — inject anyway
-          sessionManager.injectMessage(newSession, bootstrapMessage);
-          console.log(`[imessage→session] Spawned "${newSession}" — injected after timeout`);
-          pendingMessages.delete(senderNorm);
-        } else {
-          console.error(`[imessage→session] Session "${newSession}" died during startup — messages lost`);
-          pendingMessages.delete(senderNorm);
-        }
-      } catch (err) {
-        console.error(`[imessage→session] Spawn failed:`, err);
-        pendingMessages.delete(senderNorm);
-      } finally {
-        spawningSenders.delete(senderNorm);
-      }
+      // Pass bootstrap as initialMessage — spawnInteractiveSession handles
+      // wait-for-ready and injection internally (same code path as Telegram)
+      sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName)
+        .then((newSession) => {
+          imessage.registerSession(sender, newSession);
+          console.log(`[imessage→session] Spawned "${newSession}" for ${(imessage.constructor as any).maskIdentifier?.(sender) || sender}`);
+        })
+        .catch((err) => {
+          console.error(`[imessage→session] Spawn failed:`, err);
+        })
+        .finally(() => {
+          spawningSenders.delete(senderNorm);
+        });
     }
   });
 }
