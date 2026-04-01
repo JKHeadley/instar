@@ -106,10 +106,14 @@ async function validatePath(
   }
 
   // Layer 4: Check against allowedPaths
+  // Strip trailing slashes for comparison — path.normalize() may or may not
+  // preserve them depending on Node version, causing false 403s.
+  const stripTrailing = (p: string) => p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p;
+  const normalizedClean = stripTrailing(normalized);
   const allowed = config.allowedPaths.some(ap => {
-    const normalizedAllowed = path.normalize(ap);
-    return normalized === normalizedAllowed ||
-           normalized.startsWith(normalizedAllowed.endsWith('/') ? normalizedAllowed : normalizedAllowed + '/');
+    const normalizedAllowed = stripTrailing(path.normalize(ap));
+    return normalizedClean === normalizedAllowed ||
+           normalizedClean.startsWith(normalizedAllowed + '/');
   });
   if (!allowed) {
     return { valid: false, error: 'Path not in allowed directories', status: 403 };
