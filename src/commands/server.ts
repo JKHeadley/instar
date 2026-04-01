@@ -1176,6 +1176,9 @@ function wireIMessageRouting(
       );
     }
 
+    // Sanitize sender name to prevent injection via chat.db display_name
+    const safeSenderName = senderName ? senderName.replace(/[\[\]`$\\]/g, '') : undefined;
+
     // iMessage relay instructions
     parts.push(
       `--- iMessage SESSION (${sender}) ---`,
@@ -1192,7 +1195,7 @@ function wireIMessageRouting(
       `--- END iMessage SESSION ---`,
       ``,
       `The user's latest message:`,
-      `[imessage:${sender}${senderName ? ` from ${senderName}` : ''}] ${text}`,
+      `[imessage:${sender}${safeSenderName ? ` from ${safeSenderName}` : ''}] ${text}`,
     );
 
     let bootstrapMessage = parts.join('\n');
@@ -1202,10 +1205,18 @@ function wireIMessageRouting(
     const BOOTSTRAP_FILE_THRESHOLD = 500;
     if (bootstrapMessage.length > BOOTSTRAP_FILE_THRESHOLD) {
       const tmpDir = '/tmp/instar-imessage';
-      fs.mkdirSync(tmpDir, { recursive: true });
+      fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
+      // Clean up old temp files (>1 hour) to prevent unbounded accumulation
+      try {
+        const cutoff = Date.now() - 3_600_000;
+        for (const f of fs.readdirSync(tmpDir)) {
+          const fp = path.join(tmpDir, f);
+          try { if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp); } catch { /* ignore */ }
+        }
+      } catch { /* non-critical */ }
       const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
       const filepath = path.join(tmpDir, `bootstrap-${senderSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-      fs.writeFileSync(filepath, bootstrapMessage);
+      fs.writeFileSync(filepath, bootstrapMessage, { mode: 0o600 });
       console.log(`[imessage→session] Bootstrap too large (${bootstrapMessage.length} chars), wrote to ${filepath}`);
       bootstrapMessage = `[IMPORTANT: Read ${filepath} — it contains your full session context, conversation history, and the user's latest message. You MUST read this file before responding.]`;
     }
@@ -1242,7 +1253,10 @@ function wireIMessageRouting(
       // Session dead or missing — spawn with full context (same as Telegram's spawnSessionForTopic)
       spawningSenders.add(senderNorm);
 
-      const sessionName = `im-${sender.replace(/[^a-zA-Z0-9]/g, '').slice(-6)}`;
+      // Use a hash of the full sender to avoid collisions (slice(-6) collides easily)
+      const crypto = await import('node:crypto');
+      const senderHash = crypto.createHash('sha1').update(sender.toLowerCase()).digest('hex').slice(0, 8);
+      const sessionName = `im-${senderHash}`;
       const bootstrapMessage = buildBootstrapMessage(sender, text, senderName);
 
       // Pass bootstrap as initialMessage — spawnInteractiveSession handles

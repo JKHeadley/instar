@@ -3662,6 +3662,13 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: 'recipient parameter required' });
       return;
     }
+
+    // Validate recipient is an authorized sender (prevent log forgery / stall suppression)
+    if (!ctx.imessage.isAuthorized(recipient)) {
+      res.status(403).json({ error: 'recipient not in authorizedSenders' });
+      return;
+    }
+
     const { text } = req.body;
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });

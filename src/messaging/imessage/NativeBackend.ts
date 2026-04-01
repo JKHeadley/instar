@@ -15,6 +15,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { IMessageIncoming, IMessageChat, ConnectionState } from './types.js';
@@ -32,6 +33,8 @@ export interface NativeBackendOptions {
   pollIntervalMs?: number;
   /** Include attachment metadata (default: true) */
   includeAttachments?: boolean;
+  /** Path to persist poll offset (lastRowId) across restarts */
+  offsetPath?: string;
 }
 
 export class NativeBackend extends EventEmitter {
@@ -42,6 +45,7 @@ export class NativeBackend extends EventEmitter {
   private readonly dbPath: string;
   private readonly pollIntervalMs: number;
   private readonly includeAttachments: boolean;
+  private readonly offsetPath: string | null;
 
   // Prepared statements (cached for performance)
   private stmtNewMessages: import('better-sqlite3').Statement | null = null;
@@ -55,6 +59,7 @@ export class NativeBackend extends EventEmitter {
     this.dbPath = options.dbPath || DEFAULT_DB_PATH;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.includeAttachments = options.includeAttachments ?? true;
+    this.offsetPath = options.offsetPath ?? null;
   }
 
   get state(): ConnectionState {
@@ -130,13 +135,16 @@ export class NativeBackend extends EventEmitter {
 
       this.stmtMaxRowId = this.db.prepare('SELECT MAX(ROWID) AS max_id FROM message');
 
-      // Start from a lookback window so recent messages are processed on startup.
-      // Without this, messages that arrived while the server was down are silently
-      // skipped — the adapter only sees messages with ROWID > lastRowId.
-      // A 50-message lookback ensures we catch anything from the last few hours.
-      const maxRow = this.stmtMaxRowId.get() as { max_id: number } | undefined;
-      const maxId = maxRow?.max_id ?? 0;
-      this.lastRowId = Math.max(0, maxId - 50);
+      // Restore persisted poll offset if available; otherwise use a 50-message
+      // lookback so messages received while the server was down are processed.
+      const persistedOffset = this._loadOffset();
+      if (persistedOffset !== null) {
+        this.lastRowId = persistedOffset;
+      } else {
+        const maxRow = this.stmtMaxRowId.get() as { max_id: number } | undefined;
+        const maxId = maxRow?.max_id ?? 0;
+        this.lastRowId = Math.max(0, maxId - 50);
+      }
 
       this._setState('connected');
       this._startPolling();
@@ -291,6 +299,7 @@ export class NativeBackend extends EventEmitter {
         chat_name: string | null;
       }>;
 
+      const startRowId = this.lastRowId;
       for (const row of rows) {
         this.lastRowId = row.ROWID;
 
@@ -312,6 +321,10 @@ export class NativeBackend extends EventEmitter {
 
         this.emit('message', msg);
       }
+      // Persist offset if it advanced
+      if (this.lastRowId > startRowId) {
+        this._saveOffset(this.lastRowId);
+      }
     } catch (err) {
       const msg = (err as Error).message;
       if (!msg.includes('SQLITE_BUSY') && !msg.includes('database is locked')) {
@@ -331,6 +344,26 @@ export class NativeBackend extends EventEmitter {
   /** Convert Apple Cocoa nanosecond timestamp to Unix epoch seconds. */
   _cocoaToUnix(cocoaNanos: number): number {
     return Math.floor(cocoaNanos / 1e9) + APPLE_EPOCH_OFFSET;
+  }
+
+  /** Load persisted poll offset from disk. */
+  private _loadOffset(): number | null {
+    if (!this.offsetPath) return null;
+    try {
+      const data = JSON.parse(fs.readFileSync(this.offsetPath, 'utf-8'));
+      if (typeof data.lastRowId === 'number' && data.lastRowId > 0) {
+        return data.lastRowId;
+      }
+    } catch { /* first run or corrupted — use lookback */ }
+    return null;
+  }
+
+  /** Save poll offset to disk. */
+  private _saveOffset(rowId: number): void {
+    if (!this.offsetPath) return;
+    try {
+      fs.writeFileSync(this.offsetPath, JSON.stringify({ lastRowId: rowId, savedAt: new Date().toISOString() }) + '\n');
+    } catch { /* non-critical */ }
   }
 
   /** Convert Apple Cocoa nanosecond timestamp to ISO string. */

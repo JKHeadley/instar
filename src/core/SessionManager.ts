@@ -1432,13 +1432,13 @@ export class SessionManager extends EventEmitter {
       return;
     }
 
-    // Write full message to temp file
+    // Write full message to temp file with restricted permissions
     const tmpDir = path.join('/tmp', 'instar-imessage');
-    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
     const filename = `msg-${senderSlug}-${Date.now()}.txt`;
     const filepath = path.join(tmpDir, filename);
-    fs.writeFileSync(filepath, taggedText);
+    fs.writeFileSync(filepath, taggedText, { mode: 0o600 });
 
     const ref = `${tag} [Long message saved to ${filepath} — read it to see the full message]`;
     this.injectMessage(tmuxSession, ref);

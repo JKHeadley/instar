@@ -74,6 +74,7 @@ export class IMessageAdapter implements MessagingAdapter {
       dbPath: this.config.dbPath,
       pollIntervalMs: this.config.pollIntervalMs,
       includeAttachments: this.config.includeAttachments,
+      offsetPath: path.join(stateDir, 'imessage-poll-offset.json'),
     });
 
     // Initialize logger

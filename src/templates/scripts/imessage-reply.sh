@@ -65,7 +65,7 @@ fi
 
 # ── Step 2: Notify server (logging + stall clear) ─────────────────
 
-PORT="${INSTAR_PORT:-4040}"
+PORT="${INSTAR_PORT:-4042}"
 
 AUTH_TOKEN=""
 if [ -f ".instar/config.json" ]; then
