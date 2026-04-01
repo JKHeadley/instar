@@ -1,6 +1,6 @@
 # Unified Config Defaults System — Revised Specification v2.0
 
-> **Status**: Ready for implementation
+> **Status**: Implemented (v0.26.0)
 > **Author**: Echo (instar developer)
 > **Reviewers**: Architecture (7/10), DX (6.5/10), Security (5/10), Adversarial (4/10)
 > **Date**: 2026-04-01
@@ -32,145 +32,59 @@ New config fields get added to `init.ts` (for new agents) but NOT to `PostUpdate
 
 ### ConfigDefaults.ts
 
+The actual implementation has three data structures and three public exports:
+
 ```typescript
 // src/config/ConfigDefaults.ts
 
-/**
- * Canonical config defaults for all Instar agents.
- *
- * RULES FOR THIS FILE:
- * 1. Only include fields that are SAFE for all agents (not runtime-generated)
- * 2. Never include: port, authToken, paths, dashboardPin, chatId, botToken
- * 3. If a field differs by agent type, put it in the type-specific overrides
- * 4. Every field here will be auto-applied to existing agents on update
- * 5. Adding a field here is equivalent to adding it to BOTH init AND migration
- */
+export type AgentType = 'managed-project' | 'standalone';
 
-export interface ConfigDefaultsOptions {
-  agentType: 'managed-project' | 'standalone';
-}
-
-/** Fields shared across ALL agent types */
-const SHARED_DEFAULTS = {
+/** Fields shared across ALL agent types (init + migration) */
+const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
-    promptGate: {
-      enabled: true,
-      autoApprove: {
-        enabled: true,
-        fileCreation: true,
-        fileEdits: true,
-        planApproval: false,
-      },
-      dryRun: false,
-    },
+    promptGate: { enabled: true, autoApprove: { enabled: true, fileCreation: true, fileEdits: true, planApproval: false }, dryRun: false },
   },
-  externalOperations: {
-    enabled: true,
-    sentinel: { enabled: true },
-    services: {},
-    readOnlyServices: [],
-    trust: {
-      floor: 'supervised',
-      autoElevateEnabled: false,
-      elevationThreshold: 10,
-    },
-  },
-  threadline: {
-    relayEnabled: false,
-    visibility: 'public',
-    capabilities: ['chat'],
-  },
-} as const;
+  threadline: { relayEnabled: false, visibility: 'public', capabilities: ['chat'] },
+};
 
-/** Fields that differ between agent types */
+/** Fields that differ between agent types at INIT time (override SHARED_DEFAULTS for new agents) */
 const TYPE_OVERRIDES: Record<string, Record<string, unknown>> = {
   'managed-project': {
     monitoring: { quotaTracking: false },
+    externalOperations: { enabled: true, sentinel: { enabled: true }, services: {}, readOnlyServices: [],
+      trust: { floor: 'collaborative', autoElevateEnabled: true, elevationThreshold: 5 } },
+    tunnel: { enabled: true, type: 'quick' },
   },
   standalone: {
     monitoring: { quotaTracking: true },
+    externalOperations: { enabled: true, sentinel: { enabled: true }, services: {}, readOnlyServices: [],
+      trust: { floor: 'collaborative', autoElevateEnabled: true, elevationThreshold: 5 } },
   },
 };
 
 /**
- * Get the complete defaults for a given agent type.
- * Returns a deep-merged copy (safe to mutate).
+ * Fields that override SHARED_DEFAULTS + TYPE_OVERRIDES during MIGRATION only.
+ * Uses conservative values for security-sensitive fields — existing agents were
+ * operating without these features, so permissive defaults would change their security posture.
  */
-export function getConfigDefaults(options: ConfigDefaultsOptions): Record<string, unknown> {
-  const base = structuredClone(SHARED_DEFAULTS) as Record<string, unknown>;
-  const overrides = TYPE_OVERRIDES[options.agentType];
-  if (overrides) {
-    deepMerge(base, overrides);
-  }
-  return base;
-}
+const MIGRATION_OVERRIDES: Record<string, unknown> = {
+  externalOperations: { enabled: true, sentinel: { enabled: true }, services: {}, readOnlyServices: [],
+    trust: { floor: 'supervised', autoElevateEnabled: false, elevationThreshold: 10 } },
+};
 
-/**
- * Apply defaults to an existing config. Only adds MISSING keys.
- * Never overwrites existing values. Respects _instar_noMigrate.
- *
- * @returns { patched, changes, skipped } — what was added, what was left alone
- */
+/** Get defaults for new agent creation (init.ts). */
+export function getInitDefaults(agentType: AgentType): Record<string, unknown> { ... }
+
+/** Get defaults for migration (PostUpdateMigrator). Applies conservative MIGRATION_OVERRIDES. */
+export function getMigrationDefaults(agentType: AgentType): Record<string, unknown> { ... }
+
+/** Apply defaults to an existing config. Only adds MISSING keys. Never overwrites. Respects _instar_noMigrate. */
 export function applyDefaults(
   config: Record<string, unknown>,
   defaults: Record<string, unknown>,
-): { patched: boolean; changes: string[]; skipped: string[] } {
-  const noMigrate = new Set<string>(
-    Array.isArray(config._instar_noMigrate)
-      ? config._instar_noMigrate as string[]
-      : []
-  );
-
-  const changes: string[] = [];
-  const skipped: string[] = [];
-
-  function merge(target: Record<string, unknown>, source: Record<string, unknown>, path: string): void {
-    for (const key of Object.keys(source)) {
-      const fullPath = path ? `${path}.${key}` : key;
-
-      // Skip fields the user explicitly opted out of
-      // Check both the full path and the top-level key
-      if (noMigrate.has(fullPath) || noMigrate.has(key)) {
-        skipped.push(`${fullPath} (opted out via _instar_noMigrate)`);
-        continue;
-      }
-
-      if (!(key in target)) {
-        // Key is missing — add it
-        target[key] = structuredClone(source[key]);
-        changes.push(`${fullPath} (added)`);
-      } else if (
-        typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
-        typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])
-      ) {
-        // Both are objects — recurse
-        merge(target[key] as Record<string, unknown>, source[key] as Record<string, unknown>, fullPath);
-      } else {
-        // Key exists — DO NOT overwrite (arrays treated as leaves)
-        skipped.push(`${fullPath} (already set)`);
-      }
-    }
-  }
-
-  merge(config, defaults, '');
-  return { patched: changes.length > 0, changes, skipped };
-}
-
-/** Deep merge source into target (mutates target). */
-function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
-  for (const key of Object.keys(source)) {
-    if (
-      typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
-      typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])
-    ) {
-      deepMerge(target[key] as Record<string, unknown>, source[key] as Record<string, unknown>);
-    } else {
-      target[key] = source[key];
-    }
-  }
-}
+): { patched: boolean; changes: string[]; skipped: string[] } { ... }
 ```
 
 ### Key Design Decisions
@@ -179,7 +93,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 Arrays (like `capabilities: ['chat']`) are NEVER merged — they're replaced-if-absent or left alone. This preserves idempotency. Union or concatenation would produce duplicates on repeated runs.
 
 #### Agent-type overrides via composition
-`SHARED_DEFAULTS` contains everything common. `TYPE_OVERRIDES` contains only the fields that differ. Both init and migration call `getConfigDefaults({ agentType })` to get the correct set.
+`SHARED_DEFAULTS` contains everything common. `TYPE_OVERRIDES` contains only the fields that differ. `getInitDefaults(agentType)` merges these for new agents. `getMigrationDefaults(agentType)` additionally applies `MIGRATION_OVERRIDES` on top, which substitutes conservative values for security-sensitive fields (e.g., `trust.floor: 'supervised'` instead of `'collaborative'` for existing agents).
 
 The `agentType` field already exists in config.json (set during init). The migrator reads it to determine which defaults to apply.
 
@@ -210,10 +124,10 @@ This is documented as a contract at the top of ConfigDefaults.ts.
 ### In init.ts
 
 ```typescript
-import { getConfigDefaults } from '../config/ConfigDefaults.js';
+import { getInitDefaults } from '../config/ConfigDefaults.js';
 
 // Managed-project init
-const defaults = getConfigDefaults({ agentType: 'managed-project' });
+const defaults = getInitDefaults('managed-project');
 const config = {
   ...defaults,
   // Runtime-generated fields
@@ -231,13 +145,13 @@ const config = {
 ### In PostUpdateMigrator.ts
 
 ```typescript
-import { getConfigDefaults, applyDefaults } from '../config/ConfigDefaults.js';
+import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 
 private migrateConfig(result: MigrationResult): void {
   // ... read config.json ...
 
-  const agentType = (config.agentType as string) || 'managed-project';
-  const defaults = getConfigDefaults({ agentType: agentType as any });
+  const agentType = (config.agentType as string) === 'standalone' ? 'standalone' : 'managed-project';
+  const defaults = getMigrationDefaults(agentType);
   const { patched, changes, skipped } = applyDefaults(config, defaults);
 
   if (patched) {
@@ -317,7 +231,7 @@ If an existing field has an unexpected type (e.g., `monitoring: true` instead of
 ```typescript
 test('init and applyDefaults produce same config shape', () => {
   const initConfig = generateInitConfig({ agentType: 'managed-project' });
-  const migratedConfig = applyDefaults({}, getConfigDefaults({ agentType: 'managed-project' }));
+  const migratedConfig = applyDefaults({}, getInitDefaults('managed-project'));
 
   // Every key in defaults should exist in init output
   for (const key of Object.keys(migratedConfig)) {
@@ -329,7 +243,7 @@ test('init and applyDefaults produce same config shape', () => {
 ### Test 2: Idempotency
 ```typescript
 test('applyDefaults is idempotent', () => {
-  const defaults = getConfigDefaults({ agentType: 'standalone' });
+  const defaults = getInitDefaults('standalone');
   const config = {};
   const first = applyDefaults(config, defaults);
   const second = applyDefaults(config, defaults);
@@ -343,7 +257,7 @@ test('applyDefaults is idempotent', () => {
 ```typescript
 test('applyDefaults never overwrites existing values', () => {
   const config = { monitoring: { promptGate: { enabled: false } } };
-  const defaults = getConfigDefaults({ agentType: 'managed-project' });
+  const defaults = getInitDefaults('managed-project');
   applyDefaults(config, defaults);
 
   expect(config.monitoring.promptGate.enabled).toBe(false); // NOT overwritten
@@ -377,7 +291,7 @@ If this delay proves problematic, a future enhancement can add a force-refresh s
 ## Deprecation Path
 
 To deprecate a config field:
-1. Remove it from `CONFIG_DEFAULTS` (new agents won't get it)
+1. Remove it from `SHARED_DEFAULTS` / `TYPE_OVERRIDES` (new agents won't get it)
 2. Add a `cleanupDeprecated()` method to PostUpdateMigrator that removes the field
 3. Log the removal to security.jsonl
 4. Ship as a separate versioned migration (not automatic via applyDefaults)
