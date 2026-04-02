@@ -88,6 +88,40 @@ You've hit your limit - resets 7pm (America/Los_Angeles)
     expect(result).toContain('7pm (America/Los_Angeles)');
   });
 
+  it('returns null when quota error is in last 15 lines but session resumed work', () => {
+    // Exact scenario: quota error at 3:33 PM, session idle until reset,
+    // then resumes at 5:04 PM. The quota error is still within 15 lines
+    // but the session is clearly working again.
+    const snapshot = `You've hit your limit - resets 5pm (America/Los_Angeles)
+/extra-usage to finish what you're working on.
+
+
+
+On it — updating the spec now with the phased approach and all reviewer recommendations integrated.
+Reading file docs/spec.md`;
+    expect(detectQuotaExhaustion(snapshot)).toBeNull();
+  });
+
+  it('still detects quota when only whitespace/empty lines follow', () => {
+    const snapshot = `You've hit your limit - resets 5pm (America/Los_Angeles)
+/extra-usage to finish what you're working on.
+
+
+`;
+    const result = detectQuotaExhaustion(snapshot);
+    expect(result).not.toBeNull();
+    expect(result).toContain('5pm (America/Los_Angeles)');
+  });
+
+  it('still detects quota when only one substantive line follows (not enough to confirm recovery)', () => {
+    // One line could be a prompt or partial output — need 2+ to confirm recovery
+    const snapshot = `You've hit your limit - resets 5pm (America/Los_Angeles)
+/extra-usage to finish what you're working on.
+❯`;
+    const result = detectQuotaExhaustion(snapshot);
+    expect(result).not.toBeNull();
+  });
+
   it('returns null for empty input', () => {
     expect(detectQuotaExhaustion('')).toBeNull();
   });

@@ -200,28 +200,76 @@ const QUOTA_EXHAUSTION_PATTERNS = [
  * Check if terminal output indicates quota exhaustion.
  * Returns a human-friendly message if detected, null otherwise.
  *
- * Only checks the LAST 15 lines of the snapshot to avoid false positives
- * from historical quota errors that the session already recovered from.
- * Quota errors are terminal — if the session recovered and kept working,
- * the error scrolls up and out of the recent window.
+ * Only checks the LAST 15 lines of the snapshot, AND verifies
+ * the quota error is the last substantive content. If there are
+ * meaningful output lines AFTER the quota error (indicating the
+ * session resumed work after quota reset), treat it as stale.
  */
 export function detectQuotaExhaustion(snapshot: string): string | null {
-  // Only scan recent output — old quota errors in the scrollback are stale
   const lines = snapshot.split('\n');
-  const recentOutput = lines.slice(-15).join('\n');
+  const recentLines = lines.slice(-15);
 
-  for (const pattern of QUOTA_EXHAUSTION_PATTERNS) {
-    if (pattern.test(recentOutput)) {
-      // Try to extract the reset time
-      const resetMatch = recentOutput.match(/resets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*\([^)]+\))/i);
-      const resetTime = resetMatch ? resetMatch[1] : null;
-      if (resetTime) {
-        return `The agent has hit its Claude API usage limit. Quota resets ${resetTime}. The session is paused until then — no work is being done.`;
+  // Find the LAST line that matches a quota pattern
+  let lastQuotaLineIdx = -1;
+  for (let i = recentLines.length - 1; i >= 0; i--) {
+    for (const pattern of QUOTA_EXHAUSTION_PATTERNS) {
+      if (pattern.test(recentLines[i])) {
+        lastQuotaLineIdx = i;
+        break;
       }
-      return 'The agent has hit its Claude API usage limit. The session is paused until the quota resets — no work is being done.';
     }
+    if (lastQuotaLineIdx >= 0) break;
   }
-  return null;
+
+  if (lastQuotaLineIdx < 0) return null;
+
+  // Check if there are substantive lines AFTER the quota error.
+  // If the session produced real output after the error, it recovered.
+  const linesAfterQuota = recentLines.slice(lastQuotaLineIdx + 1);
+  const substantiveAfter = linesAfterQuota.filter(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    // Also skip lines that are themselves quota messages
+    for (const pattern of QUOTA_EXHAUSTION_PATTERNS) {
+      if (pattern.test(trimmed)) return false;
+    }
+    return true;
+  });
+
+  // If there are 2+ substantive lines after the quota error, session has recovered
+  if (substantiveAfter.length >= 2) return null;
+
+  // Quota error is the last substantive content — it's current
+  const recentOutput = recentLines.join('\n');
+  const resetMatch = recentOutput.match(/resets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*\([^)]+\))/i);
+  const resetTime = resetMatch ? resetMatch[1] : null;
+  if (resetTime) {
+    return `The agent has hit its Claude API usage limit. Quota resets ${resetTime}. The session is paused until then — no work is being done.`;
+  }
+  return 'The agent has hit its Claude API usage limit. The session is paused until the quota resets — no work is being done.';
+}
+
+// ─── Session Idle Detection ──────────────────────────────────────────────────
+
+/** Patterns that indicate a Claude Code session is at an idle prompt */
+const IDLE_PROMPT_PATTERNS = [
+  /^❯\s*$/,                    // Standard Claude Code prompt
+  /^>\s*$/,                    // Alternative prompt
+  /^\$\s*$/,                   // Shell prompt
+  /bypass permissions/i,       // Claude Code permission mode line (appears below prompt)
+];
+
+/**
+ * Check if the terminal output indicates the session is idle at a prompt.
+ * Returns true if the last substantive lines suggest the agent has finished
+ * working and is waiting for new input.
+ */
+export function detectSessionIdle(snapshot: string): boolean {
+  if (!snapshot) return false;
+  const lines = snapshot.split('\n');
+  // Check the last 5 lines for an idle prompt indicator
+  const tail = lines.slice(-5);
+  return tail.some(line => IDLE_PROMPT_PATTERNS.some(p => p.test(line.trim())));
 }
 
 // ─── Long-Running Process Whitelist ─────────────────────────────────────────
@@ -652,6 +700,18 @@ export class PresenceProxy {
       }
     }
 
+    // ── Session idle: agent completed work but didn't relay response ──
+    // If the terminal is at an idle prompt with no child processes, the agent
+    // has finished. Tier 1 already summarized the work — further updates are noise.
+    if (snapshot && detectSessionIdle(snapshot)) {
+      const processes = this.config.getProcessTree(state.sessionName);
+      if (processes.length === 0) {
+        state.cancelled = true;
+        this.cleanupState(topicId);
+        return; // Agent finished — don't send tier 2/3
+      }
+    }
+
     // Check if output changed since Tier 1
     const outputChanged = state.tier1SnapshotHash !== hash;
 
@@ -694,6 +754,21 @@ export class PresenceProxy {
   // ─── Tier 3: Stall Assessment ──────────────────────────────────────────
 
   private async fireTier3(topicId: number, state: PresenceState): Promise<void> {
+    // ── Session idle: agent completed work but didn't relay response ──
+    // Same check as tier 2 — if the agent finished, skip tier 3 entirely.
+    {
+      const idleRaw = this.config.captureSessionOutput(state.sessionName, 10);
+      const idleSnapshot = idleRaw ? sanitizeTmuxOutput(idleRaw, this.config.credentialPatterns) : null;
+      if (idleSnapshot && detectSessionIdle(idleSnapshot)) {
+        const processes = this.config.getProcessTree(state.sessionName);
+        if (processes.length === 0) {
+          state.cancelled = true;
+          this.cleanupState(topicId);
+          return;
+        }
+      }
+    }
+
     // Check re-check limit
     if (state.tier3RecheckCount >= this.rateLimit.tier3MaxRechecks) {
       const msg = `${this.prefix} I've been monitoring for a while now. ${this.config.agentName} appears to be running a very long process. I'll stop checking — you'll hear from ${this.config.agentName} directly when it finishes.`;
