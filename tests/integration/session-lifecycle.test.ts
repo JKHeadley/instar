@@ -39,7 +39,6 @@ describeMaybe('Session Lifecycle (integration)', () => {
         maxSessions: 3,
         protectedSessions: [],
         completionPatterns: ['Session ended'],
-        monitorGracePeriodMs: 0,
       },
       project.state,
     );
@@ -167,12 +166,14 @@ describeMaybe('Session Lifecycle (integration)', () => {
       prompt: 'echo test',
     });
 
-    // Start monitoring with fast interval (grace period disabled in test config)
+    // Start monitoring with fast interval
+    // Note: SessionManager has a 15s grace period before checking new sessions,
+    // so this test needs a timeout > 15s + monitoring interval + margin
     sm.startMonitoring(500);
 
     await waitFor(
       () => completedSessions.includes(session.id),
-      8000,
+      25000,
     );
 
     expect(completedSessions).toContain(session.id);

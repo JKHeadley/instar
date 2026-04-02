@@ -27,20 +27,20 @@ describe('IMessageAdapter', () => {
   describe('constructor', () => {
     it('requires authorizedContacts array', () => {
       expect(() => new IMessageAdapter({} as Record<string, unknown>, project.stateDir))
-        .toThrow('[imessage] authorizedContacts is required (array of phone numbers or email addresses)');
+        .toThrow('authorizedContacts is required');
     });
 
-    it('accepts empty authorizedContacts (fail-closed)', () => {
+    it('accepts empty authorizedSenders (fail-closed)', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: [] },
+        { authorizedSenders: [] },
         project.stateDir,
       );
       expect(adapter.platform).toBe('imessage');
     });
 
-    it('normalizes authorized contacts to lowercase', () => {
+    it('normalizes authorized senders to lowercase', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567', 'User@iCloud.COM'] },
+        { authorizedSenders: ['+14081234567', 'User@iCloud.COM'] },
         project.stateDir,
       );
       expect(adapter.isAuthorized('+14081234567')).toBe(true);
@@ -50,7 +50,7 @@ describe('IMessageAdapter', () => {
 
     it('sets platform to imessage', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       expect(adapter.platform).toBe('imessage');
@@ -60,7 +60,7 @@ describe('IMessageAdapter', () => {
   describe('authorization', () => {
     it('authorizes known senders', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567', 'user@icloud.com'] },
+        { authorizedSenders: ['+14081234567', 'user@icloud.com'] },
         project.stateDir,
       );
       expect(adapter.isAuthorized('+14081234567')).toBe(true);
@@ -69,7 +69,7 @@ describe('IMessageAdapter', () => {
 
     it('rejects unknown senders', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       expect(adapter.isAuthorized('+19995551234')).toBe(false);
@@ -78,7 +78,7 @@ describe('IMessageAdapter', () => {
 
     it('handles case insensitivity for email addresses', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['User@Example.COM'] },
+        { authorizedSenders: ['User@Example.COM'] },
         project.stateDir,
       );
       expect(adapter.isAuthorized('user@example.com')).toBe(true);
@@ -87,7 +87,7 @@ describe('IMessageAdapter', () => {
 
     it('handles whitespace in sender identifiers', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: [' +14081234567 '] },
+        { authorizedSenders: [' +14081234567 '] },
         project.stateDir,
       );
       expect(adapter.isAuthorized('+14081234567')).toBe(true);
@@ -111,7 +111,7 @@ describe('IMessageAdapter', () => {
   describe('onMessage handler', () => {
     it('registers a message handler', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       const messages: Message[] = [];
@@ -124,7 +124,7 @@ describe('IMessageAdapter', () => {
   describe('resolveUser', () => {
     it('returns the identifier as-is', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       expect(await adapter.resolveUser('+14081234567')).toBe('+14081234567');
@@ -133,7 +133,7 @@ describe('IMessageAdapter', () => {
 
     it('returns null for empty identifier', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       expect(await adapter.resolveUser('')).toBeNull();
@@ -143,7 +143,7 @@ describe('IMessageAdapter', () => {
   describe('getConnectionInfo', () => {
     it('returns disconnected state before start', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       const info = adapter.getConnectionInfo();
@@ -155,7 +155,7 @@ describe('IMessageAdapter', () => {
   describe('eventBus', () => {
     it('has an event bus with imessage platform', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       expect(adapter.eventBus).toBeDefined();
@@ -166,7 +166,7 @@ describe('IMessageAdapter', () => {
   describe('message logging', () => {
     it('creates log file in state directory', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       // Logger is initialized but file won't exist until first write
@@ -177,7 +177,7 @@ describe('IMessageAdapter', () => {
   describe('incoming message handling (via internal method)', () => {
     it('rejects messages from unauthorized senders', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       const messages: Message[] = [];
@@ -198,7 +198,7 @@ describe('IMessageAdapter', () => {
 
     it('accepts messages from authorized senders', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       const messages: Message[] = [];
@@ -223,7 +223,7 @@ describe('IMessageAdapter', () => {
 
     it('skips own outbound messages (isFromMe)', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       const messages: Message[] = [];
@@ -243,7 +243,7 @@ describe('IMessageAdapter', () => {
 
     it('deduplicates repeated notifications', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       const messages: Message[] = [];
@@ -267,7 +267,7 @@ describe('IMessageAdapter', () => {
 
     it('handles message handler errors gracefully', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       adapter.onMessage(async () => {
@@ -289,7 +289,7 @@ describe('IMessageAdapter', () => {
   describe('session registry', () => {
     it('registers and retrieves sessions by sender', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       adapter.registerSession('+14081234567', 'im-abc123');
@@ -298,7 +298,7 @@ describe('IMessageAdapter', () => {
 
     it('returns null for unknown sender', () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       expect(adapter.getSessionForSender('+19995550000')).toBeNull();
@@ -308,7 +308,7 @@ describe('IMessageAdapter', () => {
   describe('send() throws in server context', () => {
     it('throws explaining LaunchAgent limitation', async () => {
       const adapter = new IMessageAdapter(
-        { authorizedContacts: ['+14081234567'] },
+        { authorizedSenders: ['+14081234567'] },
         project.stateDir,
       );
       await expect(adapter.send({ userId: '+1408', content: 'test' }))

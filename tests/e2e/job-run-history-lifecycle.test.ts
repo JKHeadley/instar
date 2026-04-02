@@ -117,7 +117,6 @@ describeMaybe('E2E: Job Run History lifecycle', () => {
         maxSessions: 5,
         protectedSessions: [],
         completionPatterns: ['Session ended'],
-        monitorGracePeriodMs: 0,
       },
       state,
     );
