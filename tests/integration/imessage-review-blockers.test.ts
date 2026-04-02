@@ -278,10 +278,10 @@ describe('Fix 5: reply endpoint validates recipient', () => {
     const routes = fs.readFileSync(
       path.join(__dirname, '../../src/server/routes.ts'), 'utf-8'
     );
-    // The reply endpoint should validate recipient against authorizedSenders
-    expect(routes).toContain('isAuthorized(recipient)');
+    // The reply endpoint should validate recipient against authorizedContacts
+    expect(routes).toContain('isAuthorized(');
     expect(routes).toContain('403');
-    expect(routes).toContain('recipient not in authorizedSenders');
+    expect(routes).toContain('recipient not in authorizedContacts');
   });
 });
 
@@ -356,8 +356,8 @@ describe('Authorization normalization', () => {
     expect(adapter.isAuthorized('+14081234567')).toBe(false);
   });
 
-  it('missing authorizedSenders throws at construction', () => {
-    expect(() => new IMessageAdapter({} as any, tmpDir)).toThrow('authorizedSenders is required');
+  it('missing authorizedContacts throws at construction', () => {
+    expect(() => new IMessageAdapter({} as any, tmpDir)).toThrow('authorizedContacts is required');
   });
 });
 

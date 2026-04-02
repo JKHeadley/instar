@@ -35,6 +35,8 @@ export interface NativeBackendOptions {
   includeAttachments?: boolean;
   /** Path to persist poll offset (lastRowId) across restarts */
   offsetPath?: string;
+  /** Authorized contacts (normalized E.164) — scopes SQL queries for defense-in-depth */
+  authorizedContacts?: string[];
 }
 
 export class NativeBackend extends EventEmitter {
@@ -46,6 +48,7 @@ export class NativeBackend extends EventEmitter {
   private readonly pollIntervalMs: number;
   private readonly includeAttachments: boolean;
   private readonly offsetPath: string | null;
+  private readonly authorizedContacts: string[];
 
   // Prepared statements (cached for performance)
   private stmtNewMessages: import('better-sqlite3').Statement | null = null;
@@ -60,6 +63,7 @@ export class NativeBackend extends EventEmitter {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.includeAttachments = options.includeAttachments ?? true;
     this.offsetPath = options.offsetPath ?? null;
+    this.authorizedContacts = options.authorizedContacts ?? [];
   }
 
   get state(): ConnectionState {
@@ -83,29 +87,65 @@ export class NativeBackend extends EventEmitter {
       this.db = new Database(this.dbPath, { fileMustExist: true });
       this.db.pragma('query_only = ON');
 
-      this.stmtNewMessages = this.db.prepare(`
-        SELECT m.ROWID, m.guid, m.text, m.date, m.is_from_me, m.service,
-               m.associated_message_type,
-               h.id AS sender,
-               c.chat_identifier AS chat_id, c.display_name AS chat_name
-        FROM message m
-        LEFT JOIN handle h ON m.handle_id = h.ROWID
-        LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-        LEFT JOIN chat c ON cmj.chat_id = c.ROWID
-        WHERE m.ROWID > ?
-        ORDER BY m.ROWID ASC
-      `);
+      // Scope poll query to authorized contacts for defense-in-depth.
+      // Even if the adapter's auth check is bypassed, the SQL itself won't return
+      // unauthorized messages. Falls back to unscoped if no contacts configured.
+      if (this.authorizedContacts.length > 0) {
+        const placeholders = this.authorizedContacts.map(() => '?').join(', ');
+        this.stmtNewMessages = this.db.prepare(`
+          SELECT m.ROWID, m.guid, m.text, m.date, m.is_from_me, m.service,
+                 m.associated_message_type,
+                 h.id AS sender,
+                 c.chat_identifier AS chat_id, c.display_name AS chat_name
+          FROM message m
+          LEFT JOIN handle h ON m.handle_id = h.ROWID
+          LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+          LEFT JOIN chat c ON cmj.chat_id = c.ROWID
+          WHERE m.ROWID > ?
+            AND (m.is_from_me = 1 OR h.id IN (${placeholders}))
+          ORDER BY m.ROWID ASC
+        `);
+      } else {
+        this.stmtNewMessages = this.db.prepare(`
+          SELECT m.ROWID, m.guid, m.text, m.date, m.is_from_me, m.service,
+                 m.associated_message_type,
+                 h.id AS sender,
+                 c.chat_identifier AS chat_id, c.display_name AS chat_name
+          FROM message m
+          LEFT JOIN handle h ON m.handle_id = h.ROWID
+          LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+          LEFT JOIN chat c ON cmj.chat_id = c.ROWID
+          WHERE m.ROWID > ?
+          ORDER BY m.ROWID ASC
+        `);
+      }
 
-      this.stmtChats = this.db.prepare(`
-        SELECT c.ROWID AS id, c.chat_identifier, c.display_name, c.service_name,
-               c.guid, c.is_archived,
-               (SELECT MAX(m.date) FROM message m
-                JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
-                WHERE cmj.chat_id = c.ROWID) AS last_message_date
-        FROM chat c
-        ORDER BY last_message_date DESC
-        LIMIT ?
-      `);
+      // Scope chat listing to authorized contacts
+      if (this.authorizedContacts.length > 0) {
+        const placeholders = this.authorizedContacts.map(() => '?').join(', ');
+        this.stmtChats = this.db.prepare(`
+          SELECT c.ROWID AS id, c.chat_identifier, c.display_name, c.service_name,
+                 c.guid, c.is_archived,
+                 (SELECT MAX(m.date) FROM message m
+                  JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+                  WHERE cmj.chat_id = c.ROWID) AS last_message_date
+          FROM chat c
+          WHERE c.chat_identifier IN (${placeholders})
+          ORDER BY last_message_date DESC
+          LIMIT ?
+        `);
+      } else {
+        this.stmtChats = this.db.prepare(`
+          SELECT c.ROWID AS id, c.chat_identifier, c.display_name, c.service_name,
+                 c.guid, c.is_archived,
+                 (SELECT MAX(m.date) FROM message m
+                  JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+                  WHERE cmj.chat_id = c.ROWID) AS last_message_date
+          FROM chat c
+          ORDER BY last_message_date DESC
+          LIMIT ?
+        `);
+      }
 
       this.stmtHistory = this.db.prepare(`
         SELECT m.ROWID, m.guid, m.text, m.date, m.is_from_me, m.service,
@@ -179,7 +219,10 @@ export class NativeBackend extends EventEmitter {
       throw new Error('Database not connected');
     }
 
-    const rows = this.stmtChats.all(limit) as Array<{
+    const chatBindParams = this.authorizedContacts.length > 0
+      ? [...this.authorizedContacts, limit]
+      : [limit];
+    const rows = this.stmtChats.all(...chatBindParams) as Array<{
       id: number;
       chat_identifier: string;
       display_name: string | null;
@@ -206,6 +249,11 @@ export class NativeBackend extends EventEmitter {
   getChatHistory(chatId: string, limit = 50): IMessageIncoming[] {
     if (!this.db || !this.stmtHistory) {
       throw new Error('Database not connected');
+    }
+
+    // Defense-in-depth: only return history for authorized contacts
+    if (this.authorizedContacts.length > 0 && !this.authorizedContacts.includes(chatId)) {
+      return [];
     }
 
     const rows = this.stmtHistory.all(chatId, limit) as Array<{
@@ -286,7 +334,11 @@ export class NativeBackend extends EventEmitter {
     if (!this.db || !this.stmtNewMessages) return;
 
     try {
-      const rows = this.stmtNewMessages.all(this.lastRowId) as Array<{
+      // Pass authorized contacts as bind params when SQL is scoped
+      const bindParams = this.authorizedContacts.length > 0
+        ? [this.lastRowId, ...this.authorizedContacts]
+        : [this.lastRowId];
+      const rows = this.stmtNewMessages.all(...bindParams) as Array<{
         ROWID: number;
         guid: string;
         text: string | null;

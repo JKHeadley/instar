@@ -8,18 +8,25 @@
  * - macOS-only (requires Messages.app + Full Disk Access on node)
  * - Read-only from server context (NativeBackend reads chat.db)
  * - Sending happens from Claude Code sessions via imessage-reply.sh
- * - authorizedSenders is required and fail-closed
+ * - authorizedContacts gates BOTH inbound AND outbound (unified allowlist)
+ * - sendEnabled defaults to false (read-only mode)
+ * - proactiveSendEnabled defaults to false (replies only)
+ * - Config is cached at startup — runtime edits don't expand permissions
  * - SessionChannelRegistry maps senders to sessions
  * - StallDetector monitors for unanswered messages
  */
 
 import path from 'node:path';
+import crypto from 'node:crypto';
 import type { MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { NativeBackend } from './NativeBackend.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import { MessagingEventBus } from '../shared/MessagingEventBus.js';
 import { SessionChannelRegistry } from '../shared/SessionChannelRegistry.js';
 import { StallDetector, type StallEvent, type IsSessionAliveCheck } from '../shared/StallDetector.js';
+import { OutboundRateLimiter } from './OutboundRateLimiter.js';
+import { OutboundAuditLog } from './OutboundAuditLog.js';
+import { normalizeIdentifier, normalizeIdentifierSet } from './normalize-phone.js';
 import type {
   IMessageConfig,
   IMessageIncoming,
@@ -29,12 +36,23 @@ import type {
 
 const RECEIVED_IDS_MAX_SIZE = 1_000;
 
+/** Single-use send token for TOCTOU mitigation. */
+interface SendToken {
+  token: string;
+  recipient: string;
+  issuedAt: number;
+  ttlMs: number;
+}
+
 export class IMessageAdapter implements MessagingAdapter {
   readonly platform = 'imessage';
 
-  // Config
+  // Config (cached at startup — immutable at runtime)
   private config: IMessageConfig;
   private stateDir: string;
+  private readonly sendEnabled: boolean;
+  private readonly proactiveSendEnabled: boolean;
+  private readonly reactiveWindowHours: number;
 
   // Components
   private backend: NativeBackend;
@@ -42,12 +60,16 @@ export class IMessageAdapter implements MessagingAdapter {
   readonly eventBus: MessagingEventBus;
   private registry: SessionChannelRegistry;
   private stallDetector: StallDetector;
+  private rateLimiter: OutboundRateLimiter;
+  private auditLog: OutboundAuditLog;
 
   // State
   private messageHandler: ((message: Message) => Promise<void>) | null = null;
   private started = false;
-  private authorizedSenders: Set<string>;
+  private authorizedContacts: Set<string>;  // normalized E.164
   private receivedMessageIds = new Set<string>();
+  private lastInboundFrom = new Map<string, number>();  // normalized contact → timestamp
+  private pendingSendTokens = new Map<string, SendToken>();
 
   // Callbacks (wired by server.ts)
   onMessageLogged: ((entry: LogEntry) => void) | null = null;
@@ -57,17 +79,18 @@ export class IMessageAdapter implements MessagingAdapter {
     this.config = config as unknown as IMessageConfig;
     this.stateDir = stateDir;
 
-    if (!Array.isArray(this.config.authorizedSenders)) {
-      throw new Error('[imessage] authorizedSenders is required (array of phone numbers or email addresses)');
+    // Resolve authorizedContacts with deprecation handling
+    const contacts = this._resolveAuthorizedContacts();
+    this.authorizedContacts = normalizeIdentifierSet(contacts);
+
+    if (this.authorizedContacts.size === 0) {
+      console.warn('[imessage] authorizedContacts is empty — all messages will be rejected and all sends blocked (fail-closed)');
     }
 
-    this.authorizedSenders = new Set(
-      this.config.authorizedSenders.map((s) => s.trim().toLowerCase()),
-    );
-
-    if (this.authorizedSenders.size === 0) {
-      console.warn('[imessage] authorizedSenders is empty — all messages will be rejected (fail-closed)');
-    }
+    // Cache config at startup — runtime edits to config.json don't take effect
+    this.sendEnabled = this.config.sendEnabled ?? false;
+    this.proactiveSendEnabled = this.config.proactiveSendEnabled ?? false;
+    this.reactiveWindowHours = this.config.reactiveWindowHours ?? 24;
 
     // Initialize backend (read-only)
     this.backend = new NativeBackend({
@@ -75,6 +98,7 @@ export class IMessageAdapter implements MessagingAdapter {
       pollIntervalMs: this.config.pollIntervalMs,
       includeAttachments: this.config.includeAttachments,
       offsetPath: path.join(stateDir, 'imessage-poll-offset.json'),
+      authorizedContacts: Array.from(this.authorizedContacts),
     });
 
     // Initialize logger
@@ -98,6 +122,17 @@ export class IMessageAdapter implements MessagingAdapter {
       promiseTimeoutMinutes: this.config.promiseTimeoutMinutes ?? 10,
     });
 
+    // Initialize rate limiter
+    this.rateLimiter = new OutboundRateLimiter({
+      maxPerHour: this.config.maxOutboundPerHour ?? 20,
+      maxPerDay: this.config.maxOutboundPerDay ?? 100,
+    });
+
+    // Initialize audit log
+    this.auditLog = new OutboundAuditLog(
+      path.join(stateDir, 'imessage-outbound.jsonl'),
+    );
+
     // Wire backend message events
     this.backend.on('message', (msg: IMessageIncoming) => this._handleIncomingMessage(msg));
     this.backend.on('stateChange', (state: ConnectionState) => {
@@ -109,6 +144,9 @@ export class IMessageAdapter implements MessagingAdapter {
 
   async start(): Promise<void> {
     if (this.started) return;
+
+    // Startup security warnings
+    this._logStartupWarnings();
 
     await this.backend.connect();
     this.started = true;
@@ -147,63 +185,52 @@ export class IMessageAdapter implements MessagingAdapter {
 
   // ── Session Management ──
 
-  /** Register a session for a sender identifier. */
   registerSession(sender: string, sessionName: string): void {
-    this.registry.register(sender.toLowerCase(), sessionName, sender);
+    this.registry.register(normalizeIdentifier(sender), sessionName, sender);
   }
 
-  /** Get the session mapped to a sender, if any. */
   getSessionForSender(sender: string): string | null {
-    return this.registry.getSessionForChannel(sender.toLowerCase());
+    return this.registry.getSessionForChannel(normalizeIdentifier(sender));
   }
 
-  /** Get the sender mapped to a session, if any. */
   getSenderForSession(sessionName: string): string | null {
     return this.registry.getChannelForSession(sessionName);
   }
 
   // ── Stall Detection ──
 
-  /** Track a message injection for stall detection. */
   trackMessageInjection(sender: string, sessionName: string, text: string): void {
-    this.stallDetector.trackMessageInjection(sender.toLowerCase(), sessionName, text);
+    this.stallDetector.trackMessageInjection(normalizeIdentifier(sender), sessionName, text);
   }
 
-  /** Clear stall tracking for a sender (called when reply is received). */
   clearStallForSender(sender: string): void {
-    this.stallDetector.clearStallForChannel(sender.toLowerCase());
+    this.stallDetector.clearStallForChannel(normalizeIdentifier(sender));
   }
 
-  /** Set session liveness checker for stall detection. */
   setIsSessionAlive(check: IsSessionAliveCheck): void {
     this.stallDetector.setIsSessionAlive(check);
   }
 
-  /** Wire stall detection callback. */
   setOnStall(callback: (event: StallEvent, alive: boolean) => Promise<void>): void {
     this.stallDetector.setOnStall(callback);
   }
 
   // ── Context & History ──
 
-  /** Get conversation context formatted for session bootstrap. */
   getConversationContext(sender: string, limit = 20): string {
     return this.backend.getConversationContext(sender, limit);
   }
 
-  /** List recent chats. */
   listChats(limit = 20): unknown {
     return this.backend.listChats(limit);
   }
 
-  /** Get message history for a chat. */
   getChatHistory(chatId: string, limit = 50): unknown {
     return this.backend.getChatHistory(chatId, limit);
   }
 
   // ── Connection Info ──
 
-  /** Get current connection info. */
   getConnectionInfo(): ConnectionInfo {
     return {
       state: this.backend.state,
@@ -213,25 +240,211 @@ export class IMessageAdapter implements MessagingAdapter {
     };
   }
 
-  // ── Auth ──
+  // ── Auth (unified — gates both directions) ──
 
-  /** Check if a sender is authorized. */
   isAuthorized(sender: string): boolean {
-    return this.authorizedSenders.has(sender.trim().toLowerCase());
+    return this.authorizedContacts.has(normalizeIdentifier(sender));
+  }
+
+  // ── Outbound Safety ──
+
+  /** Whether sending is enabled (cached from startup config). */
+  isSendEnabled(): boolean {
+    return this.sendEnabled;
+  }
+
+  /** Whether proactive (agent-initiated) sends are enabled. */
+  isProactiveSendEnabled(): boolean {
+    return this.proactiveSendEnabled;
+  }
+
+  /**
+   * Check if a send to this recipient is a reactive reply (within reactive window)
+   * or a proactive send (no recent inbound).
+   */
+  getSendMode(recipient: string): 'reactive' | 'proactive' {
+    const normalized = normalizeIdentifier(recipient);
+    const lastInbound = this.lastInboundFrom.get(normalized);
+    if (!lastInbound) return 'proactive';
+
+    const windowMs = this.reactiveWindowHours * 3_600_000;
+    if (Date.now() - lastInbound > windowMs) return 'proactive';
+
+    return 'reactive';
+  }
+
+  /**
+   * Validate a send request. Returns either an approval with a single-use token,
+   * or a rejection with reason.
+   *
+   * This is Layer 3 of the 5-layer defense-in-depth.
+   */
+  validateSend(recipient: string): {
+    allowed: boolean;
+    token?: string;
+    reason?: string;
+    sendMode?: 'reactive' | 'proactive';
+  } {
+    const normalized = normalizeIdentifier(recipient);
+
+    // Check send enabled
+    if (!this.sendEnabled) {
+      this.auditLog.record({
+        recipient: normalized,
+        text: '',
+        allowed: false,
+        blockedBy: 'layer3:sendDisabled',
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+      return { allowed: false, reason: 'sendEnabled is false (read-only mode)' };
+    }
+
+    // Check authorized
+    if (!this.authorizedContacts.has(normalized)) {
+      this.auditLog.record({
+        recipient: normalized,
+        text: '',
+        allowed: false,
+        blockedBy: 'layer3:unauthorized',
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+      return { allowed: false, reason: 'recipient not in authorizedContacts' };
+    }
+
+    // Check proactive vs reactive
+    const sendMode = this.getSendMode(normalized);
+    if (sendMode === 'proactive' && !this.proactiveSendEnabled) {
+      this.auditLog.record({
+        recipient: normalized,
+        text: '',
+        allowed: false,
+        blockedBy: 'layer3:proactiveDisabled',
+        sendMode: 'proactive',
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+      return { allowed: false, reason: 'proactive sends not enabled — no recent inbound from this contact' };
+    }
+
+    // Check rate limits
+    const rateCheck = this.rateLimiter.check(normalized);
+    if (!rateCheck.allowed) {
+      this.auditLog.record({
+        recipient: normalized,
+        text: '',
+        allowed: false,
+        blockedBy: 'layer4:rateLimit',
+        sendMode,
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+
+      // Emit rate limit event for user notification
+      this.eventBus.emit('rate:outbound-limited', {
+        recipient: IMessageAdapter.maskIdentifier(normalized),
+        reason: rateCheck.reason || 'rate limit exceeded',
+      }).catch(() => {});
+
+      return { allowed: false, reason: rateCheck.reason || 'rate limit exceeded' };
+    }
+
+    // Issue single-use send token (TOCTOU mitigation)
+    const token = crypto.randomUUID();
+    const sendToken: SendToken = {
+      token,
+      recipient: normalized,
+      issuedAt: Date.now(),
+      ttlMs: 30_000, // 30 seconds
+    };
+    this.pendingSendTokens.set(token, sendToken);
+
+    // Clean up expired tokens
+    this._cleanupExpiredTokens();
+
+    return { allowed: true, token, sendMode };
+  }
+
+  /**
+   * Confirm a send (called after the message is actually delivered).
+   * Validates the send token and records the send for rate limiting + audit.
+   */
+  confirmSend(token: string, recipient: string, text: string): {
+    ok: boolean;
+    reason?: string;
+  } {
+    const normalized = normalizeIdentifier(recipient);
+    const sendToken = this.pendingSendTokens.get(token);
+
+    if (!sendToken) {
+      this.auditLog.record({
+        recipient: normalized,
+        text,
+        allowed: false,
+        blockedBy: 'layer3:invalidToken',
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+      return { ok: false, reason: 'invalid or expired send token' };
+    }
+
+    // Consume the token (single-use)
+    this.pendingSendTokens.delete(token);
+
+    // Verify token matches the recipient (prevents validate-for-A, send-to-B)
+    if (sendToken.recipient !== normalized) {
+      this.auditLog.record({
+        recipient: normalized,
+        text,
+        allowed: false,
+        blockedBy: 'layer3:tokenMismatch',
+        sendToken: token,
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+      return { ok: false, reason: 'send token was issued for a different recipient' };
+    }
+
+    // Check TTL
+    if (Date.now() - sendToken.issuedAt > sendToken.ttlMs) {
+      this.auditLog.record({
+        recipient: normalized,
+        text,
+        allowed: false,
+        blockedBy: 'layer3:tokenExpired',
+        sendToken: token,
+        rateStatus: this.rateLimiter.countsFor(normalized),
+      });
+      return { ok: false, reason: 'send token expired (30s TTL)' };
+    }
+
+    // Record for rate limiting
+    this.rateLimiter.record(normalized);
+
+    // Audit log — allowed
+    const sendMode = this.getSendMode(normalized);
+    this.auditLog.record({
+      recipient: normalized,
+      text,
+      allowed: true,
+      sendMode,
+      sendToken: token,
+      rateStatus: this.rateLimiter.countsFor(normalized),
+    });
+
+    return { ok: true };
+  }
+
+  /** Get rate limiter status (for debugging/admin endpoints). */
+  getRateLimitStatus() {
+    return this.rateLimiter.status();
   }
 
   // ── Logging ──
 
-  /** Get the message logger (for routes/searching). */
   get messageLogger(): MessageLogger {
     return this.logger;
   }
 
-  /** Log an outbound message (called by /imessage/reply endpoint). */
   logOutboundMessage(recipient: string, text: string): void {
     this._logMessage({
       messageId: `out-${Date.now()}`,
-      channelId: recipient,
+      channelId: normalizeIdentifier(recipient),
       text,
       fromUser: false,
       timestamp: new Date().toISOString(),
@@ -240,7 +453,6 @@ export class IMessageAdapter implements MessagingAdapter {
     });
   }
 
-  /** Mask a phone number for logging (privacy). */
   static maskIdentifier(id: string): string {
     if (id.startsWith('+') && id.length > 6) {
       return id.slice(0, 4) + '***' + id.slice(-4);
@@ -254,6 +466,52 @@ export class IMessageAdapter implements MessagingAdapter {
 
   // ── Internal ──
 
+  /**
+   * Resolve the contact allowlist from config, handling the
+   * authorizedSenders → authorizedContacts migration.
+   */
+  private _resolveAuthorizedContacts(): string[] {
+    const newKey = this.config.authorizedContacts;
+    const oldKey = this.config.authorizedSenders;
+
+    if (newKey && Array.isArray(newKey)) {
+      if (oldKey && Array.isArray(oldKey)) {
+        console.warn(
+          '[imessage] Both authorizedContacts and authorizedSenders are present. ' +
+          'Using authorizedContacts only. Rename authorizedSenders to authorizedContacts to suppress this warning.',
+        );
+      }
+      return newKey;
+    }
+
+    if (oldKey && Array.isArray(oldKey)) {
+      console.warn(
+        '[imessage] authorizedSenders is deprecated — rename to authorizedContacts. ' +
+        'Both gate inbound AND outbound messaging.',
+      );
+      return oldKey;
+    }
+
+    // Neither present — fail-closed
+    throw new Error('[imessage] authorizedContacts is required (array of phone numbers or email addresses)');
+  }
+
+  private _logStartupWarnings(): void {
+    if (this.sendEnabled) {
+      console.warn(
+        '[imessage] ⚠️  iMessage send is enabled with software-level guardrails. ' +
+        'Read-only mode (sendEnabled: false) provides stronger security. ' +
+        'Server-mediated sending (Phase 2) is planned.',
+      );
+    }
+    if (this.proactiveSendEnabled) {
+      console.warn(
+        '[imessage] ⚠️  Proactive iMessage send is enabled. ' +
+        'The agent can initiate messages to authorized contacts without them messaging first.',
+      );
+    }
+  }
+
   private async _handleIncomingMessage(msg: IMessageIncoming): Promise<void> {
     // Skip own outbound messages
     if (msg.isFromMe) return;
@@ -262,12 +520,15 @@ export class IMessageAdapter implements MessagingAdapter {
     if (this.receivedMessageIds.has(msg.messageId)) return;
     this._trackReceivedId(msg.messageId);
 
-    // Authorization check (fail-closed)
-    const senderNormalized = msg.sender.trim().toLowerCase();
-    if (!this.authorizedSenders.has(senderNormalized)) {
+    // Authorization check (fail-closed) — uses normalized comparison
+    const senderNormalized = normalizeIdentifier(msg.sender);
+    if (!this.authorizedContacts.has(senderNormalized)) {
       console.log(`[imessage] Rejected message from unauthorized sender: ${IMessageAdapter.maskIdentifier(msg.sender)}`);
       return;
     }
+
+    // Track last inbound time for reactive window
+    this.lastInboundFrom.set(senderNormalized, Date.now());
 
     // Log inbound message
     this._logMessage({
@@ -330,4 +591,12 @@ export class IMessageAdapter implements MessagingAdapter {
     }
   }
 
+  private _cleanupExpiredTokens(): void {
+    const now = Date.now();
+    for (const [token, sendToken] of this.pendingSendTokens) {
+      if (now - sendToken.issuedAt > sendToken.ttlMs) {
+        this.pendingSendTokens.delete(token);
+      }
+    }
+  }
 }

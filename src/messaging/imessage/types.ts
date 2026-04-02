@@ -18,11 +18,39 @@ export interface IMessageConfig {
   dbPath?: string;
 
   /**
-   * Authorized sender identifiers (phone numbers or email addresses).
-   * REQUIRED — fail-closed. Empty array = reject all messages.
+   * Unified contact allowlist — gates BOTH inbound AND outbound.
    * Phone numbers should be in E.164 format (e.g., "+14081234567").
+   * REQUIRED — fail-closed. Empty array = reject all messages AND block all sends.
    */
-  authorizedSenders: string[];
+  authorizedContacts?: string[];
+
+  /**
+   * @deprecated Use `authorizedContacts` instead. If both are present, `authorizedContacts` takes precedence.
+   */
+  authorizedSenders?: string[];
+
+  /**
+   * Enable outbound sending (default: false — read-only mode).
+   * When false, the adapter only receives messages.
+   * ⚠️ Software-level guardrails only. See PROPOSAL-messaging-outbound-safety.md.
+   */
+  sendEnabled?: boolean;
+
+  /**
+   * Enable proactive (agent-initiated) sends to authorized contacts (default: false).
+   * When false, the agent can only reply to contacts who messaged first (within reactiveWindowHours).
+   * Requires sendEnabled: true.
+   */
+  proactiveSendEnabled?: boolean;
+
+  /** Per-contact outbound rate limit per hour (default: 20) */
+  maxOutboundPerHour?: number;
+
+  /** Global outbound rate limit per day (default: 100) */
+  maxOutboundPerDay?: number;
+
+  /** Hours after last inbound before a reply counts as "proactive" (default: 24) */
+  reactiveWindowHours?: number;
 
   /** Include attachment metadata in incoming messages (default: true) */
   includeAttachments?: boolean;

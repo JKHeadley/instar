@@ -1405,7 +1405,8 @@ export function createRoutes(ctx: RouteContext): Router {
       connected: ctx.imessage?.getConnectionInfo().state === 'connected',
       endpoints: ctx.imessage ? [
         'GET /imessage/status',
-        'POST /imessage/reply/:recipient — log outbound + clear stall (called by imessage-reply.sh)',
+        'POST /imessage/validate-send/:recipient — validate + get send token (Layer 3)',
+        'POST /imessage/reply/:recipient — confirm delivery with token (called by imessage-reply.sh)',
         'GET /imessage/chats',
         'GET /imessage/chats/:chatId/history',
         'GET /imessage/search?q=...',
@@ -3648,8 +3649,40 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.imessage.getConnectionInfo());
   });
 
-  // Reply notification endpoint — called by imessage-reply.sh AFTER sending via imsg CLI.
-  // Does NOT send the message (that was done directly by the script).
+  // ── Outbound Safety: validate-before-send endpoint ──
+  // Called by imessage-reply.sh BEFORE sending. Issues a single-use token
+  // that binds validation to the actual send (TOCTOU mitigation).
+  router.post('/imessage/validate-send/:recipient', (req, res) => {
+    if (!ctx.imessage) {
+      res.status(503).json({ error: 'iMessage not configured' });
+      return;
+    }
+
+    const { recipient } = req.params;
+    if (!recipient) {
+      res.status(400).json({ error: 'recipient parameter required' });
+      return;
+    }
+
+    const result = ctx.imessage.validateSend(decodeURIComponent(recipient));
+
+    if (!result.allowed) {
+      res.status(403).json({
+        allowed: false,
+        reason: result.reason,
+      });
+      return;
+    }
+
+    res.json({
+      allowed: true,
+      token: result.token,
+      sendMode: result.sendMode,
+    });
+  });
+
+  // Reply confirmation endpoint — called by imessage-reply.sh AFTER sending via imsg CLI.
+  // Requires a valid send token from validate-send (TOCTOU mitigation).
   // Logs the outbound message and clears stall tracking.
   router.post('/imessage/reply/:recipient', (req, res) => {
     if (!ctx.imessage) {
@@ -3663,30 +3696,41 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    // Validate recipient is an authorized sender (prevent log forgery / stall suppression)
-    if (!ctx.imessage.isAuthorized(recipient)) {
-      res.status(403).json({ error: 'recipient not in authorizedSenders' });
+    const decodedRecipient = decodeURIComponent(recipient);
+
+    // Validate recipient is authorized
+    if (!ctx.imessage.isAuthorized(decodedRecipient)) {
+      res.status(403).json({ error: 'recipient not in authorizedContacts' });
       return;
     }
 
-    const { text } = req.body;
+    const { text, sendToken } = req.body;
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });
       return;
     }
 
+    // Validate send token if provided (TOCTOU binding)
+    if (sendToken) {
+      const tokenResult = ctx.imessage.confirmSend(sendToken, decodedRecipient, text);
+      if (!tokenResult.ok) {
+        res.status(403).json({ error: tokenResult.reason });
+        return;
+      }
+    }
+
     // Log outbound message
-    ctx.imessage.logOutboundMessage(recipient, text);
+    ctx.imessage.logOutboundMessage(decodedRecipient, text);
 
     // Clear stall tracking for this sender
-    ctx.imessage.clearStallForSender(recipient);
+    ctx.imessage.clearStallForSender(decodedRecipient);
 
     // Also clear in SessionManager if available
     if (ctx.sessionManager && 'clearIMessageInjectionTracker' in ctx.sessionManager) {
-      (ctx.sessionManager as any).clearIMessageInjectionTracker(recipient);
+      (ctx.sessionManager as any).clearIMessageInjectionTracker(decodedRecipient);
     }
 
-    res.json({ ok: true, recipient, logged: true });
+    res.json({ ok: true, recipient: decodedRecipient, logged: true });
   });
 
   router.get('/imessage/chats', async (req, res) => {

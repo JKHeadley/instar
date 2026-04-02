@@ -4,6 +4,9 @@
 
 export { IMessageAdapter } from './IMessageAdapter.js';
 export { NativeBackend } from './NativeBackend.js';
+export { OutboundRateLimiter } from './OutboundRateLimiter.js';
+export { OutboundAuditLog } from './OutboundAuditLog.js';
+export { normalizeIdentifier, normalizeIdentifierSet, identifiersMatch } from './normalize-phone.js';
 export type {
   IMessageConfig,
   IMessageIncoming,
