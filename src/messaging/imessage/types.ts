@@ -52,6 +52,19 @@ export interface IMessageConfig {
   /** Hours after last inbound before a reply counts as "proactive" (default: 24) */
   reactiveWindowHours?: number;
 
+  /**
+   * Trigger mode for incoming messages (default: "mention").
+   * - "mention": only respond when message contains @{agentName}
+   * - "all": respond to every message from authorized contacts
+   */
+  triggerMode?: 'mention' | 'all';
+
+  /**
+   * Agent name for mention-based triggering (default: project name).
+   * Used to detect @{agentName} in incoming messages.
+   */
+  agentName?: string;
+
   /** Include attachment metadata in incoming messages (default: true) */
   includeAttachments?: boolean;
 

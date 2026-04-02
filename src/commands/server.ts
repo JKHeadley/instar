@@ -3038,8 +3038,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Wire session routing (following Telegram/WhatsApp pattern)
         wireIMessageRouting(imessageAdapter, sessionManager);
 
+        // Set agent name for mention-based triggering
+        const imAgentName = (imessageConfig.config as any)?.agentName || config.projectName;
+        if (imAgentName) imessageAdapter.setAgentName(imAgentName);
+
         await imessageAdapter.start();
-        console.log(pc.green('  iMessage adapter: connected'));
+        const triggerInfo = imessageAdapter.getTriggerMode() === 'mention'
+          ? `trigger: @${imAgentName}`
+          : 'trigger: all messages';
+        console.log(pc.green(`  iMessage adapter: connected (${triggerInfo})`));
         console.log(pc.green('  iMessage message routing: wired'));
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);

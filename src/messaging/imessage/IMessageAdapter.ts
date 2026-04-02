@@ -53,6 +53,8 @@ export class IMessageAdapter implements MessagingAdapter {
   private readonly sendEnabled: boolean;
   private readonly proactiveSendEnabled: boolean;
   private readonly reactiveWindowHours: number;
+  private readonly triggerMode: 'mention' | 'all';
+  private agentName: string | undefined;
 
   // Components
   private backend: NativeBackend;
@@ -91,6 +93,8 @@ export class IMessageAdapter implements MessagingAdapter {
     this.sendEnabled = this.config.sendEnabled ?? false;
     this.proactiveSendEnabled = this.config.proactiveSendEnabled ?? false;
     this.reactiveWindowHours = this.config.reactiveWindowHours ?? 24;
+    this.triggerMode = this.config.triggerMode ?? 'mention';
+    this.agentName = this.config.agentName;
 
     // Initialize backend (read-only)
     this.backend = new NativeBackend({
@@ -435,6 +439,48 @@ export class IMessageAdapter implements MessagingAdapter {
     return this.rateLimiter.status();
   }
 
+  // ── Trigger Mode ──
+
+  /** Set the agent name for mention-based triggering. */
+  setAgentName(name: string): void {
+    this.agentName = name;
+  }
+
+  /** Get the current trigger mode. */
+  getTriggerMode(): 'mention' | 'all' {
+    return this.triggerMode;
+  }
+
+  /**
+   * Check whether an incoming message triggers the agent.
+   * In "mention" mode, requires @{agentName} in the message text.
+   * In "all" mode, every message triggers.
+   * Returns the stripped text (mention removed) if triggered.
+   */
+  _checkTrigger(text: string): { triggered: boolean; strippedText: string } {
+    if (this.triggerMode === 'all') {
+      return { triggered: true, strippedText: text };
+    }
+
+    // Mention mode — require @{agentName}
+    if (!this.agentName) {
+      // No agent name configured — fall back to triggering on all messages
+      return { triggered: true, strippedText: text };
+    }
+
+    const escaped = this.agentName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const mentionPattern = new RegExp(`@${escaped}\\b`, 'i');
+    const match = text.match(mentionPattern);
+
+    if (!match) {
+      return { triggered: false, strippedText: text };
+    }
+
+    // Strip the mention from the message before routing
+    const stripped = text.replace(mentionPattern, '').replace(/\s+/g, ' ').trim();
+    return { triggered: true, strippedText: stripped || text };
+  }
+
   // ── Logging ──
 
   get messageLogger(): MessageLogger {
@@ -530,6 +576,28 @@ export class IMessageAdapter implements MessagingAdapter {
     // Track last inbound time for reactive window
     this.lastInboundFrom.set(senderNormalized, Date.now());
 
+    // Check trigger mode — in "mention" mode, only respond if @agentName is present
+    const triggerResult = this._checkTrigger(msg.text);
+    if (!triggerResult.triggered) {
+      console.log(`[imessage] Message from ${IMessageAdapter.maskIdentifier(msg.sender)} logged but not triggered (mention mode, no @${this.agentName})`);
+      // Still log the message for awareness, just don't route it
+      this._logMessage({
+        messageId: msg.messageId,
+        channelId: msg.chatId,
+        text: msg.text,
+        fromUser: true,
+        timestamp: new Date(msg.timestamp * 1000).toISOString(),
+        sessionName: null,
+        senderName: msg.senderName,
+        platformUserId: msg.sender,
+        platform: 'imessage',
+      });
+      return;
+    }
+
+    // Use the stripped text (mention removed) for downstream processing
+    const processedText = triggerResult.strippedText;
+
     // Log inbound message
     this._logMessage({
       messageId: msg.messageId,
@@ -547,7 +615,7 @@ export class IMessageAdapter implements MessagingAdapter {
     await this.eventBus.emit('message:incoming', {
       channelId: msg.chatId,
       userId: msg.sender,
-      text: msg.text,
+      text: processedText,
       timestamp: new Date(msg.timestamp * 1000).toISOString(),
       raw: msg,
     });
@@ -557,7 +625,7 @@ export class IMessageAdapter implements MessagingAdapter {
       const message: Message = {
         id: msg.messageId,
         userId: msg.sender,
-        content: msg.text,
+        content: processedText,
         channel: { type: 'imessage', identifier: msg.sender },
         receivedAt: new Date(msg.timestamp * 1000).toISOString(),
         metadata: {

@@ -626,3 +626,78 @@ describe('SQL query scoping', () => {
     expect(backend).toBeDefined();
   });
 });
+
+// ── Trigger Mode ────────────────────────────────────────────────────
+
+describe('Trigger Mode', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'imsg-trigger-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeAdapter(overrides: Record<string, unknown> = {}) {
+    return new IMessageAdapter(
+      { authorizedContacts: ['+14081234567'], ...overrides },
+      tmpDir,
+    );
+  }
+
+  it('defaults to mention mode', () => {
+    const adapter = makeAdapter();
+    expect(adapter.getTriggerMode()).toBe('mention');
+  });
+
+  it('can be set to all mode', () => {
+    const adapter = makeAdapter({ triggerMode: 'all' });
+    expect(adapter.getTriggerMode()).toBe('all');
+  });
+
+  it('all mode triggers on every message', () => {
+    const adapter = makeAdapter({ triggerMode: 'all' });
+    adapter.setAgentName('Echo');
+    const result = adapter._checkTrigger('hello there');
+    expect(result.triggered).toBe(true);
+    expect(result.strippedText).toBe('hello there');
+  });
+
+  it('mention mode without mention does not trigger', () => {
+    const adapter = makeAdapter({ triggerMode: 'mention' });
+    adapter.setAgentName('Echo');
+    const result = adapter._checkTrigger('hello there');
+    expect(result.triggered).toBe(false);
+  });
+
+  it('mention mode with @AgentName triggers', () => {
+    const adapter = makeAdapter({ triggerMode: 'mention' });
+    adapter.setAgentName('Echo');
+    const result = adapter._checkTrigger('hey @Echo what time is it?');
+    expect(result.triggered).toBe(true);
+  });
+
+  it('mention detection is case-insensitive', () => {
+    const adapter = makeAdapter({ triggerMode: 'mention' });
+    adapter.setAgentName('Echo');
+    const result = adapter._checkTrigger('hey @echo what time is it?');
+    expect(result.triggered).toBe(true);
+  });
+
+  it('strips the mention from the message content', () => {
+    const adapter = makeAdapter({ triggerMode: 'mention' });
+    adapter.setAgentName('Echo');
+    const result = adapter._checkTrigger('hey @Echo what time is it?');
+    expect(result.triggered).toBe(true);
+    expect(result.strippedText).toBe('hey what time is it?');
+  });
+
+  it('falls back to all mode when agent name is not set', () => {
+    const adapter = makeAdapter({ triggerMode: 'mention' });
+    // Don't set agent name
+    const result = adapter._checkTrigger('hello there');
+    expect(result.triggered).toBe(true);
+  });
+});
