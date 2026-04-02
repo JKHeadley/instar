@@ -18,6 +18,7 @@
 
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
 import type { MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { NativeBackend } from './NativeBackend.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
@@ -70,6 +71,9 @@ export class IMessageAdapter implements MessagingAdapter {
   private receivedMessageIds = new Set<string>();
   private lastInboundFrom = new Map<string, number>();  // normalized contact → timestamp
   private pendingSendTokens = new Map<string, SendToken>();
+
+  // Immediate ack state
+  private lastAckTime = new Map<string, number>();
 
   // Callbacks (wired by server.ts)
   onMessageLogged: ((entry: LogEntry) => void) | null = null;
@@ -530,6 +534,9 @@ export class IMessageAdapter implements MessagingAdapter {
     // Track last inbound time for reactive window
     this.lastInboundFrom.set(senderNormalized, Date.now());
 
+    // Send immediate ack (fire-and-forget, before session spawn)
+    this._sendImmediateAck(msg.sender);
+
     // Log inbound message
     this._logMessage({
       messageId: msg.messageId,
@@ -574,6 +581,31 @@ export class IMessageAdapter implements MessagingAdapter {
         console.error(`[imessage] Message handler error: ${(err as Error).message}`);
       }
     }
+  }
+
+  private _sendImmediateAck(sender: string): void {
+    const ackConfig = this.config.immediateAck;
+    if (!ackConfig?.enabled) return;
+
+    const cooldown = (ackConfig.cooldownSeconds ?? 30) * 1000;
+    const now = Date.now();
+    const lastAck = this.lastAckTime.get(sender) ?? 0;
+
+    if (now - lastAck < cooldown) return;
+
+    this.lastAckTime.set(sender, now);
+
+    const cliPath = this.config.cliPath ?? 'imsg';
+    const duration = ackConfig.typingDuration ?? '30s';
+
+    // Show typing indicator (non-blocking, doesn't clutter conversation)
+    execFile(cliPath, ['typing', '--to', sender, '--duration', duration, '--service', 'imessage'], (err) => {
+      if (err) {
+        console.error(`[imessage] Typing indicator failed: ${err.message}`);
+      } else {
+        console.log(`[imessage] Showing typing indicator to ${IMessageAdapter.maskIdentifier(sender)} for ${duration}`);
+      }
+    });
   }
 
   private _trackReceivedId(messageId: string): void {

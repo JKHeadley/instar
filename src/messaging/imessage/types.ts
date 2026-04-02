@@ -63,6 +63,48 @@ export interface IMessageConfig {
 
   /** Promise follow-through timeout in minutes (default: 10) */
   promiseTimeoutMinutes?: number;
+
+  /** Message log retention in days (default: 90) */
+  logRetentionDays?: number;
+
+  /**
+   * Show typing indicator when a message is received, before spawning a session.
+   * Closes the feedback loop within seconds without cluttering the conversation.
+   */
+  immediateAck?: {
+    /** Enable immediate typing indicator (default: false) */
+    enabled: boolean;
+    /** How long to show typing indicator, e.g. "30s", "5000ms" (default: "30s") */
+    typingDuration?: string;
+    /** Cooldown in seconds — don't show indicator again within this window (default: 30) */
+    cooldownSeconds?: number;
+  };
+}
+
+// ── JSON-RPC Protocol ──
+
+export interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id: number;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface JsonRpcResponse {
+  jsonrpc: '2.0';
+  id: number;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+export interface JsonRpcNotification {
+  jsonrpc: '2.0';
+  method: string;
+  params?: Record<string, unknown>;
 }
 
 // ── iMessage Domain Types ──
