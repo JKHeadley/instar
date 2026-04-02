@@ -108,6 +108,7 @@ describeMaybe('E2E: Instar lifecycle', () => {
         maxSessions: 3,
         protectedSessions: [],
         completionPatterns: ['Session ended'],
+        monitorGracePeriodMs: 0,
       },
       state,
     );

@@ -112,6 +112,7 @@ describe('SessionManager behavioral tests', () => {
       maxSessions: 3,
       protectedSessions: ['my-project-server'],
       completionPatterns: ['Session complete', 'Goodbye'],
+      monitorGracePeriodMs: 0,
     };
     manager = new SessionManager(config, state);
 

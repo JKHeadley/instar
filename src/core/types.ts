@@ -53,6 +53,10 @@ export interface SessionManagerConfig {
   authToken?: string;
   /** Server port — used to construct INSTAR_SERVER_URL for HTTP hooks */
   port?: number;
+  /** Grace period (ms) before monitoring checks newly-spawned sessions.
+   *  Prevents false positives while Claude Code is still starting.
+   *  Defaults to 15000. Set to 0 in tests. */
+  monitorGracePeriodMs?: number;
 }
 
 // ── Job Scheduling ──────────────────────────────────────────────────
