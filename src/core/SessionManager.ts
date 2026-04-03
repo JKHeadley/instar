@@ -1027,7 +1027,7 @@ export class SessionManager extends EventEmitter {
       let ttl: number;
       if (session.status === 'killed') {
         ttl = KILLED_TTL_MS;
-      } else if ((session as any).jobSlug) {
+      } else if (session.jobSlug) {
         ttl = COMPLETED_JOB_TTL_MS;
       } else {
         ttl = COMPLETED_TTL_MS;

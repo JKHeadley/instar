@@ -2394,7 +2394,24 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/sessions/cleanup-stale', (_req, res) => {
     const cleaned = ctx.sessionManager.cleanupStaleSessions();
-    res.json({ cleaned: cleaned.length, sessionIds: cleaned });
+
+    // Also purge failed-messages files older than 24 hours
+    const failDir = path.join(ctx.config.stateDir, 'state', 'failed-messages');
+    let purgedFiles = 0;
+    if (fs.existsSync(failDir)) {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const fname of fs.readdirSync(failDir)) {
+        const fpath = path.join(failDir, fname);
+        try {
+          if (fs.statSync(fpath).mtimeMs < cutoff) {
+            fs.unlinkSync(fpath);
+            purgedFiles++;
+          }
+        } catch { /* ignore individual file errors */ }
+      }
+    }
+
+    res.json({ cleaned: cleaned.length, sessionIds: cleaned, purgedFailedMessages: purgedFiles });
   });
 
   router.get('/sessions/:name/output', (req, res) => {
@@ -5155,8 +5172,8 @@ export function createRoutes(ctx: RouteContext): Router {
         const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId);
 
         if (injected === false) {
-          // Injection failed — save message to temp file so it's not lost
-          const failDir = path.join('/tmp', 'instar-telegram', 'failed');
+          // Injection failed — save message under stateDir (not /tmp) to avoid world-readable exposure
+          const failDir = path.join(ctx.config.stateDir, 'state', 'failed-messages');
           fs.mkdirSync(failDir, { recursive: true });
           const failFile = path.join(failDir, `failed-${topicId}-${Date.now()}.txt`);
           fs.writeFileSync(failFile, text);
