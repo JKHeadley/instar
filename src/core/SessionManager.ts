@@ -1644,7 +1644,12 @@ export class SessionManager extends EventEmitter {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[SessionManager] Failed to inject message into ${tmuxSession} (attempt ${attempt}/${maxAttempts}): ${errMsg}`);
         if (attempt < maxAttempts) {
-          // Brief pause before retry
+          // Synchronous sleep between retry attempts. We use execFileSync('/bin/sleep')
+          // rather than an async delay because the entire injection path is synchronous:
+          // rawInject → injectMessage → injectTelegramMessage all use execFileSync for
+          // tmux send-keys. Converting to async would require changing the call chain
+          // through multiple callers. The 300ms pause is brief and only hits on failure
+          // (max once per injection), so the event loop impact is negligible in practice.
           try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }
           continue;
         }
