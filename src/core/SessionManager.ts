@@ -1012,9 +1012,11 @@ export class SessionManager extends EventEmitter {
   cleanupStaleSessions(): string[] {
     const allSessions = this.state.listSessions();
     const now = Date.now();
-    const KILLED_TTL_MS = 60 * 60 * 1000;        // 1 hour
-    const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const KILLED_TTL_MS = 60 * 60 * 1000;            // 1 hour
+    const COMPLETED_JOB_TTL_MS = 60 * 60 * 1000;     // 1 hour for jobs
+    const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;    // 24 hours for interactive
     const cleaned: string[] = [];
+    const completed: { id: string; endedAt: number }[] = [];
 
     for (const session of allSessions) {
       if (session.status !== 'killed' && session.status !== 'completed') continue;
@@ -1022,11 +1024,32 @@ export class SessionManager extends EventEmitter {
       if (!endedAt) continue;
 
       const age = now - endedAt;
-      const ttl = session.status === 'killed' ? KILLED_TTL_MS : COMPLETED_TTL_MS;
+      let ttl: number;
+      if (session.status === 'killed') {
+        ttl = KILLED_TTL_MS;
+      } else if (session.jobSlug) {
+        ttl = COMPLETED_JOB_TTL_MS;
+      } else {
+        ttl = COMPLETED_TTL_MS;
+      }
 
       if (age > ttl) {
         if (this.state.removeSession(session.id)) {
           cleaned.push(session.id);
+        }
+      } else if (session.status === 'completed') {
+        completed.push({ id: session.id, endedAt });
+      }
+    }
+
+    // Hard cap: prune oldest completed sessions if more than 50 remain
+    const MAX_COMPLETED = 50;
+    if (completed.length > MAX_COMPLETED) {
+      completed.sort((a, b) => a.endedAt - b.endedAt);
+      const excess = completed.slice(0, completed.length - MAX_COMPLETED);
+      for (const s of excess) {
+        if (this.state.removeSession(s.id)) {
+          cleaned.push(s.id);
         }
       }
     }
@@ -1298,7 +1321,7 @@ export class SessionManager extends EventEmitter {
     this.injectMessage(tmuxSession, ref);
   }
 
-  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number): void {
+  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number): boolean {
     // Track this injection for response verification.
     // If the session dies before the agent replies, the monitor loop will detect it.
     this.pendingInjections.set(tmuxSession, { topicId, injectedAt: Date.now(), text: text.slice(0, 200) });
@@ -1340,8 +1363,7 @@ export class SessionManager extends EventEmitter {
     const taggedText = `${topicTag} ${transformed}`;
 
     if (taggedText.length <= FILE_THRESHOLD) {
-      this.injectMessage(tmuxSession, taggedText);
-      return;
+      return this.injectMessage(tmuxSession, taggedText) !== false;
     }
 
     // Write full message to temp file
@@ -1352,7 +1374,7 @@ export class SessionManager extends EventEmitter {
     fs.writeFileSync(filepath, taggedText);
 
     const ref = `[telegram:${topicId}] [Long message saved to ${filepath} — read it to see the full message]`;
-    this.injectMessage(tmuxSession, ref);
+    return this.injectMessage(tmuxSession, ref) !== false;
   }
 
   /**
@@ -1518,13 +1540,13 @@ export class SessionManager extends EventEmitter {
             }
             if (action === 'warn') {
               // Inject the message, then inject warning afterward
-              this.rawInject(tmuxSession, text);
+              const result = this.rawInject(tmuxSession, text);
               // Small delay so warning arrives after message
               setTimeout(() => {
                 const warning = this.inputGuard!.buildWarning(binding, `Matched injection pattern: ${pattern}`);
                 this.rawInject(tmuxSession, warning);
               }, 500);
-              return;
+              return result;
             }
             // action === 'log': fall through to normal injection
           }
@@ -1563,14 +1585,14 @@ export class SessionManager extends EventEmitter {
     }
 
     // ── Normal injection (verified provenance or no InputGuard) ──
-    this.rawInject(tmuxSession, text);
+    return this.rawInject(tmuxSession, text);
   }
 
   /**
    * Raw tmux send-keys injection. No validation — just sends text to the session.
    * Used by injectMessage after provenance checks pass.
    */
-  private rawInject(tmuxSession: string, text: string): void {
+  private rawInject(tmuxSession: string, text: string): boolean {
     // Reset idle-prompt timer — this session is about to receive new input,
     // so it's not a zombie. Without this, the zombie detector can kill a session
     // that just received a message but hasn't produced output yet.
@@ -1581,50 +1603,67 @@ export class SessionManager extends EventEmitter {
     }
 
     const exactTarget = `=${tmuxSession}:`;
-    try {
-      if (text.includes('\n')) {
-        // Multi-line: use bracketed paste mode.
-        // The terminal (and Claude Code's readline) treats everything between
-        // \e[200~ and \e[201~ as a single paste — newlines are literal, not Enter.
-        // This completely avoids load-buffer/paste-buffer and their TCC prompts.
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
-          encoding: 'utf-8', timeout: 5000,
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (text.includes('\n')) {
+          // Multi-line: use bracketed paste mode.
+          // The terminal (and Claude Code's readline) treats everything between
+          // \e[200~ and \e[201~ as a single paste — newlines are literal, not Enter.
+          // This completely avoids load-buffer/paste-buffer and their TCC prompts.
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
+            encoding: 'utf-8', timeout: 10000,
+          });
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+          // Delay to let the terminal fully process the bracketed paste.
+          // 100ms was too short — Claude Code needs time to parse the paste end
+          // sequence and buffer the content before Enter can submit it.
+          // 500ms is conservative but prevents the "[Pasted text #1]" stuck state.
+          execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 });
+          // Send Enter to submit
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+        } else {
+          // Single-line: simple send-keys
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
+            encoding: 'utf-8', timeout: 10000,
+          });
+          // Send Enter separately
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+        }
+        return true;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[SessionManager] Failed to inject message into ${tmuxSession} (attempt ${attempt}/${maxAttempts}): ${errMsg}`);
+        if (attempt < maxAttempts) {
+          // Synchronous sleep between retry attempts. We use execFileSync('/bin/sleep')
+          // rather than an async delay because the entire injection path is synchronous:
+          // rawInject → injectMessage → injectTelegramMessage all use execFileSync for
+          // tmux send-keys. Converting to async would require changing the call chain
+          // through multiple callers. The 300ms pause is brief and only hits on failure
+          // (max once per injection), so the event loop impact is negligible in practice.
+          try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }
+          continue;
+        }
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.injectMessage',
+          primary: 'Inject Telegram message into tmux session',
+          fallback: 'Message delivery failed — caller notified for user-facing error relay',
+          reason: `Failed to inject message after ${maxAttempts} attempts: ${errMsg}`,
+          impact: 'User message not delivered to session',
         });
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
-          encoding: 'utf-8', timeout: 5000,
-        });
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
-          encoding: 'utf-8', timeout: 5000,
-        });
-        // Delay to let the terminal fully process the bracketed paste.
-        // 100ms was too short — Claude Code needs time to parse the paste end
-        // sequence and buffer the content before Enter can submit it.
-        // 500ms is conservative but prevents the "[Pasted text #1]" stuck state.
-        execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 });
-        // Send Enter to submit
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
-          encoding: 'utf-8', timeout: 5000,
-        });
-      } else {
-        // Single-line: simple send-keys
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
-          encoding: 'utf-8', timeout: 5000,
-        });
-        // Send Enter separately
-        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
-          encoding: 'utf-8', timeout: 5000,
-        });
+        return false;
       }
-    } catch (err) {
-      console.error(`[SessionManager] Failed to inject message into ${tmuxSession}: ${err}`);
-      DegradationReporter.getInstance().report({
-        feature: 'SessionManager.injectMessage',
-        primary: 'Inject Telegram message into tmux session',
-        fallback: 'Message lost — user input never reaches Claude',
-        reason: `Failed to inject message: ${err instanceof Error ? err.message : String(err)}`,
-        impact: 'User message silently dropped',
-      });
     }
+    return false;
   }
 
   /**

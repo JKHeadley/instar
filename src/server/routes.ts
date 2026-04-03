@@ -2394,7 +2394,24 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/sessions/cleanup-stale', (_req, res) => {
     const cleaned = ctx.sessionManager.cleanupStaleSessions();
-    res.json({ cleaned: cleaned.length, sessionIds: cleaned });
+
+    // Also purge failed-messages files older than 24 hours
+    const failDir = path.join(ctx.config.stateDir, 'state', 'failed-messages');
+    let purgedFiles = 0;
+    if (fs.existsSync(failDir)) {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const fname of fs.readdirSync(failDir)) {
+        const fpath = path.join(failDir, fname);
+        try {
+          if (fs.statSync(fpath).mtimeMs < cutoff) {
+            fs.unlinkSync(fpath);
+            purgedFiles++;
+          }
+        } catch { /* ignore individual file errors */ }
+      }
+    }
+
+    res.json({ cleaned: cleaned.length, sessionIds: cleaned, purgedFailedMessages: purgedFiles });
   });
 
   router.get('/sessions/:name/output', (req, res) => {
@@ -5152,30 +5169,40 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         } catch { /* fall through without name */ }
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId);
+        const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId);
 
-        // Truncation detection — check if this message looks truncated and inject a hint
-        const truncation = truncationDetector.detect(topicId, String(fromUserId || 'unknown'), text);
-        if (truncation.truncationSuspected) {
-          // Build Drop Zone URL (tunnel if available, otherwise localhost)
-          let dzUrl = `http://localhost:${ctx.config.port}/dashboard?tab=dropzone`;
-          if (ctx.tunnel) {
-            try {
-              const tunnelUrl = ctx.tunnel.url;
-              if (tunnelUrl) {
-                dzUrl = `${tunnelUrl}/dashboard?tab=dropzone`;
-              }
-            } catch {}
+        if (injected === false) {
+          // Injection failed — save message under stateDir (not /tmp) to avoid world-readable exposure
+          const failDir = path.join(ctx.config.stateDir, 'state', 'failed-messages');
+          fs.mkdirSync(failDir, { recursive: true });
+          const failFile = path.join(failDir, `failed-${topicId}-${Date.now()}.txt`);
+          fs.writeFileSync(failFile, text);
+          console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}. Message saved to ${failFile}`);
+          res.json({ ok: false, error: 'injection-failed', failFile, session: targetSession });
+        } else {
+          // Truncation detection — check if this message looks truncated and inject a hint
+          const truncation = truncationDetector.detect(topicId, String(fromUserId || 'unknown'), text);
+          if (truncation.truncationSuspected) {
+            // Build Drop Zone URL (tunnel if available, otherwise localhost)
+            let dzUrl = `http://localhost:${ctx.config.port}/dashboard?tab=dropzone`;
+            if (ctx.tunnel) {
+              try {
+                const tunnelUrl = ctx.tunnel.url;
+                if (tunnelUrl) {
+                  dzUrl = `${tunnelUrl}/dashboard?tab=dropzone`;
+                }
+              } catch {}
+            }
+            // Inject a system hint after a short delay so it arrives after the message
+            setTimeout(() => {
+              const hint = `<system-reminder>The user's previous message may be truncated (${truncation.reason}). ` +
+                `If their content appears incomplete, suggest they use the Drop Zone for longer content: ${dzUrl}</system-reminder>`;
+              ctx.sessionManager.injectPasteNotification(targetSession, hint);
+            }, 1000);
           }
-          // Inject a system hint after a short delay so it arrives after the message
-          setTimeout(() => {
-            const hint = `<system-reminder>The user's previous message may be truncated (${truncation.reason}). ` +
-              `If their content appears incomplete, suggest they use the Drop Zone for longer content: ${dzUrl}</system-reminder>`;
-            ctx.sessionManager.injectPasteNotification(targetSession, hint);
-          }, 1000);
-        }
 
-        res.json({ ok: true, forwarded: true, method: 'registry-inject', session: targetSession });
+          res.json({ ok: true, forwarded: true, method: 'registry-inject', session: targetSession });
+        }
       } else {
         // No session or session dead — auto-spawn a new one
         // Use topic name from registry, NOT the tmux session name.
