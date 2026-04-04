@@ -535,6 +535,7 @@ class RelayConnection {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private shouldReconnect = true;
+  private sustainedConnectionTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(identity: StoredIdentity, contacts: ContactStore, history: HistoryStore, profile: ProfileStore) {
     this.identity = identity;
@@ -583,7 +584,15 @@ class RelayConnection {
           case 'auth_ok':
             clearTimeout(timeout);
             this.connected = true;
-            this.reconnectAttempts = 0; // Reset on success
+            // Don't reset reconnectAttempts immediately — only after sustained connection (60s)
+            // The auth_ok → churn error → disconnect cycle was causing a death spiral
+            if (this.sustainedConnectionTimer) clearTimeout(this.sustainedConnectionTimer);
+            this.sustainedConnectionTimer = setTimeout(() => {
+              if (this.connected) {
+                this.reconnectAttempts = 0;
+                process.stderr.write('[threadline-mcp] Sustained connection — backoff reset\n');
+              }
+            }, 60000);
             this.sessionId = frame.sessionId as string;
             this.registryToken = (frame.registry_token as string) || null;
             this.registryTokenExpires = (frame.registry_token_expires as string) || null;
@@ -600,6 +609,14 @@ class RelayConnection {
             this.handleIncomingMessage(frame);
             break;
 
+          case 'error':
+            // Handle relay errors — especially churn bans
+            if (frame.message && typeof frame.message === 'string' && frame.message.includes('churn')) {
+              this.reconnectAttempts = Math.max(this.reconnectAttempts, 6); // Force 60s+ backoff
+              process.stderr.write(`[threadline-mcp] Churn detected: ${frame.message}\n`);
+            }
+            break;
+
           case 'ping':
             this.ws?.send(JSON.stringify({ type: 'pong' }));
             break;
@@ -613,7 +630,7 @@ class RelayConnection {
     if (!this.shouldReconnect) return;
     if (this.reconnectTimer) return;
 
-    const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 60000); // 1s to 60s
+    const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 300000); // 1s to 5 min
     const jitter = baseDelay * (0.7 + Math.random() * 0.6); // +/- 30%
     this.reconnectAttempts++;
 
