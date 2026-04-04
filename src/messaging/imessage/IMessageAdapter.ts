@@ -453,18 +453,26 @@ export class IMessageAdapter implements MessagingAdapter {
 
   /**
    * Check whether an incoming message triggers the agent.
-   * In "mention" mode, requires @{agentName} in the message text.
+   * In "mention" mode, requires @{agentName} in the message text — but only
+   * for group chats. 1:1 conversations always trigger regardless of mode,
+   * because mention gating only makes sense when multiple people are talking.
    * In "all" mode, every message triggers.
    * Returns the stripped text (mention removed) if triggered.
    */
-  _checkTrigger(text: string): { triggered: boolean; strippedText: string } {
+  _checkTrigger(text: string, chatId?: string): { triggered: boolean; strippedText: string } {
     if (this.triggerMode === 'all') {
       return { triggered: true, strippedText: text };
     }
 
-    // Mention mode — require @{agentName}
+    // 1:1 chats always trigger — mention mode only applies to group chats.
+    // iMessage 1:1 chatIds look like phone numbers (+1...) or emails (foo@bar).
+    // Group chats have identifiers like "chat123456789".
+    if (chatId && (chatId.startsWith('+') || chatId.includes('@'))) {
+      return { triggered: true, strippedText: text };
+    }
+
+    // Mention mode for group chats — require @{agentName}
     if (!this.agentName) {
-      // No agent name configured — fall back to triggering on all messages
       return { triggered: true, strippedText: text };
     }
 
@@ -577,7 +585,7 @@ export class IMessageAdapter implements MessagingAdapter {
     this.lastInboundFrom.set(senderNormalized, Date.now());
 
     // Check trigger mode — in "mention" mode, only respond if @agentName is present
-    const triggerResult = this._checkTrigger(msg.text);
+    const triggerResult = this._checkTrigger(msg.text, msg.chatId);
     if (!triggerResult.triggered) {
       console.log(`[imessage] Message from ${IMessageAdapter.maskIdentifier(msg.sender)} logged but not triggered (mention mode, no @${this.agentName})`);
       // Still log the message for awareness, just don't route it
