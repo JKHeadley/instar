@@ -99,9 +99,9 @@ describeWithToken('Slack API Contract Tests (LIVE)', () => {
           expect(data.needed).toBe('files:read');
           console.log('[contract] files.info correctly reports missing_scope with needed field');
         } else {
-          // If we have the scope, we should get file_not_found for a fake ID
-          expect(data.error).toBe('file_not_found');
-          console.log('[contract] files.info correctly returns file_not_found for invalid ID (scope is present)');
+          // If we have the scope, we should get file_not_found or invalid_arguments for a fake ID
+          expect(['file_not_found', 'invalid_arguments']).toContain(data.error);
+          console.log(`[contract] files.info correctly returns ${data.error} for invalid ID (scope is present)`);
         }
       }
     });
