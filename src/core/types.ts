@@ -1464,6 +1464,8 @@ export interface InstarConfig {
     agentName?: string;
     platform?: string;
   };
+  /** Semantic memory configuration (decay rates, stale threshold). Loaded from .instar/config.json `memory` key. */
+  memory?: Partial<SemanticMemoryConfig>;
 }
 
 // ── Dashboard ───────────────────────────────────────────────────────
@@ -2109,6 +2111,12 @@ export interface MemorySource {
   evergreen: boolean;
 }
 
+/**
+ * @deprecated MemoryIndex has been removed in favor of SemanticMemory.
+ * This type is retained only for backwards-compatible API responses on
+ * the deprecated /memory/search endpoint (sunset 2026-06-01). Use
+ * ScoredEntity for new code. Scheduled for removal in v0.29.
+ */
 export interface MemorySearchResult {
   /** The matched text chunk */
   text: string;
@@ -2124,6 +2132,12 @@ export interface MemorySearchResult {
   sourceModifiedAt: string;
 }
 
+/**
+ * @deprecated MemoryIndex has been removed in favor of SemanticMemory.
+ * This type is retained only for backwards-compatible API responses on
+ * the deprecated /memory/* endpoints (sunset 2026-06-01). Use
+ * SemanticMemoryStats for new code. Scheduled for removal in v0.29.
+ */
 export interface MemoryIndexStats {
   /** Total number of indexed files */
   totalFiles: number;
