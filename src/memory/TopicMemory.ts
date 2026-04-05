@@ -20,6 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -183,7 +184,7 @@ export class TopicMemory {
     if (this._needsRebuild) {
       const jsonlPath = path.join(this.stateDir, 'telegram-messages.jsonl');
       if (fs.existsSync(jsonlPath)) {
-        const imported = this.importFromJsonl(jsonlPath);
+        const imported = await this.importFromJsonl(jsonlPath);
         console.log(`[TopicMemory] Auto-rebuilt from JSONL: ${imported} messages reimported`);
       } else {
         console.warn('[TopicMemory] No JSONL log found for rebuild — starting fresh');
@@ -717,23 +718,55 @@ export class TopicMemory {
   // ── Import / Rebuild ────────────────────────────────────────
 
   /**
-   * Import messages from the JSONL log file.
+   * Import messages from the JSONL log file using streaming reads.
    * Idempotent — only inserts messages not already in the database.
    * Returns the number of new messages imported.
+   *
+   * Uses readline.createInterface on a read stream instead of
+   * fs.readFileSync to avoid OOM on large JSONL files (100K+ messages).
    */
-  importFromJsonl(jsonlPath: string): number {
+  async importFromJsonl(jsonlPath: string): Promise<number> {
     if (!this.db) return 0;
     if (!fs.existsSync(jsonlPath)) return 0;
 
-    const content = fs.readFileSync(jsonlPath, 'utf-8');
-    const lines = content.split('\n').filter(Boolean);
+    const db = this.db;
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
-    const messages: TopicMessage[] = [];
-    for (const line of lines) {
+    let count = 0;
+    const BATCH_SIZE = 500;
+    let batch: TopicMessage[] = [];
+
+    const flushBatch = () => {
+      if (batch.length === 0) return;
+      const tx = db.transaction(() => {
+        for (const msg of batch) {
+          const result = insert.run(
+            msg.messageId, msg.topicId, msg.text, msg.fromUser ? 1 : 0,
+            msg.timestamp, msg.sessionName,
+            msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
+            msg.userId ?? null, msg.privacyScope ?? 'private',
+          );
+          if (result.changes > 0) count++;
+        }
+      });
+      tx();
+      batch = [];
+    };
+
+    const rl = readline.createInterface({
+      input: fs.createReadStream(jsonlPath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (!line) continue;
       try {
         const entry = JSON.parse(line);
         if (entry.topicId != null && entry.text) {
-          messages.push({
+          batch.push({
             messageId: entry.messageId,
             topicId: entry.topicId,
             text: entry.text,
@@ -746,17 +779,26 @@ export class TopicMemory {
             userId: entry.userId ?? undefined,
             privacyScope: entry.privacyScope ?? undefined,
           });
+          if (batch.length >= BATCH_SIZE) {
+            flushBatch();
+          }
         }
       } catch { /* @silent-fallback-ok — JSONL parse, skip corrupted */ }
     }
 
-    return this.insertMessages(messages);
+    // Flush remaining
+    flushBatch();
+
+    // Rebuild topic_meta from messages after import
+    this.rebuildTopicMeta();
+
+    return count;
   }
 
   /**
    * Full rebuild — drop all data and reimport from JSONL.
    */
-  rebuild(jsonlPath: string): number {
+  async rebuild(jsonlPath: string): Promise<number> {
     if (!this.db) return 0;
 
     this.db.exec('DELETE FROM messages');
