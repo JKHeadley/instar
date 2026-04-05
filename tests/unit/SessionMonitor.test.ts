@@ -480,5 +480,53 @@ describe('SessionMonitor', () => {
       expect(deps.sendToTopic).toHaveBeenCalledTimes(1); // Still just 1, not 2
       expect(mockRecovery.checkAndRecover).toHaveBeenCalledTimes(1); // Still just 1
     });
+
+    it('does not spam dead-session notifications after snapshot cleanup between polls', async () => {
+      // Regression: when a session dies between polls, the snapshot is deleted.
+      // A new session appears and also dies — fresh snapshot has notifiedAt: null.
+      // Without persistent topic-level cooldown, the "session has stopped" message
+      // fires every poll (60s), spamming the user.
+      const callCount = { getActive: 0 };
+      const userMsgTs = new Date(Date.now() - 2 * 60_000).toISOString(); // 2 min ago
+
+      deps = createMockDeps({
+        getActiveTopicSessions: vi.fn(() => {
+          callCount.getActive++;
+          // Simulate: session exists on polls 1, 3, 5... (dies between)
+          // On even polls, session is gone → snapshot cleanup
+          if (callCount.getActive % 2 === 0) return new Map();
+          return new Map([[907, `session-${callCount.getActive}`]]);
+        }),
+        isSessionAlive: vi.fn(() => false), // Session is dead
+        captureSessionOutput: vi.fn(() => null),
+        getTopicHistory: vi.fn(() => [
+          { text: 'hello', fromUser: true, timestamp: userMsgTs },
+        ]),
+      });
+
+      monitor = new SessionMonitor(deps, {
+        pollIntervalSec: 60,
+        notificationCooldownMinutes: 30,
+      });
+
+      // Poll 1: session is dead, user waiting → sends notification
+      await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).toHaveBeenCalledWith(907, expect.stringContaining('session has stopped'));
+
+      // Poll 2: session gone → snapshot deleted
+      await monitor.poll();
+
+      // Poll 3: new session appears, also dead → should NOT re-notify (persistent cooldown)
+      await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1); // Still 1, not 2
+
+      // Poll 4: gone again
+      await monitor.poll();
+
+      // Poll 5: back again, still dead — still in cooldown
+      await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1); // Still 1
+    });
   });
 });

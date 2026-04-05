@@ -82,6 +82,11 @@ export class SessionMonitor extends EventEmitter {
   private running = false;
   /** Topic-level cooldown for context exhaustion — survives snapshot cleanup */
   private contextExhaustionCooldowns = new Map<number, number>();
+  /** Topic-level notification cooldown — survives snapshot cleanup.
+   *  When snapshots are deleted (session dies between polls) and recreated,
+   *  snap.notifiedAt resets to null. Without this, the dead-session notification
+   *  fires every poll (60s) creating spam. */
+  private notificationCooldowns = new Map<number, number>();
 
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
@@ -239,6 +244,7 @@ export class SessionMonitor extends EventEmitter {
           ).catch(() => {});
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
           snap.notifiedAt = now;
+          this.notificationCooldowns.set(topicId, now);
           return;
         }
       }
@@ -264,8 +270,15 @@ export class SessionMonitor extends EventEmitter {
     if (snap.status === 'healthy') return;
     if (snap.status === prevStatus && snap.notifiedAt) return; // Already handled
 
-    // Check notification cooldown
-    if (snap.notifiedAt && now - snap.notifiedAt < this.config.notificationCooldownMinutes * 60 * 1000) {
+    // Check notification cooldown — use BOTH snapshot-level and persistent topic-level cooldown.
+    // Snapshots get deleted when sessions die between polls, resetting snap.notifiedAt to null.
+    // The persistent cooldown survives snapshot cleanup and prevents notification spam.
+    const cooldownMs = this.config.notificationCooldownMinutes * 60 * 1000;
+    if (snap.notifiedAt && now - snap.notifiedAt < cooldownMs) {
+      return;
+    }
+    const lastNotification = this.notificationCooldowns.get(topicId);
+    if (lastNotification && now - lastNotification < cooldownMs) {
       return;
     }
 
@@ -315,6 +328,7 @@ export class SessionMonitor extends EventEmitter {
           this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
         }
         snap.notifiedAt = now;
+        this.notificationCooldowns.set(topicId, now);
         break;
       }
 
@@ -332,6 +346,7 @@ export class SessionMonitor extends EventEmitter {
           }
         }
         snap.notifiedAt = now;
+        this.notificationCooldowns.set(topicId, now);
         break;
       }
 
@@ -348,6 +363,7 @@ export class SessionMonitor extends EventEmitter {
           }
         }
         snap.notifiedAt = now;
+        this.notificationCooldowns.set(topicId, now);
         break;
       }
     }
