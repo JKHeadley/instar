@@ -73,6 +73,7 @@
     ".claude/skills/setup-wizard",
     ".claude/skills/secret-setup",
     ".claude/skills/autonomous",
+    ".claude/skills/build",
     ".claude/hooks",
     ".claude/settings.json"
   ],

@@ -2517,13 +2517,15 @@ Write sync results to \\\`.instar/state/job-handoff-git-sync.md\\\`:
  */
 function installBuildSkill(skillsDir: string): void {
   const buildDir = path.join(skillsDir, 'build');
-  const skillFile = path.join(buildDir, 'skill.md');
+  const skillFile = path.join(buildDir, 'SKILL.md');
 
   // Only install if not already present (preserves customizations)
-  if (fs.existsSync(skillFile)) return;
+  // Check both casings for backwards compatibility
+  if (fs.existsSync(skillFile) || fs.existsSync(path.join(buildDir, 'skill.md'))) return;
 
   // Try to copy from bundled .claude/skills/build/ first
-  const bundledSkill = path.join(__dirname, '..', '..', '.claude', 'skills', 'build', 'skill.md');
+  const modDir = path.dirname(new URL(import.meta.url).pathname);
+  const bundledSkill = path.join(modDir, '..', '..', '.claude', 'skills', 'build', 'SKILL.md');
   if (fs.existsSync(bundledSkill)) {
     fs.mkdirSync(buildDir, { recursive: true });
     fs.copyFileSync(bundledSkill, skillFile);
@@ -3622,7 +3624,8 @@ done
 
   // Build stop hook — structural enforcement for /build pipeline.
   // Installed from template; only needs to exist when /build is active (registered dynamically).
-  const buildStopHookSrc = path.join(__dirname, '..', '..', 'src', 'templates', 'hooks', 'build-stop-hook.sh');
+  const buildModDir = path.dirname(new URL(import.meta.url).pathname);
+  const buildStopHookSrc = path.join(buildModDir, '..', '..', 'src', 'templates', 'hooks', 'build-stop-hook.sh');
   const buildStopHookDst = path.join(hooksDir, 'build-stop-hook.sh');
   if (fs.existsSync(buildStopHookSrc) && !fs.existsSync(buildStopHookDst)) {
     fs.copyFileSync(buildStopHookSrc, buildStopHookDst);
