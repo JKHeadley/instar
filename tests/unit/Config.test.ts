@@ -47,6 +47,26 @@ describe('Config', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
+    it('respects sessions.tmuxPath from config.json instead of auto-detecting', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+
+      const customTmuxPath = '/usr/local/bin/my-tmux-wrapper';
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { tmuxPath: customTmuxPath },
+        }),
+      );
+
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.tmuxPath).toBe(customTmuxPath);
+
+      // Cleanup
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
     it('falls back to auto-detected claudePath when config omits it', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
       const stateDir = path.join(tmpDir, '.instar');
