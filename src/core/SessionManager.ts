@@ -1065,7 +1065,7 @@ export class SessionManager extends EventEmitter {
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; resumeSessionId?: string }): Promise<string> {
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
@@ -1127,6 +1127,10 @@ export class SessionManager extends EventEmitter {
 
       if (options?.telegramTopicId) {
         tmuxArgs.push('-e', `INSTAR_TELEGRAM_TOPIC=${options.telegramTopicId}`);
+      }
+
+      if (options?.slackChannelId) {
+        tmuxArgs.push('-e', `INSTAR_SLACK_CHANNEL=${options.slackChannelId}`);
       }
 
       tmuxArgs.push(this.config.claudePath, '--dangerously-skip-permissions');

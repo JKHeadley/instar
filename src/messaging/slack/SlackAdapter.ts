@@ -362,6 +362,33 @@ export class SlackAdapter implements MessagingAdapter {
     return limit >= all.length ? all : all.slice(-limit);
   }
 
+  /**
+   * Get channel messages with API fallback.
+   * Tries ring buffer first; if empty, fetches from Slack API directly.
+   * Use this for recovery/spawn paths where empty context = amnesia.
+   */
+  async getChannelMessagesWithFallback(channelId: string, limit = 30): Promise<SlackMessage[]> {
+    const cached = this.getChannelMessages(channelId, limit);
+    if (cached.length > 0) return cached;
+
+    // Ring buffer empty — fetch from Slack API directly
+    try {
+      console.log(`[slack] Ring buffer empty for ${channelId}, fetching from API...`);
+      const messages = await this.channelManager.getChannelHistory(channelId, limit);
+      // Populate ring buffer for future use
+      const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
+      for (const m of messages) {
+        buffer.push(m);
+      }
+      this.channelHistory.set(channelId, buffer);
+      console.log(`[slack] Fetched ${messages.length} messages from API for ${channelId}`);
+      return messages.slice(-limit);
+    } catch (err) {
+      console.warn(`[slack] API fallback failed for ${channelId}: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
   /** Get user info (cached for 5 minutes). */
   async getUserInfo(userId: string): Promise<{ id: string; name: string }> {
     const cached = this.userCache.get(userId);
