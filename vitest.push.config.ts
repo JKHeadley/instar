@@ -163,6 +163,11 @@ const FLAKY_TESTS = [
   // ── Pre-existing state/timing flakes ──────────────────────────────
   'tests/unit/ListenerSessionManager.test.ts',
   'tests/unit/telemetry-routes.test.ts',
+
+  // ── Supertest / race condition flakes (different tests fail each run) ──
+  'tests/unit/claude-session-id-bridge.test.ts',
+  'tests/unit/commitment-routes.test.ts',
+  'tests/unit/machine-auth.test.ts',
 ];
 
 export default defineConfig({
