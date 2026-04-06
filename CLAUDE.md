@@ -116,7 +116,7 @@ This toolkit is meant to be tested against real Claude Code projects. The flow:
   1. **Hook template changes** (`src/data/http-hook-templates.ts`) — Add a migration in `migrateSettings()` that patches existing `.claude/settings.json`
   2. **Config defaults** — Add to `migrateConfig()` with existence checks (only add missing fields)
   3. **CLAUDE.md sections** — Add to `migrateClaudeMd()` with content-sniffing guards
-  4. **Hook scripts** — Add to `migrateHooks()` with path migration logic
+  4. **Hook scripts** — Add to `migrateHooks()`. Built-in hooks (`instar/` directory) are **always overwritten** on every migration run — never install-if-missing. This ensures agents can't get stuck on broken templates (lesson from `hook-event-reporter.js`: it was install-if-missing, so agents with ESM hosts got stuck on a broken CJS `require('http')` — fixed by switching to always-overwrite). Custom hooks (`custom/` directory) are never touched.
   5. **Built-in skills** — No migration needed. `installBuiltinSkills()` is called from `refreshHooksAndSettings()` on every update and is non-destructive (only writes missing SKILL.md files). Adding a new built-in skill just requires adding it to the skills registry.
   6. **Idempotency** — Every migration must be safe to run multiple times (check before patching)
 
