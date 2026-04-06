@@ -1961,6 +1961,14 @@
     .features-refresh { font-size: 11px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; }
     .features-refresh:hover { border-color: var(--text-dim); color: var(--text); }
 
+    /* ── Discovery Tab ──────────────────────────── */
+    .discovery-container { flex: 1; overflow-y: auto; padding: 20px; }
+    .funnel-chart { margin: 16px 0; min-height: 100px; }
+    .feature-card { padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+    .feature-state-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+    .event-log { margin-top: 16px; font-size: 12px; }
+    .metric-card { padding: 12px; text-align: center; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border); }
+
     /* Autonomy Profile Card */
     .autonomy-card {
       background: var(--bg-panel);
@@ -2413,6 +2421,7 @@
           <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
           <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
           <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
+          <button class="tab" data-tab="discovery" onclick="switchTab('discovery')">Discovery</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -2711,6 +2720,34 @@
           <button class="autonomy-card-btn" id="profileConfirmBtn" style="border-color:var(--accent);color:var(--accent)" onclick="confirmProfileChange()">Apply Profile</button>
         </div>
         <div id="profileHistory" style="margin-top:24px"></div>
+      </div>
+    </div>
+
+    <!-- Discovery Tab -->
+    <div class="discovery-container" id="discoveryTab" style="display:none">
+      <div class="discovery-main">
+        <div class="discovery-header">
+          <h2>Discovery</h2>
+          <button class="discovery-refresh" onclick="loadDiscovery()">Refresh</button>
+        </div>
+        <div class="discovery-filters">
+          <button class="filter-btn active" data-filter="all" onclick="setDiscoveryFilter('all')">All</button>
+          <button class="filter-btn" data-filter="enabled" onclick="setDiscoveryFilter('enabled')">Enabled</button>
+          <button class="filter-btn" data-filter="undiscovered" onclick="setDiscoveryFilter('undiscovered')">Undiscovered</button>
+          <button class="filter-btn" data-filter="cooldown" onclick="setDiscoveryFilter('cooldown')">Cooldown</button>
+        </div>
+        <div class="discovery-metrics">
+          <div class="metric-card" id="metricTotal"><div class="metric-value">-</div><div class="metric-label">Total</div></div>
+          <div class="metric-card" id="metricEnabled"><div class="metric-value">-</div><div class="metric-label">Enabled</div></div>
+          <div class="metric-card" id="metricDiscovered"><div class="metric-value">-</div><div class="metric-label">Discovered</div></div>
+        </div>
+        <div id="funnelChart" class="funnel-chart"></div>
+        <div id="featureGrid" class="feature-grid"></div>
+        <div id="digestSection" class="digest-section">
+          <h3>Digest</h3>
+          <div id="digestContent"></div>
+        </div>
+        <div id="eventLog" class="event-log"></div>
       </div>
     </div>
 
@@ -3657,6 +3694,12 @@
         panels: ['systemsTab'],
         display: ['flex'],
         onActivate: () => { loadSystems(); },
+      },
+      {
+        id: 'discovery',
+        panels: ['discoveryTab'],
+        display: ['flex'],
+        onActivate: () => { loadDiscovery(); },
       },
     ];
 
@@ -5178,6 +5221,52 @@
       safety: 'Safety & Trust',
     };
     const CATEGORY_ORDER = ['safety', 'communication', 'infrastructure', 'intelligence'];
+
+    let discoveryFilter = 'all';
+    function setDiscoveryFilter(f) {
+      discoveryFilter = f;
+      document.querySelectorAll('.discovery-filters .filter-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.filter === f);
+      });
+      loadDiscovery();
+    }
+    async function loadDiscovery() {
+      try {
+        const data = await apiFetch('/features/analytics');
+        if (!data) return;
+        const funnel = document.getElementById('funnelChart');
+        const grid = document.getElementById('featureGrid');
+        const digest = document.getElementById('digestContent');
+        const log = document.getElementById('eventLog');
+        if (data.funnel) {
+          funnel.innerHTML = Object.entries(data.funnel).map(([k,v]) =>
+            `<div class="funnel-bar"><span class="funnel-label">${k}</span><span class="funnel-value">${v}</span></div>`
+          ).join('');
+        }
+        if (data.features) {
+          const filtered = discoveryFilter === 'all' ? data.features :
+            data.features.filter(f => {
+              if (discoveryFilter === 'enabled') return f.state === 'enabled';
+              if (discoveryFilter === 'undiscovered') return f.state === 'undiscovered';
+              if (discoveryFilter === 'cooldown') return f.cooldown;
+              return true;
+            });
+          grid.innerHTML = filtered.map(f =>
+            `<div class="feature-card"><div class="feature-card-name">${f.id}</div><span class="feature-state-badge">${f.state || 'unknown'}</span></div>`
+          ).join('') || '<div style="color:var(--text-dim);padding:12px">No features match filter</div>';
+        }
+        if (data.digest) {
+          digest.innerHTML = data.digest.map(d => `<div>${d}</div>`).join('');
+        }
+        if (data.events) {
+          log.innerHTML = data.events.map(e =>
+            `<div class="event-entry">${e.timestamp || ''} ${e.type || ''} ${e.featureId || ''}</div>`
+          ).join('');
+        }
+      } catch (e) {
+        console.error('Discovery load error:', e);
+      }
+    }
 
     async function loadFeatures() {
       featuresLoaded = true;
