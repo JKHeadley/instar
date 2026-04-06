@@ -465,10 +465,18 @@ export class IMessageAdapter implements MessagingAdapter {
     }
 
     // 1:1 chats always trigger — mention mode only applies to group chats.
-    // iMessage 1:1 chatIds look like phone numbers (+1...) or emails (foo@bar).
-    // Group chats have identifiers like "chat123456789".
-    if (chatId && (chatId.startsWith('+') || chatId.includes('@'))) {
-      return { triggered: true, strippedText: text };
+    // iMessage chatIds have format: iMessage;-;{identifier}
+    // For 1:1 chats, identifier is a phone number (+1...) or email (foo@bar).
+    // For group chats, identifier looks like "chat123456789" or a group GUID.
+    if (chatId) {
+      // Extract the identifier part after "iMessage;-;" (or use full chatId as fallback)
+      const parts = chatId.split(';-;');
+      const identifier = parts.length > 1 ? parts[1] : chatId;
+
+      // Check if this is a 1:1 chat (phone or email identifier)
+      if (identifier.startsWith('+') || identifier.includes('@')) {
+        return { triggered: true, strippedText: text };
+      }
     }
 
     // Mention mode for group chats — require @{agentName}
