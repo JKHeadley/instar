@@ -1555,6 +1555,24 @@
     }
 
     /* ── Jobs Tab ─────────────────────────────────────────── */
+    .jobs-summary { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
+    .jobs-summary-card { flex: 1; min-width: 50px; text-align: center; padding: 6px 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+    .jobs-summary-val { font-size: 16px; font-weight: 700; color: var(--text-bright); }
+    .jobs-summary-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+    .jobs-summary-card.failing .jobs-summary-val { color: var(--red); }
+    .jobs-summary-card.running .jobs-summary-val { color: var(--blue); }
+    .sparkline-legend { display: flex; gap: 10px; padding: 4px 0 8px; font-size: 10px; color: var(--text-dim); }
+    .sparkline-legend-item { display: flex; align-items: center; gap: 4px; }
+    .sparkline-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+    .sparkline-legend-dot.success { background: var(--accent); }
+    .sparkline-legend-dot.failure { background: var(--red); }
+    .sparkline-legend-dot.skipped { background: #555; }
+    .job-config-section { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+    .job-config-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+    .job-config-title:hover { color: var(--text); }
+    .job-config-grid { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: 12px; }
+    .job-config-key { color: var(--text-dim); padding: 4px 0; }
+    .job-config-val { color: var(--text); padding: 4px 0; word-break: break-word; }
     .jobs-container {
       display: flex;
       grid-column: 1 / -1;
@@ -1929,7 +1947,99 @@
     .spark.s-pending { background: var(--blue); }
     .spark.s-skipped { background: #333; }
 
-    /* ── Discovery Tab ──────────────────────────────────────── */
+    /* ── Features Tab (was Discovery) ──────────────────────────── */
+    .features-container {
+      grid-column: 1 / -1;
+      overflow-y: auto;
+      background: var(--bg);
+      padding: 20px;
+    }
+    .features-main { max-width: 960px; margin: 0 auto; }
+    .features-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .features-header h2 { font-size: 16px; font-weight: 600; color: var(--text-bright); }
+    .features-subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.4; }
+    .features-refresh { font-size: 11px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; }
+    .features-refresh:hover { border-color: var(--text-dim); color: var(--text); }
+
+    /* Autonomy Profile Card */
+    .autonomy-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 22px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .autonomy-card-icon { font-size: 28px; flex-shrink: 0; }
+    .autonomy-card-info { flex: 1; }
+    .autonomy-card-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .autonomy-card-level { font-size: 16px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; text-transform: capitalize; }
+    .autonomy-card-desc { font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+    .autonomy-card-btn { font-size: 11px; padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; white-space: nowrap; }
+    .autonomy-card-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Profile Selector Modal */
+    .profile-selector { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 16px 0; }
+    .profile-option { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; cursor: pointer; transition: border-color 0.15s; }
+    .profile-option:hover { border-color: rgba(255,255,255,0.2); }
+    .profile-option.selected { border-color: var(--accent); background: rgba(74,222,128,0.05); }
+    .profile-option-name { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; text-transform: capitalize; }
+    .profile-option-desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+    .profile-option-badge { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 3px; margin-top: 6px; }
+    .profile-option-badge.recommended { background: rgba(74,222,128,0.15); color: var(--accent); }
+
+    /* Feature Category Section */
+    .feat-category { margin-bottom: 24px; }
+    .feat-category-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .feat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+
+    /* Feature Card */
+    .feat-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.1s;
+    }
+    .feat-card:hover { border-color: rgba(255,255,255,0.15); transform: translateY(-1px); }
+    .feat-card-top { display: flex; align-items: center; gap: 10px; }
+    .feat-card-name { font-size: 14px; font-weight: 600; color: var(--text-bright); flex: 1; }
+    .feat-card-arrow { font-size: 11px; color: var(--text-dim); }
+    .feat-card-desc { font-size: 12px; color: var(--text-dim); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* Feature Toggle */
+    .feat-toggle { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }
+    .feat-toggle input { opacity: 0; width: 0; height: 0; }
+    .feat-toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #333; border-radius: 20px; transition: 0.2s; }
+    .feat-toggle-slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background: #888; border-radius: 50%; transition: 0.2s; }
+    .feat-toggle input:checked + .feat-toggle-slider { background: rgba(74,222,128,0.3); }
+    .feat-toggle input:checked + .feat-toggle-slider:before { transform: translateX(16px); background: var(--accent); }
+
+    /* Feature Detail View */
+    .feat-detail-view { display: none; }
+    .feat-detail-view.active { display: block; }
+    .feat-detail-back { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; border: none; background: none; padding: 0; margin-bottom: 16px; }
+    .feat-detail-back:hover { color: var(--text); }
+    .feat-detail-header { margin-bottom: 20px; }
+    .feat-detail-title { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .feat-detail-title h3 { font-size: 18px; font-weight: 600; color: var(--text-bright); margin: 0; flex: 1; }
+    .feat-detail-category { font-size: 10px; padding: 2px 8px; border-radius: 3px; background: rgba(255,255,255,0.06); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+    .feat-detail-description { font-size: 13px; color: var(--text-dim); line-height: 1.6; max-width: 700px; margin-bottom: 20px; }
+    .feat-detail-section { margin-bottom: 20px; }
+    .feat-detail-section-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .feat-data-item { display: flex; gap: 12px; padding: 10px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; font-size: 12px; }
+    .feat-data-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+    .feat-data-content { flex: 1; }
+    .feat-data-label { font-weight: 500; color: var(--text-bright); margin-bottom: 2px; }
+    .feat-data-desc { color: var(--text-dim); font-size: 11px; line-height: 1.4; }
+    .feat-reversibility { font-size: 12px; color: var(--text-dim); line-height: 1.5; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
+
     /* ── Systems Tab ──────────────────────────────────────────── */
     .systems-container { grid-column: 1 / -1; overflow-y: auto; background: var(--bg); padding: 20px; }
     .systems-main { max-width: 960px; margin: 0 auto; }
@@ -2026,250 +2136,7 @@
     .cap-content-empty { padding: 16px; text-align: center; color: var(--text-dim); font-size: 12px; }
     .cap-stat-card:hover { border-color: var(--accent); transition: border-color 0.15s; }
 
-    .discovery-container {
-      grid-column: 1 / -1;
-      overflow-y: auto;
-      background: var(--bg);
-      padding: 20px;
-    }
-
-    .discovery-main {
-      max-width: 900px;
-      margin: 0 auto;
-    }
-
-    .discovery-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 20px;
-    }
-
-    .discovery-header h2 {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-bright);
-    }
-
-    .discovery-refresh {
-      font-size: 11px;
-      padding: 4px 12px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--text-dim);
-      cursor: pointer;
-    }
-
-    .discovery-refresh:hover {
-      border-color: var(--text-dim);
-      color: var(--text);
-    }
-
-    .discovery-section {
-      margin-bottom: 24px;
-    }
-
-    .discovery-section h3 {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-bright);
-      margin-bottom: 12px;
-    }
-
-    .funnel-chart {
-      display: flex;
-      gap: 4px;
-      align-items: flex-end;
-      height: 120px;
-      padding: 12px 16px;
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-    }
-
-    .funnel-bar {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .funnel-bar-fill {
-      width: 100%;
-      border-radius: 3px 3px 0 0;
-      min-height: 2px;
-      transition: height 0.3s;
-    }
-
-    .funnel-bar-label {
-      font-size: 10px;
-      color: var(--text-dim);
-      text-align: center;
-      white-space: nowrap;
-    }
-
-    .funnel-bar-count {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-bright);
-    }
-
-    .discovery-filter-bar {
-      display: flex;
-      gap: 4px;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
-    }
-
-    .discovery-filter {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--text-dim);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-
-    .discovery-filter:hover {
-      border-color: var(--text-dim);
-      color: var(--text);
-    }
-
-    .discovery-filter.active {
-      background: var(--accent-dim);
-      border-color: var(--accent-dim);
-      color: #000;
-    }
-
-    .feature-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 10px;
-    }
-
-    .feature-card {
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px 14px;
-      font-size: 12px;
-    }
-
-    .feature-card-top {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-
-    .feature-card-name {
-      font-weight: 500;
-      color: var(--text-bright);
-      flex: 1;
-    }
-
-    .feature-state-badge {
-      font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      font-weight: 600;
-    }
-
-    .feature-state-badge.enabled { background: #0f2f0f; color: var(--accent); }
-    .feature-state-badge.undiscovered { background: #1a1a1a; color: #666; }
-    .feature-state-badge.aware { background: #0f1f2f; color: var(--blue); }
-    .feature-state-badge.interested { background: #1f1f0f; color: #eab308; }
-    .feature-state-badge.deferred { background: #1a1a1a; color: #888; }
-    .feature-state-badge.declined { background: #2f0f0f; color: var(--red); }
-    .feature-state-badge.disabled { background: #1a1a1a; color: #555; }
-
-    .feature-card-desc {
-      color: var(--text-dim);
-      font-size: 11px;
-      line-height: 1.4;
-      margin-bottom: 4px;
-    }
-
-    .feature-card-meta {
-      display: flex;
-      gap: 8px;
-      color: var(--text-dim);
-      font-size: 10px;
-    }
-
-    .feature-card-meta .tier { text-transform: uppercase; letter-spacing: 0.5px; }
-    .feature-card-meta .cooldown { color: var(--orange); }
-
-    .event-log {
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      max-height: 300px;
-      overflow-y: auto;
-    }
-
-    .event-row {
-      display: flex;
-      gap: 10px;
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--border);
-      font-size: 11px;
-      align-items: center;
-    }
-
-    .event-row:last-child { border-bottom: none; }
-
-    .event-time {
-      color: var(--text-dim);
-      flex-shrink: 0;
-      width: 70px;
-    }
-
-    .event-feature {
-      color: var(--text-bright);
-      font-weight: 500;
-      flex-shrink: 0;
-      width: 140px;
-    }
-
-    .event-transition {
-      color: var(--text);
-      flex: 1;
-    }
-
-    .event-arrow { color: var(--text-dim); }
-
-    .digest-item {
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 10px 14px;
-      margin-bottom: 8px;
-      font-size: 12px;
-    }
-
-    .digest-item-title {
-      color: var(--text-bright);
-      font-weight: 500;
-      margin-bottom: 2px;
-    }
-
-    .digest-item-desc {
-      color: var(--text-dim);
-      font-size: 11px;
-    }
-
-    /* Discovery metrics summary */
-    .discovery-metrics {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-    }
+    /* (Legacy discovery styles removed — replaced by Features tab above) */
 
     .metric-card {
       flex: 1;
@@ -2542,10 +2409,10 @@
         <nav class="tab-bar">
           <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
           <button class="tab" data-tab="files" onclick="switchTab('files')">Files</button>
-          <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Drop Zone</button>
+          <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Send Content</button>
           <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
-          <button class="tab" data-tab="discovery" onclick="switchTab('discovery')">Discovery</button>
-          <button class="tab" data-tab="systems" onclick="switchTab('systems')">Systems</button>
+          <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
+          <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -2588,7 +2455,7 @@
       <div class="session-list" id="sessionList">
         <div class="empty-state" id="emptyState">
           <div class="icon">&#x1F4AD;</div>
-          <p>No running sessions<br>Sessions will appear here when spawned</p>
+          <p>No sessions running<br>Create one to start working with your agent</p>
         </div>
       </div>
     </aside>
@@ -2700,12 +2567,12 @@
     </div>
   </div>
 
-  <!-- Drop Zone tab -->
+  <!-- Send Content tab (was Drop Zone) -->
   <div class="dropzone-container" id="dropzoneTab" style="display:none">
     <div class="dropzone-panel">
       <div class="dropzone-header">
-        <h2>Drop Zone</h2>
-        <p class="dropzone-subtitle">Send large text content to your agent session</p>
+        <h2>Send Content</h2>
+        <p class="dropzone-subtitle">Paste text content to send directly to a running session</p>
       </div>
 
       <div class="dropzone-form">
@@ -2751,8 +2618,11 @@
             <option value="lastRun">Sort: Last Run</option>
           </select>
         </div>
+        <div style="font-size:11px;color:var(--text-dim);padding:0 12px 8px;line-height:1.4">Monitor and control your scheduled tasks</div>
+        <div id="jobsSummary" class="jobs-summary"></div>
         <div class="jobs-filter-bar" id="jobsFilterBar">
           <button class="jobs-filter-chip active" data-filter="all" onclick="setJobFilter('all')">All</button>
+          <button class="jobs-filter-chip" data-filter="running" onclick="setJobFilter('running')">Running</button>
           <button class="jobs-filter-chip" data-filter="failing" onclick="setJobFilter('failing')">Failing</button>
           <button class="jobs-filter-chip" data-filter="disabled" onclick="setJobFilter('disabled')">Disabled</button>
         </div>
@@ -2764,22 +2634,23 @@
         <div class="jobs-detail-empty" id="jobsDetailEmpty">
           <div style="text-align:center">
             <div style="font-size:24px;margin-bottom:8px">&#x2699;</div>
-            <p>Select a job to view details</p>
+            <p>Select a job to view its schedule, history, and configuration</p>
           </div>
         </div>
         <div class="jobs-detail-content" id="jobsDetailContent" style="display:none"></div>
       </div>
     </div>
 
-    <!-- Systems Tab -->
+    <!-- Health Tab (was Systems) -->
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
         <!-- Overview (card grid) -->
         <div id="systemsOverview">
           <div class="systems-header">
-            <h2>Systems</h2>
+            <h2>Health</h2>
             <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
           </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;line-height:1.4">Your agent's health and running processes</div>
           <div id="systemsBanner">
             <div style="padding:20px;color:var(--text-dim);text-align:center">Loading...</div>
           </div>
@@ -2789,54 +2660,57 @@
         </div>
         <!-- Detail view (single capability) -->
         <div class="cap-detail-view" id="systemsDetailView">
-          <button class="cap-detail-back" onclick="showSystemsOverview()">&#9664; Back to overview</button>
+          <button class="cap-detail-back" onclick="showSystemsOverview()">&#9664; Back to Health</button>
           <div id="systemsDetailContent"></div>
         </div>
       </div>
     </div>
 
-    <!-- Discovery Tab -->
-    <div class="discovery-container" id="discoveryTab" style="display:none">
-      <div class="discovery-main">
-        <div class="discovery-header">
-          <h2>Feature Discovery</h2>
-          <button class="discovery-refresh" onclick="loadDiscovery()">Refresh</button>
+    <!-- Features Tab (was Discovery) -->
+    <div class="features-container" id="featuresTab" style="display:none">
+      <div class="features-main">
+        <div class="features-header">
+          <h2>Features</h2>
+          <button class="features-refresh" onclick="loadFeatures()">Refresh</button>
         </div>
+        <div class="features-subtitle">Browse and configure your agent's capabilities. Features are opt-in and can be enabled or disabled at any time.</div>
 
-        <!-- Funnel Visualization -->
-        <div class="discovery-section">
-          <h3>Discovery Funnel</h3>
-          <div class="funnel-chart" id="funnelChart">
-            <div style="padding:20px;color:var(--text-dim);text-align:center">Loading...</div>
+        <!-- Autonomy Profile -->
+        <div class="autonomy-card" id="autonomyCard">
+          <div class="autonomy-card-icon" id="autonomyIcon">&#x1F6E1;</div>
+          <div class="autonomy-card-info">
+            <div class="autonomy-card-label">Autonomy Profile</div>
+            <div class="autonomy-card-level" id="autonomyLevel">Loading...</div>
+            <div class="autonomy-card-desc" id="autonomyDesc"></div>
           </div>
+          <button class="autonomy-card-btn" onclick="showProfileSelector()">Change</button>
         </div>
 
-        <!-- Feature States Grid -->
-        <div class="discovery-section">
-          <h3>Feature States</h3>
-          <div class="discovery-filter-bar">
-            <button class="discovery-filter active" data-filter="all" onclick="setDiscoveryFilter('all')">All</button>
-            <button class="discovery-filter" data-filter="enabled" onclick="setDiscoveryFilter('enabled')">Enabled</button>
-            <button class="discovery-filter" data-filter="undiscovered" onclick="setDiscoveryFilter('undiscovered')">Undiscovered</button>
-            <button class="discovery-filter" data-filter="aware" onclick="setDiscoveryFilter('aware')">Aware</button>
-            <button class="discovery-filter" data-filter="cooldown" onclick="setDiscoveryFilter('cooldown')">In Cooldown</button>
-          </div>
-          <div class="feature-grid" id="featureGrid"></div>
+        <!-- Feature Categories (populated by JS) -->
+        <div id="featureCatalog">
+          <div style="padding:20px;color:var(--text-dim);text-align:center">Loading features...</div>
         </div>
+      </div>
 
-        <!-- Digest Section -->
-        <div class="discovery-section" id="digestSection" style="display:none">
-          <h3>Digest</h3>
-          <div id="digestContent"></div>
-        </div>
+      <!-- Feature Detail View (hidden by default) -->
+      <div class="features-main feat-detail-view" id="featDetailView">
+        <button class="feat-detail-back" onclick="showFeaturesOverview()">&#9664; Back to Features</button>
+        <div id="featDetailContent"></div>
+      </div>
 
-        <!-- Event Log -->
-        <div class="discovery-section">
-          <h3>Recent Events</h3>
-          <div class="event-log" id="eventLog">
-            <div style="padding:12px;color:var(--text-dim);text-align:center">No events yet</div>
-          </div>
+      <!-- Profile Selector (hidden by default) -->
+      <div class="features-main feat-detail-view" id="profileSelectorView">
+        <button class="feat-detail-back" onclick="showFeaturesOverview()">&#9664; Back to Features</button>
+        <div class="feat-detail-header">
+          <div class="feat-detail-title"><h3>Choose Autonomy Profile</h3></div>
+          <div class="feat-detail-description">Your autonomy profile controls how independently your agent operates. Higher autonomy means fewer interruptions, but less oversight.</div>
         </div>
+        <div class="profile-selector" id="profileSelector"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+          <button class="autonomy-card-btn" onclick="showFeaturesOverview()">Cancel</button>
+          <button class="autonomy-card-btn" id="profileConfirmBtn" style="border-color:var(--accent);color:var(--accent)" onclick="confirmProfileChange()">Apply Profile</button>
+        </div>
+        <div id="profileHistory" style="margin-top:24px"></div>
       </div>
     </div>
 
@@ -3131,20 +3005,20 @@
           if (tele.toolsUsed && tele.toolsUsed.length > 0) {
             const toolList = tele.toolsUsed.slice(0, 4).join(', ');
             const extra = tele.toolsUsed.length > 4 ? ` +${tele.toolsUsed.length - 4}` : '';
-            parts.push(`<span class="telemetry-tag">${escapeHtml(toolList)}${extra}</span>`);
+            parts.push(`<span class="telemetry-tag" title="Tools used in this session">${escapeHtml(toolList)}${extra}</span>`);
           }
           if (tele.subagentsSpawned && tele.subagentsSpawned.length > 0) {
-            parts.push(`<span class="telemetry-tag active-subagents">${tele.subagentsSpawned.length} subagent${tele.subagentsSpawned.length > 1 ? 's' : ''}</span>`);
+            parts.push(`<span class="telemetry-tag active-subagents" title="Background tasks spawned by this session">${tele.subagentsSpawned.length} background task${tele.subagentsSpawned.length > 1 ? 's' : ''}</span>`);
           }
           if (tele.lastActivity) {
             const lastMs = Date.now() - new Date(tele.lastActivity).getTime();
             const lastMins = Math.floor(lastMs / 60000);
             if (lastMins > 10) {
-              parts.push(`<span class="telemetry-tag stale">idle ${lastMins}m</span>`);
+              parts.push(`<span class="telemetry-tag stale" title="No activity for ${lastMins} minutes">waiting ${lastMins}m</span>`);
             }
           }
           if (tele.eventCount) {
-            parts.push(`<span class="telemetry-tag">${tele.eventCount} events</span>`);
+            parts.push(`<span class="telemetry-tag" title="Total events in this session">${tele.eventCount} events</span>`);
           }
           if (parts.length > 0) {
             telemetryHtml = `<div class="session-telemetry">${parts.join('')}</div>`;
@@ -3773,10 +3647,10 @@
         onDeactivate: () => { disconnectJobsSSE(); },
       },
       {
-        id: 'discovery',
-        panels: ['discoveryTab'],
+        id: 'features',
+        panels: ['featuresTab'],
         display: ['flex'],
-        onActivate: () => { if (!discoveryLoaded) loadDiscovery(); },
+        onActivate: () => { if (!featuresLoaded) loadFeatures(); },
       },
       {
         id: 'systems',
@@ -4638,7 +4512,7 @@
               <span class="dz-paste-meta">${chars} chars &middot; ${age}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
-              <span class="dz-paste-status ${p.status}">${p.status}</span>
+              <span class="dz-paste-status ${p.status}">${p.status === 'notified' ? 'delivered' : p.status === 'queued' || p.status === 'written' ? 'waiting' : p.status}</span>
               <button class="dz-paste-delete" onclick="deletePaste('${esc(p.pasteId)}')" title="Delete">&times;</button>
             </div>
           </div>`;
@@ -4674,10 +4548,10 @@
           const chars = data.contentLength?.toLocaleString() || content.length.toLocaleString();
           if (data.status === 'notified') {
             status.className = 'dropzone-status success';
-            status.textContent = `Sent ${chars} chars to session "${data.sessionName}"`;
+            status.textContent = `Delivered ${chars} chars to session "${data.sessionName}"`;
           } else {
             status.className = 'dropzone-status queued';
-            status.textContent = `Queued ${chars} chars \u2014 will be delivered when a session starts.`;
+            status.textContent = `Waiting for session \u2014 ${chars} chars will be delivered when a session starts.`;
           }
           status.style.display = 'block';
 
@@ -4763,8 +4637,8 @@
         const sessVital = document.getElementById('vitalSessions');
         const cur = h.sessions?.current ?? 0;
         const max = h.sessions?.max ?? 0;
-        sessEl.textContent = cur + '/' + max;
-        if (cur >= max) {
+        sessEl.textContent = cur + (max > 0 ? '/' + max : '') + ' session' + (cur !== 1 ? 's' : '');
+        if (max > 0 && cur >= max) {
           sessVital.className = 'vital warn';
         } else {
           sessVital.className = 'vital';
@@ -4874,11 +4748,25 @@
         const data = await apiFetch('/jobs');
         const jobs = data.jobs || data;
         jobsData = Array.isArray(jobs) ? jobs : [];
+        renderJobsSummary();
         renderJobList();
       } catch (e) {
         document.getElementById('jobsList').innerHTML =
           '<div style="padding:20px;color:var(--red);text-align:center">Failed to load jobs</div>';
       }
+    }
+
+    function renderJobsSummary() {
+      const total = jobsData.length;
+      const running = jobsData.filter(j => j.state && j.state.lastResult === 'pending').length;
+      const failing = jobsData.filter(j => j.enabled && (j.state?.consecutiveFailures || 0) > 0).length;
+      const disabled = jobsData.filter(j => !j.enabled).length;
+      const healthy = total - failing - disabled;
+      document.getElementById('jobsSummary').innerHTML = `
+        <div class="jobs-summary-card"><div class="jobs-summary-val">${total}</div><div class="jobs-summary-label">Total</div></div>
+        <div class="jobs-summary-card${running > 0 ? ' running' : ''}"><div class="jobs-summary-val">${running}</div><div class="jobs-summary-label">Running</div></div>
+        <div class="jobs-summary-card${failing > 0 ? ' failing' : ''}"><div class="jobs-summary-val">${failing}</div><div class="jobs-summary-label">Failing</div></div>
+        <div class="jobs-summary-card"><div class="jobs-summary-val">${disabled}</div><div class="jobs-summary-label">Disabled</div></div>`;
     }
 
     function setJobFilter(filter) {
@@ -4894,6 +4782,9 @@
       const sort = document.getElementById('jobsSort').value;
 
       let filtered = jobsData.filter(j => {
+        if (jobFilter === 'running') {
+          return j.state && j.state.lastResult === 'pending';
+        }
         if (jobFilter === 'failing') {
           const s = j.state || {};
           return (s.consecutiveFailures || 0) > 0;
@@ -4943,6 +4834,8 @@
         const lastResult = s.lastResult || '—';
         const lastTime = s.lastRun ? timeAgo(new Date(s.lastRun)) : 'never';
         const isActive = selectedJob === j.slug ? ' active' : '';
+        const displayName = j.name || j.slug;
+        const desc = j.description ? '<div style="font-size:10px;color:var(--text-dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(j.description) + '</div>' : '';
 
         const priorityBadge = (j.priority === 'critical' || j.priority === 'high')
           ? '<span class="priority-badge ' + esc(j.priority) + '">' + esc(j.priority) + '</span>' : '';
@@ -4950,9 +4843,10 @@
         return '<div class="job-item' + isActive + '" onclick="selectJob(\'' + esc(j.slug) + '\')">'
           + '<div class="job-item-top">'
           + '<span class="job-status-dot ' + dotClass + '"></span>'
-          + '<span class="job-item-name">' + esc(j.slug) + '</span>'
+          + '<span class="job-item-name">' + esc(displayName) + '</span>'
           + (failures > 0 ? '<span class="job-failure-count">' + failures + ' fail</span>' : '')
           + '</div>'
+          + desc
           + '<div class="job-item-meta">'
           + '<span>' + esc(schedule) + '</span>'
           + '<span class="model-badge">' + esc(j.model || '—') + '</span>'
@@ -4991,23 +4885,46 @@
       let statusText = 'Healthy';
       let statusClass = 'success';
       if (!job.enabled) { statusText = 'Disabled'; statusClass = ''; }
-      else if (failures >= 3) { statusText = 'Failing (' + failures + ' consecutive)'; statusClass = 'error'; }
-      else if (failures > 0) { statusText = 'Warning (' + failures + ' failures)'; statusClass = 'error'; }
-      else if (isRunning) { statusText = 'Running'; statusClass = ''; }
+      else if (failures >= 3) { statusText = 'This job has failed ' + failures + ' times in a row'; statusClass = 'error'; }
+      else if (failures > 0) { statusText = failures + ' recent failure' + (failures > 1 ? 's' : ''); statusClass = 'error'; }
+      else if (isRunning) { statusText = 'Running now'; statusClass = ''; }
 
-      const tags = (job.tags || []).map(t => esc(t)).join(', ') || '—';
+      const displayName = job.name || job.slug;
+      const nextTimeAbs = s.nextScheduled ? new Date(s.nextScheduled).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+      const lastTimeAbs = s.lastRun ? new Date(s.lastRun).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never';
+
+      // Supervision explanation
+      const supervisionLabels = { tier0: 'Basic (no AI verification)', tier1: 'AI-supervised (Haiku validates)', tier2: 'Full AI (Sonnet/Opus handles reasoning)' };
+      const execTypeLabels = { skill: 'Runs a skill', prompt: 'Runs a prompt', script: 'Runs a script' };
+
+      // Build config section
+      let configHtml = '<div class="job-config-section">'
+        + '<div class="job-config-title" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'grid\':\'none\'">&#9654; Configuration</div>'
+        + '<div class="job-config-grid" style="display:none">'
+        + '<div class="job-config-key">Schedule</div><div class="job-config-val">' + esc(schedule) + ' (' + esc(job.schedule) + ')</div>'
+        + '<div class="job-config-key">Model</div><div class="job-config-val">' + esc(job.model || 'default') + '</div>'
+        + '<div class="job-config-key">Priority</div><div class="job-config-val">' + esc(job.priority || 'medium') + '</div>'
+        + '<div class="job-config-key">Execution</div><div class="job-config-val">' + esc(execTypeLabels[job.execute?.type] || job.execute?.type || '—') + '</div>';
+      if (job.supervision) {
+        configHtml += '<div class="job-config-key">Supervision</div><div class="job-config-val">' + esc(supervisionLabels[job.supervision] || job.supervision) + '</div>';
+      }
+      if (job.tags && job.tags.length > 0) {
+        configHtml += '<div class="job-config-key">Tags</div><div class="job-config-val">' + job.tags.map(t => esc(t)).join(', ') + '</div>';
+      }
+      if (job.gate) {
+        configHtml += '<div class="job-config-key">Pre-flight check</div><div class="job-config-val">Yes (runs before each execution)</div>';
+      }
+      if (job.machines && job.machines.length > 0) {
+        configHtml += '<div class="job-config-key">Machines</div><div class="job-config-val">' + job.machines.map(m => esc(m)).join(', ') + '</div>';
+      }
+      configHtml += '</div></div>';
 
       detail.innerHTML = '<div class="job-detail-header">'
         + '<div>'
         + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px">&larr;</button>'
-        + '<h3>' + esc(job.slug) + '</h3>'
-        + '<div class="job-desc">' + esc(job.description || job.name || '') + '</div>'
-        + '<div class="job-meta-line">'
-        + '<span>' + esc(job.schedule) + ' (' + esc(schedule) + ')</span>'
-        + '<span class="model-badge">' + esc(job.model || '—') + '</span>'
-        + (job.priority ? '<span class="priority-badge ' + esc(job.priority) + '">' + esc(job.priority) + '</span>' : '')
-        + '<span>Tags: ' + tags + '</span>'
-        + '</div></div>'
+        + '<h3>' + esc(displayName) + '</h3>'
+        + '<div class="job-desc">' + esc(job.description || '') + '</div>'
+        + '</div>'
         + '<div class="job-detail-actions">'
         + '<button class="job-run-btn" id="jobRunBtn" onclick="runJob(\'' + esc(job.slug) + '\')"'
         + (isRunning ? ' disabled' : '') + '>'
@@ -5018,14 +4935,16 @@
         + '</div></div>'
         + '<div class="job-state-card">'
         + '<div class="state-row"><span>Status</span><span class="state-val ' + statusClass + '">' + esc(statusText) + '</span></div>'
-        + '<div class="state-row"><span>Last Run</span><span class="state-val">' + esc(lastTime) + '</span></div>'
+        + '<div class="state-row"><span>Last Run</span><span class="state-val">' + esc(lastTimeAbs) + ' (' + esc(lastTime) + ')</span></div>'
         + '<div class="state-row"><span>Last Result</span><span class="state-val ' + (lastResult === 'success' ? 'success' : failures > 0 ? 'error' : '') + '">' + esc(lastResult) + '</span></div>'
-        + (s.lastError ? '<div class="state-row"><span>Error</span><span class="state-val error">' + esc(s.lastError) + '</span></div>' : '')
-        + '<div class="state-row"><span>Next Run</span><span class="state-val">' + esc(nextTime) + '</span></div>'
+        + (s.lastError ? '<div class="state-row"><span>Error</span><span class="state-val error" style="word-break:break-word">' + esc(s.lastError) + '</span></div>' : '')
+        + '<div class="state-row"><span>Next Run</span><span class="state-val">' + esc(nextTimeAbs) + '</span></div>'
         + '</div>'
         + '<div id="jobSparkline" class="job-sparkline"></div>'
+        + '<div class="sparkline-legend"><div class="sparkline-legend-item"><div class="sparkline-legend-dot success"></div>Success</div><div class="sparkline-legend-item"><div class="sparkline-legend-dot failure"></div>Failure</div><div class="sparkline-legend-item"><div class="sparkline-legend-dot skipped"></div>Skipped</div></div>'
         + '<div class="job-history-section"><h4>Run History</h4>'
-        + '<div id="jobHistoryTable">Loading...</div></div>';
+        + '<div id="jobHistoryTable">Loading...</div></div>'
+        + configHtml;
 
       // Show back button on mobile
       if (window.innerWidth <= 768) {
@@ -5072,12 +4991,12 @@
             const result = r.result || '—';
             const dur = r.durationSeconds != null ? r.durationSeconds + 's'
               : r.durationMs != null ? Math.round(r.durationMs / 1000) + 's' : '—';
-            const error = r.error ? esc(r.error).substring(0, 80) : '—';
+            const error = r.error ? esc(r.error) : '—';
             return '<tr>'
               + '<td>' + esc(time) + '</td>'
               + '<td><span class="result-badge ' + esc(result) + '">' + esc(result) + '</span></td>'
               + '<td>' + esc(dur) + '</td>'
-              + '<td style="color:var(--text-dim);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + error + '</td>'
+              + '<td style="color:var(--text-dim);max-width:300px;word-break:break-word" title="' + esc(r.error || '') + '">' + error + '</td>'
               + '</tr>';
           }).join('') + '</tbody></table>';
       } catch (e) {
@@ -5240,198 +5159,289 @@
       }
     }
 
-    // ── Discovery Tab ──────────────────────────────────────
-    let discoveryLoaded = false;
-    let discoveryData = null;
-    let discoveryFilter = 'all';
+    // ── Features Tab (was Discovery) ──────────────────────────
+    let featuresLoaded = false;
+    let featuresData = null;  // { features: [], autonomy: {} }
+    let selectedProfile = null;
 
-    const FUNNEL_COLORS = {
-      undiscovered: '#444',
-      aware: 'var(--blue)',
-      interested: '#eab308',
-      deferred: '#888',
-      declined: 'var(--red)',
-      enabled: 'var(--accent)',
-      disabled: '#555',
+    const AUTONOMY_PROFILES = {
+      cautious: { icon: '&#x1F6E1;', desc: 'You approve everything. Maximum oversight, minimum agent independence.' },
+      supervised: { icon: '&#x1F441;', desc: 'Routine tasks run automatically. You approve important decisions. Recommended for most users.' },
+      collaborative: { icon: '&#x1F91D;', desc: 'Agent handles most decisions independently. Keeps you informed of what it does.' },
+      autonomous: { icon: '&#x1F680;', desc: 'Full self-governance. Agent handles everything and reports results.' },
     };
 
-    const FUNNEL_ORDER = ['undiscovered', 'aware', 'interested', 'deferred', 'declined', 'enabled', 'disabled'];
+    const CATEGORY_LABELS = {
+      communication: 'Communication',
+      infrastructure: 'Infrastructure',
+      intelligence: 'Intelligence',
+      safety: 'Safety & Trust',
+    };
+    const CATEGORY_ORDER = ['safety', 'communication', 'infrastructure', 'intelligence'];
 
-    async function loadDiscovery() {
-      discoveryLoaded = true;
+    async function loadFeatures() {
+      featuresLoaded = true;
       try {
-        discoveryData = await apiFetch('/features/analytics');
-        renderDiscoveryMetrics();
-        renderFunnel();
-        renderFeatureGrid();
-        renderDigest();
-        renderEventLog();
+        const [rawFeatures, autonomy] = await Promise.all([
+          apiFetch('/features'),
+          apiFetch('/autonomy').catch(() => ({ profile: 'supervised' })),
+        ]);
+        // API returns { features: [{ definition: {...}, state: {...} }] }
+        const featureList = rawFeatures?.features || rawFeatures || [];
+        const flattened = featureList.map(f => {
+          if (f.definition) {
+            return { ...f.definition, ...f.state, discoveryState: f.state?.discoveryState, enabled: f.state?.enabled };
+          }
+          return f;
+        });
+        featuresData = { features: flattened, autonomy: autonomy || {} };
+        renderAutonomyCard();
+        renderFeatureCatalog();
       } catch (e) {
-        document.getElementById('funnelChart').innerHTML =
-          '<div style="padding:20px;color:var(--red);text-align:center">Failed to load discovery data</div>';
+        document.getElementById('featureCatalog').innerHTML =
+          '<div style="padding:20px;color:var(--red);text-align:center">Failed to load features</div>';
       }
     }
 
-    function renderDiscoveryMetrics() {
-      if (!discoveryData) return;
-      const d = discoveryData;
-      const metricsHtml = `
-        <div class="discovery-metrics">
-          <div class="metric-card">
-            <div class="metric-value">${d.totalFeatures}</div>
-            <div class="metric-label">Total Features</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-value">${d.enabledCount}</div>
-            <div class="metric-label">Enabled</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-value">${Math.round(d.discoveryRate * 100)}%</div>
-            <div class="metric-label">Discovery Rate</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-value">${d.cooldowns.filter(c => c.cooldownExpiresAt).length}</div>
-            <div class="metric-label">In Cooldown</div>
-          </div>
-        </div>`;
-      // Insert before funnel
-      const section = document.querySelector('.discovery-section');
-      if (section && !document.getElementById('discoveryMetrics')) {
-        const div = document.createElement('div');
-        div.id = 'discoveryMetrics';
-        div.innerHTML = metricsHtml;
-        section.parentNode.insertBefore(div, section);
-      }
+    function renderAutonomyCard() {
+      if (!featuresData) return;
+      const profile = featuresData.autonomy.profile || featuresData.autonomy.autonomyProfile || 'supervised';
+      const info = AUTONOMY_PROFILES[profile] || AUTONOMY_PROFILES.supervised;
+      document.getElementById('autonomyIcon').innerHTML = info.icon;
+      document.getElementById('autonomyLevel').textContent = profile;
+      document.getElementById('autonomyDesc').textContent = info.desc;
     }
 
-    function renderFunnel() {
-      if (!discoveryData) return;
-      const funnel = discoveryData.funnel;
-      const maxVal = Math.max(1, ...Object.values(funnel));
-      const chart = document.getElementById('funnelChart');
+    function renderFeatureCatalog() {
+      if (!featuresData) return;
+      const catalog = document.getElementById('featureCatalog');
+      const features = featuresData.features;
 
-      chart.innerHTML = FUNNEL_ORDER.map(state => {
-        const count = funnel[state] || 0;
-        const height = Math.max(2, (count / maxVal) * 80);
-        const color = FUNNEL_COLORS[state] || '#444';
-        return `<div class="funnel-bar">
-          <div class="funnel-bar-count">${count}</div>
-          <div class="funnel-bar-fill" style="height:${height}px;background:${color}"></div>
-          <div class="funnel-bar-label">${state}</div>
-        </div>`;
-      }).join('');
-    }
-
-    function setDiscoveryFilter(filter) {
-      discoveryFilter = filter;
-      document.querySelectorAll('.discovery-filter').forEach(c => {
-        c.classList.toggle('active', c.dataset.filter === filter);
-      });
-      renderFeatureGrid();
-    }
-
-    function renderFeatureGrid() {
-      if (!discoveryData) return;
-      const grid = document.getElementById('featureGrid');
-      const cooldowns = discoveryData.cooldowns || [];
-
-      let filtered = cooldowns;
-      if (discoveryFilter === 'enabled') {
-        filtered = cooldowns.filter(c => c.discoveryState === 'enabled');
-      } else if (discoveryFilter === 'undiscovered') {
-        filtered = cooldowns.filter(c => c.discoveryState === 'undiscovered');
-      } else if (discoveryFilter === 'aware') {
-        filtered = cooldowns.filter(c => ['aware', 'interested', 'deferred'].includes(c.discoveryState));
-      } else if (discoveryFilter === 'cooldown') {
-        filtered = cooldowns.filter(c => c.cooldownExpiresAt || c.quieted);
+      // Group by category
+      const groups = {};
+      for (const f of features) {
+        const cat = f.category || 'other';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(f);
       }
 
-      if (filtered.length === 0) {
-        grid.innerHTML = '<div style="padding:16px;color:var(--text-dim);text-align:center">No features match filter</div>';
-        return;
-      }
-
-      grid.innerHTML = filtered.map(c => {
-        const cooldownNote = c.cooldownExpiresAt
-          ? '<span class="cooldown">cooldown until ' + new Date(c.cooldownExpiresAt).toLocaleTimeString() + '</span>'
-          : c.quieted ? '<span class="cooldown">quieted (' + c.surfaceCount + '/' + c.maxSurfaces + ')</span>' : '';
-
-        return `<div class="feature-card">
-          <div class="feature-card-top">
-            <span class="feature-card-name">${esc(c.featureName)}</span>
-            <span class="feature-state-badge ${esc(c.discoveryState)}">${esc(c.discoveryState)}</span>
-          </div>
-          <div class="feature-card-meta">
-            <span>surfaced ${c.surfaceCount}/${c.maxSurfaces}</span>
-            ${cooldownNote}
-          </div>
-        </div>`;
-      }).join('');
-    }
-
-    function renderDigest() {
-      if (!discoveryData) return;
-      const section = document.getElementById('digestSection');
-      const content = document.getElementById('digestContent');
-      const changed = discoveryData.changedDisabled || [];
-      const unused = discoveryData.unusedEnabled || [];
-
-      if (changed.length === 0 && unused.length === 0) {
-        section.style.display = 'none';
-        return;
-      }
-
-      section.style.display = '';
       let html = '';
-
-      if (changed.length > 0) {
-        html += '<h4 style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Disabled features with updates</h4>';
-        html += changed.map(f =>
-          `<div class="digest-item">
-            <div class="digest-item-title">${esc(f.featureName)}</div>
-            <div class="digest-item-desc">Version ${esc(f.currentVersion)} available</div>
-          </div>`
-        ).join('');
+      for (const cat of CATEGORY_ORDER) {
+        const items = groups[cat];
+        if (!items || items.length === 0) continue;
+        const label = CATEGORY_LABELS[cat] || cat;
+        html += `<div class="feat-category">
+          <div class="feat-category-title">${esc(label)}</div>
+          <div class="feat-grid">`;
+        for (const f of items) {
+          const isEnabled = f.discoveryState === 'enabled' || f.enabled;
+          const oneLiner = f.oneLiner || f.description || '';
+          html += `<div class="feat-card" onclick="showFeatureDetail('${esc(f.id)}')">
+            <div class="feat-card-top">
+              <span class="feat-card-name">${esc(f.name)}</span>
+              <label class="feat-toggle" onclick="event.stopPropagation()">
+                <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
+                <span class="feat-toggle-slider"></span>
+              </label>
+              <span class="feat-card-arrow">&#9654;</span>
+            </div>
+            <div class="feat-card-desc">${esc(oneLiner)}</div>
+          </div>`;
+        }
+        html += '</div></div>';
       }
 
-      if (unused.length > 0) {
-        html += '<h4 style="font-size:12px;color:var(--text-dim);margin:12px 0 8px">Enabled but unused (&gt;15 days)</h4>';
-        html += unused.map(f =>
-          `<div class="digest-item">
-            <div class="digest-item-title">${esc(f.featureName)}</div>
-            <div class="digest-item-desc">${f.daysSinceActivity} days since last activity</div>
-          </div>`
-        ).join('');
+      // Handle uncategorized
+      for (const cat of Object.keys(groups)) {
+        if (CATEGORY_ORDER.includes(cat)) continue;
+        const items = groups[cat];
+        html += `<div class="feat-category">
+          <div class="feat-category-title">${esc(cat)}</div>
+          <div class="feat-grid">`;
+        for (const f of items) {
+          const isEnabled = f.discoveryState === 'enabled' || f.enabled;
+          html += `<div class="feat-card" onclick="showFeatureDetail('${esc(f.id)}')">
+            <div class="feat-card-top">
+              <span class="feat-card-name">${esc(f.name)}</span>
+              <label class="feat-toggle" onclick="event.stopPropagation()">
+                <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
+                <span class="feat-toggle-slider"></span>
+              </label>
+              <span class="feat-card-arrow">&#9654;</span>
+            </div>
+            <div class="feat-card-desc">${esc(f.oneLiner || f.description || '')}</div>
+          </div>`;
+        }
+        html += '</div></div>';
       }
 
-      content.innerHTML = html;
+      catalog.innerHTML = html || '<div style="padding:20px;color:var(--text-dim);text-align:center">No features found</div>';
     }
 
-    function renderEventLog() {
-      if (!discoveryData) return;
-      const log = document.getElementById('eventLog');
-      const events = discoveryData.recentEvents || [];
+    async function toggleFeature(featureId, enable) {
+      try {
+        const to = enable ? 'enabled' : 'disabled';
+        await apiFetch(`/features/${featureId}/transition`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to }),
+        });
+        // Refresh features data
+        featuresLoaded = false;
+        await loadFeatures();
+      } catch (e) {
+        showToast('Failed to update feature: ' + (e.message || e), 'error');
+        featuresLoaded = false;
+        await loadFeatures(); // Reset toggle state
+      }
+    }
 
-      if (events.length === 0) {
-        log.innerHTML = '<div style="padding:12px;color:var(--text-dim);text-align:center">No events yet</div>';
+    function showFeatureDetail(featureId) {
+      if (!featuresData) return;
+      const f = featuresData.features.find(feat => feat.id === featureId);
+      if (!f) return;
+
+      // Hide overview, show detail
+      document.getElementById('featureCatalog').parentNode.querySelector('.features-header').style.display = 'none';
+      document.getElementById('featureCatalog').parentNode.querySelector('.features-subtitle').style.display = 'none';
+      document.getElementById('autonomyCard').style.display = 'none';
+      document.getElementById('featureCatalog').style.display = 'none';
+      document.getElementById('featDetailView').classList.add('active');
+
+      const isEnabled = f.discoveryState === 'enabled' || f.enabled;
+      const content = document.getElementById('featDetailContent');
+
+      let dataHtml = '';
+      if (f.dataImplications && f.dataImplications.length > 0) {
+        dataHtml = `<div class="feat-detail-section">
+          <div class="feat-detail-section-title">Data & Privacy</div>
+          ${f.dataImplications.map(d => `
+            <div class="feat-data-item">
+              <div class="feat-data-icon">&#x1F4CB;</div>
+              <div class="feat-data-content">
+                <div class="feat-data-label">${esc(d.dataType)}</div>
+                <div class="feat-data-desc">${esc(d.description || '')}${d.retention ? ' Retention: ' + esc(d.retention) + '.' : ''}${d.destination ? ' Destination: ' + esc(d.destination) + '.' : ''}</div>
+              </div>
+            </div>`).join('')}
+        </div>`;
+      }
+
+      let reversibilityHtml = '';
+      if (f.reversibilityNote) {
+        reversibilityHtml = `<div class="feat-detail-section">
+          <div class="feat-detail-section-title">How to Undo</div>
+          <div class="feat-reversibility">${esc(f.reversibilityNote)}</div>
+        </div>`;
+      }
+
+      content.innerHTML = `
+        <div class="feat-detail-header">
+          <div class="feat-detail-title">
+            <h3>${esc(f.name)}</h3>
+            <span class="feat-detail-category">${esc(CATEGORY_LABELS[f.category] || f.category || '')}</span>
+            <label class="feat-toggle">
+              <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
+              <span class="feat-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="feat-detail-description">${esc(f.fullDescription || f.oneLiner || f.description || '')}</div>
+        ${dataHtml}
+        ${reversibilityHtml}
+      `;
+    }
+
+    function showFeaturesOverview() {
+      document.getElementById('featDetailView').classList.remove('active');
+      document.getElementById('profileSelectorView').classList.remove('active');
+      const container = document.getElementById('featureCatalog').parentNode;
+      container.querySelector('.features-header').style.display = '';
+      container.querySelector('.features-subtitle').style.display = '';
+      document.getElementById('autonomyCard').style.display = '';
+      document.getElementById('featureCatalog').style.display = '';
+    }
+
+    function showProfileSelector() {
+      // Hide overview, show selector
+      document.getElementById('featureCatalog').parentNode.querySelector('.features-header').style.display = 'none';
+      document.getElementById('featureCatalog').parentNode.querySelector('.features-subtitle').style.display = 'none';
+      document.getElementById('autonomyCard').style.display = 'none';
+      document.getElementById('featureCatalog').style.display = 'none';
+      document.getElementById('profileSelectorView').classList.add('active');
+
+      const currentProfile = featuresData?.autonomy?.profile || featuresData?.autonomy?.autonomyProfile || 'supervised';
+      selectedProfile = currentProfile;
+
+      const selector = document.getElementById('profileSelector');
+      selector.innerHTML = Object.entries(AUTONOMY_PROFILES).map(([key, info]) => {
+        const isSelected = key === currentProfile;
+        const isCurrent = key === currentProfile;
+        const recommended = key === 'supervised' ? '<div class="profile-option-badge recommended">Recommended</div>' : '';
+        return `<div class="profile-option${isSelected ? ' selected' : ''}" onclick="selectProfile('${key}')">
+          <div class="profile-option-name">${info.icon} ${key}</div>
+          <div class="profile-option-desc">${info.desc}</div>
+          ${isCurrent ? '<div class="profile-option-badge" style="background:rgba(255,255,255,0.06);color:var(--text-dim)">Current</div>' : ''}
+          ${recommended}
+        </div>`;
+      }).join('');
+
+      // Load profile history
+      loadProfileHistory();
+    }
+
+    function selectProfile(profile) {
+      selectedProfile = profile;
+      document.querySelectorAll('.profile-option').forEach(el => {
+        el.classList.toggle('selected', el.querySelector('.profile-option-name').textContent.toLowerCase().includes(profile));
+      });
+    }
+
+    async function confirmProfileChange() {
+      if (!selectedProfile) return;
+      const currentProfile = featuresData?.autonomy?.profile || featuresData?.autonomy?.autonomyProfile || 'supervised';
+      if (selectedProfile === currentProfile) {
+        showFeaturesOverview();
         return;
       }
 
-      log.innerHTML = events.slice(0, 30).map(e => {
-        const time = new Date(e.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const date = new Date(e.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' });
-        const surfaceLabel = e.surfacedAs ? ` (${e.surfacedAs})` : '';
-        return `<div class="event-row">
-          <span class="event-time">${esc(date)} ${esc(time)}</span>
-          <span class="event-feature">${esc(e.featureId)}</span>
-          <span class="event-transition">
-            <span class="feature-state-badge ${esc(e.previousState)}">${esc(e.previousState)}</span>
-            <span class="event-arrow">&rarr;</span>
-            <span class="feature-state-badge ${esc(e.newState)}">${esc(e.newState)}</span>
-            ${surfaceLabel}
-          </span>
-        </div>`;
-      }).join('');
+      try {
+        await apiFetch('/autonomy/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile: selectedProfile }),
+        });
+        // Refresh autonomy data
+        const autonomy = await apiFetch('/autonomy').catch(() => ({ profile: selectedProfile }));
+        featuresData.autonomy = autonomy;
+        renderAutonomyCard();
+        showToast('Autonomy profile updated to ' + selectedProfile, 'success');
+        showFeaturesOverview();
+      } catch (e) {
+        showToast('Failed to change profile: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function loadProfileHistory() {
+      try {
+        const history = await apiFetch('/autonomy/history');
+        const container = document.getElementById('profileHistory');
+        if (!history || history.length === 0) {
+          container.innerHTML = '';
+          return;
+        }
+        container.innerHTML = `
+          <div class="feat-detail-section-title">Profile History</div>
+          ${history.slice(0, 10).map(h => {
+            const time = h.timestamp ? new Date(h.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+            return `<div style="display:flex;gap:10px;padding:6px 0;font-size:12px;border-bottom:1px solid var(--border)">
+              <span style="color:var(--text-dim);min-width:100px">${esc(time)}</span>
+              <span style="color:var(--text)">${esc(h.from || '?')} &rarr; ${esc(h.to || '?')}</span>
+              ${h.reason ? '<span style="color:var(--text-dim);flex:1">' + esc(h.reason) + '</span>' : ''}
+            </div>`;
+          }).join('')}`;
+      } catch (e) {
+        // History not available, that's fine
+      }
     }
 
     // ── Systems Tab ──────────────────────────────────────────────
@@ -5501,7 +5511,7 @@
             <div class="cap-card-metric">${esc(cap.metric)}</div>
           </div>`;
         }).join('');
-        capsEl.innerHTML = `<div class="cap-section-title">Active Capabilities</div><div class="cap-grid">${cards}</div>`;
+        capsEl.innerHTML = `<div class="cap-section-title">Active Subsystems</div><div class="cap-grid">${cards}</div>`;
       } else {
         capsEl.innerHTML = '';
       }
@@ -5526,8 +5536,8 @@
     function buildPreviewStats(stats) {
       if (!stats || typeof stats !== 'object') return '';
       const map = {
-        recoveries: 'Recoveries', interventions: 'Interventions', activeCases: 'Active',
-        coherencePassed: 'Passed', coherenceFailed: 'Failed', memoryPercent: 'Memory',
+        recoveries: 'Recovered', interventions: 'Auto-fixed', activeCases: 'Active',
+        coherencePassed: 'Checks OK', coherenceFailed: 'Issues', memoryPercent: 'Memory',
         enabledJobs: 'Jobs', activeJobSessions: 'Running', queueLength: 'Queued',
         weeklyUsage: 'Weekly', fiveHourRate: '5h Rate',
         topicMappings: 'Topics', totalMessages: 'Messages',
@@ -5612,15 +5622,15 @@
     function buildStatCards(stats, capId) {
       if (!stats || typeof stats !== 'object') return '';
       const map = {
-        interventions: 'Interventions', recoveries: 'Recoveries', sessionDeaths: 'Deaths',
-        llmOverrides: 'LLM Overrides', activeCases: 'Active Cases', totalTriages: 'Triages',
+        interventions: 'Auto-fixes', recoveries: 'Recovered', sessionDeaths: 'Crashes',
+        llmOverrides: 'AI Decisions', activeCases: 'Active Issues', totalTriages: 'Investigated',
         cooldowns: 'Cooldowns',
-        coherenceChecks: 'Checks', coherencePassed: 'Passed', coherenceFailed: 'Failed', coherenceCorrected: 'Corrected',
+        coherenceChecks: 'Consistency Checks', coherencePassed: 'Passed', coherenceFailed: 'Issues Found', coherenceCorrected: 'Auto-corrected',
         memoryPercent: 'Memory %', memoryFreeGB: 'Free GB', memoryTotalGB: 'Total GB',
-        trackedProcesses: 'Tracked', orphanProcesses: 'Orphans', totalMemoryMB: 'Memory MB',
+        trackedProcesses: 'Processes', orphanProcesses: 'Cleanup Needed', totalMemoryMB: 'Memory MB',
         totalJobs: 'Total Jobs', enabledJobs: 'Enabled', queueLength: 'Queued', activeJobSessions: 'Running',
         weeklyUsage: 'Weekly %', fiveHourRate: '5h Rate %',
-        topicMappings: 'Topics', pendingStalls: 'Pending', totalMessages: 'Messages',
+        topicMappings: 'Topics', pendingStalls: 'Needs Attention', totalMessages: 'Messages',
         proposals: 'Proposals', learnings: 'Learnings', learningsApplied: 'Applied',
         gaps: 'Gaps', actions: 'Actions', overdueActions: 'Overdue',
       };
