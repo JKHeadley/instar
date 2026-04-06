@@ -444,6 +444,35 @@ export class ServerSupervisor extends EventEmitter {
       }
     } catch { /* ignore */ }
 
+    // 6. Corrupted .claude/settings.json — unresolved merge conflicts crash every
+    // Claude Code session silently. The server stays healthy but no session responds.
+    const settingsPath = path.join(this.projectDir, '.claude', 'settings.json');
+    try {
+      if (fs.existsSync(settingsPath)) {
+        const raw = fs.readFileSync(settingsPath, 'utf-8');
+        if (raw.includes('<<<<<<<') || raw.includes('>>>>>>>')) {
+          console.warn('[Supervisor] Preflight: .claude/settings.json has merge conflicts — repairing');
+          const repaired = raw
+            .replace(/^<<<<<<< .*\n/gm, '')
+            .replace(/^=======\n/gm, '')
+            .replace(/^>>>>>>> .*\n/gm, '');
+          try {
+            JSON.parse(repaired);
+            fs.copyFileSync(settingsPath, `${settingsPath}.merge-conflict-backup`);
+            fs.writeFileSync(settingsPath, repaired);
+            healed.push('settings.json merge conflicts resolved');
+            console.log('[Supervisor] Preflight: settings.json repaired');
+          } catch {
+            console.error('[Supervisor] Preflight: settings.json auto-repair failed — manual fix needed');
+          }
+        } else {
+          JSON.parse(raw); // Validate JSON
+        }
+      }
+    } catch (err) {
+      console.error(`[Supervisor] Preflight: .claude/settings.json is invalid JSON: ${err}`);
+    }
+
     if (healed.length > 0) {
       const summary = healed.join(', ');
       console.log(`[Supervisor] Preflight self-heal: ${summary}`);

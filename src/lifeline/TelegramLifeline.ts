@@ -258,6 +258,31 @@ export class TelegramLifeline {
    * Start the lifeline — begins Telegram polling and server supervision.
    */
   async start(): Promise<void> {
+    // Global safety net — the lifeline MUST NOT crash from non-fatal errors.
+    // A dead lifeline = permanently unreachable agent. ELOCKED from the agent
+    // registry is the most common culprit (concurrent lock contention).
+    process.on('uncaughtException', (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ELOCKED' || msg.includes('ELOCKED') || msg.includes('Lock file is already being held')) {
+        console.error(`[Lifeline] Caught uncaught ELOCKED — suppressing to keep lifeline alive: ${msg}`);
+        return; // Swallow — registry lock contention is never fatal
+      }
+      // For other uncaught exceptions, log but don't crash
+      console.error(`[Lifeline] Uncaught exception (non-fatal): ${msg}`);
+      if (err instanceof Error && err.stack) {
+        console.error(err.stack);
+      }
+    });
+    process.on('unhandledRejection', (reason) => {
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      if (msg.includes('ELOCKED') || msg.includes('Lock file is already being held')) {
+        console.error(`[Lifeline] Caught unhandled ELOCKED rejection — suppressing: ${msg}`);
+        return;
+      }
+      console.error(`[Lifeline] Unhandled rejection (non-fatal): ${msg}`);
+    });
+
     console.log(pc.bold(`Starting Telegram Lifeline for ${pc.cyan(this.projectConfig.projectName)}`));
     console.log(`  Port: ${this.projectConfig.port}`);
     console.log(`  State: ${this.projectConfig.stateDir}`);
@@ -345,16 +370,24 @@ export class TelegramLifeline {
       // Non-critical — don't crash the lifeline over autostart
     }
 
-    // Graceful shutdown
+    // Self-healing: validate .claude/settings.json is parseable.
+    // Unresolved git merge conflicts silently crash every Claude Code session
+    // without any visible error in the server logs — the agent appears alive
+    // but never responds to messages.
+    this.selfHealSettingsJson();
+
+    // Graceful shutdown — every step is wrapped in try-catch because a crash
+    // during shutdown leaves the lifeline in a half-alive state that confuses
+    // launchd's KeepAlive restart logic.
     const shutdown = async () => {
       console.log('\nLifeline shutting down...');
       this.polling = false;
       if (this.pollTimeout) clearTimeout(this.pollTimeout);
       if (this.replayInterval) clearInterval(this.replayInterval);
-      if (this.stopHeartbeat) this.stopHeartbeat();
-      unregisterAgent(this.projectConfig.projectDir + '-lifeline');
-      releaseLockFile(this.lockPath);
-      await this.supervisor.stop();
+      try { if (this.stopHeartbeat) this.stopHeartbeat(); } catch { /* non-critical */ }
+      try { unregisterAgent(this.projectConfig.projectDir + '-lifeline'); } catch { /* ELOCKED is non-critical during shutdown */ }
+      try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
+      try { await this.supervisor.stop(); } catch { /* best effort */ }
       process.exit(0);
     };
 
@@ -452,6 +485,25 @@ export class TelegramLifeline {
         this.pollBackoffMs = Math.min(60_000, 2000 * Math.pow(2, this.consecutive409s));
         if (this.consecutive409s === 1 || this.consecutive409s % 10 === 0) {
           console.warn(`[Lifeline] Telegram 409 Conflict (${this.consecutive409s}x) — another bot instance is polling. Backing off to ${this.pollBackoffMs / 1000}s`);
+        }
+        // After sustained 409s, attempt to reclaim exclusive polling.
+        // A stale connection from a dead process can linger for minutes.
+        // deleteWebhook + short getUpdates invalidates the old connection.
+        if (this.consecutive409s > 0 && this.consecutive409s % 20 === 0) {
+          console.log(`[Lifeline] Attempting to reclaim Telegram polling after ${this.consecutive409s} conflicts...`);
+          try {
+            await this.apiCall('deleteWebhook', { drop_pending_updates: false });
+            await this.apiCall('getUpdates', {
+              offset: this.lastUpdateId + 1,
+              timeout: 0,
+              allowed_updates: ['message', 'callback_query'],
+            });
+            console.log('[Lifeline] Polling reclaimed successfully');
+            this.consecutive409s = 0;
+            this.pollBackoffMs = this.config.pollIntervalMs ?? 2000;
+          } catch {
+            // Reclaim failed — continue backoff, will try again at next interval
+          }
         }
       } else if (errMsg.includes('429') || errMsg.includes('rate limited')) {
         // Handle 429 Too Many Requests — back off the poll loop itself
@@ -1531,6 +1583,55 @@ export class TelegramLifeline {
    * The boot wrapper pattern resolves the shadow install at runtime — immune to Node version changes.
    * If the plist doesn't use the boot wrapper, regenerate both the wrapper and the plist.
    */
+  /**
+   * Validate .claude/settings.json is parseable JSON.
+   * Unresolved git merge conflicts (<<<<<<< markers) are the #1 cause of
+   * "agent is alive but every session dies instantly" — Claude Code crashes
+   * on startup when it can't parse its settings, but the lifeline/server
+   * show no errors because the crash happens in the spawned tmux session.
+   */
+  private selfHealSettingsJson(): void {
+    const settingsPath = path.join(this.projectConfig.projectDir, '.claude', 'settings.json');
+    try {
+      if (!fs.existsSync(settingsPath)) return; // No settings file is fine
+
+      const raw = fs.readFileSync(settingsPath, 'utf-8');
+
+      // Check for merge conflict markers first — most common corruption
+      if (raw.includes('<<<<<<<') || raw.includes('>>>>>>>') || raw.includes('=======\n')) {
+        console.warn('[Lifeline] ⚠️  .claude/settings.json has unresolved merge conflicts!');
+        console.warn('[Lifeline] This will crash every Claude Code session silently.');
+
+        // Attempt auto-repair: strip merge conflict markers, keeping "ours" version
+        const repaired = raw
+          .replace(/^<<<<<<< .*\n/gm, '')       // Remove <<<<<<< markers
+          .replace(/^=======\n/gm, '')           // Remove ======= markers
+          .replace(/^>>>>>>> .*\n/gm, '');       // Remove >>>>>>> markers
+
+        try {
+          // Validate the repaired version is valid JSON
+          JSON.parse(repaired);
+          // Back up the corrupted file
+          fs.copyFileSync(settingsPath, `${settingsPath}.merge-conflict-backup`);
+          fs.writeFileSync(settingsPath, repaired);
+          console.log('[Lifeline] ✅ settings.json auto-repaired (merge conflicts resolved, backup saved)');
+        } catch {
+          // Repair didn't produce valid JSON — leave original and warn loudly
+          console.error('[Lifeline] ❌ settings.json auto-repair failed — manual fix required');
+          console.error(`[Lifeline] Path: ${settingsPath}`);
+        }
+        return;
+      }
+
+      // Validate JSON parsing
+      JSON.parse(raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Lifeline] ⚠️  .claude/settings.json is invalid: ${msg}`);
+      console.error('[Lifeline] This will crash every Claude Code session silently.');
+    }
+  }
+
   private async selfHealPlist(): Promise<void> {
     if (process.platform !== 'darwin') return;
 

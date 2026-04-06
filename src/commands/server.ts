@@ -5602,8 +5602,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (threadlineShutdown) await threadlineShutdown();
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
-      stopHeartbeat?.();
-      unregisterAgent(config.projectDir);
+      try { stopHeartbeat?.(); } catch { /* non-critical during shutdown */ }
+      try { unregisterAgent(config.projectDir); } catch { /* ELOCKED is non-critical during shutdown */ }
       scheduler?.stop();
       if (telegram) await telegram.stop();
       sessionManager.stopMonitoring();

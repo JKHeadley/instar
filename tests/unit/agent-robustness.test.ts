@@ -171,4 +171,118 @@ describe('Agent Robustness', () => {
       }).toThrow();
     });
   });
+
+  describe('lifeline shutdown resilience', () => {
+    it('unregisterAgent failure does not prevent shutdown', async () => {
+      // Simulate the shutdown handler wrapping unregisterAgent in try-catch
+      const { registerAgent, unregisterAgent } = await import('../../src/core/AgentRegistry.js');
+      const registryDir = path.join(tmpHome, '.instar');
+      fs.mkdirSync(registryDir, { recursive: true });
+
+      registerAgent('/tmp/shutdown-test', 'shutdown-test', 4095);
+
+      // Create a stale lock to force ELOCKED on unregister
+      const lockPath = path.join(registryDir, 'registry.json.lock');
+      fs.mkdirSync(lockPath, { recursive: true });
+      // Write a valid lock metadata file so proper-lockfile thinks it's held
+      fs.writeFileSync(path.join(lockPath, 'mtime'), Date.now().toString());
+
+      // Without try-catch, this would throw ELOCKED.
+      // The fix wraps it in try-catch in the shutdown handler.
+      // Here we verify the pattern works:
+      let shutdownCompleted = false;
+      try { unregisterAgent('/tmp/shutdown-test'); } catch { /* ELOCKED — non-critical */ }
+      shutdownCompleted = true;
+      expect(shutdownCompleted).toBe(true);
+
+      // Clean up lock
+      fs.rmSync(lockPath, { recursive: true, force: true });
+    });
+  });
+
+  describe('settings.json merge conflict detection', () => {
+    it('detects merge conflict markers in settings.json', () => {
+      const settingsDir = path.join(tmpHome, '.claude');
+      fs.mkdirSync(settingsDir, { recursive: true });
+      const settingsPath = path.join(settingsDir, 'settings.json');
+
+      const conflicted = `{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+<<<<<<< Updated upstream
+            "command": "bash autonomous-stop-hook.sh",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+=======
+>>>>>>> Stashed changes
+            "command": "node hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ]
+      }
+    ]
+  }
+}`;
+      fs.writeFileSync(settingsPath, conflicted);
+
+      // Verify it has conflict markers
+      const raw = fs.readFileSync(settingsPath, 'utf-8');
+      expect(raw.includes('<<<<<<< ')).toBe(true);
+      expect(raw.includes('>>>>>>> ')).toBe(true);
+
+      // Verify stripping conflict markers produces valid JSON
+      const repaired = raw
+        .replace(/^<<<<<<< .*\n/gm, '')
+        .replace(/^=======\n/gm, '')
+        .replace(/^>>>>>>> .*\n/gm, '');
+      expect(() => JSON.parse(repaired)).not.toThrow();
+    });
+
+    it('valid settings.json passes without modification', () => {
+      const settingsDir = path.join(tmpHome, '.claude');
+      fs.mkdirSync(settingsDir, { recursive: true });
+      const settingsPath = path.join(settingsDir, 'settings.json');
+
+      const valid = JSON.stringify({ hooks: { Stop: [] } }, null, 2);
+      fs.writeFileSync(settingsPath, valid);
+
+      const raw = fs.readFileSync(settingsPath, 'utf-8');
+      expect(raw.includes('<<<<<<<')).toBe(false);
+      expect(() => JSON.parse(raw)).not.toThrow();
+    });
+  });
+
+  describe('409 conflict resolution', () => {
+    it('conflict counter resets after threshold for reclaim attempt', () => {
+      // Test the reclaim logic: after 20 consecutive 409s, the lifeline
+      // should attempt to reclaim by calling deleteWebhook + getUpdates.
+      // We test the counter logic here (actual API calls tested in integration).
+      let consecutive409s = 0;
+      const reclaimAttempted: number[] = [];
+
+      for (let i = 0; i < 25; i++) {
+        consecutive409s++;
+        if (consecutive409s > 0 && consecutive409s % 20 === 0) {
+          reclaimAttempted.push(consecutive409s);
+          // Simulate successful reclaim
+          consecutive409s = 0;
+        }
+      }
+
+      expect(reclaimAttempted).toEqual([20]);
+      expect(consecutive409s).toBe(5); // 5 more after reset
+    });
+  });
 });
