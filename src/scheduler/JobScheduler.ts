@@ -1038,13 +1038,18 @@ export class JobScheduler {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       return true;
-    } catch {
-      // @silent-fallback-ok — gate command non-zero exit means skip
+    } catch (err: unknown) {
+      // Gate non-zero exit means skip — but capture diagnostics
+      const stderr = (err as { stderr?: string })?.stderr?.trim() || '';
+      const exitCode = (err as { status?: number })?.status ?? null;
+      const gateCmd = job.gate!.length > 200 ? job.gate!.slice(0, 200) + '…' : job.gate!;
+
+      this.skipLedger.recordSkip(job.slug, 'gate');
       this.state.appendEvent({
         type: 'job_gate_skip',
-        summary: `Job "${job.slug}" skipped — gate check returned nothing to do`,
+        summary: `Job "${job.slug}" skipped — gate returned exit ${exitCode}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`,
         timestamp: new Date().toISOString(),
-        metadata: { slug: job.slug },
+        metadata: { slug: job.slug, exitCode, stderr: stderr.slice(0, 500), gate: gateCmd },
       });
       return false;
     }

@@ -493,7 +493,8 @@ export type SkipReason =
   | 'quota'           // Quota constraints
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
-  | 'machine-scope';  // Job is scoped to a different machine
+  | 'machine-scope'   // Job is scoped to a different machine
+  | 'gate';           // Gate command returned non-zero (nothing to do)
 
 export interface SkipEvent {
   slug: string;
