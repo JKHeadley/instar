@@ -7838,6 +7838,28 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
       if (accepted) {
+        const senderAgent = envelope.message?.from?.agent;
+        console.log(`[relay-agent] Accepted message from ${senderAgent ?? 'unknown'} (thread: ${envelope.message?.threadId ?? 'none'}, id: ${envelope.message?.id ?? 'none'})`);
+
+        // Check if this message resolves a pending waitForReply request.
+        // Local delivery bypasses the relay client's gate-passed event, so we
+        // must check reply waiters here directly.
+        if (senderAgent && ctx.threadlineReplyWaiters.size > 0) {
+          let textContent: string | undefined;
+          const body = envelope.message?.body;
+          if (typeof body === 'string') textContent = body;
+          else if (typeof body === 'object' && body !== null) {
+            textContent = String((body as Record<string, unknown>).content ?? (body as Record<string, unknown>).text ?? JSON.stringify(body));
+          }
+          if (textContent) {
+            const isAutoAck = textContent.startsWith('Message received.') || textContent.startsWith('Message received,');
+            const waiter = ctx.threadlineReplyWaiters.get(senderAgent);
+            if (waiter && !isAutoAck) {
+              waiter.resolve(textContent);
+            }
+          }
+        }
+
         // If the message has a threadId and we have a ThreadlineRouter,
         // route it through the threadline pipeline for session resume/spawn.
         if (ctx.threadlineRouter && envelope.message?.threadId) {
