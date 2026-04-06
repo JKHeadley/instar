@@ -239,12 +239,91 @@ if [ -f "$CONFIG_FILE" ]; then
   if [ -n "$PORT" ]; then
     echo "Server: curl http://localhost:${PORT}/health | Capabilities: curl http://localhost:${PORT}/capabilities"
 
-    # Inject recent Telegram messages after compaction — thread context is often
+    # Inject recent conversation context after compaction — thread context is often
     # the first thing lost in compaction; re-injecting it immediately restores continuity.
-    # Use INSTAR_TELEGRAM_TOPIC (the actual session topic) first, fall back to lifeline topic.
+    # Supports both Telegram topics and Slack channels via their respective env vars.
     HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/health" 2>/dev/null)
     if [ "$HEALTH" = "200" ]; then
-      TOPIC_FOR_CONTEXT="${INSTAR_TELEGRAM_TOPIC:-}"
+      # Slack channel context — if INSTAR_SLACK_CHANNEL is set, this is a Slack session
+      SLACK_CHANNEL="${INSTAR_SLACK_CHANNEL:-}"
+      if [ -n "$SLACK_CHANNEL" ]; then
+        AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+        SLACK_MSGS=$(curl -s \
+          -H "Authorization: Bearer ${AUTH_TOKEN}" \
+          "http://localhost:${PORT}/slack/channels/${SLACK_CHANNEL}/messages?limit=20" 2>/dev/null)
+
+        echo "$SLACK_MSGS" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    msgs = data.get('messages', [])
+    if not msgs:
+        sys.exit(0)
+
+    print()
+    print('CONTINUATION — You are resuming an EXISTING Slack conversation. Read the context below and pick up where you left off. Do NOT ask what was being discussed.')
+    print()
+    print('--- RECENT SLACK CONTEXT (restoring after compaction, last %d messages) ---' % len(msgs))
+
+    for m in msgs:
+        ts = m.get('ts', '')
+        try:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(float(ts))
+            time_str = dt.strftime('%H:%M:%S')
+        except:
+            time_str = ts[:8] if ts else '??:??:??'
+        user = m.get('user', 'unknown')
+        bot_id = m.get('bot_id', '')
+        label = 'Agent' if bot_id else user
+        text = m.get('text', '').strip()
+        if len(text) > 300:
+            text = text[:297] + '...'
+        print(f'[{time_str}] {label}: {text}')
+
+    # Detect unanswered user messages
+    pending_user = []
+    for m in msgs:
+        text = m.get('text', '').strip()
+        if not text:
+            continue
+        is_bot = bool(m.get('bot_id'))
+        if not is_bot:
+            pending_user.append(m)
+        else:
+            pending_user = []
+
+    if pending_user:
+        print()
+        print('!' * 60)
+        print('UNANSWERED MESSAGE(S) FROM USER:')
+        for pm in pending_user:
+            pm_text = pm.get('text', '')[:200]
+            print(f'  \"{pm_text}\"')
+        print()
+        print('You MUST address these messages substantively. Do NOT respond')
+        print('with just a greeting or generic reply.')
+        print('!' * 60)
+    print()
+    print('--- END SLACK CONTEXT ---')
+    import os
+    ch = os.environ.get('INSTAR_SLACK_CHANNEL', '')
+    print()
+    print('CRITICAL: Relay your response back to Slack:')
+    print('cat <<\"SLACKEOF\" | .claude/scripts/slack-reply.sh ' + ch)
+    print('Your response text here')
+    print('SLACKEOF')
+except Exception:
+    pass
+" 2>/dev/null
+      fi
+
+      # Skip Telegram context if this is a Slack session (already injected above)
+      if [ -n "$SLACK_CHANNEL" ]; then
+        TOPIC_FOR_CONTEXT=""
+      else
+        TOPIC_FOR_CONTEXT="${INSTAR_TELEGRAM_TOPIC:-}"
+      fi
 
       # Fall back to lifeline topic if no session topic set
       if [ -z "$TOPIC_FOR_CONTEXT" ]; then

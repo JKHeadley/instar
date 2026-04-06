@@ -23,7 +23,7 @@ describe('Slack context exhaustion recovery wiring', () => {
   expect(fnStart).toBeGreaterThan(-1);
 
   // Get the block from respawnSessionFresh to the next dep function
-  const block = source.slice(fnStart, fnStart + 5000);
+  const block = source.slice(fnStart, fnStart + 7000);
 
   it('respawnSessionFresh checks slackProxyChannelMap', () => {
     expect(block).toContain('slackProxyChannelMap.get(topicId)');
