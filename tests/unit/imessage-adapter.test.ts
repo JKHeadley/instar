@@ -315,4 +315,148 @@ describe('IMessageAdapter', () => {
         .rejects.toThrow('Cannot send from server process');
     });
   });
+
+  describe('_checkTrigger', () => {
+    describe('triggerMode: all', () => {
+      it('always triggers regardless of chatId', () => {
+        const adapter = new IMessageAdapter(
+          { authorizedSenders: ['+14081234567'], triggerMode: 'all' },
+          project.stateDir,
+        );
+        const result = (adapter as any)._checkTrigger('hello', 'iMessage;-;+14081234567');
+        expect(result.triggered).toBe(true);
+        expect(result.strippedText).toBe('hello');
+      });
+    });
+
+    describe('triggerMode: mention', () => {
+      describe('1:1 chats', () => {
+        it('triggers for 1:1 phone number chat without mention', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hello there',
+            'iMessage;-;+14081234567',
+          );
+          expect(result.triggered).toBe(true);
+          expect(result.strippedText).toBe('hello there');
+        });
+
+        it('triggers for 1:1 email chat without mention', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['user@icloud.com'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hello there',
+            'iMessage;-;user@icloud.com',
+          );
+          expect(result.triggered).toBe(true);
+          expect(result.strippedText).toBe('hello there');
+        });
+      });
+
+      describe('group chats', () => {
+        it('requires mention for group chat (chatXXX identifier)', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const resultWithoutMention = (adapter as any)._checkTrigger(
+            'hello everyone',
+            'iMessage;-;chat123456789',
+          );
+          expect(resultWithoutMention.triggered).toBe(false);
+
+          const resultWithMention = (adapter as any)._checkTrigger(
+            '@Roland hello there',
+            'iMessage;-;chat123456789',
+          );
+          expect(resultWithMention.triggered).toBe(true);
+          expect(resultWithMention.strippedText).toBe('hello there');
+        });
+
+        it('requires mention for group chat (GUID identifier)', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const resultWithoutMention = (adapter as any)._checkTrigger(
+            'hello everyone',
+            'iMessage;-;550e8400-e29b-41d4-a716-446655440000',
+          );
+          expect(resultWithoutMention.triggered).toBe(false);
+
+          const resultWithMention = (adapter as any)._checkTrigger(
+            '@Roland what do you think?',
+            'iMessage;-;550e8400-e29b-41d4-a716-446655440000',
+          );
+          expect(resultWithMention.triggered).toBe(true);
+          expect(resultWithMention.strippedText).toBe('what do you think?');
+        });
+
+        it('strips mention from message text', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hey @Roland can you help?',
+            'iMessage;-;chat999',
+          );
+          expect(result.triggered).toBe(true);
+          expect(result.strippedText).toBe('hey can you help?');
+        });
+      });
+
+      describe('edge cases', () => {
+        it('handles chatId without iMessage;-; prefix (legacy format)', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          // Bare phone number - should trigger as 1:1
+          const resultPhone = (adapter as any)._checkTrigger(
+            'hello',
+            '+14081234567',
+          );
+          expect(resultPhone.triggered).toBe(true);
+
+          // Bare email - should trigger as 1:1
+          const resultEmail = (adapter as any)._checkTrigger(
+            'hello',
+            'user@example.com',
+          );
+          expect(resultEmail.triggered).toBe(true);
+        });
+
+        it('triggers when no agentName is configured', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hello',
+            'iMessage;-;chat123',
+          );
+          expect(result.triggered).toBe(true);
+        });
+
+        it('handles undefined chatId', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          // Without chatId, falls through to mention check for group chat logic
+          const resultWithoutMention = (adapter as any)._checkTrigger('hello', undefined);
+          expect(resultWithoutMention.triggered).toBe(false);
+
+          const resultWithMention = (adapter as any)._checkTrigger('@Roland hello', undefined);
+          expect(resultWithMention.triggered).toBe(true);
+        });
+      });
+    });
+  });
 });
