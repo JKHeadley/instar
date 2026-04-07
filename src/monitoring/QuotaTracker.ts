@@ -59,13 +59,13 @@ export class QuotaTracker {
       const raw = fs.readFileSync(this.config.quotaFile, 'utf-8');
       const state: QuotaState = JSON.parse(raw);
 
-      // Check staleness
+      // Check staleness — stale data should fail open (allow all jobs)
       const maxStale = this.config.maxStalenessMs ?? 30 * 60 * 1000; // 30 min default
       const lastUpdated = new Date(state.lastUpdated).getTime();
       if ((now - lastUpdated) > maxStale) {
-        // Stale data — return it but mark recommendation as unknown
-        console.warn(`[quota] Stale data (${Math.round((now - lastUpdated) / 60000)}m old) — using cached but clearing recommendation`);
-        state.recommendation = undefined;
+        console.warn(`[quota] Stale data (${Math.round((now - lastUpdated) / 60000)}m old) — discarding, will fail open`);
+        this.lastRead = now; // Prevent re-reading stale file on every call
+        return null;
       }
 
       this.cachedState = state;
