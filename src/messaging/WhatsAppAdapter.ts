@@ -121,6 +121,17 @@ export interface WhatsAppConfig {
    *  Recommended: true for linked-device mode (Baileys) to avoid revealing the agent to personal contacts. */
   silentReject?: boolean;
 
+  /**
+   * How to handle direct (1:1) messages from authorized contacts.
+   * - "always": all DMs from authorized contacts trigger the agent (default — backward-compatible)
+   * - "mention": require @{agentName} in DMs before triggering
+   * - "off": never trigger on DMs regardless of content
+   *
+   * Note: authorization (authorizedContacts) is checked BEFORE this gate.
+   * This only controls whether authorized messages are routed to the agent.
+   */
+  directMessageTrigger?: 'always' | 'mention' | 'off';
+
   /** Group messaging configuration */
   groups?: WhatsAppGroupConfig;
 }
@@ -562,6 +573,22 @@ export class WhatsAppAdapter implements MessagingAdapter {
         if (this.sendFunction) {
           await this.sendFunction(jid, 'Please reply "yes" to agree or "no" to decline before we can continue.').catch(() => {});
         }
+        return;
+      }
+    }
+
+    // Direct message trigger gate
+    const dmTrigger = this.config.directMessageTrigger ?? 'always';
+    if (dmTrigger === 'off') {
+      console.log(`[whatsapp] DM from ${normalizedPhone} dropped (directMessageTrigger: off)`);
+      return;
+    }
+    if (dmTrigger === 'mention') {
+      const agentName = this.config.agentName ?? 'Agent';
+      const escaped = agentName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const mentionPattern = new RegExp(`@${escaped}\\b`, 'i');
+      if (!mentionPattern.test(text)) {
+        console.log(`[whatsapp] DM from ${normalizedPhone} not triggered (directMessageTrigger: mention, no @${agentName})`);
         return;
       }
     }

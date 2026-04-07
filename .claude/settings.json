@@ -114,6 +114,16 @@
             "timeout": 3000
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/build-stop-hook.sh",
+            "timeout": 10000
+          }
+        ]
       }
     ],
     "WorktreeCreate": [

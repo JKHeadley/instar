@@ -293,9 +293,9 @@ describe('AgentTrustManager — Relay Agent Default Trust', () => {
   });
 
   it('does not override existing profiles', () => {
-    // Create a profile and manually set it to trusted
+    // Create a profile and upgrade it via fingerprint-based API
     manager.getOrCreateProfileByFingerprint('fp-999', 'TrustedAgent');
-    manager.setTrustLevel('TrustedAgent', 'trusted', 'user-granted', 'manual upgrade');
+    manager.setTrustLevelByFingerprint('fp-999', 'trusted', 'user-granted', 'manual upgrade');
 
     // Re-fetch should return existing profile, not create new one
     const profile = manager.getOrCreateProfileByFingerprint('fp-999');

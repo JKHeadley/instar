@@ -3067,7 +3067,7 @@
       document.getElementById('terminalView').style.display = 'flex';
       document.getElementById('terminalView').style.flexDirection = 'column';
       document.getElementById('terminalView').style.height = '100%';
-      document.getElementById('termSessionName').textContent = session.name;
+      document.getElementById('termSessionName').textContent = session.platformName || session.name;
 
       const badge = document.getElementById('termModelBadge');
       if (session.model) {

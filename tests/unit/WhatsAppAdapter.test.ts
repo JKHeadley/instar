@@ -596,5 +596,89 @@ describe('WhatsAppAdapter', () => {
       const adapter = createAdapter();
       expect(adapter.getPrivacyConsent()).toBeDefined();
     });
+
+    describe('directMessageTrigger', () => {
+      it('defaults to "always" — DMs trigger without mention (backward-compatible)', async () => {
+        const adapter = createAdapter();
+        const messages: any[] = [];
+        adapter.onMessage(async (msg) => { messages.push(msg); });
+
+        await adapter.handleIncomingMessage(
+          '14155552671@s.whatsapp.net',
+          'msg-dmt-1',
+          'hello',
+          'User',
+        );
+
+        expect(messages).toHaveLength(1);
+      });
+
+      it('"mention" mode blocks DMs without @AgentName', async () => {
+        const adapter = createAdapter({ directMessageTrigger: 'mention', agentName: 'Echo' });
+        const messages: any[] = [];
+        adapter.onMessage(async (msg) => { messages.push(msg); });
+
+        await adapter.handleIncomingMessage(
+          '14155552671@s.whatsapp.net',
+          'msg-dmt-2',
+          'hello there',
+          'User',
+        );
+
+        expect(messages).toHaveLength(0);
+      });
+
+      it('"mention" mode allows DMs with @AgentName', async () => {
+        const adapter = createAdapter({ directMessageTrigger: 'mention', agentName: 'Echo' });
+        const messages: any[] = [];
+        adapter.onMessage(async (msg) => { messages.push(msg); });
+
+        await adapter.handleIncomingMessage(
+          '14155552671@s.whatsapp.net',
+          'msg-dmt-3',
+          '@Echo what do you think?',
+          'User',
+        );
+
+        expect(messages).toHaveLength(1);
+      });
+
+      it('"off" mode blocks all DMs even with mention', async () => {
+        const adapter = createAdapter({ directMessageTrigger: 'off', agentName: 'Echo' });
+        const messages: any[] = [];
+        adapter.onMessage(async (msg) => { messages.push(msg); });
+
+        await adapter.handleIncomingMessage(
+          '14155552671@s.whatsapp.net',
+          'msg-dmt-4',
+          '@Echo hello',
+          'User',
+        );
+
+        expect(messages).toHaveLength(0);
+      });
+
+      it('"mention" mode does not affect group messages', async () => {
+        const adapter = createAdapter({
+          directMessageTrigger: 'mention',
+          agentName: 'Echo',
+          groups: { enabled: true, defaultActivation: 'always' },
+        });
+        const messages: any[] = [];
+        adapter.onMessage(async (msg) => { messages.push(msg); });
+
+        await adapter.handleIncomingMessage(
+          'group123@g.us',
+          'msg-dmt-5',
+          'hello group',
+          'User',
+          undefined,
+          undefined,
+          '14155552671@s.whatsapp.net',
+        );
+
+        expect(messages).toHaveLength(1);
+      });
+    });
   });
 });

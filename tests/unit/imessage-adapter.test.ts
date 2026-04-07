@@ -329,11 +329,50 @@ describe('IMessageAdapter', () => {
       });
     });
 
-    describe('triggerMode: mention', () => {
-      describe('1:1 chats', () => {
-        it('triggers for 1:1 phone number chat without mention', () => {
+    describe('triggerMode: mention (default directMessageTrigger: mention)', () => {
+      describe('1:1 chats — require mention by default', () => {
+        it('does NOT trigger for 1:1 phone chat without mention (safe default)', () => {
           const adapter = new IMessageAdapter(
             { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hello there',
+            'iMessage;-;+14081234567',
+          );
+          expect(result.triggered).toBe(false);
+        });
+
+        it('does NOT trigger for 1:1 email chat without mention (safe default)', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['user@icloud.com'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hello there',
+            'iMessage;-;user@icloud.com',
+          );
+          expect(result.triggered).toBe(false);
+        });
+
+        it('triggers for 1:1 chat WITH mention', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            '@Roland hello there',
+            'iMessage;-;+14081234567',
+          );
+          expect(result.triggered).toBe(true);
+          expect(result.strippedText).toBe('hello there');
+        });
+      });
+
+      describe('directMessageTrigger: always', () => {
+        it('triggers for 1:1 phone chat without mention when opted in', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland', directMessageTrigger: 'always' },
             project.stateDir,
           );
           const result = (adapter as any)._checkTrigger(
@@ -344,9 +383,9 @@ describe('IMessageAdapter', () => {
           expect(result.strippedText).toBe('hello there');
         });
 
-        it('triggers for 1:1 email chat without mention', () => {
+        it('triggers for 1:1 email chat without mention when opted in', () => {
           const adapter = new IMessageAdapter(
-            { authorizedSenders: ['user@icloud.com'], triggerMode: 'mention', agentName: 'Roland' },
+            { authorizedSenders: ['user@icloud.com'], triggerMode: 'mention', agentName: 'Roland', directMessageTrigger: 'always' },
             project.stateDir,
           );
           const result = (adapter as any)._checkTrigger(
@@ -355,6 +394,32 @@ describe('IMessageAdapter', () => {
           );
           expect(result.triggered).toBe(true);
           expect(result.strippedText).toBe('hello there');
+        });
+
+        it('still requires mention for group chats even with directMessageTrigger: always', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland', directMessageTrigger: 'always' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            'hello everyone',
+            'iMessage;-;chat123456789',
+          );
+          expect(result.triggered).toBe(false);
+        });
+      });
+
+      describe('directMessageTrigger: off', () => {
+        it('never triggers for 1:1 chats even with mention', () => {
+          const adapter = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland', directMessageTrigger: 'off' },
+            project.stateDir,
+          );
+          const result = (adapter as any)._checkTrigger(
+            '@Roland hello there',
+            'iMessage;-;+14081234567',
+          );
+          expect(result.triggered).toBe(false);
         });
       });
 
@@ -413,23 +478,27 @@ describe('IMessageAdapter', () => {
 
       describe('edge cases', () => {
         it('handles chatId without iMessage;-; prefix (legacy format)', () => {
+          // With default directMessageTrigger ('mention'), bare 1:1 identifiers still require mention
           const adapter = new IMessageAdapter(
             { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland' },
             project.stateDir,
           );
-          // Bare phone number - should trigger as 1:1
-          const resultPhone = (adapter as any)._checkTrigger(
-            'hello',
-            '+14081234567',
-          );
-          expect(resultPhone.triggered).toBe(true);
+          const resultPhone = (adapter as any)._checkTrigger('hello', '+14081234567');
+          expect(resultPhone.triggered).toBe(false);
 
-          // Bare email - should trigger as 1:1
-          const resultEmail = (adapter as any)._checkTrigger(
-            'hello',
-            'user@example.com',
+          const resultEmail = (adapter as any)._checkTrigger('hello', 'user@example.com');
+          expect(resultEmail.triggered).toBe(false);
+
+          // With directMessageTrigger: 'always', they trigger
+          const adapterAlways = new IMessageAdapter(
+            { authorizedSenders: ['+14081234567'], triggerMode: 'mention', agentName: 'Roland', directMessageTrigger: 'always' },
+            project.stateDir,
           );
-          expect(resultEmail.triggered).toBe(true);
+          const resultPhoneAlways = (adapterAlways as any)._checkTrigger('hello', '+14081234567');
+          expect(resultPhoneAlways.triggered).toBe(true);
+
+          const resultEmailAlways = (adapterAlways as any)._checkTrigger('hello', 'user@example.com');
+          expect(resultEmailAlways.triggered).toBe(true);
         });
 
         it('triggers when no agentName is configured', () => {

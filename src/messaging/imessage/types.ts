@@ -60,6 +60,16 @@ export interface IMessageConfig {
   triggerMode?: 'mention' | 'all';
 
   /**
+   * How to handle direct (1:1) messages when triggerMode is "mention".
+   * - "mention": require @{agentName} even in 1:1 chats (default — safe, backward-compatible)
+   * - "always": 1:1 chats bypass mention gating (opt-in to auto-trigger on DMs)
+   * - "off": never trigger on 1:1 chats regardless of content
+   *
+   * Ignored when triggerMode is "all" (all messages trigger regardless).
+   */
+  directMessageTrigger?: 'mention' | 'always' | 'off';
+
+  /**
    * Agent name for mention-based triggering (default: project name).
    * Used to detect @{agentName} in incoming messages.
    */

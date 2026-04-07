@@ -329,15 +329,27 @@ export class ThreadlineMCPServer {
             );
           }
 
-          // Sanitize output — don't expose internal fields
-          const sanitized = agents.map(a => ({
-            name: a.name,
-            status: a.status,
-            capabilities: a.capabilities,
-            description: a.description,
-            threadlineVersion: a.threadlineVersion,
-            framework: a.framework,
-          }));
+          // Sanitize output — include fingerprint prefix + machine for disambiguation
+          const sanitized = agents.map(a => {
+            const entry: Record<string, unknown> = {
+              name: a.name,
+              status: a.status,
+              capabilities: a.capabilities,
+              description: a.description,
+              threadlineVersion: a.threadlineVersion,
+              framework: a.framework,
+            };
+            // Include short fingerprint for disambiguation of same-named agents.
+            // publicKey is hex-encoded Ed25519 key; fingerprint = first 32 hex chars.
+            // Show first 8 hex chars as a short prefix for human readability.
+            if (a.publicKey) {
+              entry.fingerprint = a.publicKey.substring(0, 8);
+            }
+            if (a.machine) {
+              entry.machine = a.machine;
+            }
+            return entry;
+          });
 
           if (sanitized.length === 0) {
             return textResult(
@@ -534,10 +546,20 @@ export class ThreadlineMCPServer {
               framework: a.framework,
               threadlineVersion: a.threadlineVersion,
             };
+            // Include short fingerprint + machine for disambiguation
+            if (a.publicKey) {
+              entry.fingerprint = a.publicKey.substring(0, 8);
+            }
+            if (a.machine) {
+              entry.machine = a.machine;
+            }
 
             // Trust levels only visible to admin scope or local operator
             if (showTrustLevels) {
-              const trustProfile = this.deps.trustManager.getProfile(a.name);
+              // Try fingerprint-based lookup first, fall back to name
+              const fingerprint = a.publicKey?.substring(0, 32);
+              const trustProfile = (fingerprint && this.deps.trustManager.getProfile(fingerprint))
+                || this.deps.trustManager.getProfile(a.name);
               if (trustProfile) {
                 entry.trustLevel = trustProfile.level;
                 entry.trustSource = trustProfile.source;

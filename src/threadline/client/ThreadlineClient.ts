@@ -255,8 +255,9 @@ export class ThreadlineClient extends EventEmitter {
 
   /**
    * Resolve an agent name or fingerprint to a fingerprint.
+   * Supports disambiguation syntax: "name:fingerprintPrefix" (e.g. "sagemind:a1b2c3d4").
    * Tries: exact fingerprint match → name match in cache → re-discover → name match.
-   * Returns null if not found.
+   * Returns null if not found. Throws if name is ambiguous and no fingerprint prefix given.
    */
   async resolveAgent(nameOrId: string): Promise<AgentFingerprint | null> {
     // 1. Exact fingerprint match (hex string, typically 32 chars)
@@ -264,14 +265,17 @@ export class ThreadlineClient extends EventEmitter {
       return nameOrId as AgentFingerprint;
     }
 
-    // 2. Name match in cache (case-insensitive)
-    const byName = this.findAgentByName(nameOrId);
+    // 2. Parse disambiguation syntax: "name:fingerprintPrefix"
+    const { name, fingerprintPrefix } = this.parseAgentAddress(nameOrId);
+
+    // 3. Name match in cache (case-insensitive)
+    const byName = this.findAgentByName(name, fingerprintPrefix);
     if (byName) return byName.agentId;
 
-    // 3. Re-discover and try again
+    // 4. Re-discover and try again
     if (this.relayClient) {
       await this.autoDiscover();
-      const byNameRetry = this.findAgentByName(nameOrId);
+      const byNameRetry = this.findAgentByName(name, fingerprintPrefix);
       if (byNameRetry) return byNameRetry.agentId;
     }
 
@@ -279,18 +283,81 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
-   * Find an agent by name (case-insensitive, partial match).
+   * Parse "name:fingerprintPrefix" addressing syntax.
+   * If no colon or input looks like a plain name, returns the whole input as name.
    */
-  private findAgentByName(name: string): KnownAgent | undefined {
+  private parseAgentAddress(input: string): { name: string; fingerprintPrefix?: string } {
+    // Only split on colon if the part after looks like a hex fingerprint prefix
+    const colonIdx = input.lastIndexOf(':');
+    if (colonIdx > 0 && colonIdx < input.length - 1) {
+      const suffix = input.substring(colonIdx + 1);
+      if (/^[0-9a-f]{4,32}$/i.test(suffix)) {
+        return {
+          name: input.substring(0, colonIdx),
+          fingerprintPrefix: suffix.toLowerCase(),
+        };
+      }
+    }
+    return { name: input };
+  }
+
+  /**
+   * Find an agent by name (case-insensitive, partial match).
+   * If fingerprintPrefix is provided, uses it to disambiguate same-named agents.
+   * Throws an error if multiple agents share the name and no prefix is given.
+   */
+  private findAgentByName(name: string, fingerprintPrefix?: string): KnownAgent | undefined {
     const lower = name.toLowerCase();
-    // Exact name match first
+
+    // Collect all exact name matches
+    const exactMatches: KnownAgent[] = [];
     for (const agent of this.knownAgents.values()) {
-      if (agent.name.toLowerCase() === lower) return agent;
+      if (agent.name.toLowerCase() === lower) exactMatches.push(agent);
     }
-    // Partial match (contains)
+
+    if (exactMatches.length === 1) return exactMatches[0];
+
+    if (exactMatches.length > 1) {
+      // Disambiguate by fingerprint prefix
+      if (fingerprintPrefix) {
+        const match = exactMatches.find(a => a.agentId.startsWith(fingerprintPrefix));
+        if (match) return match;
+        // No match for the given prefix
+        return undefined;
+      }
+      // Ambiguous — throw with helpful info
+      const options = exactMatches.map(a =>
+        `  ${a.name}:${a.agentId.substring(0, 8)} (${a.agentId})`
+      ).join('\n');
+      throw new Error(
+        `Ambiguous agent name "${name}" — ${exactMatches.length} agents share this name. ` +
+        `Use "name:fingerprint" syntax to disambiguate:\n${options}`
+      );
+    }
+
+    // No exact match — try partial match
+    const partialMatches: KnownAgent[] = [];
     for (const agent of this.knownAgents.values()) {
-      if (agent.name.toLowerCase().includes(lower)) return agent;
+      if (agent.name.toLowerCase().includes(lower)) partialMatches.push(agent);
     }
+
+    if (partialMatches.length === 1) return partialMatches[0];
+
+    if (partialMatches.length > 1) {
+      if (fingerprintPrefix) {
+        const match = partialMatches.find(a => a.agentId.startsWith(fingerprintPrefix));
+        if (match) return match;
+        return undefined;
+      }
+      const options = partialMatches.map(a =>
+        `  ${a.name}:${a.agentId.substring(0, 8)} (${a.agentId})`
+      ).join('\n');
+      throw new Error(
+        `Ambiguous agent name "${name}" — ${partialMatches.length} agents match. ` +
+        `Use "name:fingerprint" syntax to disambiguate:\n${options}`
+      );
+    }
+
     return undefined;
   }
 

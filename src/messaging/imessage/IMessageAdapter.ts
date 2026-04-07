@@ -54,6 +54,7 @@ export class IMessageAdapter implements MessagingAdapter {
   private readonly proactiveSendEnabled: boolean;
   private readonly reactiveWindowHours: number;
   private readonly triggerMode: 'mention' | 'all';
+  private readonly directMessageTrigger: 'mention' | 'always' | 'off';
   private agentName: string | undefined;
 
   // Components
@@ -94,6 +95,7 @@ export class IMessageAdapter implements MessagingAdapter {
     this.proactiveSendEnabled = this.config.proactiveSendEnabled ?? false;
     this.reactiveWindowHours = this.config.reactiveWindowHours ?? 24;
     this.triggerMode = this.config.triggerMode ?? 'mention';
+    this.directMessageTrigger = this.config.directMessageTrigger ?? 'mention';
     this.agentName = this.config.agentName;
 
     // Initialize backend (read-only)
@@ -453,10 +455,12 @@ export class IMessageAdapter implements MessagingAdapter {
 
   /**
    * Check whether an incoming message triggers the agent.
-   * In "mention" mode, requires @{agentName} in the message text — but only
-   * for group chats. 1:1 conversations always trigger regardless of mode,
-   * because mention gating only makes sense when multiple people are talking.
    * In "all" mode, every message triggers.
+   * In "mention" mode, requires @{agentName} in the message text.
+   * The directMessageTrigger config controls 1:1 chat behavior in mention mode:
+   *   - "mention" (default): require @{agentName} even in 1:1 chats (backward-compatible)
+   *   - "always": 1:1 chats bypass mention gating
+   *   - "off": 1:1 chats never trigger
    * Returns the stripped text (mention removed) if triggered.
    */
   _checkTrigger(text: string, chatId?: string): { triggered: boolean; strippedText: string } {
@@ -464,22 +468,24 @@ export class IMessageAdapter implements MessagingAdapter {
       return { triggered: true, strippedText: text };
     }
 
-    // 1:1 chats always trigger — mention mode only applies to group chats.
-    // iMessage chatIds have format: iMessage;-;{identifier}
-    // For 1:1 chats, identifier is a phone number (+1...) or email (foo@bar).
-    // For group chats, identifier looks like "chat123456789" or a group GUID.
+    // Check if this is a 1:1 chat and apply directMessageTrigger policy
     if (chatId) {
-      // Extract the identifier part after "iMessage;-;" (or use full chatId as fallback)
       const parts = chatId.split(';-;');
       const identifier = parts.length > 1 ? parts[1] : chatId;
+      const is1to1 = identifier.startsWith('+') || identifier.includes('@');
 
-      // Check if this is a 1:1 chat (phone or email identifier)
-      if (identifier.startsWith('+') || identifier.includes('@')) {
-        return { triggered: true, strippedText: text };
+      if (is1to1) {
+        if (this.directMessageTrigger === 'always') {
+          return { triggered: true, strippedText: text };
+        }
+        if (this.directMessageTrigger === 'off') {
+          return { triggered: false, strippedText: text };
+        }
+        // 'mention' (default) — fall through to mention check below
       }
     }
 
-    // Mention mode for group chats — require @{agentName}
+    // Mention mode — require @{agentName}
     if (!this.agentName) {
       return { triggered: true, strippedText: text };
     }
