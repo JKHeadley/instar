@@ -300,6 +300,11 @@ export function loadConfig(projectDir?: string): InstarConfig {
   }
 
   return {
+    // Spread fileConfig as base so all optional fields (safety, evolution,
+    // agentAutonomy, externalOperations, autonomyProfile, notifications,
+    // responseReview, inputGuard, dashboard, moltbridge, etc.) pass through.
+    // Explicitly constructed fields below override the spread.
+    ...fileConfig,
     projectName,
     projectDir: resolvedProjectDir,
     stateDir,
