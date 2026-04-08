@@ -131,6 +131,34 @@ describe('Config module', () => {
     });
   });
 
+  describe('loadConfig passes through optional config fields', () => {
+    it('spreads fileConfig so safety, evolution, agentAutonomy etc. are not dropped', () => {
+      const source = fs.readFileSync(
+        path.join(process.cwd(), 'src/core/Config.ts'),
+        'utf-8',
+      );
+      // The return statement should spread fileConfig before explicit overrides
+      expect(source).toContain('...fileConfig,');
+    });
+
+    it('loadConfig preserves safety config from config file', () => {
+      const projectDir = path.join(tmpDir, 'safety-project');
+      const instarDir = path.join(projectDir, '.instar');
+      fs.mkdirSync(instarDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), '# Test');
+      fs.writeFileSync(path.join(instarDir, 'config.json'), JSON.stringify({
+        safety: { level: 2 },
+        agentAutonomy: { level: 'autonomous' },
+        autonomyProfile: 'collaborative',
+      }));
+
+      const config = loadConfig(projectDir);
+      expect(config.safety).toEqual({ level: 2 });
+      expect(config.agentAutonomy).toEqual({ level: 'autonomous' });
+      expect(config.autonomyProfile).toBe('collaborative');
+    });
+  });
+
   describe('loadConfig maxSessions nullish coalescing', () => {
     // This tests the fix: maxSessions should use ?? not ||
     // so that 0 is a valid (falsy but intentional) value
