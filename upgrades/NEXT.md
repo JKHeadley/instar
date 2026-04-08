@@ -4,14 +4,14 @@
 
 ## What Changed
 
-No changes yet — placeholder for next version.
+- Fixed CI test failure in `config-loadconfig.test.ts`: the "loadConfig preserves safety config" test was missing explicit `sessions.tmuxPath` and `sessions.claudePath` in its test config, causing `detectClaudePath()` to throw on CI environments where Claude CLI is not installed.
 
 ## What to Tell Your User
 
-- **No changes yet**: "No new changes in this version yet."
+- **CI fix**: "A test was failing in CI because it wasn't properly isolated from the environment — now fixed."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| (none yet) | — |
+| No new capabilities | Bug fix only |
