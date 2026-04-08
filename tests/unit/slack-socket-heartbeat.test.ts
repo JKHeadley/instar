@@ -32,10 +32,6 @@ describe('Heartbeat timing constants', () => {
     expect(socketClientSource).toContain('DEAD_SILENCE_MS = 300_000');
   });
 
-  it('declares ping timeout at 10 seconds', () => {
-    expect(socketClientSource).toContain('PING_TIMEOUT_MS = 10_000');
-  });
-
   it('does NOT use the old 1-hour heartbeat timeout', () => {
     expect(socketClientSource).not.toContain('3_600_000');
     expect(socketClientSource).not.toContain('HEARTBEAT_TIMEOUT_MS');
@@ -43,26 +39,15 @@ describe('Heartbeat timing constants', () => {
 });
 
 describe('Active liveness probe', () => {
-  it('tracks lastPongAt timestamp', () => {
-    expect(socketClientSource).toContain('private lastPongAt = 0');
-  });
-
-  it('tracks pendingPing state', () => {
-    expect(socketClientSource).toContain('private pendingPing = false');
-  });
-
   it('sends a ping probe when no events for DEAD_SILENCE_MS', () => {
     // After DEAD_SILENCE_MS of silence, sends a JSON ping
     expect(socketClientSource).toMatch(/sinceLastEvent > DEAD_SILENCE_MS[\s\S]*?ws\?\.send\(.*ping/);
   });
 
-  it('forces reconnect when ping times out (no response within PING_TIMEOUT_MS)', () => {
-    expect(socketClientSource).toMatch(/pendingPing[\s\S]*?sincePing > PING_TIMEOUT_MS[\s\S]*?_forceReconnect/);
-  });
-
-  it('resets pendingPing on any received message', () => {
-    // The message event handler must clear pendingPing
-    expect(socketClientSource).toMatch(/addEventListener\('message'[\s\S]*?pendingPing = false/);
+  it('resets silence timer after successful send (TCP alive)', () => {
+    // Successful send() means TCP connection is alive — reset lastEventAt
+    // so we don't immediately re-probe on the next tick
+    expect(socketClientSource).toMatch(/ws\?\.send\(.*ping[\s\S]*?lastEventAt = Date\.now\(\)/);
   });
 
   it('forces reconnect if send() throws (socket already dead)', () => {
@@ -83,6 +68,12 @@ describe('_forceReconnect method', () => {
 
   it('clears the heartbeat timer', () => {
     expect(socketClientSource).toMatch(/_forceReconnect\(\)[\s\S]*?_clearHeartbeat\(\)/);
+  });
+
+  it('temporarily clears started to prevent close handler race condition', () => {
+    // Same pattern as reconnect(): prevents the old ws close event from
+    // triggering a second reconnect that would clobber the new connection
+    expect(socketClientSource).toMatch(/_forceReconnect\(\)[\s\S]*?wasStarted = this\.started[\s\S]*?this\.started = false[\s\S]*?ws\.close\(\)/);
   });
 
   it('closes the websocket', () => {

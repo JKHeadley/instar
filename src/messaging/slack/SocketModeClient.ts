@@ -33,8 +33,7 @@ interface OutboundQueueItem {
 
 const MAX_OUTBOUND_QUEUE = 100;
 const HEARTBEAT_INTERVAL_MS = 30_000;   // Check connection health every 30s
-const PING_TIMEOUT_MS = 10_000;         // If pong not received within 10s, connection is dead
-const DEAD_SILENCE_MS = 300_000;        // 5 min with no events AND no pong → force reconnect
+const DEAD_SILENCE_MS = 300_000;        // 5 min with no events → send liveness probe
 const MAX_BACKOFF_MS = 60_000;
 const TOO_MANY_WS_DELAY_MS = 30_000;
 
@@ -47,8 +46,6 @@ export class SocketModeClient {
   private consecutiveErrors = 0;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private lastEventAt = 0;
-  private lastPongAt = 0;
-  private pendingPing = false;
   private outboundQueue: OutboundQueueItem[] = [];
   private connectionTime: number | null = null;
 
@@ -145,7 +142,6 @@ export class SocketModeClient {
 
     this.ws.addEventListener('message', (event: MessageEvent) => {
       this.lastEventAt = Date.now();
-      this.pendingPing = false; // Any message received = connection alive
       this._handleRawMessage(typeof event.data === 'string' ? event.data : String(event.data));
     });
 
@@ -255,8 +251,6 @@ export class SocketModeClient {
 
   private _startHeartbeat(): void {
     this._clearHeartbeat();
-    this.lastPongAt = Date.now();
-    this.pendingPing = false;
 
     this.heartbeatTimer = setInterval(() => {
       // 1. Check if WebSocket is still in OPEN state
@@ -266,25 +260,20 @@ export class SocketModeClient {
         return;
       }
 
-      // 2. If we sent a ping and haven't gotten ANY message back within PING_TIMEOUT_MS, connection is dead
-      if (this.pendingPing) {
-        const sincePing = Date.now() - this.lastPongAt;
-        if (sincePing > PING_TIMEOUT_MS) {
-          console.warn(`[slack-socket] Ping timeout (${Math.round(sincePing / 1000)}s with no response), forcing reconnect`);
-          this._forceReconnect();
-          return;
-        }
-      }
-
-      // 3. If no events for DEAD_SILENCE_MS, send a probe ping
+      // 2. If no events for DEAD_SILENCE_MS, send a probe to test the connection.
+      //    Slack Socket Mode has no application-level ping/pong — Slack will
+      //    silently ignore any JSON we send. So we test with send(): if it
+      //    throws, the socket is dead at the OS level → force reconnect.
+      //    If send() succeeds, the TCP connection is alive — reset the silence
+      //    timer and check again later.
       const sinceLastEvent = Date.now() - this.lastEventAt;
-      if (sinceLastEvent > DEAD_SILENCE_MS && !this.pendingPing) {
+      if (sinceLastEvent > DEAD_SILENCE_MS) {
         console.log(`[slack-socket] No events for ${Math.round(sinceLastEvent / 60000)}m — sending liveness probe`);
-        this.pendingPing = true;
-        this.lastPongAt = Date.now(); // Reset pong timer to now (give PING_TIMEOUT_MS to respond)
         try {
-          // Send an empty JSON object — Slack will ignore it but the send() will throw if the socket is dead
           this.ws?.send('{"type":"ping"}');
+          // send() succeeded → TCP connection is alive. Reset silence timer
+          // so we don't immediately re-probe on the next tick.
+          this.lastEventAt = Date.now();
         } catch {
           console.warn('[slack-socket] Liveness probe send failed, forcing reconnect');
           this._forceReconnect();
@@ -296,8 +285,13 @@ export class SocketModeClient {
   private _forceReconnect(): void {
     this._clearHeartbeat();
     if (this.ws) {
+      // Temporarily clear started to prevent the close handler from
+      // triggering its own reconnect (same pattern as reconnect()).
+      const wasStarted = this.started;
+      this.started = false;
       try { this.ws.close(); } catch { /* ok */ }
       this.ws = null;
+      this.started = wasStarted;
     }
     // Trigger reconnect directly instead of relying on close event
     if (this.started && !this.reconnecting) {
