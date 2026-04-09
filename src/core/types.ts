@@ -214,6 +214,10 @@ export interface JobSchedulerConfig {
   /** Grace period (ms) before first missed-job evaluation, allowing HTTP server to start.
    *  Defaults to 5000ms. Set to 0 to disable. */
   startupGraceMs?: number;
+  /** Number of gate retry attempts before skipping. Defaults to 3. */
+  gateRetries?: number;
+  /** Delay between gate retries in ms. Defaults to 5000. */
+  gateRetryDelayMs?: number;
 }
 
 // ── User Management ─────────────────────────────────────────────────

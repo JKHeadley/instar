@@ -1085,8 +1085,8 @@ export class JobScheduler {
    * Retries up to 3 times with 5s delay to handle transient failures (e.g., server restart windows).
    */
   private runGate(job: JobDefinition): boolean {
-    const maxAttempts = 3;
-    const retryDelayMs = 5000;
+    const maxAttempts = this.config.gateRetries ?? 3;
+    const retryDelayMs = this.config.gateRetryDelayMs ?? 5000;
     let lastErr: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {

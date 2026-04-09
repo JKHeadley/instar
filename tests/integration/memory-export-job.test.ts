@@ -88,6 +88,7 @@ describe('Memory Export Job (integration)', () => {
         enabled: true,
         maxParallelJobs: 3,
         quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
+        gateRetries: 1,
       },
       mockSM as any,
       project.state,
@@ -107,6 +108,7 @@ describe('Memory Export Job (integration)', () => {
         enabled: true,
         maxParallelJobs: 3,
         quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
+        gateRetries: 1,
       },
     };
 
