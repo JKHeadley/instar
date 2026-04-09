@@ -98,20 +98,22 @@ function getNodeVersion(): { version: string; major: number } {
 }
 
 /**
- * Install Homebrew on macOS (non-interactive).
+ * Install Homebrew on macOS.
  * Uses the official install script from https://brew.sh.
+ * stdio is inherited so the user can enter their sudo password when prompted.
  * Returns true if installation succeeded.
  */
 function installHomebrew(): boolean {
   try {
     console.log(pc.dim('  Installing Homebrew (this may take a few minutes)...'));
+    console.log(pc.dim('  You may be prompted for your password.'));
     execFileSync('/bin/bash', [
       '-c',
-      'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+      '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
     ], {
       encoding: 'utf-8',
       stdio: 'inherit',
-      timeout: 300000, // 5 min timeout — Homebrew install can be slow
+      timeout: 600000, // 10 min timeout — Homebrew install can be slow, especially with Xcode CLT
     });
 
     // After Homebrew installs, ensure it's on PATH for this process
