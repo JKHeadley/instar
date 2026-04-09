@@ -4,16 +4,16 @@
 
 ## What Changed
 
-Job gate checks now retry up to 3 times with a 5-second delay between attempts before recording a skip. Previously, a single gate failure (e.g., health check returning non-zero during a brief server restart) would immediately skip the job. This caused guardian jobs scheduled at minute 0 to consistently miss their windows when the server restarts hourly at the same time.
+The GET /context endpoint now includes the `contextDir` path in its response, making it possible for agents to verify that the server is looking in the same directory where their context files live. This helps diagnose the "0 bytes for all segments" issue that occurs when there's a path mismatch between the server's configured state directory and where hooks/sessions create context files.
 
-The existing `scheduleRetry` mechanism (1min, 5min, 15min escalating retries) remains as a second layer, but the in-gate retry handles the most common case: a health endpoint that's unavailable for a few seconds during restart.
+Response format changed from an array of segments to `{ contextDir: string, segments: [...] }`.
 
 ## What to Tell Your User
 
-- **More reliable scheduled jobs**: "Jobs that depend on health checks are now more resilient to brief server restart windows. If you've noticed guardian or monitoring jobs being skipped, they should start running consistently now."
+- **Better context diagnostics**: "If your context segments ever show as empty despite files being on disk, the context endpoint now shows the exact directory path the server is checking. This makes it easy to spot path mismatches."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Gate retry on transient failure | Automatic — no configuration needed |
+| Context directory path in response | GET /context now returns contextDir alongside segments |
