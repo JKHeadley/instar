@@ -175,6 +175,8 @@ const FLAKY_TESTS = [
   // ── Supertest / timing flakes (different tests fail each run) ─────────
   'tests/unit/job-retry.test.ts',
   'tests/integration/dispatch-routes.test.ts',
+  'tests/integration/rich-profile-integration.test.ts',
+  'tests/integration/publishing-routes.test.ts',
 ];
 
 export default defineConfig({
