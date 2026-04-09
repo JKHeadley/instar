@@ -1100,7 +1100,8 @@ The user has been talking to you (possibly for days). A generic greeting like "H
 - **Config API**: View: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/api/files/config\`
 - **Update paths conversationally**: \`curl -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" -H "Content-Type: application/json" http://localhost:${port}/api/files/config -d '{"allowedPaths":[".claude/","docs/","src/"]}'\`
 - **Generate a file link**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/link?path=.claude/CLAUDE.md"\`
-- **Default config**: Browsing enabled for the entire project directory (\`./\`). Editing disabled by default — prompt the user to enable it for safe paths.
+- **Download a file**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/download?path=.claude/CLAUDE.md" -O\`
+- **Default config**: Browsing and editing enabled for the entire project directory (\`./\`) by default.
 - **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\` are always read-only regardless of config.
 `;
       // Insert after Dashboard section
