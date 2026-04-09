@@ -2055,7 +2055,10 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(501).json({ error: 'ContextHierarchy not initialized' });
       return;
     }
-    res.json(ctx.contextHierarchy.listSegments());
+    res.json({
+      contextDir: ctx.contextHierarchy.getContextDir(),
+      segments: ctx.contextHierarchy.listSegments(),
+    });
   });
 
   router.get('/context/dispatch', (_req, res) => {
