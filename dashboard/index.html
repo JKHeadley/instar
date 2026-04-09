@@ -2315,6 +2315,7 @@
       .app {
         overflow: hidden;
         max-width: 100vw;
+        padding-top: 48px; /* Space for fixed tab bar */
       }
 
       /* All full-span containers must respect viewport width */
@@ -2330,12 +2331,12 @@
         overflow-x: hidden;
       }
 
-      /* Header: stacks vertically on mobile */
+      /* Header: just the tab bar on mobile, fixed at top */
       .header {
         padding: 0;
         flex-direction: column;
         align-items: stretch;
-        overflow: hidden;
+        overflow: visible;
         max-width: 100vw;
       }
 
@@ -2349,7 +2350,7 @@
         display: none;
       }
 
-      /* Tab bar — primary navigation, full width, scrollable, large touch targets */
+      /* Tab bar — fixed at top of viewport, always visible */
       .tab-bar {
         display: flex;
         margin-left: 0;
@@ -2359,6 +2360,11 @@
         border-bottom: 1px solid var(--border);
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 200;
       }
 
       .tab-bar .tab {
