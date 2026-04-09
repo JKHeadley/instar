@@ -19,7 +19,7 @@ import type { InstarConfig, FileViewerConfig } from '../core/types.js';
 const DEFAULT_FILE_VIEWER_CONFIG: FileViewerConfig = {
   enabled: true,
   allowedPaths: ['./'],
-  editablePaths: [],
+  editablePaths: ['./'],
   maxFileSize: 1_048_576, // 1MB
   maxEditableFileSize: 204_800, // 200KB
   blockedFilenames: [
@@ -171,6 +171,8 @@ function isEditable(relativePath: string, config: FileViewerConfig): boolean {
   const normalized = path.normalize(relativePath);
   return config.editablePaths.some(ep => {
     const normalizedEditable = path.normalize(ep);
+    // '.' means project root — everything is editable
+    if (normalizedEditable === '.' || normalizedEditable === './') return true;
     return normalized === normalizedEditable ||
            normalized.startsWith(normalizedEditable.endsWith('/') ? normalizedEditable : normalizedEditable + '/');
   });
