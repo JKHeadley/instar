@@ -7,6 +7,7 @@
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import pc from 'picocolors';
 // @inquirer/prompts imported dynamically — requires Node 20.12+
 import { detectTmuxPath, detectClaudePath } from './Config.js';
@@ -21,6 +22,8 @@ export interface PrerequisiteResult {
   canAutoInstall: boolean;
   /** The command to run to auto-install this prerequisite. */
   installCommand?: string;
+  /** Whether Homebrew needs to be installed first (macOS). */
+  needsHomebrew?: boolean;
 }
 
 export interface PrerequisiteCheck {
@@ -95,9 +98,45 @@ function getNodeVersion(): { version: string; major: number } {
 }
 
 /**
+ * Install Homebrew on macOS (non-interactive).
+ * Uses the official install script from https://brew.sh.
+ * Returns true if installation succeeded.
+ */
+function installHomebrew(): boolean {
+  try {
+    console.log(pc.dim('  Installing Homebrew (this may take a few minutes)...'));
+    execFileSync('/bin/bash', [
+      '-c',
+      'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+    ], {
+      encoding: 'utf-8',
+      stdio: 'inherit',
+      timeout: 300000, // 5 min timeout — Homebrew install can be slow
+    });
+
+    // After Homebrew installs, ensure it's on PATH for this process
+    // Apple Silicon installs to /opt/homebrew, Intel to /usr/local
+    const brewPaths = ['/opt/homebrew/bin', '/usr/local/bin'];
+    for (const bp of brewPaths) {
+      if (fs.existsSync(path.join(bp, 'brew'))) {
+        if (!process.env.PATH?.includes(bp)) {
+          process.env.PATH = `${bp}:${process.env.PATH}`;
+        }
+        break;
+      }
+    }
+
+    return hasHomebrew();
+  } catch {
+    // @silent-fallback-ok — homebrew install failure communicated via return
+    return false;
+  }
+}
+
+/**
  * Build install hint and command for tmux based on platform.
  */
-function tmuxInstallInfo(): { hint: string; canAutoInstall: boolean; command?: string } {
+function tmuxInstallInfo(): { hint: string; canAutoInstall: boolean; command?: string; needsHomebrew?: boolean } {
   const platform = detectPlatform();
   switch (platform) {
     case 'macos-arm':
@@ -111,7 +150,9 @@ function tmuxInstallInfo(): { hint: string; canAutoInstall: boolean; command?: s
       }
       return {
         hint: 'Install Homebrew first (https://brew.sh), then: brew install tmux',
-        canAutoInstall: false,
+        canAutoInstall: true,
+        command: 'brew install tmux',
+        needsHomebrew: true,
       };
     case 'linux':
       return {
@@ -167,6 +208,7 @@ export function checkPrerequisites(): PrerequisiteCheck {
     installHint: tmuxInfo.hint,
     canAutoInstall: tmuxInfo.canAutoInstall,
     installCommand: tmuxInfo.command,
+    needsHomebrew: tmuxInfo.needsHomebrew,
   });
 
   // 3. Claude CLI
@@ -274,6 +316,29 @@ export async function ensurePrerequisites(): Promise<PrerequisiteCheck> {
     console.log(`  ${pc.red('✗')} ${missing.name} — not found`);
 
     if (missing.canAutoInstall && missing.installCommand) {
+      // If this prerequisite needs Homebrew and it's not installed, install it first
+      if (missing.needsHomebrew) {
+        const { confirm } = await import('@inquirer/prompts');
+        const installBrew = await confirm({
+          message: `${missing.name} requires Homebrew. Install Homebrew first?`,
+          default: true,
+        });
+
+        if (installBrew) {
+          const brewSuccess = installHomebrew();
+          if (brewSuccess) {
+            console.log(`  ${pc.green('✓')} Homebrew installed successfully`);
+          } else {
+            console.log(`  ${pc.red('✗')} Failed to install Homebrew`);
+            console.log(`    Install manually: https://brew.sh`);
+            continue;
+          }
+        } else {
+          console.log(`    ${missing.installHint}`);
+          continue;
+        }
+      }
+
       const { confirm } = await import('@inquirer/prompts');
       const install = await confirm({
         message: `Install ${missing.name}? (${pc.dim(missing.installCommand)})`,

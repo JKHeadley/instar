@@ -56,4 +56,29 @@ describe('Prerequisites', () => {
       expect(m.installHint.length).toBeGreaterThan(0);
     }
   });
+
+  it('tmux result includes canAutoInstall on macOS regardless of Homebrew', () => {
+    const result = checkPrerequisites();
+    const tmux = result.results.find(r => r.name === 'tmux')!;
+
+    if (process.platform === 'darwin') {
+      // On macOS, tmux should always be auto-installable
+      // (with Homebrew auto-install if needed)
+      if (!tmux.found) {
+        expect(tmux.canAutoInstall).toBe(true);
+        expect(tmux.installCommand).toBeDefined();
+      }
+    }
+  });
+
+  it('needsHomebrew is only set when Homebrew is missing on macOS', () => {
+    const result = checkPrerequisites();
+    const tmux = result.results.find(r => r.name === 'tmux')!;
+
+    if (process.platform !== 'darwin') {
+      // Non-macOS should never need Homebrew
+      expect(tmux.needsHomebrew).toBeFalsy();
+    }
+    // On macOS: needsHomebrew is true only if brew is not found
+  });
 });
