@@ -1185,6 +1185,125 @@
     .editor-toolbar .save-status.saved { color: var(--accent); }
     .editor-toolbar .save-status.error { color: var(--red); }
 
+    /* ── File Settings Panel ─────────────────────────────── */
+    .file-settings-btn {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    .file-settings-btn:hover { color: var(--text-bright); background: var(--bg-hover); }
+
+    .file-settings-panel {
+      display: none;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      padding: 16px;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    .file-settings-panel.open { display: block; }
+
+    .file-settings-panel h3 {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 0 0 10px 0;
+    }
+    .file-settings-panel h3:not(:first-child) { margin-top: 16px; }
+
+    .path-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .path-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .path-row .path-name {
+      flex: 1;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--text);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .path-row .path-toggle {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text-dim);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .path-row .path-toggle:hover { border-color: #444; }
+    .path-row .path-toggle.is-editable {
+      background: #1b3e1b;
+      color: #86efac;
+      border-color: #2d5a2d;
+    }
+    .path-row .path-remove {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 4px;
+      line-height: 1;
+    }
+    .path-row .path-remove:hover { color: var(--red); }
+
+    .path-add-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .path-add-row input {
+      flex: 1;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .path-add-row input::placeholder { color: var(--text-dim); }
+    .path-add-row button {
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg-panel);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .path-add-row button:hover { background: var(--bg-hover); }
+
+    .file-badge.download-btn {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .file-badge.download-btn:hover {
+      border-color: #333;
+      background: var(--bg-hover);
+    }
+
     /* Toast notifications */
     .toast-container {
       position: fixed;
@@ -2832,7 +2951,9 @@
       <div class="file-tree" id="fileTree">
         <div class="file-tree-header">
           <h2>Files</h2>
+          <button class="file-settings-btn" onclick="toggleFileSettings()" title="Configure paths">&#x2699;</button>
         </div>
+        <div class="file-settings-panel" id="fileSettingsPanel"></div>
         <div class="file-tree-list" id="fileTreeList">
           <div class="file-loading" id="fileTreeLoading">Loading...</div>
         </div>
@@ -4172,6 +4293,116 @@
       return resp.json();
     }
 
+    // ── File Settings ───────────────────────────────────────
+    let fileConfig = null; // cached config
+
+    function toggleFileSettings() {
+      const panel = document.getElementById('fileSettingsPanel');
+      if (panel.classList.contains('open')) {
+        panel.classList.remove('open');
+        return;
+      }
+      panel.classList.add('open');
+      loadFileSettings();
+    }
+
+    async function loadFileSettings() {
+      const panel = document.getElementById('fileSettingsPanel');
+      try {
+        fileConfig = await apiFetch('/api/files/config');
+        renderFileSettings();
+      } catch (err) {
+        panel.innerHTML = '<div class="file-error">Failed to load config: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    function renderFileSettings() {
+      const panel = document.getElementById('fileSettingsPanel');
+      if (!fileConfig) return;
+
+      const paths = fileConfig.allowedPaths || [];
+      const editable = fileConfig.editablePaths || [];
+
+      let html = '<h3>Browsable Paths</h3><div class="path-list">';
+      for (const p of paths) {
+        const isEdit = editable.some(ep => p === ep || p.startsWith(ep.endsWith('/') ? ep : ep + '/'));
+        html += '<div class="path-row">'
+          + '<span class="path-name">' + escapeHtml(p) + '</span>'
+          + '<button class="path-toggle' + (isEdit ? ' is-editable' : '') + '" onclick="togglePathEditable(\'' + escapeHtml(p) + '\')">'
+          + (isEdit ? 'Editable' : 'Read-only') + '</button>'
+          + '<button class="path-remove" onclick="removeAllowedPath(\'' + escapeHtml(p) + '\')" title="Remove">&times;</button>'
+          + '</div>';
+      }
+      html += '</div>';
+      html += '<div class="path-add-row">'
+        + '<input type="text" id="newPathInput" placeholder="src/" onkeydown="if(event.key===\'Enter\')addAllowedPath()">'
+        + '<button onclick="addAllowedPath()">Add</button>'
+        + '</div>';
+
+      panel.innerHTML = html;
+    }
+
+    async function saveFileConfig(updates) {
+      try {
+        const resp = await fetch('/api/files/config', {
+          method: 'PATCH',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+            'X-Instar-Request': '1',
+          },
+          body: JSON.stringify(updates),
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.error || 'HTTP ' + resp.status);
+        }
+        const data = await resp.json();
+        fileConfig.allowedPaths = data.allowedPaths;
+        fileConfig.editablePaths = data.editablePaths;
+        // Refresh tree to show new/removed paths
+        fileTreeCache.clear();
+        fileTreeLoaded = false;
+        loadFileTree();
+        renderFileSettings();
+        showToast('File paths updated', 'success');
+      } catch (err) {
+        showToast('Failed to update: ' + err.message, 'error');
+      }
+    }
+
+    function addAllowedPath() {
+      const input = document.getElementById('newPathInput');
+      let val = (input.value || '').trim();
+      if (!val) return;
+      // Ensure trailing slash for directories
+      if (!val.endsWith('/')) val += '/';
+      if (fileConfig.allowedPaths.includes(val)) {
+        showToast('Path already added', 'warning');
+        return;
+      }
+      const updated = [...fileConfig.allowedPaths, val];
+      saveFileConfig({ allowedPaths: updated });
+    }
+
+    function removeAllowedPath(p) {
+      const updated = fileConfig.allowedPaths.filter(ap => ap !== p);
+      // Also remove from editable if present
+      const updatedEditable = fileConfig.editablePaths.filter(ep => ep !== p);
+      saveFileConfig({ allowedPaths: updated, editablePaths: updatedEditable });
+    }
+
+    function togglePathEditable(p) {
+      const isEdit = fileConfig.editablePaths.some(ep => p === ep || p.startsWith(ep.endsWith('/') ? ep : ep + '/'));
+      let updatedEditable;
+      if (isEdit) {
+        updatedEditable = fileConfig.editablePaths.filter(ep => ep !== p);
+      } else {
+        updatedEditable = [...fileConfig.editablePaths, p];
+      }
+      saveFileConfig({ editablePaths: updatedEditable });
+    }
+
     async function loadFileTree() {
       fileTreeLoaded = true;
       const list = document.getElementById('fileTreeList');
@@ -4397,6 +4628,26 @@
         editBtn.onclick = () => enterEditMode();
         badges.appendChild(editBtn);
       }
+
+      // Download button
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'file-badge download-btn';
+      dlBtn.textContent = 'Download';
+      dlBtn.onclick = () => {
+        const url = '/api/files/download?path=' + encodeURIComponent(currentFilePath);
+        fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+          .then(blob => {
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = blobUrl;
+            link.download = currentFilePath.split('/').pop() || 'file';
+            link.click();
+            URL.revokeObjectURL(blobUrl);
+          })
+          .catch(() => showToast('Download failed', 'error'));
+      };
+      badges.appendChild(dlBtn);
 
       // Copy button
       const copyBtn = document.createElement('button');
