@@ -18,6 +18,17 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(false);
     });
 
+    it('default-enables the session watchdog (compaction-idle detection requires it)', () => {
+      // The compaction-resume infra is load-bearing on the watchdog poller.
+      // If this regresses, sessions that compact via Telegram/Slack go silent.
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const defaults = getInitDefaults(t);
+        expect((defaults.monitoring as any).watchdog?.enabled).toBe(true);
+      }
+      const mig = getMigrationDefaults('managed-project');
+      expect((mig.monitoring as any).watchdog?.enabled).toBe(true);
+    });
+
     it('returns defaults for standalone', () => {
       const defaults = getInitDefaults('standalone');
       expect((defaults.monitoring as any).quotaTracking).toBe(true);

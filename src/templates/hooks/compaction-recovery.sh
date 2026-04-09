@@ -446,5 +446,23 @@ except Exception:
   fi
 fi
 
+# Phase H: Trigger server-side compaction-resume — third independent recovery path.
+# Even if the SessionWatchdog poller and the PreCompact hook event handler are
+# both unavailable for any reason, this hook ALWAYS runs after a real compaction,
+# so it gives us a guaranteed signal. The server will check for unanswered user
+# messages and re-inject them shortly after this hook completes.
+if [ -f "$CONFIG_FILE" ] && command -v tmux >/dev/null 2>&1; then
+  PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+  TMUX_SESSION=$(tmux display-message -p '#S' 2>/dev/null)
+  if [ -n "$PORT" ] && [ -n "$TMUX_SESSION" ]; then
+    AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+    curl -s -m 2 -X POST \
+      -H "Authorization: Bearer ${AUTH_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "{\"sessionName\":\"${TMUX_SESSION}\"}" \
+      "http://localhost:${PORT}/internal/compaction-resume" >/dev/null 2>&1 &
+  fi
+fi
+
 echo ""
 echo "=== RECOVERY COMPLETE — You are grounded. Continue your work. ==="

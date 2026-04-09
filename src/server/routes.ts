@@ -442,6 +442,31 @@ export function createRoutes(ctx: RouteContext): Router {
   // The central ingest point for PostToolUse, SubagentStart/Stop, Stop,
   // SessionEnd, WorktreeCreate/Remove, TaskCompleted events.
 
+  // Compaction-resume trigger #3 — called by .instar/hooks/instar/compaction-recovery.sh
+  // immediately after a compaction event, independent of HookEventReceiver and Watchdog.
+  // This is the most reliable path: the hook only runs when compaction actually happened.
+  router.post('/internal/compaction-resume', async (req, res) => {
+    const sessionName = (req.body?.sessionName || req.body?.tmuxSession || '').toString();
+    if (!sessionName) {
+      res.status(400).json({ error: 'sessionName required' });
+      return;
+    }
+    const recover = (globalThis as Record<string, unknown>).__instarCompactionRecover as
+      | ((sessionName: string, triggerLabel: string) => Promise<boolean>)
+      | undefined;
+    if (!recover) {
+      res.status(503).json({ error: 'compaction recovery not initialized' });
+      return;
+    }
+    // Delay slightly to let Claude Code settle at the post-compaction prompt
+    setTimeout(() => {
+      recover(sessionName, 'recovery-hook').catch(err => {
+        console.warn('[CompactionResume] hook-triggered recovery failed:', err);
+      });
+    }, 8_000);
+    res.json({ ok: true, scheduled: true });
+  });
+
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });

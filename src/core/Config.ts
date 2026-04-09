@@ -320,6 +320,10 @@ export function loadConfig(projectDir?: string): InstarConfig {
       memoryMonitoring: true,
       healthCheckIntervalMs: 30000,
       ...fileConfig.monitoring,
+      // Watchdog default-enabled so compaction-idle detection runs everywhere.
+      // Cost is ~free (30s poll cadence with structural process check first).
+      // Without this, sessions that compact via Telegram/Slack go dead silently.
+      watchdog: fileConfig.monitoring?.watchdog ?? { enabled: true },
       // Telemetry defaults: strictly opt-in
       telemetry: fileConfig.monitoring?.telemetry ?? { enabled: false },
     },

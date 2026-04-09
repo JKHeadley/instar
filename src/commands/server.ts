@@ -4095,58 +4095,83 @@ export async function startServer(options: StartOptions): Promise<void> {
     const hookEventReceiver = new HookEventReceiver({ stateDir: config.stateDir });
     console.log(pc.green('  Hook event receiver enabled'));
 
-    // Wire PreCompact events to trigger proactive triage after compaction.
-    // When a session compacts, it goes idle at a prompt. If there are unanswered
-    // user messages (common with Telegram/Slack), Pattern 2b will reinject them.
-    if (triageOrchestrator && telegram) {
-      const _triageOrch = triageOrchestrator;
-      const _telegram = telegram;
-      hookEventReceiver.on('PreCompact', () => {
-        // Delay to let compaction + recovery hooks finish
-        setTimeout(() => {
-          const topicSessions = _telegram.getAllTopicSessions();
-          for (const [topicId, sessionName] of topicSessions) {
-            if (!sessionManager.isSessionAlive(sessionName)) continue;
-            const history = _telegram.getTopicHistory(topicId, 5);
-            const lastMsg = history[history.length - 1];
-            if (lastMsg?.fromUser) {
-              console.log(`[CompactionResume] PreCompact detected, topic ${topicId} has unanswered message — activating triage`);
-              _triageOrch.activate(topicId, sessionName, 'watchdog', lastMsg.text, Date.now()).catch(err => {
-                console.warn(`[CompactionResume] Triage activation failed for topic ${topicId}:`, err);
-              });
-            }
-          }
-        }, 10_000);
-      });
-      console.log(pc.green('  Compaction auto-resume wired to triage orchestrator (PreCompact event)'));
-    }
+    // ── Compaction Resume: unified recovery for one session ──────────────
+    // Robust against subsystem misconfiguration: works with or without
+    // triageOrchestrator. If the orchestrator is available we prefer it
+    // (richer recovery semantics); otherwise we fall back to a direct
+    // tmux re-injection of the unanswered user message.
+    //
+    // Three independent triggers call into this:
+    //   1. PreCompact hook event (Claude Code fires it — unreliable)
+    //   2. SessionWatchdog 'compaction-idle' polling (default-enabled)
+    //   3. POST /internal/compaction-resume (compaction-recovery.sh hook)
+    const recoverCompactedSession = async (sessionName: string, triggerLabel: string): Promise<boolean> => {
+      if (!sessionManager.isSessionAlive(sessionName)) return false;
 
-    // Watchdog compaction-idle polling — fallback for when PreCompact events
-    // don't fire (Claude Code doesn't reliably emit them). The watchdog polls
-    // every 30s and detects sessions that compacted + are idle at a prompt.
-    if (watchdog && triageOrchestrator) {
-      const _triageOrch2 = triageOrchestrator;
-      watchdog.on('compaction-idle', (sessionName: string) => {
-        // Check Telegram topics
-        if (telegram) {
-          const topicId = telegram.getTopicForSession(sessionName);
-          if (topicId) {
-            const history = telegram.getTopicHistory(topicId, 5);
-            const lastMsg = history[history.length - 1];
-            if (lastMsg?.fromUser) {
-              console.log(`[CompactionResume] Watchdog detected compaction-idle, topic ${topicId} has unanswered message — activating triage`);
-              _triageOrch2.activate(topicId, sessionName, 'watchdog', lastMsg.text, Date.now()).catch(err => {
-                console.warn(`[CompactionResume] Triage activation failed for topic ${topicId}:`, err);
-              });
-              return;
+      // Telegram path
+      if (telegram) {
+        const topicId = telegram.getTopicForSession(sessionName);
+        if (topicId) {
+          const history = telegram.getTopicHistory(topicId, 5);
+          const lastMsg = history[history.length - 1];
+          if (lastMsg?.fromUser) {
+            console.log(`[CompactionResume] (${triggerLabel}) topic ${topicId} session "${sessionName}" has unanswered message — recovering`);
+            if (triageOrchestrator) {
+              try {
+                await triageOrchestrator.activate(topicId, sessionName, 'watchdog', lastMsg.text, Date.now());
+                return true;
+              } catch (err) {
+                console.warn(`[CompactionResume] orchestrator failed, falling back to direct inject:`, err);
+              }
             }
+            // Fallback: direct injection with topic tag so InputGuard accepts it.
+            const tagged = `[telegram:${topicId}] ${lastMsg.text}`;
+            const ok = sessionManager.injectMessage(sessionName, tagged);
+            if (ok) {
+              console.log(`[CompactionResume] (${triggerLabel}) direct re-inject OK for topic ${topicId}`);
+              return true;
+            }
+            console.warn(`[CompactionResume] (${triggerLabel}) direct re-inject FAILED for topic ${topicId}`);
           }
         }
-        // Note: Slack compaction-resume is handled separately below (after
-        // slackChannelToSyntheticId is defined) to avoid TDZ reference errors.
+      }
+
+      // Slack path — handled in the Slack-aware block below (needs slackChannelToSyntheticId).
+      // We attempt it here lazily via a deferred handler set on globalThis to avoid TDZ.
+      const slackHandler = (globalThis as Record<string, unknown>).__instarSlackCompactionResume as
+        | ((sessionName: string, triggerLabel: string) => Promise<boolean>)
+        | undefined;
+      if (slackHandler) {
+        try { return await slackHandler(sessionName, triggerLabel); } catch { /* fall through */ }
+      }
+      return false;
+    };
+
+    // Trigger 1: PreCompact hook event — wired unconditionally now.
+    hookEventReceiver.on('PreCompact', () => {
+      // Delay to let compaction + recovery hooks finish
+      setTimeout(() => {
+        if (!telegram) return;
+        const topicSessions = telegram.getAllTopicSessions();
+        for (const [, sessionName] of topicSessions) {
+          recoverCompactedSession(sessionName, 'PreCompact').catch(() => { /* best-effort */ });
+        }
+      }, 10_000);
+    });
+    console.log(pc.green('  Compaction auto-resume wired (PreCompact hook event)'));
+
+    // Trigger 2: Watchdog 'compaction-idle' polling — wired unconditionally.
+    if (watchdog) {
+      watchdog.on('compaction-idle', (sessionName: string) => {
+        recoverCompactedSession(sessionName, 'watchdog-poll').catch(() => { /* best-effort */ });
       });
-      console.log(pc.green('  Compaction auto-resume wired to watchdog polling (fallback)'));
+      console.log(pc.green('  Compaction auto-resume wired (watchdog poll)'));
     }
+
+    // Trigger 3: stash the recovery function on globalThis so the HTTP route
+    // (registered later in AgentServer) and the compaction-recovery.sh hook
+    // can invoke it via POST /internal/compaction-resume.
+    (globalThis as Record<string, unknown>).__instarCompactionRecover = recoverCompactedSession;
 
     // Subagent Tracker — monitors subagent lifecycle via hook events
     const { SubagentTracker } = await import('../monitoring/SubagentTracker.js');
@@ -4294,16 +4319,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    // Slack compaction-resume wiring — needs slackChannelToSyntheticId which is now defined
-    if (watchdog && triageOrchestrator && _slackAdapter) {
-      const _triageOrch3 = triageOrchestrator;
+    // Slack compaction-resume wiring — registered as a deferred handler the
+    // unified recoverCompactedSession() helper above will call. Works with or
+    // without triageOrchestrator (falls back to direct sessionManager inject).
+    if (_slackAdapter) {
       const _slack = _slackAdapter;
-      watchdog.on('compaction-idle', (sessionName: string) => {
+      const slackRecover = async (sessionName: string, triggerLabel: string): Promise<boolean> => {
         const channelId = _slack.getChannelForSession(sessionName);
-        if (!channelId) return;
+        if (!channelId) return false;
         const syntheticId = slackChannelToSyntheticId(channelId);
-        // Read from the Slack messages JSONL log (local, no API call)
         const slackLogPath = path.join(config.stateDir, 'slack-messages.jsonl');
+        let lastUserMsg: { text?: string } | null = null;
         try {
           const content = fs.readFileSync(slackLogPath, 'utf-8');
           const lines = content.trim().split('\n').slice(-10);
@@ -4311,19 +4337,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             try {
               const msg = JSON.parse(lines[i]);
               if (msg.channelId === channelId) {
-                if (msg.fromUser) {
-                  console.log(`[CompactionResume] Watchdog detected compaction-idle, Slack channel ${channelId} has unanswered message — activating triage`);
-                  _triageOrch3.activate(syntheticId, sessionName, 'watchdog', msg.text || 'message after compaction', Date.now()).catch(err => {
-                    console.warn(`[CompactionResume] Triage activation failed for Slack channel ${channelId}:`, err);
-                  });
-                }
-                break; // Only check the most recent message for this channel
+                if (msg.fromUser) lastUserMsg = msg;
+                break;
               }
-            } catch { /* skip malformed line */ }
+            } catch { /* skip malformed */ }
           }
-        } catch { /* log file doesn't exist — no Slack messages */ }
-      });
-      console.log(pc.green('  Compaction auto-resume wired to watchdog for Slack channels'));
+        } catch { /* no log */ }
+        if (!lastUserMsg) return false;
+        const text = lastUserMsg.text || 'message after compaction';
+        console.log(`[CompactionResume] (${triggerLabel}) Slack channel ${channelId} has unanswered message — recovering`);
+        if (triageOrchestrator) {
+          try {
+            await triageOrchestrator.activate(syntheticId, sessionName, 'watchdog', text, Date.now());
+            return true;
+          } catch (err) {
+            console.warn(`[CompactionResume] Slack orchestrator failed, falling back to direct inject:`, err);
+          }
+        }
+        const ok = sessionManager.injectMessage(sessionName, text);
+        if (ok) {
+          console.log(`[CompactionResume] (${triggerLabel}) Slack direct re-inject OK for channel ${channelId}`);
+          return true;
+        }
+        return false;
+      };
+      (globalThis as Record<string, unknown>).__instarSlackCompactionResume = slackRecover;
+      console.log(pc.green('  Compaction auto-resume registered (Slack channels)'));
     }
 
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;

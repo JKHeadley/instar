@@ -19,6 +19,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
+    // Default-on so SessionWatchdog runs everywhere — required for the
+    // compaction-idle polling fallback to actually fire.
+    watchdog: {
+      enabled: true,
+    },
     promptGate: {
       enabled: true,
       autoApprove: {
