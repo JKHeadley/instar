@@ -379,6 +379,29 @@ describe('MessageSentinel', () => {
       expect(llmCalled).toBe(true);
     });
 
+    it('LLM prompt disambiguates "hold on" with substantive content as normal (regression: cluster-messagesentinel-llm-classifier)', async () => {
+      let promptReceived = '';
+      sentinel = new MessageSentinel({
+        intelligence: {
+          evaluate: async (prompt) => {
+            promptReceived = prompt;
+            return 'normal';
+          },
+        },
+      });
+
+      // This is the exact bug report scenario: long message starting with "OK hold on"
+      // followed by substantive disagreement — should be classified as normal
+      const result = await sentinel.classify(
+        "OK hold on I don't think that's how it works either. I'm pretty sure the algorithm is always optimizing."
+      );
+      expect(result.category).toBe('normal');
+      expect(result.method).toBe('llm');
+      // Verify the prompt includes disambiguation guidance
+      expect(promptReceived).toContain('substantive content');
+      expect(promptReceived).toContain('prefer normal');
+    });
+
     it('LLM prompt treats "hold on let me think" as normal example — not pause (regression: cluster-messagesentinel-llm-classifier)', async () => {
       let promptReceived = '';
       sentinel = new MessageSentinel({

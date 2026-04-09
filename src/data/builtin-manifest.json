@@ -1,7 +1,7 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-04-08T23:54:44.922Z",
+  "generatedAt": "2026-04-09T01:11:28.053Z",
   "instarVersion": "0.28.8",
   "entryCount": 185,
   "entries": {
@@ -1432,7 +1432,7 @@
       "type": "subsystem",
       "domain": "scheduling",
       "sourcePath": "src/scheduler/JobScheduler.ts",
-      "contentHash": "92ae436e47867c18c3c26d448acfa935dd2396e79e6f31bd1358189214a4d885",
+      "contentHash": "e66b2c03ede730db168345925a11c92e2bcbfaeb09bb45d35b24d620b49db0cf",
       "since": "2025-01-01"
     },
     "subsystem:project-mapper": {
