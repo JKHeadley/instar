@@ -5916,6 +5916,10 @@
           </div>
         </div>
         <div class="feat-detail-description" style="font-size:14px;line-height:1.6;max-width:700px">${esc(f.fullDescription || f.oneLiner || f.description || '')}</div>
+        <div class="feat-detail-section">
+          <div class="feat-detail-section-title">Live Status</div>
+          <div id="featLiveStatus-${esc(f.id)}">${renderLoadingState('Loading status...')}</div>
+        </div>
         ${dataHtml}
         ${reversibilityHtml}
         <div class="feat-detail-section">
@@ -5923,8 +5927,114 @@
           <div id="featReports-${esc(f.id)}">${renderLoadingState('Loading reports...')}</div>
         </div>
       `;
-      // Load related reports
+      // Load live status and related reports
+      loadFeatureLiveStatus(f.id);
       loadFeatureReports(f.id, f.name);
+    }
+
+    // Map feature IDs to their operational data endpoints
+    const FEATURE_STATUS_MAP = {
+      'threadline-relay': async () => {
+        const data = await apiFetch('/listener/health');
+        const state = data.state || 'unknown';
+        const dot = state === 'connected' ? 'var(--accent)' : 'var(--text-dim)';
+        return `<div class="net-status">
+          <div class="net-status-row"><span class="net-status-label">Daemon</span><span class="net-status-value"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dot};margin-right:6px"></span>${esc(state)}</span></div>
+          ${data.pid ? `<div class="net-status-row"><span class="net-status-label">PID</span><span class="net-status-value">${data.pid}</span></div>` : ''}
+          ${data.uptime != null ? `<div class="net-status-row"><span class="net-status-label">Uptime</span><span class="net-status-value">${formatUptimeClient(data.uptime)}</span></div>` : ''}
+          <div class="net-status-row"><span class="net-status-label">Messages In</span><span class="net-status-value">${data.msgsIn ?? 0}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Messages Out</span><span class="net-status-value">${data.msgsOut ?? 0}</span></div>
+          ${data.disconnects10m ? `<div class="net-status-row"><span class="net-status-label">Disconnects (10m)</span><span class="net-status-value" style="color:var(--orange)">${data.disconnects10m}</span></div>` : ''}
+        </div>`;
+      },
+      'external-operation-gate': async () => {
+        const trust = await apiFetch('/trust');
+        const ops = await apiFetch('/operations/log').catch(() => []);
+        const opsList = Array.isArray(ops) ? ops : (ops.operations || []);
+        const g = trust.global || {};
+        const services = trust.services || {};
+        const svcKeys = Object.keys(services);
+        let html = `<div class="net-status">
+          <div class="net-status-row"><span class="net-status-label">Trust Floor</span><span class="net-status-value">${esc(g.floor || 'unknown')}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Maturity</span><span class="net-status-value">${Math.round((g.maturity || 0) * 100)}%</span></div>
+          <div class="net-status-row"><span class="net-status-label">Operations Logged</span><span class="net-status-value">${opsList.length}</span></div>
+          ${svcKeys.length > 0 ? `<div class="net-status-row"><span class="net-status-label">Services Tracked</span><span class="net-status-value">${svcKeys.length}</span></div>` : ''}
+        </div>`;
+        if (svcKeys.length > 0) {
+          html += '<div class="trust-grid" style="margin-top:10px">' + svcKeys.map(k => {
+            const svc = services[k];
+            return `<div class="trust-card"><div class="trust-card-name">${esc(k)}</div><div class="trust-card-level">${esc(svc.level || svc.trust || '?')}</div></div>`;
+          }).join('') + '</div>';
+        }
+        return html;
+      },
+      'evolution-system': async () => {
+        const data = await apiFetch('/evolution');
+        const l = data.learnings || {};
+        const e = data.evolution || {};
+        return `<div class="net-status">
+          <div class="net-status-row"><span class="net-status-label">Learnings</span><span class="net-status-value">${l.totalLearnings || 0} (${l.pending || 0} pending)</span></div>
+          <div class="net-status-row"><span class="net-status-label">Proposals</span><span class="net-status-value">${e.totalProposals || 0}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Gaps</span><span class="net-status-value">${(data.gaps || {}).totalGaps || 0}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Actions</span><span class="net-status-value">${(data.actions || {}).totalActions || 0}</span></div>
+        </div>`;
+      },
+      'cloudflare-tunnel': async () => {
+        const data = await apiFetch('/tunnel');
+        return `<div class="net-status">
+          <div class="net-status-row"><span class="net-status-label">Status</span><span class="net-status-value" style="color:${data.running ? 'var(--accent)' : 'var(--text-dim)'}">${data.running ? 'Running' : 'Stopped'}</span></div>
+          ${data.url ? `<div class="net-status-row"><span class="net-status-label">URL</span><span class="net-status-value" style="font-size:12px;word-break:break-all">${esc(data.url)}</span></div>` : ''}
+          ${data.type ? `<div class="net-status-row"><span class="net-status-label">Type</span><span class="net-status-value">${esc(data.type)}</span></div>` : ''}
+        </div>`;
+      },
+      'feedback-system': async () => {
+        const data = await apiFetch('/feedback');
+        const items = data.feedback || [];
+        const forwarded = items.filter(f => f.forwarded).length;
+        const pending = items.length - forwarded;
+        return `<div class="net-status">
+          <div class="net-status-row"><span class="net-status-label">Total Items</span><span class="net-status-value">${items.length}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Forwarded</span><span class="net-status-value" style="color:var(--accent)">${forwarded}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Pending</span><span class="net-status-value" ${pending > 0 ? 'style="color:var(--orange)"' : ''}>${pending}</span></div>
+        </div>`;
+      },
+      'git-backup': async () => {
+        const health = await apiFetch('/health');
+        return `<div class="net-status">
+          <div class="net-status-row"><span class="net-status-label">Server Version</span><span class="net-status-value">${esc(health.version || '?')}</span></div>
+          <div class="net-status-row"><span class="net-status-label">Uptime</span><span class="net-status-value">${esc(health.uptimeHuman || '?')}</span></div>
+        </div>`;
+      },
+    };
+
+    async function loadFeatureLiveStatus(featureId) {
+      const el = document.getElementById('featLiveStatus-' + featureId);
+      if (!el) return;
+      const loader = FEATURE_STATUS_MAP[featureId];
+      if (!loader) {
+        // No live data endpoint for this feature — show subsystem status from /systems/status
+        try {
+          if (systemsData) {
+            const cap = (systemsData.activeCapabilities || []).find(c =>
+              c.id === featureId || c.label?.toLowerCase().includes(featureId.split('-')[0])
+            );
+            if (cap) {
+              el.innerHTML = `<div class="net-status">
+                <div class="net-status-row"><span class="net-status-label">Status</span><span class="net-status-value" style="color:${cap.status === 'error' ? 'var(--red)' : 'var(--accent)'}">${esc(cap.status || 'unknown')}</span></div>
+                <div class="net-status-row"><span class="net-status-label">Summary</span><span class="net-status-value">${esc(cap.metric || '')}</span></div>
+              </div>`;
+              return;
+            }
+          }
+          el.innerHTML = '<div style="font-size:13px;color:var(--text-dim)">No live status data available for this feature</div>';
+        } catch { el.innerHTML = ''; }
+        return;
+      }
+      try {
+        el.innerHTML = await loader();
+      } catch (e) {
+        el.innerHTML = '<div style="font-size:13px;color:var(--text-dim)">Could not load live status</div>';
+      }
     }
 
     async function loadFeatureReports(featureId, featureName) {
