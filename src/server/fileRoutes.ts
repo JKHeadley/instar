@@ -18,7 +18,7 @@ import type { InstarConfig, FileViewerConfig } from '../core/types.js';
 
 const DEFAULT_FILE_VIEWER_CONFIG: FileViewerConfig = {
   enabled: true,
-  allowedPaths: ['.claude/', 'docs/'],
+  allowedPaths: ['./'],
   editablePaths: [],
   maxFileSize: 1_048_576, // 1MB
   maxEditableFileSize: 204_800, // 200KB
