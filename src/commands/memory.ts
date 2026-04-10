@@ -158,6 +158,10 @@ export async function memoryExport(opts: ExportOptions): Promise<void> {
 
       if (opts.output) {
         const result = exporter.write(opts.output);
+        if (result.skipped) {
+          console.log(pc.yellow(`Skipped: 0 entities — not overwriting existing ${result.filePath}`));
+          return;
+        }
         console.log(pc.green(`Exported ${result.entityCount} entities to ${result.filePath}`));
         console.log(`  Domains:  ${result.domainCount}`);
         console.log(`  Excluded: ${result.excludedCount} (below confidence threshold)`);

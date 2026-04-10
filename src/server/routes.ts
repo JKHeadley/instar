@@ -1195,6 +1195,10 @@ export function createRoutes(ctx: RouteContext): Router {
       const filePath = req.body?.filePath;
       if (filePath) {
         const result = exporter.write(filePath);
+        if (result.skipped) {
+          res.json({ ...result, warning: 'Write skipped: 0 entities would overwrite existing MEMORY.md' });
+          return;
+        }
         // Also write a JSON snapshot alongside the MEMORY.md export
         try { ctx.semanticMemory.writeSnapshot(); } catch { /* non-critical */ }
         res.json(result);

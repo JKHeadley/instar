@@ -293,6 +293,35 @@ describe('MemoryExporter', () => {
     expect(result.markdown).toContain('*Tags: alpha, beta*');
   });
 
+  // 16a. write() skips overwrite when 0 entities and file exists
+  it('skips writing when 0 entities and MEMORY.md already exists', () => {
+    const outPath = path.join(setup.dir, 'MEMORY.md');
+    const curatedContent = '# My Agent Memory\n\n## Key Facts\n- User is Teagan\n- Org is ConsciousnessHub\n';
+    fs.writeFileSync(outPath, curatedContent, 'utf-8');
+
+    // Export with empty database — should NOT overwrite
+    const exporter = new MemoryExporter({ semanticMemory: setup.memory });
+    const result = exporter.write(outPath);
+
+    expect(result.skipped).toBe(true);
+    expect(result.entityCount).toBe(0);
+    expect(result.fileSizeBytes).toBe(0);
+
+    // Original content preserved
+    const content = fs.readFileSync(outPath, 'utf-8');
+    expect(content).toBe(curatedContent);
+  });
+
+  // 16b. write() creates file when 0 entities but no existing file
+  it('writes when 0 entities and no existing file', () => {
+    const outPath = path.join(setup.dir, 'new-MEMORY.md');
+    const exporter = new MemoryExporter({ semanticMemory: setup.memory });
+    const result = exporter.write(outPath);
+
+    expect(result.skipped).toBeUndefined();
+    expect(fs.existsSync(outPath)).toBe(true);
+  });
+
   // 16. ExportResult metadata accuracy
   it('returns accurate metadata in ExportResult', () => {
     seedEntities(setup.memory);

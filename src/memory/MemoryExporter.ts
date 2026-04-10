@@ -56,6 +56,8 @@ export interface WriteResult extends ExportResult {
   filePath: string;
   /** File size in bytes */
   fileSizeBytes: number;
+  /** Whether the write was skipped (e.g., 0 entities would wipe existing content) */
+  skipped?: boolean;
 }
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -156,9 +158,23 @@ export class MemoryExporter {
 
   /**
    * Generate and write MEMORY.md to a file path.
+   * If SemanticMemory has 0 entities, the write is skipped to avoid
+   * overwriting curated MEMORY.md content with an empty stub.
    */
   write(filePath: string): WriteResult {
     const result = this.generate();
+
+    // Guard: never overwrite existing MEMORY.md with empty content.
+    // When SemanticMemory has 0 entities (e.g., index not built yet),
+    // writing would wipe curated content with just a header + footer.
+    if (result.entityCount === 0 && fs.existsSync(filePath)) {
+      return {
+        ...result,
+        filePath,
+        fileSizeBytes: 0,
+        skipped: true,
+      };
+    }
 
     // Ensure parent directory exists
     const dir = path.dirname(filePath);
