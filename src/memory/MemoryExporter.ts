@@ -160,6 +160,14 @@ export class MemoryExporter {
   write(filePath: string): WriteResult {
     const result = this.generate();
 
+    // Guard: never overwrite an existing file with empty export.
+    // If SemanticMemory has 0 entities (e.g. never populated, migration incomplete),
+    // writing would destroy manually-curated MEMORY.md content.
+    if (result.entityCount === 0 && fs.existsSync(filePath)) {
+      const fileSizeBytes = fs.statSync(filePath).size;
+      return { ...result, filePath, fileSizeBytes };
+    }
+
     // Ensure parent directory exists
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) {

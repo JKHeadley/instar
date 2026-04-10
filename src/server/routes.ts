@@ -1225,6 +1225,10 @@ export function createRoutes(ctx: RouteContext): Router {
       const filePath = req.body?.filePath;
       if (filePath) {
         const result = exporter.write(filePath);
+        if (result.entityCount === 0) {
+          res.json({ ...result, skipped: true, reason: 'SemanticMemory has 0 entities — existing file preserved' });
+          return;
+        }
         // Also write a JSON snapshot alongside the MEMORY.md export
         try { ctx.semanticMemory.writeSnapshot(); } catch { /* non-critical */ }
         res.json(result);
