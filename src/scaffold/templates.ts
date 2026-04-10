@@ -373,7 +373,7 @@ curl -X POST http://localhost:${port}/feedback \\
   -d '{"type":"bug","title":"Short description","description":"Full details with context"}'
 \`\`\`
 
-This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`.
+This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`, \`hallucination\`.
 
 **NEVER use \`gh issue\`, \`gh api\`, or GitHub CLI to file issues.** The feedback API is my channel. It stores a local receipt, forwards upstream, and tracks delivery. I can also:
 - View submitted feedback: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback\`
@@ -910,7 +910,7 @@ curl -s -X POST http://localhost:${port}/feedback \\
   -d '{"type":"bug","title":"CONCISE_TITLE","description":"FULL_CONTEXT_WITH_ERROR_MESSAGES"}'
 \`\`\`
 
-Types: \`bug\`, \`feature\`, \`improvement\`, \`question\`
+Types: \`bug\`, \`feature\`, \`improvement\`, \`question\`, \`hallucination\`
 
 **Do not wait for the user to notice.** If a hook throws an error, report it. If a job fails, report it. If the server returns unexpected data, report it. You are not just using instar — you are part of its immune system.
 

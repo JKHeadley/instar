@@ -4009,7 +4009,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const validTypes = ['bug', 'feature', 'improvement', 'question', 'other'];
+    const validTypes = ['bug', 'feature', 'improvement', 'question', 'hallucination', 'other'];
     const feedbackType = validTypes.includes(type) ? type : 'other';
 
     // Semantic quality validation

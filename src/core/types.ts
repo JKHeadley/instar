@@ -553,7 +553,7 @@ export interface FeedbackItem {
   /** Unique feedback ID */
   id: string;
   /** Feedback type */
-  type: 'bug' | 'feature' | 'improvement' | 'question' | 'other';
+  type: 'bug' | 'feature' | 'improvement' | 'question' | 'hallucination' | 'other';
   /** Short title/summary */
   title: string;
   /** Detailed description */

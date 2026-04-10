@@ -183,10 +183,13 @@ export class SendGateway {
     }
 
     // ── Stage 3: CoherenceGate LLM review (fail-open, conditional) ──
+    // Run LLM review for external messages that are either >50 chars OR contain URLs.
+    // The URL check closes a gap where short messages with fabricated URLs bypassed review.
+    const containsUrl = /https?:\/\/\S+/.test(request.message);
     const shouldRunLLM = (
       this.coherenceGate &&
       isExternal &&
-      request.message.length > 50
+      (request.message.length > 50 || containsUrl)
     );
 
     if (shouldRunLLM) {
