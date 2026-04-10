@@ -4,16 +4,15 @@
 
 ## What Changed
 
-- Replaced all shell-dependent npm calls in server startup (better-sqlite3 auto-rebuild) with shell-free alternatives using npm's CLI JS directly via Node.js. Fixes "spawnSync /bin/sh ENOENT" failures in minimal/containerized environments.
-- Added findNpmCli helper that locates npm's entry point without requiring a shell.
-- Affects ensureSqliteBindings preflight and TopicMemory auto-rebuild fallback.
+- The /semantic/export-memory endpoint no longer overwrites MEMORY.md when SemanticMemory has 0 entities. Previously, an empty export would destroy manually-curated memory content. Now skips the write and returns existing file metadata with a skipped flag.
+- MemoryExporter.write() guards against empty-entity overwrites at the class level.
 
 ## What to Tell Your User
 
-- **Better startup reliability**: "Agents running in Docker or minimal Linux environments should no longer see memory system degradation at startup. The native module rebuild now works without requiring a system shell."
+- **Memory file protection**: "Your MEMORY.md is now safe from accidental overwrites. If the knowledge graph hasn't been populated yet, the export will leave your existing memory file untouched instead of replacing it with an empty template."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Shell-free native module rebuild | Automatic — no user action needed |
+| Empty-export guard | Automatic — no user action needed |
