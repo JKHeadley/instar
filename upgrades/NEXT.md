@@ -8,10 +8,12 @@
 
 ## What Changed
 
-- `/messages/relay-agent` now awaits `ThreadlineRouter.handleInboundMessage` and returns the real outcome (`spawned`, `resumed`, `injected`, `queued`, `error`) instead of fire-and-forget with false `{ok:true}`.
-- `ThreadlineRouter` mints a UUID threadId for first-contact messages without one, routing them through `spawnNewThread` instead of returning `{handled:false}`.
-- Reply waiters rekeyed by threadId (prevents same-name agent collisions). Self-guard compares fingerprints. Ambiguous targets fail loudly with fingerprint-qualifier hint.
-- `ThreadlineRouter` tries `MessageDelivery.deliverToSession` (tmux send-keys) before falling back to spawn/resume — messages reach already-running sessions without spawning a new process.
+<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
+<!-- Write this for the AGENT — they need to understand the system deeply. -->
+
+- Replaced all shell-dependent npm calls in server startup (better-sqlite3 auto-rebuild) with shell-free alternatives using npm's CLI JS directly via Node.js. Fixes "spawnSync /bin/sh ENOENT" failures in minimal/containerized environments.
+- Added findNpmCli helper that locates npm's entry point without requiring a shell.
+- Affects ensureSqliteBindings preflight and TopicMemory auto-rebuild fallback.
 
 ## What to Tell Your User
 
@@ -28,13 +30,10 @@
 <!-- CORRECT style: "I can turn that on for you" not "set X to false"  -->
 <!-- The agent relays this to their user — keep it human.              -->
 
-- **Agent-to-agent messaging fixed**: "Messages between agents now actually reach the other side. First-contact messages work, same-name agents on different machines no longer collide, and messages can reach agents who already have an open session."
+- **Better startup reliability**: "Agents running in Docker or minimal Linux environments should no longer see memory system degradation at startup. The native module rebuild now works without requiring a system shell."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Honest delivery status | Automatic — send status now reports spawned/resumed/injected/queued instead of always delivered |
-| First-contact messaging | Automatic — no threadId needed on first message |
-| Same-name disambiguation | Use name:fingerprintPrefix format when multiple agents share a name |
-| Live-session injection | Automatic — messages try injection before spawning |
+| Shell-free native module rebuild | Automatic — no user action needed |
