@@ -5193,7 +5193,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | undefined;
     let unifiedTrust: UnifiedTrustSystem | undefined;
     /** Shared reply waiters for threadline waitForReply support */
-    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; timer: ReturnType<typeof setTimeout> }>();
+    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>();
     try {
       const threadline = await bootstrapThreadline({
         agentName: config.projectName,
@@ -5273,27 +5273,31 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Check if this message resolves a pending waitForReply request.
           // Skip auto-ack messages (they're from us, not a real reply).
-          // Try both fingerprint and agent name as keys — the waiter is keyed by
-          // agent name (from relay-send), but gate-passed provides the fingerprint.
+          // PR-3: Waiters are now keyed by threadId (unique per conversation)
+          // rather than sender fingerprint or agent name. Fall back to the
+          // legacy fingerprint/name lookup only if no threadId is present,
+          // for compatibility with older senders.
           const isAutoAck = textContent.startsWith('Message received.') || textContent.startsWith('Message received,');
-          let waiter = threadlineReplyWaiters.get(senderFingerprint);
+          let waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
           if (!waiter) {
-            // Resolve fingerprint → agent name via known-agents cache
-            const resolvedName = (() => {
-              try {
-                const kaPath = path.join(config.stateDir, 'threadline', 'known-agents.json');
-                const kaData = JSON.parse(fs.readFileSync(kaPath, 'utf-8'));
-                const agents = kaData.agents ?? kaData;
-                if (Array.isArray(agents)) {
-                  // Check publicKey field for fingerprint match
-                  const match = agents.find((a: { publicKey?: string; name?: string }) =>
-                    a.publicKey === senderFingerprint || a.publicKey?.startsWith(senderFingerprint));
-                  return match?.name ?? null;
-                }
-                return null;
-              } catch { return null; }
-            })();
-            if (resolvedName) waiter = threadlineReplyWaiters.get(resolvedName);
+            // Legacy fallback: try by sender fingerprint, then by resolved name
+            waiter = threadlineReplyWaiters.get(senderFingerprint);
+            if (!waiter) {
+              const resolvedName = (() => {
+                try {
+                  const kaPath = path.join(config.stateDir, 'threadline', 'known-agents.json');
+                  const kaData = JSON.parse(fs.readFileSync(kaPath, 'utf-8'));
+                  const agents = kaData.agents ?? kaData;
+                  if (Array.isArray(agents)) {
+                    const match = agents.find((a: { publicKey?: string; name?: string }) =>
+                      a.publicKey === senderFingerprint || a.publicKey?.startsWith(senderFingerprint));
+                    return match?.name ?? null;
+                  }
+                  return null;
+                } catch { return null; }
+              })();
+              if (resolvedName) waiter = threadlineReplyWaiters.get(resolvedName);
+            }
           }
           if (waiter && !isAutoAck) {
             waiter.resolve(textContent);

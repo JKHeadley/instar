@@ -115,7 +115,7 @@ export class AgentServer {
     threadlineRouter?: import('../threadline/ThreadlineRouter.js').ThreadlineRouter;
     handshakeManager?: import('../threadline/HandshakeManager.js').HandshakeManager;
     threadlineRelayClient?: import('../threadline/client/ThreadlineClient.js').ThreadlineClient;
-    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; timer: ReturnType<typeof setTimeout> }>;
+    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
     telemetryHeartbeat?: import('../monitoring/TelemetryHeartbeat.js').TelemetryHeartbeat;

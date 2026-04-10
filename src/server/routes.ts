@@ -155,8 +155,10 @@ export interface RouteContext {
   discoveryEvaluator: import('../core/DiscoveryEvaluator.js').DiscoveryEvaluator | null;
   unifiedTrust: UnifiedTrustSystem | null;
   /** Pending reply waiters for threadline relay-send waitForReply support.
-   *  Key: sender fingerprint, Value: resolve callback with reply text */
-  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; timer: ReturnType<typeof setTimeout> }>;
+   *  Key: threadId (UUID — unique per conversation, unlike agent names which
+   *  can collide when multiple agents share a name). Value: resolve callback
+   *  with reply text. */
+  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
   startTime: Date;
 }
 
@@ -7987,7 +7989,10 @@ export function createRoutes(ctx: RouteContext): Router {
         // Check if this message resolves a pending waitForReply request.
         // Local delivery bypasses the relay client's gate-passed event, so we
         // must check reply waiters here directly.
-        if (senderAgent && ctx.threadlineReplyWaiters.size > 0) {
+        // PR-3: resolve waiter by threadId (unique) rather than sender
+        // agent name (which may collide across multiple same-named agents).
+        const inboundThreadId = envelope.message?.threadId;
+        if (inboundThreadId && ctx.threadlineReplyWaiters.size > 0) {
           let textContent: string | undefined;
           const body = envelope.message?.body;
           if (typeof body === 'string') textContent = body;
@@ -7996,9 +8001,9 @@ export function createRoutes(ctx: RouteContext): Router {
           }
           if (textContent) {
             const isAutoAck = textContent.startsWith('Message received.') || textContent.startsWith('Message received,');
-            const waiter = ctx.threadlineReplyWaiters.get(senderAgent);
+            const waiter = ctx.threadlineReplyWaiters.get(inboundThreadId);
             if (waiter && !isAutoAck) {
-              console.log(`[relay-agent] Resolved reply waiter for ${senderAgent}`);
+              console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
               waiter.resolve(textContent);
             }
           }
@@ -8500,24 +8505,28 @@ export function createRoutes(ctx: RouteContext): Router {
   function waitForThreadlineReply(
     routeCtx: RouteContext,
     senderAgent: string,
-    _threadId: string,
+    threadId: string,
     timeoutSec?: number,
   ): Promise<string | null> {
     const timeout = Math.min(Math.max(timeoutSec ?? 120, 5), 300) * 1000; // 5s–300s, default 120s
 
+    // PR-3: Waiters are keyed by threadId (unique per conversation) rather
+    // than sender agent name (which can collide when multiple agents share
+    // a name — e.g., two "luna" agents on different machines).
     return new Promise<string | null>((resolve) => {
       const timer = setTimeout(() => {
-        routeCtx.threadlineReplyWaiters.delete(senderAgent);
+        routeCtx.threadlineReplyWaiters.delete(threadId);
         resolve(null);
       }, timeout);
 
-      routeCtx.threadlineReplyWaiters.set(senderAgent, {
+      routeCtx.threadlineReplyWaiters.set(threadId, {
         resolve: (reply: string) => {
           clearTimeout(timer);
-          routeCtx.threadlineReplyWaiters.delete(senderAgent);
+          routeCtx.threadlineReplyWaiters.delete(threadId);
           resolve(reply);
         },
-        threadId: _threadId,
+        threadId,
+        senderAgent,
         timer,
       });
     });
@@ -8577,19 +8586,53 @@ export function createRoutes(ctx: RouteContext): Router {
           a.name === targetName || a.name?.toLowerCase() === targetName?.toLowerCase()
         );
 
-        // If multiple same-named agents, disambiguate by fingerprint prefix
+        // PR-3: Fingerprint-based disambiguation. If multiple known agents
+        // share a name, require a `name:fpPrefix` qualifier to pick one.
+        // Previously this silently fell through to the relay, which then
+        // also usually failed — masking the root cause.
         let localTarget = nameMatches.length === 1 ? nameMatches[0] : undefined;
         if (nameMatches.length > 1 && targetFpPrefix) {
           localTarget = nameMatches.find(a => {
             const fp = a.fingerprint || a.publicKey?.substring(0, 32);
             return fp?.toLowerCase().startsWith(targetFpPrefix!);
           });
+          if (!localTarget) {
+            res.status(409).json({
+              success: false,
+              error: `No agent named "${targetName}" matches fingerprint prefix "${targetFpPrefix}". Known: ${nameMatches.map(a => `${a.name}:${(a.fingerprint || a.publicKey || '').substring(0, 8)}`).join(', ')}`,
+            });
+            return;
+          }
         } else if (nameMatches.length > 1 && !targetFpPrefix) {
-          // Ambiguous — skip local delivery, let relay handle it
-          localTarget = undefined;
+          const hints = nameMatches.map(a => {
+            const fp = (a.fingerprint || a.publicKey || '').substring(0, 8);
+            return `"${a.name}:${fp}"`;
+          }).join(', ');
+          res.status(409).json({
+            success: false,
+            error: `Ambiguous target: ${nameMatches.length} known agents named "${targetName}". Use one of: ${hints}`,
+          });
+          return;
         }
 
-        if (localTarget?.port && localTarget.name !== ctx.config.projectName) {
+        // PR-3: Self-guard by fingerprint when available, falling back to
+        // name comparison. This prevents self-delivery when the agent's
+        // name happens to match one of its own aliases in known-agents.json.
+        let isSelfTarget = localTarget?.name === ctx.config.projectName;
+        if (localTarget && !isSelfTarget) {
+          try {
+            const selfIdPath = path.join(ctx.config.stateDir, 'threadline', 'identity.json');
+            if (fs.existsSync(selfIdPath)) {
+              const selfId = JSON.parse(fs.readFileSync(selfIdPath, 'utf-8'));
+              const selfFp = (selfId.fingerprint || '').toLowerCase();
+              const targetFp = (localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || '').toLowerCase();
+              if (selfFp && targetFp && selfFp === targetFp) {
+                isSelfTarget = true;
+              }
+            }
+          } catch { /* @silent-fallback-ok — identity.json read is best-effort */ }
+        }
+        if (localTarget?.port && !isSelfTarget) {
           // Check if the local agent is actually running
           try {
             const healthResp = await fetch(`http://localhost:${localTarget.port}/threadline/health`, {

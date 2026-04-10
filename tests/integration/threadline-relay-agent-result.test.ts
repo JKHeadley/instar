@@ -203,6 +203,66 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
     expect(res.body.threadline).toEqual({ handled: false });
   });
 
+  // ── PR-3: waiters re-keyed by threadId ─────────────────────────
+
+  it('resolves reply waiter by threadId, not sender agent name', async () => {
+    const routeCtx = (server as any).routeContext as { threadlineReplyWaiters: Map<string, any> };
+    expect(routeCtx.threadlineReplyWaiters).toBeDefined();
+
+    const threadId = crypto.randomUUID();
+    let resolvedReply: string | null = null;
+    const waiterPromise = new Promise<void>((done) => {
+      routeCtx.threadlineReplyWaiters.set(threadId, {
+        resolve: (reply: string) => {
+          resolvedReply = reply;
+          routeCtx.threadlineReplyWaiters.delete(threadId);
+          done();
+        },
+        threadId,
+        senderAgent: 'other-agent',
+        timer: setTimeout(() => { /* no-op for test */ }, 10_000) as ReturnType<typeof setTimeout>,
+      });
+    });
+
+    const env = validEnvelope();
+    env.message.threadId = threadId;
+    env.message.body = 'actual reply content';
+    await request(app)
+      .post('/messages/relay-agent')
+      .set('Authorization', `Bearer ${relayAgentToken}`)
+      .send(env)
+      .expect(200);
+
+    await Promise.race([waiterPromise, new Promise((_, rej) => setTimeout(() => rej(new Error('waiter never resolved')), 2000))]);
+    expect(resolvedReply).toBe('actual reply content');
+    expect(routeCtx.threadlineReplyWaiters.has(threadId)).toBe(false);
+  });
+
+  it('does not resolve waiter for a different threadId even if sender matches', async () => {
+    const routeCtx = (server as any).routeContext as { threadlineReplyWaiters: Map<string, any> };
+    const waiterThreadId = crypto.randomUUID();
+    let resolved = false;
+    routeCtx.threadlineReplyWaiters.set(waiterThreadId, {
+      resolve: () => { resolved = true; },
+      threadId: waiterThreadId,
+      senderAgent: 'other-agent',
+      timer: setTimeout(() => {}, 10_000) as ReturnType<typeof setTimeout>,
+    });
+
+    // Inbound message from same sender, DIFFERENT threadId — must not resolve
+    const env = validEnvelope();
+    env.message.threadId = crypto.randomUUID();
+    await request(app)
+      .post('/messages/relay-agent')
+      .set('Authorization', `Bearer ${relayAgentToken}`)
+      .send(env)
+      .expect(200);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(resolved).toBe(false);
+    routeCtx.threadlineReplyWaiters.delete(waiterThreadId);
+  });
+
   it('still returns 200 if the router throws, with error surfaced', async () => {
     handleInboundMessage.mockRejectedValueOnce(new Error('boom'));
     const res = await request(app)
