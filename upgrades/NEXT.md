@@ -4,15 +4,18 @@
 
 ## What Changed
 
-- The /semantic/export-memory endpoint no longer overwrites MEMORY.md when SemanticMemory has 0 entities. Previously, an empty export would destroy manually-curated memory content. Now skips the write and returns existing file metadata with a skipped flag.
-- MemoryExporter.write() guards against empty-entity overwrites at the class level.
+- Fixed dashboard apiFetch to properly pass method, headers, and body options to fetch. Feature toggles and autonomy profile changes now persist instead of silently failing as GET requests.
+- Fixed degradation-digest job gate and skill to read from the correct file path (.instar/degradations.json instead of .instar/state/degradation-events.json). The job can now actually run.
+- Fixed MemoryExporter to not overwrite existing MEMORY.md when SemanticMemory has 0 entities.
 
 ## What to Tell Your User
 
-- **Memory file protection**: "Your MEMORY.md is now safe from accidental overwrites. If the knowledge graph hasn't been populated yet, the export will leave your existing memory file untouched instead of replacing it with an empty template."
+- **Dashboard feature toggles work now**: "Feature toggles and autonomy profile changes in the dashboard now actually save. Previously they appeared to toggle but silently reverted."
+- **Degradation monitoring active**: "The degradation digest job can now run properly. It was blocked by a wrong file path since it was created."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Empty-export guard | Automatic — no user action needed |
+| Working dashboard toggles | Toggle features in the dashboard Features tab |
+| Degradation digest job | Automatic — runs every 4 hours when degradation events exist |
