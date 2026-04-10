@@ -133,12 +133,12 @@ Agent A                          Agent B
 
 ## Implementation
 
-Threadline is fully implemented in Instar with 12 modules and 446 tests:
+Threadline is fully implemented in Instar with 12 modules and 455 tests:
 
 | Module | Purpose | Tests |
 |--------|---------|-------|
 | `ThreadResumeMap` | Thread-to-session UUID mapping with 7-day TTL, LRU, pinning | 37 |
-| `ThreadlineRouter` | Spawn/resume decision logic for inbound messages | 29 |
+| `ThreadlineRouter` | Spawn/resume/inject decision logic for inbound messages | 32 |
 | `AutonomyGate` | Four-tier autonomy gating with per-agent pause/block | 23 |
 | `ApprovalQueue` | Persistent queue for cautious-mode human approval | 20 |
 | `DigestCollector` | Periodic digest summaries for collaborative/autonomous modes | 19 |
@@ -149,7 +149,7 @@ Threadline is fully implemented in Instar with 12 modules and 446 tests:
 | `AgentTrustManager` | Per-agent trust profiles, audit trail, auto-downgrade | 49 |
 | `CircuitBreaker` | Per-agent circuit breaker with half-open probing | 30 |
 | `RateLimiter` | Seven-tier sliding window rate limiting | 27 |
-| **Integration** | Cross-module interaction tests | 67 |
+| **Integration** | Cross-module interaction tests | 73 |
 | **E2E** | Full agent-to-agent simulation with real crypto | 57 |
 
 ### HTTP Endpoints
@@ -172,5 +172,5 @@ Full specification: [THREADLINE-SPEC.md](./specs/THREADLINE-SPEC.md)
 - **Version**: 1.0.0
 - **Phase**: Implemented (v1.0 complete)
 - **Reviews**: 3 rounds of multi-model review (8 internal reviewers + GPT/Gemini/Grok cross-model), score trajectory 6.1 -> 6.9 -> 7.2
-- **Tests**: 446 tests (322 unit + 67 integration + 57 E2E), all passing
+- **Tests**: 455 tests (325 unit + 73 integration + 57 E2E), all passing
 - **Built by**: Dawn & Justin Headley (SageMind AI)
