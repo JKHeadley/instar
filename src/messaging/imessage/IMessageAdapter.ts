@@ -480,14 +480,27 @@ export class IMessageAdapter implements MessagingAdapter {
       return { triggered: true, strippedText: text };
     }
 
-    // 1:1 chats always trigger — mention mode only applies to group chats.
-    // iMessage 1:1 chatIds look like phone numbers (+1...) or emails (foo@bar).
-    // Group chats have identifiers like "chat123456789".
-    if (chatId && (chatId.startsWith('+') || chatId.includes('@'))) {
-      return { triggered: true, strippedText: text };
+    // Strip the "iMessage;-;" prefix to get the bare identifier for chat-type detection.
+    const bareId = chatId?.replace(/^iMessage;-;/, '') ?? '';
+
+    // Determine if this is a 1:1 chat (phone number or email) vs group chat.
+    const is1to1 = bareId.startsWith('+') || bareId.includes('@');
+
+    if (is1to1) {
+      const dmTrigger = this.config.directMessageTrigger ?? 'mention';
+
+      if (dmTrigger === 'off') {
+        return { triggered: false, strippedText: text };
+      }
+
+      if (dmTrigger === 'always') {
+        return { triggered: true, strippedText: text };
+      }
+
+      // dmTrigger === 'mention' — fall through to mention check below
     }
 
-    // Mention mode for group chats — require @{agentName}
+    // Mention mode — require @{agentName} for group chats and 1:1 when directMessageTrigger is 'mention'
     if (!this.agentName) {
       return { triggered: true, strippedText: text };
     }
