@@ -153,11 +153,13 @@ export class OrphanProcessReaper extends EventEmitter {
     const orphanMaxAge = this.reaperConfig.orphanMaxAgeMs ?? DEFAULT_ORPHAN_MAX_AGE;
     const autoKill = this.reaperConfig.autoKillOrphans !== false; // default true
 
+    const serverSessionName = `${this.config.projectName}-server`;
+
     for (const orphan of orphans) {
       if (orphan.elapsedMs > orphanMaxAge && autoKill) {
         this.killProcess(orphan.pid);
-        // Also kill the tmux session if it exists
-        if (orphan.tmuxSession) {
+        // Also kill the tmux session if it exists — but NEVER the server session
+        if (orphan.tmuxSession && orphan.tmuxSession !== serverSessionName) {
           this.killTmuxSession(orphan.tmuxSession);
         }
         const msg = `Killed orphan PID ${orphan.pid} (${Math.round(orphan.rssKB / 1024)}MB, running ${this.formatDuration(orphan.elapsedMs)}, tmux: ${orphan.tmuxSession || 'none'})`;
@@ -283,10 +285,30 @@ export class OrphanProcessReaper extends EventEmitter {
 
   /**
    * Determine if a command is an actual Claude Code session (not an MCP server, etc.)
+   *
+   * IMPORTANT: Must match the claude BINARY, not substrings in file paths.
+   * A path like `/agents/demiclaude/server` contains "claude" but is NOT a Claude process.
+   * Fix for: cluster-orphanreaper-kills-server-tmux-session-via-false-positive-cl
    */
   private isClaudeCodeProcess(command: string): boolean {
-    // Actual Claude Code CLI invocations
-    if (command.includes('claude') && !command.includes('claude-')) {
+    // Known non-Claude helper processes that may appear in claude-containing paths
+    const helperProcesses = [
+      'cloudflared', 'caffeinate', 'tee', 'tail', 'cat', 'grep',
+    ];
+    // If the command starts with or is primarily a helper process, reject early
+    const cmdTrimmed = command.trimStart();
+    for (const helper of helperProcesses) {
+      if (cmdTrimmed.startsWith(helper)) return false;
+    }
+
+    // Match actual Claude CLI binary — either:
+    //   1. Command starts with "claude " or is exactly "claude"
+    //   2. Path ends with /claude (e.g., /usr/local/bin/claude)
+    //   3. npx/node running @anthropic-ai/claude-code
+    const claudeBinaryPattern = /(^|\/)claude(\s|$)/;
+    const claudeNodePattern = /@anthropic-ai\/claude-code|claude-code\/cli/;
+
+    if (claudeBinaryPattern.test(command) || claudeNodePattern.test(command)) {
       // Exclude MCP servers, helpers, etc.
       const exclusions = [
         'claude-in-chrome', 'claude-mcp', 'playwright-mcp',
@@ -294,10 +316,7 @@ export class OrphanProcessReaper extends EventEmitter {
       ];
       return !exclusions.some(e => command.includes(e));
     }
-    // node running Claude Code
-    if (command.includes('node') && command.includes('claude')) {
-      return true;
-    }
+
     return false;
   }
 
