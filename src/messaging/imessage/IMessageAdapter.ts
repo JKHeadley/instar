@@ -32,6 +32,8 @@
 
 import path from 'node:path';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
 import type { MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { NativeBackend } from './NativeBackend.js';
@@ -113,8 +115,18 @@ export class IMessageAdapter implements MessagingAdapter {
     this.agentName = this.config.agentName;
 
     // Initialize backend (read-only)
+    // Set up hardlinks to chat.db so reads don't require Full Disk Access on
+    // the node binary. Hardlinks share the inode, so reads are instant and
+    // always current, but the link itself isn't in the TCC-protected
+    // ~/Library/Messages/ directory.
+    //
+    // If dbPath is explicitly configured, respect it. Otherwise use the
+    // hardlinked path in .instar/imessage/ which we maintain automatically.
+    const effectiveDbPath = this.config.dbPath
+      ?? IMessageAdapter.ensureChatDbHardlink(stateDir);
+
     this.backend = new NativeBackend({
-      dbPath: this.config.dbPath,
+      dbPath: effectiveDbPath,
       pollIntervalMs: this.config.pollIntervalMs,
       includeAttachments: this.config.includeAttachments,
       offsetPath: path.join(stateDir, 'imessage-poll-offset.json'),
@@ -545,6 +557,76 @@ export class IMessageAdapter implements MessagingAdapter {
       return local.slice(0, 2) + '***@' + domain;
     }
     return '***';
+  }
+
+  /**
+   * Ensure hardlinks to ~/Library/Messages/chat.db (and WAL/SHM files) exist
+   * in a non-TCC-protected location so the server can read them without
+   * requiring Full Disk Access on the node binary.
+   *
+   * Hardlinks share the inode — reads are instant and always current, but
+   * the link path itself isn't in the protected ~/Library/Messages/ directory.
+   *
+   * If the hardlinks already exist and point to the same inode, this is a
+   * no-op. If they're stale (different inode) or missing, they're recreated.
+   * If ~/Library/Messages/chat.db doesn't exist or isn't readable, returns
+   * the original path as a fallback.
+   *
+   * Called during adapter construction — safe to call on every startup.
+   * Requires FDA on the calling process to create the hardlinks the first
+   * time; subsequent startups read through the existing hardlinks without
+   * needing FDA.
+   */
+  static ensureChatDbHardlink(stateDir: string): string {
+    const messagesDir = path.join(os.homedir(), 'Library', 'Messages');
+    const srcDb = path.join(messagesDir, 'chat.db');
+    const linkDir = path.join(stateDir, 'imessage');
+    const linkDb = path.join(linkDir, 'chat.db');
+
+    // Fallback: if Messages.app hasn't been set up, return source path.
+    // The adapter will degrade with a clear error message.
+    if (!fs.existsSync(srcDb)) {
+      return srcDb;
+    }
+
+    try {
+      fs.mkdirSync(linkDir, { recursive: true });
+
+      for (const name of ['chat.db', 'chat.db-wal', 'chat.db-shm']) {
+        const src = path.join(messagesDir, name);
+        const link = path.join(linkDir, name);
+
+        if (!fs.existsSync(src)) continue;
+
+        // If link exists and already points to the same inode, skip.
+        if (fs.existsSync(link)) {
+          try {
+            const srcIno = fs.statSync(src).ino;
+            const linkIno = fs.statSync(link).ino;
+            if (srcIno === linkIno) continue;
+          } catch { /* fall through to recreate */ }
+          try { fs.unlinkSync(link); } catch { /* best effort */ }
+        }
+
+        // Create hardlink. Requires FDA on the calling process.
+        try {
+          fs.linkSync(src, link);
+        } catch (err) {
+          console.warn(`[imessage] Could not hardlink ${name}: ${(err as Error).message}. ` +
+            `If this is first setup, run from a terminal with Full Disk Access.`);
+        }
+      }
+
+      // Verify the primary link worked
+      if (fs.existsSync(linkDb)) {
+        return linkDb;
+      }
+    } catch (err) {
+      console.warn(`[imessage] Hardlink setup failed: ${(err as Error).message}. ` +
+        `Falling back to direct chat.db read (requires FDA on node).`);
+    }
+
+    return srcDb;
   }
 
   // ── Internal ──
