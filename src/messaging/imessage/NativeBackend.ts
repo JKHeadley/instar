@@ -498,12 +498,45 @@ export class NativeBackend extends EventEmitter {
     transferName: string | null,
   ): string | null {
     if (!this.attachmentsDir) return null;
-    if (!srcPath || !fs.existsSync(srcPath)) return null;
+    if (!srcPath) return null;
 
+    // First try: if an external watcher (like the fswatch-based LaunchAgent)
+    // has already hardlinked the source file into attachmentsDir, find and
+    // return THAT path. We match by inode — whatever naming scheme the
+    // external watcher uses, the inode is identical to the source. This works
+    // even when the daemon has no FDA on ~/Library/Messages/Attachments/,
+    // because stat() on attachmentsDir is always allowed.
+    try {
+      if (fs.existsSync(this.attachmentsDir)) {
+        // We need the source inode to match against. Try stat on src; if that
+        // fails (EPERM), we fall back to matching by basename.
+        let srcIno: number | null = null;
+        try {
+          srcIno = fs.statSync(srcPath).ino;
+        } catch { /* no FDA, skip inode check */ }
+
+        const entries = fs.readdirSync(this.attachmentsDir);
+        const srcBase = path.basename(srcPath);
+        for (const name of entries) {
+          const candidate = path.join(this.attachmentsDir, name);
+          try {
+            const st = fs.statSync(candidate);
+            if (srcIno !== null && st.ino === srcIno) {
+              return candidate;  // perfect match by inode
+            }
+            if (srcIno === null && name.endsWith(`__${srcBase}`)) {
+              // Heuristic: external watcher prefixes with a uuid fragment
+              return candidate;
+            }
+          } catch { /* skip broken entries */ }
+        }
+      }
+    } catch { /* continue to own-create attempt */ }
+
+    // Fallback: try to create our own hardlink. Requires FDA on node.
+    if (!fs.existsSync(srcPath)) return null;
     try {
       fs.mkdirSync(this.attachmentsDir, { recursive: true });
-      // Use messageGuid + original basename for the hardlink filename.
-      // That keeps it unique per message without leaking user PII (like full paths).
       const base = transferName
         ? path.basename(transferName)
         : path.basename(srcPath);
@@ -513,7 +546,6 @@ export class NativeBackend extends EventEmitter {
         `${messageGuid}__${safeBase}`,
       );
 
-      // If target already exists pointing to the same inode, no-op.
       if (fs.existsSync(target)) {
         try {
           const srcIno = fs.statSync(srcPath).ino;
@@ -527,9 +559,8 @@ export class NativeBackend extends EventEmitter {
       return target;
     } catch (err) {
       const msg = (err as Error).message || '';
-      // Silently swallow "operation not permitted" — happens when daemon lacks
-      // FDA and can't read the Attachments dir. We'll try again next message
-      // arrival from a user-context process.
+      // Silently swallow "operation not permitted" — daemon lacks FDA.
+      // External watcher (LaunchAgent) should fill the gap.
       if (!msg.includes('EACCES') && !msg.includes('EPERM') && !msg.includes('not permitted')) {
         console.warn(`[imessage-native] Attachment hardlink failed: ${msg}`);
       }
