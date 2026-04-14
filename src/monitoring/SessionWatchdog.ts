@@ -77,8 +77,38 @@ const EXCLUDED_PATTERNS = [
   'playwright-mcp', 'playwright-persistent', '@playwright/mcp',
   'chrome-native-host', 'claude-in-chrome-mcp', 'payments-mcp',
   'mcp-remote', '/mcp/', '.mcp/', 'caffeinate', 'exa-mcp-server',
+  // Any MCP stdio server (threadline MCP, custom MCP entries, etc.)
+  // is long-running by design — it waits on stdin for the host client.
+  'mcp-stdio-entry', 'mcp-stdio.js', '/mcp-stdio',
   // Shell-snapshot sourcing is session initialization, not a stuck command
   '.claude/shell-snapshots',
+];
+
+// Commands whose job is to consume stdin from a pipeline. When they appear
+// as a "stuck" child it's almost always because zsh -c "cmd | consumer"
+// exec'd the last pipeline member into place — the consumer is waiting on
+// the upstream producer, which is the real long-running work. Before
+// escalating, check if the consumer has an active pipeline sibling.
+//
+// Regex matches the executable name (first whitespace-delimited token,
+// optionally leading path). Consumers that require a file argument to be
+// meaningful (e.g. `tail FILE`) are still flagged if a file arg is present,
+// because then they aren't reading from a pipe.
+const STDIN_CONSUMER_PATTERNS: Array<{ cmd: RegExp; requiresNoFileArg: boolean }> = [
+  { cmd: /^(?:\S*\/)?tail(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?head(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?less(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?more(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?cat(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?grep(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?sort(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?uniq(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?awk(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?sed(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?tr(?:\s|$)/, requiresNoFileArg: false },
+  { cmd: /^(?:\S*\/)?wc(?:\s|$)/, requiresNoFileArg: true },
+  { cmd: /^(?:\S*\/)?xargs(?:\s|$)/, requiresNoFileArg: false },
+  { cmd: /^(?:\S*\/)?jq(?:\s|$)/, requiresNoFileArg: true },
 ];
 
 const EXCLUDED_PREFIXES = [
@@ -239,17 +269,56 @@ export class SessionWatchdog extends EventEmitter {
     }
 
     const children = this.getChildProcesses(claudePid);
-    const stuckChild = children.find(
-      c => !this.isExcluded(c.command) &&
-           !this.temporaryExclusions.has(c.pid) &&
-           c.elapsedMs > this.stuckThresholdMs
-    );
+    const stuckChild = children.find(c => {
+      if (this.isExcluded(c.command)) return false;
+      if (this.temporaryExclusions.has(c.pid)) return false;
+      // Stdin consumers (tail, grep, sort...) get a much longer grace
+      // period. They're typically part of a pipeline where the producer
+      // is the real work, and the 3-minute default threshold is too
+      // aggressive for long-running builds, tests, or measurements.
+      const threshold = this.isStdinConsumerCommand(c.command)
+        ? Math.max(this.stuckThresholdMs, 600_000) // at least 10 minutes
+        : this.stuckThresholdMs;
+      return c.elapsedMs > threshold;
+    });
 
     if (stuckChild) {
-      // LLM gate: check if this command is legitimately long-running before escalating
-      const isStuck = await this.isCommandStuck(stuckChild.command, stuckChild.elapsedMs);
+      // Pipeline guard: if the stuck child is a pure stdin consumer (tail,
+      // grep, sort, etc.) and its process group or descendants still
+      // contain active sibling producers, the "stuck" process is just
+      // waiting for upstream output from a legitimate long-running
+      // pipeline. Skip escalation.
+      if (this.hasActivePipelineSibling(stuckChild.pid, stuckChild.command)) {
+        console.log(
+          `[Watchdog] "${tmuxSession}": ${stuckChild.command.slice(0, 60)} ` +
+          `is consuming an active pipeline — skipping escalation`,
+        );
+        this.temporaryExclusions.add(stuckChild.pid);
+        return;
+      }
+
+      // LLM gate: check if this command is legitimately long-running before escalating.
+      // Pass recent tmux output so the LLM can see what the session is actually doing,
+      // not just the (often truncated) child command name.
+      const recentOutput = this.sessionManager.captureOutput(tmuxSession, 30) ?? '';
+      const isStuck = await this.isCommandStuck(stuckChild.command, stuckChild.elapsedMs, recentOutput);
       if (!isStuck) {
         // LLM says legitimate — temporarily exclude this PID from future checks
+        this.temporaryExclusions.add(stuckChild.pid);
+        return;
+      }
+
+      // Fail-closed for stdin-consumers when the LLM isn't available or is
+      // uncertain: killing a `tail`/`grep` in an apparent pipeline has high
+      // blast radius (takes down the whole producer pipeline), so we only
+      // escalate these with explicit LLM confirmation. Without an LLM, we
+      // skip and log — a true orphaned consumer will be cleaned up when
+      // its tmux session terminates.
+      if (this.isStdinConsumerCommand(stuckChild.command) && !this.intelligence) {
+        console.log(
+          `[Watchdog] "${tmuxSession}": stdin-consumer ${stuckChild.command.slice(0, 60)} ` +
+          `without LLM gate — refusing to escalate (fail-closed for pipeline safety)`,
+        );
         this.temporaryExclusions.add(stuckChild.pid);
         return;
       }
@@ -413,15 +482,28 @@ export class SessionWatchdog extends EventEmitter {
    * Returns false if the LLM thinks it's a legitimate long-running task.
    * If no LLM is available, returns true (fail-open — stuck commands need recovery).
    */
-  private async isCommandStuck(command: string, elapsedMs: number): Promise<boolean> {
+  private async isCommandStuck(command: string, elapsedMs: number, recentOutput = ''): Promise<boolean> {
     if (!this.intelligence) return true; // No LLM → fail-open
 
     const elapsedMin = Math.round(elapsedMs / 60000);
-    const prompt = [
+    // Keep the output sample small — enough for context, not enough to blow the token budget.
+    const outputSample = recentOutput ? recentOutput.slice(-1500) : '';
+    const promptLines = [
       'You are evaluating whether a running process is stuck or legitimately long-running.',
       '',
       `Command: ${command.slice(0, 200)}`,
       `Running for: ${elapsedMin} minutes`,
+    ];
+    if (outputSample) {
+      promptLines.push(
+        '',
+        'Recent terminal output (tail of the session\'s tmux pane — shows what the agent is doing):',
+        '---',
+        outputSample,
+        '---',
+      );
+    }
+    promptLines.push(
       '',
       'Legitimate long-running commands include:',
       '- Package installs (npm install, pip install, cargo build, etc.)',
@@ -430,14 +512,19 @@ export class SessionWatchdog extends EventEmitter {
       '- Test suites (pytest, vitest, jest with many tests)',
       '- Network operations (curl large files, git clone large repos)',
       '- Interactive processes (vim, less, ssh sessions)',
+      '- Pipeline consumers (tail, grep, sort) whose producer is still running',
       '',
       'Likely stuck commands include:',
       '- Simple commands that should complete in seconds (ls, cat, echo)',
       '- Commands with no output that normally produce output quickly',
       '- Processes that appear to be waiting for input that will never come',
       '',
+      'Note: if the terminal output shows an active tool/test/build still producing results,',
+      'the command is legitimate even if the bare command name looks trivial.',
+      '',
       'Is this command stuck or legitimate? Respond with exactly one word: stuck or legitimate.',
-    ].join('\n');
+    );
+    const prompt = promptLines.join('\n');
 
     try {
       const response = await this.intelligence.evaluate(prompt, {
@@ -520,6 +607,110 @@ export class SessionWatchdog extends EventEmitter {
       // @silent-fallback-ok — process enumeration returns empty
       return [];
     }
+  }
+
+  /**
+   * Detects whether the given process is a pipeline stdin consumer (tail,
+   * grep, sort, etc.) whose process group still contains an active sibling
+   * producer. Such cases are false positives for the stuck-command detector:
+   * `zsh -c "python ... | tail -40"` execs tail into place, so the child
+   * of claude shows up as `tail -40` even though the real work is the
+   * python producer still running in the same pgid.
+   *
+   * Returns true if this PID looks like a waiting consumer in an active
+   * pipeline — in which case escalation should be skipped.
+   */
+  private hasActivePipelineSibling(pid: number, command: string): boolean {
+    // Step 1: is the command a stdin-consuming candidate at all?
+    const consumer = STDIN_CONSUMER_PATTERNS.find(p => p.cmd.test(command));
+    if (!consumer) return false;
+
+    // Step 2: if the consumer was given a file arg, it's not reading from
+    // a pipe (e.g. `tail -f /var/log/foo` genuinely tails that file).
+    if (consumer.requiresNoFileArg && this.hasFileArgument(command)) return false;
+
+    // Step 3: find the process group and peers.
+    try {
+      const pgidStr = shellExec(`ps -o pgid= -p ${pid} 2>/dev/null`).trim();
+      const pgid = parseInt(pgidStr, 10);
+
+      // Check process group peers (pipelines share pgid on macOS/Linux).
+      if (!isNaN(pgid) && pgid > 0) {
+        const peersOutput = shellExec(
+          `ps -o pid=,command= -g ${pgid} 2>/dev/null`,
+        ).trim();
+        for (const line of peersOutput.split('\n')) {
+          const match = line.trim().match(/^(\d+)\s+(.+)$/);
+          if (!match) continue;
+          const peerPid = parseInt(match[1], 10);
+          const peerCmd = match[2];
+          if (peerPid === pid) continue; // self
+          if (peerCmd.startsWith('ps ') || peerCmd.startsWith('sh -c')) continue; // our own probe
+          if (this.isExcluded(peerCmd)) continue;
+          return true;
+        }
+      }
+
+      // Fallback: also check direct descendants of the consumer PID. In
+      // some shell exec patterns the producer becomes a CHILD of the
+      // exec'd consumer rather than a pgid sibling.
+      const childPidsStr = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      if (childPidsStr) {
+        const childPids = childPidsStr.split('\n').filter(Boolean).join(',');
+        if (childPids) {
+          const childOutput = shellExec(`ps -o pid=,command= -p ${childPids} 2>/dev/null`).trim();
+          for (const line of childOutput.split('\n')) {
+            const match = line.trim().match(/^(\d+)\s+(.+)$/);
+            if (!match) continue;
+            const childCmd = match[2];
+            if (this.isExcluded(childCmd)) continue;
+            return true;
+          }
+        }
+      }
+
+      return false;
+    } catch {
+      // @silent-fallback-ok — on error, fall through to normal escalation path
+      return false;
+    }
+  }
+
+  /**
+   * Cheap check whether a command is a pure stdin consumer (tail, grep,
+   * sort, etc.) without needing pgid lookups. Used to apply extended
+   * grace periods and fail-closed escalation for this class of commands.
+   */
+  private isStdinConsumerCommand(command: string): boolean {
+    const consumer = STDIN_CONSUMER_PATTERNS.find(p => p.cmd.test(command));
+    if (!consumer) return false;
+    if (consumer.requiresNoFileArg && this.hasFileArgument(command)) return false;
+    return true;
+  }
+
+  /**
+   * Heuristic: does a stdin-consumer command have a file argument? If so,
+   * it's reading from the file (not a pipe) and the pipeline guard doesn't
+   * apply. We strip flags (tokens starting with `-`) and anything that
+   * looks like a flag value, then check if a non-flag token remains past
+   * the executable name.
+   */
+  private hasFileArgument(command: string): boolean {
+    const tokens = command.split(/\s+/).slice(1); // drop executable
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (!tok) continue;
+      if (tok.startsWith('-')) {
+        // Skip short-option values for well-known flags that take one
+        // (tail -n N, head -c N, grep -A N, etc.). This is heuristic —
+        // we prefer false-negatives (no file detected) over false-positives.
+        if (/^-[nNcACB]$/.test(tok)) i++; // next token is the value
+        continue;
+      }
+      // Non-flag token that isn't the executable → file argument
+      return true;
+    }
+    return false;
   }
 
   private isExcluded(command: string): boolean {
