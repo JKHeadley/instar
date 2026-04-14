@@ -192,7 +192,7 @@ describe('refreshJobs()', () => {
       expect(stateCheck!.execute!.type).toBe('skill');
     });
 
-    it('uses default port 4321 when config is missing', () => {
+    it('uses default port 4040 when config is missing', () => {
       project = createTestProject({ jobs: [makeJob('health-check')] });
 
       // Delete config to simulate missing config
@@ -207,7 +207,7 @@ describe('refreshJobs()', () => {
 
       const stateCheck = updatedJobs.find(j => j.slug === 'state-integrity-check');
       if (stateCheck?.gate) {
-        expect(stateCheck.gate).toContain('4321');
+        expect(stateCheck.gate).toContain('4040');
       }
     });
   });
