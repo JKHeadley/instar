@@ -1065,12 +1065,38 @@ export class SessionManager extends EventEmitter {
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string }): Promise<string> {
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackChannelName?: string; telegramTopicName?: string; resumeSessionId?: string }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
     const projectBase = path.basename(this.config.projectDir);
-    const tmuxSession = sanitized ? `${projectBase}-${sanitized}` : `${projectBase}-interactive-${Date.now()}`;
+    // Prefer human-readable names derived from the bound Slack channel or
+    // Telegram topic over opaque "-interactive-<timestamp>" suffixes. This
+    // makes dashboard and tmux listings immediately legible.
+    const slugFromBinding = (() => {
+      if (options?.slackChannelName) {
+        const slug = options.slackChannelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+        return slug ? `slack-${slug}` : null;
+      }
+      if (options?.telegramTopicName) {
+        const slug = options.telegramTopicName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+        return slug ? `tg-${slug}` : null;
+      }
+      return null;
+    })();
+    let tmuxSession: string;
+    if (sanitized) {
+      tmuxSession = `${projectBase}-${sanitized}`;
+    } else if (slugFromBinding) {
+      // If the slug-based name is already taken by a live session, append a
+      // short timestamp suffix so respawns don't silently reuse a dying tmux.
+      const candidate = `${projectBase}-${slugFromBinding}`;
+      tmuxSession = this.tmuxSessionExists(candidate)
+        ? `${candidate}-${Date.now().toString().slice(-6)}`
+        : candidate;
+    } else {
+      tmuxSession = `${projectBase}-interactive-${Date.now()}`;
+    }
 
     // Prevent injection into protected sessions (e.g., the server itself)
     if (this.config.protectedSessions.includes(tmuxSession)) {

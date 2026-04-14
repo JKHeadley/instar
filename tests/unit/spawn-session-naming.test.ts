@@ -39,13 +39,13 @@ describe('SessionManager.spawnInteractiveSession — Slack channel naming', () =
 describe('server.ts — Slack spawn passes channel name through', () => {
   const source = fs.readFileSync(SERVER_SRC, 'utf-8');
 
-  it('passes slackChannelName to spawnInteractiveSession', () => {
-    // The slack→session spawn path invokes spawnInteractiveSession — must include slackChannelName
-    const spawnCall = source.slice(
-      source.indexOf('spawnInteractiveSession('),
-      source.indexOf('spawnInteractiveSession(') + 600,
-    );
-    expect(spawnCall).toContain('slackChannelName');
+  it('passes slackChannelName to spawnInteractiveSession in the slack spawn path', () => {
+    // The slack→session spawn path invokes spawnInteractiveSession — must include slackChannelName.
+    // Find the call near a `slackChannelId:` reference (the Slack spawn path).
+    const slackSpawnIdx = source.indexOf('slackChannelId: channelId');
+    expect(slackSpawnIdx).toBeGreaterThan(-1);
+    const window = source.slice(Math.max(0, slackSpawnIdx - 1000), slackSpawnIdx + 500);
+    expect(window).toContain('slackChannelName');
   });
 
   it('passes channelName to registerChannelSession', () => {

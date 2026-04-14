@@ -2972,16 +2972,19 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Route: DMs go to lifeline session, channels spawn new sessions
           const targetSession = isDM ? 'lifeline' : undefined;
+          // Resolve channel name so the tmux session + dashboard label are human-readable
+          // ("echo-slack-threadline-dev" instead of "echo-interactive-<timestamp>").
+          const slackChannelName = isDM ? undefined : (await slackAdapter!.getChannelName(channelId)) ?? undefined;
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
               targetSession,
-              { resumeSessionId, slackChannelId: channelId },
+              { resumeSessionId, slackChannelId: channelId, slackChannelName },
             );
             if (newSessionName) {
-              slackAdapter!.registerChannelSession(channelId, newSessionName);
+              slackAdapter!.registerChannelSession(channelId, newSessionName, slackChannelName);
               slackAdapter!.trackMessageInjection(channelId, newSessionName, message.content);
-              console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for channel ${channelId}`);
+              console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for channel ${channelId}${slackChannelName ? ` (#${slackChannelName})` : ''}`);
             }
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);

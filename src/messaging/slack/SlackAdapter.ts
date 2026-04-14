@@ -444,6 +444,26 @@ export class SlackAdapter implements MessagingAdapter {
     return this.apiClient;
   }
 
+  /**
+   * Resolve a channel ID to its human-readable name (e.g. "threadline-dev").
+   * Cached via the registry and `conversations.info` fallback — safe to call
+   * in hot paths like session spawn. Returns null on failure (unknown channel,
+   * API error, DM). Callers should degrade to a channelId-based label.
+   */
+  async getChannelName(channelId: string): Promise<string | null> {
+    // Fast path: already cached in the channel → session registry
+    const cached = this.channelToSession.get(channelId)?.channelName;
+    if (cached) return cached;
+    // Slow path: conversations.info
+    try {
+      const info = await this.channelManager.getChannelInfo(channelId);
+      if (info?.name) return info.name;
+    } catch {
+      // Ignore — channel might be a DM or inaccessible
+    }
+    return null;
+  }
+
   // ── Channel ↔ Session Registry ──
 
   /** Register a channel → session binding. Persisted to disk. */
