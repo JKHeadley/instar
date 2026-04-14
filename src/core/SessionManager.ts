@@ -1643,6 +1643,12 @@ export class SessionManager extends EventEmitter {
             encoding: 'utf-8', timeout: 5000,
           });
         }
+        // Verify Enter actually submitted — on fresh Claude Code TUIs (v2.1.105+)
+        // the Enter after bracketed-paste-end is occasionally eaten, leaving the
+        // text sitting in the input box unsubmitted. verifyInjection captures the
+        // pane after a short delay and sends one extra Enter if the marker text
+        // is still visible at the ❯ prompt.
+        this.verifyInjection(tmuxSession, text);
         return true;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -1668,6 +1674,59 @@ export class SessionManager extends EventEmitter {
       }
     }
     return false;
+  }
+
+  /**
+   * Verify an injection actually submitted by checking for a marker snippet
+   * still present at the ❯ prompt. On Claude Code v2.1.105+ fresh spawns, the
+   * Enter after bracketed-paste-end is occasionally eaten by a race with the
+   * paste-end sequence and the text sits unsubmitted forever. This guard
+   * sends one extra Enter if we detect the stuck state; single-shot, safe
+   * when the text did submit normally (no-op).
+   *
+   * Runs asynchronously — fires a background check after markerCheckMs and
+   * does not block the caller. Called from rawInject after Enter is sent.
+   */
+  private verifyInjection(tmuxSession: string, injectedText: string): void {
+    const markerCheckMs = 1500;
+    // Extract a distinguishing first-40-chars marker from the injected text.
+    // Strip leading whitespace/newlines so we match what's visible at the prompt.
+    const marker = injectedText.replace(/^\s+/, '').slice(0, 40).trim();
+    if (!marker || marker.length < 8) return; // too short to be a reliable marker
+
+    setTimeout(() => {
+      try {
+        if (!this.tmuxSessionExists(tmuxSession)) return;
+        const pane = this.captureOutput(tmuxSession, 20) || '';
+        // If the marker is still at a ❯ prompt line, Enter was eaten.
+        // Check the pane has BOTH ❯ and the marker on the same line (or within 2 lines).
+        const lines = pane.split('\n');
+        let stuck = false;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.includes('❯') && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(marker.slice(0, 30))))) {
+            stuck = true;
+            break;
+          }
+        }
+        if (stuck) {
+          console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" still at prompt. Resending Enter.`);
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+          DegradationReporter.getInstance().report({
+            feature: 'SessionManager.verifyInjection',
+            primary: 'Bracketed paste + Enter submits injected message',
+            fallback: 'Auto-resent Enter after detecting stuck input',
+            reason: 'Enter eaten by paste-end race on fresh Claude Code TUI',
+            impact: 'Recovered without user intervention',
+          });
+        }
+      } catch (err) {
+        // Best-effort — never throw from a background verification
+        console.error(`[SessionManager] verifyInjection error for "${tmuxSession}": ${err instanceof Error ? err.message : err}`);
+      }
+    }, markerCheckMs);
   }
 
   /**
