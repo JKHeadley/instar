@@ -203,6 +203,71 @@ try {
   // Git commands may fail in CI or detached HEAD — skip gracefully
 }
 
+// ── 5. Side-effects review artifact ───────────────────────────────────
+// If the upgrade notes claim a fix or feature (anything that would require
+// an Evidence section), a matching side-effects review artifact must exist
+// in upgrades/side-effects/. This enforces the /instar-dev process at push
+// time — the pre-commit hook catches it earlier per-commit, this is the
+// release-level re-check.
+
+{
+  const FIX_PATTERNS = [
+    /\bfix(es|ed|ing)?\b/i,
+    /\bbug(fix)?\b/i,
+    /\bregression\b/i,
+    /\bresolves?\b/i,
+    /\bresolved\b/i,
+    /\bcrashes?\b/i,
+    /\bcrashed\b/i,
+    /\bcrashing\b/i,
+    /\bbroken\b/i,
+    /\bstall(s|ed|ing)?\b/i,
+    /\bfeature\b/i,
+    /\badd(s|ed|ing)?\b/i,
+    /\bnew\b/i,
+  ];
+
+  const guidePath = versionedGuideExists ? versionedGuidePath : nextPath;
+  if (fs.existsSync(guidePath)) {
+    const guideContent = fs.readFileSync(guidePath, 'utf-8');
+    // Extract "## What Changed" section
+    const whatChangedMatch = guideContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
+    const whatChanged = whatChangedMatch ? whatChangedMatch[1] : '';
+
+    const qualifies = FIX_PATTERNS.some((p) => p.test(whatChanged));
+
+    if (qualifies) {
+      const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
+      const artifactName = versionedGuideExists ? `${version}.md` : null;
+      let artifactFound = false;
+
+      if (fs.existsSync(sideEffectsDir)) {
+        const files = fs.readdirSync(sideEffectsDir).filter((f) => f.endsWith('.md'));
+        if (artifactName) {
+          artifactFound = files.includes(artifactName);
+        } else {
+          // For NEXT.md, any fresh artifact from the last 24h counts.
+          // The expectation is that during release cut, NEXT.md -> <version>.md
+          // rename will pair with the artifact rename as well.
+          const recent = files.filter((f) => {
+            const stat = fs.statSync(path.join(sideEffectsDir, f));
+            return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
+          });
+          artifactFound = recent.length > 0;
+        }
+      }
+
+      if (!artifactFound) {
+        errors.push(
+          `Upgrade notes claim a fix/feature but no matching side-effects review artifact found in upgrades/side-effects/. ` +
+          `Every change qualifying for review must ship with an artifact produced via the /instar-dev skill. ` +
+          `See skills/instar-dev/SKILL.md and docs/signal-vs-authority.md.`
+        );
+      }
+    }
+  }
+}
+
 // ── Report ────────────────────────────────────────────────────────────
 
 if (errors.length > 0 || warnings.length > 0) {
