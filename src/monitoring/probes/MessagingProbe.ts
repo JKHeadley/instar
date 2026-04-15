@@ -16,6 +16,10 @@ export interface MessagingProbeDeps {
     pendingStalls: number;
     pendingPromises: number;
     topicMappings: number;
+    lastError?: string | null;
+    consecutivePollErrors?: number;
+    fatalReason?: '401' | 'network' | null;
+    stoppedAt?: string | null;
   };
   /** Path to the Telegram message log JSONL file */
   messageLogPath: string;
@@ -44,17 +48,33 @@ export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
           const status = deps.getStatus();
 
           if (!status.started) {
+            const fatal = status.fatalReason ?? null;
+            const lastErr = status.lastError ?? null;
+            const stoppedAt = status.stoppedAt ?? null;
+            const reasonSuffix = fatal === '401'
+              ? ' (fatal: 401 Unauthorized — bot token invalid or revoked)'
+              : fatal === 'network'
+                ? ' (fatal: network failure)'
+                : lastErr
+                  ? ` (last error: ${lastErr})`
+                  : '';
+            const remediation = fatal === '401'
+              ? [
+                  'Bot token is invalid or revoked — verify TELEGRAM_BOT_TOKEN with @BotFather',
+                  'After updating the token, restart the agent to resume polling',
+                ]
+              : [
+                  'Check bot token validity — an invalid token prevents polling start',
+                  'Check network connectivity to api.telegram.org',
+                  'Check server logs for Telegram adapter errors on startup',
+                ];
             return {
               ...base,
               passed: false,
-              description: 'Telegram adapter is not started',
-              error: 'Adapter exists but polling is not active',
-              diagnostics: { status },
-              remediation: [
-                'Check bot token validity — an invalid token prevents polling start',
-                'Check network connectivity to api.telegram.org',
-                'Check server logs for Telegram adapter errors on startup',
-              ],
+              description: `Telegram adapter is not started${reasonSuffix}`,
+              error: lastErr || 'Adapter exists but polling is not active',
+              diagnostics: { status, fatalReason: fatal, lastError: lastErr, stoppedAt },
+              remediation,
             };
           }
 

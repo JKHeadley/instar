@@ -272,6 +272,11 @@ export class TelegramAdapter implements MessagingAdapter {
   private lastUpdateId = 0;
   private startedAt: Date | null = null;
   private consecutivePollErrors = 0;
+  // Diagnostics surfaced via getStatus() so health probes can explain WHY polling stopped.
+  private lastPollError: string | null = null;
+  private fatalPollReason: '401' | 'network' | null = null;
+  private pollStoppedAt: Date | null = null;
+  private pending401Retry = false;
 
   // Forum detection — if the chat is not a forum, skip all topic operations
   private notAForum = false;
@@ -646,6 +651,10 @@ export class TelegramAdapter implements MessagingAdapter {
     this.polling = true;
     this.startedAt = new Date();
     this.consecutivePollErrors = 0;
+    this.lastPollError = null;
+    this.fatalPollReason = null;
+    this.pollStoppedAt = null;
+    this.pending401Retry = false;
 
     // Ensure Lifeline topic exists (auto-recreate if deleted)
     await this.ensureLifelineTopic();
@@ -2189,6 +2198,10 @@ export class TelegramAdapter implements MessagingAdapter {
     pendingStalls: number;
     pendingPromises: number;
     topicMappings: number;
+    lastError: string | null;
+    consecutivePollErrors: number;
+    fatalReason: '401' | 'network' | null;
+    stoppedAt: string | null;
   } {
     const stallStatus = this.sharedStallDetector
       ? this.sharedStallDetector.getStatus()
@@ -2200,6 +2213,10 @@ export class TelegramAdapter implements MessagingAdapter {
       pendingStalls: stallStatus.pendingStalls,
       pendingPromises: stallStatus.pendingPromises,
       topicMappings: this.topicToSession.size,
+      lastError: this.lastPollError,
+      consecutivePollErrors: this.consecutivePollErrors,
+      fatalReason: this.fatalPollReason,
+      stoppedAt: this.pollStoppedAt ? this.pollStoppedAt.toISOString() : null,
     };
   }
 
@@ -3134,12 +3151,30 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       this.consecutivePollErrors++;
       const errMsg = err instanceof Error ? err.message : String(err);
+      this.lastPollError = errMsg;
 
       // Check for fatal errors that require restart
       if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
-        console.error(`[telegram] FATAL: Bot token is invalid. Stopping polling.`);
-        this.polling = false;
-        return;
+        // Single retry after 30s — distinguishes transient 401s from genuine token revocation.
+        // Without this, a one-off auth blip permanently kills polling until the agent restarts.
+        if (!this.pending401Retry) {
+          this.pending401Retry = true;
+          const tokenPrefix = this.config.token ? this.config.token.slice(0, 6) : 'unknown';
+          console.warn(`[telegram] 401 Unauthorized (token=${tokenPrefix}…). Retrying once in 30s before declaring fatal.`);
+          await new Promise(r => setTimeout(r, 30_000));
+          // Fall through — schedule next poll. If second attempt also 401, the !this.pending401Retry
+          // check will be false and we'll go fatal.
+        } else {
+          const tokenPrefix = this.config.token ? this.config.token.slice(0, 6) : 'unknown';
+          console.error(`[telegram] FATAL: Bot token is invalid (token=${tokenPrefix}…). Stopping polling.`);
+          this.polling = false;
+          this.fatalPollReason = '401';
+          this.pollStoppedAt = new Date();
+          return;
+        }
+      } else {
+        // Non-401 errors clear any pending 401 retry state
+        this.pending401Retry = false;
       }
 
       // Exponential backoff on consecutive errors
@@ -3150,6 +3185,13 @@ export class TelegramAdapter implements MessagingAdapter {
       } else {
         console.error(`[telegram] Poll error: ${errMsg}`);
       }
+    }
+
+    // Successful loop iteration (or non-fatal error): if we were in 401 retry and got here
+    // without re-entering the 401 branch, the retry succeeded.
+    if (this.consecutivePollErrors === 0) {
+      this.pending401Retry = false;
+      this.lastPollError = null;
     }
 
     // Schedule next poll
