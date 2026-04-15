@@ -6427,14 +6427,14 @@ export function createRoutes(ctx: RouteContext): Router {
    * Rebuild topic memory from JSONL (idempotent import).
    * POST /topic/rebuild
    */
-  router.post('/topic/rebuild', (_req, res) => {
+  router.post('/topic/rebuild', async (_req, res) => {
     if (!ctx.topicMemory) {
       res.status(503).json({ error: 'TopicMemory not initialized' });
       return;
     }
 
     const jsonlPath = path.join(ctx.config.stateDir, 'telegram-messages.jsonl');
-    const imported = ctx.topicMemory.rebuild(jsonlPath);
+    const imported = await ctx.topicMemory.rebuild(jsonlPath);
     res.json({ rebuilt: true, messagesImported: imported, stats: ctx.topicMemory.stats() });
   });
 

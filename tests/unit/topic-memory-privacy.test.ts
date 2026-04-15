@@ -443,7 +443,7 @@ describe('insertMessages (batch) with privacy fields', () => {
 // ── JSONL Import with Privacy Fields ─────────────────────────────
 
 describe('importFromJsonl with privacy fields', () => {
-  it('imports userId and privacyScope from JSONL', () => {
+  it('imports userId and privacyScope from JSONL', async () => {
     const jsonlPath = path.join(testDir, 'messages.jsonl');
     const lines = [
       JSON.stringify({
@@ -457,7 +457,7 @@ describe('importFromJsonl with privacy fields', () => {
     ];
     fs.writeFileSync(jsonlPath, lines.join('\n'));
 
-    const imported = memory.importFromJsonl(jsonlPath);
+    const imported = await memory.importFromJsonl(jsonlPath);
     expect(imported).toBe(2);
 
     const messages = memory.getRecentMessages(42);
@@ -467,7 +467,7 @@ describe('importFromJsonl with privacy fields', () => {
     expect(messages[1].privacyScope).toBe('shared-project');
   });
 
-  it('handles legacy JSONL without privacy fields', () => {
+  it('handles legacy JSONL without privacy fields', async () => {
     const jsonlPath = path.join(testDir, 'messages.jsonl');
     const lines = [
       JSON.stringify({
@@ -477,7 +477,7 @@ describe('importFromJsonl with privacy fields', () => {
     ];
     fs.writeFileSync(jsonlPath, lines.join('\n'));
 
-    const imported = memory.importFromJsonl(jsonlPath);
+    const imported = await memory.importFromJsonl(jsonlPath);
     expect(imported).toBe(1);
 
     const messages = memory.getRecentMessages(42);

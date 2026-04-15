@@ -313,7 +313,7 @@ describe('pipeline → TopicMemory storage', () => {
     expect(context).not.toContain('User: How do I deploy?');
   });
 
-  it('JSONL round-trip preserves sender identity', () => {
+  it('JSONL round-trip preserves sender identity', async () => {
     // Create JSONL with sender identity (simulating pipeline log entries)
     const jsonlPath = path.join(tmpDir, 'messages.jsonl');
     const entries = [
@@ -335,7 +335,7 @@ describe('pipeline → TopicMemory storage', () => {
     fs.writeFileSync(jsonlPath, entries.map(e => JSON.stringify(e)).join('\n'));
 
     // Import
-    const count = topicMemory.importFromJsonl(jsonlPath);
+    const count = await topicMemory.importFromJsonl(jsonlPath);
     expect(count).toBe(3);
 
     // Verify identity survived round-trip

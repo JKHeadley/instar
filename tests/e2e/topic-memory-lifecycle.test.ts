@@ -71,7 +71,7 @@ describe('TopicMemory E2E lifecycle', () => {
     // Step 2: Initialize TopicMemory and import from JSONL
     topicMemory = new TopicMemory(stateDir);
     await topicMemory.open();
-    const importCount = topicMemory.importFromJsonl(jsonlPath);
+    const importCount = await topicMemory.importFromJsonl(jsonlPath);
     expect(importCount).toBe(48);
 
     // Step 3: Start server
