@@ -701,9 +701,6 @@ describe('Threadline Integration Tests', () => {
     });
 
     it('no threadId (first-contact): mints a threadId and handles the message', async () => {
-      // PR-2: First-contact messages without a threadId used to be dropped
-      // (handled: false). The router now mints a fresh UUID and routes normally
-      // so the recipient actually sees the message.
       const threadResumeMap = new ThreadResumeMap(tmpDir, '/test/project');
       const spawnManager = makeMockSpawnManager(true);
       const messageRouter = makeMockMessageRouter();
@@ -719,6 +716,7 @@ describe('Threadline Integration Tests', () => {
 
       expect(result.handled).toBe(true);
       expect(result.threadId).toBeDefined();
+      expect(result.spawned).toBe(true);
       expect(result.threadId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
       expect(envelope.message.threadId).toBe(result.threadId);
     });

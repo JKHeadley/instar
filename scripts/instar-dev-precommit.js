@@ -36,6 +36,13 @@ const TRACES_DIR = path.join(ROOT, '.instar', 'instar-dev-traces');
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 const MIN_ARTIFACT_CHARS = 200;
 
+// ─── Step 0: skip gate for merge commits ─────────────────────────────────
+// Merge commits integrate already-reviewed code from another branch/machine.
+// The side-effects review was done when those commits were originally authored.
+if (fs.existsSync(path.join(ROOT, '.git', 'MERGE_HEAD'))) {
+  process.exit(0);
+}
+
 // ─── Step 1: inspect staged files ────────────────────────────────────────
 
 let stagedOutput;
