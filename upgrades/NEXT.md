@@ -1,53 +1,21 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
-<!-- Valid values: patch, minor, major -->
-<!-- patch = bug fixes, refactors, test additions, doc updates -->
-<!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
-<!-- major = breaking changes to existing APIs or behavior -->
 
 ## What Changed
 
-<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
-<!-- Write this for the AGENT — they need to understand the system deeply. -->
+Fixed auto-ack echo loop in Threadline relay. When two agents had auto-ack enabled, receiving an auto-ack message ("Message received. Composing response...") would trigger a new auto-ack back to the sender, creating an echo loop bounded only by rate limiting. The guard condition now checks whether the incoming message is itself an auto-ack before sending one, so auto-ack messages no longer trigger additional acks.
 
 ## What to Tell Your User
 
-<!-- Write talking points the agent should relay to their user. -->
-<!-- This should be warm, conversational, user-facing — not a changelog. -->
-<!-- Focus on what THEY can now do, not internal plumbing. -->
-<!--                                                                    -->
-<!-- PROHIBITED in this section (will fail validation):                 -->
-<!--   camelCase config keys: silentReject, maxRetries, telegramNotify -->
-<!--   Inline code backtick references like silentReject: false        -->
-<!--   Fenced code blocks                                              -->
-<!--   Instructions to edit files or run commands                      -->
-<!--                                                                    -->
-<!-- CORRECT style: "I can turn that on for you" not "set X to false"  -->
-<!-- The agent relays this to their user — keep it human.              -->
-
-- **[Feature name]**: "[Brief, friendly description of what this means for the user]"
+- **Auto-ack echo fix**: "If you've been seeing duplicate 'Message received' messages when agents talk to each other, that's fixed now. Each real message gets exactly one acknowledgment."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| [Capability] | [Endpoint, command, or "automatic"] |
+| Echo-free auto-ack | Automatic — no configuration needed |
 
 ## Evidence
 
-<!-- REQUIRED if this release claims to fix a bug. -->
-<!-- Unit tests passing is NOT evidence. Provide ONE of: -->
-<!--   (a) Reproduction steps + observed before/after on a live system. -->
-<!--       Include log excerpts, observed command output, or behavior -->
-<!--       description. Make it specific enough that a future reader can -->
-<!--       re-run it and see the same thing. -->
-<!--   (b) "Not reproducible in dev — [concrete reason]" if the failure -->
-<!--       mode truly can't be exercised locally (race conditions, -->
-<!--       event-driven paths requiring external signals, etc). -->
-<!--                                                                 -->
-<!-- If this release doesn't claim a bug fix (pure feature / refactor), -->
-<!-- leave this section blank or delete it — it's only enforced when -->
-<!-- "What Changed" describes a fix. -->
-
-[Describe reproduction + verified fix, OR "Not reproducible in dev — [concrete reason]"]
+Not reproducible in dev — requires two live agents with Threadline relay connected and auto-ack enabled. The bug was observed in production between Demiclaude and E-Ray, where each real message generated approximately 5 duplicate ack messages bounded by the rate limiter window. The fix adds one boolean check to the guard condition at the auto-ack send point, using the same detection already proven at the reply-waiter exclusion point seven lines above.
