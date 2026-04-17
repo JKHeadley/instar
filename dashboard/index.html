@@ -2414,6 +2414,7 @@
           <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
           <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
+          <button class="tab" data-tab="pr-pipeline" onclick="switchTab('pr-pipeline')">PR Pipeline</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -2758,6 +2759,24 @@
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- PR Pipeline Tab (PR-REVIEW-HARDENING-SPEC Phase A) -->
+    <!-- Read-only: NO action buttons that mutate eligibility. All PR-authored -->
+    <!-- content rendered via textContent, never innerHTML — XSS defense rule -->
+    <!-- for the dashboard per spec §"Dashboard surface rules". -->
+    <div id="prPipelinePanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">PR Pipeline</h2>
+        <div>
+          <button onclick="loadPrPipeline()" style="padding:6px 12px">Refresh</button>
+        </div>
+      </div>
+      <div id="prPipelinePhaseNotice" style="font-size:12px;color:var(--text-dim)"></div>
+      <div id="prPipelineEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
+        No PR activity to display.
+      </div>
+      <div id="prPipelineList" style="display:flex;flex-direction:column;gap:12px"></div>
     </div>
 
     <!-- Health Tab (was Systems) -->
@@ -3783,6 +3802,12 @@
         display: ['flex'],
         onActivate: () => { if (typeof loadIntegratedBeing === 'function') loadIntegratedBeing(); if (typeof loadIntegratedBeingBindings === 'function') loadIntegratedBeingBindings(); if (typeof startIntegratedBeingPoll === 'function') startIntegratedBeingPoll(); },
         onDeactivate: () => { if (typeof stopIntegratedBeingPoll === 'function') stopIntegratedBeingPoll(); },
+      },
+      {
+        id: 'pr-pipeline',
+        panels: ['prPipelinePanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadPrPipeline === 'function') loadPrPipeline(); },
       },
     ];
 
@@ -5569,6 +5594,108 @@
           }).join('')}`;
       } catch (e) {
         // History not available, that's fine
+      }
+    }
+
+    // ── PR Pipeline Tab (PR-REVIEW-HARDENING-SPEC Phase A) ───────
+    //
+    // Fetches /pr-gate/metrics on panel activation and renders the
+    // current pipeline state. Hard rules (enforced structurally here):
+    //   - NO action buttons that mutate eligibility (read-only tab).
+    //   - NO innerHTML — all PR content goes through textContent.
+    //   - NO form submissions to /pr-gate/* endpoints.
+    //   - On 404 (prGate.phase='off' — commit 8), render a disabled
+    //     placeholder rather than erroring.
+    async function loadPrPipeline() {
+      const list = document.getElementById('prPipelineList');
+      const notice = document.getElementById('prPipelinePhaseNotice');
+      const empty = document.getElementById('prPipelineEmpty');
+      // Reset view via DOM mutation, not innerHTML, to keep the
+      // "never inject content as HTML" invariant trivially true.
+      while (list.firstChild) list.removeChild(list.firstChild);
+      notice.textContent = 'Loading…';
+      empty.style.display = 'none';
+
+      // Use raw fetch (not apiFetch) so we can distinguish 404 (gate
+      // disabled, expected during phase=off) from other errors without
+      // apiFetch's throw-on-non-ok behavior.
+      let res = null;
+      let httpStatus = 0;
+      try {
+        const raw = await fetch('/pr-gate/metrics', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        httpStatus = raw.status;
+        if (raw.ok) res = await raw.json();
+      } catch {
+        res = null;
+      }
+
+      if (httpStatus === 404 || (res && res.disabled === true)) {
+        notice.textContent = 'Gate disabled (phase=off). No pipeline activity recorded yet.';
+        empty.style.display = 'block';
+        return;
+      }
+      if (!res) {
+        notice.textContent = 'PR Pipeline metrics unavailable. Endpoint did not respond.';
+        empty.style.display = 'block';
+        return;
+      }
+
+      const phase = typeof res.phase === 'string' ? res.phase : 'unknown';
+      notice.textContent = `Phase: ${phase}`;
+
+      const entries = Array.isArray(res.entries) ? res.entries : [];
+      if (entries.length === 0) {
+        empty.style.display = 'block';
+        return;
+      }
+
+      for (const entry of entries) {
+        const card = document.createElement('div');
+        card.style.background = 'var(--panel)';
+        card.style.padding = '12px';
+        card.style.borderRadius = '6px';
+        card.style.border = '1px solid var(--border)';
+
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.justifyContent = 'space-between';
+        header.style.marginBottom = '6px';
+
+        const left = document.createElement('div');
+        left.style.fontWeight = '600';
+        const pr = typeof entry.pr_number === 'number' ? `PR #${entry.pr_number}` : 'PR #—';
+        const sha = typeof entry.head_sha === 'string' ? ` @ ${entry.head_sha.slice(0, 8)}` : '';
+        left.textContent = pr + sha;
+
+        const right = document.createElement('div');
+        right.style.fontSize = '12px';
+        right.style.color = entry.eligible ? 'var(--accent)' : 'var(--text-dim)';
+        right.textContent = entry.eligible ? 'eligible' : 'not eligible';
+
+        header.appendChild(left);
+        header.appendChild(right);
+        card.appendChild(header);
+
+        if (typeof entry.reason === 'string' && entry.reason.length > 0) {
+          const reason = document.createElement('div');
+          reason.style.fontSize = '13px';
+          reason.style.color = 'var(--text-dim)';
+          reason.textContent = entry.reason;
+          card.appendChild(reason);
+        }
+
+        if (typeof entry.created_at === 'string') {
+          const time = document.createElement('div');
+          time.style.fontSize = '11px';
+          time.style.color = 'var(--text-dim)';
+          time.style.marginTop = '4px';
+          time.textContent = entry.created_at;
+          card.appendChild(time);
+        }
+
+        list.appendChild(card);
       }
     }
 
