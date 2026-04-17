@@ -1640,6 +1640,50 @@ The user has been talking to you (possibly for days). A generic greeting like "H
     // Fix .instar-level .gitignore (GitStateManager's internal git tracking)
     const instarGitignore = path.join(this.config.stateDir, '.gitignore');
     this.removeGitignoreEntry(instarGitignore, 'relationships/', result, '.instar/.gitignore');
+
+    // PR-REVIEW-HARDENING Phase A: ensure .instar/secrets/pr-gate/ is excluded
+    // from the project repo. The BackupManager.BLOCKED_PATH_PREFIXES guard
+    // (commit 1) defends the backup path; this entry defends the plain
+    // `git add .` path so contributors can't accidentally commit pr-gate
+    // secrets from the project directory.
+    this.addGitignoreEntry(projectGitignore, '.instar/secrets/pr-gate/', result, 'project .gitignore');
+  }
+
+  /**
+   * Idempotently add a .gitignore entry. No-op if the entry is already
+   * present as an active (non-comment, non-blank) line. Creates the file
+   * if it doesn't exist. A comment line that happens to contain the entry
+   * text is NOT treated as present — only exact-match active lines count.
+   */
+  private addGitignoreEntry(gitignorePath: string, entry: string, result: MigrationResult, label: string): void {
+    try {
+      let content = '';
+      if (fs.existsSync(gitignorePath)) {
+        content = fs.readFileSync(gitignorePath, 'utf-8');
+      }
+
+      const alreadyPresent = content.split('\n').some((line) => {
+        const trimmed = line.trim();
+        if (trimmed.length === 0 || trimmed.startsWith('#')) return false;
+        return trimmed === entry;
+      });
+      if (alreadyPresent) return;
+
+      let nextContent = content;
+      if (nextContent.length > 0 && !nextContent.endsWith('\n')) {
+        nextContent += '\n';
+      }
+      nextContent += entry + '\n';
+
+      const dir = path.dirname(gitignorePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(gitignorePath, nextContent);
+      result.upgraded.push(`${label}: added ${entry}`);
+    } catch (err) {
+      result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private removeGitignoreEntry(gitignorePath: string, entry: string, result: MigrationResult, label: string): void {
