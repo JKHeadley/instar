@@ -5568,16 +5568,98 @@
           if (entries.length === 0) {
             tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-dim);text-align:center">No entries</td></tr>';
           } else {
-            tbody.innerHTML = entries.map(e => `
+            // Build a map of commitmentId → effective-status derivation
+            // from supersession pointers: if a later note with subject
+            // starting "expired:" or "stranded:" or "resolved:"/"cancelled:"
+            // points back at a commitment, that commitment's effective
+            // status flips to the supersession. (Slice 5 + slice 6.)
+            const supersessionByTarget = new Map();
+            for (const ent of entries) {
+              if (ent.supersedes) {
+                const existing = supersessionByTarget.get(ent.supersedes);
+                // Prefer most-recent note with a lifecycle prefix.
+                if (!existing || new Date(ent.t) > new Date(existing.t)) {
+                  supersessionByTarget.set(ent.supersedes, ent);
+                }
+              }
+            }
+            const disputeCountByTarget = new Map();
+            for (const ent of entries) {
+              if (ent.disputes) {
+                disputeCountByTarget.set(
+                  ent.disputes,
+                  (disputeCountByTarget.get(ent.disputes) || 0) + 1,
+                );
+              }
+            }
+            const esc2 = (s) => esc(String(s == null ? '' : s));
+            const badge = (label, bg, fg) =>
+              `<span style="display:inline-block;padding:1px 6px;font-size:10px;border-radius:3px;background:${bg};color:${fg};margin-right:4px">${esc2(label)}</span>`;
+            tbody.innerHTML = entries.map(e => {
+              const ts = (e.t || '').slice(0, 19).replace('T', ' ');
+              let subjectCell = esc2(e.subject);
+              let kindCell = esc2(e.kind);
+              // Commitment-kind enrichment (slice 6): badges for mechanism
+              // type, deadline w/ overdue highlight, refStatus, and any
+              // derived effective-status from the supersession chain.
+              if (e.kind === 'commitment' && e.commitment) {
+                const mech = e.commitment.mechanism || {};
+                const mechBg = mech.type === 'passive-wait' ? '#d4a017' : '#4a6a8a';
+                kindCell = badge('commitment', '#6a4a8a', '#fff')
+                  + badge(mech.type || '(?)', mechBg, '#fff');
+                if (mech.refStatus && mech.refStatus !== 'valid') {
+                  kindCell += badge('ref:' + mech.refStatus, '#888', '#fff');
+                }
+                if (e.commitment.deadline) {
+                  const dlMs = Date.parse(e.commitment.deadline);
+                  const overdue = !Number.isNaN(dlMs) && dlMs < Date.now();
+                  const dlLabel = (e.commitment.deadline || '').slice(0, 16).replace('T', ' ');
+                  subjectCell += '<div style="font-size:11px;color:'
+                    + (overdue ? '#e74c3c' : 'var(--text-dim)')
+                    + ';margin-top:2px">'
+                    + (overdue ? '⚠ overdue ' : 'due ')
+                    + esc2(dlLabel)
+                    + '</div>';
+                }
+                // Effective status from supersession chain.
+                const superseder = supersessionByTarget.get(e.id);
+                if (superseder && typeof superseder.subject === 'string') {
+                  const s = superseder.subject;
+                  let statusLabel = 'resolved';
+                  let statusBg = '#27ae60';
+                  if (s.startsWith('expired:')) { statusLabel = 'expired'; statusBg = '#e74c3c'; }
+                  else if (s.startsWith('stranded:')) { statusLabel = 'stranded'; statusBg = '#e67e22'; }
+                  else if (s.startsWith('cancelled:')) { statusLabel = 'cancelled'; statusBg = '#7f8c8d'; }
+                  subjectCell = badge(statusLabel, statusBg, '#fff') + subjectCell;
+                }
+                const disputes = disputeCountByTarget.get(e.id) || 0;
+                if (disputes > 0) {
+                  subjectCell = badge('disputed × ' + disputes, '#c0392b', '#fff') + subjectCell;
+                }
+              } else if (e.kind === 'note' && e.disputes) {
+                // Dispute note — highlight the disputes-pointer.
+                kindCell = badge('note', '#444', '#fff') + badge('dispute', '#c0392b', '#fff');
+              } else if (e.kind === 'note' && typeof e.subject === 'string' && e.subject.startsWith('expired:')) {
+                kindCell = badge('note', '#444', '#fff') + badge('expired', '#e74c3c', '#fff');
+              } else if (e.kind === 'note' && typeof e.subject === 'string' && e.subject.startsWith('stranded:')) {
+                kindCell = badge('note', '#444', '#fff') + badge('stranded', '#e67e22', '#fff');
+              }
+              const ptr = e.supersedes
+                ? 'supersedes:' + e.supersedes
+                : e.disputes
+                ? 'disputes:' + e.disputes
+                : '';
+              return `
               <tr style="border-top:1px solid var(--border)">
-                <td style="padding:6px;font-family:monospace">${esc(e.id)}</td>
-                <td style="padding:6px">${esc((e.t || '').slice(0, 19).replace('T', ' '))}</td>
-                <td style="padding:6px">${esc(e.kind)}</td>
-                <td style="padding:6px">${esc(e.subject)}</td>
-                <td style="padding:6px">${esc(e.counterparty?.type)}/${esc(e.counterparty?.name)}</td>
-                <td style="padding:6px;font-size:11px;color:var(--text-dim)">${esc(e.provenance)}${e.source ? ' · '+esc(e.source):''}</td>
-                <td style="padding:6px;font-family:monospace;font-size:11px">${esc(e.supersedes || '')}</td>
-              </tr>`).join('');
+                <td style="padding:6px;font-family:monospace">${esc2(e.id)}</td>
+                <td style="padding:6px">${esc2(ts)}</td>
+                <td style="padding:6px">${kindCell}</td>
+                <td style="padding:6px">${subjectCell}</td>
+                <td style="padding:6px">${esc2(e.counterparty?.type)}/${esc2(e.counterparty?.name)}</td>
+                <td style="padding:6px;font-size:11px;color:var(--text-dim)">${esc2(e.provenance)}${e.source ? ' · '+esc2(e.source):''}</td>
+                <td style="padding:6px;font-family:monospace;font-size:11px">${esc2(ptr)}</td>
+              </tr>`;
+            }).join('');
           }
         }
         if (statsRes) {
