@@ -5,7 +5,7 @@ author: "echo"
 created: "2026-04-16"
 supersedes: "docs/specs/integrated-being-ledger-v1.md (remains in force; v2 is additive)"
 review-convergence: null
-review-iterations: 1
+review-iterations: 2
 review-completed-at: null
 review-report: null
 approved: false
@@ -70,13 +70,16 @@ interface CommitmentFields {
 
 **Dispute count is NOT stored on the commitment entry.** Earlier drafts kept an in-memory `disputeCount` field; Grok and Scalability reviewers independently flagged that this resets on server restart, breaking the "3 disputes in 24h triggers escalation" contract. Dispute count is now derived at render time by walking the supersession chain and counting entries of kind `note` whose subject begins with `disputed:`. Source of truth is the ledger itself. Cost: bounded by chain-depth cap (16) and the v1 chain cache.
 
-**Why mechanism is required**: the core failure this spec exists to prevent is "promise with no backing." Making `mechanism` non-optional forces the writer to think about how the commitment will actually be fulfilled. `passive-wait` IS an allowed mechanism — but it is labeled as such and rendered with heightened skepticism. Additionally, `passive-wait` commitments are capped separately (see §"Rate limits" below) to prevent the mechanism from becoming a path-of-least-resistance loophole (flagged by Gemini as a loophole; counter-measure: stricter cap).
+**Why mechanism is required**: the core failure this spec exists to prevent is "promise with no backing." Making `mechanism` non-optional forces the writer to think about how the commitment will actually be fulfilled. `passive-wait` IS an allowed mechanism — but it is labeled as such and rendered with heightened skepticism. Additionally, `passive-wait` commitments are capped separately (see §"Rate limits" below) to prevent the mechanism from becoming a path-of-least-resistance loophole.
 
-**Mechanism ref validation (adversarial A1 resolution)**: on append, if `mechanism.ref` is present, the server MUST attempt to resolve it against the corresponding mechanism-type registry:
-- `scheduled-job`: lookup in the job scheduler — must be a valid, non-expired, non-cancelled job.
-- `polling-sentinel`: lookup in the sentinel registry.
-- `external-callback`: verify the callback URL/handle is in the per-agent allowlist.
-- `passive-wait`, `user-driven`: `ref` is ignored/optional.
+**passive-wait requires a deadline (Grok iter 2)**: commitments with `mechanism.type == "passive-wait"` MUST carry a `deadline`. Server rejects 400 on append if deadline is missing. Without a deadline, passive-wait commitments would accumulate forever with no expired-sweep trigger — closes the accumulation risk.
+
+**Mechanism ref validation (adversarial A1 resolution + iter 2 clarifications)**: on append, if `mechanism.ref` is present, the server MUST attempt to resolve it against the corresponding mechanism-type registry — **these are all in-memory lookups against local instar state; NO network I/O, NO URL fetching**:
+- `scheduled-job`: lookup in the local job-scheduler registry — must be a valid, non-expired, non-cancelled job.
+- `polling-sentinel`: lookup in the local sentinel registry.
+- `external-callback`: lookup in the per-agent callback-handle allowlist (in-memory). The `ref` is a handle identifier (e.g., `feedback-callback-v1`), NOT a URL. The server never fetches any URL during validation. Resolving only checks handle presence in the allowlist.
+- `user-driven`: `ref` is validated as a short opaque label (max 64 chars, charset `[a-zA-Z0-9-_.:]`), purely descriptive, no lookup.
+- `passive-wait`: `ref` is forbidden (must be absent) — there is nothing to reference.
 
 Resolution timeout is 200ms. On success, `refStatus: "valid"`. On explicit failure, `refStatus: "invalid"` AND the commitment is still accepted but written with `status: "disputed"` immediately (so the falsified-backing claim is visible). On timeout or inability to verify, `refStatus: "unverified"` and the commitment renders with a warning icon. `refStatus` is ALWAYS server-bound — never accepted from the client.
 
@@ -128,7 +131,8 @@ interface SessionAppendRequest {
 **Authoritative server rebinds (and trust-tier override visibility)**:
 
 - `provenance` is ALWAYS set to `"session-asserted"` by the server. Client cannot supply.
-- `counterparty.trustTier` is server-re-resolved from threadline autonomy level per v1's trust-tier mapping. If the client hint differs from the server's resolution, the server emits a `note` entry (subsystem-asserted, dedup'd at per-session-per-counterparty-per-24h) recording the discrepancy. This resolves Grok's "silent trust-tier override" finding — overrides are now visible in the ledger, not silent.
+- `status` field on commitment entries: client MAY supply `status: "open"` on creation (redundant — server sets it anyway). For mutations to status, client MUST use the `/shared-state/resolve/<id>` endpoint, not append a new entry. The server enforces this: a `POST /shared-state/append` request with `commitment.status != "open"` on a fresh commitment returns 400. Status transitions flow only through resolution endpoints or server-side sweep emitters (expired/stranded). Clarifies the status-authority ambiguity flagged by GPT iter 2.
+- `counterparty.trustTier` is server-re-resolved from threadline autonomy level per v1's trust-tier mapping. If the client hint differs from the server's resolution, the server emits a `note` entry (subsystem-asserted) recording the discrepancy. **Cap (Adversarial A10 iter 2)**: at most one discrepancy note per session per 24h regardless of counterparty, AND at most 10 total discrepancy notes per agent per 24h. Further discrepancies within the window silently suppress the note while still applying the correct trustTier. Closes the counterparty-cycling noise-flood vector.
 - Trust-tier resolution timeout is 500ms. On timeout, resolved as `untrusted` (default-deny) AND a degradation event `trust-tier-lookup-timeout` is emitted at WARN level (Security M3 resolution).
 - `source` field is NOT allowed on session-asserted entries. It's reserved for subsystem-inferred (classifier) entries.
 
@@ -142,12 +146,17 @@ interface SessionAppendRequest {
 
 **Near-duplicate rejection with explicit normalization**:
 
-A cross-session hash index of recent subject+summary pairs. **Normalization (Adversarial A2 resolution)** is explicit:
-1. Unicode NFC-normalize `subject` and `summary`.
-2. Lowercase.
-3. Strip `\p{C}` (control chars) and `\p{Cf}` (format chars per v1 Unicode rules).
-4. Concatenate `normalized-subject + "\0" + (normalized-summary ?? "")`.
-5. SHA-256 hash, first 16 hex chars.
+A cross-session hash index of recent subject+summary pairs. **Normalization (Adversarial A2 + A8 resolution)** is explicit:
+1. Unicode NFKC-normalize `subject` and `summary` (note: NFKC not NFC — NFKC applies compatibility decomposition which folds many visual variants to a canonical form).
+2. Apply Unicode confusables skeleton per UTS #39 (Unicode Security Mechanisms) — folds Cyrillic `а` (U+0430) to Latin `a`, zero-width joiners to nothing, full-width to ASCII, etc. Implemented via the `unicode/confusables` npm package or equivalent — stated as a dependency pin.
+3. Lowercase (after NFKC + confusables, which handle case-equivalent exotic scripts first).
+4. Strip `\p{C}` (control chars) and `\p{Cf}` (format chars per v1 Unicode rules).
+5. Collapse internal whitespace runs to single space.
+6. Trim leading/trailing whitespace.
+7. Concatenate `normalized-subject + "\0" + (normalized-summary ?? "")`.
+8. SHA-256 hash, first 16 hex chars.
+
+**Index persistence (Grok iter 2 resolution)**: the ring buffer is primarily in-memory for hot-path speed, but ALSO persisted to `.instar/dedup-index.cbor` (CBOR-encoded for compactness) on rotation-flush cadence (same cadence as stats sidecar). On server restart, the index is reloaded. Worst-case data loss on unclean shutdown: up to one flush interval of entries (~100ms). Acceptable — the dedup check is a signal not an authority, and a brief gap in coverage doesn't unlock new attacks.
 
 **Index eviction (Scalability Sc1 resolution)**: the index is a time-bucketed ring buffer. Hourly buckets; oldest bucket evicted on rotation to cap memory. Total index capped at 24 hours × (maxWritesPerMinuteGlobal × 60) = ~144K entries worst case at default config. Each entry is ~40 bytes (hash + timestamp + byte-count), max ~6MB — acceptable. At lower sustained rates, index is much smaller.
 
@@ -177,11 +186,12 @@ A new class at `src/core/LedgerSessionRegistry.ts`. Distinct from the existing t
 - The registry persists to `.instar/ledger-sessions.json` with file mode 0o600.
 - On server restart, the registry is reloaded; binding tokens survive server restart.
 
-**Token absolute TTL and rotation (Gemini + Grok resolution)**:
+**Token absolute TTL and rotation (Gemini + Grok resolution + iter 2 refinement)**:
 - Absolute TTL: `config.integratedBeing.tokenAbsoluteTtlHours` (default 72). A token is invalid past this age regardless of session activity. Prevents a leaked token from being refresh-revived indefinitely.
 - Rolling TTL (activity refresh): `config.integratedBeing.tokenIdleTtlHours` (default 24). A session that hasn't written in 24h must re-register to get a new token. Absolute TTL still caps the total lifetime.
 - Rotation: sessions MAY proactively re-register at any time; old token is invalidated on new token issue. The session-start hook re-runs on session restart, producing a new binding.
 - Revocation: the dashboard exposes a "revoke binding" button per session; revocation immediately invalidates the token and writes a `note` entry (subsystem-asserted) recording the revocation.
+- **Grace window on rotation (Gemini iter 2)**: when absolute TTL is reached for a long-running session, rotation is attempted via the session-start-hook path. If hook-based rotation fails (agent is in a state that can't re-run the hook), a 60-second grace window allows the session to call `POST /shared-state/session-bind-rotate` with the current still-valid token to receive a new one — closes the "one transient glitch bricks a long-running session" failure. The rotate endpoint has the same structural safety as interactive (requires session id + current valid token, both proving prior lifecycle integration).
 
 **Token handoff from session to server (race-safe — Adversarial A3 + Gemini resolution)**:
 
@@ -196,9 +206,20 @@ The session-start hook writes the token with atomic rename and explicit mode ver
 7. Session polls for `.ready`; max wait 5s.
 8. On read, the session verifies file mode is exactly 0o600. If not, fail-CLOSED (log CRITICAL, deny write capability for this session's lifetime). This tightens the earlier "fail-open" which was the wrong default (GPT flagged the wording; this is a security boundary).
 
-**REST fallback for hook propagation failure (Gemini resolution)**: if the hook-propagation path fails (marker never appears, or token file has wrong mode), the session can fall back to an interactive re-bind path: `POST /shared-state/session-bind-interactive` which returns the token directly in the response body over the authenticated HTTP channel (bearer-token gated). This path is ONLY usable when the file-based path fails, gated by a runtime detection that the file-based handoff did not succeed. Prevents the "permanent read-only degradation" failure mode where a single failed handoff silently disables a session's write capability for its lifetime.
+**REST fallback for hook propagation failure (Gemini iter 2 hardening)**: if the hook-propagation path fails, the session can fall back to an interactive re-bind path: `POST /shared-state/session-bind-interactive`. **This path is NOT simply bearer-token gated** — that would let any bearer-token holder mint binding tokens, defeating the 0o600 boundary.
 
-**No weaker fallback for auth itself**: there is NO path that allows a session to write without a registered, valid, non-expired binding token. The REST fallback still produces a token through the authenticated server channel — the fallback is only about HOW the token is delivered, not about WHETHER authentication happens.
+**Server-side attestation required (new in iter 2)**. The fallback is gated by a server-recorded "hook-initiated but failed to complete" flag:
+
+1. The session-start hook ALWAYS calls `POST /shared-state/session-bind` first (unconditionally). This registers a session id on the server side AND starts a 30-second "hook-in-progress" timer keyed by session id.
+2. If the hook completes the file-based handoff (token file with mode 0o600 plus `.ready` marker), the server observes this via a subsequent ping call `POST /shared-state/session-bind-confirm` which clears the hook-in-progress flag. The flag is cleared ONLY on successful mode-verification-passed session-bind-confirm.
+3. If the hook fails (file write error, mode mismatch), the session polls the ready marker, times out at 5s, and can then call `POST /shared-state/session-bind-interactive` with the session id. The server checks: (a) the hook-in-progress flag is set for this session id AND within 30s of session-bind, (b) the session id has NOT already received a binding token via any path. Both conditions must hold.
+4. If both hold, the interactive path returns a token and clears the flag. Otherwise, 403.
+
+This means: a bearer-token holder CANNOT mint a binding token unless they first pose as the session-start hook (requires being the session's actual parent process, which has authenticated instar lifecycle integration) AND the file-path failed first. The 0o600 boundary remains the primary; the interactive path is a second-factor fallback that still requires hook-lifecycle proof.
+
+**No weaker fallback for auth itself**: there is NO path that allows a session to write without a registered, valid, non-expired binding token obtained through one of the two sanctioned paths.
+
+**Log masking applies to interactive path too**: `POST /shared-state/session-bind-interactive` response body contains the token — masked in all server logs AND the caller is responsible for not logging the response. Response carries `Cache-Control: no-store` header. Client-side linting encouraged.
 
 **Cleanup (Scalability Sc4 resolution — two-tier retention)**:
 - Active sessions (wrote within last 7 days): retained 7 days after last write.
@@ -216,23 +237,42 @@ The session-start hook writes the token with atomic rename and explicit mode ver
 |------------|--------------|--------------|
 | self-assert | ONLY the registered session that originally created the commitment (session id matches `emittedBy.instance`) | `self-asserted` |
 | subsystem-verify | A whitelisted server-side emitter (e.g., scheduled-job outcome emitter) | `subsystem-verified` |
-| user-resolve | The dashboard, behind `X-Instar-Request: 1` header | `user-resolved` |
+| user-resolve | The dashboard with a proper user-auth assertion (not just the X-Instar-Request header) — see "User-resolve auth" below | `user-resolved` |
 | dispute | Any registered session OR the dashboard | New `note` entry, does NOT mutate |
 
 Sessions other than the creator may NOT self-assert resolution (Adversarial A4: closes "any session can hide any commitment via self-assert"). To contest a commitment written by another session, use `dispute` — which produces a visible note.
 
-**Stranded commitments (GPT follow-up)**: if the creating session is expired/purged before self-asserting, the commitment remains `open` forever. To handle this: the daily expired-status sweep (§1) also targets commitments whose creating session has been purged for 7+ days — those get a `note` with subject `stranded: creating session no longer exists` and effective status rendered as `stranded` (new derived state, not in the enum — computed at render time only).
+**User-resolve auth (GPT iter 2 High-severity resolution)**: user-resolved resolution requires TWO factors:
+
+1. Bearer token matching the agent's auth token (existing instar auth).
+2. Dashboard session PIN verification — the user-resolve endpoint requires a valid dashboard-session cookie AND a recent PIN-unlock (within the last 15 minutes). This matches the existing dashboard-session model used for other user-authoritative actions (backup triggers, config edits).
+
+The `X-Instar-Request: 1` header is NOT sufficient by itself — a shell-side adversary with the bearer token could set that header. PIN-unlock within 15 minutes provides the "user is presently at the dashboard" signal. Replay-protection: the PIN-unlock is rotated on every successful user-resolve, preventing a captured dashboard session from performing multiple silent resolutions.
+
+**Stranded commitments (GPT follow-up + iter 2 clarification)**: if the creating session is expired/purged before self-asserting, the commitment remains `open` forever. To handle this: the daily expired-status sweep (§1) also targets commitments whose creating session has been purged for 7+ days — those get a `note` with subject `stranded: creating session no longer exists`.
+
+**Rendered state vs enum (GPT iter 2 resolution)**: `stranded` is NOT a member of the stored `status` enum (which stays `open | resolved | cancelled | expired | disputed`). It is a render-time derived state computed by the rendering layer when a stranded-note is present in the supersession chain. Documented explicitly so no consumer assumes they can set `status: "stranded"` via API — they cannot; the field is rejected at schema validation. The rendering-only approach keeps the write surface small and the stored state finite.
+
+**Accelerated stranding (GPT iter 2 follow-up)**: the 14-day lag (7d session purge + 7d sweep cadence) left commitments in limbo too long. Revised: the stranded sweep runs daily, and triggers at 24h after the creating session is purged (not 7 days). Total stranding lag: creating-session idle-TTL (24h) + session purge (7d activity-based) + stranded sweep (24h after purge) = up to ~9 days maximum, down from 14.
 
 Resolutions write a NEW entry that `supersedes` the commitment AND updates the commitment's effective status via supersession chain walk at render time. The original commitment entry is immutable.
 
 **Supersession chain caching (Scalability Sc3 resolution)**: chain walks are cached per-entry with TTL 60s and bust-on-write (new entry supersedes an entry → invalidate cache for that entry's chain). Bounded by v1's depth cap 16.
 
-**Dispute handling**:
+**Dispute handling (Gemini iter 2 critical resolution — separated from supersession chain)**:
 
-A dispute is a new entry with kind `note`, `supersedes` the commitment, subject `"disputed: <brief reason>"`. Render-time aggregation counts disputes (derived from ledger, not in-memory — Grok/Scalability Sc5 resolution). After ≥3 disputes within 24h (window measured at render time over the supersession chain):
+Disputes are NOT stored as entries in the commitment's supersession chain. That design hit the v1 depth cap of 16, creating a data-hiding vector where the 17th dispute would fail silently. Instead:
+
+A dispute is a new entry with `kind: "note"`, AND a new field `disputes: <commitment-id>` (not `supersedes`). The `disputes` field is separate from `supersedes` and is not subject to the chain-depth cap. The supersession chain itself is reserved for state transitions (resolve/cancel/expire/strand) which are bounded by the commitment's lifecycle and unlikely to hit 16.
+
+**Per-session dispute write cap (new iter 2)**: to bound disputes-as-ledger-volume, a session may write at most `config.integratedBeing.disputesPerSessionPerHour` (default 10) dispute entries per hour. Exceeds → 429. Independent of the 30/min session-write cap. Closes Gemini's "~6,000 disputes/hour" vector.
+
+Dispute-count aggregation: render-time scan of entries with `disputes: <commitment-id>` matching the target. Bounded by the same dedup-index rolling window (24h). Beyond 24h, historical disputes are retained in the ledger but not counted in the live threshold check (they remain visible in the audit trail).
+
+After ≥3 disputes within 24h:
 - Commitment's effective `status` renders as `disputed`.
-- Attention-queue item produced (coalesced per Security M4 — at most one per commitment per 24h).
-- Render surface shows all dispute reasons.
+- Attention-queue item produced (coalesced — at most one per commitment per 24h).
+- Render surface shows all live dispute reasons.
 
 ### 5. Dashboard surface additions
 
@@ -279,8 +319,16 @@ Cross-machine commitment visibility remains a v3 deferral.
 - **SharedStateLedger.ts (v1)**: v2 extends the entry type union; v1 entries remain valid. `renderForInjection()` updated to handle `commitment` kind with mechanism/status/resolution rendering. Existing v1 kinds render unchanged.
 - **BackupManager**: `.instar/ledger-sessions.json` and `.instar/session-binding/*.token` added to default backup manifest (gated by `config.integratedBeing.enabled`). Glob inclusion per v1's pattern.
 - **Dashboard**: additions to existing tab (not a new tab). Bindings subtab is the only structural addition.
-- **Session-start hook**: one new server call (`POST /shared-state/session-bind`) with token-file atomic write. Authoritative inline template at `PostUpdateMigrator.getSessionStartHook()` updated. `instar migrate sync-session-hook` (from v1) extended with v2 migration steps. Divergent local hooks (e.g., Echo's) require explicit re-run of this CLI.
-- **Job scheduler**: new `onComplete` callback hook. On job completion, if the job was referenced by an open commitment (`mechanism.ref` matches job id), emit a `subsystem-verified` resolution entry. If the spec's target scheduler doesn't yet have an `onComplete` extension point, that becomes a prerequisite implementation step — called out in §"Implementation prerequisites" below.
+- **Session-start hook**: one new server call (`POST /shared-state/session-bind`) with token-file atomic write. Authoritative inline template at `PostUpdateMigrator.getSessionStartHook()` updated. `instar migrate sync-session-hook` (from v1) extended with v2 migration steps.
+
+**Divergent-hook migration policy (Integration M1 iter 2 resolution)**: `instar migrate sync-session-hook --v2` offers two explicit modes:
+1. `--mode=inject` (default): parse the existing custom hook, detect the integrated-being section by comment markers (`# BEGIN integrated-being-v2` / `# END integrated-being-v2`), and inject the v2 section without touching other customizations. Idempotent: re-running the command updates only the marked section.
+2. `--mode=overwrite`: replace the entire hook with the canonical template, losing any custom additions. Documented as destructive; a backup copy of the pre-migration hook is saved to `.instar/hooks/instar/session-start.sh.pre-v2.<timestamp>`.
+
+For Echo-style agents with substantial customization, `--mode=inject` is the path. For new installs, `--mode=overwrite` is the default from the update migrator.
+- **Job scheduler**: new `onComplete` callback hook. On job completion, if the job was referenced by an open commitment (`mechanism.ref` matches job id), emit a `subsystem-verified` resolution entry.
+
+**onComplete polling fallback (Integration M2 iter 2 resolution)**: if the existing job scheduler cannot be extended with a native callback (confirmed during implementation, not pre-decided), the fallback is a polling sentinel that runs every 60 seconds and checks: for each `status: "open"` commitment with `mechanism.type: "scheduled-job"`, query the scheduler for the referenced job's current state. If the job is complete (`finished-ok` or `finished-error`), emit a `subsystem-verified` resolution entry. Bounded work per poll: max 100 commitments scanned per cycle (if more, continue next cycle). Retry semantics: a poll cycle that fails to query the scheduler retries on the next 60s tick; after 10 consecutive poll failures the commitment is marked with a degradation note (signal only, commitment stays open). Budget accounting: polls count against the agent-global 100/min write cap only when they ACTUALLY emit a resolution entry, not just when they read.
 - **Attention queue**: new item kind `"commitment-dispute"` AND `"suspicious-repetition"` (from aggregation signal). Coalesced per §4 and §2 respectively.
 - **Threadline**: no changes. Third-party delivery awareness remains a separate track.
 - **MessageSentinel paraphrase cross-check (v1)**: extended to scan `subject` on `commitment` entries with exclusion rules matching v1 (different counterparty only, skip inferred-provenance). Fires as a signal only. No spec change to v1; this is an implementation-time addition to v1's existing corpus.
@@ -304,6 +352,8 @@ These exist as implementation tasks (not spec gaps — the spec assumes they'll 
 
 v1 entries remain renderable. A v1 reader encountering a v2 commitment entry sees an entry with extra unknown fields. v1's render path has an explicit "unknown kind → show subject/summary with kind name as a label" fallback (already present). The extra fields (mechanism, deadline, etc.) are ignored by v1 rendering. This means: a v1-installed agent reading a v2-written ledger after a mixed upgrade gets degraded-but-safe rendering. Tested explicitly via the success criteria.
 
+**v1 in-flight migration (Gemini iter 2 resolution)**: at v2 enable time, any v1 entries already in the ledger remain unchanged and continue to render. The migration is passive — no v1 entry is converted into a v2 commitment entry. If a user wants to upgrade a v1 note/agreement retroactively into a tracked commitment, they create a new v2 commitment entry referencing the v1 entry's id in its `summary` (the `supersedes` relationship is NOT used here, since the v1 entry isn't being withdrawn — it's being elaborated). Documented in the upgrade notes.
+
 ## Rollback plan
 
 v2 write surface is gated by independent switches, any of which disables it cleanly:
@@ -316,9 +366,12 @@ v2 write surface is gated by independent switches, any of which disables it clea
 
 ## Config knobs (additions to v1)
 
+**`resolutionEnabled` coupling (Integration M3 iter 2 resolution)**: this is explicit loader-level coupling, not maintainer convention. On config load, if `v2Enabled == false`, `resolutionEnabled` is forced to `false` regardless of user value. If `v2Enabled == true` and `resolutionEnabled` has never been explicitly set (first transition to v2Enabled=true), it is set to `true` and written back to config. If `v2Enabled == true` and the user has explicitly set `resolutionEnabled: false`, that takes precedence. This lets operators disable the resolution workflow independently without fighting the v2Enabled flip.
+
 ```
 integratedBeing.v2Enabled                          (default false — observation period first)
-integratedBeing.resolutionEnabled                  (default false until v2Enabled, then true)
+integratedBeing.resolutionEnabled                  (default false — auto-true on first v2Enabled flip, unless operator set it false explicitly)
+integratedBeing.disputesPerSessionPerHour          (default 10)
 integratedBeing.sessionWriteRatePerMinute          (default 30)
 integratedBeing.maxWritesPerMinuteGlobal           (default 100)    # agent-global ceiling
 integratedBeing.openCommitmentsPerSession          (default 20)
