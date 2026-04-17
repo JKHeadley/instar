@@ -1492,6 +1492,14 @@ export interface InstarConfig {
   };
   /** Integrated-Being ledger (cross-session coherence) — see docs/specs/integrated-being-ledger-v1.md */
   integratedBeing?: IntegratedBeingConfig;
+  /**
+   * BackupManager configuration override. Optional; all fields merge over
+   * BackupManager's DEFAULT_CONFIG. `includeFiles` is set-unioned with
+   * defaults (see {@link BackupConfig.includeFiles}) — this is how
+   * migrators and users add extra paths to backups without displacing
+   * identity/memory defaults.
+   */
+  backup?: Partial<BackupConfig>;
 }
 
 // ── Integrated-Being Ledger (v1) ────────────────────────────────────
@@ -1516,6 +1524,49 @@ export interface IntegratedBeingConfig {
   /** Per-agent salt for hashing untrusted counterparty names. Generated on
    *  first use; never rotated silently. */
   counterpartyHashSalt?: string;
+
+  // ── v2 knobs (docs/specs/integrated-being-ledger-v2.md) ──────────
+  /** Master v2 switch. Gates session-write endpoints, session registry,
+   *  and dashboard additions. Default false — v2 ships dark for observation. */
+  v2Enabled?: boolean;
+  /** Enables POST /shared-state/resolve/:id user-facing resolution flow.
+   *  Loader forces false when v2Enabled is false; auto-trues on first
+   *  v2Enabled flip unless operator explicitly set false. */
+  resolutionEnabled?: boolean;
+  /** Per-session write rate (writes/min). Default 30. Returns 429. */
+  sessionWriteRatePerMinute?: number;
+  /** Per-agent global write ceiling (writes/min, summed across sessions).
+   *  Default 100. */
+  maxWritesPerMinuteGlobal?: number;
+  /** Per-session cap on open commitments. Default 20. */
+  openCommitmentsPerSession?: number;
+  /** Per-session cap on passive-wait commitments. Default 3. */
+  passiveWaitCommitmentsPerSession?: number;
+  /** Absolute TTL for binding tokens (hours). Default 72. Past this,
+   *  tokens are invalid regardless of refresh. */
+  tokenAbsoluteTtlHours?: number;
+  /** Rolling idle TTL for binding tokens (hours). Default 24.
+   *  Absolute TTL still caps total lifetime. */
+  tokenIdleTtlHours?: number;
+  /** Days after last write that a session registration is retained.
+   *  Default 7. */
+  sessionBindingRetentionDays?: number;
+  /** Mechanism-ref validation timeout (ms). Default 200. */
+  mechanismRefValidateTimeoutMs?: number;
+  /** Trust-tier lookup timeout (ms). Default 500. */
+  trustTierLookupTimeoutMs?: number;
+  /** Dispute-count threshold for rendering disputed status. Default 3. */
+  disputeCountThreshold?: number;
+  /** Disputes per session per hour cap. Default 10. */
+  disputesPerSessionPerHour?: number;
+  /** Dispute window (hours). Default 24. */
+  disputeWindowHours?: number;
+  /** Aggregation signal threshold (cross-session dedup hits in 24h). Default 5. */
+  aggregationSignalThreshold?: number;
+  /** Aggregation signal immediate threshold (same-session dedup hits). Default 2. */
+  aggregationSignalImmediateThreshold?: number;
+  /** Phase A sidecar buffer max entries. Default 500 — overflow 429s. */
+  sidecarBufferMax?: number;
 }
 
 /** Ledger entry subsystem (who emitted). Always bound server-side. */
@@ -1525,7 +1576,9 @@ export type LedgerEntrySubsystem =
   | 'session-manager'
   | 'compaction-sentinel'
   | 'dispatch'
-  | 'coherence-gate';
+  | 'coherence-gate'
+  /** v2: session-asserted writes via POST /shared-state/append. instance = session id. */
+  | 'session';
 
 /** Ledger entry kind. */
 export type LedgerEntryKind =
@@ -1538,7 +1591,11 @@ export type LedgerEntryKind =
   | 'note';
 
 /** Authorship label on each entry (replaces "confidence"). */
-export type LedgerProvenance = 'subsystem-asserted' | 'subsystem-inferred';
+export type LedgerProvenance =
+  | 'subsystem-asserted'
+  | 'subsystem-inferred'
+  /** v2: bearer-token-authenticated session write via POST /shared-state/append. */
+  | 'session-asserted';
 
 /** Counterparty metadata for a ledger entry. */
 export interface LedgerCounterparty {
@@ -1585,6 +1642,97 @@ export interface LedgerEntry {
   dedupKey: string;
   /** Optional source label for classifier-produced entries. */
   source?: 'heuristic-classifier';
+  /** v2: commitment-kind fields. Present iff kind === 'commitment'. */
+  commitment?: LedgerCommitmentFields;
+  /** v2: dispute pointer — kind must be 'note'. Separate from supersedes. */
+  disputes?: string;
+}
+
+// ── Integrated-Being Ledger (v2) ────────────────────────────────────
+
+/** Commitment mechanism declaration — how the commitment will be fulfilled. */
+export type LedgerMechanismType =
+  | 'scheduled-job'
+  | 'polling-sentinel'
+  | 'external-callback'
+  | 'passive-wait'
+  | 'user-driven';
+
+/** Result of one-time server-side mechanism-ref resolution at write. */
+export type LedgerMechanismRefStatus = 'valid' | 'invalid' | 'unverified';
+
+/** Commitment status in the stored state enum. 'stranded' is render-only. */
+export type LedgerCommitmentStatus =
+  | 'open'
+  | 'resolved'
+  | 'cancelled'
+  | 'expired'
+  | 'disputed';
+
+/** Tier of a resolution outcome — readers calibrate trust accordingly. */
+export type LedgerResolutionTier =
+  | 'self-asserted'
+  | 'subsystem-verified'
+  | 'user-resolved';
+
+/** Mechanism block for a commitment entry. refStatus is server-bound. */
+export interface LedgerMechanismSpec {
+  type: LedgerMechanismType;
+  /** Opaque ref resolvable against the mechanism-type registry. */
+  ref?: string;
+  /** ISO 8601 timestamp. Server-set — frozen at append. */
+  refResolvedAt: string;
+  /** Result of one-time resolution at write. Server-bound — never from client. */
+  refStatus: LedgerMechanismRefStatus;
+}
+
+/** Resolution block — present when a commitment is non-open. */
+export interface LedgerResolutionSpec {
+  /** ISO 8601 timestamp. */
+  at: string;
+  /** Which tier wrote this resolution. */
+  by: LedgerResolutionTier;
+  /** Optional note. Max 400 chars, Unicode-sanitized per v1 rules. */
+  note?: string;
+  /** Opaque pointer to audit trail. */
+  evidenceRef?: string;
+}
+
+/** Commitment-specific fields attached to a LedgerEntry of kind 'commitment'. */
+export interface LedgerCommitmentFields {
+  mechanism: LedgerMechanismSpec;
+  /** Optional ISO 8601 deadline. Sanity range: now+60s..now+90d. */
+  deadline?: string;
+  status: LedgerCommitmentStatus;
+  resolution?: LedgerResolutionSpec;
+}
+
+/**
+ * A registered session in the LedgerSessionRegistry. Represents a live
+ * or retained session that holds a binding token used to authenticate
+ * writes via POST /shared-state/append.
+ */
+export interface LedgerSessionRegistration {
+  /** Opaque session id (UUIDv4). */
+  sessionId: string;
+  /** Hex-encoded SHA-256 of the binding token. Plaintext token is returned
+   *  to the caller ONCE on register; only the hash is persisted. */
+  tokenHash: string;
+  /** ISO 8601 timestamp of initial registration. */
+  registeredAt: string;
+  /** ISO 8601 timestamp of most recent write or rotation. */
+  lastActiveAt: string;
+  /** ISO 8601 timestamp when the absolute TTL expires. */
+  absoluteExpiresAt: string;
+  /** ISO 8601 timestamp when the idle TTL expires (refreshed on write). */
+  idleExpiresAt: string;
+  /** True once the session has made at least one successful write.
+   *  Determines retention tier on cleanup (7d vs 1d). */
+  hasWritten: boolean;
+  /** True if revoked. Revoked sessions are purged on cleanup; verify fails closed. */
+  revoked: boolean;
+  /** Optional label for dashboard rendering — set by hook, max 64 chars. */
+  label?: string;
 }
 
 // ── Dashboard ───────────────────────────────────────────────────────
@@ -2182,7 +2330,16 @@ export interface BackupConfig {
   enabled: boolean;
   /** Maximum snapshots to retain (default: 20) */
   maxSnapshots: number;
-  /** Files to include in backups (relative to .instar/) */
+  /**
+   * Additional files to include in backups, unioned with
+   * `BackupManager.DEFAULT_CONFIG.includeFiles`. Users and migrators
+   * can extend the default set but cannot remove from it.
+   * Paths are relative to `stateDir` (typically `.instar/`).
+   *
+   * Defense-in-depth: any entry resolving under `.instar/secrets/` is
+   * refused by `BLOCKED_PATH_PREFIXES` at snapshot time regardless of
+   * source (defaults, user config, migrator).
+   */
   includeFiles: string[];
 }
 

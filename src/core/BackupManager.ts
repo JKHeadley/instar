@@ -88,7 +88,19 @@ export class BackupManager {
   ) {
     this.stateDir = path.resolve(stateDir);
     this.backupsDir = path.resolve(stateDir, 'backups');
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // `includeFiles` is UNIONED with defaults, not replaced. Users and
+    // migrators extend the default identity/memory set with extra paths
+    // (e.g. pr-pipeline state); they can't accidentally strip the defaults
+    // by passing a shorter list.
+    const userIncludes = config?.includeFiles ?? [];
+    const mergedIncludes = Array.from(
+      new Set<string>([...DEFAULT_CONFIG.includeFiles, ...userIncludes]),
+    );
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+      includeFiles: mergedIncludes,
+    };
     this.isSessionActive = isSessionActive;
     this.isIntegratedBeingEnabled = isIntegratedBeingEnabled;
   }

@@ -168,6 +168,8 @@ export interface RouteContext {
   unifiedTrust: UnifiedTrustSystem | null;
   /** Integrated-Being SharedStateLedger (v1). Null when disabled. */
   sharedStateLedger: import('../core/SharedStateLedger.js').SharedStateLedger | null;
+  /** Integrated-Being LedgerSessionRegistry (v2). Null when v2Enabled=false. */
+  ledgerSessionRegistry: import('../core/LedgerSessionRegistry.js').LedgerSessionRegistry | null;
   /** Pending reply waiters for threadline relay-send waitForReply support.
    *  Key: threadId (UUID — unique per conversation, unlike agent names which
    *  can collide when multiple agents share a name). Value: resolve callback
@@ -952,7 +954,7 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/backups', async (_req, res) => {
     try {
       const { BackupManager } = await import('../core/BackupManager.js');
-      const manager = new BackupManager(ctx.config.stateDir);
+      const manager = new BackupManager(ctx.config.stateDir, ctx.config.backup);
       res.json({ snapshots: manager.listSnapshots() });
     } catch {
       res.status(500).json({ error: 'Failed to list backups' });
@@ -962,7 +964,7 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/backups', async (_req, res) => {
     try {
       const { BackupManager } = await import('../core/BackupManager.js');
-      const manager = new BackupManager(ctx.config.stateDir);
+      const manager = new BackupManager(ctx.config.stateDir, ctx.config.backup);
       const snapshot = manager.createSnapshot('manual');
       res.json(snapshot);
     } catch (err) {
@@ -1001,7 +1003,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const { BackupManager } = await import('../core/BackupManager.js');
       const manager = new BackupManager(
         ctx.config.stateDir,
-        undefined,
+        ctx.config.backup,
         () => ctx.sessionManager.listRunningSessions().length > 0,
       );
       manager.restoreSnapshot(id);
@@ -10029,6 +10031,298 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  // ── Integrated-Being shared-state ledger (v2 — session-write surface) ─
+  //
+  // Slice 1 scope: session-bind + append (auth-only, no commitment logic).
+  // Later slices add resolve, session-bind-interactive, session-bind-rotate,
+  // mechanism-ref validation, dedup index, sweepers, and dashboard.
+  //
+  // All v2 endpoints are gated on config.integratedBeing.v2Enabled (default
+  // false). When false, endpoints return 503 with X-Disabled: v2.
+  //
+  // Spec: docs/specs/integrated-being-ledger-v2.md
+
+  const v2Disabled = (_req: ExpressRequest, res: ExpressResponse): boolean => {
+    const ibConfig = ctx.config.integratedBeing ?? {};
+    const masterEnabled =
+      ibConfig.enabled === undefined ? true : ibConfig.enabled !== false;
+    const v2Enabled = ibConfig.v2Enabled === true;
+    const ready =
+      masterEnabled && v2Enabled && ctx.sharedStateLedger && ctx.ledgerSessionRegistry;
+    if (!ready) {
+      res.setHeader('X-Disabled', 'v2');
+      res.status(503).json({ error: 'Integrated-Being ledger v2 disabled' });
+      return true;
+    }
+    return false;
+  };
+
+  // --- Log-masking helper: binding tokens + session ids must never leak. ---
+  // Structural redaction via a shared helper ensures consistency across
+  // handlers. The raw token and session id never land in logs / error
+  // traces / degradation-reporter output. (Spec §2 Security S1.)
+  const redactBindingToken = (token: string): string =>
+    token.length > 0 ? '***REDACTED***' : '';
+  const redactSessionId = (sid: string): string =>
+    sid.length >= 8 ? `${sid.slice(0, 8)}-***` : '***';
+
+  /**
+   * POST /shared-state/session-bind
+   *
+   * Registers a session id in the LedgerSessionRegistry and returns a
+   * plaintext binding token ONCE. Called by the session-start hook
+   * (slice 2 wires the hook; for slice 1 this endpoint is callable
+   * directly from tests and any authenticated caller).
+   *
+   * Request body: { sessionId: uuidv4, label?: string }
+   * Response 200: { token, absoluteExpiresAt, idleExpiresAt, idempotentReplay }
+   * Response 400: malformed sessionId
+   * Response 503: v2 disabled
+   *
+   * Note: bearer-token auth is enforced by the global authMiddleware.
+   * The open architectural concern called out in the spec's "Open
+   * architectural questions" §1 (any bearer-token holder can call this)
+   * is documented there as an accepted limit of v2; v2.1 addresses it
+   * with privileged-channel isolation.
+   */
+  router.post(
+    '/shared-state/session-bind',
+    rateLimiter(60_000, 30),
+    async (req, res) => {
+      if (v2Disabled(req, res)) return;
+      try {
+        const body = (req.body ?? {}) as { sessionId?: unknown; label?: unknown };
+        const sessionId =
+          typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+        const label = typeof body.label === 'string' ? body.label : undefined;
+        if (!sessionId) {
+          res.status(400).json({
+            error: 'sessionId is required (UUIDv4 format)',
+          });
+          return;
+        }
+        let result;
+        try {
+          result = ctx.ledgerSessionRegistry!.register(sessionId, label);
+        } catch (err) {
+          res.status(400).json({
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          sessionId: result.sessionId,
+          token: result.token,
+          absoluteExpiresAt: result.absoluteExpiresAt,
+          idleExpiresAt: result.idleExpiresAt,
+          idempotentReplay: result.idempotentReplay,
+        });
+      } catch (err) {
+        res.status(500).json({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  );
+
+  /**
+   * POST /shared-state/append
+   *
+   * Authenticated session-write to the shared-state ledger. Slice 1
+   * scope: accepts 'agreement' | 'decision' | 'note' kinds only;
+   * 'commitment' returns 501 (pending slice 3's mechanism-ref validator).
+   * 'thread-*' kinds return 400 (reserved for server-side emitters).
+   *
+   * Auth: X-Instar-Session-Id + X-Instar-Session-Token. Both required.
+   * The global bearer-token auth (authMiddleware) remains in front.
+   *
+   * Request body (SessionAppendRequest):
+   *   { kind, subject, summary?, counterparty: { type, name, trustTier? },
+   *     supersedes?, dedupKey }
+   *
+   * Response 200: { id, t } — the new entry's id and server timestamp.
+   * Response 400: malformed body or forbidden kind
+   * Response 401: missing / invalid session headers
+   * Response 409: dedupKey collision (via v1 dedup)
+   * Response 501: commitment kind (pending slice 3)
+   * Response 503: v2 disabled
+   */
+  router.post(
+    '/shared-state/append',
+    rateLimiter(60_000, 60),
+    async (req, res) => {
+      if (v2Disabled(req, res)) return;
+
+      // ── Session auth ──────────────────────────────────────────────
+      const sessionId = String(req.header('x-instar-session-id') ?? '').trim();
+      const token = String(req.header('x-instar-session-token') ?? '').trim();
+      if (!sessionId || !token) {
+        res
+          .status(401)
+          .json({ error: 'Missing X-Instar-Session-Id or X-Instar-Session-Token' });
+        return;
+      }
+      const verify = ctx.ledgerSessionRegistry!.verify(sessionId, token);
+      if (!verify.ok) {
+        res.status(401).json({
+          error: 'Session binding invalid',
+          reason: verify.reason,
+        });
+        return;
+      }
+
+      // ── Schema validation ─────────────────────────────────────────
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const kind = typeof body.kind === 'string' ? body.kind : '';
+      if (kind === 'commitment') {
+        res.setHeader('X-Pending-Slice', '3');
+        res.status(501).json({
+          error: 'commitment kind pending slice 3 (mechanism-ref validator)',
+        });
+        return;
+      }
+      if (
+        kind !== 'agreement' &&
+        kind !== 'decision' &&
+        kind !== 'note'
+      ) {
+        res.setHeader('X-Invalid-Field', 'kind');
+        res.status(400).json({
+          error: 'kind must be one of: agreement | decision | note',
+        });
+        return;
+      }
+
+      const subject = typeof body.subject === 'string' ? body.subject : '';
+      if (!subject || subject.length > 200) {
+        res.setHeader('X-Invalid-Field', 'subject');
+        res.status(400).json({ error: 'subject required, max 200 chars' });
+        return;
+      }
+      const summary =
+        typeof body.summary === 'string' ? body.summary : undefined;
+      if (summary !== undefined && summary.length > 400) {
+        res.setHeader('X-Invalid-Field', 'summary');
+        res.status(400).json({ error: 'summary max 400 chars' });
+        return;
+      }
+
+      const counterparty = body.counterparty as
+        | { type?: string; name?: string; trustTier?: string }
+        | undefined;
+      if (
+        !counterparty ||
+        typeof counterparty !== 'object' ||
+        !counterparty.type ||
+        !counterparty.name
+      ) {
+        res.setHeader('X-Invalid-Field', 'counterparty');
+        res.status(400).json({ error: 'counterparty.type + .name required' });
+        return;
+      }
+      if (!/^[a-zA-Z0-9\-_.:]+$/.test(counterparty.name) || counterparty.name.length > 64) {
+        res.setHeader('X-Invalid-Field', 'counterparty.name');
+        res.status(400).json({
+          error: 'counterparty.name must be [a-zA-Z0-9-_.:], max 64 chars',
+        });
+        return;
+      }
+      if (
+        counterparty.type !== 'user' &&
+        counterparty.type !== 'agent' &&
+        counterparty.type !== 'self' &&
+        counterparty.type !== 'system'
+      ) {
+        res.setHeader('X-Invalid-Field', 'counterparty.type');
+        res.status(400).json({
+          error: 'counterparty.type must be one of: user | agent | self | system',
+        });
+        return;
+      }
+
+      const dedupKey = typeof body.dedupKey === 'string' ? body.dedupKey : '';
+      if (!dedupKey || dedupKey.length > 200 || !/^[a-zA-Z0-9\-_.:]+$/.test(dedupKey)) {
+        res.setHeader('X-Invalid-Field', 'dedupKey');
+        res.status(400).json({
+          error: 'dedupKey required, [a-zA-Z0-9-_.:], max 200 chars',
+        });
+        return;
+      }
+
+      const supersedes =
+        typeof body.supersedes === 'string' && body.supersedes.length > 0
+          ? body.supersedes
+          : undefined;
+
+      // ── Forbid commitment / source / provenance / emittedBy fields ──
+      // Those are server-bound per spec §2. Clients that try to set them
+      // get a 400 — this prevents confusion about what's authoritative.
+      for (const forbidden of [
+        'commitment',
+        'provenance',
+        'emittedBy',
+        'source',
+        'id',
+        't',
+      ]) {
+        if (Object.prototype.hasOwnProperty.call(body, forbidden)) {
+          res.setHeader('X-Invalid-Field', forbidden);
+          res.status(400).json({
+            error: `field '${forbidden}' is server-bound and cannot be supplied`,
+          });
+          return;
+        }
+      }
+
+      // ── Append ────────────────────────────────────────────────────
+      try {
+        const appended = await ctx.sharedStateLedger!.append({
+          emittedBy: { subsystem: 'session', instance: sessionId },
+          kind: kind as 'agreement' | 'decision' | 'note',
+          subject,
+          summary,
+          counterparty: {
+            type: counterparty.type,
+            name: counterparty.name,
+            // trustTier is server-owned per spec — client hint ignored in slice 1.
+            trustTier: 'untrusted',
+          },
+          supersedes,
+          provenance: 'session-asserted',
+          dedupKey,
+        });
+
+        if (!appended) {
+          // v1 append returns null on dedup OR fail-open IO failure. The
+          // client can't tell which without inspecting server logs — for
+          // slice 1 we collapse to 409 (idempotent replay friendly) and
+          // return 500 only if a subsequent follow-up check (future slice)
+          // confirms a write failure. v1 behavior is preserved.
+          res.setHeader('X-Dedup-Or-Fail', '1');
+          res.status(409).json({
+            error: 'duplicate dedupKey or append failed (fail-open)',
+          });
+          return;
+        }
+
+        ctx.ledgerSessionRegistry!.touchActivity(sessionId);
+        res.json({ id: appended.id, t: appended.t });
+      } catch (err) {
+        console.error(
+          `[shared-state/append] append failed for session=${redactSessionId(
+            sessionId
+          )} token=${redactBindingToken(token)}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+        res.status(500).json({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  );
 
   return router;
 }

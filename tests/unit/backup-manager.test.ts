@@ -523,15 +523,45 @@ describe('BackupManager', () => {
   });
 
   describe('custom config', () => {
-    it('uses custom includeFiles', () => {
+    it('unions custom includeFiles with defaults (never replaces)', () => {
+      // User-supplied includeFiles are ADDED to the defaults; migrators and
+      // user config extend the backup set without risk of stripping
+      // identity/memory defaults. Pre-change semantics were replace — that
+      // footgun is what this commit closes.
+      fs.writeFileSync(path.join(stateDir, 'custom-state.json'), '{"x": 1}');
       const manager = new BackupManager(stateDir, {
-        includeFiles: ['AGENT.md'],
+        includeFiles: ['custom-state.json'],
       });
       const snapshot = manager.createSnapshot('manual');
 
-      expect(snapshot.files).toEqual(['AGENT.md']);
-      expect(snapshot.files).not.toContain('MEMORY.md');
-      expect(snapshot.files).not.toContain('jobs.json');
+      expect(snapshot.files).toContain('custom-state.json');
+      expect(snapshot.files).toContain('AGENT.md');
+      expect(snapshot.files).toContain('MEMORY.md');
+      expect(snapshot.files).toContain('jobs.json');
+    });
+
+    it('missing config.backup does not crash (defaults only)', () => {
+      // ctx.config.backup is optional; routes pass it straight through.
+      // Constructor must tolerate undefined.
+      const manager = new BackupManager(stateDir, undefined);
+      const snapshot = manager.createSnapshot('manual');
+
+      expect(snapshot.files).toContain('AGENT.md');
+      expect(snapshot.files).toContain('MEMORY.md');
+    });
+
+    it('dedupes entries present in both defaults and user config', () => {
+      // If a user or migrator re-specifies a default path, it appears once,
+      // not twice, in the snapshot.
+      const manager = new BackupManager(stateDir, {
+        includeFiles: ['AGENT.md', 'MEMORY.md'],
+      });
+      const snapshot = manager.createSnapshot('manual');
+
+      const agentCount = snapshot.files.filter((f) => f === 'AGENT.md').length;
+      const memoryCount = snapshot.files.filter((f) => f === 'MEMORY.md').length;
+      expect(agentCount).toBe(1);
+      expect(memoryCount).toBe(1);
     });
 
     it('uses custom maxSnapshots', () => {

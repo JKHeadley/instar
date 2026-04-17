@@ -40,6 +40,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     visibility: 'public',
     capabilities: ['chat'],
   },
+  // Backup overrides. `includeFiles` is set-unioned with BackupManager's
+  // DEFAULT_CONFIG.includeFiles — the empty default here means users and
+  // migrators can ADD paths (e.g. pr-pipeline state) without displacing
+  // the built-in identity/memory defaults.
+  backup: {
+    includeFiles: [] as string[],
+  },
 };
 
 /**

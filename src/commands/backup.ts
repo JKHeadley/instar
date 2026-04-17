@@ -23,7 +23,7 @@ interface RestoreOptions extends BackupOptions {
 
 export async function createBackup(opts: BackupOptions): Promise<void> {
   const config = loadConfig(opts.dir);
-  const manager = new BackupManager(config.stateDir);
+  const manager = new BackupManager(config.stateDir, config.backup);
 
   console.log(pc.dim('Creating backup...'));
   const snapshot = manager.createSnapshot('manual');
@@ -36,7 +36,7 @@ export async function createBackup(opts: BackupOptions): Promise<void> {
 
 export async function listBackups(opts: BackupOptions): Promise<void> {
   const config = loadConfig(opts.dir);
-  const manager = new BackupManager(config.stateDir);
+  const manager = new BackupManager(config.stateDir, config.backup);
   const snapshots = manager.listSnapshots();
 
   if (snapshots.length === 0) {
@@ -61,7 +61,7 @@ export async function listBackups(opts: BackupOptions): Promise<void> {
 
 export async function restoreBackup(id: string | undefined, opts: BackupOptions): Promise<void> {
   const config = loadConfig(opts.dir);
-  const manager = new BackupManager(config.stateDir);
+  const manager = new BackupManager(config.stateDir, config.backup);
 
   // If no ID, use latest
   if (!id) {
