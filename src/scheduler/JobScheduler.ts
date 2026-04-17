@@ -1106,11 +1106,20 @@ export class JobScheduler {
     const retryDelayMs = this.config.gateRetryDelayMs ?? 5000;
     let lastErr: unknown;
 
+    // Expose auth token to gate shells so they can call authenticated localhost
+    // endpoints (e.g. /evolution/actions/overdue). Without this, gates that curl
+    // the local API silently return 401 and the downstream pipe crashes, making
+    // the job skip every run cycle with no obvious signal.
+    const gateEnv = this.config.authToken
+      ? { ...process.env, INSTAR_AUTH_TOKEN: this.config.authToken }
+      : process.env;
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await execFileAsync('/bin/sh', ['-c', job.gate!], {
           encoding: 'utf-8',
           timeout: 10000,
+          env: gateEnv,
         });
         if (attempt > 1) {
           console.log(`[scheduler] Gate for "${job.slug}" passed on attempt ${attempt}/${maxAttempts}`);

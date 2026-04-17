@@ -2692,7 +2692,7 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       expectedDurationMinutes: 3,
       model: 'opus',
       enabled: true,
-      gate: `curl -sf http://localhost:${port}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:${port}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Harvest and synthesize learnings: curl -s http://localhost:${port}/evolution/learnings?applied=false
@@ -2723,7 +2723,7 @@ If no actionable patterns found, exit silently.`,
       expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:${port}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:${port}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Check for overdue commitments: curl -s http://localhost:${port}/evolution/actions/overdue
@@ -2964,7 +2964,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 3,
       model: 'sonnet',
       enabled: true,
-      gate: `curl -sf http://localhost:${port}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:${port}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Review pending evolution proposals: curl -s http://localhost:${port}/evolution/proposals?status=proposed\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH http://localhost:${port}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s http://localhost:${port}/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
@@ -2980,7 +2980,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 10,
       model: 'opus',
       enabled: true,
-      gate: `curl -sf http://localhost:${port}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:${port}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Implement approved evolution proposals: curl -s http://localhost:${port}/evolution/proposals?status=approved\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH http://localhost:${port}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,

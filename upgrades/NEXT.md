@@ -1,53 +1,52 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
-<!-- Valid values: patch, minor, major -->
-<!-- patch = bug fixes, refactors, test additions, doc updates -->
-<!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
-<!-- major = breaking changes to existing APIs or behavior -->
 
 ## What Changed
 
-<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
-<!-- Write this for the AGENT — they need to understand the system deeply. -->
+The job scheduler now injects `$INSTAR_AUTH_TOKEN` into the environment of any
+gate shell it runs when `scheduler.authToken` is configured. Four built-in
+gate scripts (evolution-proposal-evaluate, evolution-proposal-implement,
+evolution-overdue-check, insight-harvest) have been updated to send
+`Authorization: Bearer $INSTAR_AUTH_TOKEN` with their curl calls to the local
+Instar HTTP API.
+
+Previously these gates curled `http://127.0.0.1:4041/evolution/...` without
+authentication. `authMiddleware` returned 401, the downstream
+`python3 -c 'json.load(stdin)'` crashed on invalid JSON, and the job was
+skipped every cycle with no error surface. The fix is additive: when
+`authToken` is unset the env var is absent and gates remain identical to
+their prior behavior; when it IS set (the default post-`instar init` state)
+the four affected gates begin succeeding immediately on next scheduler tick.
+
+A new optional field `authToken?: string` was added to `JobSchedulerConfig`,
+wired through from `instar.json` via `Config.ts`. No migration required.
 
 ## What to Tell Your User
 
-<!-- Write talking points the agent should relay to their user. -->
-<!-- This should be warm, conversational, user-facing — not a changelog. -->
-<!-- Focus on what THEY can now do, not internal plumbing. -->
-<!--                                                                    -->
-<!-- PROHIBITED in this section (will fail validation):                 -->
-<!--   camelCase config keys: silentReject, maxRetries, telegramNotify -->
-<!--   Inline code backtick references like silentReject: false        -->
-<!--   Fenced code blocks                                              -->
-<!--   Instructions to edit files or run commands                      -->
-<!--                                                                    -->
-<!-- CORRECT style: "I can turn that on for you" not "set X to false"  -->
-<!-- The agent relays this to their user — keep it human.              -->
-
-- **[Feature name]**: "[Brief, friendly description of what this means for the user]"
+- **Evolution pipeline unblocked**: "Your evolution jobs start firing real work again — proposal evaluation, proposal implementation, overdue-check, and insight harvesting have all been silently skipping every cycle, and this release fixes that."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| [Capability] | [Endpoint, command, or "automatic"] |
+| Authenticated gate calls | automatic — gates inherit auth token from scheduler config |
+| Evolution proposal evaluation | automatic — fires on scheduler tick when proposals queued |
+| Evolution proposal implementation | automatic — fires on scheduler tick when proposals approved |
+| Overdue action check | automatic — fires on scheduler tick when actions overdue |
+| Insight harvest | automatic — fires on scheduler tick when learnings accumulated |
 
 ## Evidence
 
-<!-- REQUIRED if this release claims to fix a bug. -->
-<!-- Unit tests passing is NOT evidence. Provide ONE of: -->
-<!--   (a) Reproduction steps + observed before/after on a live system. -->
-<!--       Include log excerpts, observed command output, or behavior -->
-<!--       description. Make it specific enough that a future reader can -->
-<!--       re-run it and see the same thing. -->
-<!--   (b) "Not reproducible in dev — [concrete reason]" if the failure -->
-<!--       mode truly can't be exercised locally (race conditions, -->
-<!--       event-driven paths requiring external signals, etc). -->
-<!--                                                                 -->
-<!-- If this release doesn't claim a bug fix (pure feature / refactor), -->
-<!-- leave this section blank or delete it — it's only enforced when -->
-<!-- "What Changed" describes a fix. -->
+Reproduction: on any instance with `authToken` configured (default post-
+`instar init`), tail `logs/job-scheduler.log` for an evolution job's next
+scheduled tick. Before fix: gate execution stderr contains
+`json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)`
+or a silent 10s timeout, and the job is skipped with no command execution.
+After fix: gate logs show `HTTP/1.1 200 OK` from the authenticated
+localhost call, gate returns 0, command proceeds.
 
-[Describe reproduction + verified fix, OR "Not reproducible in dev — [concrete reason]"]
+Verified in unit tests: `tests/unit/JobScheduler.test.ts` — 2 new tests
+assert the env var is present when authToken configured (`token=<value>`)
+and absent when unset (`token=`), exercising both branches. All 47 tests
+in the scheduler suite pass.

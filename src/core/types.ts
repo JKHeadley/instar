@@ -222,6 +222,8 @@ export interface JobSchedulerConfig {
   gateRetries?: number;
   /** Delay between gate retries in ms. Defaults to 5000. */
   gateRetryDelayMs?: number;
+  /** Auth token exposed to gate shell commands as $INSTAR_AUTH_TOKEN so gates can call authenticated localhost endpoints. */
+  authToken?: string;
 }
 
 // ── User Management ─────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
-import type { JobSchedulerConfig } from '../../src/core/types.js';
+import type { JobSchedulerConfig, JobDefinition } from '../../src/core/types.js';
 
 describe('JobScheduler', () => {
   let project: TempProject;
@@ -131,6 +131,70 @@ describe('JobScheduler', () => {
       const result = await scheduler.triggerJob('health-check', 'test');
       expect(result).toBe('skipped');
       expect(mockSM._spawnCount).toBe(0);
+    });
+  });
+
+  describe('gate auth token injection', () => {
+    it('exposes authToken as $INSTAR_AUTH_TOKEN to gate shell', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const capturePath = path.join(project.stateDir, 'gate-capture.txt');
+      const jobs: JobDefinition[] = [{
+        slug: 'gate-capture',
+        name: 'Gate Capture',
+        description: 'Writes the auth env var to disk',
+        schedule: '0 0 * * *',
+        priority: 'medium',
+        expectedDurationMinutes: 1,
+        model: 'haiku',
+        enabled: true,
+        gate: `echo "token=$INSTAR_AUTH_TOKEN" > ${capturePath}`,
+        execute: { type: 'skill', value: 'noop' },
+      }];
+      const customJobsFile = createSampleJobsFile(project.stateDir, jobs);
+      scheduler = new JobScheduler(
+        { ...makeConfig(), jobsFile: customJobsFile, authToken: 'test-token-xyz' },
+        mockSM as any,
+        project.state,
+        project.stateDir,
+      );
+      scheduler.start();
+
+      const result = await scheduler.triggerJob('gate-capture', 'test');
+      expect(result).toBe('triggered');
+      const captured = fs.readFileSync(capturePath, 'utf-8').trim();
+      expect(captured).toBe('token=test-token-xyz');
+    });
+
+    it('leaves $INSTAR_AUTH_TOKEN unset when no authToken is configured', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const capturePath = path.join(project.stateDir, 'gate-capture-noauth.txt');
+      const jobs: JobDefinition[] = [{
+        slug: 'gate-capture-noauth',
+        name: 'Gate Capture No Auth',
+        description: 'Writes the auth env var to disk (should be empty)',
+        schedule: '0 0 * * *',
+        priority: 'medium',
+        expectedDurationMinutes: 1,
+        model: 'haiku',
+        enabled: true,
+        gate: `echo "token=$INSTAR_AUTH_TOKEN" > ${capturePath}`,
+        execute: { type: 'skill', value: 'noop' },
+      }];
+      const customJobsFile = createSampleJobsFile(project.stateDir, jobs);
+      scheduler = new JobScheduler(
+        { ...makeConfig(), jobsFile: customJobsFile }, // no authToken
+        mockSM as any,
+        project.state,
+        project.stateDir,
+      );
+      scheduler.start();
+
+      const result = await scheduler.triggerJob('gate-capture-noauth', 'test');
+      expect(result).toBe('triggered');
+      const captured = fs.readFileSync(capturePath, 'utf-8').trim();
+      expect(captured).toBe('token=');
     });
   });
 

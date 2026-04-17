@@ -275,6 +275,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
       critical: 92,
       shutdown: 95,
     },
+    authToken: fileConfig.authToken as string | undefined,
   };
 
   // Auto-generate contextSigningKey if not present (persists to config file)
