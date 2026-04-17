@@ -9,7 +9,7 @@
  */
 
 import pc from 'picocolors';
-import { loadConfig } from '../core/Config.js';
+import { loadConfig, getSemanticMemoryConfig } from '../core/Config.js';
 import { KnowledgeManager } from '../knowledge/KnowledgeManager.js';
 
 interface KnowledgeOptions {
@@ -47,7 +47,7 @@ export async function knowledgeIngest(content: string, opts: KnowledgeOptions): 
     console.log(pc.dim(`  File: ${result.filePath}`));
     console.log(pc.dim(`  Words: ${result.wordCount}`));
     console.log();
-    console.log(pc.dim('  Run `instar memory sync` to update the search index.'));
+    console.log(pc.dim('  Knowledge base updated. Search results will reflect changes immediately.'));
   } catch (err) {
     console.error(pc.red(`Failed to ingest: ${err instanceof Error ? err.message : String(err)}`));
     process.exit(1);
@@ -85,15 +85,15 @@ export async function knowledgeList(opts: KnowledgeOptions): Promise<void> {
 export async function knowledgeSearch(query: string, opts: KnowledgeOptions): Promise<void> {
   try {
     const config = loadConfig(opts.dir);
-    const { MemoryIndex } = await import('../memory/MemoryIndex.js');
-    const memoryConfig = (config as any).memory || {};
-    const index = new MemoryIndex(config.stateDir, { ...memoryConfig, enabled: true });
-    await index.open();
+    const { SemanticMemory } = await import('../memory/SemanticMemory.js');
+    const memory = new SemanticMemory(getSemanticMemoryConfig(config));
+    await memory.open();
 
     try {
-      index.sync();
       const limit = opts.limit || 10;
-      const results = index.search(query, { limit, source: 'knowledge/' });
+      const allResults = memory.search(query, { limit: limit * 3 });
+      // Filter to knowledge-base entries only (source starts with 'knowledge/')
+      const results = allResults.filter(r => r.source?.startsWith('knowledge/')).slice(0, limit);
 
       if (results.length === 0) {
         console.log(pc.dim(`\n  No knowledge results for "${query}".`));
@@ -105,13 +105,14 @@ export async function knowledgeSearch(query: string, opts: KnowledgeOptions): Pr
 
       for (const result of results) {
         const score = result.score.toFixed(3);
-        console.log(`  ${pc.cyan(result.source)}  ${pc.dim(`score: ${score}`)}`);
-        const snippet = result.text.slice(0, 200).replace(/\n/g, ' ');
-        console.log(`  ${pc.dim(snippet)}${result.text.length > 200 ? '...' : ''}`);
+        const confidence = Math.round(result.confidence * 100);
+        console.log(`  ${pc.cyan(result.name)} ${pc.dim(`(${result.type})`)}  ${pc.dim(`score: ${score}  confidence: ${confidence}%`)}`);
+        const snippet = result.content.slice(0, 200).replace(/\n/g, ' ');
+        console.log(`  ${pc.dim(snippet)}${result.content.length > 200 ? '...' : ''}`);
         console.log();
       }
     } finally {
-      index.close();
+      memory.close();
     }
   } catch (err) {
     if (err instanceof Error && err.message.includes('better-sqlite3')) {
@@ -137,7 +138,7 @@ export async function knowledgeRemove(sourceId: string, opts: KnowledgeOptions):
     const removed = km.remove(sourceId);
     if (removed) {
       console.log(pc.green(`\n  Removed: ${source.title} (${sourceId})`));
-      console.log(pc.dim('  Run `instar memory sync` to update the search index.\n'));
+      console.log(pc.dim('  Knowledge base updated. Search results will reflect changes immediately.\n'));
     }
   } catch (err) {
     console.error(pc.red(`Failed to remove: ${err instanceof Error ? err.message : String(err)}`));
