@@ -183,18 +183,30 @@ describe('JobScheduler', () => {
         execute: { type: 'skill', value: 'noop' },
       }];
       const customJobsFile = createSampleJobsFile(project.stateDir, jobs);
-      scheduler = new JobScheduler(
-        { ...makeConfig(), jobsFile: customJobsFile }, // no authToken
-        mockSM as any,
-        project.state,
-        project.stateDir,
-      );
-      scheduler.start();
+      // The contract under test is "when config.authToken is absent, the
+      // scheduler does not INJECT a token into the gate env." When the test
+      // runner itself inherits INSTAR_AUTH_TOKEN (e.g. tests are invoked from
+      // inside an instar-managed session), the gate shell would see it via
+      // inherited process.env and produce a false failure. Clear the env var
+      // for the duration of this test to make the assertion hermetic.
+      const savedAuth = process.env.INSTAR_AUTH_TOKEN;
+      delete process.env.INSTAR_AUTH_TOKEN;
+      try {
+        scheduler = new JobScheduler(
+          { ...makeConfig(), jobsFile: customJobsFile }, // no authToken
+          mockSM as any,
+          project.state,
+          project.stateDir,
+        );
+        scheduler.start();
 
-      const result = await scheduler.triggerJob('gate-capture-noauth', 'test');
-      expect(result).toBe('triggered');
-      const captured = fs.readFileSync(capturePath, 'utf-8').trim();
-      expect(captured).toBe('token=');
+        const result = await scheduler.triggerJob('gate-capture-noauth', 'test');
+        expect(result).toBe('triggered');
+        const captured = fs.readFileSync(capturePath, 'utf-8').trim();
+        expect(captured).toBe('token=');
+      } finally {
+        if (savedAuth !== undefined) process.env.INSTAR_AUTH_TOKEN = savedAuth;
+      }
     });
   });
 
