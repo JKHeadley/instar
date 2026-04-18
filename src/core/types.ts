@@ -1479,6 +1479,17 @@ export interface InstarConfig {
   threadline?: ThreadlineConfig;
   /** Dashboard configuration */
   dashboard?: DashboardConfig;
+  /**
+   * Free-text description of how outbound agent-to-user messages should be
+   * written for this agent's user. Consumed by the MessagingToneGate's style
+   * rule (B11_STYLE_MISMATCH). Generic by design — every agent's operator sets
+   * their own preferred style without code changes. Examples:
+   *   "ELI10 — write for a 10-year-old. Short sentences. Plain words."
+   *   "Technical and terse. Prefer precise vocabulary."
+   *   "Formal business-memo tone."
+   * When undefined/empty the style rule does not apply (behavior unchanged).
+   */
+  messagingStyle?: string;
   /** HMAC signing key for context file integrity verification (auto-generated, 32-byte hex) */
   contextSigningKey?: string;
   /** MoltBridge integration — trust network for agent discovery and credibility */

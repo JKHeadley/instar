@@ -416,6 +416,7 @@ export function createRoutes(ctx: RouteContext): Router {
         channel,
         recentMessages,
         signals,
+        targetStyle: ctx.config.messagingStyle,
       });
 
       // Structured observability: log every decision the authority made. This is

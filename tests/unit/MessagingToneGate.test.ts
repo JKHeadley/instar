@@ -83,6 +83,58 @@ describe('MessagingToneGate', () => {
       expect(result.rule).toBe('B2_FILE_PATH');
     });
 
+    it('blocks messages that mismatch the configured target style (B11)', async () => {
+      const provider = mockProvider(() =>
+        JSON.stringify({
+          pass: false,
+          rule: 'B11_STYLE_MISMATCH',
+          issue: 'Message uses jargon and stacked clauses; target style is ELI10, short sentences, plain words.',
+          suggestion: 'Rewrite in plain English. One idea per sentence. Explain each technical term in kid-level language first.',
+        }),
+      );
+      const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review(
+        'Merged the composition-root wiring PR. Day-2 TOFU migration sentinel written, branch ruleset id 15247386 installed active, OIDC verifier deferred until phase flips to shadow.',
+        {
+          channel: 'telegram',
+          targetStyle: 'ELI10 — write for a 10-year-old. Short sentences. Plain words. No acronyms without an explanation first.',
+        },
+      );
+
+      expect(result.pass).toBe(false);
+      expect(result.rule).toBe('B11_STYLE_MISMATCH');
+      expect(result.issue).toBeTruthy();
+      expect(result.suggestion).toBeTruthy();
+    });
+
+    it('target style is included in the prompt when provided', async () => {
+      let capturedPrompt = '';
+      const provider = mockProvider((p) => {
+        capturedPrompt = p;
+        return JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('Some message.', {
+        channel: 'telegram',
+        targetStyle: 'Technical and terse.',
+      });
+      expect(capturedPrompt).toContain('TARGET STYLE');
+      expect(capturedPrompt).toContain('Technical and terse.');
+    });
+
+    it('no target style → B11 explicitly does not apply (prompt advertises this)', async () => {
+      let capturedPrompt = '';
+      const provider = mockProvider((p) => {
+        capturedPrompt = p;
+        return JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('Some message.', { channel: 'telegram' });
+      expect(capturedPrompt).toContain('TARGET STYLE');
+      expect(capturedPrompt).toContain('B11_STYLE_MISMATCH does not apply');
+    });
+
     it('blocks messages with config keys', async () => {
       const provider = mockProvider(() =>
         JSON.stringify({
