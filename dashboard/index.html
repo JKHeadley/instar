@@ -3221,6 +3221,7 @@
 
       activeSession = tmuxSession;
       userIsFollowing = true; // Reset scroll tracking on session switch
+      hideResumeButton(); // Carry-over button from prior session would be misleading
       historyLinesLoaded = 2000; // Reset history state for new session
       historyLoading = false;
       historyExhausted = false;
@@ -3334,15 +3335,20 @@
         if (atBottom && !userIsFollowing) {
           // User scrolled back to bottom — resume following and apply pending output
           userIsFollowing = true;
+          hideResumeButton();
           if (pendingOutputData) {
             const data = pendingOutputData;
             pendingOutputData = null;
             term.clear();
-            term.write(data);
-            term.scrollToBottom();
+            // term.write is async — scroll after write completes so the buffer is populated.
+            term.write(data, () => { term.scrollToBottom(); });
           }
-        } else if (!atBottom) {
+        } else if (!atBottom && userIsFollowing) {
+          // User scrolled up — pause follow and surface the resume button
+          // even if no new output is pending. The button is the always-available
+          // "take me back to live" control.
           userIsFollowing = false;
+          showResumeButton();
         }
 
         // Infinite scroll: load more history when scrolled near the top
@@ -3370,12 +3376,13 @@
             const atBottom = buf.baseY === 0 || (buf.baseY - buf.viewportY) <= 5;
             if (atBottom) {
               userIsFollowing = true;
+              hideResumeButton();
               if (pendingOutputData) {
                 const data = pendingOutputData;
                 pendingOutputData = null;
                 term.clear();
-                term.write(data);
-                term.scrollToBottom();
+                // term.write is async — scroll after write completes so the buffer is populated.
+                term.write(data, () => { term.scrollToBottom(); });
               }
             }
           }
@@ -3449,23 +3456,20 @@
         btn.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:10;background:var(--accent);color:#000;border:none;padding:6px 16px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600;opacity:0.95;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
         btn.onclick = () => {
           userIsFollowing = true;
+          const snapToBottom = () => {
+            term.scrollToBottom();
+            const container = document.getElementById('terminalContainer');
+            if (container) container.scrollIntoView({ block: 'end', behavior: 'instant' });
+          };
           if (pendingOutputData) {
             const data = pendingOutputData;
             pendingOutputData = null;
             term.clear();
-            term.write(data);
-            // Delay scrollToBottom until after xterm renders the written data
-            requestAnimationFrame(() => {
-              term.scrollToBottom();
-              // Also scroll the browser viewport to show the terminal bottom
-              const container = document.getElementById('terminalContainer');
-              if (container) container.scrollIntoView({ block: 'end', behavior: 'instant' });
-            });
+            // term.write is async — use its completion callback so scroll runs
+            // after the buffer is populated, not against a stale viewport.
+            term.write(data, snapToBottom);
           } else {
-            // No pending data — just snap to bottom of existing content
-            term.scrollToBottom();
-            const container = document.getElementById('terminalContainer');
-            if (container) container.scrollIntoView({ block: 'end', behavior: 'instant' });
+            snapToBottom();
           }
           hideResumeButton();
         };
