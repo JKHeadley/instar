@@ -797,11 +797,15 @@ export class TelegramLifeline {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
+        const cbHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (this.projectConfig.authToken) {
+          cbHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+        }
         const response = await fetch(
           `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-callback`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: cbHeaders,
             body: JSON.stringify({
               callbackQueryId: query.id,
               data: query.data,
@@ -842,11 +846,15 @@ export class TelegramLifeline {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
+        const fwdHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (this.projectConfig.authToken) {
+          fwdHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+        }
         const response = await fetch(
           `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: fwdHeaders,
             body: JSON.stringify({
               topicId,
               text,
