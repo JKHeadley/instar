@@ -89,8 +89,120 @@ export class PostUpdateMigrator {
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
+    this.migrateContextDeathAntiPattern(result);
 
     return result;
+  }
+
+  // ── Context-death anti-pattern (PR1 — context-death-pitfall-
+  //    prevention spec § (a)) ────────────────────────────────────────
+  //
+  // Injects the "Context-Death Self-Stop" anti-pattern marker block
+  // into CLAUDE.md (under "Critical Anti-Patterns") and AGENT.md
+  // (under "My Principles") when absent. Idempotent: if the marker
+  // is already present, nothing happens. Honors .instar/identity-
+  // pins.json — if an entry exists for the marker id, the block is
+  // skipped (user has customized).
+  //
+  // The marker is a literal HTML comment pair:
+  //   <!-- INSTAR:ANTI-PATTERN-CONTEXT-DEATH -->
+  //   ...content...
+  //   <!-- /INSTAR:ANTI-PATTERN-CONTEXT-DEATH -->
+  //
+  // Pin file format (local, agent-side only):
+  //   { "INSTAR:ANTI-PATTERN-CONTEXT-DEATH": { "contentHash": "sha256...",
+  //                                             "pinnedAt": "<ISO>" } }
+  private migrateContextDeathAntiPattern(result: MigrationResult): void {
+    const markerId = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
+    const pins = this.readIdentityPins();
+
+    if (pins[markerId]) {
+      result.skipped.push(`${markerId}: pinned in .instar/identity-pins.json — skip`);
+      return;
+    }
+
+    const claudeBlock = [
+      `<!-- ${markerId} -->`,
+      '**"Context-Death Self-Stop"** — Do not self-terminate mid-plan citing context preservation, context-window concerns, or "let\'s continue in a fresh session" when durable artifacts for the plan exist on disk (committed code, plan files, ledger rows). Compaction-recovery re-injects identity, memory, and recent context automatically; worst case is a ~30s re-read of the plan file. Legitimate stops: real design questions, missing information only the user can provide, genuine errors, completion. Context-preservation is NOT a legitimate stop reason on its own. If you catch yourself reaching for it, check the durable artifact instead and keep going.',
+      `<!-- /${markerId} -->`,
+    ].join('\n');
+
+    const agentBlock = [
+      `<!-- ${markerId} -->`,
+      '**No context-death self-stops.** I do not self-terminate mid-plan citing context preservation, context-window concerns, or "let\'s continue in a fresh session" when durable artifacts (committed code, plan files, ledger rows) exist on disk. Compaction-recovery re-injects my identity, memory, and recent context automatically — worst case is a ~30s re-read of the plan file. Legitimate stops are real design questions, missing information only the user can provide, genuine errors, or completion. Context preservation is not a legitimate stop reason on its own. If I catch myself reaching for that rationalization, I verify the durable artifact exists and keep going.',
+      `<!-- /${markerId} -->`,
+    ].join('\n');
+
+    // ── CLAUDE.md — insert inside "Critical Anti-Patterns" section ──
+    const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
+    if (fs.existsSync(claudeMdPath)) {
+      try {
+        let content = fs.readFileSync(claudeMdPath, 'utf-8');
+        if (!content.includes(markerId)) {
+          // Anchor: end of "Critical Anti-Patterns" (just before next
+          // `## ` heading) — falls back to append if section absent.
+          const antiPatternsIdx = content.indexOf('## Critical Anti-Patterns');
+          if (antiPatternsIdx >= 0) {
+            // Find the next top-level heading after Critical Anti-Patterns.
+            const afterHeader = antiPatternsIdx + '## Critical Anti-Patterns'.length;
+            const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
+            const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
+            content = content.slice(0, insertAt) + '\n' + claudeBlock + '\n' + content.slice(insertAt);
+          } else {
+            content += '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n';
+          }
+          fs.writeFileSync(claudeMdPath, content);
+          result.upgraded.push(`CLAUDE.md: added ${markerId} marker block`);
+        } else {
+          result.skipped.push(`CLAUDE.md: ${markerId} marker already present`);
+        }
+      } catch (err) {
+        result.errors.push(`CLAUDE.md ${markerId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // ── AGENT.md — append the block inside "My Principles" section ──
+    const agentMdPath = path.join(this.config.stateDir, 'AGENT.md');
+    if (fs.existsSync(agentMdPath)) {
+      try {
+        let content = fs.readFileSync(agentMdPath, 'utf-8');
+        if (!content.includes(markerId)) {
+          const principlesIdx = content.indexOf('## My Principles');
+          if (principlesIdx >= 0) {
+            const afterHeader = principlesIdx + '## My Principles'.length;
+            const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
+            const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
+            content = content.slice(0, insertAt) + '\n' + agentBlock + '\n' + content.slice(insertAt);
+          } else {
+            content += '\n\n## My Principles\n\n' + agentBlock + '\n';
+          }
+          fs.writeFileSync(agentMdPath, content);
+          result.upgraded.push(`AGENT.md: added ${markerId} marker block`);
+        } else {
+          result.skipped.push(`AGENT.md: ${markerId} marker already present`);
+        }
+      } catch (err) {
+        result.errors.push(`AGENT.md ${markerId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /**
+   * Read `.instar/identity-pins.json` if present. Returns an object
+   * keyed by marker id; missing file or malformed JSON yields `{}`
+   * (soft-fail — a broken pin file shouldn't block every migration).
+   */
+  private readIdentityPins(): Record<string, { contentHash?: string; pinnedAt?: string }> {
+    const pinsPath = path.join(this.config.stateDir, 'identity-pins.json');
+    if (!fs.existsSync(pinsPath)) return {};
+    try {
+      const raw = fs.readFileSync(pinsPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+      return {};
+    } catch {
+      return {};
+    }
   }
 
   /**
