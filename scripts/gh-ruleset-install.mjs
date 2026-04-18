@@ -25,25 +25,31 @@ import { execFileSync } from 'node:child_process';
 
 const [, , owner, repo, ...rest] = process.argv;
 if (!owner || !repo) {
-  console.error('Usage: gh-ruleset-install.mjs <owner> <repo> [--mode evaluate|active]');
+  console.error('Usage: gh-ruleset-install.mjs <owner> <repo> [--mode disabled|evaluate|active] [--skip-trust-root]');
   process.exit(2);
 }
 const modeFlag = rest.find((a) => a.startsWith('--mode='));
-const mode = (rest.includes('--mode') ? rest[rest.indexOf('--mode') + 1] : modeFlag?.split('=')[1]) ?? 'evaluate';
-if (!['evaluate', 'active'].includes(mode)) {
-  console.error(`invalid --mode "${mode}" — must be evaluate|active`);
+const mode = (rest.includes('--mode') ? rest[rest.indexOf('--mode') + 1] : modeFlag?.split('=')[1]) ?? 'active';
+if (!['disabled', 'evaluate', 'active'].includes(mode)) {
+  console.error(`invalid --mode "${mode}" — must be disabled|evaluate|active`);
+  console.error('  note: "evaluate" requires GitHub Enterprise; use "disabled" on other plans.');
   process.exit(2);
 }
+// K4 trust-root uses file_path_restriction, which is Enterprise-only. Operators
+// on Team/Pro plans pass --skip-trust-root (or run a custom CODEOWNERS-based
+// equivalent) and live without the file-scoped 2-approval gate.
+const skipTrustRoot = rest.includes('--skip-trust-root');
 
-function ghApi(method, path, bodyObj = null) {
-  const args = ['api', '--method', method, path, '-H', 'Accept: application/vnd.github+json'];
-  if (bodyObj !== null) {
-    for (const [k, v] of Object.entries(bodyObj)) {
-      args.push('--field', `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
-    }
-  }
+function ghApi(method, pathStr, bodyObj = null) {
+  // --field stringifies nested structures; ruleset bodies need real JSON nesting.
+  // Pipe the body via stdin with --input - so arrays/objects stay typed.
+  const args = ['api', '--method', method, pathStr, '-H', 'Accept: application/vnd.github+json'];
+  if (bodyObj !== null) args.push('--input', '-');
   try {
-    return execFileSync('gh', args, { encoding: 'utf-8' });
+    return execFileSync('gh', args, {
+      encoding: 'utf-8',
+      input: bodyObj !== null ? JSON.stringify(bodyObj) : undefined,
+    });
   } catch (err) {
     console.error(`gh-ruleset-install: gh api failed: ${err.message}`);
     if (err.stderr) console.error(err.stderr.toString());
@@ -138,6 +144,11 @@ ghApi('POST', `/repos/${owner}/${repo}/rulesets`, branchRuleset);
 console.log('  ✓ branch ruleset installed');
 ghApi('POST', `/repos/${owner}/${repo}/rulesets`, tagRuleset);
 console.log('  ✓ tag ruleset installed');
-ghApi('POST', `/repos/${owner}/${repo}/rulesets`, trustRootRuleset);
-console.log('  ✓ trust-root 2-approval ruleset installed');
+if (skipTrustRoot) {
+  console.log('  ⟲ trust-root 2-approval ruleset SKIPPED (per --skip-trust-root)');
+  console.log('    K4 protection must be provided by another mechanism (e.g. CODEOWNERS + required-review).');
+} else {
+  ghApi('POST', `/repos/${owner}/${repo}/rulesets`, trustRootRuleset);
+  console.log('  ✓ trust-root 2-approval ruleset installed');
+}
 console.log('Done.');
