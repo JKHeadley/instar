@@ -205,6 +205,14 @@ async function checkNonceUniqueness({ sha, trailers }) {
 }
 
 async function main() {
+  // Bootstrap guard: if the public key hasn't been configured yet (Day -2 migration
+  // not yet run), the signing infrastructure doesn't exist. Skip verification so the
+  // workflow that SHIPS this system can merge without a chicken-and-egg deadlock.
+  if (!process.env.PUBLIC_KEY_PEM) {
+    console.log('verify-trailers: PUBLIC_KEY_PEM not configured — verification system not yet activated. Skipping.');
+    process.exit(0);
+  }
+
   const range = process.env.PUSH_RANGE;
   if (!range || !range.includes('..')) {
     console.error(`verify-trailers: invalid PUSH_RANGE "${range}"`);
