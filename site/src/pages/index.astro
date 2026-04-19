@@ -42,7 +42,7 @@ import Layout from '../layouts/Layout.astro';
       </h1>
 
       <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up animate-delay-200">
-        One command. Persistent agent. Memory, scheduling, Telegram &mdash; all built on the real Claude Code CLI.
+        The agent framework where identity, memory, and continuity are load-bearing &mdash; not bolted on. Built on the real Claude Code CLI.
       </p>
 
       <!-- Install command -->
@@ -71,6 +71,9 @@ import Layout from '../layouts/Layout.astro';
           </video>
         </div>
         <p class="text-xs text-slate-600 mt-3">Kira &mdash; an Instar agent handling email via Telegram</p>
+        <p class="text-sm text-slate-400 mt-6 max-w-2xl mx-auto leading-relaxed">
+          Architecture distilled from <a href="https://dawn.bot-me.ai" class="text-teal-400 hover:text-teal-300 underline underline-offset-2" target="_blank" rel="noopener">Dawn</a> &mdash; an AI running continuously since early 2026, holding ~700 tracked relationships and hundreds of learned lessons across thousands of restarts. Packaged so every agent you build can start from the same foundation.
+        </p>
       </div>
     </div>
   </section>
@@ -110,11 +113,9 @@ import Layout from '../layouts/Layout.astro';
   <section id="coherence" class="py-16 sm:py-20 border-t border-slate-800/50">
     <div class="max-w-4xl mx-auto px-6">
       <div class="text-center mb-10">
-        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">The Coherence Problem</h2>
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Why Coherence Is the Foundation</h2>
         <p class="text-slate-400 max-w-2xl mx-auto">
-          Claude Code is powerful. But power without coherence is unreliable. An agent that forgets what you discussed yesterday,
-          doesn't recognize someone it talked to last week, or contradicts its own decisions &mdash; that agent can't be trusted
-          with real autonomy.
+          An agent that forgets what you discussed yesterday, doesn't recognize someone it talked to last week, or contradicts its own decisions can't be trusted with real autonomy. The six dimensions below aren't features &mdash; they're the conditions under which an agent becomes trustworthy enough to leave running. Every Instar agent gets them enforced structurally, not prompted into behaving.
         </p>
       </div>
 
@@ -125,6 +126,7 @@ import Layout from '../layouts/Layout.astro';
             <p class="text-sm font-medium text-slate-200">Memory</p>
           </div>
           <p class="text-xs text-slate-500">Remembers across sessions &mdash; not just within one</p>
+          <p class="text-[10px] text-teal-400/70 font-mono mt-2">Per-topic SQLite + FTS5 · rolling summaries</p>
         </div>
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
@@ -132,6 +134,7 @@ import Layout from '../layouts/Layout.astro';
             <p class="text-sm font-medium text-slate-200">Relationships</p>
           </div>
           <p class="text-xs text-slate-500">Knows who it's talking to &mdash; with continuity across platforms</p>
+          <p class="text-[10px] text-teal-400/70 font-mono mt-2">Cross-platform identity resolution</p>
         </div>
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
@@ -139,6 +142,7 @@ import Layout from '../layouts/Layout.astro';
             <p class="text-sm font-medium text-slate-200">Identity</p>
           </div>
           <p class="text-xs text-slate-500">Stays itself after restarts, compaction, and updates</p>
+          <p class="text-[10px] text-teal-400/70 font-mono mt-2">AGENT.md + grounding hooks</p>
         </div>
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
@@ -146,6 +150,7 @@ import Layout from '../layouts/Layout.astro';
             <p class="text-sm font-medium text-slate-200">Temporal awareness</p>
           </div>
           <p class="text-xs text-slate-500">Understands time, context, and what's been happening</p>
+          <p class="text-[10px] text-teal-400/70 font-mono mt-2">Event tracking every turn</p>
         </div>
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
@@ -153,6 +158,7 @@ import Layout from '../layouts/Layout.astro';
             <p class="text-sm font-medium text-slate-200">Consistency</p>
           </div>
           <p class="text-xs text-slate-500">Follows through on commitments &mdash; doesn't contradict itself</p>
+          <p class="text-[10px] text-teal-400/70 font-mono mt-2">Coherence Gate + decision journaling</p>
         </div>
         <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
           <div class="flex items-center gap-2 mb-2">
@@ -160,6 +166,7 @@ import Layout from '../layouts/Layout.astro';
             <p class="text-sm font-medium text-slate-200">Growth</p>
           </div>
           <p class="text-xs text-slate-500">Evolves its capabilities and understanding over time</p>
+          <p class="text-[10px] text-teal-400/70 font-mono mt-2">Evolution system: proposals · learnings · gaps</p>
         </div>
       </div>
     </div>
@@ -633,7 +640,7 @@ import Layout from '../layouts/Layout.astro';
       <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Start Growing</h2>
       <p class="text-slate-400 mb-3">One command. Full coherence. Every molt, more autonomous.</p>
       <p class="text-slate-500 text-sm mb-8">
-        Extracted from the <a href="https://dawn.bot-me.ai" class="text-teal-400 hover:text-teal-300 underline underline-offset-2" target="_blank" rel="noopener">Dawn/Portal project</a> &mdash; a production AI system where a human and an AI have been building together for months.
+        Architecture distilled from <a href="https://dawn.bot-me.ai" class="text-teal-400 hover:text-teal-300 underline underline-offset-2" target="_blank" rel="noopener">Dawn</a> &mdash; a production AI that has run continuously since early 2026.
       </p>
 
       <div class="inline-flex items-center gap-3 bg-slate-800/60 border border-teal-500/20 rounded-lg px-6 py-4 font-mono text-base sm:text-lg group cursor-pointer hover:border-teal-500/40 transition-colors glow-teal" id="install-cmd-bottom">
