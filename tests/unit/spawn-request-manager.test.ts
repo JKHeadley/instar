@@ -1048,6 +1048,79 @@ describe('SpawnRequestManager', () => {
       expect(mgr.getRuntimeConfig()).toEqual(before);
     });
 
+    it('emits spawn-penalty-tripped on the trip-edge only (§4.5)', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const events: unknown[] = [];
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('bad', 'envelope-validation'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession,
+        cooldownMs: 1,
+        nowFn: () => now,
+        onDegradation: (e) => events.push(e),
+      }));
+      // 3 attributable failures → trip.
+      for (let i = 0; i < 3; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 5;
+      }
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ kind: 'spawn-penalty-tripped', agent: 'agent-a', consecutiveFailures: 3 });
+      // Subsequent attributable failures while already in penalty refresh the
+      // timer but do NOT re-emit the trip event.
+      await mgr.evaluate(makeRequest());
+      expect(events).toHaveLength(1);
+    });
+
+    it('emits spawn-infra-degraded on the trip-edge only (§4.5)', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const events: unknown[] = [];
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('outage', 'provider-5xx'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession,
+        cooldownMs: 1,
+        nowFn: () => now,
+        onDegradation: (e) => events.push(e),
+      }));
+      // 5 infra failures → trip.
+      for (let i = 0; i < 5; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 5;
+      }
+      expect(events.filter((e: any) => e.kind === 'spawn-infra-degraded')).toHaveLength(1);
+      // Sixth infra failure does NOT re-emit (still in degradation).
+      await mgr.evaluate(makeRequest());
+      expect(events.filter((e: any) => e.kind === 'spawn-infra-degraded')).toHaveLength(1);
+    });
+
+    it('onDegradation callback errors do not affect spawn flow (§4.5)', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('bad', 'envelope-validation'),
+      );
+      let now = 1_000_000;
+      // Use a longer cooldown so penalty (= 2 × cooldown) doesn't expire
+      // before we check getStatus.
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession,
+        cooldownMs: 10_000,
+        nowFn: () => now,
+        onDegradation: () => { throw new Error('observability sink boom'); },
+      }));
+      // Should NOT throw despite the callback throwing on the trip event.
+      for (let i = 0; i < 3; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 11_000; // past cooldown each time
+      }
+      // Penalty was still applied even though the sink threw.
+      expect(mgr.getStatus().penalties.length).toBeGreaterThanOrEqual(1);
+    });
+
     it('getDrainTickMs honors floor and ceiling', () => {
       // cooldown=100 → 100/4=25 → floor at 1000
       let mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 100 }));

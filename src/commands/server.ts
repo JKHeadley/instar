@@ -5300,6 +5300,31 @@ export async function startServer(options: StartOptions): Promise<void> {
       onEscalate: (request, reason) => {
         notify('IMMEDIATE', 'messaging', `Spawn escalation: ${reason}\n  Requester: ${request.requester.agent}\n  Target: ${request.target.agent}`);
       },
+      // §4.5: emit degradation breadcrumbs on edge transitions.
+      onDegradation: (event) => {
+        try {
+          const reporter = DegradationReporter.getInstance();
+          if (event.kind === 'spawn-penalty-tripped') {
+            reporter.report({
+              feature: 'Threadline.SpawnPenalty',
+              primary: `Open spawn slot for peer "${event.agent}"`,
+              fallback: `Spawn blocked for ${Math.round(event.penaltyMs / 1000)}s after ${event.consecutiveFailures} consecutive agent-attributable failures`,
+              reason: `Peer "${event.agent}" tripped the consecutive-failure penalty (3 strikes)`,
+              impact: 'Peer cannot spawn sessions until penalty clears. Successful inbound spawn from a different peer is unaffected.',
+            });
+          } else if (event.kind === 'spawn-infra-degraded') {
+            reporter.report({
+              feature: 'Threadline.SpawnInfraDegraded',
+              primary: `Full queue admission (cap 10) for peer "${event.agent}"`,
+              fallback: `Degraded admission (cap ${spawnConfig?.degradedMaxQueuedPerAgent ?? 1}) for ${Math.round(event.degradationMs / 60_000)}min`,
+              reason: `Peer "${event.agent}" tripped the infra-failure soft limiter (${event.failureCount} non-attributable failures in 10min)`,
+              impact: 'Peer\'s queue depth is capped; older messages are dropped. No blame attribution.',
+            });
+          }
+        } catch (err) {
+          console.warn(`[spawn-manager] degradation reporter failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
       // §4.4: optional knobs from config.
       cooldownMs: spawnConfig?.cooldownMs,
       maxDrainsPerTick: spawnConfig?.maxDrainsPerTick,

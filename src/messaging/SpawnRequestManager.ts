@@ -110,6 +110,20 @@ export type SpawnFailureCause =
   | 'gate-llm-timeout'               // infrastructure
   | 'ambiguous';                     // neither — still emits breadcrumb, no penalty
 
+/**
+ * §4.5: Edge-transition events the manager emits via `onDegradation`. Each
+ * event represents a state change worth surfacing to operators — not every
+ * cooldown denial.
+ *
+ * - `spawn-penalty-tripped`: agent crossed `consecutiveSpawnFailures >= 3`
+ *   threshold and is now in penalty cooldown.
+ * - `spawn-infra-degraded`: agent crossed infra-failure threshold (5 in 10 min)
+ *   and is now in degraded admission.
+ */
+export type SpawnDegradationEvent =
+  | { kind: 'spawn-penalty-tripped'; agent: string; consecutiveFailures: number; penaltyMs: number; at: number }
+  | { kind: 'spawn-infra-degraded'; agent: string; failureCount: number; degradationMs: number; at: number };
+
 /** Error class callers throw from inside `spawnSession` to tag attributable failures. */
 export class SpawnFailureError extends Error {
   constructor(message: string, public readonly cause: SpawnFailureCause) {
@@ -153,6 +167,13 @@ export interface SpawnRequestManagerConfig {
   onEscalate?: (request: SpawnRequest, reason: string) => void;
   /** Optional clock injection for deterministic tests. Defaults to Date.now(). */
   nowFn?: () => number;
+  /**
+   * §4.5: optional sink for degradation breadcrumbs. When provided, the
+   * manager calls this on edge transitions (penalty trip, infra-degraded
+   * entry). Wiring at the server layer typically targets DegradationReporter.
+   * Decoupled to keep the manager testable without the global reporter.
+   */
+  onDegradation?: (event: SpawnDegradationEvent) => void;
   /**
    * §4.2: Called per ready agent during a drain tick. The consumer is
    * responsible for running a spawn/deliver cycle for that agent — typically
@@ -364,7 +385,23 @@ export class SpawnRequestManager {
       const prior = this.#consecutiveSpawnFailures.get(agent) ?? 0;
       const next = prior + 1;
       this.#consecutiveSpawnFailures.set(agent, next);
-      if (next >= PENALTY_FAILURE_THRESHOLD) {
+      // §4.5: emit on the trip-edge (prior < threshold && next >= threshold).
+      if (prior < PENALTY_FAILURE_THRESHOLD && next >= PENALTY_FAILURE_THRESHOLD) {
+        const cooldownMs = this.#config.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+        const penaltyMs = PENALTY_COOLDOWN_MULTIPLIER * cooldownMs;
+        const at = this.#nowFn();
+        this.#penaltyUntil.set(agent, at + penaltyMs);
+        try {
+          this.#config.onDegradation?.({
+            kind: 'spawn-penalty-tripped',
+            agent,
+            consecutiveFailures: next,
+            penaltyMs,
+            at,
+          });
+        } catch { /* observability sink errors must never affect spawn flow */ }
+      } else if (next >= PENALTY_FAILURE_THRESHOLD) {
+        // Already in penalty — refresh the timer on subsequent attributable failures.
         const cooldownMs = this.#config.cooldownMs ?? DEFAULT_COOLDOWN_MS;
         this.#penaltyUntil.set(agent, this.#nowFn() + PENALTY_COOLDOWN_MULTIPLIER * cooldownMs);
       }
@@ -382,9 +419,23 @@ export class SpawnRequestManager {
     const now = this.#nowFn();
     const cutoff = now - INFRA_FAILURE_WINDOW_MS;
     const window = this.#infraFailureWindow.get(agent) ?? [];
+    const wasDegradedBefore = window.length >= INFRA_FAILURE_THRESHOLD &&
+      window.filter(t => t > cutoff).length >= INFRA_FAILURE_THRESHOLD;
     const fresh = window.filter(t => t > cutoff);
     fresh.push(now);
     this.#infraFailureWindow.set(agent, fresh);
+    // §4.5: emit on the trip-edge (was-not-degraded → now-degraded).
+    if (!wasDegradedBefore && fresh.length >= INFRA_FAILURE_THRESHOLD) {
+      try {
+        this.#config.onDegradation?.({
+          kind: 'spawn-infra-degraded',
+          agent,
+          failureCount: fresh.length,
+          degradationMs: INFRA_DEGRADATION_DURATION_MS,
+          at: now,
+        });
+      } catch { /* observability sink errors must never affect spawn flow */ }
+    }
   }
 
   /**
