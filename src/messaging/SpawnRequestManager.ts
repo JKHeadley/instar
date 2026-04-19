@@ -70,6 +70,17 @@ export interface SpawnRequest {
   suggestedModel?: string;
   suggestedMaxDuration?: number;
   pendingMessages?: string[];
+  /**
+   * §4.5: Provenance tag forwarded to `spawnSession` so the resulting
+   * session can be filtered, observed, or routed differently based on
+   * how it was triggered.
+   * - `spawn-request`: inline `evaluate()` from a fresh inbound message.
+   * - `spawn-request-drain`: re-attempt from the drain loop's
+   *   `onDrainReady` callback.
+   * Defaults to `spawn-request` if unset. Future tags may be added
+   * (e.g., `spawn-request-retry`).
+   */
+  triggeredBy?: 'spawn-request' | 'spawn-request-drain';
 }
 
 export interface SpawnResult {
@@ -118,8 +129,18 @@ export interface SpawnRequestManagerConfig {
   maxSessions: number;
   /** Function to list current running sessions */
   getActiveSessions: () => Session[];
-  /** Function to spawn a new session. Returns the session ID. */
-  spawnSession: (prompt: string, options?: { model?: string; maxDurationMinutes?: number }) => Promise<string>;
+  /**
+   * Function to spawn a new session. Returns the session ID.
+   *
+   * §4.5: `options.triggeredBy` forwards the SpawnRequest's provenance tag
+   * (defaulting to `spawn-request`) so the consumer can label the resulting
+   * session (e.g., for log filtering or routing).
+   */
+  spawnSession: (prompt: string, options?: {
+    model?: string;
+    maxDurationMinutes?: number;
+    triggeredBy?: 'spawn-request' | 'spawn-request-drain';
+  }) => Promise<string>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
   /** Cooldown between spawn requests per agent (ms). Default: 30s */
@@ -471,6 +492,8 @@ export class SpawnRequestManager {
       const sessionId = await this.#config.spawnSession(prompt, {
         model: request.suggestedModel,
         maxDurationMinutes: request.suggestedMaxDuration,
+        // §4.5: forward provenance tag (defaults to 'spawn-request' on inline path).
+        triggeredBy: request.triggeredBy ?? 'spawn-request',
       });
 
       // Success — clear penalty state and pending retries.

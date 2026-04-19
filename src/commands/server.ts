@@ -5282,7 +5282,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           prompt,
           model: opts?.model as import('../core/types.js').ModelTier | undefined,
           maxDurationMinutes: opts?.maxDurationMinutes,
-          triggeredBy: 'spawn-request',
+          // §4.5: honor SpawnRequestManager's provenance tag so drain-spawned
+          // sessions are distinguishable from inline-spawned ones in logs/stream.
+          triggeredBy: opts?.triggeredBy ?? 'spawn-request',
         });
         return session.id;
       },

@@ -87,7 +87,7 @@ describe('SpawnRequestManager', () => {
 
       expect(config.spawnSession).toHaveBeenCalledWith(
         expect.any(String),
-        { model: 'opus', maxDurationMinutes: 30 },
+        expect.objectContaining({ model: 'opus', maxDurationMinutes: 30 }),
       );
     });
 
@@ -931,6 +931,26 @@ describe('SpawnRequestManager', () => {
       await mgr.evaluate(makeRequest({ context: 'first' }));
       await mgr.evaluate(makeRequest({ context: 'follow' }));
       expect(mgr.getQueuedCount('agent-a')).toBe(1);
+    });
+
+    it('forwards request.triggeredBy to spawnSession options (§4.5)', async () => {
+      const spawnSession = vi.fn().mockResolvedValue('sess-1');
+      const mgr = new SpawnRequestManager(makeConfig({ spawnSession }));
+      await mgr.evaluate(makeRequest({ triggeredBy: 'spawn-request-drain' }));
+      expect(spawnSession).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ triggeredBy: 'spawn-request-drain' }),
+      );
+    });
+
+    it('defaults triggeredBy to spawn-request when unset (§4.5)', async () => {
+      const spawnSession = vi.fn().mockResolvedValue('sess-1');
+      const mgr = new SpawnRequestManager(makeConfig({ spawnSession }));
+      await mgr.evaluate(makeRequest()); // triggeredBy omitted
+      expect(spawnSession).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ triggeredBy: 'spawn-request' }),
+      );
     });
 
     it('getDrainTickMs honors floor and ceiling', () => {
