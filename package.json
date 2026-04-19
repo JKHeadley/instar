@@ -1,6 +1,6 @@
 {
   "name": "instar",
-  "version": "0.28.59",
+  "version": "0.28.60",
   "description": "Persistent autonomy infrastructure for AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -20,6 +20,7 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:push": "vitest run --config vitest.push.config.ts",
+    "test:smoke": "vitest run --config vitest.push.config.ts --changed origin/main",
     "test:flaky": "vitest run tests/unit/relationship-routes.test.ts tests/integration/messaging-routes.test.ts tests/integration/whatsapp-routes.test.ts tests/unit/server.test.ts tests/e2e/semantic-memory-lifecycle.test.ts tests/e2e/system-reviewer-e2e.test.ts tests/e2e/working-memory-lifecycle.test.ts tests/e2e/messaging-multi-agent.test.ts",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
