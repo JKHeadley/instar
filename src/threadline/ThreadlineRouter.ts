@@ -120,6 +120,31 @@ export interface ThreadlineHandleResult {
 
 const DEFAULT_MAX_HISTORY = 20;
 
+/**
+ * Receiver-side session affinity (§4.1).
+ *
+ * When a verified peer sends us a threadless message, we want to reuse the
+ * threadId we minted for their last recent message rather than spawning a
+ * fresh session for every follow-up. Map is process-local, never persisted,
+ * and read/written ONLY when `relayContext.trust.kind === 'verified'` —
+ * plaintext-tofu paths cannot assert the sender is the same entity across
+ * messages, so reusing a thread would open a hijack vector.
+ *
+ * Sliding TTL: entry expires if not used within this window.
+ * Absolute TTL: entry expires this long after its first use regardless of
+ * subsequent activity — caps exposure of any single reused thread.
+ * LRU cap: bounds memory under adversarial peer churn.
+ */
+const RECEIVER_AFFINITY_SLIDING_TTL_MS = 600_000; // 10 minutes
+const RECEIVER_AFFINITY_ABSOLUTE_TTL_MS = 7_200_000; // 2 hours
+const RECEIVER_AFFINITY_MAX = 1000;
+
+interface ReceiverAffinityEntry {
+  threadId: string;
+  firstUsedAt: number;
+  lastUsedAt: number;
+}
+
 const THREAD_SPAWN_PROMPT_TEMPLATE = `You are continuing a threaded conversation with {remote_agent}.
 
 Thread: {thread_id}
@@ -156,6 +181,22 @@ export class ThreadlineRouter {
   /** Track in-flight spawn requests to prevent concurrent spawns for the same thread */
   private readonly pendingSpawns = new Set<string>();
 
+  /**
+   * Verified-path session affinity (§4.1 D3 fix).
+   *
+   * Maps a verified peer's senderFingerprint → the threadId we last used
+   * for them, with sliding + absolute TTLs. Only read/written when
+   * `relayContext.trust.kind === 'verified'`. Uses insertion-order iteration
+   * as LRU proxy: setting an existing key deletes-then-sets to bump it to
+   * the tail, and eviction at cap drops the head.
+   *
+   * Process-local, never persisted. Confirmed by test asserting no files
+   * appear under `.instar/` during a send burst.
+   */
+  private readonly recentThreadByPeer = new Map<string, ReceiverAffinityEntry>();
+  /** Test seam: override `Date.now()` for deterministic TTL tests. */
+  private readonly nowFn: () => number;
+
   constructor(
     messageRouter: MessageRouter,
     spawnManager: SpawnRequestManager,
@@ -165,6 +206,7 @@ export class ThreadlineRouter {
     autonomyGate?: AutonomyGate | null,
     messageDelivery?: IMessageDelivery | null,
     onLedgerEvent?: (evt: ThreadlineLedgerEvent) => void,
+    nowFn?: () => number,
   ) {
     this.messageRouter = messageRouter;
     this.spawnManager = spawnManager;
@@ -177,6 +219,72 @@ export class ThreadlineRouter {
     this.autonomyGate = autonomyGate ?? null;
     this.messageDelivery = messageDelivery ?? null;
     this.onLedgerEvent = onLedgerEvent ?? null;
+    this.nowFn = nowFn ?? (() => Date.now());
+  }
+
+  /**
+   * Look up a recent affinity entry for a verified peer. Returns the threadId
+   * iff an entry exists AND both sliding + absolute TTLs are satisfied.
+   * Expired entries are evicted as a side-effect. Non-verified trust kinds
+   * short-circuit to null — the map is untouched.
+   */
+  private peekAffinity(relayContext: RelayMessageContext | undefined): string | null {
+    if (!relayContext || relayContext.trust.kind !== 'verified') return null;
+    const fingerprint = relayContext.trust.senderFingerprint;
+    const entry = this.recentThreadByPeer.get(fingerprint);
+    if (!entry) return null;
+    const now = this.nowFn();
+    if (now - entry.firstUsedAt > RECEIVER_AFFINITY_ABSOLUTE_TTL_MS) {
+      this.recentThreadByPeer.delete(fingerprint);
+      return null;
+    }
+    if (now - entry.lastUsedAt > RECEIVER_AFFINITY_SLIDING_TTL_MS) {
+      this.recentThreadByPeer.delete(fingerprint);
+      return null;
+    }
+    return entry.threadId;
+  }
+
+  /**
+   * Record a (fingerprint → threadId) affinity for a verified peer. Bumps
+   * LRU recency; evicts oldest entries when over cap. Non-verified trust
+   * kinds are no-ops.
+   */
+  private recordAffinity(relayContext: RelayMessageContext | undefined, threadId: string): void {
+    if (!relayContext || relayContext.trust.kind !== 'verified') return;
+    const fingerprint = relayContext.trust.senderFingerprint;
+    const now = this.nowFn();
+    const existing = this.recentThreadByPeer.get(fingerprint);
+    if (existing && existing.threadId === threadId) {
+      // Refresh lastUsedAt + bump LRU by delete-then-set.
+      this.recentThreadByPeer.delete(fingerprint);
+      this.recentThreadByPeer.set(fingerprint, {
+        threadId,
+        firstUsedAt: existing.firstUsedAt,
+        lastUsedAt: now,
+      });
+    } else {
+      this.recentThreadByPeer.delete(fingerprint);
+      this.recentThreadByPeer.set(fingerprint, {
+        threadId,
+        firstUsedAt: now,
+        lastUsedAt: now,
+      });
+    }
+    // LRU eviction: drop oldest until under cap.
+    while (this.recentThreadByPeer.size > RECEIVER_AFFINITY_MAX) {
+      const oldestKey = this.recentThreadByPeer.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.recentThreadByPeer.delete(oldestKey);
+    }
+  }
+
+  /**
+   * Test seam: inspect the affinity map. Returns a snapshot; callers must
+   * not mutate. Not intended for production use.
+   */
+  getAffinitySnapshotForTests(): ReadonlyMap<string, ReceiverAffinityEntry> {
+    return new Map(this.recentThreadByPeer);
   }
 
   /** Fire a ledger event swallowing any exception (signal-only). */
@@ -231,18 +339,24 @@ export class ThreadlineRouter {
       return { handled: false };
     }
 
-    // First-contact: if the sender didn't provide a threadId, mint one so
-    // both sides can agree on an identifier. Previously missing threadIds
-    // caused us to drop the message entirely (`handled: false`), which
-    // looked fine to the sender (HTTP 200) but silently abandoned the
-    // message on the recipient side.
+    // First-contact: if the sender didn't provide a threadId, try to reuse
+    // the last threadId we minted for this verified peer (§4.1 D3 fix).
+    // Falls back to minting fresh on miss, plaintext trust kinds, or TTL expiry.
     if (!message.threadId) {
-      const mintedThreadId = crypto.randomUUID();
-      console.log(`[ThreadlineRouter] Minted new threadId ${mintedThreadId} for first-contact message from ${message.from.agent} (id: ${message.id})`);
-      message.threadId = mintedThreadId;
+      const affinityThreadId = this.peekAffinity(relayContext);
+      if (affinityThreadId) {
+        console.log(`[ThreadlineRouter] Reused affinity threadId ${affinityThreadId} for verified peer (msg id: ${message.id})`);
+        message.threadId = affinityThreadId;
+      } else {
+        const mintedThreadId = crypto.randomUUID();
+        console.log(`[ThreadlineRouter] Minted new threadId ${mintedThreadId} for first-contact message from ${message.from.agent} (id: ${message.id})`);
+        message.threadId = mintedThreadId;
+      }
     }
 
     const threadId = message.threadId;
+    // Record affinity (no-op for non-verified trust kinds).
+    this.recordAffinity(relayContext, threadId);
 
     // Prevent concurrent spawns for the same thread
     if (this.pendingSpawns.has(threadId)) {

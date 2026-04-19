@@ -51,19 +51,22 @@ function createMockMessageStore() {
   return {};
 }
 
-function createEnvelope(overrides: Partial<{
-  from: string;
-  threadId: string;
-  subject: string;
-  body: string;
-  priority: string;
-}> = {}): MessageEnvelope {
+function createEnvelope(overrides: {
+  from?: string;
+  threadId?: string | null;
+  subject?: string;
+  body?: string;
+  priority?: string;
+} = {}): MessageEnvelope {
+  const threadId = 'threadId' in overrides
+    ? (overrides.threadId === null ? undefined : overrides.threadId)
+    : 'thread-123';
   return {
     message: {
       id: 'msg-' + Math.random().toString(36).slice(2, 8),
       from: { agent: overrides.from ?? 'RemoteAgent', machine: 'remote-machine' },
       to: { agent: 'LocalAgent', machine: 'local-machine' },
-      threadId: overrides.threadId ?? 'thread-123',
+      threadId,
       subject: overrides.subject ?? 'Test Subject',
       body: overrides.body ?? 'Hello from remote',
       createdAt: new Date().toISOString(),
@@ -316,6 +319,151 @@ describe('ThreadlineRouter — Relay Integration', () => {
       expect(RELAY_HISTORY_LIMITS.verified).toBe(5);
       expect(RELAY_HISTORY_LIMITS.trusted).toBe(10);
       expect(RELAY_HISTORY_LIMITS.autonomous).toBe(20);
+    });
+  });
+
+  // ── Receiver-side session affinity (§4.1 D3 fix) ──────────────
+
+  describe('receiver-side session affinity', () => {
+    it('reuses threadId for verified peer on threadless follow-up', async () => {
+      // First message from verified peer — no threadId → mints fresh.
+      const first = createEnvelope({ from: 'VerifiedPeer', threadId: null });
+      const ctx = createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-verified-1' },
+      });
+      await router.handleInboundMessage(first, ctx);
+      const firstThreadId = first.message.threadId;
+      expect(firstThreadId).toBeTruthy();
+
+      // Second threadless message from same verified peer → reuses same threadId.
+      const second = createEnvelope({ from: 'VerifiedPeer', threadId: null });
+      await router.handleInboundMessage(second, ctx);
+      expect(second.message.threadId).toBe(firstThreadId);
+    });
+
+    it('mints fresh for plaintext-tofu peer even on follow-up', async () => {
+      const first = createEnvelope({ from: 'PlainPeer', threadId: null });
+      const ctx = createRelayContext({
+        trust: { kind: 'plaintext-tofu', senderFingerprint: 'fp-plain-1' },
+      });
+      await router.handleInboundMessage(first, ctx);
+      const firstThreadId = first.message.threadId;
+
+      const second = createEnvelope({ from: 'PlainPeer', threadId: null });
+      await router.handleInboundMessage(second, ctx);
+      expect(second.message.threadId).not.toBe(firstThreadId);
+      expect(router.getAffinitySnapshotForTests().size).toBe(0);
+    });
+
+    it('does not read affinity map when no relay context', async () => {
+      // Prime the map by sending once WITH verified ctx.
+      const primer = createEnvelope({ from: 'Peer', threadId: null });
+      await router.handleInboundMessage(primer, createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-v' },
+      }));
+      const primerThreadId = primer.message.threadId;
+
+      // Now send without any relay context.
+      const follow = createEnvelope({ from: 'Peer', threadId: null });
+      await router.handleInboundMessage(follow, undefined);
+      expect(follow.message.threadId).not.toBe(primerThreadId);
+    });
+
+    it('explicit threadId on envelope wins over affinity', async () => {
+      const primer = createEnvelope({ from: 'Peer', threadId: null });
+      const ctx = createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-explicit' },
+      });
+      await router.handleInboundMessage(primer, ctx);
+
+      const explicit = createEnvelope({ from: 'Peer', threadId: 'caller-chosen-thread-id' });
+      await router.handleInboundMessage(explicit, ctx);
+      expect(explicit.message.threadId).toBe('caller-chosen-thread-id');
+    });
+
+    it('evicts entries beyond LRU cap', async () => {
+      // Flood 1001 verified peers; first entry should be evicted.
+      for (let i = 0; i < 1001; i++) {
+        const env = createEnvelope({ from: `Peer${i}`, threadId: null });
+        await router.handleInboundMessage(env, createRelayContext({
+          trust: { kind: 'verified', senderFingerprint: `fp-${i}` },
+        }));
+      }
+      const snap = router.getAffinitySnapshotForTests();
+      expect(snap.size).toBe(1000);
+      expect(snap.has('fp-0')).toBe(false);
+      expect(snap.has('fp-1000')).toBe(true);
+    });
+
+    it('refreshes sliding TTL on reuse but preserves firstUsedAt', async () => {
+      let fakeNow = 1_000_000;
+      const clockRouter = new ThreadlineRouter(
+        messageRouter as never, spawnManager as never, threadResumeMap as never,
+        createMockMessageStore() as never, routerConfig, null, null, undefined, () => fakeNow,
+      );
+      const ctx = createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-ttl' },
+      });
+      const first = createEnvelope({ from: 'Peer', threadId: null });
+      await clockRouter.handleInboundMessage(first, ctx);
+      const firstThreadId = first.message.threadId;
+
+      fakeNow += 60_000; // 1 min later — within both TTLs
+      const second = createEnvelope({ from: 'Peer', threadId: null });
+      await clockRouter.handleInboundMessage(second, ctx);
+      expect(second.message.threadId).toBe(firstThreadId);
+
+      const snap = clockRouter.getAffinitySnapshotForTests();
+      const entry = snap.get('fp-ttl');
+      expect(entry).toBeDefined();
+      expect(entry!.firstUsedAt).toBe(1_000_000);
+      expect(entry!.lastUsedAt).toBe(1_060_000);
+    });
+
+    it('expires entry past sliding TTL', async () => {
+      let fakeNow = 2_000_000;
+      const clockRouter = new ThreadlineRouter(
+        messageRouter as never, spawnManager as never, threadResumeMap as never,
+        createMockMessageStore() as never, routerConfig, null, null, undefined, () => fakeNow,
+      );
+      const ctx = createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-sliding' },
+      });
+      const first = createEnvelope({ from: 'Peer', threadId: null });
+      await clockRouter.handleInboundMessage(first, ctx);
+      const firstThreadId = first.message.threadId;
+
+      fakeNow += 700_000; // > 10 min sliding TTL
+      const second = createEnvelope({ from: 'Peer', threadId: null });
+      await clockRouter.handleInboundMessage(second, ctx);
+      expect(second.message.threadId).not.toBe(firstThreadId);
+    });
+
+    it('expires entry past absolute TTL even with recent activity', async () => {
+      let fakeNow = 3_000_000;
+      const clockRouter = new ThreadlineRouter(
+        messageRouter as never, spawnManager as never, threadResumeMap as never,
+        createMockMessageStore() as never, routerConfig, null, null, undefined, () => fakeNow,
+      );
+      const ctx = createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-absolute' },
+      });
+      const first = createEnvelope({ from: 'Peer', threadId: null });
+      await clockRouter.handleInboundMessage(first, ctx);
+      const firstThreadId = first.message.threadId;
+
+      // Churn within sliding TTL to keep lastUsedAt fresh, but push past absolute.
+      for (let i = 0; i < 15; i++) {
+        fakeNow += 500_000; // 8.3 min each — within sliding 10min
+        const f = createEnvelope({ from: 'Peer', threadId: null });
+        await clockRouter.handleInboundMessage(f, ctx);
+      }
+      // After 15 iterations × 500_000ms = 7_500_000ms, which exceeds absolute 7_200_000ms.
+      // The most-recent call above will have observed expiry and minted fresh.
+      const final = createEnvelope({ from: 'Peer', threadId: null });
+      await clockRouter.handleInboundMessage(final, ctx);
+      // firstThreadId is long gone — check that the final thread is not the original.
+      expect(final.message.threadId).not.toBe(firstThreadId);
     });
   });
 
