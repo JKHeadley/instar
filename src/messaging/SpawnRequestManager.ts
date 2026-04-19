@@ -111,6 +111,13 @@ export interface SpawnRequestManagerConfig {
   maxDrainsPerTick?: number;
   /** §4.2: max queued messages per agent while in degraded admission. Default 1. */
   degradedMaxQueuedPerAgent?: number;
+  /**
+   * §4.3: max envelope size in bytes (UTF-8). Spawn requests with `context`
+   * larger than this are refused at admission with an `envelope-too-large`
+   * reason. Bounds drain-tick cost and prevents a peer from hogging budget
+   * with bulk content. Default: 256 KiB.
+   */
+  maxEnvelopeBytes?: number;
 }
 
 // ── Constants ───────────────────────────────────────────────────
@@ -133,6 +140,9 @@ const PENALTY_COOLDOWN_MULTIPLIER = 2;
  * for the degradation duration. No penalty, no blame — just gentle backpressure
  * on peers that reliably trigger infra paths.
  */
+/** §4.3: default payload byte-size cap. */
+const DEFAULT_MAX_ENVELOPE_BYTES = 256 * 1024; // 256 KiB
+
 const INFRA_FAILURE_WINDOW_MS = 10 * 60_000;       // 10 min
 const INFRA_FAILURE_THRESHOLD = 5;                  // failures within window to trigger
 const INFRA_DEGRADATION_DURATION_MS = 30 * 60_000;  // 30 min degraded admission
@@ -331,6 +341,20 @@ export class SpawnRequestManager {
    */
   async evaluate(request: SpawnRequest): Promise<SpawnResult> {
     const agent = request.requester.agent;
+
+    // §4.3: payload byte-size cap. Refuse oversized envelopes at admission so
+    // bulk content can't hog drain-tick budget. Measured on the UTF-8 byte
+    // length of `context` (the only payload field on this surface today).
+    const maxBytes = this.#config.maxEnvelopeBytes ?? DEFAULT_MAX_ENVELOPE_BYTES;
+    if (request.context !== undefined) {
+      const bytes = Buffer.byteLength(request.context, 'utf8');
+      if (bytes > maxBytes) {
+        return {
+          approved: false,
+          reason: `envelope-too-large: ${bytes} bytes exceeds cap of ${maxBytes} bytes`,
+        };
+      }
+    }
 
     // §4.2: single-source cooldown check (covers cooldown AND penalty).
     const remainingMs = this.cooldownRemainingMs(agent);

@@ -783,6 +783,52 @@ describe('SpawnRequestManager', () => {
       expect(mgr.effectiveMaxQueuedPerAgent('agent-a')).toBe(3);
     });
 
+    it('refuses envelopes above maxEnvelopeBytes with envelope-too-large reason', async () => {
+      const mgr = new SpawnRequestManager(makeConfig({ maxEnvelopeBytes: 100 }));
+      const oversized = 'x'.repeat(101);
+      const result = await mgr.evaluate(makeRequest({ context: oversized }));
+      expect(result.approved).toBe(false);
+      expect(result.reason).toMatch(/envelope-too-large/);
+      expect(result.reason).toContain('101 bytes');
+      expect(result.reason).toContain('100 bytes');
+    });
+
+    it('accepts envelopes at exactly maxEnvelopeBytes', async () => {
+      const mgr = new SpawnRequestManager(makeConfig({ maxEnvelopeBytes: 100 }));
+      const exact = 'x'.repeat(100);
+      const result = await mgr.evaluate(makeRequest({ context: exact }));
+      expect(result.approved).toBe(true);
+    });
+
+    it('uses default 256 KiB cap when maxEnvelopeBytes not configured', async () => {
+      const mgr = new SpawnRequestManager(makeConfig());
+      // Just over 256 KiB.
+      const huge = 'x'.repeat(256 * 1024 + 1);
+      const result = await mgr.evaluate(makeRequest({ context: huge }));
+      expect(result.approved).toBe(false);
+      expect(result.reason).toMatch(/envelope-too-large/);
+    });
+
+    it('byte-size check counts UTF-8 bytes, not code units', async () => {
+      const mgr = new SpawnRequestManager(makeConfig({ maxEnvelopeBytes: 10 }));
+      // Each emoji is 4 UTF-8 bytes. 3 emojis = 12 bytes > 10.
+      const result = await mgr.evaluate(makeRequest({ context: '🌊🌊🌊' }));
+      expect(result.approved).toBe(false);
+      expect(result.reason).toMatch(/envelope-too-large/);
+    });
+
+    it('refuses oversized envelopes BEFORE cooldown check (no queue side-effect)', async () => {
+      const mgr = new SpawnRequestManager(makeConfig({ maxEnvelopeBytes: 100, cooldownMs: 1_000 }));
+      // First successful spawn to set cooldown.
+      await mgr.evaluate(makeRequest());
+      // Now an oversized request — should be refused without queueing.
+      const oversized = 'x'.repeat(200);
+      const result = await mgr.evaluate(makeRequest({ context: oversized }));
+      expect(result.approved).toBe(false);
+      expect(result.reason).toMatch(/envelope-too-large/);
+      expect(mgr.getQueuedCount('agent-a')).toBe(0);
+    });
+
     it('getDrainTickMs honors floor and ceiling', () => {
       // cooldown=100 → 100/4=25 → floor at 1000
       let mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 100 }));
