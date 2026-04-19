@@ -832,6 +832,75 @@ export class SpawnRequestManager {
     return new Map(this.#drrDeficit);
   }
 
+  /**
+   * §4.4 commit 3: runtime-tunable subset of the config. Exposed for the
+   * GET endpoint that lets operators inspect current values without exposing
+   * sensitive callbacks (`spawnSession`, `getActiveSessions`, etc.).
+   */
+  getRuntimeConfig(): {
+    cooldownMs: number;
+    maxDrainsPerTick: number;
+    maxEnvelopeBytes: number;
+    maxGlobalQueued: number;
+    degradedMaxQueuedPerAgent: number;
+    drainTickMs: number;
+  } {
+    return {
+      cooldownMs: this.#config.cooldownMs ?? DEFAULT_COOLDOWN_MS,
+      maxDrainsPerTick: this.#config.maxDrainsPerTick ?? DRAIN_MAX_PER_TICK_DEFAULT,
+      maxEnvelopeBytes: this.#config.maxEnvelopeBytes ?? DEFAULT_MAX_ENVELOPE_BYTES,
+      maxGlobalQueued: this.#config.maxGlobalQueued ?? DEFAULT_MAX_GLOBAL_QUEUED,
+      degradedMaxQueuedPerAgent: this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT,
+      drainTickMs: this.getDrainTickMs(),
+    };
+  }
+
+  /**
+   * §4.4 commit 3: update the runtime-tunable subset of the config in place.
+   *
+   * Changing `cooldownMs` updates the gate logic immediately, but the drain
+   * tick interval is fixed at `start()`. To pick up a new tick interval,
+   * callers should `dispose()` then `start()`. Returns true if the timer
+   * needs to be restarted to pick up tick-interval changes.
+   *
+   * Validation: each field is rejected if not a positive finite number (or
+   * if it would result in nonsensical state). The whole patch is atomic —
+   * any invalid field rejects the entire update.
+   */
+  updateConfig(patch: {
+    cooldownMs?: number;
+    maxDrainsPerTick?: number;
+    maxEnvelopeBytes?: number;
+    maxGlobalQueued?: number;
+    degradedMaxQueuedPerAgent?: number;
+  }): { applied: true; tickIntervalChanged: boolean } | { applied: false; reason: string } {
+    const validators: Array<[keyof typeof patch, (v: number) => boolean]> = [
+      ['cooldownMs', v => v >= 0 && Number.isFinite(v)],
+      ['maxDrainsPerTick', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
+      ['maxEnvelopeBytes', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
+      ['maxGlobalQueued', v => v >= 0 && Number.isFinite(v) && Number.isInteger(v)],
+      ['degradedMaxQueuedPerAgent', v => v >= 0 && Number.isFinite(v) && Number.isInteger(v)],
+    ];
+    for (const [k, ok] of validators) {
+      const v = patch[k];
+      if (v !== undefined && !ok(v)) {
+        return { applied: false, reason: `Invalid value for ${String(k)}: ${v}` };
+      }
+    }
+    const oldTickMs = this.getDrainTickMs();
+    // Mutate in place. `#config` is readonly as a binding; the object's
+    // fields aren't individually readonly, so this is safe.
+    if (patch.cooldownMs !== undefined) this.#config.cooldownMs = patch.cooldownMs;
+    if (patch.maxDrainsPerTick !== undefined) this.#config.maxDrainsPerTick = patch.maxDrainsPerTick;
+    if (patch.maxEnvelopeBytes !== undefined) this.#config.maxEnvelopeBytes = patch.maxEnvelopeBytes;
+    if (patch.maxGlobalQueued !== undefined) this.#config.maxGlobalQueued = patch.maxGlobalQueued;
+    if (patch.degradedMaxQueuedPerAgent !== undefined) {
+      this.#config.degradedMaxQueuedPerAgent = patch.degradedMaxQueuedPerAgent;
+    }
+    const newTickMs = this.getDrainTickMs();
+    return { applied: true, tickIntervalChanged: oldTickMs !== newTickMs };
+  }
+
   /** Clear all state (for testing) */
   reset(): void {
     this.#lastSpawnByAgent.clear();

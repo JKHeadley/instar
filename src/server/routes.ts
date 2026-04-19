@@ -9246,6 +9246,64 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  /**
+   * §4.4 commit 3: read the current runtime-tunable spawn-manager config.
+   * Returns the resolved values (defaults filled in).
+   */
+  router.get('/messages/spawn/config', (_req, res) => {
+    if (!ctx.spawnManager) {
+      res.status(503).json({ error: 'Spawn manager not available' });
+      return;
+    }
+    res.json(ctx.spawnManager.getRuntimeConfig());
+  });
+
+  /**
+   * §4.4 commit 3: update runtime-tunable spawn-manager fields atomically.
+   * Body: any subset of { cooldownMs, maxDrainsPerTick, maxEnvelopeBytes,
+   * maxGlobalQueued, degradedMaxQueuedPerAgent }.
+   *
+   * Note: changing cooldownMs updates gate logic immediately, but the drain
+   * tick interval is fixed at start(). The response indicates whether a
+   * timer restart is needed; operators can trigger that with a separate call
+   * (or just restart the server) if they need the new tick rate to take
+   * effect.
+   */
+  router.patch('/messages/spawn/config', (req, res) => {
+    if (!ctx.spawnManager) {
+      res.status(503).json({ error: 'Spawn manager not available' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    // Reject unknown fields to avoid silent typos.
+    const allowed = new Set(['cooldownMs', 'maxDrainsPerTick', 'maxEnvelopeBytes', 'maxGlobalQueued', 'degradedMaxQueuedPerAgent']);
+    const unknownKeys = Object.keys(body).filter(k => !allowed.has(k));
+    if (unknownKeys.length > 0) {
+      res.status(400).json({ error: `Unknown fields: ${unknownKeys.join(', ')}` });
+      return;
+    }
+    // Reject non-number values up-front so the manager only sees clean input.
+    for (const k of Object.keys(body)) {
+      if (typeof body[k] !== 'number') {
+        res.status(400).json({ error: `Field ${k} must be a number` });
+        return;
+      }
+    }
+    const result = ctx.spawnManager.updateConfig(body as Parameters<typeof ctx.spawnManager.updateConfig>[0]);
+    if (!result.applied) {
+      res.status(400).json({ error: result.reason });
+      return;
+    }
+    res.json({
+      ok: true,
+      tickIntervalChanged: result.tickIntervalChanged,
+      tickIntervalNote: result.tickIntervalChanged
+        ? 'New tick interval will take effect after the next dispose() + start() (e.g., server restart).'
+        : undefined,
+      current: ctx.spawnManager.getRuntimeConfig(),
+    });
+  });
+
   router.post('/messages/spawn-request', async (req, res) => {
     if (!ctx.spawnManager) {
       res.status(503).json({ error: 'Spawn requests not available' });

@@ -999,6 +999,55 @@ describe('SpawnRequestManager', () => {
       expect(lastCall[1]).toMatchObject({ triggeredBy: 'spawn-request-drain' });
     });
 
+    it('getRuntimeConfig returns resolved values with defaults filled in', () => {
+      const mgr = new SpawnRequestManager(makeConfig({ cooldownMs: 1234 }));
+      const cfg = mgr.getRuntimeConfig();
+      expect(cfg.cooldownMs).toBe(1234);
+      // maxDrainsPerTick not set → default 8
+      expect(cfg.maxDrainsPerTick).toBe(8);
+      expect(cfg.maxEnvelopeBytes).toBe(256 * 1024);
+      expect(cfg.maxGlobalQueued).toBe(1000);
+      expect(cfg.degradedMaxQueuedPerAgent).toBe(1);
+      expect(cfg.drainTickMs).toBeGreaterThanOrEqual(1000);
+    });
+
+    it('updateConfig applies valid fields atomically', () => {
+      const mgr = new SpawnRequestManager(makeConfig({ cooldownMs: 1000 }));
+      const r = mgr.updateConfig({ cooldownMs: 5000, maxEnvelopeBytes: 1024 });
+      expect(r.applied).toBe(true);
+      const cfg = mgr.getRuntimeConfig();
+      expect(cfg.cooldownMs).toBe(5000);
+      expect(cfg.maxEnvelopeBytes).toBe(1024);
+    });
+
+    it('updateConfig rejects invalid values without partial application', () => {
+      const mgr = new SpawnRequestManager(makeConfig({ cooldownMs: 1000 }));
+      const r = mgr.updateConfig({ cooldownMs: 9999, maxDrainsPerTick: -1 });
+      expect(r.applied).toBe(false);
+      // No partial mutation.
+      expect(mgr.getRuntimeConfig().cooldownMs).toBe(1000);
+    });
+
+    it('updateConfig flags tickIntervalChanged when cooldownMs changes the tick', () => {
+      const mgr = new SpawnRequestManager(makeConfig({ cooldownMs: 4000 }));
+      // 4000/4 = 1000 = floor → tick = 1000
+      const oldTick = mgr.getDrainTickMs();
+      const r = mgr.updateConfig({ cooldownMs: 40_000 });
+      expect(r.applied).toBe(true);
+      // 40000/4 = 10000 → ceiling = 5000 → tick changes
+      if (r.applied) expect(r.tickIntervalChanged).toBe(true);
+      expect(mgr.getDrainTickMs()).not.toBe(oldTick);
+    });
+
+    it('updateConfig with empty patch is a no-op success', () => {
+      const mgr = new SpawnRequestManager(makeConfig());
+      const before = mgr.getRuntimeConfig();
+      const r = mgr.updateConfig({});
+      expect(r.applied).toBe(true);
+      if (r.applied) expect(r.tickIntervalChanged).toBe(false);
+      expect(mgr.getRuntimeConfig()).toEqual(before);
+    });
+
     it('getDrainTickMs honors floor and ceiling', () => {
       // cooldown=100 → 100/4=25 → floor at 1000
       let mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 100 }));
