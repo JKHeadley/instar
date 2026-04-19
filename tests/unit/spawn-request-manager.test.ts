@@ -688,6 +688,101 @@ describe('SpawnRequestManager', () => {
       expect(calls).toBe(3); // all callbacks invoked despite one failure
     });
 
+    it('infra-failure soft limiter triggers after 5 infra failures within window', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('outage', 'provider-5xx'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession, cooldownMs: 1, nowFn: () => now,
+      }));
+      expect(mgr.isInfraDegraded('agent-a')).toBe(false);
+
+      for (let i = 0; i < 5; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 2; // past cooldown
+      }
+      expect(mgr.isInfraDegraded('agent-a')).toBe(true);
+      expect(mgr.effectiveMaxQueuedPerAgent('agent-a')).toBe(1);
+      // Other agents are not degraded.
+      expect(mgr.isInfraDegraded('agent-b')).toBe(false);
+      expect(mgr.effectiveMaxQueuedPerAgent('agent-b')).toBe(SpawnRequestManager.MAX_QUEUED_PER_AGENT);
+    });
+
+    it('infra failures outside the 10-min window do not count', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('outage', 'provider-5xx'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession, cooldownMs: 1, nowFn: () => now,
+      }));
+
+      // Trip 4 failures, then jump 11 minutes.
+      for (let i = 0; i < 4; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 2;
+      }
+      now += 11 * 60_000; // window has slid past
+      // One more failure — old ones are stale, so we're at 1, not 5.
+      await mgr.evaluate(makeRequest());
+      expect(mgr.isInfraDegraded('agent-a')).toBe(false);
+    });
+
+    it('agent-attributable failures do NOT count toward infra window', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('bad envelope', 'envelope-validation'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession, cooldownMs: 1, nowFn: () => now,
+      }));
+      for (let i = 0; i < 5; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 2;
+      }
+      expect(mgr.isInfraDegraded('agent-a')).toBe(false);
+    });
+
+    it('degradation expires 30 minutes after the threshold-tripping failure', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('outage', 'provider-5xx'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession, cooldownMs: 1, nowFn: () => now,
+      }));
+      for (let i = 0; i < 5; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 2;
+      }
+      expect(mgr.isInfraDegraded('agent-a')).toBe(true);
+      // Jump ahead 31 min from the threshold-tripping failure.
+      now += 31 * 60_000;
+      expect(mgr.isInfraDegraded('agent-a')).toBe(false);
+    });
+
+    it('respects custom degradedMaxQueuedPerAgent override', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const spawnSession = vi.fn().mockRejectedValue(
+        new SpawnFailureError('outage', 'gate-llm-timeout'),
+      );
+      let now = 1_000_000;
+      const mgr = new SpawnRequestManager(makeConfig({
+        spawnSession, cooldownMs: 1, nowFn: () => now,
+        degradedMaxQueuedPerAgent: 3,
+      }));
+      for (let i = 0; i < 5; i++) {
+        await mgr.evaluate(makeRequest());
+        now += 2;
+      }
+      expect(mgr.effectiveMaxQueuedPerAgent('agent-a')).toBe(3);
+    });
+
     it('getDrainTickMs honors floor and ceiling', () => {
       // cooldown=100 → 100/4=25 → floor at 1000
       let mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 100 }));

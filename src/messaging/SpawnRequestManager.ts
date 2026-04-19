@@ -109,6 +109,8 @@ export interface SpawnRequestManagerConfig {
   onDrainReady?: (agent: string) => Promise<void>;
   /** §4.2: max drains per tick. Default 8. */
   maxDrainsPerTick?: number;
+  /** §4.2: max queued messages per agent while in degraded admission. Default 1. */
+  degradedMaxQueuedPerAgent?: number;
 }
 
 // ── Constants ───────────────────────────────────────────────────
@@ -121,6 +123,20 @@ const DEFAULT_MAX_RETRY_WINDOW_MS = 30 * 60_000;
 const PENALTY_FAILURE_THRESHOLD = 3;
 /** §4.2: penalty duration is this multiple of the configured cooldown. */
 const PENALTY_COOLDOWN_MULTIPLIER = 2;
+
+/**
+ * §4.2 infra-failure soft limiter.
+ *
+ * Tracks infrastructure-attributable failures (provider-5xx, gate-llm-timeout,
+ * etc.) over a sliding window. If a peer exceeds the threshold within the
+ * window, their queue admission is **degraded** to `degradedMaxQueuedPerAgent`
+ * for the degradation duration. No penalty, no blame — just gentle backpressure
+ * on peers that reliably trigger infra paths.
+ */
+const INFRA_FAILURE_WINDOW_MS = 10 * 60_000;       // 10 min
+const INFRA_FAILURE_THRESHOLD = 5;                  // failures within window to trigger
+const INFRA_DEGRADATION_DURATION_MS = 30 * 60_000;  // 30 min degraded admission
+const DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT = 1;
 
 /**
  * §4.2 drain-loop constants (DRR scheduling).
@@ -195,6 +211,9 @@ export class SpawnRequestManager {
   /** §4.2: re-entrancy guard to prevent overlapping tick executions. */
   #tickInflight = false;
 
+  /** §4.2: rolling timestamps of infra-attributable failures per agent. */
+  readonly #infraFailureWindow = new Map<string, number[]>();
+
   constructor(config: SpawnRequestManagerConfig) {
     this.#config = config;
     this.#nowFn = config.nowFn ?? (() => Date.now());
@@ -234,16 +253,68 @@ export class SpawnRequestManager {
    * Apply a classified failure to penalty state. Only agent-attributable
    * causes increment `consecutiveSpawnFailures`; hitting the threshold stamps
    * `penaltyUntil`. Infrastructure + ambiguous causes do NOT bump the counter.
+   *
+   * §4.2 infra soft limiter: infrastructure-attributable causes ARE recorded
+   * in `#infraFailureWindow` so peers that reliably trigger infra paths can
+   * be gently throttled via `isInfraDegraded(agent)`.
    */
   #applyFailureAttribution(agent: string, cause: SpawnFailureCause): void {
-    if (!AGENT_ATTRIBUTABLE_CAUSES.has(cause)) return;
-    const prior = this.#consecutiveSpawnFailures.get(agent) ?? 0;
-    const next = prior + 1;
-    this.#consecutiveSpawnFailures.set(agent, next);
-    if (next >= PENALTY_FAILURE_THRESHOLD) {
-      const cooldownMs = this.#config.cooldownMs ?? DEFAULT_COOLDOWN_MS;
-      this.#penaltyUntil.set(agent, this.#nowFn() + PENALTY_COOLDOWN_MULTIPLIER * cooldownMs);
+    if (AGENT_ATTRIBUTABLE_CAUSES.has(cause)) {
+      const prior = this.#consecutiveSpawnFailures.get(agent) ?? 0;
+      const next = prior + 1;
+      this.#consecutiveSpawnFailures.set(agent, next);
+      if (next >= PENALTY_FAILURE_THRESHOLD) {
+        const cooldownMs = this.#config.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+        this.#penaltyUntil.set(agent, this.#nowFn() + PENALTY_COOLDOWN_MULTIPLIER * cooldownMs);
+      }
+      return;
     }
+    // Non-attributable causes (infra + ambiguous) feed the soft limiter
+    // window. Ambiguous is included because, from the limiter's perspective,
+    // unknown is indistinguishable from infra — the signal is "this peer
+    // reliably triggers things going wrong, but we can't blame them".
+    this.#recordInfraFailure(agent);
+  }
+
+  /** Record an infra-attributable failure timestamp; prune stale entries. */
+  #recordInfraFailure(agent: string): void {
+    const now = this.#nowFn();
+    const cutoff = now - INFRA_FAILURE_WINDOW_MS;
+    const window = this.#infraFailureWindow.get(agent) ?? [];
+    const fresh = window.filter(t => t > cutoff);
+    fresh.push(now);
+    this.#infraFailureWindow.set(agent, fresh);
+  }
+
+  /**
+   * Returns true if the agent has exceeded `INFRA_FAILURE_THRESHOLD`
+   * infra-attributable failures within `INFRA_FAILURE_WINDOW_MS` AND the
+   * resulting degradation window (`INFRA_DEGRADATION_DURATION_MS` since the
+   * threshold-tripping failure) has not yet elapsed.
+   *
+   * No penalty implied — degraded admission ONLY caps queue depth via
+   * `effectiveMaxQueuedPerAgent(agent)`.
+   */
+  isInfraDegraded(agent: string): boolean {
+    const window = this.#infraFailureWindow.get(agent);
+    if (!window || window.length < INFRA_FAILURE_THRESHOLD) return false;
+    const now = this.#nowFn();
+    const cutoff = now - INFRA_FAILURE_WINDOW_MS;
+    const fresh = window.filter(t => t > cutoff);
+    if (fresh.length < INFRA_FAILURE_THRESHOLD) return false;
+    // Threshold-tripping failure = the Nth-most-recent failure (where N = threshold).
+    // Degradation lasts INFRA_DEGRADATION_DURATION_MS from that timestamp.
+    const tripIdx = fresh.length - INFRA_FAILURE_THRESHOLD;
+    const trippedAt = fresh[tripIdx];
+    return now - trippedAt < INFRA_DEGRADATION_DURATION_MS;
+  }
+
+  /** Effective per-agent queue cap, accounting for soft-limiter degradation. */
+  effectiveMaxQueuedPerAgent(agent: string): number {
+    if (this.isInfraDegraded(agent)) {
+      return this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT;
+    }
+    return SpawnRequestManager.MAX_QUEUED_PER_AGENT;
   }
 
   /** Clear penalty counters on successful spawn. */
@@ -395,7 +466,9 @@ export class SpawnRequestManager {
       queue.shift();
     }
 
-    if (queue.length >= SpawnRequestManager.MAX_QUEUED_PER_AGENT) {
+    // §4.2 infra soft limiter: respect degraded admission cap if active.
+    const cap = this.effectiveMaxQueuedPerAgent(agent);
+    while (queue.length >= cap) {
       queue.shift();
     }
 
@@ -611,5 +684,6 @@ export class SpawnRequestManager {
     this.#consecutiveSpawnFailures.clear();
     this.#drrDeficit.clear();
     this.#drainAttempts.clear();
+    this.#infraFailureWindow.clear();
   }
 }
