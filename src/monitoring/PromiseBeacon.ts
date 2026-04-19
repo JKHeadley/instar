@@ -62,6 +62,25 @@ export interface PromiseBeaconConfig {
     tmuxOutput: string,
     signal: AbortSignal,
   ) => Promise<string>;
+  /**
+   * Haiku-class classifier — returns a `concern` verdict used as a signal-only
+   * input to the atRisk transition. The beacon never auto-transitions to
+   * `violated` on this signal; authority for terminal `violated` is held by
+   * hard corroboration (session death / hard deadline). Per spec Round 3 #1.
+   *
+   * Return shape:
+   *  - `working`  — normal heartbeat, atRisk cleared.
+   *  - `stalled`  — the beacon sets `atRisk: true` (non-terminal), emits a
+   *                 softer line, and doubles cadence until the next check.
+   *                 Two consecutive `stalled` verdicts spanning ≥30 min
+   *                 remain a signal-only state here; the terminal promotion
+   *                 still requires a hard corroborating event.
+   */
+  classifyProgress?: (
+    promiseText: string,
+    tmuxOutput: string,
+    signal: AbortSignal,
+  ) => Promise<'working' | 'stalled'>;
 
   // Settings (all spec-defaulted, per-agent overridable via config.json)
   prefix?: string;                   // Default: "⏳"
@@ -78,6 +97,13 @@ export interface PromiseBeaconConfig {
   __dev_timerMultiplier?: number;
   /** Injectable clock for tests. */
   now?: () => number;
+  /**
+   * Max active beacons per agent (boot-cap). When more beacon-enabled pending
+   * commitments exist at `start()`, the overflow is marked `beaconSuppressed`
+   * with reason `boot-cap-exceeded` (non-terminal; status stays `pending`).
+   * Spec Round 3 #2. Default: 20.
+   */
+  maxActiveBeacons?: number;
 }
 
 interface HotState {
@@ -155,6 +181,7 @@ export class PromiseBeacon extends EventEmitter {
   private maxCadenceMs: number;
   private timerMult: number;
   private now: () => number;
+  private maxActiveBeacons: number;
 
   constructor(config: PromiseBeaconConfig) {
     super();
@@ -164,6 +191,7 @@ export class PromiseBeacon extends EventEmitter {
     this.maxCadenceMs = config.maxCadenceMs ?? 21_600_000;
     this.timerMult = config.__dev_timerMultiplier ?? 1.0;
     this.now = config.now ?? (() => Date.now());
+    this.maxActiveBeacons = config.maxActiveBeacons ?? 20;
     this.stateDir = path.join(config.stateDir, 'state', 'promise-beacon');
     try { fs.mkdirSync(this.stateDir, { recursive: true }); } catch { /* ok */ }
   }
@@ -175,7 +203,33 @@ export class PromiseBeacon extends EventEmitter {
     const active = this.config.commitmentTracker
       .getActive()
       .filter(c => c.beaconEnabled && c.status === 'pending' && !c.beaconSuppressed);
-    for (const c of active) {
+
+    // Boot-cap enforcement (spec Round 3 #2).
+    // If the count of beacon-enabled pending commitments exceeds the cap,
+    // newest-first is kept; overflow is marked `beaconSuppressed` with reason
+    // `boot-cap-exceeded`. Non-terminal — status stays `pending`.
+    const sorted = [...active].sort((a, b) => {
+      const ta = new Date(a.createdAt).getTime();
+      const tb = new Date(b.createdAt).getTime();
+      return tb - ta; // newest first
+    });
+    const keep = sorted.slice(0, this.maxActiveBeacons);
+    const overflow = sorted.slice(this.maxActiveBeacons);
+    if (overflow.length > 0) {
+      console.log(`[PromiseBeacon] Boot-cap exceeded: ${overflow.length} commitment(s) suppressed (cap=${this.maxActiveBeacons})`);
+      for (const c of overflow) {
+        // Fire-and-forget — the mutate surface handles CAS retries.
+        this.config.commitmentTracker
+          .mutate(c.id, prev => ({
+            ...prev,
+            beaconSuppressed: true,
+            beaconSuppressionReason: 'boot-cap-exceeded',
+          }))
+          .catch(err => console.warn(`[PromiseBeacon] boot-cap suppress failed for ${c.id}:`, (err as Error).message));
+      }
+      this.emit('boot-cap.exceeded', { cap: this.maxActiveBeacons, suppressed: overflow.map(c => c.id) });
+    }
+    for (const c of keep) {
       this.schedule(c);
     }
     // React to new beacon-enabled commitments as they're recorded.
@@ -216,7 +270,10 @@ export class PromiseBeacon extends EventEmitter {
     if (!c.topicId) return;
     if (c.status !== 'pending' || c.beaconSuppressed) return;
 
-    const cadence = this.clampCadence(c.cadenceMs ?? 10 * 60_000) * this.timerMult;
+    // atRisk doubles cadence (spec Round 3 #1) — softer-toned + less frequent.
+    const baseCadence = c.cadenceMs ?? 10 * 60_000;
+    const effective = c.atRisk ? baseCadence * 2 : baseCadence;
+    const cadence = this.clampCadence(effective) * this.timerMult;
     const hot = this.loadHotState(c.id);
     const last = hot.lastHeartbeatAt ? new Date(hot.lastHeartbeatAt).getTime() : new Date(c.createdAt).getTime();
     const dueAt = last + cadence;
@@ -294,11 +351,15 @@ export class PromiseBeacon extends EventEmitter {
       const unchanged = hash === hot.lastSnapshotHash;
 
       let text: string;
+      let atRiskSignal = false;
       if (!snapshot || unchanged) {
-        // Templated — no LLM call.
-        const variants = hot.consecutiveUnchanged > 2 ? AT_RISK_VARIANTS : TEMPLATED_VARIANTS;
+        // Templated — no LLM call. Prolonged unchanged output is itself a
+        // soft atRisk signal (2 consecutive unchanged snapshots).
+        const unchangedIsAtRisk = hot.consecutiveUnchanged >= 2;
+        const variants = unchangedIsAtRisk ? AT_RISK_VARIANTS : TEMPLATED_VARIANTS;
         const phrase = variants[hot.templatedVariantCursor % variants.length];
         text = `${this.prefix} ${phrase}`;
+        if (unchangedIsAtRisk) atRiskSignal = true;
         hot.consecutiveUnchanged += 1;
         hot.templatedVariantCursor += 1;
       } else {
@@ -317,7 +378,31 @@ export class PromiseBeacon extends EventEmitter {
             1,
           );
           const guard = guardProxyOutput(line);
-          text = `${this.prefix} ${guard.safe ? line : 'working on it'}`;
+          let safeLine = guard.safe ? line : 'working on it';
+
+          // ── atRisk classifier (signal-only) ──
+          // If a classifier is wired, ask it whether the snapshot reads as
+          // stalled. This is a *signal*, not authority: the beacon will flag
+          // the commitment atRisk and soften the heartbeat, but NEVER
+          // auto-transition to `violated` from this input. Spec Round 3 #1.
+          if (this.config.classifyProgress) {
+            try {
+              const verdict = await this.config.llmQueue.enqueue(
+                'background',
+                (s) => this.config.classifyProgress!(c.agentResponse || c.userRequest, snapshot, s),
+                1,
+              );
+              if (verdict === 'stalled') {
+                atRiskSignal = true;
+                const softPhrase = AT_RISK_VARIANTS[hot.templatedVariantCursor % AT_RISK_VARIANTS.length];
+                safeLine = softPhrase;
+              }
+            } catch {
+              // Classifier failure is non-fatal — fall through with original line.
+            }
+          }
+
+          text = `${this.prefix} ${safeLine}`;
           hot.consecutiveUnchanged = 0;
         } catch (err) {
           if (err instanceof LlmAbortedError || (err as Error).message.includes('cap exceeded') || (err as Error).message.includes('reserve')) {
@@ -347,9 +432,17 @@ export class PromiseBeacon extends EventEmitter {
         lastHeartbeatAt: nowIso,
         heartbeatCount: (prev.heartbeatCount ?? 0) + 1,
         lastSnapshotHash: hash,
+        // atRisk is a signal-driven, non-terminal flag. Setting it does NOT
+        // change status; it only nudges tone and doubles cadence below.
+        atRisk: atRiskSignal ? true : prev.atRisk,
       }));
 
-      this.emit('heartbeat.fired', { id: c.id, topicId: c.topicId, templated: !snapshot || unchanged });
+      this.emit('heartbeat.fired', {
+        id: c.id,
+        topicId: c.topicId,
+        templated: !snapshot || unchanged,
+        atRisk: atRiskSignal,
+      });
     } finally {
       this.config.proxyCoordinator.release(c.topicId, 'promise-beacon');
     }

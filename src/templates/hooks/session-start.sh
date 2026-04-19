@@ -189,6 +189,25 @@ except Exception:
     sys.exit(0)
 " <<< "$WORKING_MEM" 2>/dev/null
 
+# Active commitments injection (PROMISE-BEACON-SPEC Round 3 #7).
+# Surfaces beacon-watched pending commitments so the agent can self-regulate
+# pacing across compaction. Capped server-side at 20 entries.
+ACTIVE_COMMITMENTS=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+  "http://localhost:${PORT}/commitments/active-context" 2>/dev/null)
+if [ -n "$ACTIVE_COMMITMENTS" ]; then
+  python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    snippet = d.get('snippet', '').strip()
+    if snippet:
+        print(snippet)
+        print()
+except Exception:
+    pass
+" <<< "$ACTIVE_COMMITMENTS" 2>/dev/null
+fi
+
 # Soul.md fallback injection — until the Being layer is in the self-knowledge tree,
 # inject Personality Seed + Core Values at session start for identity grounding.
 if [ -f "$INSTAR_DIR/soul.md" ]; then

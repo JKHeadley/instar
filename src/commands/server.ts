@@ -4558,13 +4558,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       maxDailyLlmSpendCents?: number;
       sentinelAutoEnable?: boolean;
       quietHours?: { start: string; end: string; timezone?: string };
+      maxActiveBeacons?: number;
     };
     const sharedLlmQueue = new SharedLlmQueueCls({
       maxConcurrent: 3,
       interactiveReservePct: 0.4,
       maxDailyCents: promiseBeaconCfg.maxDailyLlmSpendCents ?? 100,
     });
-    void sharedLlmQueue; // Wired into PromiseBeacon below; PresenceProxy refactor tracked as follow-up.
+    // sharedLlmQueue is wired into both PromiseBeacon (background lane) and
+    // PresenceProxy (interactive lane) below.
 
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {
@@ -4713,6 +4715,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),
           releaseProxyMutex: (topicId, holder) => proxyCoordinator.release(topicId, holder),
+          // Shared LLM queue (interactive lane) — cross-monitor concurrency
+          // and daily-spend-cap with PromiseBeacon.
+          sharedLlmQueue,
         });
 
         // Hook into Telegram's onMessageLogged callback (always active, unlike EventBus which requires a feature flag)
@@ -4768,6 +4773,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             maxDailyLlmSpendCents: promiseBeaconCfg.maxDailyLlmSpendCents ?? 100,
             sentinelAutoEnable: promiseBeaconCfg.sentinelAutoEnable ?? false,
             quietHours: promiseBeaconCfg.quietHours ?? { start: '22:00', end: '08:00' },
+            maxActiveBeacons: promiseBeaconCfg.maxActiveBeacons ?? 20,
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;

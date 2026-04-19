@@ -8812,6 +8812,36 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   /**
+   * GET /commitments/active-context
+   * Returns the `<active_commitments>` snippet for session-start injection
+   * (spec Round 3 #7). Capped at 20 entries with a "+N more" footer.
+   * MUST be registered before `/commitments/:id` or Express will route the
+   * literal `active-context` to the :id handler.
+   */
+  router.get('/commitments/active-context', (_req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.json({ enabled: false, snippet: '' });
+      return;
+    }
+    const all = ctx.commitmentTracker.getActive()
+      .filter(c => c.status === 'pending' && c.beaconEnabled);
+    const cap = 20;
+    const shown = all.slice(0, cap).map(c => ({
+      id: c.id,
+      promiseText: (c.agentResponse || c.userRequest).slice(0, 120),
+      nextUpdateDueAt: c.nextUpdateDueAt ?? null,
+      atRisk: !!c.atRisk,
+    }));
+    const more = Math.max(0, all.length - cap);
+    let snippet = '';
+    if (shown.length > 0) {
+      const body = JSON.stringify(shown);
+      snippet = `<active_commitments>\n${body}${more > 0 ? `\n+ ${more} more` : ''}\n</active_commitments>`;
+    }
+    res.json({ enabled: true, snippet, total: all.length, shown: shown.length });
+  });
+
+  /**
    * Get a single commitment by ID.
    */
   router.get('/commitments/:id', (req, res) => {
@@ -8877,6 +8907,104 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(201).json(commitment);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to record' });
+    }
+  });
+
+  /**
+   * PATCH /commitments/:id
+   * Update mutable beacon fields on a pending commitment (spec Round 3 #2
+   * follow-up). Routes through CommitmentTracker.mutate() so the single-writer
+   * CAS invariant is preserved. Same validator shape as POST /commitments:
+   * if the caller sets beaconEnabled=true they must have topicId and at least
+   * one of nextUpdateDueAt/softDeadlineAt/hardDeadlineAt (effective fields,
+   * i.e. new-or-existing).
+   *
+   * Terminal-status guard: PATCH on delivered/violated/expired/withdrawn
+   * returns 409 (matches the `deliver` guard).
+   */
+  router.patch('/commitments/:id', async (req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const existing = ctx.commitmentTracker.get(req.params.id);
+    if (!existing) {
+      res.status(404).json({ error: `Commitment ${req.params.id} not found` });
+      return;
+    }
+    if (['delivered', 'violated', 'expired', 'withdrawn'].includes(existing.status)) {
+      res.status(409).json({ error: `Commitment ${req.params.id} is ${existing.status} (terminal); PATCH rejected` });
+      return;
+    }
+
+    const { nextUpdateDueAt, softDeadlineAt, hardDeadlineAt, cadenceMs, beaconEnabled } = req.body ?? {};
+
+    // Reject unknown keys to surface typos early.
+    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled']);
+    const unknown = Object.keys(req.body ?? {}).filter(k => !allowed.has(k));
+    if (unknown.length > 0) {
+      res.status(400).json({ error: `Unknown field(s): ${unknown.join(', ')}. Allowed: ${[...allowed].join(', ')}` });
+      return;
+    }
+
+    // Type validation.
+    const iso = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && !Number.isNaN(Date.parse(v)));
+    if (!iso(nextUpdateDueAt)) { res.status(400).json({ error: 'nextUpdateDueAt must be ISO 8601' }); return; }
+    if (!iso(softDeadlineAt)) { res.status(400).json({ error: 'softDeadlineAt must be ISO 8601' }); return; }
+    if (!iso(hardDeadlineAt)) { res.status(400).json({ error: 'hardDeadlineAt must be ISO 8601' }); return; }
+    if (cadenceMs !== undefined && cadenceMs !== null && (typeof cadenceMs !== 'number' || cadenceMs <= 0)) {
+      res.status(400).json({ error: 'cadenceMs must be a positive number' });
+      return;
+    }
+    if (beaconEnabled !== undefined && typeof beaconEnabled !== 'boolean') {
+      res.status(400).json({ error: 'beaconEnabled must be boolean' });
+      return;
+    }
+
+    // Effective-field validation (matches POST creation validator).
+    const effBeaconEnabled = beaconEnabled ?? existing.beaconEnabled;
+    if (effBeaconEnabled) {
+      if (!existing.topicId) {
+        res.status(400).json({ error: 'beaconEnabled commitments require topicId (cannot be added via PATCH)' });
+        return;
+      }
+      // Treat an explicit-present key (even `null`) as an overwrite, so the
+      // caller can clear a field. Fall back to `existing` only when the key
+      // was omitted from the body entirely.
+      const body = req.body ?? {};
+      const effNextUpdate = 'nextUpdateDueAt' in body ? nextUpdateDueAt : existing.nextUpdateDueAt;
+      const effSoft = 'softDeadlineAt' in body ? softDeadlineAt : existing.softDeadlineAt;
+      const effHard = 'hardDeadlineAt' in body ? hardDeadlineAt : existing.hardDeadlineAt;
+      if (!effNextUpdate && !effSoft && !effHard) {
+        res.status(400).json({
+          error: 'beaconEnabled commitments require at least one of nextUpdateDueAt, softDeadlineAt, hardDeadlineAt',
+        });
+        return;
+      }
+    }
+
+    try {
+      const updated = await ctx.commitmentTracker.mutate(req.params.id, prev => ({
+        ...prev,
+        ...(nextUpdateDueAt !== undefined ? { nextUpdateDueAt } : {}),
+        ...(softDeadlineAt !== undefined ? { softDeadlineAt } : {}),
+        ...(hardDeadlineAt !== undefined ? { hardDeadlineAt } : {}),
+        ...(cadenceMs !== undefined ? { cadenceMs } : {}),
+        ...(beaconEnabled !== undefined ? { beaconEnabled } : {}),
+      }));
+      // Re-arm the beacon timer if the tracker is wired to a live beacon.
+      try {
+        const beacon = (globalThis as Record<string, unknown>).__instarPromiseBeacon as
+          | { schedule: (c: typeof updated) => void; stopFor: (id: string) => void }
+          | undefined;
+        if (beacon && updated.beaconEnabled && updated.status === 'pending' && !updated.beaconSuppressed) {
+          beacon.stopFor(updated.id);
+          beacon.schedule(updated);
+        }
+      } catch { /* non-fatal */ }
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'mutate failed' });
     }
   });
 

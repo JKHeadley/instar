@@ -20,6 +20,7 @@ import type { IntelligenceProvider, IntelligenceOptions } from '../core/types.js
 import type { MessageLoggedEvent } from '../messaging/shared/MessagingEventBus.js';
 import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessage.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
+import { LlmAbortedError } from './LlmQueue.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,15 @@ export interface PresenceProxyConfig {
     autoSilenceMinutes: number; // Default: 30
   };
   concurrentLlmCalls?: number; // Default: 3
+
+  /**
+   * Shared cross-monitor LLM queue (PROMISE-BEACON-SPEC follow-up).
+   * When provided, all PresenceProxy LLM calls route through this queue
+   * using the `interactive` lane, so PromiseBeacon's background lane can be
+   * preempted when a tier message arrives and the daily spend cap is shared
+   * end-to-end. When omitted, the internal legacy queue is used (back-compat).
+   */
+  sharedLlmQueue?: import('./LlmQueue.js').LlmQueue;
 
   // Security
   allowExternalLlm?: boolean;  // Default: false
@@ -1187,6 +1197,37 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     priority: 'low' | 'high',
     timeoutMs: number,
   ): Promise<string> {
+    // Prefer the shared cross-monitor queue when wired (spec follow-up). Both
+    // 'low' and 'high' priorities for PresenceProxy map to the `interactive`
+    // lane — PresenceProxy is the user-facing monitor and always outranks
+    // PromiseBeacon's background heartbeats. The shared queue enforces the
+    // daily spend cap across both monitors.
+    if (this.config.sharedLlmQueue) {
+      try {
+        return await this.config.sharedLlmQueue.enqueue(
+          'interactive',
+          async (signal) => {
+            const result = await Promise.race([
+              this.config.intelligence.evaluate(prompt, options),
+              new Promise<never>((_, reject) => {
+                const t = setTimeout(() => reject(new Error('LLM timeout')), timeoutMs);
+                signal.addEventListener('abort', () => {
+                  clearTimeout(t);
+                  reject(new LlmAbortedError());
+                });
+              }),
+            ]);
+            return result;
+          },
+          // Rough cost estimate — tier messages are ~1-3k tokens.
+          1,
+        );
+      } catch (err) {
+        // Surface the cap-exceeded / aborted cases to the caller, same as the
+        // legacy queue's behavior (caller decides whether to fallback).
+        throw err;
+      }
+    }
     return this.llmQueue.enqueue(async () => {
       const result = await Promise.race([
         this.config.intelligence.evaluate(prompt, options),
