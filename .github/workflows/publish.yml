@@ -10,27 +10,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
-    name: CI Gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-      - run: npm ci
-      - run: npm run lint
-      # Use test:push (excludes known-flaky tests) — matches CI workflow.
-      # Full suite is tracked separately; flaky tests should not block releases.
-      - run: npm run test:push
-      - run: npm run build
-
+  # Note: no CI gate inside this workflow. ci.yml (lint + unit [node 20+22] +
+  # build + integration + e2e) runs on the same main push and is enforced as a
+  # required status check on PRs via branch protection. Duplicating it here
+  # added ~10 min per publish with no additional safety.
   publish:
     name: Bump & Publish
-    needs: ci
     runs-on: ubuntu-latest
     # Skip version-bump commits to prevent infinite loop
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
