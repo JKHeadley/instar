@@ -141,6 +141,7 @@ describe('Relay Auto-Connect Pipeline (Integration)', () => {
 
       // Now route through ThreadlineRouter with relay context
       const relayCtx: RelayMessageContext = {
+        trust: { kind: 'plaintext-tofu', senderFingerprint: 'fp-verified-agent' },
         senderFingerprint: 'fp-verified-agent',
         senderName: 'VerifiedBot',
         trustLevel: 'verified',

@@ -73,8 +73,10 @@ function createEnvelope(overrides: Partial<{
 }
 
 function createRelayContext(overrides: Partial<RelayMessageContext> = {}): RelayMessageContext {
+  const senderFingerprint = overrides.senderFingerprint ?? 'fp-remote-abc123';
   return {
-    senderFingerprint: 'fp-remote-abc123',
+    trust: { kind: 'plaintext-tofu', senderFingerprint },
+    senderFingerprint,
     senderName: 'RemoteAgent',
     trustLevel: 'verified',
     ...overrides,
@@ -314,6 +316,45 @@ describe('ThreadlineRouter — Relay Integration', () => {
       expect(RELAY_HISTORY_LIMITS.verified).toBe(5);
       expect(RELAY_HISTORY_LIMITS.trusted).toBe(10);
       expect(RELAY_HISTORY_LIMITS.autonomous).toBe(20);
+    });
+  });
+
+  // ── RelayTrustLevel discriminated union (§4.1) ─────────────────
+
+  describe('RelayTrustLevel branded union', () => {
+    it('plaintext-tofu kind carries fingerprint and is not verified', () => {
+      const ctx = createRelayContext({
+        trust: { kind: 'plaintext-tofu', senderFingerprint: 'fp-plain' },
+      });
+      expect(ctx.trust.kind).toBe('plaintext-tofu');
+      // Narrowing: only `verified` callers should read affinity maps.
+      if (ctx.trust.kind === 'verified') {
+        throw new Error('should not narrow to verified');
+      }
+    });
+
+    it('verified kind carries fingerprint and narrows correctly', () => {
+      const ctx = createRelayContext({
+        trust: { kind: 'verified', senderFingerprint: 'fp-verified' },
+      });
+      expect(ctx.trust.kind).toBe('verified');
+      if (ctx.trust.kind === 'verified') {
+        expect(ctx.trust.senderFingerprint).toBe('fp-verified');
+      } else {
+        throw new Error('expected verified narrowing');
+      }
+    });
+
+    it('unauthenticated kind has no fingerprint on the trust field', () => {
+      const ctx = createRelayContext({
+        trust: { kind: 'unauthenticated' },
+      });
+      expect(ctx.trust.kind).toBe('unauthenticated');
+      if (ctx.trust.kind === 'unauthenticated') {
+        // @ts-expect-error — senderFingerprint is not present on unauthenticated trust
+        const _shouldBeError = ctx.trust.senderFingerprint;
+        void _shouldBeError;
+      }
     });
   });
 });

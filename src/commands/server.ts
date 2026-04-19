@@ -5606,7 +5606,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             delivery: { status: 'delivered' as const, attempts: 1, lastAttempt: new Date().toISOString() },
           } as unknown as import('../messaging/types.js').MessageEnvelope;
 
-          const relayContext = { senderFingerprint, senderName, trustLevel };
+          const relayContext = {
+            trust: { kind: 'plaintext-tofu' as const, senderFingerprint },
+            senderFingerprint,
+            senderName,
+            trustLevel,
+          };
           let result = await threadlineRouter.handleInboundMessage(envelope, relayContext);
 
           // Fallback for threadId-less messages

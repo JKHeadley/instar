@@ -55,9 +55,28 @@ export interface ThreadlineLedgerEvent {
   timestamp: string;
 }
 
+/**
+ * Transport-level authentication kind for a relay message.
+ *
+ * Distinguishes how the sender's identity was established on the wire:
+ * - `verified`: end-to-end cryptographic authentication of this specific message
+ * - `plaintext-tofu`: trust-on-first-use over plaintext transport (not hijack-safe)
+ * - `unauthenticated`: no identity verification (rejected upstream in most paths)
+ *
+ * This is orthogonal to `AgentTrustLevel`, which is who the sender is in the trust DB.
+ * Affinity features that assume the sender can't be impersonated on the wire
+ * MUST gate on `kind === 'verified'`.
+ */
+export type RelayTrustLevel =
+  | { kind: 'verified'; senderFingerprint: string }
+  | { kind: 'plaintext-tofu'; senderFingerprint: string }
+  | { kind: 'unauthenticated' };
+
 /** Relay context passed from InboundMessageGate when message arrives via relay */
 export interface RelayMessageContext {
-  /** Sender's cryptographic fingerprint */
+  /** Transport-level authentication kind — see RelayTrustLevel. */
+  trust: RelayTrustLevel;
+  /** Sender's cryptographic fingerprint (display/key use; for authenticated-only use, read trust.senderFingerprint) */
   senderFingerprint: string;
   /** Sender's display name */
   senderName: string;
