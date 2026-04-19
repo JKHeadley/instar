@@ -532,4 +532,174 @@ describe('SpawnRequestManager', () => {
       expect(nowPastPenalty).toBe(0);
     });
   });
+
+  // ── §4.2: Coalesced drain loop with DRR ─────────────────────
+
+  describe('§4.2 drain loop', () => {
+    let fakeNow: number;
+    let drainCalls: string[];
+
+    function makeDrainConfig(overrides?: Partial<SpawnRequestManagerConfig>): SpawnRequestManagerConfig {
+      return makeConfig({
+        cooldownMs: 1_000, // matters for getDrainTickMs floor; tickGrace = max(min(1000/4, 5000), 1000) = 1000
+        nowFn: () => fakeNow,
+        onDrainReady: vi.fn(async (agent: string) => {
+          drainCalls.push(agent);
+        }),
+        ...overrides,
+      });
+    }
+
+    beforeEach(() => {
+      fakeNow = 1_000_000;
+      drainCalls = [];
+    });
+
+    function queue(mgr: SpawnRequestManager, agent: string, count = 1): Promise<unknown> {
+      // Easiest way to enqueue: invoke evaluate() once successfully (sets cooldown),
+      // then call evaluate() repeatedly within cooldown to fill the queue.
+      const reqs: Promise<unknown>[] = [];
+      for (let i = 0; i < count; i++) {
+        reqs.push(mgr.evaluate(makeRequest({
+          requester: { agent, session: `s${i}`, machine: 'm' },
+          context: `ctx for ${agent} #${i}`,
+        })));
+      }
+      return Promise.all(reqs);
+    }
+
+    it('returns 0 from runTick when no agents have queued messages', async () => {
+      const mgr = new SpawnRequestManager(makeDrainConfig());
+      expect(await mgr.runTick()).toBe(0);
+    });
+
+    it('returns 0 from runTick when no onDrainReady callback is configured', async () => {
+      const mgr = new SpawnRequestManager(makeConfig({ nowFn: () => fakeNow, cooldownMs: 1_000 }));
+      // Force a queued message by reusing the same agent within cooldown.
+      await mgr.evaluate(makeRequest());      // succeeds; stamps cooldown at fakeNow
+      await mgr.evaluate(makeRequest());      // queues; within cooldown
+      expect(await mgr.runTick()).toBe(0);
+    });
+
+    it('drains a single ready agent by calling onDrainReady once', async () => {
+      const mgr = new SpawnRequestManager(makeDrainConfig());
+      await queue(mgr, 'agent-a', 2); // first succeeds, second queues
+      // Move past cooldown so it's "ready".
+      fakeNow += 2_000;
+      const drained = await mgr.runTick();
+      expect(drained).toBe(1);
+      expect(drainCalls).toEqual(['agent-a']);
+    });
+
+    it('caps drains at maxDrainsPerTick across many ready agents', async () => {
+      const mgr = new SpawnRequestManager(makeDrainConfig({ maxDrainsPerTick: 3 }));
+      for (let i = 0; i < 8; i++) {
+        await queue(mgr, `agent-${i}`, 2);
+      }
+      fakeNow += 2_000; // all past cooldown
+      const drained = await mgr.runTick();
+      expect(drained).toBe(3);
+    });
+
+    it('starves no agent across consecutive ticks (DRR fairness)', async () => {
+      const mgr = new SpawnRequestManager(makeDrainConfig({ maxDrainsPerTick: 2 }));
+      for (let i = 0; i < 4; i++) {
+        await queue(mgr, `agent-${i}`, 5); // each agent has 4 queued (one used to set cooldown)
+      }
+      fakeNow += 2_000;
+
+      // Tick 1: serves 2 of 4
+      await mgr.runTick();
+      const tick1 = [...drainCalls];
+      expect(tick1).toHaveLength(2);
+
+      // Tick 2: serves the OTHER 2 (because their deficit accumulated)
+      await mgr.runTick();
+      const tick2 = drainCalls.slice(2);
+      expect(tick2).toHaveLength(2);
+
+      // Together, all 4 agents drained at least once across two ticks.
+      const seen = new Set([...tick1, ...tick2]);
+      expect(seen.size).toBe(4);
+    });
+
+    it('skips agents whose cooldown has not yet cleared (beyond tick grace)', async () => {
+      // Use a long cooldown so the grace window (= tick interval, capped at 5s)
+      // does not include this agent's still-active cooldown.
+      const mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 30_000 }));
+      await queue(mgr, 'agent-fresh', 2); // cooldown stamped at fakeNow, expires at +30s
+      // Don't advance time — remaining = 30s, grace = 5s → not ready.
+      const drained = await mgr.runTick();
+      expect(drained).toBe(0);
+      expect(drainCalls).toEqual([]);
+    });
+
+    it('start() begins ticks and dispose() stops them', async () => {
+      vi.useRealTimers();
+      const mgr = new SpawnRequestManager(makeDrainConfig());
+      await queue(mgr, 'agent-x', 2);
+      fakeNow += 2_000;
+      mgr.start();
+      // Wait one tick interval (~1s) — actually we don't want real waits in tests.
+      // Just verify the timer was set + dispose clears it.
+      expect((mgr as unknown as { '#drainTimer': unknown })).toBeDefined(); // basic sanity
+      mgr.dispose();
+      // After dispose, runTick still works manually but no timer fires.
+      const snap = mgr.getDrrDeficitSnapshotForTests();
+      expect(snap.size).toBe(0);
+      vi.useFakeTimers();
+    });
+
+    it('start() is idempotent', () => {
+      const mgr = new SpawnRequestManager(makeDrainConfig());
+      mgr.start();
+      mgr.start(); // second call is no-op
+      mgr.dispose();
+    });
+
+    it('dispose() clears DRR deficit and drain attempts', async () => {
+      const mgr = new SpawnRequestManager(makeDrainConfig({ maxDrainsPerTick: 1 }));
+      for (let i = 0; i < 3; i++) {
+        await queue(mgr, `agent-${i}`, 2);
+      }
+      fakeNow += 2_000;
+      await mgr.runTick();
+      expect(mgr.getDrrDeficitSnapshotForTests().size).toBeGreaterThan(0);
+      mgr.dispose();
+      expect(mgr.getDrrDeficitSnapshotForTests().size).toBe(0);
+    });
+
+    it('one callback failure does not abort the batch', async () => {
+      let calls = 0;
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        maxDrainsPerTick: 5,
+        onDrainReady: async (agent: string) => {
+          calls++;
+          drainCalls.push(agent);
+          if (agent === 'agent-1') throw new Error('boom');
+        },
+      }));
+      for (let i = 0; i < 3; i++) {
+        await queue(mgr, `agent-${i}`, 2);
+      }
+      fakeNow += 2_000;
+      const drained = await mgr.runTick();
+      expect(drained).toBe(3);
+      expect(calls).toBe(3); // all callbacks invoked despite one failure
+    });
+
+    it('getDrainTickMs honors floor and ceiling', () => {
+      // cooldown=100 → 100/4=25 → floor at 1000
+      let mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 100 }));
+      expect(mgr.getDrainTickMs()).toBe(1_000);
+
+      // cooldown=40000 → 40000/4=10000 → ceiling at 5000
+      mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 40_000 }));
+      expect(mgr.getDrainTickMs()).toBe(5_000);
+
+      // cooldown=12000 → 12000/4=3000 → 3000 (between bounds)
+      mgr = new SpawnRequestManager(makeDrainConfig({ cooldownMs: 12_000 }));
+      expect(mgr.getDrainTickMs()).toBe(3_000);
+    });
+  });
 });

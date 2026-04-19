@@ -99,6 +99,16 @@ export interface SpawnRequestManagerConfig {
   onEscalate?: (request: SpawnRequest, reason: string) => void;
   /** Optional clock injection for deterministic tests. Defaults to Date.now(). */
   nowFn?: () => number;
+  /**
+   * §4.2: Called per ready agent during a drain tick. The consumer is
+   * responsible for running a spawn/deliver cycle for that agent — typically
+   * by constructing a synthetic `SpawnRequest` and calling back into
+   * `evaluate`. Optional: if unset, the drain loop is a no-op and queued
+   * messages only drain on the next inline `evaluate` call (legacy behavior).
+   */
+  onDrainReady?: (agent: string) => Promise<void>;
+  /** §4.2: max drains per tick. Default 8. */
+  maxDrainsPerTick?: number;
 }
 
 // ── Constants ───────────────────────────────────────────────────
@@ -111,6 +121,24 @@ const DEFAULT_MAX_RETRY_WINDOW_MS = 30 * 60_000;
 const PENALTY_FAILURE_THRESHOLD = 3;
 /** §4.2: penalty duration is this multiple of the configured cooldown. */
 const PENALTY_COOLDOWN_MULTIPLIER = 2;
+
+/**
+ * §4.2 drain-loop constants (DRR scheduling).
+ *
+ * The drain loop is a single shared `setInterval` that picks ready agents
+ * (cooldown cleared AND queued messages present) and calls
+ * `onDrainReady(agent)` so the consumer can run an actual spawn cycle.
+ *
+ * Fairness uses Deficit Round Robin with quantum=1, cost=1, at most one
+ * drain per agent per tick. Agents not served this tick carry deficit for
+ * next tick — prevents starvation when |ready| > MAX_DRAINS_PER_TICK.
+ */
+const DRAIN_TICK_FLOOR_MS = 1_000;
+const DRAIN_TICK_CEILING_MS = 5_000;
+const DRAIN_MAX_PER_TICK_DEFAULT = 8;
+const DRR_QUANTUM = 1;
+const DRR_COST = 1;
+const DRR_AGE_BOOST_MULTIPLIER = 1.5;
 
 const SPAWN_PROMPT_TEMPLATE = `You were spawned by an inter-agent message request.
 
@@ -154,6 +182,18 @@ export class SpawnRequestManager {
 
   /** Max age for queued messages (10 minutes) */
   static readonly QUEUE_MAX_AGE_MS = 10 * 60_000;
+
+  /** §4.2: DRR deficit counter per agent. Survives across ticks. */
+  readonly #drrDeficit = new Map<string, number>();
+
+  /** §4.2: drain-attempt counter per agent. Reset on successful drain. */
+  readonly #drainAttempts = new Map<string, number>();
+
+  /** §4.2: shared drain-tick timer. null when not started. */
+  #drainTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** §4.2: re-entrancy guard to prevent overlapping tick executions. */
+  #tickInflight = false;
 
   constructor(config: SpawnRequestManagerConfig) {
     this.#config = config;
@@ -426,6 +466,142 @@ export class SpawnRequestManager {
     };
   }
 
+  // ── §4.2 Drain loop ─────────────────────────────────────────
+
+  /**
+   * Compute the drain-tick interval from the configured cooldown (§4.2).
+   *
+   * Formula: `max(min(cooldownMs / 4, 5000), 1000)`. Floor at 1 s prevents
+   * a tiny cooldown from producing a hot loop; ceiling at 5 s preserves
+   * responsiveness under long cooldowns.
+   */
+  getDrainTickMs(): number {
+    const cooldownMs = this.#config.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+    const tick = Math.min(Math.floor(cooldownMs / 4), DRAIN_TICK_CEILING_MS);
+    return Math.max(tick, DRAIN_TICK_FLOOR_MS);
+  }
+
+  /**
+   * Start the shared drain tick. Idempotent — safe to call twice; a second
+   * call is a no-op. The tick runs on a real `setInterval` so consumers
+   * can use vitest fake timers for test determinism.
+   */
+  start(): void {
+    if (this.#drainTimer !== null) return;
+    const intervalMs = this.getDrainTickMs();
+    this.#drainTimer = setInterval(() => {
+      // Fire-and-forget tick; any rejection is swallowed (logged inside tick).
+      void this.runTick();
+    }, intervalMs);
+    // Node-only: `unref` so the timer doesn't keep the event loop alive.
+    // Defensive type check because some runtimes don't expose unref.
+    const maybeUnref = (this.#drainTimer as unknown as { unref?: () => void }).unref;
+    if (typeof maybeUnref === 'function') {
+      maybeUnref.call(this.#drainTimer);
+    }
+  }
+
+  /**
+   * Stop the drain tick and clear deficit/attempt state. Idempotent.
+   * Use this OR `reset()` between tests — `reset()` also clears cooldown.
+   */
+  dispose(): void {
+    if (this.#drainTimer !== null) {
+      clearInterval(this.#drainTimer);
+      this.#drainTimer = null;
+    }
+    this.#drrDeficit.clear();
+    this.#drainAttempts.clear();
+    this.#tickInflight = false;
+  }
+
+  /**
+   * Run a single drain tick. Exposed for tests + for consumers who want
+   * to drive ticks manually (e.g., drive-by-event rather than by timer).
+   *
+   * Behavior:
+   * 1. O(1) early return if no agents have queued messages.
+   * 2. Collect ready agents: those with `cooldownRemainingMs <= tickGraceMs`
+   *    AND queued messages present.
+   * 3. Add DRR quantum to each ready agent's deficit (with age boost for
+   *    agents whose oldest queued message has been drain-attempted > 1 time).
+   * 4. Select up to `maxDrainsPerTick` agents ordered by descending deficit;
+   *    decrement deficit by cost for each selected agent.
+   * 5. Fire `onDrainReady` for selected agents concurrently via allSettled.
+   *
+   * Returns the count of drain callbacks invoked this tick (useful for tests).
+   */
+  async runTick(): Promise<number> {
+    if (this.#tickInflight) return 0;
+    if (this.#pendingMessages.size === 0) return 0;
+    const onDrainReady = this.#config.onDrainReady;
+    if (!onDrainReady) return 0;
+
+    this.#tickInflight = true;
+    try {
+      const tickGraceMs = this.getDrainTickMs();
+      const readyAgents: string[] = [];
+      for (const [agent, queue] of this.#pendingMessages) {
+        if (queue.length === 0) continue;
+        if (this.cooldownRemainingMs(agent) <= tickGraceMs) {
+          readyAgents.push(agent);
+        }
+      }
+      if (readyAgents.length === 0) return 0;
+
+      // DRR: add quantum (with age boost) to each ready agent's deficit.
+      for (const agent of readyAgents) {
+        const attempts = this.#drainAttempts.get(agent) ?? 0;
+        const quantum = attempts > 1 ? DRR_QUANTUM * DRR_AGE_BOOST_MULTIPLIER : DRR_QUANTUM;
+        this.#drrDeficit.set(agent, (this.#drrDeficit.get(agent) ?? 0) + quantum);
+      }
+
+      // Select drainees: highest deficit first, stable by insertion order.
+      // At most one drain per agent per tick, capped at maxDrainsPerTick.
+      const max = this.#config.maxDrainsPerTick ?? DRAIN_MAX_PER_TICK_DEFAULT;
+      const selected = [...readyAgents]
+        .sort((a, b) => (this.#drrDeficit.get(b) ?? 0) - (this.#drrDeficit.get(a) ?? 0))
+        .slice(0, max)
+        .filter(a => (this.#drrDeficit.get(a) ?? 0) >= DRR_COST);
+
+      for (const agent of selected) {
+        this.#drrDeficit.set(agent, (this.#drrDeficit.get(agent) ?? 0) - DRR_COST);
+        this.#drainAttempts.set(agent, (this.#drainAttempts.get(agent) ?? 0) + 1);
+      }
+
+      // Garbage-collect deficit for agents no longer ready AND at zero.
+      for (const agent of this.#drrDeficit.keys()) {
+        if (!readyAgents.includes(agent) && (this.#drrDeficit.get(agent) ?? 0) <= 0) {
+          this.#drrDeficit.delete(agent);
+          this.#drainAttempts.delete(agent);
+        }
+      }
+
+      // Fire callbacks concurrently; one callback failure does not abort the batch.
+      const results = await Promise.allSettled(
+        selected.map(agent => onDrainReady(agent).then(() => {
+          // Successful drain → reset attempt counter so next tick doesn't apply age-boost.
+          this.#drainAttempts.delete(agent);
+        })),
+      );
+      // Log but don't throw on individual callback failures.
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status === 'rejected') {
+          console.warn(`[SpawnRequestManager] drain callback failed for agent ${selected[i]}: ${String(r.reason)}`);
+        }
+      }
+      return selected.length;
+    } finally {
+      this.#tickInflight = false;
+    }
+  }
+
+  /** Test seam: snapshot of DRR deficit state. */
+  getDrrDeficitSnapshotForTests(): ReadonlyMap<string, number> {
+    return new Map(this.#drrDeficit);
+  }
+
   /** Clear all state (for testing) */
   reset(): void {
     this.#lastSpawnByAgent.clear();
@@ -433,5 +609,7 @@ export class SpawnRequestManager {
     this.#pendingMessages.clear();
     this.#penaltyUntil.clear();
     this.#consecutiveSpawnFailures.clear();
+    this.#drrDeficit.clear();
+    this.#drainAttempts.clear();
   }
 }
