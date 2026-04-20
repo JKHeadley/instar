@@ -215,6 +215,43 @@ export class CommitmentTracker extends EventEmitter {
     this.rulesPath = path.join(config.stateDir, 'state', 'commitment-rules.md');
     this.store = this.loadStore();
     this.nextId = this.computeNextId();
+    this.backfillUnverifiableOneTimeActions();
+  }
+
+  /**
+   * One-shot migration: any pre-existing one-time-action that is stuck
+   * in `violated` with no real verification method (violationCount > 0,
+   * verificationCount === 0, no verificationMethod) is retro-transitioned
+   * to `delivered` with a clear resolution. This drains the ~270 noisy
+   * rows that accumulated before this fix shipped. Idempotent — rows
+   * already `delivered`/`withdrawn`/`expired` are skipped.
+   */
+  private backfillUnverifiableOneTimeActions(): void {
+    let changed = 0;
+    for (const c of this.store.commitments) {
+      if (c.type !== 'one-time-action') continue;
+      if (c.status === 'delivered' || c.status === 'withdrawn' || c.status === 'expired') continue;
+      if (!CommitmentTracker.isUnverifiableOneTime(c)) continue;
+      c.status = 'delivered';
+      c.resolvedAt = c.resolvedAt ?? new Date().toISOString();
+      c.resolution =
+        c.resolution ??
+        'Backfilled: no automated verification method — trusting agent acknowledgment.';
+      c.version = (c.version ?? 0) + 1;
+      changed++;
+    }
+    if (changed > 0) {
+      try {
+        this.saveStore();
+        console.log(
+          `[CommitmentTracker] Backfill: ${changed} unverifiable one-time-action(s) transitioned to delivered`,
+        );
+      } catch (err) {
+        console.warn(
+          `[CommitmentTracker] Backfill save failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────
@@ -382,15 +419,32 @@ export class CommitmentTracker extends EventEmitter {
 
   /**
    * Get all active commitments (pending or verified, not expired).
+   *
+   * `delivered` is a terminal state for one-time-actions that have no
+   * automated verification method — once transitioned, they are not
+   * re-checked (Phase 1 of commitment signal-quality fix).
    */
   getActive(): Commitment[] {
     const now = new Date().toISOString();
     return this.store.commitments.filter(c => {
-      if (c.status === 'withdrawn' || c.status === 'expired') return false;
+      if (c.status === 'withdrawn' || c.status === 'expired' || c.status === 'delivered') return false;
       if (c.expiresAt && c.expiresAt < now) return false;
       // Active = pending, verified, or violated (violated is still "active" — it needs attention)
       return c.status === 'pending' || c.status === 'verified' || c.status === 'violated';
     });
+  }
+
+  /**
+   * True if a one-time-action commitment has no way to be verified
+   * automatically — no verificationMethod at all, an unknown method, or
+   * the `manual` method (which by design cannot self-resolve). Such
+   * commitments should not keep accumulating violations on every sweep;
+   * they transition to `delivered` on the first verify call.
+   */
+  private static isUnverifiableOneTime(c: Commitment): boolean {
+    if (c.type !== 'one-time-action') return false;
+    const m = c.verificationMethod;
+    return m === undefined || m === null || m === 'manual';
   }
 
   /**
@@ -464,7 +518,28 @@ export class CommitmentTracker extends EventEmitter {
   verifyOne(id: string): { passed: boolean; detail: string } | null {
     const commitment = this.store.commitments.find(c => c.id === id);
     if (!commitment) return null;
-    if (commitment.status === 'withdrawn' || commitment.status === 'expired') return null;
+    if (
+      commitment.status === 'withdrawn' ||
+      commitment.status === 'expired' ||
+      commitment.status === 'delivered'
+    ) return null;
+
+    // One-time-actions with no automated verification path cannot keep
+    // being "violated" on every sweep — that's how a single commitment
+    // accumulated 51,000+ violation ticks. Transition once to
+    // `delivered` (terminal) with a clear resolution note, then skip.
+    if (CommitmentTracker.isUnverifiableOneTime(commitment)) {
+      const updated = this.mutateSync(id, c => ({
+        ...c,
+        status: 'delivered',
+        resolvedAt: new Date().toISOString(),
+        resolution:
+          'No automated verification method — trusting agent acknowledgment. ' +
+          'Use PATCH /commitments/:id or markDelivered() to change this.',
+      }));
+      if (this.config.onVerified) this.config.onVerified(updated);
+      return { passed: true, detail: 'Trusted — no automated verification method' };
+    }
 
     let result: { passed: boolean; detail: string };
 
