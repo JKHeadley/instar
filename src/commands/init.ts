@@ -3703,14 +3703,12 @@ done
   fs.writeFileSync(path.join(hooksDir, 'auto-approve-permissions.js'), getAutoApprovePermissionsScript(), { mode: 0o755 });
 
   // Build stop hook — structural enforcement for /build pipeline.
-  // Installed from template; only needs to exist when /build is active (registered dynamically).
-  const buildModDir = path.dirname(new URL(import.meta.url).pathname);
-  const buildStopHookSrc = path.join(buildModDir, '..', '..', 'src', 'templates', 'hooks', 'build-stop-hook.sh');
-  const buildStopHookDst = path.join(hooksDir, 'build-stop-hook.sh');
-  if (fs.existsSync(buildStopHookSrc) && !fs.existsSync(buildStopHookDst)) {
-    fs.copyFileSync(buildStopHookSrc, buildStopHookDst);
-    fs.chmodSync(buildStopHookDst, 0o755);
-  }
+  // Shares the PostUpdateMigrator content so init and upgrade produce the same
+  // file. Previously read from src/templates/hooks/build-stop-hook.sh, which
+  // meant agents initialized before this block was added never received the
+  // hook, yet settings.json references it — silent "No such file" on every
+  // Stop event until they ran an upgrade.
+  fs.writeFileSync(path.join(hooksDir, 'build-stop-hook.sh'), migrator.getHookContent('build-stop-hook'), { mode: 0o755 });
 }
 
 function getHookEventReporterScript(): string {
