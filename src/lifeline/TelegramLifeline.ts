@@ -32,6 +32,8 @@ import { registerAgent, unregisterAgent, startHeartbeat } from '../core/AgentReg
 // import { installAutoStart } from '../commands/setup.js';
 import { MessageQueue, type QueuedMessage } from './MessageQueue.js';
 import { ServerSupervisor } from './ServerSupervisor.js';
+import { retryWithBackoff } from './retryWithBackoff.js';
+import { notifyMessageDropped } from './droppedMessages.js';
 
 /**
  * Acquire an exclusive lock file to prevent multiple lifeline instances.
@@ -836,13 +838,22 @@ export class TelegramLifeline {
 
   /**
    * Forward a message to the Instar server's Telegram webhook.
+   *
+   * Attempts up to FORWARD_ATTEMPTS times with exponential backoff
+   * (1s, 2s base). A single 10s-timeout fetch per attempt. Returns true
+   * on the first success, false after all attempts fail. Giving the
+   * handoff a real chance to succeed closes the silent-drop window that
+   * the caller's queue-and-retry path papered over.
    */
+  private static readonly FORWARD_ATTEMPTS = 3;
+  private static readonly FORWARD_BACKOFF_BASE_MS = 1000;
+
   private async forwardToServer(
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
   ): Promise<boolean> {
-    try {
+    const doForward = async (): Promise<true> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
@@ -867,10 +878,29 @@ export class TelegramLifeline {
             signal: controller.signal,
           }
         );
-        return response.ok;
+        if (!response.ok) {
+          throw new Error(`forward responded ${response.status}`);
+        }
+        return true;
       } finally {
         clearTimeout(timer);
       }
+    };
+
+    try {
+      await retryWithBackoff(doForward, {
+        attempts: TelegramLifeline.FORWARD_ATTEMPTS,
+        baseMs: TelegramLifeline.FORWARD_BACKOFF_BASE_MS,
+        onAttempt: (n, lastErr) => {
+          if (n > 1) {
+            console.warn(
+              `[Lifeline] forwardToServer retry ${n}/${TelegramLifeline.FORWARD_ATTEMPTS} ` +
+              `(topic ${topicId}, msg ${rawMsg.message_id}) — prior: ${lastErr?.message ?? 'unknown'}`
+            );
+          }
+        },
+      });
+      return true;
     } catch {
       return false;
     }
@@ -995,6 +1025,25 @@ export class TelegramLifeline {
       const failures = msg.replayFailures ?? 0;
       if (failures >= TelegramLifeline.MAX_REPLAY_FAILURES) {
         dropped++;
+        // Before the drop becomes silent: persist the record, report a
+        // degradation, and tell the original sender their message was lost.
+        try {
+          await notifyMessageDropped({
+            stateDir: this.projectConfig.stateDir,
+            topicId: msg.topicId,
+            messageId: msg.id,
+            senderName: msg.fromFirstName ?? msg.fromUsername ?? String(msg.fromUserId),
+            text: msg.text,
+            retryCount: failures,
+            reason: `Handoff to server failed after ${failures} replay attempts`,
+            sendToTopic: (topicId, body) => this.sendToTopic(topicId, body),
+          });
+        } catch (err) {
+          // notifyMessageDropped only throws on true disk failure after the notice/report paths
+          // had their chance — surface and continue; we still want to drop this message so
+          // the queue doesn't stall.
+          console.error(`[Lifeline] notifyMessageDropped threw for ${msg.id}:`, err instanceof Error ? err.message : err);
+        }
         console.warn(`[Lifeline] Dropping message ${msg.id} after ${failures} replay failures: ${msg.text.slice(0, 80)}`);
         continue;
       }
