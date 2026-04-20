@@ -119,6 +119,98 @@ describe('CommitmentTracker', () => {
       const c = tracker.record({ type: 'behavioral', userRequest: 'req', agentResponse: 'resp', source: 'sentinel', behavioralRule: 'Always check first' });
       expect(c.source).toBe('sentinel');
     });
+  });
+
+  // ── Time-promise detection and beacon auto-enable ────────
+
+  describe('detectTimePromise (static)', () => {
+    it('detects "back in 20 minutes" and returns a bounded cadence', () => {
+      const r = CommitmentTracker.detectTimePromise('Got it, back in 20 minutes with findings.');
+      expect(r).not.toBeNull();
+      expect(r!.cadenceMs).toBeGreaterThanOrEqual(60_000);
+      expect(r!.cadenceMs).toBeLessThanOrEqual(21_600_000);
+      // ~half of 20min = 10min
+      expect(r!.cadenceMs).toBe(10 * 60_000);
+      expect(r!.hardDeadlineOffsetMs).toBe(60 * 60_000);
+    });
+
+    it('detects "in an hour"', () => {
+      const r = CommitmentTracker.detectTimePromise("I'll check back in an hour.");
+      expect(r).not.toBeNull();
+      expect(r!.cadenceMs).toBe(30 * 60_000);
+    });
+
+    it('detects "by EOD" with a conservative cadence', () => {
+      const r = CommitmentTracker.detectTimePromise('Will ship this by EOD.');
+      expect(r).not.toBeNull();
+      expect(r!.cadenceMs).toBe(60 * 60_000);
+    });
+
+    it('detects vague promises like "shortly" / "I\'ll report back"', () => {
+      const a = CommitmentTracker.detectTimePromise('Back shortly with findings.');
+      const b = CommitmentTracker.detectTimePromise("I'll report back when the build finishes.");
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+    });
+
+    it('returns null when no time marker is present', () => {
+      expect(CommitmentTracker.detectTimePromise('Done.')).toBeNull();
+      expect(CommitmentTracker.detectTimePromise('')).toBeNull();
+      expect(CommitmentTracker.detectTimePromise('Thanks for the update.')).toBeNull();
+    });
+
+    it('returns null for sub-minute phrasing (too tight to beacon usefully)', () => {
+      // "in 30 seconds" is well below the 60s minimum cadence — beacon opts out.
+      expect(CommitmentTracker.detectTimePromise('in 30 seconds')).toBeNull();
+    });
+  });
+
+  describe('record() auto-enables beacon on time-promise commitments', () => {
+    it('auto-enables beacon when agentResponse contains a time promise AND topicId is set', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'summarize the thread',
+        agentResponse: 'On it — back in 30 minutes with the summary.',
+        topicId: 7535,
+      });
+      expect(c.beaconEnabled).toBe(true);
+      expect(c.cadenceMs).toBeGreaterThanOrEqual(60_000);
+      expect(c.hardDeadlineAt).toBeTruthy();
+    });
+
+    it('does not auto-enable without a topicId (beacon needs a channel to heartbeat to)', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'research X',
+        agentResponse: 'Back in an hour.',
+      });
+      expect(c.beaconEnabled).toBeUndefined();
+    });
+
+    it('does not auto-enable when agentResponse has no time marker', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'do it',
+        agentResponse: 'Done.',
+        topicId: 7535,
+      });
+      expect(c.beaconEnabled).toBeUndefined();
+    });
+
+    it('respects explicit beaconEnabled=false (caller opts out)', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'x',
+        agentResponse: 'back in 20 minutes',
+        topicId: 7535,
+        beaconEnabled: false,
+      });
+      expect(c.beaconEnabled).toBe(false);
+    });
 
     it('emits recorded event', () => {
       const tracker = makeTracker(stateDir);
@@ -564,7 +656,7 @@ describe('CommitmentTracker', () => {
       expect(result!.passed).toBe(true);
     });
 
-    it('manual verification stays pending', () => {
+    it('manual verification transitions to delivered (terminal) with trust note', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'one-time-action',
@@ -574,8 +666,131 @@ describe('CommitmentTracker', () => {
       });
 
       const result = tracker.verifyOne(c.id);
-      expect(result!.passed).toBe(false);
-      expect(result!.detail).toContain('manual verification');
+      expect(result!.passed).toBe(true);
+      expect(result!.detail).toContain('Trusted');
+
+      const updated = tracker.get(c.id)!;
+      expect(updated.status).toBe('delivered');
+      expect(updated.resolvedAt).toBeTruthy();
+      expect(updated.resolution).toMatch(/No automated verification/);
+    });
+
+    it('one-time-action with no verificationMethod transitions to delivered instead of accumulating violations', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'bump the version and deploy',
+        agentResponse: '✓ Delivered',
+      });
+
+      // Simulate 10 sweep ticks
+      for (let i = 0; i < 10; i++) tracker.verifyOne(c.id);
+
+      const updated = tracker.get(c.id)!;
+      expect(updated.status).toBe('delivered');
+      expect(updated.violationCount).toBe(0);
+      // Delivered commitments are not active — sweeps skip them
+      const active = tracker.getActive().find(x => x.id === c.id);
+      expect(active).toBeUndefined();
+    });
+
+    it('verifyOne returns null for already-delivered commitments', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'one-shot',
+        agentResponse: 'done',
+      });
+      tracker.verifyOne(c.id); // transitions to delivered
+      const second = tracker.verifyOne(c.id);
+      expect(second).toBeNull();
+    });
+  });
+
+  // ── Backfill: legacy violated rows with no verification method ────
+
+  describe('backfill on construction', () => {
+    it('transitions pre-existing unverifiable violated one-time-actions to delivered', () => {
+      // Seed a store file mimicking the 272-violated state
+      const storePath = path.join(stateDir, 'state', 'commitments.json');
+      const seed = {
+        version: 1,
+        commitments: [
+          {
+            id: 'CMT-LEGACY-1',
+            userRequest: 'bump the version and deploy this properly',
+            agentResponse: '✓ Delivered',
+            type: 'one-time-action',
+            status: 'violated',
+            createdAt: '2026-03-10T00:22:11.260Z',
+            verificationCount: 0,
+            violationCount: 51669,
+            correctionCount: 0,
+            correctionHistory: [],
+            escalated: false,
+            version: 94,
+          },
+          {
+            id: 'CMT-LEGACY-2',
+            userRequest: 'keep verified',
+            agentResponse: 'done',
+            type: 'behavioral',
+            status: 'verified',
+            behavioralRule: 'always do X',
+            createdAt: '2026-03-10T00:00:00.000Z',
+            verificationCount: 1,
+            violationCount: 0,
+            correctionCount: 0,
+            correctionHistory: [],
+            escalated: false,
+            version: 1,
+          },
+        ],
+      };
+      fs.writeFileSync(storePath, JSON.stringify(seed));
+
+      const tracker = makeTracker(stateDir);
+      const legacy1 = tracker.get('CMT-LEGACY-1')!;
+      expect(legacy1.status).toBe('delivered');
+      expect(legacy1.resolvedAt).toBeTruthy();
+      expect(legacy1.resolution).toMatch(/Backfilled/);
+
+      // Behavioral commitment untouched
+      const legacy2 = tracker.get('CMT-LEGACY-2')!;
+      expect(legacy2.status).toBe('verified');
+    });
+
+    it('is idempotent — second construction does not re-backfill', () => {
+      const storePath = path.join(stateDir, 'state', 'commitments.json');
+      const seed = {
+        version: 1,
+        commitments: [
+          {
+            id: 'CMT-IDEM-1',
+            userRequest: 'x',
+            agentResponse: 'y',
+            type: 'one-time-action',
+            status: 'violated',
+            createdAt: '2026-03-10T00:00:00.000Z',
+            verificationCount: 0,
+            violationCount: 5,
+            correctionCount: 0,
+            correctionHistory: [],
+            escalated: false,
+            version: 1,
+          },
+        ],
+      };
+      fs.writeFileSync(storePath, JSON.stringify(seed));
+
+      const t1 = makeTracker(stateDir);
+      const afterFirst = t1.get('CMT-IDEM-1')!;
+      const resolvedAt1 = afterFirst.resolvedAt;
+
+      const t2 = makeTracker(stateDir);
+      const afterSecond = t2.get('CMT-IDEM-1')!;
+      expect(afterSecond.status).toBe('delivered');
+      expect(afterSecond.resolvedAt).toBe(resolvedAt1); // unchanged
     });
   });
 
