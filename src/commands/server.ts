@@ -4358,6 +4358,55 @@ export async function startServer(options: StartOptions): Promise<void> {
     const subagentTracker = new SubagentTracker({ stateDir: config.stateDir });
     console.log(pc.green('  Subagent tracker enabled'));
 
+    // Helper Watchdog — detects subagent stalls and rate-limit failures,
+    // surfacing them back into the parent session's stdin so the agent
+    // can decide whether to retry smaller. Complements SessionWatchdog,
+    // which only covers the top-level session.
+    const { HelperWatchdog } = await import('../monitoring/HelperWatchdog.js');
+    const helperWatchdog = new HelperWatchdog({ subagentTracker });
+    helperWatchdog.start();
+    const findTmuxForClaudeSession = (claudeSessionId: string): string | null => {
+      const running = sessionManager
+        .listRunningSessions()
+        .filter((s) => s.claudeSessionId === claudeSessionId);
+      return running[0]?.tmuxSession ?? null;
+    };
+    const deliverHelperAlert = (tmux: string | null, msg: string): void => {
+      console.warn(msg);
+      if (!tmux) return;
+      try {
+        sessionManager.injectMessage(tmux, msg);
+      } catch (err) {
+        console.warn(
+          `[HelperWatchdog] inject failed for ${tmux}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
+    helperWatchdog.on(
+      'stall',
+      (e: { agentId: string; agentType: string; sessionId: string; elapsedMs: number }) => {
+        const minutes = Math.round(e.elapsedMs / 60_000);
+        deliverHelperAlert(
+          findTmuxForClaudeSession(e.sessionId),
+          `[helper-watchdog] Your ${e.agentType} helper (agent ${e.agentId}) has been running for ${minutes}m with no stop event — likely stalled. Consider retrying with a smaller scope or aborting.`,
+        );
+      },
+    );
+    helperWatchdog.on(
+      'helper-failed',
+      (e: {
+        record: { agentId: string; agentType: string; sessionId: string; lastMessage: string | null };
+        reason: string;
+      }) => {
+        const snippet = (e.record.lastMessage ?? '').slice(0, 160);
+        deliverHelperAlert(
+          findTmuxForClaudeSession(e.record.sessionId),
+          `[helper-watchdog] Your ${e.record.agentType} helper (agent ${e.record.agentId}) died with reason=${e.reason}. Last message: ${snippet}`,
+        );
+      },
+    );
+    console.log(pc.green('  Helper watchdog enabled'));
+
     // Wire subagent awareness into zombie cleanup — prevents killing sessions
     // that are idle at the prompt but waiting for subagent results.
     const MAX_SUBAGENT_WAIT_MS = 60 * 60_000; // 60 minutes — stale subagent safety cap
@@ -4715,6 +4764,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),
           releaseProxyMutex: (topicId, holder) => proxyCoordinator.release(topicId, holder),
+          // BUILD-STALL-VISIBILITY-SPEC Fix 2 — suppress generic standby when
+          // a /build heartbeat landed recently on this topic.
+          hasRecentBuildHeartbeat: (topicId, windowMs) => proxyCoordinator.hasRecentBuildHeartbeat(topicId, windowMs),
           // Shared LLM queue (interactive lane) — cross-monitor concurrency
           // and daily-spend-cap with PromiseBeacon.
           sharedLlmQueue,
@@ -5937,7 +5989,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { InitiativeTracker } = await import('../core/InitiativeTracker.js');
     const initiativeTracker = new InitiativeTracker(config.stateDir);
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.

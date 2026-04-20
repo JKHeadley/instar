@@ -398,6 +398,19 @@ export class PostUpdateMigrator {
       result.errors.push(`skill-usage-telemetry.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Build stop hook — structural enforcement for /build pipeline.
+    // Previously only installed once by init.ts, so existing agents that initialized
+    // before it was added never received the file, yet settings.json references it
+    // (registered by the /build skill). Result: silent "No such file or directory"
+    // errors on every Stop event. Overwrite on every upgrade to match the pattern
+    // used for every other instar-owned hook.
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'build-stop-hook.sh'), this.getBuildStopHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/build-stop-hook.sh (/build pipeline structural enforcement)');
+    } catch (err) {
+      result.errors.push(`build-stop-hook.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Hook event reporter — always overwrite (built-in infrastructure).
     // Previously only installed-if-missing by migrateHttpHooksToCommandHooks, which left
     // agents stuck on a broken template (the old template used CommonJS `require('http')`,
@@ -407,6 +420,66 @@ export class PostUpdateMigrator {
       result.upgraded.push('hooks/instar/hook-event-reporter.js (ESM-compatible http import)');
     } catch (err) {
       result.errors.push(`hook-event-reporter.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Validate settings.json hook references exist on disk. Structural invariant:
+    // every `command:` in settings.json hooks that resolves to a file under
+    // .instar/hooks/ must exist, otherwise every firing of that hook emits
+    // "No such file or directory" with no user-facing signal.
+    this.validateHookReferences(hooksDir, result);
+  }
+
+  /**
+   * Scan .claude/settings.json for hook `command:` entries that reference files
+   * under the instar hooks tree, and report any that don't exist on disk.
+   *
+   * Structural invariant check — runs at upgrade time, emits into result.errors
+   * so the upgrade log surfaces the drift. Not fatal: unknown hooks may be
+   * agent-custom (lives under .instar/hooks/custom/) and we don't want to wedge
+   * an upgrade on a reference we don't own.
+   */
+  validateHookReferences(hooksDir: string, result: MigrationResult): void {
+    const settingsPath = path.join(this.config.projectDir, '.claude', 'settings.json');
+    if (!fs.existsSync(settingsPath)) return;
+
+    let settings: unknown;
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    } catch (err) {
+      result.errors.push(`settings.json parse (hook-reference validation): ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const hooksSection = (settings as { hooks?: Record<string, unknown> }).hooks;
+    if (!hooksSection || typeof hooksSection !== 'object') return;
+
+    const missing: string[] = [];
+    for (const [event, entries] of Object.entries(hooksSection)) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries as Array<{ hooks?: Array<{ command?: string }> }>) {
+        const hookList = Array.isArray(entry?.hooks) ? entry.hooks : [];
+        for (const hook of hookList) {
+          const cmd = typeof hook?.command === 'string' ? hook.command : '';
+          if (!cmd) continue;
+          // Extract a path that looks like `.instar/hooks/...` from the command.
+          // Matches bash .instar/hooks/instar/foo.sh, node .instar/hooks/instar/foo.js,
+          // or any direct reference to a file path under the hooks tree. Custom hooks
+          // live under .instar/hooks/custom/ and are skipped — the agent owns them.
+          const match = cmd.match(/(?:^|\s)(\.instar\/hooks\/instar\/[^\s"]+)/);
+          if (!match) continue;
+          const relPath = match[1];
+          const abs = path.join(this.config.projectDir, relPath);
+          if (!fs.existsSync(abs)) {
+            missing.push(`${event}: ${relPath} (referenced in settings.json, not found on disk)`);
+          }
+        }
+      }
+    }
+
+    if (missing.length > 0) {
+      for (const m of missing) {
+        result.errors.push(`hook-reference-missing — ${m}`);
+      }
     }
   }
 
@@ -2170,7 +2243,7 @@ The user has been talking to you (possibly for days). A generic greeting like "H
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'auto-approve-permissions' | 'skill-usage-telemetry'): string {
+  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
@@ -2186,6 +2259,7 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       case 'response-review': return this.getResponseReviewHook();
       case 'auto-approve-permissions': return this.getAutoApprovePermissionsHook();
       case 'skill-usage-telemetry': return this.getSkillUsageTelemetryHook();
+      case 'build-stop-hook': return this.getBuildStopHook();
     }
   }
 
@@ -4514,6 +4588,91 @@ SESSION_ID="\${INSTAR_SESSION_ID:-}"
 
 mkdir -p "$INSTAR_DIR"
 echo "{\\"timestamp\\":\\"$TIMESTAMP\\",\\"skill\\":\\"$SKILL_NAME\\",\\"args\\":\\"$SKILL_ARGS\\",\\"session_id\\":\\"$SESSION_ID\\",\\"output_length\\":$OUTPUT_LEN}" >> "$TELEMETRY_FILE"
+`;
+  }
+
+  private getBuildStopHook(): string {
+    // Canonical source: src/templates/hooks/build-stop-hook.sh
+    // If you edit either, keep them byte-identical — tests assert equality.
+    return `#!/bin/bash
+# Build Stop Hook — Structural enforcement for the /build pipeline.
+#
+# Prevents premature exit during active builds. Graduated protection:
+#   SMALL  (light):  3 reinforcements
+#   STANDARD (medium): 5 reinforcements
+#   LARGE  (heavy):  10 reinforcements
+#
+# Reads state from .instar/state/build/build-state.json.
+
+STATE_FILE=".instar/state/build/build-state.json"
+
+# No state file = no active build = allow exit
+if [ ! -f "\$STATE_FILE" ]; then
+  echo '{"decision":"approve"}'
+  exit 0
+fi
+
+# Read state
+PHASE=\$(python3 -c "import json; d=json.load(open('\$STATE_FILE')); print(d.get('phase','idle'))" 2>/dev/null)
+
+# Terminal phases — allow exit
+if [ "\$PHASE" = "complete" ] || [ "\$PHASE" = "failed" ] || [ "\$PHASE" = "escalated" ]; then
+  echo '{"decision":"approve"}'
+  exit 0
+fi
+
+# Check and update reinforcement counter
+RESULT=\$(python3 -c "
+import json, sys
+with open('\$STATE_FILE') as f:
+    state = json.load(f)
+
+protection = state.get('protection', {})
+max_r = protection.get('reinforcements', 5)
+used = state.get('reinforcementsUsed', 0)
+
+if used >= max_r:
+    print(json.dumps({'decision': 'approve'}))
+    sys.exit(0)
+
+state['reinforcementsUsed'] = used + 1
+with open('\$STATE_FILE', 'w') as f:
+    json.dump(state, f, indent=2)
+
+phase = state.get('phase', 'idle')
+task = state.get('task', 'unknown')
+label = protection.get('label', '?')
+steps = state.get('steps', [])
+total_tests = state.get('totalTests', 0)
+wt = state.get('worktree')
+
+prompts = {
+    'idle': 'Build initialized. Begin with Phase 0 (CLARIFY) or Phase 1 (PLAN).',
+    'clarify': 'In CLARIFY phase. Resolve ambiguity, then transition to PLAN.',
+    'planning': 'In PLAN phase. Complete plan with test strategy, then EXECUTE.',
+    'executing': 'In EXECUTE phase. Complete current step: code, tests, verify.',
+    'verifying': 'In VERIFY phase. Run independent verification and real-world tests.',
+    'fixing': 'In FIXING phase. Address findings, return to VERIFY.',
+    'hardening': 'In HARDEN phase. Complete observability checklists.',
+}
+
+hint = prompts.get(phase, 'Continue with current phase.')
+steps_info = ' | %d steps, %d tests' % (len(steps), total_tests) if steps else ''
+wt_info = ' | worktree: %s' % wt['path'] if wt else ''
+
+reason = (
+    '/build active. Phase: %s (%s, %d/%d reinforcements)%s%s\\n\\n'
+    'Task: %s\\n\\n%s\\n\\n'
+    'Use \\\`python3 playbook-scripts/build-state.py status\\\` to check state.\\n'
+    'Use \\\`python3 playbook-scripts/build-state.py transition <phase>\\\` to advance.\\n\\n'
+    'The build pipeline is not complete. Continue working.'
+) % (phase, label, state['reinforcementsUsed'], max_r, steps_info, wt_info, task, hint)
+
+print(json.dumps({'decision': 'block', 'reason': reason}))
+" 2>/dev/null)
+
+echo "\$RESULT"
+exit 0
 `;
   }
 
