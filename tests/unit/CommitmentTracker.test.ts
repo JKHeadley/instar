@@ -119,6 +119,98 @@ describe('CommitmentTracker', () => {
       const c = tracker.record({ type: 'behavioral', userRequest: 'req', agentResponse: 'resp', source: 'sentinel', behavioralRule: 'Always check first' });
       expect(c.source).toBe('sentinel');
     });
+  });
+
+  // ── Time-promise detection and beacon auto-enable ────────
+
+  describe('detectTimePromise (static)', () => {
+    it('detects "back in 20 minutes" and returns a bounded cadence', () => {
+      const r = CommitmentTracker.detectTimePromise('Got it, back in 20 minutes with findings.');
+      expect(r).not.toBeNull();
+      expect(r!.cadenceMs).toBeGreaterThanOrEqual(60_000);
+      expect(r!.cadenceMs).toBeLessThanOrEqual(21_600_000);
+      // ~half of 20min = 10min
+      expect(r!.cadenceMs).toBe(10 * 60_000);
+      expect(r!.hardDeadlineOffsetMs).toBe(60 * 60_000);
+    });
+
+    it('detects "in an hour"', () => {
+      const r = CommitmentTracker.detectTimePromise("I'll check back in an hour.");
+      expect(r).not.toBeNull();
+      expect(r!.cadenceMs).toBe(30 * 60_000);
+    });
+
+    it('detects "by EOD" with a conservative cadence', () => {
+      const r = CommitmentTracker.detectTimePromise('Will ship this by EOD.');
+      expect(r).not.toBeNull();
+      expect(r!.cadenceMs).toBe(60 * 60_000);
+    });
+
+    it('detects vague promises like "shortly" / "I\'ll report back"', () => {
+      const a = CommitmentTracker.detectTimePromise('Back shortly with findings.');
+      const b = CommitmentTracker.detectTimePromise("I'll report back when the build finishes.");
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+    });
+
+    it('returns null when no time marker is present', () => {
+      expect(CommitmentTracker.detectTimePromise('Done.')).toBeNull();
+      expect(CommitmentTracker.detectTimePromise('')).toBeNull();
+      expect(CommitmentTracker.detectTimePromise('Thanks for the update.')).toBeNull();
+    });
+
+    it('returns null for sub-minute phrasing (too tight to beacon usefully)', () => {
+      // "in 30 seconds" is well below the 60s minimum cadence — beacon opts out.
+      expect(CommitmentTracker.detectTimePromise('in 30 seconds')).toBeNull();
+    });
+  });
+
+  describe('record() auto-enables beacon on time-promise commitments', () => {
+    it('auto-enables beacon when agentResponse contains a time promise AND topicId is set', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'summarize the thread',
+        agentResponse: 'On it — back in 30 minutes with the summary.',
+        topicId: 7535,
+      });
+      expect(c.beaconEnabled).toBe(true);
+      expect(c.cadenceMs).toBeGreaterThanOrEqual(60_000);
+      expect(c.hardDeadlineAt).toBeTruthy();
+    });
+
+    it('does not auto-enable without a topicId (beacon needs a channel to heartbeat to)', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'research X',
+        agentResponse: 'Back in an hour.',
+      });
+      expect(c.beaconEnabled).toBeUndefined();
+    });
+
+    it('does not auto-enable when agentResponse has no time marker', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'do it',
+        agentResponse: 'Done.',
+        topicId: 7535,
+      });
+      expect(c.beaconEnabled).toBeUndefined();
+    });
+
+    it('respects explicit beaconEnabled=false (caller opts out)', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'x',
+        agentResponse: 'back in 20 minutes',
+        topicId: 7535,
+        beaconEnabled: false,
+      });
+      expect(c.beaconEnabled).toBe(false);
+    });
 
     it('emits recorded event', () => {
       const tracker = makeTracker(stateDir);
