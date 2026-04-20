@@ -80,6 +80,25 @@ describe('JobLoader', () => {
       expect(() => loadJobs(file))
         .toThrow('must contain a JSON array');
     });
+
+    it('skips invalid entries and loads valid ones (does not throw)', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const file = writeJobsFile([
+        validJob,
+        // Missing name + priority, invalid execute.type — the exact shape
+        // of the contact-proposer job that crashed the scheduler in prod.
+        { slug: 'broken-job', description: 'x', schedule: '0 * * * *', enabled: true, execute: { type: 'bash', value: 'echo hi' } },
+        { ...validJob, slug: 'third-job', name: 'Third' },
+      ]);
+      const jobs = loadJobs(file);
+      expect(jobs).toHaveLength(2);
+      expect(jobs.map((j) => j.slug)).toEqual(['test-job', 'third-job']);
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('Skipping invalid job at index 1'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipped 1 invalid entry'));
+      warn.mockRestore();
+      err.mockRestore();
+    });
   });
 
   describe('validateJob', () => {

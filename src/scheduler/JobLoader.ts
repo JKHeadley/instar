@@ -29,7 +29,12 @@ const GROUNDING_EXEMPT_SLUGS: ReadonlySet<string> = new Set([
 
 /**
  * Load and validate job definitions from a JSON file.
- * Throws on invalid structure — fail loud at startup, not at runtime.
+ *
+ * Per-entry resilience: invalid entries are logged and skipped, not thrown.
+ * One malformed job should not take down the whole scheduler (and with it
+ * the HTTP server, dashboard, feedback pipeline, and Telegram poller).
+ * Structural errors (missing file, unparseable JSON, non-array root) still
+ * throw — those indicate nothing can be loaded at all.
  *
  * Missing file is NOT fatal: treated as "no jobs configured" so a
  * fresh or partially-initialized agent still boots. The scheduler
@@ -55,10 +60,31 @@ export function loadJobs(jobsFile: string): JobDefinition[] {
     throw new Error(`Jobs file must contain a JSON array, got ${typeof raw}`);
   }
 
-  const jobs = raw.map((job: unknown, index: number) => {
-    validateJob(job, index);
-    return job as JobDefinition;
-  });
+  const jobs: JobDefinition[] = [];
+  const skipped: Array<{ index: number; slug?: string; error: string }> = [];
+  for (let index = 0; index < raw.length; index++) {
+    const job = raw[index];
+    try {
+      validateJob(job, index);
+      jobs.push(job as JobDefinition);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const slug = job && typeof job === 'object' ? (job as Record<string, unknown>).slug : undefined;
+      skipped.push({ index, slug: typeof slug === 'string' ? slug : undefined, error: message });
+      console.error(
+        `[JobLoader] Skipping invalid job at index ${index}` +
+        (typeof slug === 'string' ? ` (slug="${slug}")` : '') +
+        `: ${message}`
+      );
+    }
+  }
+
+  if (skipped.length > 0) {
+    console.warn(
+      `[JobLoader] Loaded ${jobs.length} valid job(s); skipped ${skipped.length} invalid entry(ies). ` +
+      `Fix the skipped entries to restore full scheduler coverage.`
+    );
+  }
 
   // Grounding-by-default audit — warn about jobs missing grounding config
   auditGrounding(jobs);
