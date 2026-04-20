@@ -65,6 +65,20 @@ describe('SessionWatchdog MCP exclusion', () => {
       expect(isExcluded('npx @playwright/mcp')).toBe(true);
     });
 
+    it('excludes @scope/mcp with @version suffix (the regression case)', () => {
+      // Observed in production: `npm exec @playwright/mcp@latest` was being
+      // killed because the trailing `@latest` escaped the lookahead that
+      // only allowed end/whitespace/slash after `mcp`.
+      expect(isExcluded('npm exec @playwright/mcp@latest')).toBe(true);
+      expect(isExcluded('npm exec @playwright/mcp@1.2.3')).toBe(true);
+      expect(isExcluded('npx @modelcontextprotocol/mcp@0.5.0')).toBe(true);
+    });
+
+    it('excludes foo-mcp with @version suffix', () => {
+      expect(isExcluded('some-other-mcp@2.0.0')).toBe(true);
+      expect(isExcluded('npx foo-mcp-server@latest')).toBe(true);
+    });
+
     it('excludes bar-mcp-server.js (file extension after suffix)', () => {
       expect(isExcluded('node /path/bar-mcp-server.js')).toBe(true);
     });

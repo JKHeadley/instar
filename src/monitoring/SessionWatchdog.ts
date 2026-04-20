@@ -74,6 +74,9 @@ export interface WatchdogStats {
 
 // Processes that are long-running by design.
 // Entries can be strings (substring match via `includes`) or regex (token match).
+// MCP regex token boundaries (lookahead): $ \s / . @ — end, whitespace, path,
+// file-extension, npm-version-pin. Extend (docker `:tag`, pip `==ver`) when a
+// live case proves it necessary.
 const EXCLUDED_PATTERNS: Array<string | RegExp> = [
   'playwright-persistent',
   'chrome-native-host', 'caffeinate',
@@ -82,13 +85,13 @@ const EXCLUDED_PATTERNS: Array<string | RegExp> = [
   // exa-mcp-server, foo-mcp, claude-in-chrome-mcp, bar-mcp-server.js, etc.
   // Character class includes `-` so multi-hyphen names (claude-in-chrome-mcp)
   // are consumed whole. Trailing lookahead allows end, whitespace, slash,
-  // or `.` (so `-mcp-server.js` style entry points match).
-  /(?:^|[\s/@])[\w.@-]+-mcp(?:-server)?(?=$|[\s/.])/,
+  // `.` (so `-mcp-server.js` style entry points match), or `@` (so
+  // version-pinned invocations like `foo-mcp@1.2.3` match).
+  /(?:^|[\s/@])[\w.@-]+-mcp(?:-server)?(?=$|[\s/.@])/,
   // Package-style "@scope/mcp" where the last token is bare "mcp"
-  // (e.g. @playwright/mcp, @modelcontextprotocol/mcp). Covered by the
-  // existing "/mcp/" literal when inside a longer path, but a trailing
-  // bare "/mcp" also needs catching.
-  /(?:^|\s)[@\w./-]+\/mcp(?=$|[\s/])/,
+  // (e.g. @playwright/mcp, @modelcontextprotocol/mcp). Lookahead allows `@`
+  // so `@playwright/mcp@latest` and other version pins match.
+  /(?:^|\s)[@\w./-]+\/mcp(?=$|[\s/@])/,
   'mcp-remote', '/mcp/', '.mcp/',
   'mcp-stdio-entry', 'mcp-stdio.js', '/mcp-stdio',
   // Shell-snapshot sourcing is session initialization, not a stuck command
