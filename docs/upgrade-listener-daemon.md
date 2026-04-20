@@ -157,7 +157,7 @@ instar listener status    # Shows inbox size
 The server reads from `inbox.jsonl.active` — check that the server's wake socket is connected (shown in status output).
 
 ### Pipe sessions not spawning
-Requirements: sender trust >= "trusted", IQS >= 70, message < 2000 chars, not an existing thread. Check server logs for pipe session routing decisions.
+Requirements: sender trust >= "trusted", IQS >= 70, message < 2000 chars, not an existing thread, no active pipe session already running for this thread. Check server logs for pipe session routing decisions.
 
 ## Files Created
 
