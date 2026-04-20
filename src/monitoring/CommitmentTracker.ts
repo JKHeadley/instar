@@ -312,6 +312,27 @@ export class CommitmentTracker extends EventEmitter {
   }): Commitment {
     const id = `CMT-${String(this.nextId++).padStart(3, '0')}`;
 
+    // Auto-enable PromiseBeacon on time-promise commitments. If the
+    // caller didn't explicitly set beaconEnabled, sniff the agent's
+    // response for a time marker like "back in 20 min" or "by EOD" —
+    // when present AND a topicId is attached, opt the commitment in
+    // with a conservative cadence and hard deadline. This closes the
+    // "I said 'back in an hour' and went silent" gap without requiring
+    // every record() call-site to plumb beacon flags.
+    let autoBeaconEnabled = input.beaconEnabled;
+    let autoCadenceMs = input.cadenceMs;
+    let autoHardDeadlineAt = input.hardDeadlineAt;
+    if (autoBeaconEnabled === undefined && input.topicId !== undefined) {
+      const detected = CommitmentTracker.detectTimePromise(input.agentResponse);
+      if (detected) {
+        autoBeaconEnabled = true;
+        autoCadenceMs = autoCadenceMs ?? detected.cadenceMs;
+        autoHardDeadlineAt =
+          autoHardDeadlineAt ??
+          new Date(Date.now() + detected.hardDeadlineOffsetMs).toISOString();
+      }
+    }
+
     const commitment: Commitment = {
       id,
       userRequest: input.userRequest,
@@ -334,11 +355,11 @@ export class CommitmentTracker extends EventEmitter {
       escalated: false,
       version: 0,
       // Promise Beacon fields (Phase 1).
-      beaconEnabled: input.beaconEnabled,
-      cadenceMs: input.cadenceMs,
+      beaconEnabled: autoBeaconEnabled,
+      cadenceMs: autoCadenceMs,
       nextUpdateDueAt: input.nextUpdateDueAt,
       softDeadlineAt: input.softDeadlineAt,
-      hardDeadlineAt: input.hardDeadlineAt,
+      hardDeadlineAt: autoHardDeadlineAt,
       sessionEpoch: input.sessionEpoch,
       ownerMachineId: input.ownerMachineId,
       externalKey: input.externalKey,
@@ -445,6 +466,68 @@ export class CommitmentTracker extends EventEmitter {
     if (c.type !== 'one-time-action') return false;
     const m = c.verificationMethod;
     return m === undefined || m === null || m === 'manual';
+  }
+
+  /**
+   * Sniff a commitment's agent-response text for an explicit time
+   * promise — "back in 20 minutes", "in an hour", "by EOD", etc.
+   * Returns a suggested beacon cadence and a hard-deadline offset when
+   * a marker is found, null otherwise. Conservative by design: misses
+   * are a no-op.
+   *
+   * Cadence heuristic: half of the promised duration, clamped to the
+   * beacon's own [60_000, 21_600_000] ms range. Hard-deadline offset
+   * is 3x the promised duration so a slow response isn't terminal,
+   * just flagged.
+   */
+  static detectTimePromise(
+    text: string,
+  ): { cadenceMs: number; hardDeadlineOffsetMs: number } | null {
+    if (!text) return null;
+    const t = text.toLowerCase();
+
+    // Explicit N-unit phrases: "back in 20 minutes", "in an hour", "in 2h".
+    const numeric = t.match(
+      /\b(?:back\s+)?in\s+(an?|\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|h|m|s)\b/,
+    );
+    if (numeric) {
+      const raw = numeric[1];
+      const n = raw === 'a' || raw === 'an' ? 1 : parseInt(raw, 10);
+      const unit = numeric[2];
+      let unitMs: number;
+      if (unit === 's' || /^secs?$/.test(unit) || /^seconds?$/.test(unit)) {
+        unitMs = 1000;
+      } else if (unit === 'm' || /^mins?$/.test(unit) || /^minutes?$/.test(unit)) {
+        unitMs = 60_000;
+      } else {
+        unitMs = 3_600_000; // h / hr / hour
+      }
+      const totalMs = n * unitMs;
+      if (totalMs >= 60_000) {
+        const half = Math.floor(totalMs / 2);
+        const cadence = Math.max(60_000, Math.min(half, 21_600_000));
+        return {
+          cadenceMs: cadence,
+          hardDeadlineOffsetMs: Math.min(totalMs * 3, 24 * 3_600_000),
+        };
+      }
+    }
+
+    // Softer markers — shorthand time promises.
+    if (/\b(by\s+eod|end\s+of\s+(the\s+)?day)\b/.test(t)) {
+      return { cadenceMs: 60 * 60_000, hardDeadlineOffsetMs: 12 * 3_600_000 };
+    }
+    if (/\b(tomorrow|by\s+morning|by\s+tomorrow)\b/.test(t)) {
+      return { cadenceMs: 2 * 3_600_000, hardDeadlineOffsetMs: 24 * 3_600_000 };
+    }
+    if (
+      /\b(i'?ll\s+(?:check\s+in|report\s+back|get\s+back|ping|update)|back\s+(?:shortly|soon|when)|shortly|soon)\b/
+        .test(t)
+    ) {
+      return { cadenceMs: 30 * 60_000, hardDeadlineOffsetMs: 2 * 3_600_000 };
+    }
+
+    return null;
   }
 
   /**
