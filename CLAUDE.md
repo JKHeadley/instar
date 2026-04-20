@@ -209,7 +209,7 @@ This returns your full capability matrix: scripts, hooks, Telegram status, jobs,
 - Local: `http://localhost:4040/dashboard`
 - Remote: When a tunnel is running, the dashboard is accessible at `{tunnelUrl}/dashboard`
 - Authentication: Uses a 6-digit PIN (auto-generated in `dashboardPin` in `.instar/config.json`). NEVER mention "bearer tokens" or "auth tokens" to users — just give them the PIN.
-- Features: Real-time terminal streaming of all running sessions, session management, model badges, mobile-responsive
+- Features: Real-time terminal streaming of all running sessions, session management, model badges, mobile-responsive, Secrets tab (Secret Drop visibility — list pending credential requests, create test requests)
 - **Sharing the dashboard**: When the user wants to check on sessions from their phone, give them the tunnel URL + PIN. Read the PIN from your config.json. Check tunnel status: `curl -H "Authorization: Bearer $AUTH" http://localhost:4040/tunnel`
 
 

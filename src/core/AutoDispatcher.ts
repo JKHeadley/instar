@@ -759,12 +759,13 @@ export class AutoDispatcher {
 
   /**
    * Get the topic ID for dispatch notifications.
-   * Prefers the dedicated Agent Updates topic (informational), falls back to Agent Attention.
+   *
+   * Dispatch announcements are routed exclusively to the dedicated Agent Updates
+   * topic. If it is not configured, notify() drops to console — we never fall
+   * back to Attention or any other topic. Matches /telegram/post-update contract.
    */
   private getNotificationTopicId(): number {
-    return this.state.get<number>('agent-updates-topic')
-      || this.state.get<number>('agent-attention-topic')
-      || 0;
+    return this.state.get<number>('agent-updates-topic') || 0;
   }
 
   // ── Decision journal helpers ────────────────────────────────────────
