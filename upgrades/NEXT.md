@@ -8,9 +8,9 @@ The better-sqlite3 native-bindings self-heal gains a source-build fallback and a
 
 ## What to Tell Your User
 
-Nothing unless they ask. If they've seen their agent crash-loop on startup with `better-sqlite3` errors in the logs, tell them:
+Nothing unless they ask. If they've seen their agent crash-loop on startup with better-sqlite3 errors in the logs, tell them:
 
-> I patched the startup self-heal. If the native binding is missing or broken, I'll now rebuild it from source instead of redownloading the same broken prebuild over and over. And if both paths fail, I'll stop retrying and degrade to a slower backing store so your agent stays up — you'll see a log line, not a crash loop. You can clear the attempt state and force another try by deleting `<instar-install>/node_modules/better-sqlite3/.instar-fix-state.json`.
+> I patched the startup self-heal. If the native binding is missing or broken, I'll now rebuild it from source instead of redownloading the same broken prebuild over and over. And if both paths fail, I'll stop retrying and degrade to a slower backing store so your agent stays up — you'll see a log line, not a crash loop. If you want to force another fix attempt, just ask me to reset the fix state.
 
 ## What Changed
 
@@ -26,6 +26,10 @@ Nothing unless they ask. If they've seen their agent crash-loop on startup with 
 4. **Loop-breaker** — if state shows the current tuple has already exhausted both prebuild AND source-build, the script exits 1 immediately without any further network or build activity. Caller (`ensureSqliteBindings` in `src/commands/server.ts`) then degrades to JSONL-only mode instead of crash-looping.
 
 The prebuild path is still attempted first (faster than a source build when it works). Source build is the safety net, not the default.
+
+## Evidence
+
+Observed on Dawn's machine on 2026-04-20: `fix-better-sqlite3.cjs` entered a crash loop under launchd KeepAlive. No prebuild existed for the active `(better-sqlite3 version, Node MODULE_VERSION, platform, arch)` tuple, so the script exited 1. launchd respawned the server, the self-heal ran again, redownloaded the same broken prebuild, and failed again — indefinitely. After this fix: the source-build fallback lets node-gyp compile from headers (no prebuild required), and the loop-breaker persists per-tuple fix state so a second entry exits immediately and allows the caller to degrade to JSONL-only mode rather than spinning.
 
 ## Why This Matters
 
