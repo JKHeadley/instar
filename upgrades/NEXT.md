@@ -1,54 +1,53 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
+<!-- Valid values: patch, minor, major -->
+<!-- patch = bug fixes, refactors, test additions, doc updates -->
+<!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
+<!-- major = breaking changes to existing APIs or behavior -->
 
 ## What Changed
 
-The coherence monitor now emits a proper degradation entry whenever it
-detects that the process is running stale code (running version differs
-from what's installed on disk, and the auto-updater has not yet flagged a
-pending restart). Before this change the stale-process state was only
-visible in the `versionMismatch` field of `/health`; it did not appear in
-`degradationSummary` and triggered no Telegram alert.
-
-The emission is deduped per on-disk version — exactly one entry per newly
-observed mismatch, reset once the mismatch clears after a restart — and
-still honors the existing `DegradationReporter` per-feature Telegram
-cooldown, so there is no risk of spam from a long-lived stale process.
-
-Feature key on the new entry: `ProcessIntegrity.versionMismatch`.
+<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
+<!-- Write this for the AGENT — they need to understand the system deeply. -->
 
 ## What to Tell Your User
 
-- **Better nudges when I'm running behind**: If I've quietly been running
-  an older version of myself because I haven't restarted since an update,
-  I'll now tell you about it instead of keeping quiet. You'll see a short
-  note in the attention channel so you know a restart would bring in the
-  latest fixes.
+<!-- Write talking points the agent should relay to their user. -->
+<!-- This should be warm, conversational, user-facing — not a changelog. -->
+<!-- Focus on what THEY can now do, not internal plumbing. -->
+<!--                                                                    -->
+<!-- PROHIBITED in this section (will fail validation):                 -->
+<!--   camelCase config keys: silentReject, maxRetries, telegramNotify -->
+<!--   Inline code backtick references like silentReject: false        -->
+<!--   Fenced code blocks                                              -->
+<!--   Instructions to edit files or run commands                      -->
+<!--                                                                    -->
+<!-- CORRECT style: "I can turn that on for you" not "set X to false"  -->
+<!-- The agent relays this to their user — keep it human.              -->
+
+- **[Feature name]**: "[Brief, friendly description of what this means for the user]"
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Stale-process degradation signal | Automatic — surfaces in degradationSummary and as a Telegram alert when the coherence monitor detects a version mismatch |
+| [Capability] | [Endpoint, command, or "automatic"] |
 
 ## Evidence
 
-Not reproducible in dev without simulating a disk-only version bump mid-process.
-The fix is a targeted wiring change: the existing else-branch of
-`CoherenceMonitor.checkProcessIntegrity()` (the branch that already reports
-`passed:false` with message "Running vX but disk has vY — restart needed")
-now additionally calls `DegradationReporter.getInstance().report()` with
-an in-memory dedup on `diskVersion`. Verified by code inspection:
+<!-- REQUIRED if this release claims to fix a bug. -->
+<!-- Unit tests passing is NOT evidence. Provide ONE of: -->
+<!--   (a) Reproduction steps + observed before/after on a live system. -->
+<!--       Include log excerpts, observed command output, or behavior -->
+<!--       description. Make it specific enough that a future reader can -->
+<!--       re-run it and see the same thing. -->
+<!--   (b) "Not reproducible in dev — [concrete reason]" if the failure -->
+<!--       mode truly can't be exercised locally (race conditions, -->
+<!--       event-driven paths requiring external signals, etc). -->
+<!--                                                                 -->
+<!-- If this release doesn't claim a bug fix (pure feature / refactor), -->
+<!-- leave this section blank or delete it — it's only enforced when -->
+<!-- "What Changed" describes a fix. -->
 
-- Before: CoherenceMonitor.ts had no `DegradationReporter` import; the
-  else-branch returned a CoherenceCheckResult and nothing else.
-- After: CoherenceMonitor.ts imports DegradationReporter, the else-branch
-  checks `lastReportedMismatchDiskVersion !== integrity.diskVersion` before
-  emitting, and the coherent-branch resets the dedup field.
-
-`tests/unit/degradation-reporter.test.ts` (8 tests) and
-`tests/unit/stale-version-prevention.test.ts` both pass after the change.
-The pre-existing `tests/unit/no-silent-fallbacks.test.ts` baseline-count
-failure is unrelated (174 vs baseline 86 — verified identical on a clean
-checkout of main before the change was applied).
+[Describe reproduction + verified fix, OR "Not reproducible in dev — [concrete reason]"]
