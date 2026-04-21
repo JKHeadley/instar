@@ -5541,7 +5541,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           isConfigured: () => true,
         }) : []),
         ...createLifelineProbes({
-          getSupervisorStatus: () => ({ running: false, healthy: false, restartAttempts: 0, lastHealthy: 0, coolingDown: false, cooldownRemainingMs: 0, circuitBroken: false, totalFailures: 0, lastCrashOutput: '', circuitBreakerRetryCount: 0, maxCircuitBreakerRetries: 0, inMaintenanceWait: false, maintenanceWaitElapsedMs: 0 }),
+          // Supervisor status intentionally omitted: the supervisor only exists
+          // in the lifeline process, not in the server. The process + queue probes
+          // here check lifeline health via the lock file and queue contents,
+          // which is the correct signal from the server's vantage point.
           getQueueLength: () => 0,
           peekQueue: () => [],
           lockFilePath: path.join(config.stateDir, 'lifeline.lock'),

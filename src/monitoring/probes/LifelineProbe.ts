@@ -9,8 +9,13 @@ import fs from 'node:fs';
 import type { Probe, ProbeResult } from '../SystemReviewer.js';
 
 export interface LifelineProbeDeps {
-  /** Get supervisor status */
-  getSupervisorStatus: () => {
+  /**
+   * Get supervisor status. Optional — the supervisor only exists in the lifeline
+   * process itself. When running in the server (or any context without an
+   * in-process supervisor), omit this field so the supervisor probe is skipped
+   * rather than reporting a false-positive "server down".
+   */
+  getSupervisorStatus?: () => {
     running: boolean;
     healthy: boolean;
     restartAttempts: number;
@@ -41,8 +46,9 @@ export function createLifelineProbes(deps: LifelineProbeDeps): Probe[] {
   const timeoutMs = 5000;
 
   const prerequisites = () => deps.isEnabled();
+  const getSupervisorStatus = deps.getSupervisorStatus;
 
-  return [
+  const probes: Probe[] = [
     {
       id: 'instar.lifeline.process',
       name: 'Lifeline Process',
@@ -127,7 +133,7 @@ export function createLifelineProbes(deps: LifelineProbeDeps): Probe[] {
       },
     },
 
-    {
+    ...(getSupervisorStatus ? [{
       id: 'instar.lifeline.supervisor',
       name: 'Lifeline Supervisor',
       tier,
@@ -137,7 +143,7 @@ export function createLifelineProbes(deps: LifelineProbeDeps): Probe[] {
       async run(): Promise<ProbeResult> {
         const base = { probeId: this.id, name: this.name, tier, durationMs: 0 };
         try {
-          const status = deps.getSupervisorStatus();
+          const status = getSupervisorStatus();
 
           if (status.circuitBroken) {
             return {
@@ -231,7 +237,7 @@ export function createLifelineProbes(deps: LifelineProbeDeps): Probe[] {
           };
         }
       },
-    },
+    }] : []),
 
     {
       id: 'instar.lifeline.queue',
@@ -323,4 +329,6 @@ export function createLifelineProbes(deps: LifelineProbeDeps): Probe[] {
       },
     },
   ];
+
+  return probes;
 }
