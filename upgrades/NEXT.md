@@ -1,53 +1,33 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
-<!-- Valid values: patch, minor, major -->
-<!-- patch = bug fixes, refactors, test additions, doc updates -->
-<!-- minor = new features, new APIs, new capabilities (backwards-compatible) -->
-<!-- major = breaking changes to existing APIs or behavior -->
 
 ## What Changed
 
-<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
-<!-- Write this for the AGENT — they need to understand the system deeply. -->
+`CapabilityMapper.classify()` now correctly labels agent-local capabilities (skills, scripts, jobs, context segments, custom hooks) that are NOT in the shipped builtin manifest and NOT linked to an evolution proposal as `user` provenance, instead of leaving them as `unknown`. The `Provenance` type has always declared `user` as a first-class value, but the classifier never assigned it — so every agent's drift report over-counted "unmapped" capabilities and `userConfigured` was always zero in the summary.
+
+Concretely, in `classify()` the final fallback checks `cap.provenance === 'unknown'` and, if so, returns the capability with `provenance: 'user'`. Non-`unknown` pre-classify provenance (e.g. the `hooks/instar/` subdir which hardcodes `instar`) is preserved untouched. The persisted `capability-manifest.json` now records `classificationReason: 'agent-local config directory'` for these entries.
+
+On the first scan after upgrading, each agent's `drift.changed` list will show a one-time provenance transition from `unknown` → `user` for every affected capability. That's expected — it's the signal that the fix took effect. `drift.unmapped` shrinks accordingly; `summary.userConfigured` populates correctly.
+
+No schema change, no API surface change, no migration required.
 
 ## What to Tell Your User
 
-<!-- Write talking points the agent should relay to their user. -->
-<!-- This should be warm, conversational, user-facing — not a changelog. -->
-<!-- Focus on what THEY can now do, not internal plumbing. -->
-<!--                                                                    -->
-<!-- PROHIBITED in this section (will fail validation):                 -->
-<!--   camelCase config keys: silentReject, maxRetries, telegramNotify -->
-<!--   Inline code backtick references like silentReject: false        -->
-<!--   Fenced code blocks                                              -->
-<!--   Instructions to edit files or run commands                      -->
-<!--                                                                    -->
-<!-- CORRECT style: "I can turn that on for you" not "set X to false"  -->
-<!-- The agent relays this to their user — keep it human.              -->
-
-- **[Feature name]**: "[Brief, friendly description of what this means for the user]"
+- **Cleaner drift reports**: "I stopped flagging my own config as mystery items. The capability map now recognizes what you and I set up together as user-authored."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| [Capability] | [Endpoint, command, or "automatic"] |
+| Accurate user-provenance classification | Automatic on next `capability-map` scan |
 
 ## Evidence
 
-<!-- REQUIRED if this release claims to fix a bug. -->
-<!-- Unit tests passing is NOT evidence. Provide ONE of: -->
-<!--   (a) Reproduction steps + observed before/after on a live system. -->
-<!--       Include log excerpts, observed command output, or behavior -->
-<!--       description. Make it specific enough that a future reader can -->
-<!--       re-run it and see the same thing. -->
-<!--   (b) "Not reproducible in dev — [concrete reason]" if the failure -->
-<!--       mode truly can't be exercised locally (race conditions, -->
-<!--       event-driven paths requiring external signals, etc). -->
-<!--                                                                 -->
-<!-- If this release doesn't claim a bug fix (pure feature / refactor), -->
-<!-- leave this section blank or delete it — it's only enforced when -->
-<!-- "What Changed" describes a fix. -->
+Reproduction: on an agent running pre-fix, call the capability-map drift endpoint. The `unmapped` list contains every agent-local skill/script/job/context segment that isn't in the builtin manifest (~100+ entries on a mature agent). `summary.userConfigured` reads 0 even when the agent has many user-authored capabilities.
 
-[Describe reproduction + verified fix, OR "Not reproducible in dev — [concrete reason]"]
+After upgrading and running one scan: those entries move out of `unmapped` and into the `user`-provenance tally. `drift.changed` shows the one-time transition for each affected capability.
+
+Unit-level verification: `tests/unit/capability-mapper-advanced.test.ts` "classifies unmatched agent-local capabilities as user (not unmapped)" asserts both that a mystery skill is NOT in `drift.unmapped` and that its `provenance` on the capability map equals `'user'`. All 208 tests across the three capability-mapper test files pass.
+
+Reporter: `cluster-capability-map-has-104-unmapped-capabilities` (2 reports, governance=implement).

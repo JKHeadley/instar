@@ -787,7 +787,7 @@ describe('CapabilityMapper — Drift Detection', () => {
     )).toBe(true);
   });
 
-  it('reports unmapped capabilities (unknown provenance)', async () => {
+  it('classifies unmatched agent-local capabilities as user (not unmapped)', async () => {
     const { projectDir, stateDir } = createMinimalAgent(tmpDir, {
       skills: [{ name: 'mystery', content: '---\nname: mystery\ndescription: Unknown origin\n---\n' }],
     });
@@ -795,9 +795,15 @@ describe('CapabilityMapper — Drift Detection', () => {
     const config = makeConfig(projectDir, stateDir);
     const mapper = new CapabilityMapper(config);
     const drift = await mapper.detectDrift();
+    const map = await mapper.refresh();
 
-    // Skills not in builtin manifest and not linked to evolution = unknown
-    expect(drift.unmapped).toContain('skill:mystery');
+    // Agent-local capabilities not matched to builtin/evolution are
+    // classified as 'user' (agent-authored config), not left 'unknown'.
+    expect(drift.unmapped).not.toContain('skill:mystery');
+    const mystery = map.domains
+      .flatMap(d => d.capabilities)
+      .find(c => c.id === 'skill:mystery');
+    expect(mystery?.provenance).toBe('user');
   });
 
   it('drift report includes scan timestamp', async () => {

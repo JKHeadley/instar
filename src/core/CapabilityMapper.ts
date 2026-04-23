@@ -787,7 +787,12 @@ export class CapabilityMapper {
         return { ...cap, provenance: 'agent' as Provenance };
       }
 
-      // 4. Otherwise unknown
+      // 4. Fallback: capabilities discovered in the agent's own config dirs
+      // (skills/, scripts/, jobs.json, context/, custom hooks) are user-authored.
+      // Only items whose scanner pre-assigned a non-'unknown' provenance retain it.
+      if (cap.provenance === 'unknown') {
+        return { ...cap, provenance: 'user' as Provenance };
+      }
       return cap;
     });
   }
@@ -971,6 +976,7 @@ export class CapabilityMapper {
         classificationReason: cap.provenance === 'instar' ? 'builtin-manifest match'
           : cap.provenance === 'inherited' ? 'builtin-manifest with modified content'
           : cap.provenance === 'agent' ? cap.evolutionProposal ? `evolution: ${cap.evolutionProposal}` : 'custom directory'
+          : cap.provenance === 'user' ? 'agent-local config directory'
           : undefined,
       };
     }
