@@ -211,7 +211,7 @@ iMessage support lets your agent send and receive iMessages on macOS. Messages a
    ```
 4. **Automation permission** for Messages.app — macOS will prompt on first send
 
-> **Photo attachments:** If you want your agent to process images and files sent via iMessage, the `instar-attachments-sync` binary must also be running with Full Disk Access granted to it. It mirrors attachments from the Messages sandbox to a readable location. See [docs/LAUNCHDAEMON-SETUP.md#3-imessage-photo-attachments-optional](docs/LAUNCHDAEMON-SETUP.md#3-imessage-photo-attachments-optional) for setup.
+> **Photo attachments:** The adapter automatically hardlinks attachments into `.instar/imessage/attachments/` so Claude Code sessions can read photos without requiring Full Disk Access on the node process. No external binary is needed — this works out of the box as long as the terminal that runs `instar server start` has Full Disk Access (required to create the initial hardlinks).
 
 For running as a LaunchDaemon (always-on, survives reboots), see [docs/LAUNCHDAEMON-SETUP.md](docs/LAUNCHDAEMON-SETUP.md).
 ### Configuration
@@ -225,7 +225,7 @@ Add to your `.instar/config.json`:
       "type": "imessage",
       "enabled": true,
       "config": {
-        "authorizedSenders": ["+14081234567"],
+        "authorizedContacts": ["+14081234567"],
         "cliPath": "/opt/homebrew/bin/imsg"
       }
     }
@@ -233,11 +233,12 @@ Add to your `.instar/config.json`:
 }
 ```
 
-`authorizedSenders` is required (fail-closed). Only messages from these phone numbers or email addresses will be processed.
+`authorizedContacts` is required (fail-closed). Only messages from these phone numbers or email addresses will be processed.
 
 ### How it works
 
 - **Receiving**: The server polls `~/Library/Messages/chat.db` every 2 seconds for new messages. Uses the `query_only` SQLite pragma to read the WAL (write-ahead log) where Messages.app writes new data.
+- **Immediate ack**: When a message arrives, the server sends a brief acknowledgment reply before spawning the Claude session (30–90 second spawn delay otherwise). The ack text and cooldown period are configurable.
 - **Sending**: Claude Code sessions run `imessage-reply.sh` which calls `imsg send` and notifies the server for logging. Sending requires Automation permission for Messages.app, which only works from user-context processes (tmux sessions), not the LaunchAgent server.
 - **Session lifecycle**: Follows the same pattern as Telegram — each sender maps to a Claude Code session that receives conversation context on spawn and respawns with full history when needed.
 
