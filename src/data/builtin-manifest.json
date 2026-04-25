@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-04-21T23:06:09.926Z",
-  "instarVersion": "0.28.69",
+  "generatedAt": "2026-04-25T09:12:44.185Z",
+  "instarVersion": "0.28.74",
   "entryCount": 186,
   "entries": {
     "hook:session-start": {
@@ -1112,7 +1112,7 @@
       "type": "template",
       "domain": "operations",
       "sourcePath": "src/templates/scripts/telegram-reply.sh",
-      "contentHash": "4f8787df1bf6384545dd7f19093fd77daa1bf993ed48a8ab02b6598d41a2007c",
+      "contentHash": "3d08c63c6280d0a7ba94a345c259673a461ee5c1d116cb47c95c7626c67cee23",
       "since": "2025-01-01"
     },
     "template:whatsapp-reply.sh": {
@@ -1408,7 +1408,7 @@
       "type": "subsystem",
       "domain": "sessions",
       "sourcePath": "src/core/SessionManager.ts",
-      "contentHash": "07b0ed1f402436fe88c81c05aecca43d375788fdac63a832f59cdaa7c9c32e86",
+      "contentHash": "b47fdc0040c512bada61574b4fd1505da3c9bbe2adc793915d6f5bd479faad06",
       "since": "2025-01-01"
     },
     "subsystem:auto-updater": {
@@ -1464,7 +1464,7 @@
       "type": "subsystem",
       "domain": "communication",
       "sourcePath": "src/lifeline/TelegramLifeline.ts",
-      "contentHash": "c9c7fd786bbab2bfefff986a3882a6267b6d5c1f2efb6a386626e65eeefc0fb8",
+      "contentHash": "22d7d3827ba85d345862e55457fd2cca83e4f38201da61e20a7f0e539052322b",
       "since": "2025-01-01"
     },
     "subsystem:orphan-process-reaper": {

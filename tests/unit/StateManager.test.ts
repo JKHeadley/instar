@@ -219,6 +219,42 @@ describe('StateManager', () => {
       fs.writeFileSync(filePath, ']]not json[[');
       expect(state.get('bad-data')).toBeNull();
     });
+
+    it('discriminates permission errors from corruption (EPERM/EACCES)', () => {
+      // Permission errors should not be labeled "Corrupted" — they're an
+      // operator-actionable Full Disk Access issue on macOS, not a corrupt file.
+      // We capture the DegradationReporter's reason via console.warn ordering:
+      // permission errors emit "permission" kind, parse errors emit "parse".
+      const filePath = path.join(tmpDir, 'state', 'jobs', 'unreadable.json');
+      fs.writeFileSync(filePath, '{"slug":"unreadable","lastRunAt":null,"runCount":0}');
+      // Make file unreadable (skip when running as root, where chmod is bypassed).
+      if (process.getuid && process.getuid() === 0) return;
+      fs.chmodSync(filePath, 0o000);
+      try {
+        const warnings: string[] = [];
+        const origWarn = console.warn;
+        console.warn = (msg: unknown) => warnings.push(String(msg));
+        try {
+          expect(state.getJobState('unreadable')).toBeNull();
+        } finally {
+          console.warn = origWarn;
+        }
+        // Either the read raises EACCES (permission kind) — happy path for the
+        // discrimination — or in some sandboxed test runners chmod 0o000 is a
+        // no-op and the file is still readable, in which case getJobState
+        // returns the parsed value. Both outcomes are acceptable here; what
+        // we're guarding against is the OLD behavior of labeling a permission
+        // error as "Corrupted job state file".
+        const permissionMsgs = warnings.filter((w) => w.includes('permission'));
+        const corruptionMsgs = warnings.filter((w) => /\bparse\b|\bCorrupted\b/.test(w));
+        if (warnings.length > 0) {
+          expect(permissionMsgs.length).toBeGreaterThan(0);
+          expect(corruptionMsgs.length).toBe(0);
+        }
+      } finally {
+        fs.chmodSync(filePath, 0o644);
+      }
+    });
   });
 
   describe('Empty Directory Handling', () => {
