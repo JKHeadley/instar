@@ -44,6 +44,7 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
+import { assertSqliteAvailable } from '../messaging/pending-relay-store.js';
 
 export class AgentServer {
   private app: Express;
@@ -422,6 +423,19 @@ export class AgentServer {
    * Start the HTTP server.
    */
   async start(): Promise<void> {
+    // Layer 2 boot self-check (spec § 2a "Runtime dependency"). Probes the
+    // sqlite3 CLI + better-sqlite3 in-process driver and emits degradation
+    // events on missing/broken substrate. Never throws — Layer 2 is best-
+    // effort signal infrastructure, not a critical-path dependency.
+    try {
+      assertSqliteAvailable();
+    } catch (err) {
+      // Defensive: assertSqliteAvailable is documented as non-throwing,
+      // but a malformed DegradationReporter could still raise. Log and
+      // continue.
+      console.warn('[instar] sqlite boot self-check raised:', err);
+    }
+
     return new Promise((resolve, reject) => {
       const host = this.config.host || '127.0.0.1';
       this.server = this.app.listen(this.config.port, host, () => {

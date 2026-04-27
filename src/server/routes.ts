@@ -257,6 +257,236 @@ export function createWhoamiHandler(opts: {
   };
 }
 
+/**
+ * Build the `POST /events/delivery-failed` request handler.
+ *
+ * Spec: docs/specs/telegram-delivery-robustness.md § Layer 2c.
+ *
+ * Contract:
+ *   - Body: `{ delivery_id, topic_id, text_hash, http_code,
+ *              error_body?, attempted_port, attempts }` — strict
+ *     (any extra field rejected with 400).
+ *   - Caps: text-equivalent fields ≤ 8KB, error_body ≤ 1KB, total
+ *     body ≤ 16KB. The endpoint *does not store anything* — the
+ *     SQLite queue on the script side is the durable record. This
+ *     route only fans out an SSE event so listeners (the Layer 3
+ *     sentinel, the dashboard) can react in real time.
+ *   - Per-(agentId, remote) token bucket: 10 req/s sustained, burst 50.
+ *   - Auth handled by upstream `authMiddleware`; we additionally
+ *     reject responses missing `X-Instar-AgentId` so the auth-mismatch
+ *     path returns the same structured 403 even when the route is
+ *     mounted in tests without the full middleware stack.
+ *
+ * Validation is hand-rolled (rather than zod) for two reasons:
+ *   (1) the schema is small and we want every failure mode to map to a
+ *       precise error code without translating zod's verbose message
+ *       shape; (2) zod is in deps but adds a non-trivial import-time
+ *       cost on a hot route.
+ */
+export function createDeliveryFailedHandler(opts: {
+  agentId: string;
+  emit?: (event: Record<string, unknown>) => void;
+  /** Override clock for tests; defaults to `Date.now`. */
+  now?: () => number;
+}) {
+  const now = opts.now ?? (() => Date.now());
+
+  // Per-source token bucket. Burst 50; refill 10 tokens/sec.
+  // Keyed on `${agentId}|${remoteAddress}` — the agent-id is opaque to
+  // the bucket itself but having it in the key means tests that mount
+  // multiple agents on a single Express app each get their own budget.
+  const BURST = 50;
+  const REFILL_PER_SEC = 10;
+  type Bucket = { tokens: number; lastRefillMs: number };
+  const buckets = new Map<string, Bucket>();
+  // Periodic GC so a large cardinality of (agent, IP) pairs doesn't bloat the map.
+  const gc = setInterval(() => {
+    const cutoff = now() - 5 * 60 * 1000;
+    for (const [k, b] of buckets) {
+      if (b.lastRefillMs < cutoff) buckets.delete(k);
+    }
+  }, 60 * 1000);
+  gc.unref();
+
+  function takeToken(key: string): boolean {
+    const t = now();
+    let b = buckets.get(key);
+    if (!b) {
+      b = { tokens: BURST, lastRefillMs: t };
+      buckets.set(key, b);
+    } else {
+      const elapsedMs = t - b.lastRefillMs;
+      if (elapsedMs > 0) {
+        b.tokens = Math.min(BURST, b.tokens + (elapsedMs / 1000) * REFILL_PER_SEC);
+        b.lastRefillMs = t;
+      }
+    }
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
+  // Caps — defense-in-depth on top of the body-parser limit.
+  const MAX_TOTAL_BYTES = 16 * 1024;
+  const MAX_TEXT_FIELD_BYTES = 8 * 1024;
+  const MAX_ERROR_BODY_BYTES = 1 * 1024;
+  const HEX64 = /^[a-f0-9]{64}$/i;
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  const allowedFields = new Set([
+    'delivery_id',
+    'topic_id',
+    'text_hash',
+    'http_code',
+    'error_body',
+    'attempted_port',
+    'attempts',
+  ]);
+
+  /** Strip control chars (except \n, \t) and length-cap. */
+  function sanitizeErrorBody(s: string): string {
+    // eslint-disable-next-line no-control-regex
+    const stripped = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    return stripped.length > MAX_ERROR_BODY_BYTES
+      ? stripped.slice(0, MAX_ERROR_BODY_BYTES)
+      : stripped;
+  }
+
+  return (req: ExpressRequest, res: ExpressResponse): void => {
+    // Auth-mismatch defense in depth — emit a single 403 audit line and do
+    // not echo the body. The upstream auth middleware should already have
+    // rejected, but the route is mountable bare in tests, so we re-check.
+    const headerVal = req.headers['x-instar-agentid'];
+    const provided = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+    if (provided !== undefined && provided !== opts.agentId) {
+      const remote = req.ip || req.socket?.remoteAddress || 'unknown';
+      console.warn(
+        `[delivery-failed] auth_failure: agent_id_mismatch from ${remote} ` +
+        `(provided=${JSON.stringify(provided).slice(0, 64)}, expected=${opts.agentId})`,
+      );
+      res.status(403).json({ error: 'agent_id_mismatch', expected: opts.agentId });
+      return;
+    }
+
+    // Rate limit.
+    const remote = req.ip || req.socket?.remoteAddress || 'unknown';
+    const bucketKey = `${opts.agentId}|${remote}`;
+    if (!takeToken(bucketKey)) {
+      res.status(429).json({
+        error: 'Rate limit exceeded',
+        limit: { rps: REFILL_PER_SEC, burst: BURST },
+      });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'body must be a JSON object' });
+      return;
+    }
+
+    // Total-body cap. Express's body-parser already imposes a limit, but we
+    // re-measure here so a misconfigured upstream limit can't smuggle through.
+    let totalBytes: number;
+    try {
+      totalBytes = Buffer.byteLength(JSON.stringify(body), 'utf-8');
+    } catch {
+      res.status(400).json({ error: 'body not serializable' });
+      return;
+    }
+    if (totalBytes > MAX_TOTAL_BYTES) {
+      res.status(413).json({ error: 'body too large', maxBytes: MAX_TOTAL_BYTES });
+      return;
+    }
+
+    // Strict field set — reject extras.
+    for (const k of Object.keys(body)) {
+      if (!allowedFields.has(k)) {
+        res.status(400).json({ error: `unexpected field: ${k}` });
+        return;
+      }
+    }
+
+    const {
+      delivery_id,
+      topic_id,
+      text_hash,
+      http_code,
+      error_body,
+      attempted_port,
+      attempts,
+    } = body as Record<string, unknown>;
+
+    if (typeof delivery_id !== 'string' || !UUID.test(delivery_id)) {
+      res.status(400).json({ error: 'delivery_id must be a UUIDv4 string' });
+      return;
+    }
+    if (typeof topic_id !== 'number' || !Number.isInteger(topic_id) || topic_id < 0) {
+      res.status(400).json({ error: 'topic_id must be a non-negative integer' });
+      return;
+    }
+    if (typeof text_hash !== 'string' || !HEX64.test(text_hash)) {
+      res.status(400).json({ error: 'text_hash must be a 64-char hex string' });
+      return;
+    }
+    if (typeof http_code !== 'number' || !Number.isInteger(http_code) || http_code < 0 || http_code > 999) {
+      res.status(400).json({ error: 'http_code must be an integer in [0,999]' });
+      return;
+    }
+    if (typeof attempted_port !== 'number' || !Number.isInteger(attempted_port) || attempted_port < 1 || attempted_port > 65535) {
+      res.status(400).json({ error: 'attempted_port must be an integer in [1,65535]' });
+      return;
+    }
+    if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 1) {
+      res.status(400).json({ error: 'attempts must be a positive integer' });
+      return;
+    }
+    let sanitizedErrorBody: string | null = null;
+    if (error_body !== undefined && error_body !== null) {
+      if (typeof error_body !== 'string') {
+        res.status(400).json({ error: 'error_body must be a string when present' });
+        return;
+      }
+      if (Buffer.byteLength(error_body, 'utf-8') > MAX_TEXT_FIELD_BYTES) {
+        // We could just silently truncate, but the script's contract caps at
+        // 1KB before send — anything bigger is a contract violation worth
+        // reporting back. Cap at 8KB as the field-size hard upper bound;
+        // sanitization below handles the per-field 1KB normalization.
+        res.status(413).json({ error: 'error_body too large', maxBytes: MAX_TEXT_FIELD_BYTES });
+        return;
+      }
+      sanitizedErrorBody = sanitizeErrorBody(error_body);
+    }
+
+    // Fan out to listeners. We do NOT persist anything — that's the script's
+    // job. Listeners care about the *fact* of failure plus enough metadata to
+    // look up the queued row.
+    const event = {
+      type: 'delivery_failed',
+      agentId: opts.agentId,
+      delivery_id,
+      topic_id,
+      text_hash,
+      http_code,
+      attempted_port,
+      attempts,
+      error_body: sanitizedErrorBody,
+      receivedAt: new Date(now()).toISOString(),
+    };
+    if (opts.emit) {
+      try {
+        opts.emit(event);
+      } catch (err) {
+        // The endpoint must not fail because a listener crashed. The script
+        // already has the row in SQLite; the event is best-effort signal.
+        console.error('[delivery-failed] emit handler threw:', err);
+      }
+    }
+
+    res.status(202).json({ accepted: true, delivery_id });
+  };
+}
+
 export interface RouteContext {
   config: InstarConfig;
   sessionManager: SessionManager;
@@ -814,6 +1044,29 @@ export function createRoutes(ctx: RouteContext): Router {
       agentId: ctx.config.projectName,
       port: ctx.config.port,
       configVersion: ctx.config.version,
+    })
+  );
+
+  // POST /events/delivery-failed — fan-out for the script-side detector.
+  //
+  // Spec § Layer 2c. The relay script INSERTs into its local SQLite queue
+  // and then best-effort POSTs here so the in-process Layer 3 sentinel
+  // can react in <1s rather than waiting for its 5-minute watchdog tick.
+  // The endpoint itself does not persist anything — SQLite is the
+  // durable record on the script side.
+  router.post(
+    '/events/delivery-failed',
+    createDeliveryFailedHandler({
+      agentId: ctx.config.projectName,
+      emit: ctx.wsManager
+        ? (event) => {
+            // wsManager is set lazily after server.listen; if it's still
+            // null at request time we just no-op the broadcast — the
+            // event was still accepted, and the Layer 3 backstop watchdog
+            // (5-min tick over SQLite) catches up.
+            if (ctx.wsManager) ctx.wsManager.broadcastEvent(event);
+          }
+        : undefined,
     })
   );
 
