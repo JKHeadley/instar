@@ -15,17 +15,7 @@
 #                     ('html' is reserved for trusted internal callers.)
 #                     When absent, the server's configured default applies.
 #
-# Port resolution (in order):
-#   1. INSTAR_PORT environment variable (explicit operator override).
-#   2. `port` field in .instar/config.json (the canonical agent-local truth).
-#   3. Hardcoded fallback to 4040, with a stderr warning. This is the path
-#      that historically caused cross-tenant misroutes on multi-agent hosts.
-#
-# Auth:
-#   Sends `Authorization: Bearer <authToken>` AND `X-Instar-AgentId: <projectName>`
-#   (both read from .instar/config.json). The agent-id header lets the server
-#   reject auth-bearing requests that hit the wrong agent's port BEFORE token
-#   comparison — a token sent to the wrong server is structurally inert.
+# Reads INSTAR_PORT from environment (default: 4040).
 
 FORMAT=""
 
@@ -74,35 +64,12 @@ if [ -z "$MSG" ]; then
   exit 1
 fi
 
-# Resolve config-derived values from .instar/config.json (single python3
-# invocation). Env > config > 4040-warn for port; config-only for authToken
-# and agentId.
-AUTH_TOKEN=""
-AGENT_ID=""
-CONFIG_PORT=""
-if [ -f ".instar/config.json" ]; then
-  CONFIG_VALUES=$(python3 -c "
-import json, sys
-try:
-    c = json.load(open('.instar/config.json'))
-except Exception:
-    sys.exit(0)
-print(c.get('authToken', ''))
-print(c.get('projectName', ''))
-print(c.get('port', ''))
-" 2>/dev/null)
-  AUTH_TOKEN=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
-  AGENT_ID=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '2p')
-  CONFIG_PORT=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '3p')
-fi
+PORT="${INSTAR_PORT:-4040}"
 
-if [ -n "$INSTAR_PORT" ]; then
-  PORT="$INSTAR_PORT"
-elif [ -n "$CONFIG_PORT" ]; then
-  PORT="$CONFIG_PORT"
-else
-  PORT=4040
-  echo "WARN: telegram-reply.sh — no INSTAR_PORT env and no port in .instar/config.json; falling back to 4040" >&2
+# Read auth token from config (if present)
+AUTH_TOKEN=""
+if [ -f ".instar/config.json" ]; then
+  AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
 fi
 
 # Build JSON body (text + optional format).
@@ -122,20 +89,16 @@ if [ -z "$JSON_BODY" ]; then
   JSON_BODY="{\"text\":\"${ESCAPED}\"}"
 fi
 
-# Assemble curl args. Always include X-Instar-AgentId when we can resolve it
-# from config — the server uses it to reject wrong-port requests before
-# evaluating the token.
-CURL_ARGS=(-s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/telegram/reply/${TOPIC_ID}"
-  -H 'Content-Type: application/json'
-  -d "$JSON_BODY")
 if [ -n "$AUTH_TOKEN" ]; then
-  CURL_ARGS+=(-H "Authorization: Bearer ${AUTH_TOKEN}")
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/telegram/reply/${TOPIC_ID}" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -d "$JSON_BODY")
+else
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/telegram/reply/${TOPIC_ID}" \
+    -H 'Content-Type: application/json' \
+    -d "$JSON_BODY")
 fi
-if [ -n "$AGENT_ID" ]; then
-  CURL_ARGS+=(-H "X-Instar-AgentId: ${AGENT_ID}")
-fi
-
-RESPONSE=$(curl "${CURL_ARGS[@]}")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')

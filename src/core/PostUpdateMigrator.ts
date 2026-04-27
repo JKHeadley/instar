@@ -39,6 +39,7 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1407,22 +1408,22 @@ The user has been talking to you (possibly for days). A generic greeting like "H
           result.errors.push(`telegram-reply.sh: ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
-        try {
-          const existing = fs.readFileSync(scriptPath, 'utf-8');
-          // Only overwrite if the existing copy is an older version (lacks 408
-          // handling) AND looks like the shipped version (starts with the
-          // shipped shebang comment). Don't stomp custom user scripts.
-          const looksShipped = existing.includes('telegram-reply.sh — Send a message back to a Telegram topic via instar server');
-          const hasNewHandling = existing.includes('HTTP_CODE" = "408"');
-          if (looksShipped && !hasNewHandling) {
-            fs.writeFileSync(scriptPath, newContent, { mode: 0o755 });
-            result.upgraded.push('scripts/telegram-reply.sh (upgraded to HTTP 408 ambiguous-outcome handling)');
-          } else {
-            result.skipped.push('scripts/telegram-reply.sh (already exists)');
-          }
-        } catch (err) {
-          result.errors.push(`telegram-reply.sh migration: ${err instanceof Error ? err.message : String(err)}`);
-        }
+        // SHA-based migrator (spec § Layer 1, migration). Replaces the
+        // marker-string match — which silently overwrote any user
+        // customization that happened to keep the shipped header line.
+        // The new flow is hash-only: if the on-disk SHA matches a
+        // known prior shipped version, back up + overwrite; if it
+        // matches the new template, no-op; otherwise leave the
+        // original alone, write a `.new` candidate, and surface a
+        // degradation event so the operator sees the customization
+        // and can resolve it.
+        this.migrateReplyScriptToPortConfig({
+          scriptPath,
+          newContent,
+          label: 'scripts/telegram-reply.sh',
+          stateDir: this.config.stateDir,
+          result,
+        });
       }
     }
 
@@ -3646,6 +3647,150 @@ process.stdin.on('end', async () => {
    * telegram-reply.sh migration uses similar logic inline because it ALSO
    * installs on first run (hasTelegram gate); these two are upgrade-only.
    */
+  /**
+   * Known-shipped SHA-256 hashes of `src/templates/scripts/telegram-reply.sh`.
+   *
+   * The migrator overwrites an on-disk copy only when its SHA matches one
+   * of these — meaning it is a verbatim prior shipped version. Any other
+   * content (user customization, partial edits, accidental damage) is
+   * preserved. The new template is written alongside as `.new` and a
+   * degradation event is raised so the operator can resolve it manually.
+   *
+   * Add the prior shipped SHA when shipping a new template; never remove
+   * old SHAs (they remain valid migration sources).
+   */
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  private static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Pre-port-config version (HTTP 408 handling, INSTAR_PORT-or-4040 default,
+    // no agent-id header). Shipped through 2026-04-27.
+    '3d08c63c6280d0a7ba94a345c259673a461ee5c1d116cb47c95c7626c67cee23',
+  ]);
+
+  /**
+   * SHA-based migrator for telegram-reply.sh — replaces marker-string
+   * detection with content-hash detection. See spec
+   * docs/specs/telegram-delivery-robustness.md § Layer 1 "Migration".
+   *
+   * Three branches:
+   *   - on-disk SHA ∈ prior-shipped → back up and overwrite with new template.
+   *   - on-disk SHA == new-template SHA → no-op (idempotent).
+   *   - otherwise → write `<scriptPath>.new`, raise a
+   *     `relay-script-modified-locally` degradation event, leave the
+   *     original untouched.
+   */
+  private migrateReplyScriptToPortConfig(opts: {
+    scriptPath: string;
+    newContent: string;
+    label: string;
+    stateDir: string;
+    result: MigrationResult;
+  }): void {
+    let existing: string;
+    try {
+      existing = fs.readFileSync(opts.scriptPath, 'utf-8');
+    } catch (err) {
+      opts.result.errors.push(
+        `${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
+
+    const existingSha = crypto.createHash('sha256').update(existing).digest('hex');
+    const newSha = crypto.createHash('sha256').update(opts.newContent).digest('hex');
+
+    if (existingSha === newSha) {
+      // Idempotent path — already on the new template. Assert this by
+      // recording a no-op result; never write, never back up.
+      opts.result.skipped.push(`${opts.label} (already current)`);
+      return;
+    }
+
+    if (PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS.has(existingSha)) {
+      // Backup-then-overwrite. Backup directory lives under the agent's
+      // state dir (so it follows backup/restore semantics already
+      // configured for .instar/).
+      const backupDir = path.join(opts.stateDir, 'backups');
+      try {
+        fs.mkdirSync(backupDir, { recursive: true });
+        const backupPath = path.join(
+          backupDir,
+          `telegram-reply.sh.${Date.now()}`
+        );
+        fs.writeFileSync(backupPath, existing, { mode: 0o644 });
+        fs.writeFileSync(opts.scriptPath, opts.newContent, { mode: 0o755 });
+        opts.result.upgraded.push(
+          `${opts.label} (upgraded to port-from-config + agent-id binding; ` +
+          `prior version backed up to ${path.relative(opts.stateDir, backupPath)})`
+        );
+      } catch (err) {
+        opts.result.errors.push(
+          `${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      return;
+    }
+
+    // Unknown content (user-modified or unknown version). Write a `.new`
+    // candidate next to the original and raise a degradation event so
+    // the operator can resolve it without us stomping their changes.
+    //
+    // Idempotency: if a `.new` file already exists with byte-identical
+    // content (e.g., this is the second `instar update` against the same
+    // user-modified script), skip the rewrite and the degradation event
+    // so the operator doesn't get duplicate noise on every upgrade.
+    const candidatePath = `${opts.scriptPath}.new`;
+    let candidateAlreadyCurrent = false;
+    try {
+      const existingCandidate = fs.readFileSync(candidatePath, 'utf-8');
+      if (existingCandidate === opts.newContent) {
+        candidateAlreadyCurrent = true;
+      }
+    } catch {
+      // No existing .new file — fall through to write.
+    }
+
+    if (!candidateAlreadyCurrent) {
+      try {
+        fs.writeFileSync(candidatePath, opts.newContent, { mode: 0o755 });
+      } catch (err) {
+        opts.result.errors.push(
+          `${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return;
+      }
+
+      // Only fire the degradation event the first time we detect the
+      // drift OR when the new template content has shifted since the
+      // last `.new` write. Re-running the migrator on the same unknown
+      // on-disk SHA + same new template SHA is a no-op event-wise.
+      try {
+        const reporter = DegradationReporter.getInstance();
+        if (reporter && typeof reporter.report === 'function') {
+          reporter.report({
+            feature: 'relay-script-modified-locally',
+            primary: 'overwrite shipped relay script with new template',
+            fallback: 'wrote new template alongside as .new — operator review required',
+            reason:
+              `${opts.label} content does not match any prior shipped SHA ` +
+              `(found sha256:${existingSha.slice(0, 12)}…). New template ` +
+              `written to ${path.basename(candidatePath)}.`,
+            impact:
+              'Relay script keeps running with user-modified content; the ' +
+              'port-from-config + agent-id binding fix is NOT active until ' +
+              'the operator reconciles the .new file.',
+          });
+        }
+      } catch {
+        // DegradationReporter is best-effort; don't block migration on it.
+      }
+    }
+
+    opts.result.skipped.push(
+      `${opts.label} (user-modified — new version ` +
+      `${candidateAlreadyCurrent ? 'already' : ''} written to ${path.basename(candidatePath)})`
+    );
+  }
+
   private migrateReplyScriptTo408(opts: {
     scriptPath: string;
     templateFilename: string;

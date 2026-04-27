@@ -178,6 +178,85 @@ import type { WebSocketManager } from './WebSocketManager.js';
 import { TruncationDetector } from '../paste/TruncationDetector.js';
 import { SecretDrop } from './SecretDrop.js';
 
+/**
+ * Build the /whoami request handler.
+ *
+ * Spec docs/specs/telegram-delivery-robustness.md § Layer 1c. Exported
+ * separately from createRoutes so unit tests can mount it on a minimal
+ * Express app without instantiating the entire RouteContext.
+ *
+ * Behavior:
+ *   - 403 `{error: 'agent_id_header_required'}` when X-Instar-AgentId is
+ *     absent. The middleware accepts bare-token requests during the
+ *     deprecation window for *other* endpoints; /whoami does not, because
+ *     accepting a bare-token request here would let a caller learn the
+ *     expected agent-id from the response (discovery oracle).
+ *   - 403 `{error: 'agent_id_mismatch', expected}` when the header is
+ *     present but does not match.
+ *   - 429 with retry hint when the per-source rate limit (1 req/s) is
+ *     exceeded — the bucket is keyed on (agent-id, remoteAddress) so a
+ *     single misbehaving caller can't starve the budget for legitimate
+ *     sentinel callers from other source addresses.
+ *   - 200 `{agentId, port}` on a clean request. (We deliberately do NOT
+ *     return `version`: an authed identity probe shouldn't double as a
+ *     CVE-targeting oracle for an authed peer who has stolen a token.)
+ */
+export function createWhoamiHandler(opts: {
+  agentId: string;
+  port: number;
+  configVersion?: string;
+}) {
+  const WHOAMI_WINDOW_MS = 1000;
+  // Bucket key is `${agentId}|${remoteAddress}` so a single noisy caller
+  // can't starve the budget for legitimate sentinel callers from other
+  // source addresses on the same authed agent-id.
+  const buckets = new Map<string, number>();
+  const cleanup = setInterval(() => {
+    const cutoff = Date.now() - WHOAMI_WINDOW_MS * 60;
+    for (const [k, t] of buckets) {
+      if (t < cutoff) buckets.delete(k);
+    }
+  }, WHOAMI_WINDOW_MS * 60);
+  cleanup.unref();
+
+  return (req: ExpressRequest, res: ExpressResponse) => {
+    const headerVal = req.headers['x-instar-agentid'];
+    const provided = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+    const expected = opts.agentId;
+    if (!provided) {
+      res.status(403).json({ error: 'agent_id_header_required', expected });
+      return;
+    }
+    if (provided !== expected) {
+      // Defense-in-depth — auth middleware should have already caught this.
+      res.status(403).json({ error: 'agent_id_mismatch', expected });
+      return;
+    }
+    const remote = req.ip || req.socket?.remoteAddress || 'unknown';
+    const bucketKey = `${provided}|${remote}`;
+    const now = Date.now();
+    const last = buckets.get(bucketKey);
+    if (last !== undefined && now - last < WHOAMI_WINDOW_MS) {
+      res.status(429).json({
+        error: 'Rate limit exceeded',
+        retryAfterMs: WHOAMI_WINDOW_MS - (now - last),
+      });
+      return;
+    }
+    buckets.set(bucketKey, now);
+
+    // Deliberately omit `version`: an authed identity probe shouldn't
+    // double as a CVE-targeting oracle for a peer whose token has been
+    // stolen. Layer 3's recovery path needs agentId + port, not version.
+    // (`opts.configVersion` retained on the type for forward-compat
+    // — callers who need version must read it from a separate route.)
+    res.json({
+      agentId: expected,
+      port: opts.port,
+    });
+  };
+}
+
 export interface RouteContext {
   config: InstarConfig;
   sessionManager: SessionManager;
@@ -713,6 +792,30 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     res.json(base);
   });
+
+  // GET /whoami — authenticated identity probe.
+  //
+  // Spec § Layer 1c: the sentinel hits this BEFORE any auth-bearing
+  // POST /telegram/reply during recovery. It returns this server's
+  // agentId/port/version so the caller can verify it's talking to the
+  // right agent before sending content.
+  //
+  // Hard requirement (no deprecation exception): the X-Instar-AgentId
+  // header MUST be present AND match this server's agent-id. If we
+  // accepted bare-token requests here, the endpoint would become a
+  // discovery oracle for token→port→agent-id triples. The auth
+  // middleware already validates the token and (when header present)
+  // the agent-id; we re-check the header presence here to close the
+  // deprecation hole that otherwise lets bare-token callers learn the
+  // expected agent-id from the response.
+  router.get(
+    '/whoami',
+    createWhoamiHandler({
+      agentId: ctx.config.projectName,
+      port: ctx.config.port,
+      configVersion: ctx.config.version,
+    })
+  );
 
   /**
    * Get all feature degradation events.
