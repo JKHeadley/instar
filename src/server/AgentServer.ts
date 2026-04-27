@@ -279,7 +279,12 @@ export class AgentServer {
       });
     }
 
-    this.app.use(authMiddleware(options.config.authToken));
+    // Agent-id binding (spec telegram-delivery-robustness § Layer 1b):
+    // pass projectName as the agent identity so the auth middleware can
+    // structurally reject tokens sent to the wrong agent's server BEFORE
+    // any token comparison runs. This closes the cross-tenant misroute
+    // class proven by the Inspec/cheryl 2026-04-27 incident.
+    this.app.use(authMiddleware(options.config.authToken, options.config.projectName));
     // Outbound messaging routes are intentionally LLM-backed (tone gate review)
     // and involve third-party API calls (Telegram/Slack/WhatsApp Bot APIs) whose
     // latency we don't control. The default 30s budget is routinely exceeded

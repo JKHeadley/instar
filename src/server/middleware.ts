@@ -21,10 +21,54 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
 }
 
 /**
+ * In-memory dedup cache for deprecation log lines.
+ *
+ * Per spec § Layer 1c "Backward upgrade path": when a client sends a
+ * Bearer token without `X-Instar-AgentId`, we accept the request during
+ * the deprecation window, but log it at most once per hour per source.
+ * The "source" key is the token's SHA-256 prefix (we never log the token
+ * itself) plus the request remote — a bare-token caller behind a fixed
+ * IP rotates faster than caller behind shifting IPs, but neither floods.
+ */
+const deprecationLogCache = new Map<string, number>();
+const DEPRECATION_LOG_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const DEPRECATION_LOG_CACHE_MAX = 1024; // bound memory
+
+function shouldLogDeprecation(sourceKey: string, now: number = Date.now()): boolean {
+  const last = deprecationLogCache.get(sourceKey);
+  if (last !== undefined && now - last < DEPRECATION_LOG_INTERVAL_MS) {
+    return false;
+  }
+  // Bound memory: when at cap, drop the oldest entry before insert.
+  if (deprecationLogCache.size >= DEPRECATION_LOG_CACHE_MAX) {
+    const oldestKey = deprecationLogCache.keys().next().value;
+    if (oldestKey !== undefined) deprecationLogCache.delete(oldestKey);
+  }
+  deprecationLogCache.set(sourceKey, now);
+  return true;
+}
+
+/** Test hook — clear the deprecation log cache. */
+export function _resetDeprecationLogCache(): void {
+  deprecationLogCache.clear();
+}
+
+/**
  * Auth middleware — enforces Bearer token on API endpoints.
  * Health endpoint is exempt (used for external monitoring).
+ *
+ * @param authToken  The configured server bearer token. If omitted, all
+ *   requests pass through (used in tests and unauthenticated dev runs).
+ * @param agentId    The configured server agent identity (e.g. projectName).
+ *   When set, the middleware additionally validates the
+ *   `X-Instar-AgentId` request header BEFORE comparing the bearer
+ *   token. A mismatch returns a structured 403 — the goal is to make
+ *   tokens sent to the wrong agent's server structurally inert before
+ *   token bytes are even compared. Missing header is accepted during
+ *   the backward-compatibility deprecation window with a deduped log
+ *   line. See spec docs/specs/telegram-delivery-robustness.md § Layer 1b.
  */
-export function authMiddleware(authToken?: string) {
+export function authMiddleware(authToken?: string, agentId?: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Skip auth if no token configured
     if (!authToken) {
@@ -119,6 +163,46 @@ export function authMiddleware(authToken?: string) {
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
       return;
+    }
+
+    // Agent-id binding (spec § Layer 1b). The header is checked BEFORE the
+    // token comparison so a token sent to the wrong agent's server is
+    // structurally inert — we never even get to the timing-safe-equals
+    // step. The value is a stable, low-cardinality identifier
+    // (projectName); we compare as strings rather than constant-time
+    // because the agent-id space is operator-public (it appears in tmux
+    // session names, log lines, file paths) — there is no secret here to
+    // protect from a timing oracle.
+    const providedAgentIdHeader = req.headers['x-instar-agentid'];
+    const providedAgentId = Array.isArray(providedAgentIdHeader)
+      ? providedAgentIdHeader[0]
+      : providedAgentIdHeader;
+    if (agentId) {
+      if (providedAgentId === undefined) {
+        // Backward-compat: old clients without the header are accepted
+        // during the deprecation window. Log at most once per hour per
+        // source (token-hash + remote) so rolling upgrades don't flood.
+        const tokenForKey = header.slice(7);
+        const tokenKey = createHash('sha256').update(tokenForKey).digest('hex').slice(0, 16);
+        const remote = req.socket.remoteAddress ?? 'unknown';
+        const sourceKey = `${tokenKey}:${remote}`;
+        if (shouldLogDeprecation(sourceKey)) {
+          console.warn(
+            `[auth] deprecation: bearer-only request to ${req.path} ` +
+            `from ${remote} — clients must send X-Instar-AgentId header. ` +
+            `(deduped 1/hour per source)`
+          );
+        }
+        // Fall through to token validation below.
+      } else if (providedAgentId !== agentId) {
+        // Cross-tenant misroute or forged header. Return a structured
+        // sub-code so the client (sentinel) can categorize precisely.
+        // Do NOT echo any token bytes — the response only carries the
+        // expected agent-id, which is operator-public information.
+        res.status(403).json({ error: 'agent_id_mismatch', expected: agentId });
+        return;
+      }
+      // Match → fall through to token validation.
     }
 
     const token = header.slice(7);
