@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 const TOKEN_SIZE_BYTES = 32; // 256 bits
 const TOKEN_DIR_NAME = 'agent-tokens';
@@ -204,8 +205,7 @@ export function deleteAgentToken(agentName: string): boolean {
 
   const filePath = tokenPath(agentName);
   try {
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(filePath);
+    SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/messaging/AgentTokenManager.ts:208' });
     return true;
   } catch {
     // @silent-fallback-ok — file may not exist

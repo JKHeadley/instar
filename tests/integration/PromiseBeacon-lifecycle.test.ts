@@ -17,6 +17,7 @@ import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { LlmQueue } from '../../src/monitoring/LlmQueue.js';
 import { ProxyCoordinator } from '../../src/monitoring/ProxyCoordinator.js';
 import { PromiseBeacon } from '../../src/monitoring/PromiseBeacon.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('PromiseBeacon lifecycle', () => {
   let dir: string;
@@ -25,8 +26,7 @@ describe('PromiseBeacon lifecycle', () => {
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), '{}');
   });
-  // safe-git-allow: incremental-migration
-  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/PromiseBeacon-lifecycle.test.ts:29' }));
 
   it('records → heartbeats → delivered → stops', async () => {
     const tracker = new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir) });

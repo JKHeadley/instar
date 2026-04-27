@@ -19,6 +19,7 @@ import { DiscoveryEvaluator } from '../../src/core/DiscoveryEvaluator.js';
 import type { DiscoveryContext } from '../../src/core/DiscoveryEvaluator.js';
 import type { ConsentRecord } from '../../src/core/FeatureRegistry.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Intelligence ───────────────────────────────────────────────
 
@@ -74,8 +75,7 @@ describe('E2E: Discovery Hardening', () => {
   });
 
   afterAll(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/discovery-hardening.test.ts:78' });
   });
 
   // ── 1. maxDeclines Cap ────────────────────────────────────────────

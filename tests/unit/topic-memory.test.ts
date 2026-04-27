@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TopicMemory, type TopicMessage } from '../../src/memory/TopicMemory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TopicMemory', () => {
   let tmpDir: string;
@@ -38,8 +39,7 @@ describe('TopicMemory', () => {
 
   afterEach(() => {
     topicMemory.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/topic-memory.test.ts:42' });
   });
 
   // ── Message Operations ──────────────────────────────────────
@@ -878,8 +878,7 @@ describe('TopicMemory', () => {
         expect(fresh.getLastImportStats()).toBeNull();
       } finally {
         fresh.close();
-        // safe-git-allow: incremental-migration
-        fs.rmSync(freshDir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(freshDir, { recursive: true, force: true, operation: 'tests/unit/topic-memory.test.ts:882' });
       }
     });
   });

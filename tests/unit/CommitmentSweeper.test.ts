@@ -15,6 +15,7 @@ import { LedgerSessionRegistry } from '../../src/core/LedgerSessionRegistry.js';
 import { CommitmentSweeper } from '../../src/core/CommitmentSweeper.js';
 import type { LedgerAppendPayload } from '../../src/core/SharedStateLedger.js';
 import type { IntegratedBeingConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'commitment-sweeper-test-'));
@@ -68,8 +69,7 @@ describe('CommitmentSweeper', () => {
 
   afterEach(() => {
     ledger.shutdown();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CommitmentSweeper.test.ts:72' });
   });
 
   describe('sweepExpired', () => {

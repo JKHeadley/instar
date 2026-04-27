@@ -17,6 +17,7 @@ import { DispatchScopeEnforcer } from '../../src/core/DispatchScopeEnforcer.js';
 import { DispatchExecutor } from '../../src/core/DispatchExecutor.js';
 import type { Dispatch, DispatchCheckResult, EvaluationDecision } from '../../src/core/DispatchManager.js';
 import type { ExecutionResult } from '../../src/core/DispatchExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock factories ──────────────────────────────────────────────────
 
@@ -97,8 +98,7 @@ describe('Dispatch Decision Journal Integration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/dispatch-decision-journal.test.ts:101' });
     vi.restoreAllMocks();
   });
 

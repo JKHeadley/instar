@@ -15,6 +15,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 
 const DEFAULT_QUARANTINE_GRACE_MS = 14 * 24 * 3600 * 1000; // 14 days
 const DEFAULT_REAP_INTERVAL_MS = 24 * 3600 * 1000;
@@ -149,8 +151,7 @@ export class WorktreeReaper extends EventEmitter {
             if (this.config.dryRun) {
               result.deleted.push(`(dry-run) ${p}`);
             } else {
-              // safe-git-allow: incremental-migration
-              fs.rmSync(p, { recursive: true, force: true });
+              SafeFsExecutor.safeRmSync(p, { recursive: true, force: true, operation: 'src/monitoring/WorktreeReaper.ts:153' });
               result.deleted.push(p);
             }
           }
@@ -169,8 +170,7 @@ export class WorktreeReaper extends EventEmitter {
           const st = fs.statSync(p);
           if (st.mtimeMs < cutoffMs) {
             if (this.config.dryRun) result.deleted.push(`(dry-run) ${p}`);
-            // safe-git-allow: incremental-migration
-            else { fs.unlinkSync(p); result.deleted.push(p); }
+            else { SafeFsExecutor.safeUnlinkSync(p, { operation: 'src/monitoring/WorktreeReaper.ts:173' }); result.deleted.push(p); }
           }
         } catch (err) {
           result.errors.push({ path: p, error: (err as Error).message });
@@ -207,8 +207,7 @@ export class WorktreeReaper extends EventEmitter {
   private tryRepairWorktree(worktreePath: string, branch: string): void {
     if (this.config.dryRun) return;
     try {
-      // safe-git-allow: incremental-migration
-      execFileSync('git', ['-C', this.config.projectDir, 'worktree', 'add', worktreePath, branch], { timeout: 30_000 });
+      SafeGitExecutor.execSync(['-C', this.config.projectDir, 'worktree', 'add', worktreePath, branch], { timeout: 30_000, operation: 'src/monitoring/WorktreeReaper.ts:211' });
     } catch (err) {
       this.emit('warn', `repair failed for ${worktreePath}: ${(err as Error).message}`);
     }

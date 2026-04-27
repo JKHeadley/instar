@@ -34,6 +34,7 @@ import {
   hasAdapter,
   clearRegistry,
 } from '../../src/messaging/AdapterRegistry.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('iMessage Adapter — E2E lifecycle', () => {
   let tmpDir: string;
@@ -43,8 +44,7 @@ describe('iMessage Adapter — E2E lifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/imessage-adapter-e2e.test.ts:47' });
     clearRegistry();
   });
 

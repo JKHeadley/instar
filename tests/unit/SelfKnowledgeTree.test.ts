@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SelfKnowledgeTree } from '../../src/knowledge/SelfKnowledgeTree.js';
 import type { SelfKnowledgeTreeConfig } from '../../src/knowledge/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('SelfKnowledgeTree', () => {
   let tmpDir: string;
@@ -41,8 +42,7 @@ Direct and technical. I don't waste words.
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SelfKnowledgeTree.test.ts:45' });
   });
 
   function createTree(intelligence?: { evaluate: ReturnType<typeof vi.fn> }): SelfKnowledgeTree {

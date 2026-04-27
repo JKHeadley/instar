@@ -19,6 +19,7 @@ import { DNSVerifier } from '../../../src/threadline/DNSVerifier.js';
 import type { DNSResolverFn } from '../../../src/threadline/DNSVerifier.js';
 import type { HttpFetcher } from '../../../src/threadline/AgentDiscovery.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -69,8 +70,7 @@ describe('TrustBootstrap Integration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/integration/threadline/TrustBootstrapIntegration.test.ts:73' });
   });
 
   // ── 1. Full Invitation Workflow ────────────────────────────────

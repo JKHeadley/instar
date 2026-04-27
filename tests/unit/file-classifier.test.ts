@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { FileClassifier } from '../../src/core/FileClassifier.js';
 import type { ClassificationResult, FileClass, MergeStrategy } from '../../src/core/FileClassifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeClassifier(tmpDir: string, overrides?: Partial<ConstructorParameters<typeof FileClassifier>[0]>) {
   return new FileClassifier({
@@ -27,8 +28,7 @@ describe('FileClassifier', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/file-classifier.test.ts:31' });
   });
 
   // ── Source Code Classification ────────────────────────────────────

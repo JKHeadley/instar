@@ -3,11 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { writeStartupMarker, readStartupMarker, markerPath } from '../../../src/lifeline/startupMarker.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'startup-marker-')); });
-// safe-git-allow: incremental-migration
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/lifeline/startupMarker.test.ts:10' }); });
 
 describe('startupMarker', () => {
   it('writes marker atomically with pid/version/timestamp', () => {

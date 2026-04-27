@@ -11,6 +11,7 @@ import path from 'node:path';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('SessionManager.injectTelegramMessage', () => {
   let project: TempProject;
@@ -28,8 +29,7 @@ describe('SessionManager.injectTelegramMessage', () => {
     if (fs.existsSync(tmpDir)) {
       const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('msg-'));
       for (const f of files) {
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(path.join(tmpDir, f)); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(path.join(tmpDir, f), { operation: 'tests/unit/session-telegram-inject.test.ts:32' }); } catch { /* ignore */ }
       }
     }
   });

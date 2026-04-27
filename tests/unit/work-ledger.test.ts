@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { WorkLedger } from '../../src/core/WorkLedger.js';
 import type { LedgerEntry, MachineLedger, OverlapTier } from '../../src/core/WorkLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeLedger(tmpDir: string, machineId = 'machine-a', userId?: string) {
   const stateDir = path.join(tmpDir, '.instar');
@@ -25,8 +26,7 @@ describe('WorkLedger', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/work-ledger.test.ts:29' });
   });
 
   // ── Session Lifecycle ────────────────────────────────────────────

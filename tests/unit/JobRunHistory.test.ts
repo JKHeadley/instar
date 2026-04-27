@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import type { JobRun, JobRunReflection } from '../../src/scheduler/JobRunHistory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -47,8 +48,7 @@ describe('JobRunHistory unit tests', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/JobRunHistory.test.ts:51' });
   });
 
   // ── Scenario 1: Complete run lifecycle ──────────────────────────────

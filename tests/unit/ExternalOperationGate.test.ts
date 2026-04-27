@@ -15,6 +15,7 @@ import type {
   OperationScope,
   RiskLevel,
 } from '../../src/core/ExternalOperationGate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('computeRiskLevel', () => {
   it('reads are always low risk', () => {
@@ -129,8 +130,7 @@ describe('ExternalOperationGate', () => {
     for (const entry of fs.readdirSync(os.tmpdir())) {
       const full = path.join(os.tmpdir(), entry);
       if (full.startsWith(prefix)) {
-        // safe-git-allow: incremental-migration
-        fs.rmSync(full, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(full, { recursive: true, force: true, operation: 'tests/unit/ExternalOperationGate.test.ts:133' });
       }
     }
   });

@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('DegradationReporter', () => {
   let tmpDir: string;
@@ -25,8 +26,7 @@ describe('DegradationReporter', () => {
 
   afterEach(() => {
     DegradationReporter.resetForTesting();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/degradation-reporter.test.ts:29' });
   });
 
   it('is a singleton', () => {

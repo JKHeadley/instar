@@ -5,6 +5,7 @@ import os from 'node:os';
 import { TreeTraversal } from '../../src/knowledge/TreeTraversal.js';
 import { ProbeRegistry } from '../../src/knowledge/ProbeRegistry.js';
 import type { SelfKnowledgeNode } from '../../src/knowledge/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TreeTraversal', () => {
   let tmpDir: string;
@@ -35,8 +36,7 @@ describe('TreeTraversal', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TreeTraversal.test.ts:39' });
   });
 
   // Gate Test 1.12: File source reads AGENT.md correctly

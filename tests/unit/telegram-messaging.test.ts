@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TelegramAdapter, type TelegramConfig } from '../../src/messaging/TelegramAdapter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TelegramAdapter messaging', () => {
   let tmpDir: string;
@@ -35,8 +36,7 @@ describe('TelegramAdapter messaging', () => {
   afterEach(async () => {
     await adapter.stop();
     global.fetch = originalFetch;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/telegram-messaging.test.ts:39' });
   });
 
   describe('sendToTopic', () => {

@@ -25,6 +25,7 @@ import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { refreshHooksAndSettings } from '../../src/commands/init.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Memory Export Job lifecycle (E2E)', () => {
   let tmpDir: string;
@@ -87,8 +88,7 @@ describe('Memory Export Job lifecycle (E2E)', () => {
 
   afterAll(() => {
     semanticMemory?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/memory-export-job-lifecycle.test.ts:91' });
   });
 
   const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });

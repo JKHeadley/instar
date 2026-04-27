@@ -15,14 +15,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { HeartbeatManager } from '../../src/core/HeartbeatManager.js';
 import type { Heartbeat } from '../../src/core/HeartbeatManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-heartbeat-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/heartbeat-manager.test.ts:25' });
 }
 
 describe('HeartbeatManager', () => {

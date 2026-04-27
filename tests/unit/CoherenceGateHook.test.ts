@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── PostUpdateMigrator Hook Template Tests ──────────────────────────
 
@@ -70,8 +71,7 @@ describe('PostUpdateMigrator — response-review hook', () => {
     expect(content).toContain('stopHookActive');
     expect(content).toContain('input.stop_hook_active');
 
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/CoherenceGateHook.test.ts:74' });
   });
 
   it('bakes the configured port into the hook template', async () => {
@@ -121,8 +121,7 @@ describe('PostUpdateMigrator — response-review hook', () => {
     const source = fs.readFileSync(migratorPath, 'utf-8');
     expect(source).toContain("'response-review.js'");
 
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/CoherenceGateHook.test.ts:125' });
   });
 });
 

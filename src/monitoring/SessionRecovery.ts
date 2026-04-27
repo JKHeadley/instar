@@ -28,6 +28,7 @@ import { detectToolCallStall, type StallInfo } from './stall-detector.js';
 import { detectCrashedSession, detectErrorLoop, type CrashInfo, type ErrorLoopInfo } from './crash-detector.js';
 import { truncateJsonlToSafePoint, type TruncationStrategy } from './jsonl-truncator.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ============================================================================
 // Types
@@ -723,8 +724,7 @@ export class SessionRecovery extends EventEmitter {
         try {
           const stat = fs.statSync(filePath);
           if (now - stat.mtimeMs > maxAgeMs) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(filePath);
+            SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/monitoring/SessionRecovery.ts:727' });
             cleaned++;
           }
         } catch { // @silent-fallback-ok — best-effort cleanup; skipping one file is fine

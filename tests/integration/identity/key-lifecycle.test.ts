@@ -28,6 +28,7 @@ import {
   verifyRecoveryCommitment,
 } from '../../../src/identity/RecoveryPhrase.js';
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('Key Lifecycle Integration', () => {
   let tmpDir: string;
@@ -37,8 +38,7 @@ describe('Key Lifecycle Integration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/identity/key-lifecycle.test.ts:41' });
   });
 
   describe('create → persist → reload → sign/verify', () => {

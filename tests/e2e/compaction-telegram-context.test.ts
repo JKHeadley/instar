@@ -15,6 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Compaction & Telegram context recovery E2E', () => {
   let tmpDir: string;
@@ -38,8 +39,7 @@ describe('Compaction & Telegram context recovery E2E', () => {
   });
 
   afterAll(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/compaction-telegram-context.test.ts:42' });
   });
 
   describe('Unanswered detection algorithm (Python parity)', () => {

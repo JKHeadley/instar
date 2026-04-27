@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TelegramAdapter', () => {
   let adapter: TelegramAdapter;
@@ -19,8 +20,7 @@ describe('TelegramAdapter', () => {
 
   afterEach(async () => {
     await adapter.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter.test.ts:23' });
   });
 
   it('has correct platform name', () => {

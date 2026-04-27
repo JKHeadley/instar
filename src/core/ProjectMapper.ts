@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 export interface ProjectMapConfig {
   /** Project root directory */
@@ -258,12 +259,9 @@ export class ProjectMapper {
 
   private detectGitRemote(): string | null {
     try {
-      // safe-git-allow: incremental-migration
-      const result = execFileSync('git', ['remote', 'get-url', 'origin'], {
-        cwd: this.config.projectDir,
+      const result = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: this.config.projectDir,
         encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+        stdio: 'pipe', operation: 'src/core/ProjectMapper.ts:262' });
       return result.trim() || null;
     } catch {
       // @silent-fallback-ok — git remote detection
@@ -273,12 +271,9 @@ export class ProjectMapper {
 
   private detectGitBranch(): string | null {
     try {
-      // safe-git-allow: incremental-migration
-      const result = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-        cwd: this.config.projectDir,
+      const result = SafeGitExecutor.readSync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: this.config.projectDir,
         encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+        stdio: 'pipe', operation: 'src/core/ProjectMapper.ts:277' });
       return result.trim() || null;
     } catch {
       // @silent-fallback-ok — git branch detection

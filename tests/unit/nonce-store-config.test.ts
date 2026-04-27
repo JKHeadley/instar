@@ -14,6 +14,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { NonceStore } from '../../src/core/NonceStore.js';
 import type { NonceStoreConfig } from '../../src/core/NonceStore.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function freshDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'nonce-config-'));
@@ -33,8 +34,7 @@ describe('NonceStore configurable parameters', () => {
 
   afterEach(() => {
     store?.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/nonce-store-config.test.ts:37' });
   });
 
   // ── Timestamp Window Configuration ──────────────────────────────

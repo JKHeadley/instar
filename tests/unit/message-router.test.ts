@@ -23,6 +23,7 @@ import { MessageDelivery } from '../../src/messaging/MessageDelivery.js';
 import { MessageFormatter } from '../../src/messaging/MessageFormatter.js';
 import type { AgentMessage, MessageEnvelope, SendMessageOptions } from '../../src/messaging/types.js';
 import { DEFAULT_TTL } from '../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -31,8 +32,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/message-router.test.ts:35' });
 }
 
 // Mock tmux ops that always succeed

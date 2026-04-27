@@ -12,6 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ExecutionJournal } from '../../src/core/ExecutionJournal.js';
 import { PatternAnalyzer } from '../../src/core/PatternAnalyzer.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Generate timestamps relative to now to stay within the 30-day analysis window.
 function daysAgo(n: number): string {
@@ -30,8 +31,7 @@ describe('ExecutionJournal Lifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/execution-journal-lifecycle.test.ts:34' });
   });
 
   it('full lifecycle: capture → finalize → read → stats → retention', () => {

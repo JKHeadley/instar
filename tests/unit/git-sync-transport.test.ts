@@ -28,6 +28,7 @@ import {
 } from '../../src/messaging/GitSyncTransport.js';
 import { MessageStore } from '../../src/messaging/MessageStore.js';
 import type { MessageEnvelope, AgentMessage } from '../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -100,8 +101,7 @@ describe('GitSyncTransport', () => {
 
   afterEach(async () => {
     await store.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tempDir, { recursive: true, force: true, operation: 'tests/unit/git-sync-transport.test.ts:104' });
   });
 
   // ── Inbound Pickup ──────────────────────────────────────────
@@ -307,8 +307,7 @@ describe('GitSyncTransport', () => {
       expect(fs.existsSync(testFile)).toBe(false);
 
       // Clean up test dir
-      // safe-git-allow: incremental-migration
-      fs.rmSync(outboundDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(outboundDir, { recursive: true, force: true, operation: 'tests/unit/git-sync-transport.test.ts:311' });
     });
 
     it('returns false when file does not exist', () => {

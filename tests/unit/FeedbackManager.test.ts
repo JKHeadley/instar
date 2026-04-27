@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { FeedbackManager } from '../../src/core/FeedbackManager.js';
 import type { FeedbackConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('FeedbackManager', () => {
   let tmpDir: string;
@@ -23,8 +24,7 @@ describe('FeedbackManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/FeedbackManager.test.ts:27' });
   });
 
   describe('submit', () => {

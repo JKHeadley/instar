@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // Core (Phases 1-3)
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
@@ -249,8 +250,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/threadline/ThreadlineFullStack.test.ts:253' });
 });
 
 // ══════════════════════════════════════════════════════════════════════

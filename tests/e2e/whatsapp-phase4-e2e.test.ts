@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import { WhatsAppAdapter, type BackendCapabilities } from '../../src/messaging/WhatsAppAdapter.js';
 import { MessageBridge } from '../../src/messaging/shared/MessageBridge.js';
 import { MessagingEventBus } from '../../src/messaging/shared/MessagingEventBus.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Phase 4: UX Signals, QR Code, Message Bridge — E2E', () => {
   let tmpDir: string;
@@ -27,8 +28,7 @@ describe('Phase 4: UX Signals, QR Code, Message Bridge — E2E', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/whatsapp-phase4-e2e.test.ts:31' });
   });
 
   function createTestAdapter(overrides: Record<string, unknown> = {}): WhatsAppAdapter {

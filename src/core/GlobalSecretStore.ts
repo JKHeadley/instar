@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -427,10 +428,8 @@ export class GlobalSecretStore {
 
   /** Destroy all stored secrets and keys. For testing only. */
   destroy(): void {
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(this.encryptedFile)) fs.unlinkSync(this.encryptedFile);
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(this.keyFile)) fs.unlinkSync(this.keyFile);
+    if (fs.existsSync(this.encryptedFile)) SafeFsExecutor.safeUnlinkSync(this.encryptedFile, { operation: 'src/core/GlobalSecretStore.ts:431' });
+    if (fs.existsSync(this.keyFile)) SafeFsExecutor.safeUnlinkSync(this.keyFile, { operation: 'src/core/GlobalSecretStore.ts:433' });
     this.masterKey = null;
   }
 }

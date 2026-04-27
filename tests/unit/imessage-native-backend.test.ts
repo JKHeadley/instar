@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { NativeBackend } from '../../src/messaging/imessage/NativeBackend.js';
 import type { IMessageIncoming } from '../../src/messaging/imessage/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Apple Cocoa epoch offset (2001-01-01 in Unix seconds)
 const APPLE_EPOCH = 978307200;
@@ -136,8 +137,7 @@ describe('Feature: NativeBackend reads Messages database', () => {
 
   afterEach(() => {
     try { testDb.close(); } catch { /* */ }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/imessage-native-backend.test.ts:140' });
   });
 
   describe('Scenario: Connects to database and reads initial state', () => {

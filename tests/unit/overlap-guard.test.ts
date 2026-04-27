@@ -14,6 +14,7 @@ import os from 'node:os';
 import { WorkLedger } from '../../src/core/WorkLedger.js';
 import { OverlapGuard } from '../../src/core/OverlapGuard.js';
 import type { OverlapCheckResult, OverlapAction } from '../../src/core/OverlapGuard.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ──────────────────────────────────────────────────────
 
@@ -30,8 +31,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/overlap-guard.test.ts:34' });
 });
 
 function makeGuard(overrides: Partial<Parameters<typeof OverlapGuard.prototype.check>[0]> & {

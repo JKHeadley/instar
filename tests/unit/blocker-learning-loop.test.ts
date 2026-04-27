@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BlockerLearningLoop, type BlockerResolution } from '../../src/core/BlockerLearningLoop.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,8 +45,7 @@ function setup(jobs: unknown[] = [baseJob]) {
 }
 
 function teardown() {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/blocker-learning-loop.test.ts:48' });
 }
 
 function makeResolution(overrides?: Partial<BlockerResolution>): BlockerResolution {

@@ -16,6 +16,7 @@ import { ContextSnapshotBuilder } from '../../src/core/ContextSnapshotBuilder.js
 import { DispatchDecisionJournal } from '../../src/core/DispatchDecisionJournal.js';
 import type { Dispatch } from '../../src/core/DispatchManager.js';
 import type { SignedDispatch } from '../../src/core/DispatchVerifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function generateKeyPair() {
   return crypto.generateKeyPairSync('ed25519', {
@@ -84,8 +85,7 @@ describe('Dispatch Verification + Filter Pipeline', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/dispatch-verification-filter.test.ts:88' });
   });
 
   /**

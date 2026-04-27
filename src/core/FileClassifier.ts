@@ -12,6 +12,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -295,16 +296,10 @@ export class FileClassifier {
       const manifestPath = path.join(this.projectDir, classification.manifestFile);
       if (fs.existsSync(manifestPath)) {
         try {
-          // safe-git-allow: incremental-migration
-          execFileSync('git', ['checkout', '--ours', classification.manifestFile], {
-            cwd: this.projectDir,
-            stdio: 'pipe',
-          });
-          // safe-git-allow: incremental-migration
-          execFileSync('git', ['add', classification.manifestFile], {
-            cwd: this.projectDir,
-            stdio: 'pipe',
-          });
+          SafeGitExecutor.execSync(['checkout', '--ours', classification.manifestFile], { cwd: this.projectDir,
+            stdio: 'pipe', operation: 'src/core/FileClassifier.ts:299' });
+          SafeGitExecutor.execSync(['add', classification.manifestFile], { cwd: this.projectDir,
+            stdio: 'pipe', operation: 'src/core/FileClassifier.ts:304' });
         } catch {
           // @silent-fallback-ok — manifest checkout is pre-regen prep; regen will recreate it anyway
         }
@@ -323,11 +318,8 @@ export class FileClassifier {
 
         // Stage the regenerated lockfile
         const relPath = path.relative(this.projectDir, filePath);
-        // safe-git-allow: incremental-migration
-        execFileSync('git', ['add', relPath], {
-          cwd: this.projectDir,
-          stdio: 'pipe',
-        });
+        SafeGitExecutor.execSync(['add', relPath], { cwd: this.projectDir,
+          stdio: 'pipe', operation: 'src/core/FileClassifier.ts:327' });
 
         return { success: true, command: cmd };
       } catch {
@@ -445,11 +437,7 @@ export class FileClassifier {
 
   private getStageHash(relPath: string, stage: number): string | null {
     try {
-      // safe-git-allow: incremental-migration
-      const output = execFileSync(
-        'git', ['ls-files', '-s', '--', relPath],
-        { cwd: this.projectDir, encoding: 'utf-8', stdio: 'pipe' },
-      );
+      const output = SafeGitExecutor.readSync(['ls-files', '-s', '--', relPath], { cwd: this.projectDir, encoding: 'utf-8', stdio: 'pipe', operation: 'src/core/FileClassifier.ts:449' });
       // Output: "mode hash stage\tfilename" — one line per stage
       for (const line of output.trim().split('\n')) {
         const parts = line.trim().split(/\s+/);

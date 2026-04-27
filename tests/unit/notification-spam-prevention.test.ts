@@ -19,6 +19,7 @@ import type { Session, JobDefinition, SessionManagerConfig } from '../../src/cor
 import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Factories ──────────────────────────────────────────────
 
@@ -88,8 +89,7 @@ describe('AutoUpdater loop prevention', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/notification-spam-prevention.test.ts:92' });
   });
 
   it('does NOT re-apply when lastAppliedVersion matches latest', async () => {
@@ -261,8 +261,7 @@ describe('Job quiet mode (on-alert)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/notification-spam-prevention.test.ts:265' });
   });
 
   function injectJobs(jobs: Partial<JobDefinition>[]): void {

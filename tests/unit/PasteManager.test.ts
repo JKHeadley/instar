@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PasteManager, PasteError } from '../../src/paste/PasteManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('PasteManager', () => {
   let tmpDir: string;
@@ -29,8 +30,7 @@ describe('PasteManager', () => {
 
   afterEach(() => {
     manager.shutdown();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/PasteManager.test.ts:33' });
   });
 
   // ── Creation ──────────────────────────────────────────────────

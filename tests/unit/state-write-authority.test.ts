@@ -15,6 +15,7 @@ import {
   type WriteToken,
   type WriteOperation,
 } from '../../src/core/StateWriteAuthority.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── generateWriteToken ──────────────────────────────────────────────
 
@@ -154,10 +155,8 @@ describe('OfflineQueue', () => {
 
   afterEach(() => {
     process.env.HOME = originalHome;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpHome, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/state-write-authority.test.ts:158' });
+    SafeFsExecutor.safeRmSync(tmpHome, { recursive: true, force: true, operation: 'tests/unit/state-write-authority.test.ts:160' });
   });
 
   it('enqueue succeeds for non-escalating operations', () => {

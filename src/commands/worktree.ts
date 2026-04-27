@@ -15,6 +15,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
 import { WorktreeKeyVault } from '../core/WorktreeKeyVault.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface RegisterKeypairOptions {
   /** Path to the Ed25519 private-key PEM (pkcs8). Usually the `.NEW` file
@@ -81,8 +82,7 @@ export async function registerKeypair(opts: RegisterKeypairOptions): Promise<voi
     try {
       // Overwrite with zero-length before unlink — best-effort scrub.
       fs.writeFileSync(privAbs, '');
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(privAbs);
+      SafeFsExecutor.safeUnlinkSync(privAbs, { operation: 'src/commands/worktree.ts:85' });
     } catch (err) {
       console.error(pc.yellow(`  warning: could not delete input file ${privAbs}: ${(err as Error).message}`));
     }

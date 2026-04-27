@@ -25,6 +25,7 @@ import crypto from 'node:crypto';
 import { NativeBackend } from '../../src/messaging/imessage/NativeBackend.js';
 import { IMessageAdapter } from '../../src/messaging/imessage/IMessageAdapter.js';
 import type { IMessageIncoming } from '../../src/messaging/imessage/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Apple Cocoa epoch offset (2001-01-01 in Unix seconds)
 const APPLE_EPOCH = 978307200;
@@ -128,8 +129,7 @@ describe('Fix 1: lastRowId persistence across restarts', () => {
 
   afterEach(() => {
     try { testDb.close(); } catch { /* */ }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-review-blockers.test.ts:132' });
   });
 
   it('persists lastRowId to disk after processing messages', async () => {
@@ -340,8 +340,7 @@ describe('Authorization normalization', () => {
 
   afterEach(() => {
     try { testDb.close(); } catch { /* */ }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-review-blockers.test.ts:344' });
   });
 
   it('authorizedSenders is case-insensitive', () => {
@@ -391,8 +390,7 @@ describe('Full adapter lifecycle with mock database', () => {
 
   afterEach(() => {
     try { testDb.close(); } catch { /* */ }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-review-blockers.test.ts:395' });
   });
 
   it('start → receive message → stop full cycle', async () => {

@@ -24,6 +24,7 @@ import crypto from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
 import type { ComponentHealth } from '../core/types.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -903,8 +904,7 @@ export class CommitmentTracker extends EventEmitter {
       } else {
         // No active commitments — remove the file so hooks skip injection
         if (fs.existsSync(this.rulesPath)) {
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(this.rulesPath);
+          SafeFsExecutor.safeUnlinkSync(this.rulesPath, { operation: 'src/monitoring/CommitmentTracker.ts:907' });
         }
       }
     } catch {

@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ExecutionJournal } from '../../src/core/ExecutionJournal.js';
 import type { PendingStep, ExecutionStep } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('ExecutionJournal', () => {
   let tmpDir: string;
@@ -32,8 +33,7 @@ describe('ExecutionJournal', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/ExecutionJournal.test.ts:36' });
     vi.restoreAllMocks();
   });
 

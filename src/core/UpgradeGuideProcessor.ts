@@ -32,6 +32,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface UpgradeGuideResult {
   /** Guides that were found and are pending processing by the agent */
@@ -286,8 +287,7 @@ export class UpgradeGuideProcessor {
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
       fs.renameSync(tmpPath, this.processedFile);
     } catch {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/UpgradeGuideProcessor.ts:290' }); } catch { /* ignore */ }
     }
   }
 
@@ -297,8 +297,7 @@ export class UpgradeGuideProcessor {
   private cleanPendingGuide(): void {
     try {
       if (fs.existsSync(this.pendingGuidePath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(this.pendingGuidePath);
+        SafeFsExecutor.safeUnlinkSync(this.pendingGuidePath, { operation: 'src/core/UpgradeGuideProcessor.ts:301' });
       }
     } catch {
       // @silent-fallback-ok — cleanup, file persists

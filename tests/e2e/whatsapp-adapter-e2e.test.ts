@@ -28,6 +28,7 @@ import {
   createAdapter,
   clearRegistry,
 } from '../../src/messaging/AdapterRegistry.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Phase 2: WhatsApp Adapter — E2E', () => {
   let tmpDir: string;
@@ -37,8 +38,7 @@ describe('Phase 2: WhatsApp Adapter — E2E', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/whatsapp-adapter-e2e.test.ts:41' });
     clearRegistry();
   });
 

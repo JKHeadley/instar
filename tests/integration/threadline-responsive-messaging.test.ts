@@ -26,14 +26,14 @@ import type { ThreadlineMessage } from '../../src/threadline/types.js';
 import type { AgentTrustManager, AgentTrustLevel } from '../../src/threadline/AgentTrustManager.js';
 import type { ReceivedMessage } from '../../src/threadline/client/ThreadlineClient.js';
 import type { PlaintextMessage } from '../../src/threadline/client/MessageEncryptor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function createTempDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threadline-e2e-'));
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/threadline-responsive-messaging.test.ts:36' }) };
 }
 
 function createMockTrustManager(defaultLevel: AgentTrustLevel = 'verified'): AgentTrustManager & { _overrides: Map<string, AgentTrustLevel> } {

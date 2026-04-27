@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { JobReflector } from '../../src/core/JobReflector.js';
 import type { IntelligenceProvider, ExecutionRecord } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeRecord(overrides: Partial<ExecutionRecord> = {}): ExecutionRecord {
   return {
@@ -72,8 +73,7 @@ describe('JobReflector', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/JobReflector.test.ts:76' });
   });
 
   // ─── No Provider ──────────────────────────────────────────────────

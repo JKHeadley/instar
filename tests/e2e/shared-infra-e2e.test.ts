@@ -24,6 +24,7 @@ import { StallDetector } from '../../src/messaging/shared/StallDetector.js';
 import { CommandRouter } from '../../src/messaging/shared/CommandRouter.js';
 import { AuthGate } from '../../src/messaging/shared/AuthGate.js';
 import { MessagingEventBus } from '../../src/messaging/shared/MessagingEventBus.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const originalFlags = { ...SHARED_INFRA_FLAGS };
 
@@ -37,8 +38,7 @@ describe('Phase 1 Shared Infrastructure — E2E', () => {
 
   afterEach(() => {
     Object.assign(SHARED_INFRA_FLAGS, originalFlags);
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/shared-infra-e2e.test.ts:41' });
   });
 
   // ══════════════════════════════════════════════════════════

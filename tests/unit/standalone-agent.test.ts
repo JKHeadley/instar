@@ -16,14 +16,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-standalone-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/standalone-agent.test.ts:26' });
 }
 
 describe('Standalone Agent', () => {

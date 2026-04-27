@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { initProject } from '../../src/commands/init.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Hook installation for external operation safety', () => {
   let tmpDir: string;
@@ -33,8 +34,7 @@ describe('Hook installation for external operation safety', () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/hook-installation.test.ts:37' });
   });
 
   it('installs external-operation-gate.js hook', () => {
@@ -191,8 +191,7 @@ describe('Hook installation for external operation safety', () => {
       // Script must exit cleanly (it ignores network failures by design)
       expect(result.status).toBe(0);
     } finally {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(esmHost, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(esmHost, { recursive: true, force: true, operation: 'tests/unit/hook-installation.test.ts:195' });
     }
   });
 

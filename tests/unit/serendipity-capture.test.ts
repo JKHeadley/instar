@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Setup ──────────────────────────────────────────────────
 
@@ -104,15 +105,13 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/serendipity-capture.test.ts:108' });
 });
 
 beforeEach(() => {
   // Clean serendipity directory between tests
   if (fs.existsSync(serendipityDir)) {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(serendipityDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(serendipityDir, { recursive: true, force: true, operation: 'tests/unit/serendipity-capture.test.ts:115' });
   }
 });
 

@@ -27,6 +27,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 export interface CompactionHarnessOptions {
   /** Agent identity name to write into AGENT.md. Defaults to 'TestAgent'. */
@@ -107,12 +109,9 @@ export function createCompactionHarness(options: CompactionHarnessOptions = {}):
 
   // ── 1. Initialize project tree + git repo ──────────────────────────
   fs.mkdirSync(projectDir, { recursive: true });
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'init', '-q', '-b', 'main']);
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'harness@instar.local']);
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Compaction Harness']);
+  SafeGitExecutor.execSync(['-C', projectDir, 'init', '-q', '-b', 'main'], { operation: 'tests/e2e/compaction-harness.ts:111' });
+  SafeGitExecutor.execSync(['-C', projectDir, 'config', 'user.email', 'harness@instar.local'], { operation: 'tests/e2e/compaction-harness.ts:113' });
+  SafeGitExecutor.execSync(['-C', projectDir, 'config', 'user.name', 'Compaction Harness'], { operation: 'tests/e2e/compaction-harness.ts:115' });
 
   // ── 2. Identity files ──────────────────────────────────────────────
   fs.writeFileSync(
@@ -168,20 +167,13 @@ export function createCompactionHarness(options: CompactionHarnessOptions = {}):
     const planAbs = path.join(projectDir, options.planFile.relativePath);
     fs.mkdirSync(path.dirname(planAbs), { recursive: true });
     fs.writeFileSync(planAbs, options.planFile.content);
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['-C', projectDir, 'add', options.planFile.relativePath]);
-    // safe-git-allow: incremental-migration
-    execFileSync(
-      'git',
-      ['-C', projectDir, 'commit', '-q', '-m', `plan: ${options.planFile.relativePath}`]
-    );
+    SafeGitExecutor.execSync(['-C', projectDir, 'add', options.planFile.relativePath], { operation: 'tests/e2e/compaction-harness.ts:172' });
+    SafeGitExecutor.execSync(['-C', projectDir, 'commit', '-q', '-m', `plan: ${options.planFile.relativePath}`], { operation: 'tests/e2e/compaction-harness.ts:174' });
   }
 
   // ── 6. Also commit identity files so they're "durable" per the spec
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'add', 'AGENT.md', 'MEMORY.md', 'USER.md', '.instar/config.json']);
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'commit', '-q', '-m', 'harness: identity + config']);
+  SafeGitExecutor.execSync(['-C', projectDir, 'add', 'AGENT.md', 'MEMORY.md', 'USER.md', '.instar/config.json'], { operation: 'tests/e2e/compaction-harness.ts:182' });
+  SafeGitExecutor.execSync(['-C', projectDir, 'commit', '-q', '-m', 'harness: identity + config'], { operation: 'tests/e2e/compaction-harness.ts:184' });
 
   return {
     projectDir,
@@ -192,13 +184,8 @@ export function createCompactionHarness(options: CompactionHarnessOptions = {}):
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, content);
       if (opts?.commit) {
-        // safe-git-allow: incremental-migration
-        execFileSync('git', ['-C', projectDir, 'add', relativePath]);
-        // safe-git-allow: incremental-migration
-        execFileSync(
-          'git',
-          ['-C', projectDir, 'commit', '-q', '-m', opts.commitMessage ?? `write: ${relativePath}`]
-        );
+        SafeGitExecutor.execSync(['-C', projectDir, 'add', relativePath], { operation: 'tests/e2e/compaction-harness.ts:196' });
+        SafeGitExecutor.execSync(['-C', projectDir, 'commit', '-q', '-m', opts.commitMessage ?? `write: ${relativePath}`], { operation: 'tests/e2e/compaction-harness.ts:198' });
       }
     },
 
@@ -257,8 +244,7 @@ export function createCompactionHarness(options: CompactionHarnessOptions = {}):
       if (tornDown) return;
       tornDown = true;
       try {
-        // safe-git-allow: incremental-migration
-        fs.rmSync(tmp, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/compaction-harness.ts:261' });
       } catch {
         // best-effort; harness cleanup should not break tests
       }

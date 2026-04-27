@@ -31,6 +31,7 @@ import type { Permission } from '../../src/core/AccessControl.js';
 import { AuditTrail } from '../../src/core/AuditTrail.js';
 import { generateSigningKeyPair } from '../../src/core/MachineIdentity.js';
 import type { LedgerEntry } from '../../src/core/WorkLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -40,8 +41,7 @@ function createTempStateDir(prefix: string): string {
 
 function cleanupDir(dir: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/security-lifecycle.test.ts:44' });
   } catch {
     // Best-effort cleanup
   }

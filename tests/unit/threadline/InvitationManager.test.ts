@@ -5,6 +5,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { InvitationManager } from '../../../src/threadline/InvitationManager.js';
 import type { InvitationStatus } from '../../../src/threadline/InvitationManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('InvitationManager', () => {
   let tmpDir: string;
@@ -18,8 +19,7 @@ describe('InvitationManager', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/InvitationManager.test.ts:22' });
   });
 
   // ── 1. Constructor ──────────────────────────────────────────────
@@ -289,8 +289,7 @@ describe('InvitationManager', () => {
         const result = manager2.validate(token);
         expect(result.status).toBe('invalid-hmac');
       } finally {
-        // safe-git-allow: incremental-migration
-        fs.rmSync(tmpDir2, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(tmpDir2, { recursive: true, force: true, operation: 'tests/unit/threadline/InvitationManager.test.ts:293' });
       }
     });
   });
@@ -541,8 +540,7 @@ describe('InvitationManager', () => {
     it('handles missing invitations.json gracefully (empty state)', () => {
       manager.create();
       const filePath = path.join(tmpDir, 'threadline', 'invitations.json');
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(filePath);
+      SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'tests/unit/threadline/InvitationManager.test.ts:545' });
       manager.reload();
       expect(manager.list()).toEqual([]);
     });

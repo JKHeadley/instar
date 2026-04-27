@@ -32,6 +32,7 @@ import {
   recordFormatLintIssue,
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -2840,8 +2841,7 @@ export class TelegramAdapter implements MessagingAdapter {
           fs.writeFileSync(tmpPath, kept.join('\n') + '\n');
           fs.renameSync(tmpPath, this.messageLogPath);
         } catch (rotateErr) {
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:2844' }); } catch { /* ignore */ }
           throw rotateErr;
         }
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
@@ -3086,8 +3086,7 @@ export class TelegramAdapter implements MessagingAdapter {
         fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
         fs.renameSync(tmpPath, this.registryPath);
       } catch (writeErr) {
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:3090' }); } catch { /* ignore */ }
         throw writeErr;
       }
     } catch (err) {
@@ -3124,8 +3123,7 @@ export class TelegramAdapter implements MessagingAdapter {
         fs.writeFileSync(tmpPath, JSON.stringify({ lastUpdateId: this.lastUpdateId }));
         fs.renameSync(tmpPath, this.offsetPath);
       } catch (writeErr) {
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:3128' }); } catch { /* ignore */ }
         throw writeErr;
       }
     } catch (err) {
@@ -3473,8 +3471,7 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.sendToTopic(topicId, replyText).catch(() => {});
     } finally {
       // Clean up voice file after processing
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(filepath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/messaging/TelegramAdapter.ts:3477' }); } catch { /* ignore */ }
     }
   }
 

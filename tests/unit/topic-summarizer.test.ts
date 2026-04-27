@@ -18,6 +18,7 @@ import os from 'node:os';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import { TopicSummarizer, buildSummaryPrompt } from '../../src/memory/TopicSummarizer.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Mock intelligence provider that captures prompts
 function createMockIntelligence(response: string = 'Mock summary of the conversation.'): IntelligenceProvider & { _calls: Array<{ prompt: string; options?: IntelligenceOptions }> } {
@@ -43,8 +44,7 @@ describe('TopicSummarizer', () => {
 
   afterEach(() => {
     topicMemory.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/topic-summarizer.test.ts:47' });
   });
 
   // Helper: insert N messages into a topic

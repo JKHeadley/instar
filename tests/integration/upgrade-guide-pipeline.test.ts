@@ -28,6 +28,7 @@ import {
   UpgradeNotifyManager,
   type UpgradeNotifyConfig,
 } from '../../src/core/UpgradeNotifyManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Upgrade guide delivery pipeline', () => {
   let tmpDir: string;
@@ -74,8 +75,7 @@ Added hybrid search combining keyword and vector, plus MEMORY.md export from sem
   });
 
   afterAll(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/upgrade-guide-pipeline.test.ts:78' });
   });
 
   function createProcessor(opts: {
@@ -117,11 +117,9 @@ Added hybrid search combining keyword and vector, plus MEMORY.md export from sem
   // 2. NEXT.md ignored
   it('NEXT.md is not delivered as an upgrade guide', () => {
     // Clean state
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(pendingPath())) fs.unlinkSync(pendingPath());
+    if (fs.existsSync(pendingPath())) SafeFsExecutor.safeUnlinkSync(pendingPath(), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:121' });
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:124' });
 
     // Only write NEXT.md (no versioned file)
     fs.writeFileSync(path.join(upgradesDir, 'NEXT.md'), `# Next Guide
@@ -138,8 +136,7 @@ Something new.
     // Remove versioned guides
     for (const f of fs.readdirSync(upgradesDir)) {
       if (/^\d+\.\d+\.\d+\.md$/.test(f)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(path.join(upgradesDir, f));
+        SafeFsExecutor.safeUnlinkSync(path.join(upgradesDir, f), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:142' });
       }
     }
 
@@ -154,10 +151,8 @@ Something new.
   it('delivers only guides between previousVersion and currentVersion', () => {
     // Clean state
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(pendingPath())) fs.unlinkSync(pendingPath());
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:158' });
+    if (fs.existsSync(pendingPath())) SafeFsExecutor.safeUnlinkSync(pendingPath(), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:160' });
 
     writeGuide('0.9.80', `# Guide v0.9.80
 ## What Changed
@@ -189,8 +184,7 @@ Old feature.
   it('upgrade-ack (clearPendingGuide) removes the pending file', () => {
     // Clean state
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:193' });
 
     writeGuide('0.9.86', GUIDE_V86);
 
@@ -209,8 +203,7 @@ Old feature.
   it('after ack, re-processing finds nothing new (guides marked as processed)', () => {
     // Clean state
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:213' });
 
     writeGuide('0.9.86', GUIDE_V86);
 
@@ -230,8 +223,7 @@ Old feature.
   it('pending guide survives failed notification (not deleted by processor)', async () => {
     // Clean state
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:234' });
 
     writeGuide('0.9.86', GUIDE_V86);
 
@@ -289,13 +281,10 @@ Old feature.
   it('sequential version bumps each deliver their own guide exactly once', () => {
     // Clean ALL state including guide files from previous tests
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(pendingPath())) fs.unlinkSync(pendingPath());
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:293' });
+    if (fs.existsSync(pendingPath())) SafeFsExecutor.safeUnlinkSync(pendingPath(), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:295' });
     for (const f of fs.readdirSync(upgradesDir)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(upgradesDir, f));
+      SafeFsExecutor.safeUnlinkSync(path.join(upgradesDir, f), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:298' });
     }
 
     // First update: 0.9.84 → 0.9.85
@@ -325,13 +314,10 @@ Old feature.
   it('pending guide includes header with guide count', () => {
     // Clean ALL state including guide files from previous tests
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(pendingPath())) fs.unlinkSync(pendingPath());
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:329' });
+    if (fs.existsSync(pendingPath())) SafeFsExecutor.safeUnlinkSync(pendingPath(), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:331' });
     for (const f of fs.readdirSync(upgradesDir)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(upgradesDir, f));
+      SafeFsExecutor.safeUnlinkSync(path.join(upgradesDir, f), { operation: 'tests/integration/upgrade-guide-pipeline.test.ts:334' });
     }
 
     writeGuide('0.9.85', GUIDE_V85);

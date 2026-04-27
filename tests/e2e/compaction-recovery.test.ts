@@ -31,6 +31,7 @@ import {
   createCompactionHarness,
   type CompactionHarnessHandle,
 } from './compaction-harness.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 describe('e2e compaction-recovery — structural invariants (spec § (c))', () => {
   let harness: CompactionHarnessHandle | null = null;
@@ -93,23 +94,13 @@ describe('e2e compaction-recovery — structural invariants (spec § (c))', () =
 
     const planAbs = path.join(harness.projectDir, 'docs/slice-plan.md');
     const contentBefore = fs.readFileSync(planAbs, 'utf-8');
-    // safe-git-allow: incremental-migration
-    const commitBefore = execFileSync(
-      'git',
-      ['-C', harness.projectDir, 'rev-parse', 'HEAD'],
-      { encoding: 'utf-8' }
-    ).trim();
+    const commitBefore = SafeGitExecutor.readSync(['-C', harness.projectDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', operation: 'tests/e2e/compaction-recovery.test.ts:97' }).trim();
 
     const result = harness.runCompactionRecovery();
     expect(result.exitCode).toBe(0);
 
     const contentAfter = fs.readFileSync(planAbs, 'utf-8');
-    // safe-git-allow: incremental-migration
-    const commitAfter = execFileSync(
-      'git',
-      ['-C', harness.projectDir, 'rev-parse', 'HEAD'],
-      { encoding: 'utf-8' }
-    ).trim();
+    const commitAfter = SafeGitExecutor.readSync(['-C', harness.projectDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', operation: 'tests/e2e/compaction-recovery.test.ts:108' }).trim();
 
     expect(contentAfter).toBe(contentBefore);
     expect(commitAfter).toBe(commitBefore);

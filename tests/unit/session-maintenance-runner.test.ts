@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SessionMaintenanceRunner } from '../../src/core/SessionMaintenanceRunner.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('SessionMaintenanceRunner', () => {
   let tmpDir: string;
@@ -12,8 +13,7 @@ describe('SessionMaintenanceRunner', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/session-maintenance-runner.test.ts:16' });
   });
 
   it('returns empty result when nothing needs maintenance', async () => {

@@ -18,6 +18,7 @@ import os from 'node:os';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import { TopicSummarizer, buildSummaryPrompt, parsePurposeFromResponse } from '../../src/memory/TopicSummarizer.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createMockIntelligence(response: string): IntelligenceProvider & { _calls: Array<{ prompt: string; options?: IntelligenceOptions }> } {
   const calls: Array<{ prompt: string; options?: IntelligenceOptions }> = [];
@@ -42,8 +43,7 @@ describe('Topic Purpose Awareness', () => {
 
   afterEach(() => {
     topicMemory.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/topic-purpose-awareness.test.ts:46' });
   });
 
   function insertMessages(topicId: number, count: number) {

@@ -29,6 +29,7 @@ import type { RetryConfig, OAuthUsageResponse } from '../../src/monitoring/Quota
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ────────────────────────────────────────────────────
 
@@ -324,8 +325,7 @@ describe('JsonlParser', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-collector.test.ts:328' });
   });
 
   describe('findFiles', () => {
@@ -510,8 +510,7 @@ describe('QuotaCollector', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-collector.test.ts:514' });
   });
 
   it('collects via OAuth API and updates tracker', async () => {

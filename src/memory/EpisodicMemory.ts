@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -344,8 +345,7 @@ export class EpisodicMemory {
    */
   removePending(sessionId: string, pendingId: string): void {
     const filePath = path.join(this.pendingDir, sessionId, `${pendingId}.json`);
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (fs.existsSync(filePath)) SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/memory/EpisodicMemory.ts:348' });
   }
 
   /**

@@ -35,6 +35,7 @@ import {
   type RestartHistoryEntry,
 } from '../../../src/lifeline/rateLimitState.js';
 import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 type RestartOutcome = 'exited' | 'suppressed';
 
@@ -167,8 +168,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   try {
     if (harness?.stateDir && fs.existsSync(harness.stateDir)) {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(harness.stateDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(harness.stateDir, { recursive: true, force: true, operation: 'tests/integration/lifeline/stage-c-chaos.test.ts:171' });
     }
   } catch {
     /* best effort */

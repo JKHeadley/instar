@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PrivateViewer } from '../../src/publishing/PrivateViewer.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('PrivateViewer', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('PrivateViewer', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/PrivateViewer.test.ts:18' });
   });
 
   it('creates a view without metadata', () => {

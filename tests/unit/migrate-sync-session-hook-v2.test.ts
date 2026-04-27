@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { syncSessionHook } from '../../src/commands/migrate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeProject(): { projectDir: string; stateDir: string; hookPath: string } {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v2-sync-hook-test-'));
@@ -42,8 +43,7 @@ describe('sync-session-hook --v2-mode=inject', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(project.projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(project.projectDir, { recursive: true, force: true, operation: 'tests/unit/migrate-sync-session-hook-v2.test.ts:46' });
   });
 
   it('writes the canonical template on fresh install (no existing hook)', async () => {
@@ -130,8 +130,7 @@ describe('sync-session-hook --v2-mode=overwrite', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(project.projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(project.projectDir, { recursive: true, force: true, operation: 'tests/unit/migrate-sync-session-hook-v2.test.ts:134' });
   });
 
   it('saves a pre-v2 backup when an existing hook is present', async () => {

@@ -3,6 +3,7 @@ import { detectTmuxPath, detectClaudePath, loadConfig } from '../../src/core/Con
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Config', () => {
   describe('detectTmuxPath', () => {
@@ -44,8 +45,7 @@ describe('Config', () => {
       expect(config.sessions.claudePath).toBe(customClaudePath);
 
       // Cleanup
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:48' });
     });
 
     it('respects sessions.tmuxPath from config.json instead of auto-detecting', () => {
@@ -65,8 +65,7 @@ describe('Config', () => {
       expect(config.sessions.tmuxPath).toBe(customTmuxPath);
 
       // Cleanup
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:69' });
     });
 
     it('falls back to auto-detected claudePath when config omits it', () => {
@@ -89,8 +88,7 @@ describe('Config', () => {
       expect(config.sessions.claudePath).toBe(detected);
 
       // Cleanup
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:93' });
     });
   });
 });

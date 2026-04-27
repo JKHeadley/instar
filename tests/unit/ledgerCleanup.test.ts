@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ledgerCleanup } from '../../src/commands/ledgerCleanup.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-cleanup-test-'));
@@ -23,8 +24,7 @@ describe('ledger cleanup', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ledgerCleanup.test.ts:27' });
   });
 
   it('refuses to delete when feature is enabled', async () => {
@@ -76,8 +76,7 @@ describe('ledger cleanup', () => {
       });
       expect(result.deleted.length).toBe(0);
     } finally {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(fresh, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(fresh, { recursive: true, force: true, operation: 'tests/unit/ledgerCleanup.test.ts:80' });
     }
   });
 });

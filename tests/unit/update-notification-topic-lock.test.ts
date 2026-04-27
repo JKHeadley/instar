@@ -22,6 +22,7 @@ import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { StateManager } from '../../src/core/StateManager.js';
 import type { DispatchManager } from '../../src/core/DispatchManager.js';
 import type { DispatchExecutor } from '../../src/core/DispatchExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function mockChecker(): UpdateChecker {
   return {
@@ -81,8 +82,7 @@ describe('update announcement topic lock', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/update-notification-topic-lock.test.ts:85' });
   });
 
   describe('AutoUpdater.notify', () => {

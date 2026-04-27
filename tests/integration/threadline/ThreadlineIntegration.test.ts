@@ -27,6 +27,7 @@ import { RateLimiter } from '../../../src/threadline/RateLimiter.js';
 import { AgentDiscovery } from '../../../src/threadline/AgentDiscovery.js';
 import type { HttpFetcher, ThreadlineAgentInfo } from '../../../src/threadline/AgentDiscovery.js';
 import type { MessageEnvelope } from '../../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -159,8 +160,7 @@ describe('Threadline Integration Tests', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:163' });
     vi.restoreAllMocks();
   });
 
@@ -1442,10 +1442,8 @@ describe('Threadline Integration Tests', () => {
       expect(rawMap[threadId].state).toBe('idle');
 
       // Clean up the fake JSONL file
-      // safe-git-allow: incremental-migration
-      fs.rmSync(jsonlPath, { force: true });
-      // safe-git-allow: incremental-migration
-      try { fs.rmdirSync(claudeProjectDir); } catch { /* may not be empty */ }
+      SafeFsExecutor.safeRmSync(jsonlPath, { force: true, operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:1446' });
+      try { SafeFsExecutor.safeRmdirSync(claudeProjectDir, { operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:1448' }); } catch { /* may not be empty */ }
     });
 
     it('onThreadResolved marks the thread as resolved', () => {
@@ -1899,10 +1897,8 @@ describe('Threadline Integration Tests', () => {
       expect(rawMap[threadId].state).toBe('failed');
 
       // Clean up
-      // safe-git-allow: incremental-migration
-      fs.rmSync(jsonlPath, { force: true });
-      // safe-git-allow: incremental-migration
-      try { fs.rmdirSync(claudeProjectDir); } catch { /* may not be empty */ }
+      SafeFsExecutor.safeRmSync(jsonlPath, { force: true, operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:1903' });
+      try { SafeFsExecutor.safeRmdirSync(claudeProjectDir, { operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:1905' }); } catch { /* may not be empty */ }
     });
 
     it('concurrent spawns for same thread are blocked', async () => {

@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createMigrator(projectDir: string): PostUpdateMigrator {
   return new PostUpdateMigrator({
@@ -68,8 +69,7 @@ describe('PostUpdateMigrator — telegram-reply.sh 408 migration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-telegramReply.test.ts:72' });
   });
 
   it('getTelegramReplyScript() returns a string that handles HTTP 408', () => {
@@ -181,8 +181,7 @@ describe('PostUpdateMigrator — slack-reply.sh 408 migration', () => {
     scriptPath = path.join(scriptsDir, 'slack-reply.sh');
   });
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-telegramReply.test.ts:185' });
   });
 
   it('upgrades the shipped-but-old slack-reply.sh to the new 408-aware version', async () => {
@@ -222,8 +221,7 @@ describe('PostUpdateMigrator — whatsapp-reply.sh 408 migration', () => {
     scriptPath = path.join(whatsappScriptsDir, 'whatsapp-reply.sh');
   });
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-telegramReply.test.ts:226' });
   });
 
   it('upgrades the shipped-but-old whatsapp-reply.sh to the new 408-aware version', async () => {

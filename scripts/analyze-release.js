@@ -28,6 +28,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SafeGitExecutor } from '../src/core/SafeGitExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -44,19 +45,16 @@ function log(msg) {
 
 function getLastReleaseTag() {
   try {
-    // safe-git-allow: incremental-migration
-    return execSync('git describe --tags --abbrev=0', { cwd: ROOT, encoding: 'utf-8' }).trim();
+    return SafeGitExecutor.readSync(['describe', '--tags', '--abbrev=0'], { cwd: ROOT, encoding: 'utf-8', operation: 'scripts/analyze-release.js:48' }).trim();
   } catch {
     // No tags at all — diff against the initial commit
-    // safe-git-allow: incremental-migration
-    return execSync('git rev-list --max-parents=0 HEAD', { cwd: ROOT, encoding: 'utf-8' }).trim();
+    return SafeGitExecutor.readSync(['rev-list', '--max-parents=0', 'HEAD'], { cwd: ROOT, encoding: 'utf-8', operation: 'scripts/analyze-release.js:52' }).trim();
   }
 }
 
 function getCommitsSinceTag(tag) {
   try {
-    // safe-git-allow: incremental-migration
-    const raw = execSync(`git log ${tag}..HEAD --oneline --no-merges`, { cwd: ROOT, encoding: 'utf-8' });
+    const raw = SafeGitExecutor.readSync(['log', `${tag}..HEAD`, '--oneline', '--no-merges'], { cwd: ROOT, encoding: 'utf-8', operation: 'scripts/analyze-release.js:getCommitsSinceTag' });
     return raw.trim().split('\n').filter(Boolean).map(line => {
       const [hash, ...rest] = line.split(' ');
       return { hash, message: rest.join(' ') };
@@ -68,8 +66,7 @@ function getCommitsSinceTag(tag) {
 
 function getDiffStat(tag) {
   try {
-    // safe-git-allow: incremental-migration
-    return execSync(`git diff ${tag}..HEAD --stat`, { cwd: ROOT, encoding: 'utf-8' }).trim();
+    return SafeGitExecutor.readSync(['diff', `${tag}..HEAD`, '--stat'], { cwd: ROOT, encoding: 'utf-8', operation: 'scripts/analyze-release.js:getDiffStat' }).trim();
   } catch {
     return '';
   }
@@ -77,8 +74,7 @@ function getDiffStat(tag) {
 
 function getChangedFiles(tag) {
   try {
-    // safe-git-allow: incremental-migration
-    const raw = execSync(`git diff ${tag}..HEAD --name-status`, { cwd: ROOT, encoding: 'utf-8' });
+    const raw = SafeGitExecutor.readSync(['diff', `${tag}..HEAD`, '--name-status'], { cwd: ROOT, encoding: 'utf-8', operation: 'scripts/analyze-release.js:getChangedFiles' });
     return raw.trim().split('\n').filter(Boolean).map(line => {
       const [status, ...pathParts] = line.split('\t');
       return { status: status.charAt(0), file: pathParts.join('\t') };
@@ -90,8 +86,7 @@ function getChangedFiles(tag) {
 
 function getFileDiff(tag, file) {
   try {
-    // safe-git-allow: incremental-migration
-    return execSync(`git diff ${tag}..HEAD -- "${file}"`, { cwd: ROOT, encoding: 'utf-8' });
+    return SafeGitExecutor.readSync(['diff', `${tag}..HEAD`, '--', file], { cwd: ROOT, encoding: 'utf-8', operation: 'scripts/analyze-release.js:getFileDiff' });
   } catch {
     return '';
   }

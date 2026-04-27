@@ -20,6 +20,7 @@ import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/t
 import { StateManager } from '../../src/core/StateManager.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Intelligence Provider ──────────────────────────────────────
 
@@ -109,8 +110,7 @@ describe('E2E: Discovery Evaluator', () => {
 
   afterAll(() => {
     registry?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/discovery-evaluator.test.ts:113' });
   });
 
   // ── Pre-Filtering ────────────────────────────────────────────────
@@ -653,8 +653,7 @@ describe('E2E: Discovery Evaluator', () => {
       expect(intelligence.callCount).toBe(0); // No LLM call
 
       emptyRegistry.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(emptyDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(emptyDir, { recursive: true, force: true, operation: 'tests/e2e/discovery-evaluator.test.ts:657' });
     });
   });
 

@@ -18,6 +18,7 @@ import {
   InitiativeTracker,
   STALE_THRESHOLD_MS,
 } from '../../src/core/InitiativeTracker.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let tmpDir: string;
 let tracker: InitiativeTracker;
@@ -28,8 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/InitiativeTracker.test.ts:32' });
 });
 
 function baseInput(id = 'demo') {

@@ -12,13 +12,13 @@ import os from 'node:os';
 import { ThreadlineMCPServer } from '../../src/threadline/ThreadlineMCPServer.js';
 import { AgentTrustManager } from '../../src/threadline/AgentTrustManager.js';
 import type { ThreadlineMCPServerConfig, ThreadlineMCPDeps } from '../../src/threadline/ThreadlineMCPServer.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function createTempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-trust-test-'));
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/ThreadlineMCPServer-trust.test.ts:21' }) };
 }
 
 function createMockDiscovery() {

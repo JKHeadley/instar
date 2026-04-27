@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SemanticMemory } from '../../src/memory/SemanticMemory.js';
 import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Shared State ─────────────────────────────────────────────────
 
@@ -59,8 +60,7 @@ async function createHybridMemory(): Promise<TestSetup> {
     memory,
     cleanup: () => {
       memory.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(dir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/hybrid-search.test.ts:63' });
     },
   };
 }
@@ -83,8 +83,7 @@ async function createFtsOnlyMemory(): Promise<TestSetup> {
     memory,
     cleanup: () => {
       memory.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(dir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/hybrid-search.test.ts:87' });
     },
   };
 }
@@ -310,8 +309,7 @@ describe('Hybrid Search Integration', () => {
 
       // Clean up this nested setup
       memory.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(dir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/hybrid-search.test.ts:314' });
     });
 
     it('returns 0 when all entities already embedded', async () => {

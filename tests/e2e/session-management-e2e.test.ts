@@ -23,6 +23,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { detectTmuxPath } from '../../src/core/Config.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
 import { cleanupTmuxSessions, waitFor } from '../helpers/setup.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Constants ──────────────────────────────────────────────────
 
@@ -167,8 +168,7 @@ function createTestProject(): TestProject {
     dir,
     stateDir,
     state,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/session-management-e2e.test.ts:171' }),
   };
 }
 
@@ -568,8 +568,7 @@ describeMaybe('Session Management E2E', () => {
 
         // Cleanup
         for (const f of files) {
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(path.join(tmpDir, f)); } catch { /* ignore */ }
+          try { SafeFsExecutor.safeUnlinkSync(path.join(tmpDir, f), { operation: 'tests/e2e/session-management-e2e.test.ts:572' }); } catch { /* ignore */ }
         }
       }
     });

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SafeGitExecutor } from '../src/core/SafeGitExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -36,18 +37,29 @@ const ADAPTER_PATHS = [
 let adapterChanges = [];
 try {
   // Find files changed since the last npm version tag
-  // safe-git-allow: incremental-migration
-  const lastTag = execSync('git describe --tags --abbrev=0 2>/dev/null || echo ""', {
-    encoding: 'utf-8',
-    cwd: ROOT,
-  }).trim();
+  let lastTag = '';
+  try {
+    lastTag = SafeGitExecutor.readSync(['describe', '--tags', '--abbrev=0'], {
+      encoding: 'utf-8',
+      cwd: ROOT,
+      operation: 'scripts/check-contract-evidence.js:lastTag',
+    }).trim();
+  } catch {
+    lastTag = '';
+  }
 
   const diffBase = lastTag || 'HEAD~10';
-  // safe-git-allow: incremental-migration
-  const changedFiles = execSync(`git diff --name-only ${diffBase}...HEAD 2>/dev/null || echo ""`, {
-    encoding: 'utf-8',
-    cwd: ROOT,
-  }).trim().split('\n').filter(Boolean);
+  let changedFiles = [];
+  try {
+    const out = SafeGitExecutor.readSync(['diff', '--name-only', `${diffBase}...HEAD`], {
+      encoding: 'utf-8',
+      cwd: ROOT,
+      operation: 'scripts/check-contract-evidence.js:changedFiles',
+    });
+    changedFiles = out.trim().split('\n').filter(Boolean);
+  } catch {
+    changedFiles = [];
+  }
 
   adapterChanges = changedFiles.filter(f =>
     ADAPTER_PATHS.some(prefix => f.startsWith(prefix))

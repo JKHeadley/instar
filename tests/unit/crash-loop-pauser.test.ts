@@ -12,6 +12,7 @@ import path from 'node:path';
 import { CrashLoopPauser } from '../../src/monitoring/CrashLoopPauser.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import type { JobDefinition } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function mkJob(over: Partial<JobDefinition>): JobDefinition {
   return {
@@ -38,8 +39,7 @@ describe('CrashLoopPauser', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/crash-loop-pauser.test.ts:42' });
   });
 
   function recordFailures(slug: string, count: number, durationSeconds = 120) {

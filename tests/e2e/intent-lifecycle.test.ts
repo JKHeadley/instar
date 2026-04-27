@@ -16,6 +16,7 @@ import os from 'node:os';
 import { OrgIntentManager } from '../../src/core/OrgIntentManager.js';
 import { DecisionJournal } from '../../src/core/DecisionJournal.js';
 import { loadConfig } from '../../src/core/Config.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 vi.mock('../../src/core/Config.js', () => ({
   loadConfig: vi.fn(),
@@ -52,8 +53,7 @@ describe('Intent Lifecycle (e2e)', () => {
   afterEach(() => {
     process.exit = originalExit;
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/intent-lifecycle.test.ts:56' });
   });
 
   it('complete lifecycle: org-init -> write content -> validate (clean) -> reflect', async () => {

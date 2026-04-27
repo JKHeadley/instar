@@ -24,6 +24,7 @@ import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Scope Coherence E2E lifecycle', () => {
   let tmpDir: string;
@@ -78,8 +79,7 @@ describe('Scope Coherence E2E lifecycle', () => {
 
   afterAll(async () => {
     await server.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/scope-coherence-lifecycle.test.ts:82' });
   });
 
   const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });

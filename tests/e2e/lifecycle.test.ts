@@ -22,6 +22,7 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../../src/core/Config.js';
 import { createMockClaude, createSampleJobsFile, waitFor } from '../helpers/setup.js';
 import type { InstarConfig, JobDefinition } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const tmuxPath = detectTmuxPath();
 const describeMaybe = tmuxPath ? describe : describe.skip;
@@ -196,8 +197,7 @@ describeMaybe('E2E: Instar lifecycle', () => {
     } catch {}
 
     await server?.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/lifecycle.test.ts:200' });
   });
 
   // ── Phase 3: Verify server health ────────────────────────

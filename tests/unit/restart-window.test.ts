@@ -11,6 +11,7 @@ import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
@@ -71,8 +72,7 @@ describe('Restart window', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/restart-window.test.ts:75' });
   });
 
   it('isInRestartWindow returns true when no window is configured', () => {

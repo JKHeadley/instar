@@ -24,6 +24,7 @@ import { JobClaimManager } from '../../src/scheduler/JobClaimManager.js';
 import { AgentBus } from '../../src/core/AgentBus.js';
 import type { AgentMessage } from '../../src/core/AgentBus.js';
 import type { JobClaim, JobClaimPayload, JobCompletePayload } from '../../src/scheduler/JobClaimManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -32,8 +33,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/job-claim-manager.test.ts:36' });
 }
 
 function createBus(stateDir: string, machineId: string): AgentBus {

@@ -6,6 +6,7 @@ import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Factories ──────────────────────────────────────────────
 
@@ -74,8 +75,7 @@ describe('AutoUpdater — failure paths', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/auto-updater-failures.test.ts:78' });
   });
 
   // ── 1. requestRestart writes signal file correctly ──────────

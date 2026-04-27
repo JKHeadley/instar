@@ -7,6 +7,7 @@ import { CanonicalIdentityManager } from '../../../src/identity/IdentityManager.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // Mock the moltbridge SDK
 vi.mock('moltbridge', () => ({
@@ -54,8 +55,7 @@ describe('MoltBridge Routes', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/moltbridge/routes.test.ts:58' });
   });
 
   describe('GET /moltbridge/status', () => {

@@ -9,6 +9,7 @@ import {
   readAuthFile,
   writeAuthFile,
 } from '../../../src/messaging/shared/EncryptedAuthStore.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('EncryptedAuthStore', () => {
   let tmpDir: string;
@@ -18,8 +19,7 @@ describe('EncryptedAuthStore', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/messaging-shared/EncryptedAuthStore.test.ts:22' });
   });
 
   describe('encryptData / decryptData', () => {

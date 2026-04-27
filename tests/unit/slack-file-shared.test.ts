@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TEST_STATE_DIR = '/tmp/slack-file-shared-test-' + Date.now();
 
@@ -40,8 +41,7 @@ function createTestAdapter() {
 
 afterEach(() => {
   // Clean up test state directory
-  // safe-git-allow: incremental-migration
-  fs.rmSync(TEST_STATE_DIR, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(TEST_STATE_DIR, { recursive: true, force: true, operation: 'tests/unit/slack-file-shared.test.ts:44' });
 });
 
 describe('SlackAdapter file_shared handling', () => {

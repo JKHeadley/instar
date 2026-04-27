@@ -39,6 +39,7 @@ import {
   verify,
 } from '../../../src/threadline/ThreadlineCrypto.js';
 import type { KeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -48,8 +49,7 @@ function createTmpDir(): string {
 
 function rmDir(dir: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/threadline/A2AIntegration.test.ts:52' });
   } catch { /* ignore */ }
 }
 

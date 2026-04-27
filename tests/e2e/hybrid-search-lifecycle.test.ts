@@ -29,6 +29,7 @@ import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Hybrid Search E2E lifecycle', () => {
   let tmpDir: string;
@@ -87,8 +88,7 @@ describe('Hybrid Search E2E lifecycle', () => {
 
   afterAll(() => {
     semanticMemory?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/hybrid-search-lifecycle.test.ts:91' });
   });
 
   // ─── Phase 1: Alive Check ──────────────────────────────────────

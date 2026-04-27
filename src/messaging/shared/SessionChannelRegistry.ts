@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 
 export interface ChannelMapping {
   channelId: string;
@@ -158,8 +159,7 @@ export class SessionChannelRegistry {
         fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
         fs.renameSync(tmpPath, this.registryPath);
       } catch (writeErr) {
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/shared/SessionChannelRegistry.ts:162' }); } catch { /* ignore */ }
         throw writeErr;
       }
     } catch (err) {

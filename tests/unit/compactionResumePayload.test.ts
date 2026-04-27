@@ -23,6 +23,7 @@ import {
   prepareInjectionText,
   type HistoryEntryLike,
 } from '../../src/messaging/shared/compactionResumePayload.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('buildCompactionResumePayload', () => {
   it('emits preamble-only when the context block is empty', () => {
@@ -130,8 +131,7 @@ describe('prepareInjectionText', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/compactionResumePayload.test.ts:134' }); } catch { /* best effort */ }
   });
 
   it('returns the payload verbatim when under the threshold', () => {

@@ -19,6 +19,7 @@ import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Test Constants ──────────────────────────────────────────
 
@@ -50,12 +51,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/topic-resume-map.test.ts:54' });
   // Clean up the test JSONL directory
   if (fs.existsSync(projectJsonlDir)) {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectJsonlDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectJsonlDir, { recursive: true, force: true, operation: 'tests/unit/topic-resume-map.test.ts:58' });
   }
 });
 
@@ -215,8 +214,7 @@ describe('TopicResumeMap — Heartbeat', () => {
   });
 
   it('handles missing JSONL directory gracefully', () => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectJsonlDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectJsonlDir, { recursive: true, force: true, operation: 'tests/unit/topic-resume-map.test.ts:219' });
     const topicSessions = new Map<number, { sessionName: string; claudeSessionId?: string }>();
     topicSessions.set(42, { sessionName: 'dawn-test' });
     // Should not throw

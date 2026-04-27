@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TelegramAdapter, applyTelegramFormatter } from '../../src/messaging/TelegramAdapter.js';
 import { resetFormatMetrics, getFormatMetricsSnapshot } from '../../src/messaging/telegramFormatMetrics.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('applyTelegramFormatter (pure wire-up helper)', () => {
   beforeEach(() => resetFormatMetrics());
@@ -105,8 +106,7 @@ describe('TelegramAdapter — formatter wire-up in apiCall', () => {
 
   afterEach(async () => {
     if (adapter) await adapter.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/telegram-format-wireup.test.ts:109' });
     vi.unstubAllGlobals();
   });
 

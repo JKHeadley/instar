@@ -19,6 +19,7 @@ import type {
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -101,8 +102,7 @@ describe('QuotaManager → SessionMigrator notification wiring', () => {
 
   afterEach(() => {
     quotaManager.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/quota-enforcement-wiring.test.ts:105' });
   });
 
   // ── 1. enforced_pause notification ──
@@ -265,7 +265,6 @@ describe('QuotaManager → SessionMigrator notification wiring', () => {
 
     // Cleanup
     quotaManager2.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir2, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir2, { recursive: true, force: true, operation: 'tests/integration/quota-enforcement-wiring.test.ts:269' });
   });
 });

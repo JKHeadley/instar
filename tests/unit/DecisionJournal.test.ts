@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DecisionJournal } from '../../src/core/DecisionJournal.js';
 import type { DecisionJournalEntry } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('DecisionJournal', () => {
   let tmpDir: string;
@@ -28,8 +29,7 @@ describe('DecisionJournal', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/DecisionJournal.test.ts:32' });
     vi.restoreAllMocks();
   });
 

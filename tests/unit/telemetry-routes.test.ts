@@ -8,6 +8,7 @@ import { TelemetryHeartbeat } from '../../src/monitoring/TelemetryHeartbeat.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig, TelemetryConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Telemetry Routes', () => {
   let project: TempProject;
@@ -139,8 +140,7 @@ describe('Telemetry Routes', () => {
       expect(res.body.submissions.length).toBeLessThanOrEqual(200);
 
       // Cleanup
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(logDir, 'submissions.jsonl'));
+      SafeFsExecutor.safeUnlinkSync(path.join(logDir, 'submissions.jsonl'), { operation: 'tests/unit/telemetry-routes.test.ts:143' });
     });
   });
 
@@ -168,8 +168,7 @@ describe('Telemetry Routes', () => {
       expect(res.body.submission.payload.installationId).toBe('test-latest');
 
       // Cleanup
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(logDir, 'submissions.jsonl'));
+      SafeFsExecutor.safeUnlinkSync(path.join(logDir, 'submissions.jsonl'), { operation: 'tests/unit/telemetry-routes.test.ts:172' });
     });
   });
 

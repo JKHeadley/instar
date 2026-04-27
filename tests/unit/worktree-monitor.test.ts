@@ -24,6 +24,7 @@ import {
   type WorktreeMonitorConfig,
 } from '../../src/monitoring/WorktreeMonitor.js';
 import type { Session } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -133,8 +134,7 @@ describe('WorktreeMonitor', () => {
 
   afterEach(() => {
     monitor.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/worktree-monitor.test.ts:137' });
   });
 
   // ── Worktree Listing ─────────────────────────────────────────

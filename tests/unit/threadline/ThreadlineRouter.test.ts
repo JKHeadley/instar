@@ -8,6 +8,7 @@ import { ThreadResumeMap } from '../../../src/threadline/ThreadResumeMap.js';
 import type { ThreadResumeEntry } from '../../../src/threadline/ThreadResumeMap.js';
 import type { MessageEnvelope, AgentMessage, MessageThread } from '../../../src/messaging/types.js';
 import type { SpawnResult } from '../../../src/messaging/SpawnRequestManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Mock Factories ───────────────────────────────────────────────
 
@@ -173,8 +174,7 @@ function createTempDir(): { dir: string; stateDir: string; cleanup: () => void }
   return {
     dir,
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/ThreadlineRouter.test.ts:177' }),
   };
 }
 
@@ -190,8 +190,7 @@ function createFakeJsonl(uuid: string): void {
 function cleanupFakeJsonl(): void {
   const testProjectDir = path.join(os.homedir(), '.claude', 'projects', 'threadline-router-test');
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(testProjectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(testProjectDir, { recursive: true, force: true, operation: 'tests/unit/threadline/ThreadlineRouter.test.ts:194' });
   } catch {
     // May not exist
   }

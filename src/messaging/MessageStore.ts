@@ -29,6 +29,7 @@ import type {
   MessagingStats,
 } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 const DIRS = ['store', 'index', 'dead-letter', 'pending', 'threads', 'threads/archive', 'drop', 'outbound'];
 
@@ -246,8 +247,7 @@ export class MessageStore implements IMessageStore {
     fs.writeFileSync(dlPath, JSON.stringify(envelope, null, 2));
 
     // Remove from store
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(srcPath);
+    SafeFsExecutor.safeUnlinkSync(srcPath, { operation: 'src/messaging/MessageStore.ts:250' });
   }
 
   async queryDeadLetters(filter?: MessageFilter): Promise<MessageEnvelope[]> {
@@ -411,8 +411,7 @@ export class MessageStore implements IMessageStore {
         try {
           const stat = fs.statSync(filePath);
           if (stat.mtimeMs < thirtyDaysAgo) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(filePath);
+            SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/messaging/MessageStore.ts:415' });
             deleted++;
           }
         } catch {

@@ -20,6 +20,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { ActivityEvent } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -28,8 +29,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/machine-prefixed-state.test.ts:32' });
 }
 
 function readEvents(stateDir: string): ActivityEvent[] {

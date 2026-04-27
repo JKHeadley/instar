@@ -23,14 +23,14 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { signRequest } from '../../src/server/machineAuth.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-http-e2e-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/multi-machine-http.test.ts:33' });
 }
 
 /**

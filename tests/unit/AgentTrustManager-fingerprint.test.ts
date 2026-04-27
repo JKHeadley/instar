@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { AgentTrustManager } from '../../src/threadline/AgentTrustManager.js';
 import type { AgentTrustLevel } from '../../src/threadline/AgentTrustManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -18,8 +19,7 @@ function createTempDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trust-test-'));
   return {
     dir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/AgentTrustManager-fingerprint.test.ts:22' }),
   };
 }
 

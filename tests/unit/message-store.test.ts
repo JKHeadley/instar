@@ -24,6 +24,7 @@ import type {
   AgentMessage,
   DeliveryState,
 } from '../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -32,8 +33,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/message-store.test.ts:36' });
 }
 
 function makeMessage(overrides?: Partial<AgentMessage>): AgentMessage {

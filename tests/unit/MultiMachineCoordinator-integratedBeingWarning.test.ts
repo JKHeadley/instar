@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import { MultiMachineCoordinator } from '../../src/core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mmc-ib-test-'));
@@ -41,8 +42,7 @@ describe('MultiMachineCoordinator — Integrated-Being multi-machine warning', (
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/MultiMachineCoordinator-integratedBeingWarning.test.ts:45' });
   });
 
   it('does NOT warn with only one machine in the registry', () => {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ContextThreadMap } from '../../../src/threadline/ContextThreadMap.js';
 import type { ContextThreadMapConfig, ContextThreadMapping } from '../../../src/threadline/ContextThreadMap.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -14,8 +15,7 @@ function createTempDir(): { dir: string; stateDir: string; cleanup: () => void }
   return {
     dir,
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/ContextThreadMap.test.ts:18' }),
   };
 }
 

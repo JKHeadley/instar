@@ -11,11 +11,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { wireParallelDev } from '../../src/core/ParallelDevWiring.js';
 import { WorktreeManager } from '../../src/core/WorktreeManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-wiring-')); });
-// safe-git-allow: incremental-migration
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/ParallelDevWiring.test.ts:18' }); });
 
 describe('wireParallelDev', () => {
   it('returns null when phase="off" — sessions stay on legacy single-tree', async () => {

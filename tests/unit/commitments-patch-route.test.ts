@@ -14,13 +14,13 @@ import type { AddressInfo } from 'node:net';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tmpState() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmt-patch-'));
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ authToken: 'test' }));
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/commitments-patch-route.test.ts:23' }) };
 }
 
 interface Server { url: string; close: () => Promise<void>; }

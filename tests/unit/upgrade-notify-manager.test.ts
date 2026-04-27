@@ -31,6 +31,7 @@ import {
   type SessionCompletionChecker,
   type ActivityLogger,
 } from '../../src/core/UpgradeNotifyManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('UpgradeNotifyManager', () => {
   let tmpDir: string;
@@ -84,8 +85,7 @@ Added hybrid search and MEMORY.md export.
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/upgrade-notify-manager.test.ts:88' });
   });
 
   function createSpawner(opts: { autoComplete?: boolean } = {}): SessionSpawner {
@@ -123,8 +123,7 @@ Added hybrid search and MEMORY.md export.
   function acknowledgeGuide() {
     // Simulate the agent running `instar upgrade-ack` which removes the pending file
     if (fs.existsSync(pendingGuidePath)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(pendingGuidePath);
+      SafeFsExecutor.safeUnlinkSync(pendingGuidePath, { operation: 'tests/unit/upgrade-notify-manager.test.ts:127' });
     }
   }
 

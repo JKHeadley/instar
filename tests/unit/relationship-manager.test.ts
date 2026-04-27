@@ -8,6 +8,7 @@ import type { UserChannel, InteractionSummary } from '../../src/core/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('RelationshipManager', () => {
   let tmpDir: string;
@@ -22,8 +23,7 @@ describe('RelationshipManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/relationship-manager.test.ts:26' });
   });
 
   const telegramChannel: UserChannel = { type: 'telegram', identifier: '12345' };

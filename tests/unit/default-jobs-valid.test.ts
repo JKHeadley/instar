@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { validateJob } from '../../src/scheduler/JobLoader.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Import the getDefaultJobs function — it's not exported, so we'll
 // inline the same logic by requiring the init module indirectly.
@@ -247,9 +248,7 @@ describe('Default Jobs Validation', () => {
     }
 
     // Cleanup
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(tmpJobsFile);
-    // safe-git-allow: incremental-migration
-    fs.rmdirSync(tmpDir);
+    SafeFsExecutor.safeUnlinkSync(tmpJobsFile, { operation: 'tests/unit/default-jobs-valid.test.ts:251' });
+    SafeFsExecutor.safeRmdirSync(tmpDir, { operation: 'tests/unit/default-jobs-valid.test.ts:253' });
   });
 });

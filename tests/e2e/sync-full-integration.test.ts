@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Real module imports
 import { SyncOrchestrator } from '../../src/core/SyncOrchestrator.js';
@@ -335,8 +336,7 @@ describe('Full Cross-Module Integration — All 15 INTELLIGENT_SYNC_SPEC Modules
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/sync-full-integration.test.ts:339' });
   });
 
   // ── Scenario 1: Full sync cycle with conflict resolution ──────────

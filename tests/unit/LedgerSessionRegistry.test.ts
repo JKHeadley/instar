@@ -12,6 +12,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { LedgerSessionRegistry } from '../../src/core/LedgerSessionRegistry.js';
 import type { IntegratedBeingConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-session-registry-test-'));
@@ -42,8 +43,7 @@ describe('LedgerSessionRegistry', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/LedgerSessionRegistry.test.ts:46' });
   });
 
   describe('register', () => {

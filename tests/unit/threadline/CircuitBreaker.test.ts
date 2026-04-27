@@ -5,6 +5,7 @@ import os from 'node:os';
 import { CircuitBreaker } from '../../../src/threadline/CircuitBreaker.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import type { TrustChangeNotification } from '../../../src/threadline/AgentTrustManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('CircuitBreaker', () => {
   let tmpDir: string;
@@ -18,8 +19,7 @@ describe('CircuitBreaker', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/CircuitBreaker.test.ts:22' });
   });
 
   function createBreaker(opts?: {

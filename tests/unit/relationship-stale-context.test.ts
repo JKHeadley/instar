@@ -11,6 +11,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { RelationshipManager } from '../../src/core/RelationshipManager.js';
 import type { RelationshipManagerConfig, RelationshipRecord } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Relationship stale detection and context', () => {
   let dir: string;
@@ -24,8 +25,7 @@ describe('Relationship stale detection and context', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/relationship-stale-context.test.ts:28' });
   });
 
   function createRecord(overrides: Partial<RelationshipRecord> = {}): RelationshipRecord {

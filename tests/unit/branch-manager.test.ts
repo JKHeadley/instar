@@ -12,17 +12,16 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { BranchManager } from '../../src/core/BranchManager.js';
 import type { TaskBranch, BranchManagerConfig } from '../../src/core/BranchManager.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function git(cwd: string, ...args: string[]): string {
-  // safe-git-allow: incremental-migration
-  return execFileSync('git', args, {
-    cwd,
+  return SafeGitExecutor.run(args, { cwd,
     encoding: 'utf-8',
     timeout: 10_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  }).trim();
+    stdio: ['pipe', 'pipe', 'pipe'], operation: 'tests/unit/branch-manager.test.ts:20' }).trim();
 }
 
 function makeManager(
@@ -59,22 +58,16 @@ describe('BranchManager', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-mgr-'));
     stateDir = path.join(tmpDir, '.instar');
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['init', '-b', 'main'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir });
+    SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:63' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:65' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:67' });
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n');
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['add', '.'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: tmpDir });
+    SafeGitExecutor.execSync(['add', '.'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:70' });
+    SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:72' });
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/branch-manager.test.ts:77' });
   });
 
   // ── 1. shouldBranch() Decision Logic ──────────────────────────────

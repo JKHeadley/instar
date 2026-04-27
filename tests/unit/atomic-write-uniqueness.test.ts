@@ -10,6 +10,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('StateManager — atomic write uniqueness', () => {
   it('concurrent writes to the same key do not leave .tmp files', () => {
@@ -33,8 +34,7 @@ describe('StateManager — atomic write uniqueness', () => {
     expect(tmpFiles).toHaveLength(0);
 
     // Clean up
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/atomic-write-uniqueness.test.ts:37' });
   });
 
   it('atomicWrite does not use fixed .tmp filename', () => {

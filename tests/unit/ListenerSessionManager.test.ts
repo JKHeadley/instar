@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ListenerSessionManager } from '../../src/threadline/ListenerSessionManager.js';
 import type { InboxEntry } from '../../src/threadline/ListenerSessionManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -19,8 +20,7 @@ function createTempDir(): { dir: string; cleanup: () => void } {
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
   return {
     dir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/ListenerSessionManager.test.ts:23' }),
   };
 }
 

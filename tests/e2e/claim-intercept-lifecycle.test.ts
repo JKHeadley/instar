@@ -32,6 +32,7 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { CanonicalState } from '../../src/core/CanonicalState.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test infrastructure ──────────────────────────────────────────────
 
@@ -89,15 +90,13 @@ function setupCanonicalState(facts: any[] = [], projects: any[] = [], antiPatter
 /** Clear rate limit file so each test starts fresh. */
 function clearRateLimit() {
   const rateFile = path.join(tmpDir, '.instar', 'state', '.claim-intercept-last.tmp');
-  // safe-git-allow: incremental-migration
-  try { fs.unlinkSync(rateFile); } catch {}
+  try { SafeFsExecutor.safeUnlinkSync(rateFile, { operation: 'tests/e2e/claim-intercept-lifecycle.test.ts:93' }); } catch {}
 }
 
 /** Clear log file. */
 function clearLog() {
   const logFile = path.join(tmpDir, '.instar', 'state', 'claim-intercept.log');
-  // safe-git-allow: incremental-migration
-  try { fs.unlinkSync(logFile); } catch {}
+  try { SafeFsExecutor.safeUnlinkSync(logFile, { operation: 'tests/e2e/claim-intercept-lifecycle.test.ts:100' }); } catch {}
 }
 
 /** Read log file content. */
@@ -194,8 +193,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/claim-intercept-lifecycle.test.ts:198' });
 });
 
 beforeEach(() => {
@@ -638,8 +636,7 @@ describe('Phase 5: Canonical State integration', () => {
     const stDir = path.join(tmpDir, '.instar', 'state');
     const origFacts = fs.readFileSync(path.join(stDir, 'quick-facts.json'), 'utf-8');
 
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(path.join(stDir, 'quick-facts.json'));
+    SafeFsExecutor.safeUnlinkSync(path.join(stDir, 'quick-facts.json'), { operation: 'tests/e2e/claim-intercept-lifecycle.test.ts:642' });
 
     const r = runHook(postToolUseHook, {
       tool_name: 'Bash',
@@ -1065,8 +1062,7 @@ describe('Phase 11: Edge cases', () => {
       }, { cwd: emptyDir });
       expect(r.exitCode).toBe(0);
     } finally {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(emptyDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(emptyDir, { recursive: true, force: true, operation: 'tests/e2e/claim-intercept-lifecycle.test.ts:1069' });
     }
   });
 
@@ -1224,8 +1220,7 @@ describe('Phase 13: CanonicalState class integration', () => {
     expect(fs.existsSync(path.join(freshStateDir, 'anti-patterns.json'))).toBe(true);
     expect(fs.existsSync(path.join(freshStateDir, 'project-registry.json'))).toBe(true);
 
-    // safe-git-allow: incremental-migration
-    fs.rmSync(freshDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(freshDir, { recursive: true, force: true, operation: 'tests/e2e/claim-intercept-lifecycle.test.ts:1228' });
   });
 
   it('setFact() creates facts that the hook picks up', () => {

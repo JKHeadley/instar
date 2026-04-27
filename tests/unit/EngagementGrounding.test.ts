@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SelfKnowledgeTree } from '../../src/knowledge/SelfKnowledgeTree.js';
 import type { SelfKnowledgeTreeConfig, GroundingResult } from '../../src/knowledge/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Engagement Grounding (Phase 2)', () => {
   let tmpDir: string;
@@ -44,8 +45,7 @@ Improve test coverage. Catch regressions early.
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/EngagementGrounding.test.ts:48' });
   });
 
   function makeConfig(): SelfKnowledgeTreeConfig {

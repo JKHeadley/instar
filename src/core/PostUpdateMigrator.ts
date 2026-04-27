@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
@@ -38,6 +38,7 @@ import {
   PR_GATE_SETUP_MD,
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -520,8 +521,7 @@ export class PostUpdateMigrator {
       try {
         // Move built-in hooks to instar/ — they'll be overwritten by the current
         // migrateHooks() call anyway, but cleaning up the old location is important
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(oldPath);
+        SafeFsExecutor.safeUnlinkSync(oldPath, { operation: 'src/core/PostUpdateMigrator.ts:524' });
       } catch {
         // If we can't remove, it's not critical — the new hooks will be written
         // to instar/ regardless
@@ -2075,11 +2075,11 @@ The user has been talking to you (possibly for days). A generic greeting like "H
 
     const getRemote = (name: string): string | null => {
       try {
-        // safe-git-allow: incremental-migration
-        return execSync(`git remote get-url ${name}`, {
+        return SafeGitExecutor.readSync(['remote', 'get-url', name], {
           cwd: this.config.projectDir,
           stdio: ['ignore', 'pipe', 'ignore'],
           encoding: 'utf-8',
+          operation: 'src/core/PostUpdateMigrator.ts:getRemote',
         });
       } catch {
         return null;

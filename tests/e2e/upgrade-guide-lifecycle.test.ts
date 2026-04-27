@@ -29,6 +29,7 @@ import {
   UpgradeNotifyManager,
   type UpgradeNotifyConfig,
 } from '../../src/core/UpgradeNotifyManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Upgrade guide lifecycle E2E', () => {
   let tmpDir: string;
@@ -44,8 +45,7 @@ describe('Upgrade guide lifecycle E2E', () => {
   });
 
   afterAll(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/upgrade-guide-lifecycle.test.ts:48' });
   });
 
   function makeProcessor(opts: {
@@ -103,8 +103,7 @@ describe('Upgrade guide lifecycle E2E', () => {
         if (opts.shouldAcknowledge !== false) {
           // Simulate the session running `instar upgrade-ack`
           if (fs.existsSync(pendingGuidePath)) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(pendingGuidePath);
+            SafeFsExecutor.safeUnlinkSync(pendingGuidePath, { operation: 'tests/e2e/upgrade-guide-lifecycle.test.ts:107' });
           }
         }
 
@@ -146,14 +145,11 @@ Version ${version} adds exciting new features including improved search and bett
 
   function cleanState() {
     const processedFile = path.join(stateDir, 'state', 'processed-upgrades.json');
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(processedFile)) fs.unlinkSync(processedFile);
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(pendingPath())) fs.unlinkSync(pendingPath());
+    if (fs.existsSync(processedFile)) SafeFsExecutor.safeUnlinkSync(processedFile, { operation: 'tests/e2e/upgrade-guide-lifecycle.test.ts:150' });
+    if (fs.existsSync(pendingPath())) SafeFsExecutor.safeUnlinkSync(pendingPath(), { operation: 'tests/e2e/upgrade-guide-lifecycle.test.ts:152' });
     // Clean guide files
     for (const f of fs.readdirSync(upgradesDir)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(upgradesDir, f));
+      SafeFsExecutor.safeUnlinkSync(path.join(upgradesDir, f), { operation: 'tests/e2e/upgrade-guide-lifecycle.test.ts:156' });
     }
   }
 
@@ -365,8 +361,7 @@ New stuff.
 
         // Only acknowledge on second attempt (sonnet)
         if (attempt >= 2 && fs.existsSync(pendingPath())) {
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(pendingPath());
+          SafeFsExecutor.safeUnlinkSync(pendingPath(), { operation: 'tests/e2e/upgrade-guide-lifecycle.test.ts:369' });
         }
 
         return {

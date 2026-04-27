@@ -21,6 +21,7 @@ import {
   createCompactionHarness,
   type CompactionHarnessHandle,
 } from './compaction-harness.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('compaction harness — setup + teardown', () => {
   let harness: CompactionHarnessHandle | null = null;
@@ -174,8 +175,7 @@ describe('compaction harness — error surfaces', () => {
     harness = createCompactionHarness();
     // Remove the hook to simulate the "canonical not found" path.
     const hookPath = path.join(harness.stateDir, 'hooks', 'instar', 'compaction-recovery.sh');
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(hookPath);
+    SafeFsExecutor.safeUnlinkSync(hookPath, { operation: 'tests/e2e/compaction-harness.test.ts:178' });
     expect(() => harness!.runCompactionRecovery()).toThrow(/compaction-recovery\.sh not found/);
   });
 });

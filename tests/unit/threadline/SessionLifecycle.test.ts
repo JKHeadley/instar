@@ -8,6 +8,7 @@ import type {
   SessionState,
   SessionEntry,
 } from '../../../src/threadline/SessionLifecycle.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('SessionLifecycle', () => {
   let tmpDir: string;
@@ -17,8 +18,7 @@ describe('SessionLifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/SessionLifecycle.test.ts:21' });
   });
 
   function createConfig(overrides?: Partial<SessionLifecycleConfig>): SessionLifecycleConfig {

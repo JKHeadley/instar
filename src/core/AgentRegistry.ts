@@ -21,6 +21,7 @@ import os from 'node:os';
 import lockfile from 'proper-lockfile';
 import type { AgentRegistry, AgentRegistryEntry, AgentType, AgentStatus } from './types.js';
 import { getInstarVersion } from './Config.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // Paths are computed lazily from os.homedir() so they pick up mocks in tests
 function registryDir(): string { return path.join(os.homedir(), '.instar'); }
@@ -115,8 +116,7 @@ export function saveRegistry(registry: AgentRegistry): void {
     fs.writeFileSync(tmpPath, JSON.stringify(registry, null, 2));
     fs.renameSync(tmpPath, registryPath());
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/AgentRegistry.ts:119' }); } catch { /* ignore */ }
     throw err;
   }
 }
@@ -422,8 +422,7 @@ export function forceRemoveRegistryLock(): boolean {
   const lockPath = registryPath() + '.lock';
   try {
     if (fs.existsSync(lockPath)) {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(lockPath, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(lockPath, { recursive: true, force: true, operation: 'src/core/AgentRegistry.ts:426' });
       console.log(`[AgentRegistry] Force-removed stale lock: ${lockPath}`);
       return true;
     }

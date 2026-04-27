@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { WorkLedger } from '../../src/core/WorkLedger.js';
 import type { WorkLedgerConfig, MachineLedger } from '../../src/core/WorkLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -53,8 +54,7 @@ describe('WorkLedger wiring integrity', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/ledger-wiring.test.ts:57' });
   });
 
   // ── Category 1: WorkLedger is not null/undefined ──────────────────

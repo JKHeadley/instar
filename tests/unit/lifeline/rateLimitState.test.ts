@@ -13,6 +13,7 @@ import {
   RESTART_STORM_THRESHOLD,
   RESTART_STORM_WINDOW_MS,
 } from '../../../src/lifeline/rateLimitState.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 let tmp: string;
 
@@ -20,8 +21,7 @@ beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rate-limit-test-'));
 });
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmp, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/lifeline/rateLimitState.test.ts:24' });
 });
 
 describe('readRateLimitState', () => {

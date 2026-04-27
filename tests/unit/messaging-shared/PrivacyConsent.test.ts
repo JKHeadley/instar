@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { PrivacyConsent } from '../../../src/messaging/shared/PrivacyConsent.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('PrivacyConsent', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('PrivacyConsent', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/messaging-shared/PrivacyConsent.test.ts:18' });
   });
 
   function createConsent(overrides: Partial<Parameters<typeof PrivacyConsent['prototype']['hasConsent']> extends never[] ? Record<string, unknown> : Record<string, unknown>> = {}): PrivacyConsent {

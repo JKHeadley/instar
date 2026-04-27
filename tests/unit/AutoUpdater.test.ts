@@ -6,6 +6,7 @@ import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Factories ──────────────────────────────────────────────
 
@@ -72,8 +73,7 @@ describe('AutoUpdater', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/AutoUpdater.test.ts:76' });
   });
 
   describe('start/stop', () => {

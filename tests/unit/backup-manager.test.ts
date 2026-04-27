@@ -28,14 +28,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BackupManager } from '../../src/core/BackupManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-backup-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/backup-manager.test.ts:38' });
 }
 
 describe('BackupManager', () => {
@@ -358,8 +358,7 @@ describe('BackupManager', () => {
 
       // Delete a file from the snapshot
       const snapshotMemory = path.join(stateDir, 'backups', snapshot.id, 'MEMORY.md');
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(snapshotMemory);
+      SafeFsExecutor.safeUnlinkSync(snapshotMemory, { operation: 'tests/unit/backup-manager.test.ts:362' });
 
       // Update manifest to remove integrity hash so it doesn't fail on that
       const manifestPath = path.join(stateDir, 'backups', snapshot.id, 'manifest.json');
@@ -376,8 +375,7 @@ describe('BackupManager', () => {
       const snapshot = manager.createSnapshot('manual');
 
       // Delete relationships
-      // safe-git-allow: incremental-migration
-      fs.rmSync(path.join(stateDir, 'relationships'), { recursive: true });
+      SafeFsExecutor.safeRmSync(path.join(stateDir, 'relationships'), { recursive: true, operation: 'tests/unit/backup-manager.test.ts:380' });
       expect(fs.existsSync(path.join(stateDir, 'relationships'))).toBe(false);
 
       manager.restoreSnapshot(snapshot.id);

@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { MessageEnvelope } from './types.js';
 import type { MessageStore } from './MessageStore.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -249,8 +250,7 @@ export function cleanupDeliveredOutbound(
 
   try {
     if (fs.existsSync(outboundPath)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(outboundPath);
+      SafeFsExecutor.safeUnlinkSync(outboundPath, { operation: 'src/messaging/GitSyncTransport.ts:253' });
       return true;
     }
     return false;
@@ -289,8 +289,7 @@ export async function cleanupAllDelivered(store: MessageStore): Promise<number> 
         try {
           const envelope = await store.get(messageId);
           if (envelope && (envelope.delivery.phase === 'delivered' || envelope.delivery.phase === 'read')) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(path.join(machinePath, file));
+            SafeFsExecutor.safeUnlinkSync(path.join(machinePath, file), { operation: 'src/messaging/GitSyncTransport.ts:293' });
             cleaned++;
           }
         } catch {
@@ -372,8 +371,7 @@ export function resolveAgentMachine(
 
 function unlinkSafe(filePath: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(filePath);
+    SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/messaging/GitSyncTransport.ts:376' });
   } catch {
     // @silent-fallback-ok — cleanup failure is non-critical
   }

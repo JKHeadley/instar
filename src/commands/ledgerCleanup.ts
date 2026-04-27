@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface LedgerCleanupOptions {
   dir?: string;
@@ -80,8 +81,7 @@ export async function ledgerCleanup(
   const skipped: string[] = [];
   for (const name of toDelete) {
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(stateDir, name));
+      SafeFsExecutor.safeUnlinkSync(path.join(stateDir, name), { operation: 'src/commands/ledgerCleanup.ts:84' });
       deleted.push(name);
     } catch {
       skipped.push(name);

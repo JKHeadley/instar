@@ -26,6 +26,7 @@ import {
   shouldRouteToDm,
   type RoutingContext,
 } from '../../src/privacy/OutputPrivacyRouter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Fixtures ────────────────────────────────────────────────────
 
@@ -64,8 +65,7 @@ beforeEach(async () => {
 afterEach(() => {
   topicMemory.close();
   semanticMemory.close();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(testDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(testDir, { recursive: true, force: true, operation: 'tests/integration/output-privacy-routing.test.ts:68' });
 });
 
 // ── Helper: Simulate Response Generation ────────────────────────

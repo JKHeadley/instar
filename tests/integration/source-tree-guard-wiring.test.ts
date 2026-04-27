@@ -25,6 +25,8 @@ import { GitSyncManager } from '../../src/core/GitSync.js';
 import type { WorkLedger } from '../../src/core/WorkLedger.js';
 import type { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import type { SecurityLog } from '../../src/core/SecurityLog.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -141,17 +143,13 @@ describe('SourceTreeGuard — legitimate sandbox construction succeeds', () => {
     stateDir = path.join(sandbox, '.instar');
     // Make it a real git repo so BranchManager has something to work with,
     // though the guard decision happens before git runs.
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['init', '-b', 'main'], { cwd: sandbox });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: sandbox });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: sandbox });
+    SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: sandbox, operation: 'tests/integration/source-tree-guard-wiring.test.ts:145' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: sandbox, operation: 'tests/integration/source-tree-guard-wiring.test.ts:147' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: sandbox, operation: 'tests/integration/source-tree-guard-wiring.test.ts:149' });
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(sandbox, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(sandbox, { recursive: true, force: true, operation: 'tests/integration/source-tree-guard-wiring.test.ts:154' });
   });
 
   it('BranchManager constructs successfully in a sandbox', () => {

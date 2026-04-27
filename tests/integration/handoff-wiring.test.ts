@@ -27,18 +27,17 @@ import { HandoffManager } from '../../src/core/HandoffManager.js';
 import { WorkLedger } from '../../src/core/WorkLedger.js';
 import type { HandoffNote } from '../../src/core/HandoffManager.js';
 import type { MachineLedger } from '../../src/core/WorkLedger.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /** Run a git command in the given directory. */
 function git(cwd: string, ...args: string[]): string {
-  // safe-git-allow: incremental-migration
-  return execFileSync('git', args, {
-    cwd,
+  return SafeGitExecutor.run(args, { cwd,
     encoding: 'utf-8',
     timeout: 10_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  }).trim();
+    stdio: ['pipe', 'pipe', 'pipe'], operation: 'tests/integration/handoff-wiring.test.ts:36' }).trim();
 }
 
 /** Initialize a real git repo with an initial commit so HEAD exists. */
@@ -79,8 +78,7 @@ describe('HandoffManager wiring integrity', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/handoff-wiring.test.ts:83' });
   });
 
   // ── 1. Construction — not null/undefined ──────────────────────────

@@ -19,6 +19,7 @@ import type {
   DriftReport,
   Capability,
 } from '../../src/core/CapabilityMapper.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ──────────────────────────────────────────────────────
 
@@ -109,8 +110,7 @@ describe('CapabilityMapper — Edge Cases & Corrupt Data', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:113' });
   });
 
   it('handles corrupt jobs.json (invalid JSON)', async () => {
@@ -333,8 +333,7 @@ describe('CapabilityMapper — Edge Cases & Corrupt Data', () => {
   it('handles non-existent .claude/skills/ directory', async () => {
     const { projectDir, stateDir } = createMinimalAgent(tmpDir);
     // Remove the skills directory
-    // safe-git-allow: incremental-migration
-    fs.rmSync(path.join(projectDir, '.claude', 'skills'), { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(path.join(projectDir, '.claude', 'skills'), { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:337' });
 
     const mapper = new CapabilityMapper(makeConfig(projectDir, stateDir));
     const map = await mapper.refresh();
@@ -347,8 +346,7 @@ describe('CapabilityMapper — Edge Cases & Corrupt Data', () => {
   it('handles non-existent hooks directory', async () => {
     const { projectDir, stateDir } = createMinimalAgent(tmpDir);
     // Remove the hooks directory
-    // safe-git-allow: incremental-migration
-    fs.rmSync(path.join(stateDir, 'hooks'), { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(path.join(stateDir, 'hooks'), { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:351' });
 
     const mapper = new CapabilityMapper(makeConfig(projectDir, stateDir));
     const map = await mapper.refresh();
@@ -360,8 +358,7 @@ describe('CapabilityMapper — Edge Cases & Corrupt Data', () => {
 
   it('handles non-existent context directory', async () => {
     const { projectDir, stateDir } = createMinimalAgent(tmpDir);
-    // safe-git-allow: incremental-migration
-    fs.rmSync(path.join(stateDir, 'context'), { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(path.join(stateDir, 'context'), { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:364' });
 
     const mapper = new CapabilityMapper(makeConfig(projectDir, stateDir));
     const map = await mapper.refresh();
@@ -448,8 +445,7 @@ describe('CapabilityMapper — Domain Inference', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:452' });
   });
 
   const domainKeywordTests: Array<{ keyword: string; expectedDomain: string }> = [
@@ -547,8 +543,7 @@ describe('CapabilityMapper — Provenance Classification', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:551' });
   });
 
   it('classifies hooks in instar/ as instar provenance', async () => {
@@ -693,8 +688,7 @@ describe('CapabilityMapper — Drift Detection', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:697' });
   });
 
   it('detects no drift when nothing has changed', async () => {
@@ -733,8 +727,7 @@ describe('CapabilityMapper — Drift Detection', () => {
     await mapper.refresh();
 
     // Remove a skill
-    // safe-git-allow: incremental-migration
-    fs.rmSync(path.join(projectDir, '.claude', 'skills', 'goes'), { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(path.join(projectDir, '.claude', 'skills', 'goes'), { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:737' });
     // Add a new script
     fs.writeFileSync(path.join(projectDir, '.claude', 'scripts', 'new-one.sh'), '#!/bin/bash\necho new');
     // Change a script
@@ -834,8 +827,7 @@ describe('CapabilityMapper — Manifest Persistence & HMAC', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:838' });
   });
 
   it('persists manifest entries for all discovered capabilities', async () => {
@@ -975,8 +967,7 @@ describe('CapabilityMapper — Markdown Rendering', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:979' });
   });
 
   it('renders level 0 and level 1 identically', async () => {
@@ -1122,8 +1113,7 @@ describe('CapabilityMapper — Content Hashing', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1126' });
   });
 
   it('identical content produces identical hashes', async () => {
@@ -1228,8 +1218,7 @@ describe('CapabilityMapper — Concurrency & Freshness', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1232' });
   });
 
   it('getMap returns cached map without re-scanning', async () => {
@@ -1348,8 +1337,7 @@ describe('CapabilityMapper — HATEOAS & API Contracts', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1352' });
   });
 
   it('domain links match actual domain IDs', async () => {
@@ -1517,8 +1505,7 @@ describe('CapabilityMapper — Script Description Extraction', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1521' });
   });
 
   it('extracts description from bash comment', async () => {
@@ -1607,8 +1594,7 @@ describe('CapabilityMapper — Full Lifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1611' });
   });
 
   it('complete lifecycle: create -> scan -> modify -> rescan -> drift', async () => {
@@ -1663,8 +1649,7 @@ describe('CapabilityMapper — Full Lifecycle', () => {
     );
 
     // Remove a script
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(path.join(projectDir, '.claude', 'scripts', 'helper.sh'));
+    SafeFsExecutor.safeUnlinkSync(path.join(projectDir, '.claude', 'scripts', 'helper.sh'), { operation: 'tests/unit/capability-mapper-advanced.test.ts:1667' });
 
     // Modify a context segment
     fs.writeFileSync(path.join(stateDir, 'context', 'identity.md'), '# Identity v2\nUpdated identity.');
@@ -1738,8 +1723,7 @@ describe('CapabilityMapper — Subsystem Detection', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1742' });
   });
 
   it('detects topic-memory from file presence', async () => {
@@ -1886,8 +1870,7 @@ describe('CapabilityMapper — Flat Hooks (Pre-Migration)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1890' });
   });
 
   it('discovers flat hooks (not in instar/ or custom/ subdirs)', async () => {
@@ -1933,8 +1916,7 @@ describe('CapabilityMapper — Large Agent Stress Test', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:1937' });
   });
 
   it('handles 50 skills, 50 scripts, 20 hooks, 50 jobs', async () => {
@@ -2042,8 +2024,7 @@ describe('CapabilityMapper — Context Segment Parsing', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:2046' });
   });
 
   it('extracts first heading as name', async () => {
@@ -2117,8 +2098,7 @@ describe('CapabilityMapper — YAML Frontmatter Edge Cases', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:2121' });
   });
 
   it('handles quoted strings in frontmatter', async () => {
@@ -2216,8 +2196,7 @@ describe('ManifestIntegrity — Additional Edge Cases', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper-advanced.test.ts:2220' });
   });
 
   it('handles manifest with deeply nested entries', () => {

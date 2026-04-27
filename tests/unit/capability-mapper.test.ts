@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { CapabilityMapper } from '../../src/core/CapabilityMapper.js';
 import type { CapabilityMap, CapabilityMapperConfig, DriftReport } from '../../src/core/CapabilityMapper.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /** Create a temporary directory structure that mimics an Instar agent */
 function createTestAgent(rootDir: string) {
@@ -112,8 +113,7 @@ describe('CapabilityMapper', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-mapper.test.ts:116' });
   });
 
   it('scans and returns a capability map', async () => {
@@ -292,8 +292,7 @@ description: A newly added skill
     await mapper.refresh();
 
     // Remove a skill
-    // safe-git-allow: incremental-migration
-    fs.rmSync(path.join(projectDir, '.claude', 'skills', 'test-skill'), { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(path.join(projectDir, '.claude', 'skills', 'test-skill'), { recursive: true, force: true, operation: 'tests/unit/capability-mapper.test.ts:296' });
 
     const mapper2 = new CapabilityMapper(config);
     const drift = await mapper2.detectDrift();

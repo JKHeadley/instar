@@ -13,6 +13,7 @@ import os from 'node:os';
 import { SharedStateLedger } from '../../src/core/SharedStateLedger.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import type { LedgerAppendPayload } from '../../src/core/SharedStateLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'shared-state-test-'));
@@ -47,8 +48,7 @@ describe('SharedStateLedger', () => {
 
   afterEach(() => {
     ledger.shutdown();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SharedStateLedger.test.ts:51' });
   });
 
   describe('schema validation', () => {

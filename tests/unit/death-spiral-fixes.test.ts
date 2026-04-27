@@ -16,6 +16,7 @@ import { CoherenceMonitor } from '../../src/monitoring/CoherenceMonitor.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import type { StateManager } from '../../src/core/StateManager.js';
 import type { Session, SessionManagerConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -198,8 +199,7 @@ describe('CoherenceMonitor suppresses known-pending updates', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/death-spiral-fixes.test.ts:202' });
     vi.restoreAllMocks();
   });
 

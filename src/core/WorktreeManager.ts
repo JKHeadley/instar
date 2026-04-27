@@ -23,6 +23,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -429,8 +431,7 @@ export class WorktreeManager extends EventEmitter {
       if (lock.sessionId === args.sessionId && lock.fencingToken === args.fencingToken) {
         this.locks.delete(worktreePath);
         const lockFile = path.join(worktreePath, '.session.lock');
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(lockFile); } catch { /* @silent-fallback-ok */ }
+        try { SafeFsExecutor.safeUnlinkSync(lockFile, { operation: 'src/core/WorktreeManager.ts:433' }); } catch { /* @silent-fallback-ok */ }
         this.emit('lock:released', { worktreePath, sessionId: args.sessionId });
         return { released: true };
       }
@@ -506,8 +507,7 @@ export class WorktreeManager extends EventEmitter {
     }
 
     this.locks.delete(binding.worktreePath);
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(path.join(binding.worktreePath, '.session.lock')); } catch { /* @silent-fallback-ok */ }
+    try { SafeFsExecutor.safeUnlinkSync(path.join(binding.worktreePath, '.session.lock'), { operation: 'src/core/WorktreeManager.ts:510' }); } catch { /* @silent-fallback-ok */ }
 
     this.appendHistoryEvent({
       kind: 'force-take',
@@ -755,22 +755,18 @@ export class WorktreeManager extends EventEmitter {
     if (fs.existsSync(worktreePath)) {
       // Adopt existing if .git is valid
       try {
-        // safe-git-allow: incremental-migration
-        execFileSync('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], { stdio: 'pipe', timeout: 3000 });
+        SafeGitExecutor.readSync(['-C', worktreePath, 'rev-parse', 'HEAD'], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:759' });
       } catch {
         throw new Error(`Worktree path ${worktreePath} exists but is not a valid git worktree`);
       }
     } else {
       // Create branch if needed; then `git worktree add`
       try {
-        // safe-git-allow: incremental-migration
-        execFileSync('git', ['-C', this.opts.projectDir, 'rev-parse', '--verify', branch], { stdio: 'pipe', timeout: 3000 });
+        SafeGitExecutor.readSync(['-C', this.opts.projectDir, 'rev-parse', '--verify', branch], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:767' });
       } catch {
-        // safe-git-allow: incremental-migration
-        execFileSync('git', ['-C', this.opts.projectDir, 'branch', branch], { timeout: 5000 });
+        SafeGitExecutor.execSync(['-C', this.opts.projectDir, 'branch', branch], { timeout: 5000, operation: 'src/core/WorktreeManager.ts:branch' });
       }
-      // safe-git-allow: incremental-migration
-      execFileSync('git', ['-C', this.opts.projectDir, 'worktree', 'add', worktreePath, branch], { timeout: 30_000 });
+      SafeGitExecutor.execSync(['-C', this.opts.projectDir, 'worktree', 'add', worktreePath, branch], { timeout: 30_000, operation: 'src/core/WorktreeManager.ts:773' });
 
       // Cross-platform fast-copy node_modules from main if present (avoid `cp -al` per K-fix; use clonefile/reflink only)
       await this.fastCopyDeps(worktreePath);
@@ -882,8 +878,7 @@ export class WorktreeManager extends EventEmitter {
 
     let gitWorktrees: Array<{ path: string }> = [];
     try {
-      // safe-git-allow: incremental-migration
-      const stdout = execFileSync('git', ['-C', this.opts.projectDir, 'worktree', 'list', '--porcelain', '-z'], { encoding: 'utf-8', timeout: 5000 });
+      const stdout = SafeGitExecutor.readSync(['-C', this.opts.projectDir, 'worktree', 'list', '--porcelain', '-z'], { encoding: 'utf-8', timeout: 5000, operation: 'src/core/WorktreeManager.ts:886' });
       for (const block of stdout.split('\0\0')) {
         const m = block.match(/worktree\s+(.+)/);
         if (m) gitWorktrees.push({ path: m[1] });

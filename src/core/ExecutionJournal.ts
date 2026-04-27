@@ -22,6 +22,7 @@ import type {
   ExecutionDeviation,
   PendingStep,
 } from './types.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface ExecutionJournalStats {
   /** Total number of execution records */
@@ -276,8 +277,7 @@ export class ExecutionJournal {
   private removeSafe(filePath: string): void {
     try {
       if (fs.existsSync(filePath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(filePath);
+        SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/core/ExecutionJournal.ts:280' });
       }
     } catch {
       // @silent-fallback-ok — cleanup failure is non-critical

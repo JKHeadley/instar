@@ -28,14 +28,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { GitStateManager } from '../../src/core/GitStateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-git-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/git-state-manager.test.ts:38' });
 }
 
 describe('GitStateManager', () => {
@@ -50,10 +51,8 @@ describe('GitStateManager', () => {
 
     // Configure git user for commits in test env
     try {
-      // safe-git-allow: incremental-migration
-      execSync('git config --global user.email "test@test.com" 2>/dev/null || true', { stdio: 'pipe' });
-      // safe-git-allow: incremental-migration
-      execSync('git config --global user.name "Test" 2>/dev/null || true', { stdio: 'pipe' });
+      SafeGitExecutor.execSync(['config', '--global', 'user.email', '"test@test.com"', '2>/dev/null', '||', 'true'], { stdio: 'pipe', operation: 'tests/unit/git-state-manager.test.ts:54' });
+      SafeGitExecutor.execSync(['config', '--global', 'user.name', '"Test"', '2>/dev/null', '||', 'true'], { stdio: 'pipe', operation: 'tests/unit/git-state-manager.test.ts:56' });
     } catch {
       // May already be configured
     }
@@ -313,8 +312,7 @@ describe('GitStateManager', () => {
       manager.setRemote('https://github.com/user/repo.git');
 
       // Verify the git remote was set
-      // safe-git-allow: incremental-migration
-      const remoteUrl = execSync('git remote get-url origin', { cwd: stateDir, encoding: 'utf-8' }).trim();
+      const remoteUrl = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: stateDir, encoding: 'utf-8', operation: 'tests/unit/git-state-manager.test.ts:317' }).trim();
       expect(remoteUrl).toBe('https://github.com/user/repo.git');
     });
   });

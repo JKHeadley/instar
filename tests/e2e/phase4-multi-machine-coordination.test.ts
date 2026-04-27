@@ -36,6 +36,7 @@ import { UserManager } from '../../src/users/UserManager.js';
 import { CoordinationProtocol } from '../../src/core/CoordinationProtocol.js';
 import type { UserProfile, JobSchedulerConfig, ActivityEvent } from '../../src/core/types.js';
 import type { SessionManager } from '../../src/core/SessionManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Infrastructure ──────────────────────────────────────────────
 
@@ -47,8 +48,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/phase4-multi-machine-coordination.test.ts:51' });
 }
 
 function createJobsFile(dir: string, jobs: any[]): string {

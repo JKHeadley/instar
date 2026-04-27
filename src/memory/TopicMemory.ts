@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -155,11 +156,9 @@ export class TopicMemory {
           console.warn(`[TopicMemory] Database corrupt (${result[0]?.integrity_check}) — deleting and rebuilding`);
           this.db.close();
           this.db = null;
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(this.dbPath);
+          SafeFsExecutor.safeUnlinkSync(this.dbPath, { operation: 'src/memory/TopicMemory.ts:159' });
           for (const ext of ['-wal', '-shm']) {
-            // safe-git-allow: incremental-migration
-            try { fs.unlinkSync(this.dbPath + ext); } catch { /* may not exist */ }
+            try { SafeFsExecutor.safeUnlinkSync(this.dbPath + ext, { operation: 'src/memory/TopicMemory.ts:162' }); } catch { /* may not exist */ }
           }
           this.db = new BetterSqlite3(this.dbPath);
           this._needsRebuild = true;
@@ -169,11 +168,9 @@ export class TopicMemory {
         console.warn(`[TopicMemory] Database unreadable — deleting and rebuilding:`, err);
         try { this.db?.close(); } catch { /* ignore */ }
         this.db = null;
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(this.dbPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(this.dbPath, { operation: 'src/memory/TopicMemory.ts:173' }); } catch { /* ignore */ }
         for (const ext of ['-wal', '-shm']) {
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(this.dbPath + ext); } catch { /* may not exist */ }
+          try { SafeFsExecutor.safeUnlinkSync(this.dbPath + ext, { operation: 'src/memory/TopicMemory.ts:176' }); } catch { /* may not exist */ }
         }
         this.db = new BetterSqlite3(this.dbPath);
         this._needsRebuild = true;

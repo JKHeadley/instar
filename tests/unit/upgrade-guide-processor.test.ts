@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { UpgradeGuideProcessor } from '../../src/core/UpgradeGuideProcessor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('UpgradeGuideProcessor', () => {
   let tmpDir: string;
@@ -78,8 +79,7 @@ Added feature C.
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/upgrade-guide-processor.test.ts:82' });
   });
 
   // Helper: create a processor that reads upgrades from our test dir
@@ -211,8 +211,7 @@ Added feature C.
 
   // 9. Returns empty when no upgrades dir
   it('returns empty result when upgrades dir does not exist', () => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(upgradesDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(upgradesDir, { recursive: true, force: true, operation: 'tests/unit/upgrade-guide-processor.test.ts:215' });
 
     const proc = createProcessor();
     // Override to return null (no dir)

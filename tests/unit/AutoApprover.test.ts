@@ -15,6 +15,7 @@ import {
 } from '../../src/core/AutoApprover.js';
 import type { DetectedPrompt } from '../../src/monitoring/PromptGate.js';
 import type { ClassificationResult } from '../../src/monitoring/InputClassifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -65,8 +66,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/AutoApprover.test.ts:69' });
 });
 
 // ── Key Resolution ────────────────────────────────────────────────

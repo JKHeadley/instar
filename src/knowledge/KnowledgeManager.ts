@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface KnowledgeSource {
   id: string;
@@ -130,8 +131,7 @@ export class KnowledgeManager {
 
     // Remove file if it exists
     if (fs.existsSync(fullPath)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(fullPath);
+      SafeFsExecutor.safeUnlinkSync(fullPath, { operation: 'src/knowledge/KnowledgeManager.ts:134' });
     }
 
     // Remove from catalog

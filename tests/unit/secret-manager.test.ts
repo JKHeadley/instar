@@ -10,6 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SecretManager, SECRET_KEYS } from '../../src/core/SecretManager.js';
 import { GlobalSecretStore } from '../../src/core/GlobalSecretStore.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('SecretManager', () => {
   let tmpDir: string;
@@ -19,8 +20,7 @@ describe('SecretManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/secret-manager.test.ts:23' });
   });
 
   /** Create a GlobalSecretStore that auto-inits with machine-derived password. */

@@ -34,6 +34,7 @@ import type { Dispatch } from '../../src/core/DispatchManager.js';
 import type { SignedDispatch } from '../../src/core/DispatchVerifier.js';
 import type { IntelligenceProvider, AgentContextSnapshot } from '../../src/core/types.js';
 import type { ContextualEvaluation } from '../../src/core/ContextualEvaluator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Orchestrator ──────────────────────────────────────────────
 // Wires all components together like AutoDispatcher.setDiscernmentLayer() does,
@@ -358,8 +359,7 @@ describe('Discernment Layer E2E', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/discernment-layer-e2e.test.ts:362' });
   });
 
   function makeOrchestrator(

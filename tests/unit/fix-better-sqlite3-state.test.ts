@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const require = createRequire(import.meta.url);
 // Load the .cjs via createRequire so ESM doesn't choke on the non-module format.
@@ -35,8 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
-    // safe-git-allow: incremental-migration
-    if (fs.existsSync(tmpPkg)) fs.rmSync(tmpPkg, { recursive: true, force: true });
+    if (fs.existsSync(tmpPkg)) SafeFsExecutor.safeRmSync(tmpPkg, { recursive: true, force: true, operation: 'tests/unit/fix-better-sqlite3-state.test.ts:39' });
   } catch { /* best effort */ }
 });
 

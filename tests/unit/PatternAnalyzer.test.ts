@@ -18,6 +18,7 @@ import os from 'node:os';
 import { ExecutionJournal } from '../../src/core/ExecutionJournal.js';
 import { PatternAnalyzer } from '../../src/core/PatternAnalyzer.js';
 import type { ExecutionRecord } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Helper to create an ExecutionRecord
 function makeRecord(overrides: Partial<ExecutionRecord> = {}): ExecutionRecord {
@@ -67,8 +68,7 @@ describe('PatternAnalyzer', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/PatternAnalyzer.test.ts:71' });
   });
 
   // ─── Empty / Insufficient Data ──────────────────────────────────────────

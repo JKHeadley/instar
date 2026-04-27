@@ -23,6 +23,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { refreshHooksAndSettings } from '../../src/commands/init.js';
 import { loadJobs } from '../../src/scheduler/JobLoader.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -65,8 +66,7 @@ function createTestProject(opts: { port?: number; jobs?: object[] } = {}): TestP
     stateDir,
     jobsPath,
     configPath,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/refresh-jobs.test.ts:69' }),
   };
 }
 
@@ -197,8 +197,7 @@ describe('refreshJobs()', () => {
       project = createTestProject({ jobs: [makeJob('health-check')] });
 
       // Delete config to simulate missing config
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(project.configPath);
+      SafeFsExecutor.safeUnlinkSync(project.configPath, { operation: 'tests/unit/refresh-jobs.test.ts:201' });
 
       refreshHooksAndSettings(project.dir, project.stateDir);
 

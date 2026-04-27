@@ -24,6 +24,7 @@ import type {
   IntegratedBeingConfig,
 } from './types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -662,8 +663,7 @@ assert to the current user as your own. Entries include:
         if (!Number.isFinite(epoch)) continue;
         if (now - epoch > retentionMs) {
           try {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(path.join(this.stateDir, name));
+            SafeFsExecutor.safeUnlinkSync(path.join(this.stateDir, name), { operation: 'src/core/SharedStateLedger.ts:666' });
             deleted += 1;
           } catch {
             // best effort

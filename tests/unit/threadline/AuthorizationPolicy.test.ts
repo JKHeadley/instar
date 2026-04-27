@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AuthorizationPolicyManager } from '../../../src/threadline/AuthorizationPolicy.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('AuthorizationPolicy', () => {
   let tmpDir: string;
@@ -15,8 +16,7 @@ describe('AuthorizationPolicy', () => {
 
   afterEach(() => {
     mgr.flush();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/AuthorizationPolicy.test.ts:19' });
   });
 
   describe('createGrant', () => {

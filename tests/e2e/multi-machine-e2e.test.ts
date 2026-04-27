@@ -43,14 +43,14 @@ import {
   sign,
   verify,
 } from '../../src/core/MachineIdentity.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-e2e-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/multi-machine-e2e.test.ts:53' });
 }
 
 /**

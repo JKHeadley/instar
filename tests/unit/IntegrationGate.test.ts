@@ -20,6 +20,7 @@ import os from 'node:os';
 import { IntegrationGate } from '../../src/scheduler/IntegrationGate.js';
 import type { IntegrationGateConfig, GateContext } from '../../src/scheduler/IntegrationGate.js';
 import type { IntelligenceProvider, ExecutionRecord, JobDefinition } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -136,8 +137,7 @@ describe('IntegrationGate', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/IntegrationGate.test.ts:140' });
   });
 
   // ── Skip Behavior ──────────────────────────────────────────────────

@@ -13,6 +13,7 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('AgentServer — EADDRINUSE handling', () => {
   let blocker: net.Server | null = null;
@@ -80,7 +81,6 @@ describe('AgentServer — EADDRINUSE handling', () => {
     await expect(server.start()).rejects.toThrow(/already in use/i);
 
     // Clean up
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/server-eaddrinuse.test.ts:84' });
   });
 });

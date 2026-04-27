@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('WhatsApp CLI commands', () => {
   let tmpDir: string;
@@ -15,8 +16,7 @@ describe('WhatsApp CLI commands', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/WhatsAppCli.test.ts:19' });
   });
 
   function writeConfig(config: Record<string, unknown>): void {

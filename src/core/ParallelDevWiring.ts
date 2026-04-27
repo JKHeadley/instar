@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { ParallelDevConfig } from './types.js';
 import { WorktreeKeyVault } from './WorktreeKeyVault.js';
 import { WorktreeManager } from './WorktreeManager.js';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 export interface ParallelDevWiringOptions {
   config: ParallelDevConfig;
@@ -32,12 +33,9 @@ export interface ParallelDevWiringResult {
 
 function defaultRepoOriginUrl(projectDir: string): string {
   try {
-    // safe-git-allow: incremental-migration
-    return execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: projectDir,
+    return SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: projectDir,
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+      stdio: ['pipe', 'pipe', 'pipe'], operation: 'src/core/ParallelDevWiring.ts:36' }).trim();
   } catch {
     return '';
   }

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ContextHierarchy } from '../../src/core/ContextHierarchy.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTmpProject(): { projectDir: string; stateDir: string } {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-test-'));
@@ -32,8 +33,7 @@ describe('ContextHierarchy', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/ContextHierarchy.test.ts:36' });
   });
 
   describe('initialize()', () => {

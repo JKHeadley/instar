@@ -10,12 +10,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { FileHandler } from '../../src/messaging/slack/FileHandler.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TEST_DIR = '/tmp/slack-file-download-test-' + Date.now();
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(TEST_DIR, { recursive: true, force: true, operation: 'tests/unit/slack-file-download.test.ts:18' });
   vi.restoreAllMocks();
 });
 

@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SHARED_INFRA_FLAGS } from '../../src/messaging/shared/FeatureFlags.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Save original flag values
 const originalFlags = { ...SHARED_INFRA_FLAGS };
@@ -31,8 +32,7 @@ describe('Shared Infrastructure Delegation', () => {
   afterEach(() => {
     // Restore original flags
     Object.assign(SHARED_INFRA_FLAGS, originalFlags);
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/shared-infra-delegation.test.ts:35' });
   });
 
   /**

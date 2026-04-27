@@ -20,6 +20,7 @@ import { ClaudeConfigCredentialProvider } from '../../src/monitoring/CredentialP
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -98,8 +99,7 @@ describe('Session Migration Lifecycle (e2e)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/session-migration-lifecycle.test.ts:102' });
   });
 
   it('full lifecycle: exhaustion → migrate → sessions restart on new account', async () => {

@@ -7,6 +7,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { isEncryptedFile } from '../messaging/shared/EncryptedAuthStore.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 /**
  * Check if Baileys is importable. Uses dynamic import() instead of require.resolve()
@@ -131,8 +132,7 @@ export async function addWhatsApp(opts: AddWhatsAppOptions): Promise<void> {
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/commands/whatsapp.ts:135' }); } catch { /* ignore */ }
     throw err;
   }
 

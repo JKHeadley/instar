@@ -8,6 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DeferredDispatchTracker } from '../../src/core/DeferredDispatchTracker.js';
 import type { Dispatch } from '../../src/core/DispatchManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeDispatch(overrides?: Partial<Dispatch>): Dispatch {
   return {
@@ -33,8 +34,7 @@ describe('DeferredDispatchTracker', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/DeferredDispatchTracker.test.ts:37' });
   });
 
   // ── Basic deferral ───────────────────────────────────────────────

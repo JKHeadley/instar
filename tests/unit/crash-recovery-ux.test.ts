@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test helpers ─────────────────────────────────────────────
 
@@ -22,8 +23,7 @@ function createTempDir(): { dir: string; cleanup: () => void } {
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
   return {
     dir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/crash-recovery-ux.test.ts:26' }),
   };
 }
 
@@ -407,8 +407,7 @@ describe('debug-restart-request.json lifecycle', () => {
 
     // Simulate consumption
     fs.readFileSync(requestPath, 'utf-8');
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(requestPath);
+    SafeFsExecutor.safeUnlinkSync(requestPath, { operation: 'tests/unit/crash-recovery-ux.test.ts:411' });
     expect(fs.existsSync(requestPath)).toBe(false);
   });
 

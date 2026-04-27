@@ -20,6 +20,7 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { detectTmuxPath } from '../../src/core/Config.js';
 import { createMockClaude, createSampleJobsFile, waitFor } from '../helpers/setup.js';
 import type { InstarConfig, JobDefinition } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const tmuxPath = detectTmuxPath();
 const describeMaybe = tmuxPath ? describe : describe.skip;
@@ -195,8 +196,7 @@ describeMaybe('E2E: Job Run History lifecycle', () => {
     } catch {}
 
     await server?.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/job-run-history-lifecycle.test.ts:199' });
   });
 
   // ── History endpoints exist and return correct shape ─────────────

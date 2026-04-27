@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('HandshakeManager', () => {
   let tmpDir: string;
@@ -16,8 +17,7 @@ describe('HandshakeManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/HandshakeManager.test.ts:20' });
   });
 
   describe('Full handshake flow (happy path)', () => {

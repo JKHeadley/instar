@@ -13,6 +13,7 @@ import { DispatchExecutor } from '../../src/core/DispatchExecutor.js';
 import type { ActionPayload } from '../../src/core/DispatchExecutor.js';
 import { DispatchManager } from '../../src/core/DispatchManager.js';
 import type { Dispatch } from '../../src/core/DispatchManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── DispatchExecutor failure paths ────────────────────────────────
 
@@ -117,8 +118,7 @@ describe('DispatchExecutor — missing required fields in steps', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/dispatch-failures.test.ts:121' });
   });
 
   it('shell step with missing command returns error', async () => {
@@ -220,8 +220,7 @@ describe('DispatchManager — context file corrupted', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/dispatch-failures.test.ts:224' });
   });
 
   it('readContextFile returns empty string when file contains garbage', () => {
@@ -295,8 +294,7 @@ describe('DispatchManager — last check file corrupted', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/dispatch-failures.test.ts:299' });
   });
 
   it('handles corrupted last-check file by re-checking without since param', async () => {
@@ -370,8 +368,7 @@ describe('DispatchManager — dispatch file write fails', () => {
   afterEach(() => {
     global.fetch = originalFetch;
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/dispatch-failures.test.ts:374' });
   });
 
   it('saveDispatches failure during markApplied propagates the error', () => {
@@ -466,8 +463,7 @@ describe('DispatchManager — concurrent dispatch checks', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/dispatch-failures.test.ts:470' });
   });
 
   it('two concurrent checks do not duplicate dispatches', async () => {
@@ -562,8 +558,7 @@ describe('DispatchManager — approval gate rejects', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/dispatch-failures.test.ts:566' });
   });
 
   function seedDispatch(overrides: Partial<Dispatch> = {}): Dispatch {

@@ -20,6 +20,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from './DegradationReporter.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -628,8 +629,7 @@ export class SessionMigrator extends EventEmitter {
   private releaseLock(): void {
     try {
       if (fs.existsSync(this.lockPath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(this.lockPath);
+        SafeFsExecutor.safeUnlinkSync(this.lockPath, { operation: 'src/monitoring/SessionMigrator.ts:632' });
       }
     } catch {
       // @silent-fallback-ok — lock may have been cleaned up already

@@ -22,6 +22,7 @@ import type {
   InteractionSummary,
   UserChannel,
 } from './types.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /** Maximum number of channels per relationship record. */
 const MAX_CHANNELS = 50;
@@ -777,8 +778,7 @@ Respond with ONLY: YES or NO`;
       writeFileSync(tmpPath, JSON.stringify(record, null, 2));
       renameSync(tmpPath, filePath);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/RelationshipManager.ts:781' }); } catch { /* ignore */ }
       throw err;
     }
   }
@@ -787,8 +787,7 @@ Respond with ONLY: YES or NO`;
     this.validateId(id);
     const filePath = join(this.config.relationshipsDir, `${id}.json`);
     try {
-      // safe-git-allow: incremental-migration
-      unlinkSync(filePath);
+      SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/core/RelationshipManager.ts:791' });
     } catch {
       // File may not exist
     }

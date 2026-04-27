@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { IdentityManager } from '../../../../src/threadline/client/IdentityManager.js';
+import { SafeFsExecutor } from '../../../../src/core/SafeFsExecutor.js';
 
 describe('IdentityManager', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('IdentityManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/client/IdentityManager.test.ts:18' });
   });
 
   describe('getOrCreate', () => {

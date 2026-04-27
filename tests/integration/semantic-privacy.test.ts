@@ -17,6 +17,7 @@ import {
   defaultScope,
   buildPrivacySqlFilter,
 } from '../../src/utils/privacy.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -40,8 +41,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   memory.close();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(testDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(testDir, { recursive: true, force: true, operation: 'tests/integration/semantic-privacy.test.ts:44' });
 });
 
 // ── Full Pipeline: Remember → Privacy Filter → Context ──────────

@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { MCPAuth } from '../../../src/threadline/MCPAuth.js';
 import type { MCPTokenScope } from '../../../src/threadline/MCPAuth.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -23,8 +24,7 @@ function createTempDir(): string {
 
 function cleanupDir(dir: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/MCPAuth.test.ts:27' });
   } catch { /* ignore */ }
 }
 

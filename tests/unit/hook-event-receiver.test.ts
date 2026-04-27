@@ -18,6 +18,7 @@ import {
   HookEventReceiver,
   type HookEventPayload,
 } from '../../src/monitoring/HookEventReceiver.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -46,8 +47,7 @@ describe('HookEventReceiver', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/hook-event-receiver.test.ts:50' });
   });
 
   // ── Event Reception ──────────────────────────────────────────

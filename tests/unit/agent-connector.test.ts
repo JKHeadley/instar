@@ -13,6 +13,7 @@ import {
   connectViaGit,
   registerConnectedAgent,
 } from '../../src/core/AgentConnector.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── validateAgentState ──────────────────────────────────────────────
 
@@ -24,8 +25,7 @@ describe('validateAgentState', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-connector.test.ts:28' });
   });
 
   function writeAgentFiles(overrides: {
@@ -256,8 +256,7 @@ describe('connectViaGit', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-connector.test.ts:260' });
   });
 
   it('rejects invalid URLs', () => {
@@ -328,8 +327,7 @@ describe('registerConnectedAgent', () => {
       originalContent = null;
     }
     // Remove to start clean
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(registryPath); } catch { /* no file */ }
+    try { SafeFsExecutor.safeUnlinkSync(registryPath, { operation: 'tests/unit/agent-connector.test.ts:332' }); } catch { /* no file */ }
   });
 
   afterEach(() => {
@@ -338,8 +336,7 @@ describe('registerConnectedAgent', () => {
       fs.mkdirSync(path.dirname(registryPath), { recursive: true });
       fs.writeFileSync(registryPath, originalContent);
     } else {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(registryPath); } catch { /* no file */ }
+      try { SafeFsExecutor.safeUnlinkSync(registryPath, { operation: 'tests/unit/agent-connector.test.ts:342' }); } catch { /* no file */ }
     }
   });
 

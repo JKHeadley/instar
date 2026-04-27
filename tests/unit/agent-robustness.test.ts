@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const ORIG_HOMEDIR = os.homedir;
 
@@ -22,8 +23,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/agent-robustness.test.ts:26' });
 }
 
 describe('Agent Robustness', () => {
@@ -197,8 +197,7 @@ describe('Agent Robustness', () => {
       expect(shutdownCompleted).toBe(true);
 
       // Clean up lock
-      // safe-git-allow: incremental-migration
-      fs.rmSync(lockPath, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(lockPath, { recursive: true, force: true, operation: 'tests/unit/agent-robustness.test.ts:201' });
     });
   });
 

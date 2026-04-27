@@ -18,13 +18,13 @@ import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { LlmQueue } from '../../src/monitoring/LlmQueue.js';
 import { ProxyCoordinator } from '../../src/monitoring/ProxyCoordinator.js';
 import { PromiseBeacon } from '../../src/monitoring/PromiseBeacon.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tmpState() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'promise-beacon-fu-'));
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), '{}');
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/PromiseBeacon-followups.test.ts:27' }) };
 }
 
 function baseTracker(dir: string) {

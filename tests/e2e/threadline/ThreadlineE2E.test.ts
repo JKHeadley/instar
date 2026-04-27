@@ -31,6 +31,7 @@ import {
 } from '../../../src/threadline/ThreadlineCrypto.js';
 import type { HelloPayload, ConfirmPayload } from '../../../src/threadline/HandshakeManager.js';
 import type { ThreadResumeEntry } from '../../../src/threadline/ThreadResumeMap.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Agent Simulator ──────────────────────────────────────────────────
 
@@ -110,8 +111,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/threadline/ThreadlineE2E.test.ts:114' });
 });
 
 // ── Scenario 1: Happy Path — First Contact to Conversation ──────────

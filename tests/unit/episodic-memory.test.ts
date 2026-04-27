@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { EpisodicMemory } from '../../src/memory/EpisodicMemory.js';
 import type { ActivityDigest, SessionSynthesis, BoundarySignal } from '../../src/memory/EpisodicMemory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Test Helpers ───────────────────────────────────────────────────
 
@@ -37,8 +38,7 @@ function createTestMemory(): TestSetup {
     dir,
     stateDir,
     memory,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/episodic-memory.test.ts:41' }),
   };
 }
 

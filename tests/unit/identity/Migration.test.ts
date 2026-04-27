@@ -11,6 +11,7 @@ import {
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
 import { computeCanonicalId, computeDisplayFingerprint } from '../../../src/identity/types.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('Migration', () => {
   let tmpDir: string;
@@ -34,8 +35,7 @@ describe('Migration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/identity/Migration.test.ts:38' });
   });
 
   describe('hasLegacyIdentity', () => {
@@ -46,8 +46,7 @@ describe('Migration', () => {
     it('returns false when no legacy', () => {
       const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-'));
       expect(hasLegacyIdentity(emptyDir)).toBe(false);
-      // safe-git-allow: incremental-migration
-      fs.rmSync(emptyDir, { recursive: true });
+      SafeFsExecutor.safeRmSync(emptyDir, { recursive: true, operation: 'tests/unit/identity/Migration.test.ts:50' });
     });
   });
 
@@ -106,8 +105,7 @@ describe('Migration', () => {
     it('throws if no legacy exists', () => {
       const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-'));
       expect(() => migrateFromLegacy(emptyDir)).toThrow('No legacy identity');
-      // safe-git-allow: incremental-migration
-      fs.rmSync(emptyDir, { recursive: true });
+      SafeFsExecutor.safeRmSync(emptyDir, { recursive: true, operation: 'tests/unit/identity/Migration.test.ts:110' });
     });
 
     it('throws if canonical already exists', () => {
@@ -125,8 +123,7 @@ describe('Migration', () => {
     it('returns null when no legacy exists', () => {
       const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-'));
       expect(getLegacyFingerprint(emptyDir)).toBeNull();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(emptyDir, { recursive: true });
+      SafeFsExecutor.safeRmSync(emptyDir, { recursive: true, operation: 'tests/unit/identity/Migration.test.ts:129' });
     });
   });
 });

@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createTwoSessionHarness, type HarnessHandle } from '../fixtures/two-session-harness.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 let h: HarnessHandle;
 
@@ -74,10 +75,8 @@ describe('AC-4 sequential attach', () => {
 describe('AC-5 commit-msg trailer injection', () => {
   it('signTrailer returns 9 trailer lines with valid Ed25519 signature', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    // safe-git-allow: incremental-migration
-    const treeHash = execFileSync('git', ['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8' }).trim();
-    // safe-git-allow: incremental-migration
-    const head = execFileSync('git', ['-C', s.cwd!, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:78' }).trim();
+    const head = SafeGitExecutor.readSync(['-C', s.cwd!, 'rev-parse', 'HEAD'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:80' }).trim();
 
     const result = h.manager.signTrailer({
       sessionId: s.sessionId,
@@ -96,8 +95,7 @@ describe('AC-5 commit-msg trailer injection', () => {
 describe('AC-9 replay rejected (nonce uniqueness)', () => {
   it('same nonce reused for a different commit is rejected', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    // safe-git-allow: incremental-migration
-    const treeHash = execFileSync('git', ['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8' }).trim();
+    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:100' }).trim();
     const result = h.manager.signTrailer({
       sessionId: s.sessionId,
       fencingToken: s.fencingToken!,
@@ -142,10 +140,8 @@ describe('AC-17 incident replay part one — two-session sweep', () => {
 describe('AC-43 Ed25519 offline verify', () => {
   it('signature verifies offline using only the public key', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    // safe-git-allow: incremental-migration
-    const treeHash = execFileSync('git', ['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8' }).trim();
-    // safe-git-allow: incremental-migration
-    const head = execFileSync('git', ['-C', s.cwd!, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:146' }).trim();
+    const head = SafeGitExecutor.readSync(['-C', s.cwd!, 'rev-parse', 'HEAD'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:148' }).trim();
 
     const result = h.manager.signTrailer({
       sessionId: s.sessionId,
@@ -180,10 +176,8 @@ describe('AC-43 Ed25519 offline verify', () => {
 describe('AC-48 nonce idempotency', () => {
   it('same (nonce, commitSha) on retry returns seen-for-same-commit (allowed)', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    // safe-git-allow: incremental-migration
-    const treeHash = execFileSync('git', ['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8' }).trim();
-    // safe-git-allow: incremental-migration
-    const head = execFileSync('git', ['-C', s.cwd!, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:184' }).trim();
+    const head = SafeGitExecutor.readSync(['-C', s.cwd!, 'rev-parse', 'HEAD'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:186' }).trim();
     const result = h.manager.signTrailer({
       sessionId: s.sessionId,
       fencingToken: s.fencingToken!,
@@ -198,8 +192,7 @@ describe('AC-48 nonce idempotency', () => {
 describe('AC-51 merge-commit signs all parents in order', () => {
   it('signature payload includes all parent SHAs comma-joined', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    // safe-git-allow: incremental-migration
-    const treeHash = execFileSync('git', ['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8' }).trim();
+    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager.test.ts:202' }).trim();
     const parents = ['a'.repeat(40), 'b'.repeat(40)];
     const result = h.manager.signTrailer({
       sessionId: s.sessionId,

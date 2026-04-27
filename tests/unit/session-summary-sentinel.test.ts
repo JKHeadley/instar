@@ -20,6 +20,7 @@ import {
   type SessionSummary,
 } from '../../src/messaging/SessionSummarySentinel.js';
 import type { Session } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -59,8 +60,7 @@ describe('SessionSummarySentinel', () => {
 
   afterEach(() => {
     sentinel.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/session-summary-sentinel.test.ts:63' });
   });
 
   // ── Keyword Summary Extraction ─────────────────────────────

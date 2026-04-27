@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { TreeGenerator } from '../../src/knowledge/TreeGenerator.js';
 import { ContextSnapshotBuilder } from '../../src/core/ContextSnapshotBuilder.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Self-Knowledge Init/Doctor (Phase 3)', () => {
   let tmpDir: string;
@@ -19,8 +20,7 @@ describe('Self-Knowledge Init/Doctor (Phase 3)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SelfKnowledgeInit.test.ts:23' });
   });
 
   function writeAgentMd(content: string) {

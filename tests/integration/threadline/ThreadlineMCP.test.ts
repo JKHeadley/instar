@@ -28,6 +28,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer.js';
 import { MCPAuth } from '../../../src/threadline/MCPAuth.js';
 import { ThreadResumeMap } from '../../../src/threadline/ThreadResumeMap.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 /**
  * Test-friendly ThreadResumeMap that skips JSONL file existence checks.
@@ -71,8 +72,7 @@ function createTempDir(): string {
 }
 
 function cleanupDir(dir: string): void {
-  // safe-git-allow: incremental-migration
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/threadline/ThreadlineMCP.test.ts:75' }); } catch { /* ignore */ }
 }
 
 // ── Simulated Message Store ──────────────────────────────────────────

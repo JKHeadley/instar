@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SCRIPT = path.resolve(__dirname, '../../playbook-scripts/build-state.py');
 
@@ -98,8 +99,7 @@ describe('build-state.py heartbeat', () => {
 
   afterEach(async () => {
     await server.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/build-state-heartbeat.test.ts:102' });
   });
 
   it('posts a heartbeat on transition when INSTAR_TELEGRAM_TOPIC is set', async () => {

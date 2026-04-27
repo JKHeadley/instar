@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SCRIPT = path.resolve(__dirname, '../../playbook-scripts/build-state.py');
 
@@ -37,8 +38,7 @@ describe('build-state.py', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/build-state.test.ts:41' });
   });
 
   describe('init', () => {

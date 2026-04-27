@@ -26,6 +26,7 @@ import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SCRIPT_DIR = path.join(process.cwd(), 'src/templates/scripts');
 
@@ -112,8 +113,7 @@ async function runScript(script: string, args: string[], port: number, stdin?: s
       proc.stdin.end();
     });
   } finally {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpCwd, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpCwd, { recursive: true, force: true, operation: 'tests/unit/reply-scripts.test.ts:116' });
   }
 }
 

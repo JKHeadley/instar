@@ -25,6 +25,7 @@ import { AgentBus } from '../../src/core/AgentBus.js';
 import type { AgentMessage } from '../../src/core/AgentBus.js';
 import type { UserProfile } from '../../src/core/types.js';
 import type { UserPropagationPayload } from '../../src/users/UserPropagator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -33,8 +34,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/user-propagator.test.ts:37' });
 }
 
 function makeUser(overrides?: Partial<UserProfile>): UserProfile {

@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Upgrade guide finalization', () => {
   let tmpDir: string;
@@ -126,8 +127,7 @@ automatically created and maintained alongside existing vector indexes.
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/upgrade-guide-finalization.test.ts:130' });
   });
 
   function runLocalScript(): { stdout: string; exitCode: number } {

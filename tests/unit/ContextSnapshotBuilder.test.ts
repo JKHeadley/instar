@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ContextSnapshotBuilder } from '../../src/core/ContextSnapshotBuilder.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('ContextSnapshotBuilder', () => {
   let tmpDir: string;
@@ -30,8 +31,7 @@ describe('ContextSnapshotBuilder', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/ContextSnapshotBuilder.test.ts:34' });
     vi.restoreAllMocks();
   });
 
@@ -539,8 +539,7 @@ describe('ContextSnapshotBuilder', () => {
   describe('edge cases', () => {
     it('handles completely empty state directory', () => {
       // Remove state dir entirely
-      // safe-git-allow: incremental-migration
-      fs.rmSync(stateDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ContextSnapshotBuilder.test.ts:543' });
       const builder = makeBuilder();
       const snapshot = builder.build();
 

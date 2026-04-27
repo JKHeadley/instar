@@ -10,6 +10,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('StateManager — edge cases', () => {
   let tmpDir: string;
@@ -24,8 +25,7 @@ describe('StateManager — edge cases', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/state-manager-edge.test.ts:28' });
   });
 
   describe('atomic write cleanup', () => {

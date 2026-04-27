@@ -13,6 +13,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 const WATCHDOG_INTERVAL_MS = 30_000; // 30 seconds
 
@@ -207,8 +208,7 @@ export class CaffeinateManager extends EventEmitter {
   private removePidFile(): void {
     try {
       if (fs.existsSync(this.pidFile)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(this.pidFile);
+        SafeFsExecutor.safeUnlinkSync(this.pidFile, { operation: 'src/core/CaffeinateManager.ts:211' });
       }
     } catch {
       // Not critical

@@ -39,6 +39,7 @@ import type { RelevanceFilter } from './RelevanceFilter.js';
 import type { DispatchVerifier } from './DispatchVerifier.js';
 import type { DeferredDispatchTracker } from './DeferredDispatchTracker.js';
 import type { AdaptationValidator } from './AdaptationValidator.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface AutoDispatcherConfig {
   /** How often to poll for dispatches, in minutes. Default: 30 */
@@ -845,8 +846,7 @@ export class AutoDispatcher {
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
       fs.renameSync(tmpPath, this.stateFile);
     } catch {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/AutoDispatcher.ts:849' }); } catch { /* ignore */ }
     }
   }
 }

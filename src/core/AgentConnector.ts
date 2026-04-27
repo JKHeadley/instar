@@ -20,6 +20,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GitStateManager } from './GitStateManager.js';
 import type { AgentAutonomyConfig, JobDefinition } from './types.js';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -138,8 +140,7 @@ export function checkGitVersion(): { version: string; safe: boolean; minimum: st
   const minimum = MIN_GIT_VERSIONS[platform] || '2.43.7';
 
   try {
-    // safe-git-allow: incremental-migration
-    const versionOutput = execSync('git --version', { encoding: 'utf-8' }).trim();
+    const versionOutput = SafeGitExecutor.readSync(['--version'], { encoding: 'utf-8', operation: 'src/core/AgentConnector.ts:142' }).trim();
     const match = versionOutput.match(/(\d+\.\d+\.\d+)/);
     if (!match) {
       return { version: 'unknown', safe: false, minimum };
@@ -240,14 +241,14 @@ export function connectViaGit(options: ConnectViaGitOptions): ConnectViaGitResul
 
   // Clone with security flags
   try {
-    const execOpts: ExecSyncOptions = {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 60000, // 1 minute timeout
-    };
-    // safe-git-allow: incremental-migration
-    execSync(
-      `git clone --depth=1 --no-recurse-submodules ${JSON.stringify(remoteUrl)} ${JSON.stringify(targetDir)}`,
-      execOpts,
+    SafeGitExecutor.execSync(
+      ['clone', '--depth=1', '--no-recurse-submodules', remoteUrl, targetDir],
+      {
+        cwd: parentDir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 60000,
+        operation: 'src/core/AgentConnector.ts:cloneRepo',
+      },
     );
   } catch (err) {
     // Clean up partial clone
@@ -334,8 +335,7 @@ export function connectViaGit(options: ConnectViaGitOptions): ConnectViaGitResul
  */
 function cleanup(dir: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'src/core/AgentConnector.ts:338' });
   } catch {
     // Best effort cleanup
   }

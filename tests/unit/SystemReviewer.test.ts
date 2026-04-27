@@ -16,6 +16,7 @@ import { createSessionProbes } from '../../src/monitoring/probes/SessionProbe.js
 import { createSchedulerProbes } from '../../src/monitoring/probes/SchedulerProbe.js';
 import { createMessagingProbes } from '../../src/monitoring/probes/MessagingProbe.js';
 import { createLifelineProbes } from '../../src/monitoring/probes/LifelineProbe.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -149,8 +150,7 @@ describe('SystemReviewer', () => {
   afterEach(() => {
     reviewer.stop();
     try {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(stateDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:153' });
     } catch { /* ignore */ }
   });
 
@@ -200,8 +200,7 @@ describe('SystemReviewer', () => {
     expect(probes.find(p => p.id === 'test.nopre')?.prerequisitesMet).toBe(false);
 
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:204' });
   });
 
   // ── Review Execution ────────────────────────────────────────────────
@@ -304,8 +303,7 @@ describe('SystemReviewer', () => {
     expect(report.skipped.some(s => s.probeId === 'test.disabled')).toBe(true);
     expect(report.skipped.find(s => s.probeId === 'test.disabled')?.reason).toContain('Disabled');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:308' });
   });
 
   // ── Status Classification ───────────────────────────────────────────
@@ -473,8 +471,7 @@ describe('SystemReviewer', () => {
     }
 
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:477' });
   });
 
   // ── Concurrency Control ─────────────────────────────────────────────
@@ -727,8 +724,7 @@ describe('SystemReviewer', () => {
 
     expect(rev.getHistory()).toHaveLength(3);
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:731' });
   });
 
   it('loads history from JSONL file on startup', async () => {
@@ -775,8 +771,7 @@ describe('SystemReviewer', () => {
     expect(lines.length).toBe(3);
 
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:779' });
   });
 
   // ── Dead Letter Fallback ────────────────────────────────────────────
@@ -790,8 +785,7 @@ describe('SystemReviewer', () => {
 
     // Create a directory where the history file should be (to cause write error)
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(historyPath);
+      SafeFsExecutor.safeUnlinkSync(historyPath, { operation: 'tests/unit/SystemReviewer.test.ts:794' });
     } catch { /* may not exist */ }
     fs.mkdirSync(historyPath, { recursive: true });
 
@@ -804,8 +798,7 @@ describe('SystemReviewer', () => {
     expect(content).toContain('history-persist-error');
 
     // Cleanup: remove the directory we created
-    // safe-git-allow: incremental-migration
-    fs.rmSync(historyPath, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(historyPath, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:808' });
   });
 
   // ── Trend Analysis ──────────────────────────────────────────────────
@@ -889,8 +882,7 @@ describe('SystemReviewer', () => {
     expect(trend.direction).toBe('declining');
     rev2.stop();
     rev3.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir2, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir2, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:893' });
   });
 
   it('trend detects improving direction', async () => {
@@ -927,8 +919,7 @@ describe('SystemReviewer', () => {
     const trend = rev.getTrend();
     expect(trend.direction).toBe('improving');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:931' });
   });
 
   it('trend detects persistent failures (3+ consecutive)', async () => {
@@ -954,8 +945,7 @@ describe('SystemReviewer', () => {
     expect(trend.persistentFailures).toContain('test.broken');
     expect(trend.persistentFailures).not.toContain('test.ok');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:958' });
   });
 
   it('trend detects new failures', async () => {
@@ -988,8 +978,7 @@ describe('SystemReviewer', () => {
     const trend = rev.getTrend();
     expect(trend.newFailures).toContain('test.flaky');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:992' });
   });
 
   it('trend detects recovered probes', async () => {
@@ -1022,8 +1011,7 @@ describe('SystemReviewer', () => {
     const trend = rev.getTrend();
     expect(trend.recovered).toContain('test.fixed');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1026' });
   });
 
   // ── Health Status ──────────────────────────────────────────────────
@@ -1154,8 +1142,7 @@ describe('SystemReviewer', () => {
     expect(alertText).toContain('test.crit');
     expect(alertText).toContain('Expected 42, got 0');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1158' });
   });
 
   it('sends alert for Tier 2 failures', async () => {
@@ -1175,8 +1162,7 @@ describe('SystemReviewer', () => {
     expect(alertText).toContain('test.high');
     expect(alertText).toContain('Expected 42, got 0');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1179' });
   });
 
   it('does not send alert for Tier 3+ failures', async () => {
@@ -1192,8 +1178,7 @@ describe('SystemReviewer', () => {
 
     expect(sendAlert).not.toHaveBeenCalled();
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1196' });
   });
 
   it('respects alert cooldown', async () => {
@@ -1213,8 +1198,7 @@ describe('SystemReviewer', () => {
     expect(sendAlert).toHaveBeenCalledOnce(); // Still 1
 
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1217' });
   });
 
   it('does not alert when alertOnCritical is false', async () => {
@@ -1230,8 +1214,7 @@ describe('SystemReviewer', () => {
 
     expect(sendAlert).not.toHaveBeenCalled();
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1234' });
   });
 
   it('writes dead letter when alert sending fails', async () => {
@@ -1251,8 +1234,7 @@ describe('SystemReviewer', () => {
     expect(content).toContain('alert-send-error');
     expect(content).toContain('Telegram down');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1255' });
   });
 
   // ── Feedback Submission ─────────────────────────────────────────────
@@ -1272,8 +1254,7 @@ describe('SystemReviewer', () => {
     expect(submitFeedback.mock.calls[0][0].title).toContain('test.fail');
     expect(submitFeedback.mock.calls[0][0].type).toBe('bug');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1276' });
   });
 
   it('does not submit feedback when autoSubmitFeedback is false', async () => {
@@ -1289,8 +1270,7 @@ describe('SystemReviewer', () => {
 
     expect(submitFeedback).not.toHaveBeenCalled();
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1293' });
   });
 
   it('does not submit feedback when feedbackConsentGiven is false', async () => {
@@ -1306,8 +1286,7 @@ describe('SystemReviewer', () => {
 
     expect(submitFeedback).not.toHaveBeenCalled();
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1310' });
   });
 
   it('dedups feedback (same probe failed in previous review)', async () => {
@@ -1326,8 +1305,7 @@ describe('SystemReviewer', () => {
     expect(submitFeedback).toHaveBeenCalledOnce(); // Still 1
 
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1330' });
   });
 
   it('redacts secrets from feedback descriptions', async () => {
@@ -1344,8 +1322,7 @@ describe('SystemReviewer', () => {
 
     expect(redactSecrets).toHaveBeenCalled();
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1348' });
   });
 
   it('writes dead letter when feedback submission fails', async () => {
@@ -1364,8 +1341,7 @@ describe('SystemReviewer', () => {
     const content = fs.readFileSync(deadLetterPath, 'utf-8');
     expect(content).toContain('feedback-submit-error');
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1368' });
   });
 
   // ── Cleanup & Startup Sweep ────────────────────────────────────────
@@ -1413,8 +1389,7 @@ describe('SystemReviewer', () => {
     rev.start();
     // No timer should be set — nothing to assert directly, but stop() shouldn't throw
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1417' });
   });
 
   it('start() is idempotent', () => {
@@ -1423,8 +1398,7 @@ describe('SystemReviewer', () => {
     rev.start();
     rev.start(); // Should not create a second timer
     rev.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1427' });
   });
 
   // ── Tier Ordering ──────────────────────────────────────────────────
@@ -1670,8 +1644,7 @@ describe('SchedulerProbes', () => {
     expect(result.description).toContain('mismatch');
     expect(result.expected).toContain('3');
     expect(result.actual).toContain('1');
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1674' });
   });
 
   it('scheduler.loaded passes when counts match jobs.json', async () => {
@@ -1691,8 +1664,7 @@ describe('SchedulerProbes', () => {
     const result = await probe.run();
     expect(result.passed).toBe(true);
     expect(result.description).toContain('matches jobs.json');
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1695' });
   });
 
   it('scheduler.running passes when active', async () => {
@@ -1876,8 +1848,7 @@ describe('MessagingProbes', () => {
     const result = await probe.run();
     expect(result.passed).toBe(true);
     expect(result.description).toContain('active');
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1880' });
   });
 
   it('messaging.topics reports count', async () => {
@@ -1924,8 +1895,7 @@ describe('LifelineProbes', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SystemReviewer.test.ts:1928' });
   });
 
   it('returns 3 probes', () => {

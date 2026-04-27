@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Interfaces ──────────────────────────────────────────────────────
 
@@ -209,8 +210,7 @@ export class ClaudeConfigCredentialProvider implements CredentialProvider {
     const credPath = path.join(this.configDir, 'credentials.json');
     try {
       if (fs.existsSync(credPath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(credPath);
+        SafeFsExecutor.safeUnlinkSync(credPath, { operation: 'src/monitoring/CredentialProvider.ts:213' });
       }
     } catch {
       // @silent-fallback-ok — file already deleted or never existed

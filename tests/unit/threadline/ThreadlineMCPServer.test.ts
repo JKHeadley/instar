@@ -33,6 +33,7 @@ import type {
 import type { ThreadlineAgentInfo } from '../../../src/threadline/AgentDiscovery.js';
 import type { ThreadResumeEntry } from '../../../src/threadline/ThreadResumeMap.js';
 import type { AgentTrustProfile } from '../../../src/threadline/AgentTrustManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ─────────────────────────────────────────────────────
 
@@ -41,8 +42,7 @@ function createTempDir(): string {
 }
 
 function cleanupDir(dir: string): void {
-  // safe-git-allow: incremental-migration
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/ThreadlineMCPServer.test.ts:45' }); } catch { /* ignore */ }
 }
 
 function makeAgent(overrides?: Partial<ThreadlineAgentInfo>): ThreadlineAgentInfo {

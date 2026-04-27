@@ -5,6 +5,7 @@ import type {
   TriageOrchestratorConfig,
   TriageEvidence,
 } from '../../src/monitoring/TriageOrchestrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * Integration tests for TriageOrchestrator — tests the full activation flow
@@ -397,8 +398,7 @@ describe('TriageOrchestrator Integration', () => {
       expect(content).toContain('</user_message>');
 
       // Cleanup
-      // safe-git-allow: incremental-migration
-      try { require('fs').unlinkSync(filepath); } catch {}
+      try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'tests/integration/triage-orchestrator-integration.test.ts:401' }); } catch {}
     });
 
     it('escapes XML delimiter injection attempts in tmux output', () => {
@@ -427,8 +427,7 @@ describe('TriageOrchestrator Integration', () => {
       // The injected JSON should just be text, not a real action
       expect(content).toContain('injection');
 
-      // safe-git-allow: incremental-migration
-      try { require('fs').unlinkSync(filepath); } catch {}
+      try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'tests/integration/triage-orchestrator-integration.test.ts:431' }); } catch {}
     });
   });
 

@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CanonicalState } from '../../src/core/CanonicalState.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'canonical-test-'));
@@ -29,8 +30,7 @@ describe('CanonicalState', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/CanonicalState.test.ts:33' });
   });
 
   describe('initialize()', () => {

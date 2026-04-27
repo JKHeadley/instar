@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createTempProject } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // We can't easily import SessionManager without its full dependency tree,
 // so we test the injection logic patterns directly.
@@ -26,8 +27,7 @@ describe('Feature: iMessage injection into tmux sessions', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/imessage-session-injection.test.ts:30' });
   });
 
   describe('Scenario: Tag construction', () => {

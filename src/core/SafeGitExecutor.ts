@@ -216,9 +216,23 @@ interface ExtractedTargets {
  */
 function extractVerbAndTargets(
   args: readonly string[],
-  cwd: string,
+  cwd: string | undefined,
 ): ExtractedTargets {
-  const targets: string[] = [canonicalize(cwd)];
+  // If cwd is not given but the args contain a `-C <dir>` redirect, default
+  // to that directory rather than process.cwd(). This preserves the
+  // semantics of `execFileSync('git', ['-C', dir, ...])` calls that pre-date
+  // the migration to SafeGitExecutor and didn't pass an explicit cwd.
+  let effectiveCwd = cwd;
+  if (effectiveCwd === undefined) {
+    for (let i = 0; i < args.length - 1; i++) {
+      if (args[i] === '-C') {
+        effectiveCwd = args[i + 1];
+        break;
+      }
+    }
+    effectiveCwd = effectiveCwd ?? process.cwd();
+  }
+  const targets: string[] = [canonicalize(effectiveCwd)];
   let i = 0;
   while (i < args.length) {
     const a = args[i];
@@ -511,12 +525,12 @@ function captureCallerFrame(): string {
 // ── Public types ────────────────────────────────────────────────────
 
 export interface SafeGitOptions {
-  /** Required. The directory the git command will mutate. */
-  cwd: string;
+  /** The directory the git command will mutate. Defaults to process.cwd(). */
+  cwd?: string;
   /** Caller label for error messages and audit log. */
   operation: string;
-  /** stdio passthrough, default 'pipe'. */
-  stdio?: 'pipe' | 'inherit' | 'ignore';
+  /** stdio passthrough, default 'pipe'. Accepts the same shapes execFileSync does. */
+  stdio?: 'pipe' | 'inherit' | 'ignore' | Array<'pipe' | 'inherit' | 'ignore' | number | null | undefined>;
   /** Encoding for return value, default 'utf-8'. */
   encoding?: BufferEncoding;
   /** Timeout in ms, default 30000. */
@@ -681,6 +695,29 @@ export class SafeGitExecutor {
     }
     audit('git', opts.operation, verb, targets[0], 'allowed');
     return stdout || '';
+  }
+
+  /**
+   * Verb-aware dispatcher. Routes to readSync for known read-only verbs and to
+   * execSync otherwise. Use this from generic git() helpers that take dynamic
+   * args and don't know at the call site whether the verb is destructive.
+   */
+  static run(args: readonly string[], opts: SafeGitOptions): string {
+    const verb = args[0];
+    if (verb && READONLY_GIT_VERBS.has(verb)) {
+      const verbArgs = args.slice(1);
+      const shape = isReadOnlyShape(verb, verbArgs);
+      if (shape !== false) return SafeGitExecutor.readSync(args, opts);
+    }
+    if (verb && !DESTRUCTIVE_GIT_VERBS.has(verb)) {
+      return SafeGitExecutor.readSync(args, opts);
+    }
+    if (verb) {
+      const verbArgs = args.slice(1);
+      const shape = isReadOnlyShape(verb, verbArgs);
+      if (shape === true) return SafeGitExecutor.readSync(args, opts);
+    }
+    return SafeGitExecutor.execSync(args, opts);
   }
 }
 

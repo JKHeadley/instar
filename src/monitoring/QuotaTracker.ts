@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import { DegradationReporter } from './DegradationReporter.js';
 import path from 'node:path';
 import type { QuotaState, JobPriority, JobSchedulerConfig } from '../core/types.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface QuotaTrackerConfig {
   /** Path to the quota state JSON file */
@@ -171,8 +172,7 @@ export class QuotaTracker {
       fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
       fs.renameSync(tmpPath, this.config.quotaFile);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/monitoring/QuotaTracker.ts:175' }); } catch { /* ignore */ }
       throw err;
     }
     this.cachedState = state;

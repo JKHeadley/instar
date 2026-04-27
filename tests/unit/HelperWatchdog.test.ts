@@ -9,13 +9,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { SubagentTracker } from '../../src/monitoring/SubagentTracker.js';
 import { HelperWatchdog } from '../../src/monitoring/HelperWatchdog.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTmpState(): { stateDir: string; cleanup: () => void } {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'helper-watchdog-test-'));
   return {
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(stateDir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/HelperWatchdog.test.ts:18' }),
   };
 }
 

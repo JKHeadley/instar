@@ -27,6 +27,7 @@ import type { LiveConfig } from '../config/LiveConfig.js';
 import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
 import type { SessionManagerLike, SessionMonitorLike } from './UpdateGate.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -782,8 +783,7 @@ export class AutoUpdater {
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
       fs.renameSync(tmpPath, this.stateFile);
     } catch {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/AutoUpdater.ts:786' }); } catch { /* ignore */ }
     }
   }
 }

@@ -15,6 +15,7 @@ import type { HealthStatus, ComponentHealth, InstarConfig } from '../core/types.
 import type { SessionWatchdog } from './SessionWatchdog.js';
 import type { StallTriageNurse } from './StallTriageNurse.js';
 import type { MemoryPressureMonitor } from './MemoryPressureMonitor.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export class HealthChecker {
   private config: InstarConfig;
@@ -242,8 +243,7 @@ export class HealthChecker {
       // Check we can write — fixed name prevents orphaned files on crash
       const testFile = path.join(this.config.stateDir, '.health-check-probe');
       fs.writeFileSync(testFile, 'ok');
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(testFile);
+      SafeFsExecutor.safeUnlinkSync(testFile, { operation: 'src/monitoring/HealthChecker.ts:246' });
 
       return { status: 'healthy', message: 'State directory writable', lastCheck: now };
     } catch (err) {

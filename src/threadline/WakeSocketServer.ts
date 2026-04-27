@@ -18,6 +18,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface WakeSocketEvents {
   /** New inbox entry available */
@@ -47,8 +48,7 @@ export class WakeSocketServer extends EventEmitter {
     // Clean up stale socket file
     if (fs.existsSync(this.socketPath)) {
       try {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(this.socketPath);
+        SafeFsExecutor.safeUnlinkSync(this.socketPath, { operation: 'src/threadline/WakeSocketServer.ts:51' });
       } catch {
         // May fail if another process holds it
       }
@@ -113,8 +113,7 @@ export class WakeSocketServer extends EventEmitter {
     // Remove socket file
     try {
       if (fs.existsSync(this.socketPath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(this.socketPath);
+        SafeFsExecutor.safeUnlinkSync(this.socketPath, { operation: 'src/threadline/WakeSocketServer.ts:117' });
       }
     } catch {
       // Non-critical

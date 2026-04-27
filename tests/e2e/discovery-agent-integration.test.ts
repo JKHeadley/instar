@@ -32,6 +32,7 @@ import type { SurfacingMessage } from '../../src/core/SurfacingTemplates.js';
 import { generateAgentMd } from '../../src/scaffold/templates.js';
 import { TreeGenerator } from '../../src/knowledge/TreeGenerator.js';
 import { AutonomyProfileManager, type DiscoveryAggressiveness } from '../../src/core/AutonomyProfileManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Intelligence Provider ──────────────────────────────────────
 
@@ -99,8 +100,7 @@ describe('E2E: Discovery Agent Integration (Phase 4)', () => {
 
   afterAll(() => {
     registry?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/discovery-agent-integration.test.ts:103' });
   });
 
   // ── 1. AGENT.md Behavioral Contract ───────────────────────────────

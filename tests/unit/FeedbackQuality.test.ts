@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { FeedbackManager } from '../../src/core/FeedbackManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('FeedbackManager quality validation', () => {
   let tmpDir: string;
@@ -33,8 +34,7 @@ describe('FeedbackManager quality validation', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/FeedbackQuality.test.ts:37' });
     vi.restoreAllMocks();
   });
 

@@ -32,6 +32,7 @@ import {
 } from '../../src/messaging/backends/BusinessApiBackend.js';
 import { mountWhatsAppWebhooks } from '../../src/messaging/backends/WhatsAppWebhookRoutes.js';
 import type { Express, Request, Response } from 'express';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test helpers ──────────────────────────────────────
 
@@ -147,8 +148,7 @@ describe('Phase 3: Business API — E2E', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/business-api-e2e.test.ts:151' });
   });
 
   // ── 1. Full webhook-to-adapter lifecycle ──────────────

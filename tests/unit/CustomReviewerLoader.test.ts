@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { CustomReviewerLoader } from '../../src/core/CustomReviewerLoader.js';
 import type { CustomReviewerSpec } from '../../src/core/CustomReviewerLoader.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -55,8 +56,7 @@ describe('CustomReviewerLoader', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/CustomReviewerLoader.test.ts:59' });
   });
 
   describe('loadAll()', () => {
@@ -307,8 +307,7 @@ describe('CustomReviewerLoader', () => {
         const specs = new CustomReviewerLoader(dir).loadAll();
         expect(specs).toHaveLength(1);
         expect(specs[0].priority).toBe(p);
-        // safe-git-allow: incremental-migration
-        fs.rmSync(dir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CustomReviewerLoader.test.ts:311' });
       }
     });
 

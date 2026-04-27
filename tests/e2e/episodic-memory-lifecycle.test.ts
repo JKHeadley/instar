@@ -34,6 +34,7 @@ import { SessionActivitySentinel } from '../../src/monitoring/SessionActivitySen
 import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider, Session } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Episodic Memory E2E lifecycle', () => {
   let tmpDir: string;
@@ -207,8 +208,7 @@ describe('Episodic Memory E2E lifecycle', () => {
 
   afterAll(async () => {
     await server.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/episodic-memory-lifecycle.test.ts:211' });
   });
 
   const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });

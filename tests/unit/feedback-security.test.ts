@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { FeedbackManager } from '../../src/core/FeedbackManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('FeedbackManager security headers', () => {
   let tmpDir: string;
@@ -24,8 +25,7 @@ describe('FeedbackManager security headers', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/feedback-security.test.ts:28' });
   });
 
   it('sends User-Agent header with instar/<version> format', async () => {
@@ -156,8 +156,7 @@ describe('FeedbackManager webhook payload completeness', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/feedback-security.test.ts:160' });
   });
 
   it('sends feedbackId (not id) in payload', async () => {

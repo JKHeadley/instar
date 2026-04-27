@@ -23,6 +23,8 @@ import { standaloneAgentsDir } from '../core/Config.js';
 import { unregisterAgent } from '../core/AgentRegistry.js';
 import { uninstallAutoStart } from './setup.js';
 import { SecretManager, SECRET_KEYS } from '../core/SecretManager.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 interface NukeOptions {
   skipConfirm?: boolean;
@@ -139,25 +141,17 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
   if (hasGit && hasRemote) {
     try {
       // Stage and commit any uncommitted changes
-      // safe-git-allow: incremental-migration
-      execFileSync('git', ['add', '-A'], { cwd: agentDir, stdio: 'pipe' });
-      // safe-git-allow: incremental-migration
-      const status = execFileSync('git', ['status', '--porcelain'], {
-        cwd: agentDir,
+      SafeGitExecutor.execSync(['add', '-A'], { cwd: agentDir, stdio: 'pipe', operation: 'src/commands/nuke.ts:143' });
+      const status = SafeGitExecutor.readSync(['status', '--porcelain'], { cwd: agentDir,
         encoding: 'utf-8',
-        stdio: 'pipe',
-      }).trim();
+        stdio: 'pipe', operation: 'src/commands/nuke.ts:145' }).trim();
 
       if (status) {
-        // safe-git-allow: incremental-migration
-        execFileSync('git', ['commit', '-m', 'final backup before nuke'], {
-          cwd: agentDir,
-          stdio: 'pipe',
-        });
+        SafeGitExecutor.execSync(['commit', '-m', 'final backup before nuke'], { cwd: agentDir,
+          stdio: 'pipe', operation: 'src/commands/nuke.ts:153' });
       }
 
-      // safe-git-allow: incremental-migration
-      execFileSync('git', ['push'], { cwd: agentDir, stdio: 'pipe', timeout: 30_000 });
+      SafeGitExecutor.execSync(['push'], { cwd: agentDir, stdio: 'pipe', timeout: 30_000, operation: 'src/commands/nuke.ts:160' });
       console.log(`  ${pc.green('✓')} Pushed final backup to remote`);
     } catch {
       console.log(pc.yellow('  Could not push final backup (remote may be unavailable)'));
@@ -195,8 +189,7 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
 
   // Step 6: Delete the agent directory
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(agentDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(agentDir, { recursive: true, force: true, operation: 'src/commands/nuke.ts:199' });
     console.log(`  ${pc.green('✓')} Deleted ${agentDir}`);
   } catch (err) {
     console.log(pc.red(`  Could not delete directory: ${err instanceof Error ? err.message : err}`));
@@ -214,12 +207,9 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
 
 function hasGitRemote(dir: string): boolean {
   try {
-    // safe-git-allow: incremental-migration
-    const remote = execFileSync('git', ['remote'], {
-      cwd: dir,
+    const remote = SafeGitExecutor.readSync(['remote'], { cwd: dir,
       encoding: 'utf-8',
-      stdio: 'pipe',
-    }).trim();
+      stdio: 'pipe', operation: 'src/commands/nuke.ts:218' }).trim();
     return remote.length > 0;
   } catch {
     return false;

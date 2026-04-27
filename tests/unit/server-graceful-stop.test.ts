@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('AgentServer — graceful shutdown', () => {
   let tmpDir: string;
@@ -26,8 +27,7 @@ describe('AgentServer — graceful shutdown', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/server-graceful-stop.test.ts:30' });
   });
 
   function createServer(): AgentServer {

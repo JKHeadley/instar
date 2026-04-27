@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CanonicalIdentityManager } from '../../../src/identity/IdentityManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('CanonicalIdentityManager', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('CanonicalIdentityManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/identity/IdentityManager.test.ts:18' });
   });
 
   describe('create (unencrypted / dev mode)', () => {

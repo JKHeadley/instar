@@ -8,6 +8,7 @@ import type {
   TrustLevel,
   MeterCheckResult,
 } from '../../../src/threadline/ComputeMeter.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('ComputeMeter', () => {
   let tmpDir: string;
@@ -17,8 +18,7 @@ describe('ComputeMeter', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/ComputeMeter.test.ts:21' });
     vi.restoreAllMocks();
   });
 

@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Track mock tmux sessions at module scope so the mock and tests share state
 const mockTmuxSessions = new Set<string>();
@@ -121,8 +122,7 @@ describe('SessionManager behavioral tests', () => {
 
   afterEach(() => {
     manager.stopMonitoring();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/session-manager-behavioral.test.ts:125' });
   });
 
   describe('spawnSession', () => {

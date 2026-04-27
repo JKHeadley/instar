@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /** Generate a timestamp N days ago from now. */
 function daysAgo(days: number): string {
@@ -78,8 +79,7 @@ describe('Drift & Alignment Routes (integration)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/drift-routes.test.ts:82' });
   });
 
   // ── GET /intent/drift ─────────────────────────────────────────────

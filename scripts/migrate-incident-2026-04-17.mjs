@@ -27,6 +27,7 @@ import crypto from 'node:crypto';
 import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeGitExecutor } from '../src/core/SafeGitExecutor.js';
 
 const ROOT = process.cwd();
 const STATE_DIR = path.join(ROOT, '.instar', 'local-state');
@@ -54,8 +55,7 @@ function generateKeypair() {
 function verifyStash() {
   let stashList;
   try {
-    // safe-git-allow: incremental-migration
-    stashList = execSync('git stash list', { encoding: 'utf-8' });
+    stashList = SafeGitExecutor.readSync(['stash', 'list'], { encoding: 'utf-8', operation: 'scripts/migrate-incident-2026-04-17.mjs:58' });
   } catch (err) {
     logStep(`No stash present (or not a git repo). Skipping stash verification.`);
     return { ok: true, skipped: true };

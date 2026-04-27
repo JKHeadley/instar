@@ -23,6 +23,7 @@ import type {
   LLMConflictResolverConfig,
 } from '../../src/core/LLMConflictResolver.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ──────────────────────────────────────────────────────
 
@@ -31,8 +32,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/llm-conflict-resolver.test.ts:35' });
 }
 
 function makeConflict(overrides: Partial<ConflictFile> = {}): ConflictFile {

@@ -13,6 +13,7 @@ import { DNSVerifier } from '../../../src/threadline/DNSVerifier.js';
 import type { HttpFetcher } from '../../../src/threadline/AgentDiscovery.js';
 import type { DNSResolverFn } from '../../../src/threadline/DNSVerifier.js';
 import type { BootstrapEvidence } from '../../../src/threadline/TrustBootstrap.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -58,8 +59,7 @@ function throwingResolver(code: string): DNSResolverFn {
 
 afterEach(() => {
   for (const dir of tmpDirs) {
-    // safe-git-allow: incremental-migration
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/TrustBootstrap.test.ts:62' }); } catch { /* ignore */ }
   }
   tmpDirs = [];
 });

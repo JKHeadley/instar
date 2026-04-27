@@ -18,6 +18,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import { createFileRoutes } from '../../src/server/fileRoutes.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helper: HTTP request wrapper ──────────────────────────────────────
 
@@ -163,8 +164,7 @@ describe('E2E: Dashboard File Viewer', () => {
     if (server) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/file-viewer-e2e.test.ts:167' });
   });
 
   // ════════════════════════════════════════════════════════════════════

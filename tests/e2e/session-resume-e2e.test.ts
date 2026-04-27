@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
 import { EventEmitter } from 'node:events';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -65,11 +66,9 @@ describe('Session Resume E2E', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/session-resume-e2e.test.ts:69' });
     for (const dir of cleanupDirs) {
-      // safe-git-allow: incremental-migration
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/session-resume-e2e.test.ts:72' }); } catch { /* best effort */ }
     }
   });
 
@@ -415,8 +414,7 @@ describe('Session Resume E2E', () => {
 
       // Delete the JSONL file (simulating cleanup or disk issue)
       const jsonlPath = path.join(myDir, `${sessionUuid}.jsonl`);
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(jsonlPath);
+      SafeFsExecutor.safeUnlinkSync(jsonlPath, { operation: 'tests/e2e/session-resume-e2e.test.ts:419' });
 
       // get() should now return null — JSONL validation fails gracefully
       expect(resumeMap.get(topicId)).toBeNull();

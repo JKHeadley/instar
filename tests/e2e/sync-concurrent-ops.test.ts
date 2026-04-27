@@ -29,6 +29,7 @@ import { AuditTrail } from '../../src/core/AuditTrail.js';
 import { AgentBus } from '../../src/core/AgentBus.js';
 import { CoordinationProtocol } from '../../src/core/CoordinationProtocol.js';
 import { HandoffManager } from '../../src/core/HandoffManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Module Mock ──────────────────────────────────────────────────────
 
@@ -131,8 +132,7 @@ describe('Concurrent Operations', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/sync-concurrent-ops.test.ts:135' });
   });
 
   // ── Group 1: Concurrent Sync Lock Contention ──────────────────────

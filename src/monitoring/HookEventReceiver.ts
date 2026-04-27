@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -291,8 +292,7 @@ export class HookEventReceiver extends EventEmitter {
     for (const sessionId of toRemove) {
       const file = this.getSessionFile(sessionId);
       try {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(file);
+        SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/monitoring/HookEventReceiver.ts:295' });
         this.sessionIndex.delete(sessionId);
       } catch { /* best effort */ }
     }

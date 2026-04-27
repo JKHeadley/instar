@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { assertNotInstarSourceTree } from './SourceTreeGuard.js';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -532,12 +533,12 @@ export class BranchManager {
   // ── Private: Git Helper ────────────────────────────────────────────
 
   private git(...args: string[]): string {
-    // safe-git-allow: incremental-migration
-    return execFileSync('git', args, {
+    return SafeGitExecutor.run(args, {
       cwd: this.projectDir,
       encoding: 'utf-8',
       timeout: 30_000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      operation: 'src/core/BranchManager.ts:git',
     }).trim();
   }
 }

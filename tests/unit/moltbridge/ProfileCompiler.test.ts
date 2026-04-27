@@ -18,12 +18,18 @@ vi.mock('fs/promises', async () => {
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual('child_process');
-  return { ...actual, execSync: vi.fn() };
+  return { ...actual, execSync: vi.fn(), execFileSync: vi.fn() };
+});
+
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual('node:child_process');
+  return { ...actual, execSync: vi.fn(), execFileSync: vi.fn() };
 });
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFile = vi.mocked(fsPromises.readFile);
 const mockExecSync = vi.mocked(childProcess.execSync);
+const mockExecFileSync = vi.mocked(childProcess.execFileSync);
 
 const testConfig: ProfileCompilerConfig = {
   stateDir: '/test/.instar',
@@ -73,6 +79,16 @@ describe('ProfileCompiler', () => {
       if (String(cmd).includes('ls-files')) return 'src/index.ts\nsrc/client.ts\npackage.json\n';
       if (String(cmd).includes('remote get-url')) return 'https://github.com/test/instar.git\n';
       return '';
+    });
+    mockExecFileSync.mockImplementation((file: any, args?: any) => {
+      const verb = (args || [])[0];
+      if (verb === 'log') {
+        // 42 commit lines for --oneline
+        return Array.from({ length: 42 }, (_, i) => `abc${i} commit ${i}`).join('\n') as any;
+      }
+      if (verb === 'ls-files') return 'src/index.ts\nsrc/client.ts\npackage.json\n' as any;
+      if (verb === 'remote' && (args || [])[1] === 'get-url') return 'https://github.com/test/instar.git\n' as any;
+      return '' as any;
     });
   });
 

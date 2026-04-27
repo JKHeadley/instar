@@ -21,6 +21,7 @@ import path from 'node:path';
 import { QuotaTracker } from '../../src/monitoring/QuotaTracker.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import type { QuotaState, JobSchedulerConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const thresholds: JobSchedulerConfig['quotaThresholds'] = {
   normal: 50,
@@ -40,8 +41,7 @@ describe('QuotaTracker — failure paths', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-tracker-failures.test.ts:44' });
     vi.restoreAllMocks();
   });
 

@@ -23,6 +23,8 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { BranchManager } from '../../src/core/BranchManager.js';
 import type { BranchManagerConfig, TaskBranch } from '../../src/core/BranchManager.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -49,13 +51,10 @@ function branchStateFile(stateDir: string): string {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  // safe-git-allow: incremental-migration
-  return execFileSync('git', args, {
-    cwd,
+  return SafeGitExecutor.run(args, { cwd,
     encoding: 'utf-8',
     timeout: 10_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  }).trim();
+    stdio: ['pipe', 'pipe', 'pipe'], operation: 'tests/integration/branch-wiring.test.ts:53' }).trim();
 }
 
 /**
@@ -78,17 +77,12 @@ describe('BranchManager wiring integrity', () => {
     stateDir = path.join(tmpDir, '.instar');
 
     // Initialize a real git repository
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['init', '-b', 'main'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir });
+    SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: tmpDir, operation: 'tests/integration/branch-wiring.test.ts:82' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: tmpDir, operation: 'tests/integration/branch-wiring.test.ts:84' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: tmpDir, operation: 'tests/integration/branch-wiring.test.ts:86' });
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n');
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['add', '.'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: tmpDir });
+    SafeGitExecutor.execSync(['add', '.'], { cwd: tmpDir, operation: 'tests/integration/branch-wiring.test.ts:89' });
+    SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: tmpDir, operation: 'tests/integration/branch-wiring.test.ts:91' });
   });
 
   afterEach(() => {
@@ -98,8 +92,7 @@ describe('BranchManager wiring integrity', () => {
     } catch {
       // Repo may already be cleaned up
     }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/branch-wiring.test.ts:102' });
   });
 
   // ── Category 1: Construction — not null/undefined ─────────────────

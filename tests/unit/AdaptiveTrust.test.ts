@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { AdaptiveTrust } from '../../src/core/AdaptiveTrust.js';
 import type { AdaptiveTrustConfig, TrustLevel } from '../../src/core/AdaptiveTrust.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('AdaptiveTrust', () => {
   let tmpDir: string;
@@ -20,8 +21,7 @@ describe('AdaptiveTrust', () => {
     for (const entry of fs.readdirSync(os.tmpdir())) {
       const full = path.join(os.tmpdir(), entry);
       if (full.startsWith(prefix)) {
-        // safe-git-allow: incremental-migration
-        fs.rmSync(full, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(full, { recursive: true, force: true, operation: 'tests/unit/AdaptiveTrust.test.ts:24' });
       }
     }
   });

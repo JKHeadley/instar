@@ -8,6 +8,7 @@ import {
   SourceTreeGuardError,
   CANONICAL_INSTAR_REMOTES,
 } from '../../src/core/SourceTreeGuard.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Fixture helpers ────────────────────────────────────────────────
 
@@ -17,8 +18,7 @@ function mkSandbox(): string {
 
 function rmrf(p: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(p, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(p, { recursive: true, force: true, operation: 'tests/unit/SourceTreeGuard.test.ts:21' });
   } catch {
     // best-effort
   }
@@ -334,8 +334,7 @@ describe('SourceTreeGuard — symlink canonicalization', () => {
   });
   afterEach(() => {
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(linkDir);
+      SafeFsExecutor.safeUnlinkSync(linkDir, { operation: 'tests/unit/SourceTreeGuard.test.ts:338' });
     } catch {
       // ignore
     }

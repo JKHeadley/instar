@@ -12,6 +12,7 @@ import os from 'node:os';
 import { OnboardingGate } from '../../src/users/OnboardingGate.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import type { TopicMessage } from '../../src/memory/TopicMemory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -41,8 +42,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   memory.close();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(testDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(testDir, { recursive: true, force: true, operation: 'tests/integration/onboarding-gate.test.ts:45' });
 });
 
 // ── Full Onboarding → Message Storage Pipeline ──────────────────

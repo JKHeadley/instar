@@ -32,6 +32,8 @@ import type { AuditTrail } from './AuditTrail.js';
 import type { AgentBus } from './AgentBus.js';
 import type { CoordinationProtocol } from './CoordinationProtocol.js';
 import type { ConflictNegotiator } from './ConflictNegotiator.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -313,13 +315,11 @@ export class SyncOrchestrator extends EventEmitter {
       const lock: SyncLock = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
       if (lock.machineId !== this.machineId) return false;
 
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(lockPath);
+      SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'src/core/SyncOrchestrator.ts:317' });
       return true;
     } catch {
       // @silent-fallback-ok — corrupted lock file; attempt removal as cleanup
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(lockPath); } catch { /* @silent-fallback-ok — lock file removal is best-effort cleanup */ }
+      try { SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'src/core/SyncOrchestrator.ts:322' }); } catch { /* @silent-fallback-ok — lock file removal is best-effort cleanup */ }
       return true;
     }
   }
@@ -1162,12 +1162,12 @@ export class SyncOrchestrator extends EventEmitter {
    * Execute a git command with safe error handling.
    */
   private gitExecSafe(args: string[]): string {
-    // safe-git-allow: incremental-migration
-    return execFileSync('git', args, {
+    return SafeGitExecutor.run(args, {
       cwd: this.projectDir,
       encoding: 'utf-8',
       timeout: 30_000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      operation: 'src/core/SyncOrchestrator.ts:gitExecSafe',
     }).trim();
   }
 }

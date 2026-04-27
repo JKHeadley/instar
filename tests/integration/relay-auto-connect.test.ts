@@ -17,13 +17,13 @@ import { ThreadlineRouter } from '../../src/threadline/ThreadlineRouter.js';
 import type { RelayMessageContext } from '../../src/threadline/ThreadlineRouter.js';
 import { buildRelayGroundingPreamble, RELAY_HISTORY_LIMITS } from '../../src/threadline/RelayGroundingPreamble.js';
 import type { ReceivedMessage } from '../../src/threadline/client/ThreadlineClient.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Infrastructure ──────────────────────────────────────────────
 
 function createTempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-int-'));
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/relay-auto-connect.test.ts:26' }) };
 }
 
 function createMockSpawnManager(approved = true) {

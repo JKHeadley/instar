@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { initProject } from '../../src/commands/init.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Init external operations config', () => {
   let tmpDir: string;
@@ -23,8 +24,7 @@ describe('Init external operations config', () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/init-external-operations.test.ts:27' });
   });
 
   function readConfig(projectDir: string): Record<string, unknown> {

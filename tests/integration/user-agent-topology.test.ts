@@ -31,6 +31,7 @@ import {
   sanitizeTopicName,
 } from '../../src/utils/sanitize.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ─────────────────────────────────────────────────
 
@@ -197,8 +198,7 @@ describe('pipeline → TopicMemory storage', () => {
 
   afterEach(() => {
     topicMemory.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/user-agent-topology.test.ts:201' });
   });
 
   it('pipeline log entry feeds TopicMemory with sender identity', () => {
@@ -446,8 +446,7 @@ describe('schema migration: v1 → v2 upgrade', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/user-agent-topology.test.ts:450' });
   });
 
   it('v1 database gets sender columns added on open()', async () => {

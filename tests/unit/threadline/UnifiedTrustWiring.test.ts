@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createUnifiedTrustSystem, type UnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWiring.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // Mock the moltbridge SDK (imported transitively by MoltBridgeClient)
 vi.mock('moltbridge', () => ({
@@ -30,8 +31,7 @@ describe('UnifiedTrustWiring', () => {
 
   afterEach(() => {
     system.shutdown();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/UnifiedTrustWiring.test.ts:34' });
   });
 
   describe('initialization', () => {
@@ -180,8 +180,7 @@ describe('UnifiedTrustWiring', () => {
       expect(fs.existsSync(path.join(legacyDir, 'identity.json'))).toBe(true);
 
       sys.shutdown();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(migrateDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(migrateDir, { recursive: true, force: true, operation: 'tests/unit/threadline/UnifiedTrustWiring.test.ts:184' });
     });
   });
 });

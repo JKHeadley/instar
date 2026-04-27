@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -286,8 +287,7 @@ export async function listenerDoctor(opts: { dir?: string }): Promise<void> {
     }
     const testFile = path.join(inboxDir, '.write-test');
     fs.writeFileSync(testFile, 'test');
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(testFile);
+    SafeFsExecutor.safeUnlinkSync(testFile, { operation: 'src/commands/listener.ts:290' });
     return true;
   });
 
@@ -312,8 +312,7 @@ export async function listenerDoctor(opts: { dir?: string }): Promise<void> {
       process.kill(pid, 0);
       return true; // Process is actually running — not stale
     } catch {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(pidFile);
+      SafeFsExecutor.safeUnlinkSync(pidFile, { operation: 'src/commands/listener.ts:316' });
       return true; // Cleaned up stale PID
     }
   });
@@ -385,8 +384,7 @@ export async function purgeListener(opts: { dir?: string; force?: boolean }): Pr
   let deleted = 0;
   for (const file of toDelete) {
     if (fs.existsSync(file)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(file);
+      SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/commands/listener.ts:389' });
       deleted++;
     }
   }
@@ -394,8 +392,7 @@ export async function purgeListener(opts: { dir?: string; force?: boolean }): Pr
   // Clean inbox archive directory
   const archiveDir = path.join(stateDir, 'threadline', 'inbox-archive');
   if (fs.existsSync(archiveDir)) {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(archiveDir, { recursive: true });
+    SafeFsExecutor.safeRmSync(archiveDir, { recursive: true, operation: 'src/commands/listener.ts:398' });
     deleted++;
   }
 
@@ -404,8 +401,7 @@ export async function purgeListener(opts: { dir?: string; force?: boolean }): Pr
   if (fs.existsSync(tmpDir)) {
     const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('prompt-'));
     for (const f of files) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(tmpDir, f));
+      SafeFsExecutor.safeUnlinkSync(path.join(tmpDir, f), { operation: 'src/commands/listener.ts:408' });
       deleted++;
     }
   }
@@ -493,8 +489,7 @@ export async function uninstallListener(opts: { dir?: string }): Promise<void> {
       } catch {
         // May not be loaded
       }
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(plistPath);
+      SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/listener.ts:497' });
       console.log(pc.green('Uninstalled launchd plist.'));
     } else {
       console.log(pc.yellow('No launchd plist found.'));

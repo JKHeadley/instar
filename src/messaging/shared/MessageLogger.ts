@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 
 export interface LogEntry {
   messageId: number | string;
@@ -213,8 +214,7 @@ export class MessageLogger {
           fs.writeFileSync(tmpPath, kept.join('\n') + '\n');
           fs.renameSync(tmpPath, this.logPath);
         } catch (rotateErr) {
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/shared/MessageLogger.ts:217' }); } catch { /* ignore */ }
           throw rotateErr;
         }
         console.log(`[message-logger] Rotated log: ${lines.length} -> ${kept.length} lines`);

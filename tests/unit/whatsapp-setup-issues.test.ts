@@ -504,7 +504,7 @@ describe('Issue 7: Stale credential auto-clear on 401', () => {
       src.indexOf('if (loggedOut)'),
       src.indexOf('} else if (isTerminalFailure)'),
     );
-    expect(loggedOutSection).toContain('rmSync');
+    expect(loggedOutSection).toMatch(/(safeRmSync|rmSync)/);
     expect(loggedOutSection).toContain('recursive: true');
     expect(loggedOutSection).toContain('force: true');
     // Should recreate the directory after clearing

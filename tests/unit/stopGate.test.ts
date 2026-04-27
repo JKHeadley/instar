@@ -21,6 +21,7 @@ import {
   getHotPathState,
   _resetForTests,
 } from '../../src/server/stopGate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('stopGate — version contract', () => {
   it('exports version constants as positive integers', () => {
@@ -96,8 +97,7 @@ describe('stopGate — compactionInFlight probe (P0.6)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/stopGate.test.ts:100' });
   });
 
   it('returns true when recovery script mtime is fresh (<60s)', () => {
@@ -128,8 +128,7 @@ describe('stopGate — compactionInFlight probe (P0.6)', () => {
         compactionInFlight({ sessionId: sid, recoveryScriptPath: '/no/such/path' })
       ).toBe(true);
     } finally {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(markerDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(markerDir, { recursive: true, force: true, operation: 'tests/unit/stopGate.test.ts:132' });
     }
   });
 });
@@ -188,8 +187,7 @@ describe('stopGate — getHotPathState', () => {
       });
       expect(present.autonomousActive).toBe(true);
 
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(stateFile);
+      SafeFsExecutor.safeUnlinkSync(stateFile, { operation: 'tests/unit/stopGate.test.ts:192' });
       const absent = getHotPathState({
         sessionId: 'sess-h',
         autonomousStateFile: stateFile,
@@ -197,8 +195,7 @@ describe('stopGate — getHotPathState', () => {
       });
       expect(absent.autonomousActive).toBe(false);
     } finally {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmp, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/stopGate.test.ts:201' });
     }
   });
 });

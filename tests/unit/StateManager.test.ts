@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { Session, ActivityEvent } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('StateManager', () => {
   let tmpDir: string;
@@ -19,8 +20,7 @@ describe('StateManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/StateManager.test.ts:23' });
   });
 
   describe('Session State', () => {
@@ -261,14 +261,12 @@ describe('StateManager', () => {
   describe('Empty Directory Handling', () => {
     it('returns empty list when sessions dir does not exist', () => {
       // Remove the sessions directory
-      // safe-git-allow: incremental-migration
-      fs.rmSync(path.join(tmpDir, 'state', 'sessions'), { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(path.join(tmpDir, 'state', 'sessions'), { recursive: true, force: true, operation: 'tests/unit/StateManager.test.ts:265' });
       expect(state.listSessions()).toEqual([]);
     });
 
     it('returns empty events when logs dir does not exist', () => {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(path.join(tmpDir, 'logs'), { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(path.join(tmpDir, 'logs'), { recursive: true, force: true, operation: 'tests/unit/StateManager.test.ts:271' });
       expect(state.queryEvents({})).toEqual([]);
     });
   });

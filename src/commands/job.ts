@@ -9,6 +9,7 @@ import { loadJobs, validateJob } from '../scheduler/JobLoader.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
 import { StateManager } from '../core/StateManager.js';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 interface JobAddOptions {
   slug: string;
@@ -69,8 +70,7 @@ export async function addJob(options: JobAddOptions): Promise<void> {
     fs.writeFileSync(tmpPath, JSON.stringify(jobs, null, 2));
     fs.renameSync(tmpPath, jobsFile);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/commands/job.ts:73' }); } catch { /* ignore */ }
     throw err;
   }
 

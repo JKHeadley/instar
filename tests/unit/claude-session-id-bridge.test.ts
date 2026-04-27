@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { HookEventReceiver } from '../../src/monitoring/HookEventReceiver.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Minimal Session Manager Mock ─────────────────────────────────
 
@@ -105,8 +106,7 @@ describe('claudeSessionId bridge via /hooks/events', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/claude-session-id-bridge.test.ts:109' });
   });
 
   // ── Core bridging ───────────────────────────────────────────────

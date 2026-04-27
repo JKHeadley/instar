@@ -34,6 +34,7 @@ import { WorkingMemoryAssembler } from '../../src/memory/WorkingMemoryAssembler.
 import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Working Memory E2E lifecycle', () => {
   let tmpDir: string;
@@ -182,8 +183,7 @@ describe('Working Memory E2E lifecycle', () => {
   afterAll(async () => {
     await server.stop();
     semanticMemory?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/working-memory-lifecycle.test.ts:186' });
   });
 
   const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });

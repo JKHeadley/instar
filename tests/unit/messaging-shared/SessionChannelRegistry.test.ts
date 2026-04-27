@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SessionChannelRegistry } from '../../../src/messaging/shared/SessionChannelRegistry.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('SessionChannelRegistry', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('SessionChannelRegistry', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/messaging-shared/SessionChannelRegistry.test.ts:18' });
   });
 
   function createRegistry() {

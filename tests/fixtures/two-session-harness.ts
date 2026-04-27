@@ -11,6 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { WorktreeManager, type WorktreeMode } from '../../src/core/WorktreeManager.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 export interface HarnessSession {
   sessionId: string;
@@ -40,17 +42,12 @@ export async function createTwoSessionHarness(): Promise<HarnessHandle> {
 
   fs.mkdirSync(projectDir, { recursive: true });
   // Initialize a real git repo so `git worktree add` works
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'init', '-q', '-b', 'main']);
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'config', 'user.email', 'test@instar.local']);
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'config', 'user.name', 'Test Harness']);
+  SafeGitExecutor.execSync(['-C', projectDir, 'init', '-q', '-b', 'main'], { operation: 'tests/fixtures/two-session-harness.ts:44' });
+  SafeGitExecutor.execSync(['-C', projectDir, 'config', 'user.email', 'test@instar.local'], { operation: 'tests/fixtures/two-session-harness.ts:46' });
+  SafeGitExecutor.execSync(['-C', projectDir, 'config', 'user.name', 'Test Harness'], { operation: 'tests/fixtures/two-session-harness.ts:48' });
   fs.writeFileSync(path.join(projectDir, 'README.md'), '# test\n');
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'add', 'README.md']);
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['-C', projectDir, 'commit', '-q', '-m', 'init']);
+  SafeGitExecutor.execSync(['-C', projectDir, 'add', 'README.md'], { operation: 'tests/fixtures/two-session-harness.ts:51' });
+  SafeGitExecutor.execSync(['-C', projectDir, 'commit', '-q', '-m', 'init'], { operation: 'tests/fixtures/two-session-harness.ts:53' });
 
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'worktrees'), { recursive: true });
@@ -109,8 +106,7 @@ export async function createTwoSessionHarness(): Promise<HarnessHandle> {
       });
     },
     cleanup() {
-      // safe-git-allow: incremental-migration
-      try { fs.rmSync(tmp, { recursive: true, force: true }); }
+      try { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/fixtures/two-session-harness.ts:113' }); }
       catch { /* @silent-fallback-ok */ }
     },
   };

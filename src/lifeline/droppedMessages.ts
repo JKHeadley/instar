@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 /** Maximum preview length stored per dropped record. */
 const TEXT_PREVIEW_MAX = 200;
@@ -83,8 +84,7 @@ export function appendDroppedMessage(
   try {
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/lifeline/droppedMessages.ts:87' }); } catch { /* best effort */ }
     throw err;
   }
 }

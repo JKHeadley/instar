@@ -19,6 +19,7 @@ import { ReflectionConsolidator } from '../../src/core/ReflectionConsolidator.js
 import { ExecutionJournal } from '../../src/core/ExecutionJournal.js';
 import { EvolutionManager } from '../../src/core/EvolutionManager.js';
 import type { ExecutionRecord } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /** Return an ISO timestamp for N days ago */
 function daysAgo(n: number): string {
@@ -61,8 +62,7 @@ describe('ReflectionConsolidator', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/ReflectionConsolidator.test.ts:65' });
   });
 
   // ─── Empty State ──────────────────────────────────────────────────

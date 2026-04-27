@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID, createHmac, createHash } from 'node:crypto';
 import type { FeedbackItem, FeedbackConfig } from './types.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /** Maximum number of feedback items stored locally. */
 const MAX_FEEDBACK_ITEMS = 1000;
@@ -289,8 +290,7 @@ export class FeedbackManager {
       fs.writeFileSync(tmpPath, JSON.stringify(items, null, 2));
       fs.renameSync(tmpPath, this.feedbackFile);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/FeedbackManager.ts:293' }); } catch { /* ignore */ }
       throw err;
     }
   }

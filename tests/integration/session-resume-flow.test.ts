@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Track spawned session args
 const spawnedSessions: Array<{
@@ -108,10 +109,8 @@ describe('Session Resume Flow (integration)', () => {
 
   afterEach(() => {
     sessionManager.stopMonitoring();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-    // safe-git-allow: incremental-migration
-    try { fs.rmSync(testProjectDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/session-resume-flow.test.ts:112' });
+    try { SafeFsExecutor.safeRmSync(testProjectDir, { recursive: true, force: true, operation: 'tests/integration/session-resume-flow.test.ts:114' }); } catch { /* best effort */ }
   });
 
   function createFakeJsonl(uuid: string): void {

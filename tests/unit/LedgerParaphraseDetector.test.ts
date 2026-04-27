@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SharedStateLedger } from '../../src/core/SharedStateLedger.js';
 import { LedgerParaphraseDetector } from '../../src/core/LedgerParaphraseDetector.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'paraphrase-test-'));
@@ -51,8 +52,7 @@ describe('LedgerParaphraseDetector', () => {
 
   afterEach(() => {
     ledger.shutdown();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/LedgerParaphraseDetector.test.ts:55' });
   });
 
   it('fires when paraphrasing a trusted agreement to a different counterparty', async () => {

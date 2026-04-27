@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import { execSync, spawn as childSpawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -292,8 +293,7 @@ export class PipeSessionSpawner {
         execSync(`tmux has-session -t "${sessionName}" 2>/dev/null`);
       } catch {
         // Session failed to create
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:296' }); } catch { /* ignore */ }
         return { spawned: false, reason: 'tmux session failed to create' };
       }
 
@@ -335,8 +335,7 @@ export class PipeSessionSpawner {
       return { spawned: true, sessionName, pid };
     } catch (err) {
       // Clean up prompt file on failure
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:339' }); } catch { /* ignore */ }
       return { spawned: false, reason: `spawn failed: ${err instanceof Error ? err.message : err}` };
     }
   }

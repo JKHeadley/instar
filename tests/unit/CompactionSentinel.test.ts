@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CompactionSentinel } from '../../src/monitoring/CompactionSentinel.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeTempJsonlRoot(): { root: string; write: (name: string, bytes: number) => void; cleanup: () => void } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sentinel-test-'));
@@ -15,8 +16,7 @@ function makeTempJsonlRoot(): { root: string; write: (name: string, bytes: numbe
     write: (name, bytes) => {
       fs.writeFileSync(path.join(root, name), 'x'.repeat(bytes));
     },
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/CompactionSentinel.test.ts:19' }),
   };
 }
 

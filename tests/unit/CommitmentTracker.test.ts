@@ -21,6 +21,7 @@ import os from 'node:os';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import type { CommitmentTrackerConfig, Commitment } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -34,8 +35,7 @@ function createTmpState(): { stateDir: string; cleanup: () => void } {
   );
   return {
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(stateDir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/CommitmentTracker.test.ts:38' }),
   };
 }
 
@@ -576,8 +576,7 @@ describe('CommitmentTracker', () => {
 
       // Delete the rules file
       const rulesPath = path.join(stateDir, 'state', 'commitment-rules.md');
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(rulesPath);
+      SafeFsExecutor.safeUnlinkSync(rulesPath, { operation: 'tests/unit/CommitmentTracker.test.ts:580' });
 
       // Verify again — it should regenerate the file and pass
       const result = tracker.verifyOne(c.id);

@@ -17,6 +17,7 @@ import { IntegrationGate } from '../../src/scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { IntelligenceProvider, ExecutionRecord, JobDefinition } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,8 +29,7 @@ function createTempStateDir(): { stateDir: string; cleanup: () => void } {
   fs.mkdirSync(path.join(stateDir, 'state', 'execution-journal', 'default'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'ledger'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
-  // safe-git-allow: incremental-migration
-  return { stateDir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { stateDir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/integration-gate-e2e.test.ts:32' }) };
 }
 
 function writeRecords(stateDir: string, jobSlug: string, records: ExecutionRecord[]): void {

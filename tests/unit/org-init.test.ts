@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadConfig } from '../../src/core/Config.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 vi.mock('../../src/core/Config.js', () => ({
   loadConfig: vi.fn(),
@@ -47,8 +48,7 @@ describe('instar intent org-init', () => {
   afterEach(() => {
     process.exit = originalExit;
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/org-init.test.ts:51' });
   });
 
   it('creates ORG-INTENT.md with correct template', async () => {

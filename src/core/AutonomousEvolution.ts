@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { EvolutionProposal } from './types.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -485,8 +486,7 @@ export class AutonomousEvolution {
     try {
       const p = this.sidecarPath(jobSlug);
       if (fs.existsSync(p)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(p);
+        SafeFsExecutor.safeUnlinkSync(p, { operation: 'src/core/AutonomousEvolution.ts:489' });
       }
     } catch {
       // Non-fatal

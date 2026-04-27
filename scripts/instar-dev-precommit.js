@@ -47,7 +47,6 @@ if (fs.existsSync(path.join(ROOT, '.git', 'MERGE_HEAD'))) {
 
 let stagedOutput;
 try {
-  // safe-git-allow: incremental-migration
   stagedOutput = execSync('git diff --cached --name-only --diff-filter=ACMR', {
     cwd: ROOT,
     encoding: 'utf8',
@@ -94,7 +93,6 @@ if (inScopeFiles.length === 0) {
 
 let addedOutput = '';
 try {
-  // safe-git-allow: incremental-migration
   addedOutput = execSync('git diff --cached --name-only --diff-filter=A', {
     cwd: ROOT,
     encoding: 'utf8',

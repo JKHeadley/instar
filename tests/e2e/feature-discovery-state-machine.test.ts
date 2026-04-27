@@ -19,6 +19,7 @@ import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('E2E: Feature Discovery State Machine', () => {
   let projectDir: string;
@@ -144,8 +145,7 @@ describe('E2E: Feature Discovery State Machine', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     registry?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/feature-discovery-state-machine.test.ts:148' });
   });
 
   // ── Phase 2a: Valid Transitions (Direct API) ────────────────────

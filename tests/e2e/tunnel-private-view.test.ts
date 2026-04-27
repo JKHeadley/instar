@@ -21,6 +21,7 @@ import { PrivateViewer } from '../../src/publishing/PrivateViewer.js';
 import { TunnelManager } from '../../src/tunnel/TunnelManager.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SKIP = process.env.SKIP_E2E === '1';
 
@@ -140,8 +141,7 @@ describe('Tunnel + Private Viewer E2E', () => {
       await server.stop();
     } catch { /* ignore */ }
 
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/e2e/tunnel-private-view.test.ts:144' });
   }, 15_000);
 
   it.skipIf(SKIP)('creates a private view via API', async () => {

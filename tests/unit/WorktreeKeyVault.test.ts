@@ -7,11 +7,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WorktreeKeyVault } from '../../src/core/WorktreeKeyVault.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-keyvault-')); });
-// safe-git-allow: incremental-migration
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/WorktreeKeyVault.test.ts:14' }); });
 
 describe('WorktreeKeyVault', () => {
   it('K1: headless mode without passphrase resolver throws', async () => {

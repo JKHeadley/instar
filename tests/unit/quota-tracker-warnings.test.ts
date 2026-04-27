@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { QuotaTracker } from '../../src/monitoring/QuotaTracker.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('QuotaTracker — warnings and staleness', () => {
   let tmpDir: string;
@@ -23,8 +24,7 @@ describe('QuotaTracker — warnings and staleness', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-tracker-warnings.test.ts:27' });
     vi.restoreAllMocks();
   });
 

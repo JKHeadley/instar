@@ -25,6 +25,7 @@ import { ThreadlineClient } from './client/ThreadlineClient.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { InboundMessageGate } from './InboundMessageGate.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -149,8 +150,7 @@ export async function bootstrapThreadline(
         daemonAlive = true;
       } catch {
         // PID file exists but process is dead — clean up stale PID
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(daemonPidPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(daemonPidPath, { operation: 'src/threadline/ThreadlineBootstrap.ts:153' }); } catch { /* ignore */ }
       }
     }
 

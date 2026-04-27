@@ -17,6 +17,7 @@ import os from 'node:os';
 import { HookEventReceiver } from '../../src/monitoring/HookEventReceiver.js';
 import { SubagentTracker } from '../../src/monitoring/SubagentTracker.js';
 import { InstructionsVerifier } from '../../src/monitoring/InstructionsVerifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -128,8 +129,7 @@ describe('Hook Events Route', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/hook-events-route.test.ts:132' });
   });
 
   // ── Event Ingestion ───────────────────────────────────────────

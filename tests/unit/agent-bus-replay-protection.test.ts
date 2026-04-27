@@ -19,6 +19,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { AgentBus } from '../../src/core/AgentBus.js';
 import type { AgentMessage, AgentBusConfig } from '../../src/core/AgentBus.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -78,8 +79,7 @@ function validMessage(overrides: Partial<AgentMessage> = {}): AgentMessage {
 
 describe('send-side replay field generation', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:82' }); });
 
   it('attaches nonce and sequence when replay protection enabled', async () => {
     const bus = makeProtectedBus(tmpDir);
@@ -175,8 +175,7 @@ describe('send-side replay field generation', () => {
 
 describe('receive-side replay protection validation', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:179' }); });
 
   it('accepts valid message with fresh timestamp + unique nonce + valid sequence', () => {
     const bus = makeProtectedBus(tmpDir);
@@ -327,8 +326,7 @@ describe('receive-side replay protection validation', () => {
 
 describe('fail-closed: messages without replay fields', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:331' }); });
 
   it('rejects message with no nonce when protection enabled', () => {
     const bus = makeProtectedBus(tmpDir);
@@ -421,8 +419,7 @@ describe('fail-closed: messages without replay fields', () => {
 
 describe('backward compatibility (protection disabled)', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:425' }); });
 
   it('accepts legacy messages without nonce/sequence', () => {
     const bus = makeBus(tmpDir); // No replay protection
@@ -484,8 +481,7 @@ describe('backward compatibility (protection disabled)', () => {
 
 describe('cross-bus replay protection', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:488' }); });
 
   it('message from protected sender accepted by protected receiver', async () => {
     const sender = makeProtectedBus(tmpDir, 'machine-a');
@@ -559,8 +555,7 @@ describe('cross-bus replay protection', () => {
 
 describe('multi-peer sequence isolation', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:563' }); });
 
   it('tracks sequences independently per sender', () => {
     const bus = makeProtectedBus(tmpDir);
@@ -620,8 +615,7 @@ describe('multi-peer sequence isolation', () => {
 
 describe('nonce persistence across bus restarts', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:624' }); });
 
   it('nonce seen before restart is still rejected after restart', () => {
     const nonce = crypto.randomBytes(16).toString('hex');
@@ -677,8 +671,7 @@ describe('nonce persistence across bus restarts', () => {
 
 describe('custom timestamp window', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:681' }); });
 
   it('respects custom timestamp window (shorter)', () => {
     const bus = makeBus(tmpDir, 'machine-a', {
@@ -726,8 +719,7 @@ describe('custom timestamp window', () => {
 
 describe('replay-rejected event emission', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:730' }); });
 
   it('emits replay-rejected with message and reason for timestamp failure', () => {
     const bus = makeProtectedBus(tmpDir);
@@ -802,8 +794,7 @@ describe('replay-rejected event emission', () => {
 
 describe('replay protection + TTL interaction', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:806' }); });
 
   it('TTL expiration checked before replay protection', () => {
     const bus = makeProtectedBus(tmpDir);
@@ -863,8 +854,7 @@ describe('replay protection + TTL interaction', () => {
 
 describe('destroy cleans up NonceStore', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:867' }); });
 
   it('destroy is safe to call multiple times', () => {
     const bus = makeProtectedBus(tmpDir);
@@ -888,8 +878,7 @@ describe('destroy cleans up NonceStore', () => {
 
 describe('broadcast messages with replay protection', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:892' }); });
 
   it('broadcast messages include nonce/sequence', async () => {
     const bus = makeProtectedBus(tmpDir);
@@ -933,8 +922,7 @@ describe('broadcast messages with replay protection', () => {
 
 describe('HTTP transport with replay protection', () => {
   beforeEach(() => { tmpDir = freshDir(); });
-  // safe-git-allow: incremental-migration
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus-replay-protection.test.ts:937' }); });
 
   it('handleHttpMessage validates replay fields', () => {
     const bus = makeProtectedBus(tmpDir, 'machine-a', { transport: 'http' });

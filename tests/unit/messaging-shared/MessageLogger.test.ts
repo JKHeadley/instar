@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MessageLogger, type LogEntry } from '../../../src/messaging/shared/MessageLogger.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('MessageLogger', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('MessageLogger', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/messaging-shared/MessageLogger.test.ts:18' });
   });
 
   function createLogger(overrides?: Partial<Parameters<typeof MessageLogger.prototype.append>[0]>) {

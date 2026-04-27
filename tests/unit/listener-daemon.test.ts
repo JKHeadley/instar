@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── WakeSocketServer Tests ──────────────────────────────────────────
 
@@ -24,8 +25,7 @@ describe('WakeSocketServer', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/listener-daemon.test.ts:28' });
   });
 
   it('creates socket file on start', async () => {
@@ -139,8 +139,7 @@ describe('PipeSessionSpawner', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/listener-daemon.test.ts:143' });
   });
 
   describe('shouldUsePipeMode', () => {
@@ -315,8 +314,7 @@ describe('ThreadResumeMap cross-machine migration', () => {
     const mockPath = path.join(targetDir, `${uuid}.jsonl`);
     if (!fs.existsSync(mockPath)) {
       fs.writeFileSync(mockPath, '{"mock": true}\n');
-      // safe-git-allow: incremental-migration
-      afterEach(() => { try { fs.unlinkSync(mockPath); } catch { /* ignore */ } });
+      afterEach(() => { try { SafeFsExecutor.safeUnlinkSync(mockPath, { operation: 'tests/unit/listener-daemon.test.ts:319' }); } catch { /* ignore */ } });
     }
   }
 
@@ -327,11 +325,9 @@ describe('ThreadResumeMap cross-machine migration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/listener-daemon.test.ts:331' });
     if (mockProjectDir && fs.existsSync(mockProjectDir)) {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(mockProjectDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(mockProjectDir, { recursive: true, force: true, operation: 'tests/unit/listener-daemon.test.ts:334' });
       mockProjectDir = null;
     }
   });
@@ -439,8 +435,7 @@ describe('HMAC inbox signing round-trip', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/listener-daemon.test.ts:443' });
   });
 
   it('signs and verifies inbox entries', async () => {

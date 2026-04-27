@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TelegraphService } from '../../src/publishing/TelegraphService.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SKIP = process.env.SKIP_E2E === '1';
 
@@ -34,8 +35,7 @@ describe('Telegraph E2E publish flow', () => {
 
   afterAll(() => {
     if (SKIP) return;
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/e2e/telegraph-publish.test.ts:38' });
   });
 
   it.skipIf(SKIP)('creates a Telegraph account', async () => {

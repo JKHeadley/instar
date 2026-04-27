@@ -33,6 +33,7 @@ import type {
   ThreadHistoryResult,
 } from '../../../src/threadline/ThreadlineMCPServer.js';
 import type { HttpFetcher } from '../../../src/threadline/AgentDiscovery.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -41,8 +42,7 @@ function createTempDir(): string {
 }
 
 function cleanupDir(dir: string): void {
-  // safe-git-allow: incremental-migration
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/threadline/ThreadlineMCPE2E.test.ts:45' }); } catch { /* ignore */ }
 }
 
 /**

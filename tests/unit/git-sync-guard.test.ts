@@ -14,6 +14,8 @@ import { execSync } from 'node:child_process';
 import { GitSyncManager } from '../../src/core/GitSync.js';
 import type { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import type { SecurityLog } from '../../src/core/SecurityLog.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 function makeMockIdentityManager(): MachineIdentityManager {
   return {
@@ -38,8 +40,7 @@ describe('GitSyncManager.isGitRepo()', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/git-sync-guard.test.ts:42' });
   });
 
   it('returns false when .git/ does not exist', () => {
@@ -69,8 +70,8 @@ describe('GitSyncManager.isGitRepo()', () => {
   });
 
   it('returns true when .git/ exists and repo has commits', () => {
-    // safe-git-allow: incremental-migration
-    execSync('git init && git commit --allow-empty -m "init"', { cwd: tmpDir, stdio: 'ignore' });
+    SafeGitExecutor.execSync(['init'], { cwd: tmpDir, stdio: 'ignore', operation: 'tests/unit/git-sync-guard.test.ts:init' });
+    SafeGitExecutor.execSync(['commit', '--allow-empty', '-m', 'init'], { cwd: tmpDir, stdio: 'ignore', operation: 'tests/unit/git-sync-guard.test.ts:commit' });
 
     const gitSync = new GitSyncManager({
       projectDir: tmpDir,
@@ -94,8 +95,7 @@ describe('GitSyncManager.sync() without git repo', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/git-sync-guard.test.ts:98' });
   });
 
   it('returns a clean no-op result when no .git/ directory', async () => {

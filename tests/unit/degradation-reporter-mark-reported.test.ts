@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('DegradationReporter.markReported', () => {
   let tmpDir: string;
@@ -21,8 +22,7 @@ describe('DegradationReporter.markReported', () => {
 
   afterEach(() => {
     DegradationReporter.resetForTesting();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/degradation-reporter-mark-reported.test.ts:25' });
   });
 
   function seed(reporter: DegradationReporter, feature: string) {

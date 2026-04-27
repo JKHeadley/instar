@@ -20,6 +20,7 @@ import {
   type PlatformAction,
   type PlatformActionType,
 } from '../../src/core/PlatformActivityRegistry.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -57,8 +58,7 @@ describe('PlatformActivityRegistry', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/PlatformActivityRegistry.test.ts:61' });
   });
 
   // ── Core Recording ─────────────────────────────────────────────────

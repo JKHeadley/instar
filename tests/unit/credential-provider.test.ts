@@ -19,6 +19,7 @@ import type { ClaudeCredentials, CredentialProvider } from '../../src/monitoring
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Token Redaction ─────────────────────────────────────────────────
 
@@ -71,8 +72,7 @@ describe('ClaudeConfigCredentialProvider', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/credential-provider.test.ts:75' });
   });
 
   it('has correct platform and security level', () => {

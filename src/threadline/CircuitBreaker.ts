@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentTrustManager } from './AgentTrustManager.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -58,8 +59,7 @@ function atomicWrite(filePath: string, data: string): void {
     fs.writeFileSync(tmpPath, data);
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/threadline/CircuitBreaker.ts:62' }); } catch { /* ignore */ }
     throw err;
   }
 }

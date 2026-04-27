@@ -43,6 +43,8 @@ import { StopGateDb, dayKeyFor, type EvalMode } from '../core/StopGateDb.js';
 import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 const execFile = promisify(execFileCb);
 
@@ -2282,8 +2284,7 @@ export function createRoutes(ctx: RouteContext): Router {
         let gitSyncJobEnabled = false;
         if (hasGitRepo) {
           try {
-            // safe-git-allow: incremental-migration
-            const remote = execFileSync('git', ['remote'], { cwd: projectDir, stdio: 'pipe' }).toString().trim();
+            const remote = SafeGitExecutor.readSync(['remote'], { cwd: projectDir, stdio: 'pipe', operation: 'src/server/routes.ts:2286' }).toString().trim();
             hasRemote = remote.length > 0;
           } catch { /* no remote */ }
         }
@@ -3033,13 +3034,10 @@ export function createRoutes(ctx: RouteContext): Router {
     // Detect GitHub repo from git remote
     let repo: string | null = null;
     try {
-      // safe-git-allow: incremental-migration
-      const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], {
-        cwd: projectDir,
+      const remoteUrl = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: projectDir,
         encoding: 'utf-8',
         timeout: 5000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
+        stdio: ['pipe', 'pipe', 'pipe'], operation: 'src/server/routes.ts:3037' }).trim();
       // Extract owner/repo from SSH or HTTPS URL
       const match = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
       if (match) repo = match[1];
@@ -3173,8 +3171,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const fpath = path.join(failDir, fname);
         try {
           if (fs.statSync(fpath).mtimeMs < cutoff) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(fpath);
+            SafeFsExecutor.safeUnlinkSync(fpath, { operation: 'src/server/routes.ts:3177' });
             purgedFiles++;
           }
         } catch { /* ignore individual file errors */ }
@@ -8928,8 +8925,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Clear submissions log
       const submissionsLog = path.join(ctx.config.stateDir, 'telemetry', 'submissions.jsonl');
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(submissionsLog); } catch { /* may not exist */ }
+      try { SafeFsExecutor.safeUnlinkSync(submissionsLog, { operation: 'src/server/routes.ts:8932' }); } catch { /* may not exist */ }
 
       // Update config.json
       const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');

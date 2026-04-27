@@ -25,6 +25,7 @@ import {
   type WebhookPayload,
 } from '../../src/messaging/backends/BusinessApiBackend.js';
 import { mountWhatsAppWebhooks } from '../../src/messaging/backends/WhatsAppWebhookRoutes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test setup ──────────────────────────────────────
 
@@ -106,8 +107,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   vi.restoreAllMocks();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/whatsapp-server-e2e.test.ts:110' });
 });
 
 // ── Tests ──────────────────────────────────────────────

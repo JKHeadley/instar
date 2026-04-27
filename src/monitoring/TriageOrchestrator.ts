@@ -21,6 +21,7 @@ import type {
   ProcessInfo,
   TreatmentAction,
 } from './StallTriageNurse.types.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -1026,8 +1027,7 @@ export class TriageOrchestrator extends EventEmitter {
 
     // Schedule cleanup
     setTimeout(() => {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(filepath); } catch { /* best-effort */ }
+      try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/monitoring/TriageOrchestrator.ts:1030' }); } catch { /* best-effort */ }
     }, this.config.evidenceRetentionMinutes * 60000);
 
     return filepath;
@@ -1080,8 +1080,7 @@ export class TriageOrchestrator extends EventEmitter {
         const filepath = path.join(EVIDENCE_DIR, file);
         const stat = fs.statSync(filepath);
         if (now - stat.mtimeMs > this.config.evidenceRetentionMinutes * 60000) {
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(filepath);
+          SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/monitoring/TriageOrchestrator.ts:1084' });
         }
       }
     } catch {

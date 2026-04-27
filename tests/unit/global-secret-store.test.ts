@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { GlobalSecretStore } from '../../src/core/GlobalSecretStore.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('GlobalSecretStore', () => {
   let tmpDir: string;
@@ -24,8 +25,7 @@ describe('GlobalSecretStore', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/global-secret-store.test.ts:28' });
   });
 
   function createStore() {

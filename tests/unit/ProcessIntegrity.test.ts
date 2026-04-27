@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('ProcessIntegrity', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('ProcessIntegrity', () => {
 
   afterEach(() => {
     ProcessIntegrity.reset();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/ProcessIntegrity.test.ts:18' });
   });
 
   // ── Core: Version Freezing ──────────────────────────────────────

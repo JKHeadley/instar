@@ -19,6 +19,7 @@ import { MessageDelivery, type TmuxOperations } from '../../src/messaging/Messag
 import { MessageFormatter } from '../../src/messaging/MessageFormatter.js';
 import { DeliveryRetryManager } from '../../src/messaging/DeliveryRetryManager.js';
 import type { MessageEnvelope, AgentMessage } from '../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -101,8 +102,7 @@ describe('DeliveryRetryManager', () => {
 
   afterEach(() => {
     manager.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/delivery-retry-manager.test.ts:105' });
   });
 
   // ── Layer 2 Retry ──────────────────────────────────────────

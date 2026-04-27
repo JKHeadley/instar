@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { RateLimiter, DEFAULT_RATE_LIMITS } from '../../../src/threadline/RateLimiter.js';
 import type { RateLimitConfig } from '../../../src/threadline/RateLimiter.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('RateLimiter', () => {
   let tmpDir: string;
@@ -17,8 +18,7 @@ describe('RateLimiter', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/RateLimiter.test.ts:21' });
   });
 
   function createLimiter(opts?: {

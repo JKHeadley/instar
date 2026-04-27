@@ -19,6 +19,7 @@ import { DispatchDecisionJournal } from '../../src/core/DispatchDecisionJournal.
 import type { Dispatch } from '../../src/core/DispatchManager.js';
 import type { SignedDispatch } from '../../src/core/DispatchVerifier.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -106,8 +107,7 @@ describe('Full Discernment Pipeline', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/discernment-pipeline.test.ts:110' });
   });
 
   /**

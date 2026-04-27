@@ -7,6 +7,7 @@ import {
   readDroppedMessages,
   type DroppedMessageRecord,
 } from '../../../src/lifeline/droppedMessages.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('droppedMessages', () => {
   let stateDir: string;
@@ -19,8 +20,7 @@ describe('droppedMessages', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/lifeline/droppedMessages.test.ts:23' });
   });
 
   const sample = (overrides: Partial<DroppedMessageRecord> = {}): Omit<DroppedMessageRecord, 'timestamp'> => ({

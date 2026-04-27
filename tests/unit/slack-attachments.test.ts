@@ -12,12 +12,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TEST_DIR = '/tmp/slack-attachments-test-' + Date.now();
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(TEST_DIR, { recursive: true, force: true, operation: 'tests/unit/slack-attachments.test.ts:20' });
   vi.restoreAllMocks();
 });
 

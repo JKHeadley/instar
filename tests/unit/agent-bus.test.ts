@@ -12,6 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { AgentBus } from '../../src/core/AgentBus.js';
 import type { AgentMessage, AgentBusConfig } from '../../src/core/AgentBus.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeBus(tmpDir: string, machineId = 'machine-a', overrides: Partial<AgentBusConfig> = {}): AgentBus {
   const stateDir = path.join(tmpDir, '.instar');
@@ -33,8 +34,7 @@ describe('AgentBus', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/agent-bus.test.ts:37' });
   });
 
   // ── Construction ────────────────────────────────────────────────

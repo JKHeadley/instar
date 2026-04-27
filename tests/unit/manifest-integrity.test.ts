@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { ManifestIntegrity } from '../../src/security/ManifestIntegrity.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('ManifestIntegrity', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('ManifestIntegrity', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/manifest-integrity.test.ts:18' });
   });
 
   it('generates a key on first call', () => {

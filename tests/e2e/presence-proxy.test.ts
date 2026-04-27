@@ -28,6 +28,7 @@ import {
   type ProxyMetadata,
 } from '../../src/monitoring/PresenceProxy.js';
 import type { MessageLoggedEvent } from '../../src/messaging/shared/MessagingEventBus.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -37,8 +38,7 @@ function createTempDir(): { dir: string; cleanup: () => void } {
   fs.mkdirSync(path.join(stateDir, 'state', 'presence-proxy'), { recursive: true });
   return {
     dir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/presence-proxy.test.ts:41' }),
   };
 }
 

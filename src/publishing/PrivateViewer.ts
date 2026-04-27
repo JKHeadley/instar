@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { marked } from 'marked';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -135,8 +136,7 @@ export class PrivateViewer {
     const filePath = path.join(this.viewsDir, `${id}.json`);
     try {
       if (!fs.existsSync(filePath)) return false;
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(filePath);
+      SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/publishing/PrivateViewer.ts:139' });
       return true;
     } catch {
       return false;

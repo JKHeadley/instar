@@ -33,6 +33,8 @@ import {
   type SetupDiscoveryContext,
   type SetupScenarioContext,
 } from './discovery.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 /**
  * Try allocatePort from the registry, fall back to scanning for a free port.
@@ -111,12 +113,9 @@ export async function runSetup(): Promise<void> {
   let gitRepoName = '';
   let gitRepoRoot = '';
   try {
-    // safe-git-allow: incremental-migration
-    gitRepoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: projectDir,
+    gitRepoRoot = SafeGitExecutor.readSync(['rev-parse', '--show-toplevel'], { cwd: projectDir,
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+      stdio: ['pipe', 'pipe', 'pipe'], operation: 'src/commands/setup.ts:115' }).trim();
     gitRepoName = path.basename(gitRepoRoot);
     isInsideGitRepo = true;
   } catch { /* not in a git repo */ }
@@ -586,8 +585,7 @@ export function uninstallAutoStart(projectName: string): boolean {
 
     // Remove file
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(plistPath);
+      SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:590' });
       return true;
     } catch {
       return false;
@@ -602,8 +600,7 @@ export function uninstallAutoStart(projectName: string): boolean {
     } catch { /* not loaded */ }
 
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(servicePath);
+      SafeFsExecutor.safeUnlinkSync(servicePath, { operation: 'src/commands/setup.ts:606' });
       execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
       return true;
     } catch {
@@ -731,8 +728,7 @@ export function ensureStableNodeSymlink(projectDir: string): string {
 
   // Create/update the symlink
   try {
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(symlinkPath);
+    SafeFsExecutor.safeUnlinkSync(symlinkPath, { operation: 'src/commands/setup.ts:735' });
   } catch { /* didn't exist */ }
   fs.symlinkSync(durablePath, symlinkPath);
 
@@ -833,8 +829,7 @@ export function installBootWrapper(projectDir: string): { sh: string; js: string
   const jsPath = path.join(stateDir, `instar-boot${jsExt}`);
   // Clean up the other extension if it exists (prevents stale wrapper confusion)
   const altPath = path.join(stateDir, `instar-boot${usesCjs ? '.js' : '.cjs'}`);
-  // safe-git-allow: incremental-migration
-  try { fs.unlinkSync(altPath); } catch { /* didn't exist */ }
+  try { SafeFsExecutor.safeUnlinkSync(altPath, { operation: 'src/commands/setup.ts:837' }); } catch { /* didn't exist */ }
 
   const shadowCli = path.join(stateDir, 'shadow-install', 'node_modules', 'instar', 'dist', 'cli.js');
 
@@ -1191,8 +1186,7 @@ ${argsXml}
       console.error(`[setup] CRITICAL: Generated plist failed validation: ${stderr}`);
       console.error(`[setup] Plist path: ${plistPath}`);
       // Remove the invalid plist so we don't leave a landmine
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(plistPath); } catch { /* best effort */ }
+      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:1195' }); } catch { /* best effort */ }
       return false;
     }
 

@@ -29,6 +29,7 @@ import {
   toLogEntry,
 } from '../../src/types/pipeline.js';
 import type { PipelineLogEntry } from '../../src/types/pipeline.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -57,8 +58,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   memory.close();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(testDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(testDir, { recursive: true, force: true, operation: 'tests/integration/privacy-scoping.test.ts:61' });
 });
 
 // ── Full Pipeline: Message → Privacy Filter → Context ─────────────

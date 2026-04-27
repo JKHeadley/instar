@@ -17,6 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * Create a minimal RouteContext with only what the intent routes need.
@@ -75,8 +76,7 @@ describe('Intent Journal Routes (integration)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/intent-routes.test.ts:79' });
   });
 
   // ── POST /intent/journal ─────────────────────────────────────────

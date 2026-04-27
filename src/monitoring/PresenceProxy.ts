@@ -21,6 +21,7 @@ import type { MessageLoggedEvent } from '../messaging/shared/MessagingEventBus.j
 import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessage.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { LlmAbortedError } from './LlmQueue.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1425,8 +1426,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     this.states.delete(topicId);
     // Remove persisted state file
     const filePath = path.join(this.stateDir, `${topicId}.json`);
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(filePath); } catch { /* ok — may not exist */ }
+    try { SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/monitoring/PresenceProxy.ts:1429' }); } catch { /* ok — may not exist */ }
   }
 
   private persistState(topicId: number, state: PresenceState): void {
@@ -1465,8 +1465,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
 
           // Stale state (>15 minutes) — clean up
           if (elapsed > 15 * 60_000) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(path.join(this.stateDir, file));
+            SafeFsExecutor.safeUnlinkSync(path.join(this.stateDir, file), { operation: 'src/monitoring/PresenceProxy.ts:1469' });
             continue;
           }
 
@@ -1475,8 +1474,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
 
           // Verify session still exists
           if (!this.config.getSessionForTopic(topicId)) {
-            // safe-git-allow: incremental-migration
-            fs.unlinkSync(path.join(this.stateDir, file));
+            SafeFsExecutor.safeUnlinkSync(path.join(this.stateDir, file), { operation: 'src/monitoring/PresenceProxy.ts:1479' });
             continue;
           }
 
@@ -1519,8 +1517,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
           console.log(`[PresenceProxy] Recovered state for topic ${topicId} (elapsed: ${Math.round(elapsed / 1000)}s)`);
         } catch {
           // Corrupt state file — remove it
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(path.join(this.stateDir, file)); } catch { /* ok */ }
+          try { SafeFsExecutor.safeUnlinkSync(path.join(this.stateDir, file), { operation: 'src/monitoring/PresenceProxy.ts:1523' }); } catch { /* ok */ }
         }
       }
     } catch {

@@ -16,6 +16,8 @@ import path from 'node:path';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { WorkLedger, LedgerEntry } from './WorkLedger.js';
 import { assertNotInstarSourceTree } from './SourceTreeGuard.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -353,8 +355,7 @@ export class HandoffManager {
   clearHandoffNote(): void {
     const filePath = this.handoffFilePath();
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(filePath);
+      SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/core/HandoffManager.ts:357' });
     } catch {
       // @silent-fallback-ok — file may not exist; clearing a nonexistent handoff note is a no-op
     }
@@ -496,12 +497,12 @@ export class HandoffManager {
   }
 
   private git(...args: string[]): string {
-    // safe-git-allow: incremental-migration
-    return execFileSync('git', args, {
+    return SafeGitExecutor.run(args, {
       cwd: this.projectDir,
       encoding: 'utf-8',
       timeout: 30_000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      operation: 'src/core/HandoffManager.ts:git',
     }).trim();
   }
 }

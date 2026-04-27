@@ -25,6 +25,7 @@ import type {
   LedgerSessionRegistration,
 } from './types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants / defaults ───────────────────────────────────────────
 
@@ -231,8 +232,7 @@ export class LedgerSessionRegistry {
       }
     } catch {
       try {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(tmp);
+        SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'src/core/LedgerSessionRegistry.ts:235' });
       } catch {
         /* best effort */
       }

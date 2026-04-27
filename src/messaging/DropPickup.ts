@@ -19,6 +19,7 @@ import os from 'node:os';
 import type { MessageEnvelope } from './types.js';
 import type { MessageStore } from './MessageStore.js';
 import { verifyDropHmac } from './AgentTokenManager.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface DropPickupResult {
   /** Number of messages successfully ingested */
@@ -143,8 +144,7 @@ export async function pickupDroppedMessages(
 /** Safely delete a file, ignoring errors */
 function unlinkSafe(filePath: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(filePath);
+    SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/messaging/DropPickup.ts:147' });
   } catch {
     // @silent-fallback-ok — file may already be deleted
   }

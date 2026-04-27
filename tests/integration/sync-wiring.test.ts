@@ -21,6 +21,7 @@ import { LLMConflictResolver } from '../../src/core/LLMConflictResolver.js';
 import type { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import type { SecurityLog } from '../../src/core/SecurityLog.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -61,8 +62,7 @@ describe('Sync pipeline wiring integrity', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/sync-wiring.test.ts:65' });
   });
 
   // ── Category 1: FileClassifier is wired into GitSync ─────────────

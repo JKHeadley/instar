@@ -28,14 +28,14 @@ import {
   encryptForSync,
   decryptFromSync,
 } from '../../src/core/SecretStore.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-secret-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/secret-store.test.ts:38' });
 }
 
 /** Generate an X25519 key pair for testing. */

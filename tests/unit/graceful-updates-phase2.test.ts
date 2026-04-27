@@ -19,6 +19,7 @@ import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { StateManager } from '../../src/core/StateManager.js';
 import type { SessionManagerLike, SessionMonitorLike, SessionHealthEntry } from '../../src/core/UpdateGate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Factories ──────────────────────────────────────────────
 
@@ -99,8 +100,7 @@ describe('Phase 2A: Update coalescing', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/graceful-updates-phase2.test.ts:103' });
   });
 
   it('rapid version bumps produce single apply (3 versions in 3 minutes)', async () => {
@@ -450,8 +450,7 @@ describe('Phase 2B+E: AutoUpdater with session gating', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/graceful-updates-phase2.test.ts:454' });
   });
 
   it('defers restart when active sessions exist', async () => {
@@ -559,8 +558,7 @@ describe('Phase 2C: Notify-only mode (autoApply: false)', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/graceful-updates-phase2.test.ts:563' });
   });
 
   it('does not auto-apply when autoApply is false', async () => {
@@ -645,8 +643,7 @@ describe('E2E: Full update cycle', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/graceful-updates-phase2.test.ts:649' });
   });
 
   it('full cycle with active session: detect → coalesce → gate → defer → session ends → restart', async () => {

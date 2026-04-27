@@ -30,6 +30,7 @@ import {
   MachineIdentityManager,
   ensureGitignore,
 } from '../../src/core/MachineIdentity.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ─────────────────────────────────────────────────────
 
@@ -38,8 +39,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/machine-identity.test.ts:42' });
 }
 
 // ── Key Generation ───────────────────────────────────────────────────
@@ -423,8 +423,7 @@ describe('MachineIdentityManager', () => {
     it('self-registers when machine missing from registry (registry wiped scenario)', async () => {
       // Generate identity (this also registers it once), then simulate a wiped registry
       const identity = await manager.generateIdentity();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(path.join(instarDir, 'machines'), { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(path.join(instarDir, 'machines'), { recursive: true, force: true, operation: 'tests/unit/machine-identity.test.ts:427' });
 
       const registered = manager.ensureSelfRegistered(identity, 'awake');
       expect(registered).toBe(true);
@@ -449,8 +448,7 @@ describe('MachineIdentityManager', () => {
 
     it('allows subsequent updateRole calls after self-registration', async () => {
       const identity = await manager.generateIdentity();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(path.join(instarDir, 'machines'), { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(path.join(instarDir, 'machines'), { recursive: true, force: true, operation: 'tests/unit/machine-identity.test.ts:453' });
 
       manager.ensureSelfRegistered(identity, 'standby');
       // This would previously throw with MACHINE_NOT_FOUND

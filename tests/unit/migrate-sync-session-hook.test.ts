@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { syncSessionHook } from '../../src/commands/migrate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-sync-test-'));
@@ -23,8 +24,7 @@ describe('migrate sync-session-hook', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/migrate-sync-session-hook.test.ts:27' });
   });
 
   it('writes the hook when no file exists', async () => {

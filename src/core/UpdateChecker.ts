@@ -19,6 +19,7 @@ import type { UpdateInfo, UpdateResult } from './types.js';
 import { PostUpdateMigrator } from './PostUpdateMigrator.js';
 import type { MigratorConfig } from './PostUpdateMigrator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/JKHeadley/instar/releases';
 
@@ -621,8 +622,7 @@ export class UpdateChecker {
       fs.writeFileSync(tmpPath, JSON.stringify(info, null, 2));
       fs.renameSync(tmpPath, this.stateFile);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/UpdateChecker.ts:625' }); } catch { /* ignore */ }
       throw err;
     }
   }
@@ -639,8 +639,7 @@ export class UpdateChecker {
 
   private clearRollbackInfo(): void {
     if (fs.existsSync(this.rollbackFile)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(this.rollbackFile);
+      SafeFsExecutor.safeUnlinkSync(this.rollbackFile, { operation: 'src/core/UpdateChecker.ts:643' });
     }
   }
 }

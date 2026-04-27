@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Events endpoint — parameter bounds', () => {
   let app: express.Express;
@@ -81,8 +82,7 @@ describe('Events endpoint — parameter bounds', () => {
 
   afterAll(async () => {
     try { await server?.stop(); } catch { /* ignore */ }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/events-bounds.test.ts:85' });
   });
 
   const auth = { Authorization: `Bearer ${authToken}` };

@@ -21,6 +21,7 @@ import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
 import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Context ────────────────────────────────────────────────────
 
@@ -94,8 +95,7 @@ describe('E2E: Discovery Observability (Phase 5)', () => {
   afterAll(() => {
     registry?.close();
     server?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/discovery-observability.test.ts:98' });
   });
 
   // ── 1. Funnel Metrics ─────────────────────────────────────────────

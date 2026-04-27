@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SecretManager, SECRET_KEYS } from '../../src/core/SecretManager.js';
 import { GlobalSecretStore } from '../../src/core/GlobalSecretStore.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Secret Manager Lifecycle', () => {
   let tmpDir: string;
@@ -20,8 +21,7 @@ describe('Secret Manager Lifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/secret-manager-lifecycle.test.ts:24' });
   });
 
   function createMgr(agentName: string) {

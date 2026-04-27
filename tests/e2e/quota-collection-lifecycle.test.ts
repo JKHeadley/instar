@@ -22,6 +22,7 @@ import { AccountSwitcher } from '../../src/monitoring/AccountSwitcher.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ────────────────────────────────────────────────────
 
@@ -143,8 +144,7 @@ describe('Quota Collection Lifecycle (e2e)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/quota-collection-lifecycle.test.ts:147' });
   });
 
   it('full lifecycle: OAuth → token expires → JSONL fallback → new token → OAuth resumes', async () => {

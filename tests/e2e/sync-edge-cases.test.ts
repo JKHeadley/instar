@@ -14,6 +14,8 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 // Modules under test
 import { SecretRedactor } from '../../src/core/SecretRedactor.js';
@@ -32,22 +34,16 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/sync-edge-cases.test.ts:36' });
 }
 
 function initGitRepo(dir: string): void {
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: dir, stdio: 'ignore' });
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'ignore' });
+  SafeGitExecutor.execSync(['init'], { cwd: dir, stdio: 'ignore', operation: 'tests/e2e/sync-edge-cases.test.ts:41' });
+  SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: dir, stdio: 'ignore', operation: 'tests/e2e/sync-edge-cases.test.ts:43' });
+  SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: dir, stdio: 'ignore', operation: 'tests/e2e/sync-edge-cases.test.ts:45' });
   fs.writeFileSync(path.join(dir, 'README.md'), '# Test');
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['add', '.'], { cwd: dir, stdio: 'ignore' });
-  // safe-git-allow: incremental-migration
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'ignore' });
+  SafeGitExecutor.execSync(['add', '.'], { cwd: dir, stdio: 'ignore', operation: 'tests/e2e/sync-edge-cases.test.ts:48' });
+  SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: dir, stdio: 'ignore', operation: 'tests/e2e/sync-edge-cases.test.ts:50' });
 }
 
 // ── SecretRedactor Edge Cases ────────────────────────────────────────

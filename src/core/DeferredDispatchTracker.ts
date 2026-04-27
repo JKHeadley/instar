@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Dispatch } from './DispatchManager.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -262,8 +263,7 @@ export class DeferredDispatchTracker {
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
       fs.renameSync(tmpPath, this.stateFile);
     } catch {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/DeferredDispatchTracker.ts:266' }); } catch { /* ignore */ }
     }
   }
 }

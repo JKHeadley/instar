@@ -30,6 +30,7 @@ import type {
   EntityType,
   RelationType,
 } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -52,8 +53,7 @@ async function createTestMemory(): Promise<TestSetup> {
     memory,
     cleanup: () => {
       memory.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(dir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/semantic-memory.test.ts:56' });
     },
   };
 }
@@ -865,8 +865,7 @@ describe('SemanticMemory', () => {
       expect(alice!.connections[0].entity.name).toBe('Portal');
 
       importDb.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(importDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(importDir, { recursive: true, force: true, operation: 'tests/unit/semantic-memory.test.ts:869' });
     });
 
     it('handles import into non-empty database (skips duplicates)', async () => {

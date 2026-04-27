@@ -20,6 +20,7 @@ import { DNSVerifier } from '../../../src/threadline/DNSVerifier.js';
 import type { DNSResolverFn } from '../../../src/threadline/DNSVerifier.js';
 import type { HttpFetcher } from '../../../src/threadline/AgentDiscovery.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -71,8 +72,7 @@ describe('TrustBootstrap E2E', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/e2e/threadline/TrustBootstrapE2E.test.ts:75' });
   });
 
   // ── 1. New Agent Joining via Invitation ────────────────────────

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TelemetryAuth } from '../../src/monitoring/TelemetryAuth.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TelemetryAuth', () => {
   let tmpDir: string;
@@ -15,8 +16,7 @@ describe('TelemetryAuth', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TelemetryAuth.test.ts:19' });
   });
 
   describe('isProvisioned()', () => {
@@ -86,8 +86,7 @@ describe('TelemetryAuth', () => {
     it('should regenerate missing secret while preserving install-id', () => {
       const first = auth.provision();
       // Delete only the secret
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(tmpDir, 'telemetry', 'local-secret'));
+      SafeFsExecutor.safeUnlinkSync(path.join(tmpDir, 'telemetry', 'local-secret'), { operation: 'tests/unit/TelemetryAuth.test.ts:90' });
       const second = auth.provision();
       expect(second.installationId).toBe(first.installationId);
       expect(second.created).toBe(true);

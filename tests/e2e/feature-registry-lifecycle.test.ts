@@ -18,6 +18,7 @@ import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('E2E: Feature Registry Lifecycle', () => {
   let projectDir: string;
@@ -154,8 +155,7 @@ describe('E2E: Feature Registry Lifecycle', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     registry?.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/feature-registry-lifecycle.test.ts:158' });
   });
 
   // ── Phase 1a: Registration & Bootstrap ──────────────────────────

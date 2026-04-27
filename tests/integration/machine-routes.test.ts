@@ -26,14 +26,14 @@ import { signRequest } from '../../src/server/machineAuth.js';
 import { createMachineRoutes } from '../../src/server/machineRoutes.js';
 import type { MachineAuthDeps } from '../../src/server/machineAuth.js';
 import type { MachineIdentity } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-routes-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/machine-routes.test.ts:36' });
 }
 
 /**

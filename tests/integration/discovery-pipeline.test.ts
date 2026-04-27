@@ -23,6 +23,7 @@ import {
   type SetupDiscoveryContext,
   type SetupLock,
 } from '../../src/commands/discovery.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -30,8 +31,7 @@ function createTempDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-integration-'));
   return {
     dir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/discovery-pipeline.test.ts:34' }),
   };
 }
 

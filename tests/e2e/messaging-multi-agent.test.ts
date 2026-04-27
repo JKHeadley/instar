@@ -41,6 +41,7 @@ import { SpawnRequestManager } from '../../src/messaging/SpawnRequestManager.js'
 import type { InstarConfig } from '../../src/core/types.js';
 import type { MessageEnvelope } from '../../src/messaging/types.js';
 import { registerAgent, unregisterAgent } from '../../src/core/AgentRegistry.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -165,8 +166,7 @@ async function destroyTestAgent(agent: TestAgent): Promise<void> {
   await agent.store.destroy();
   deleteAgentToken(agent.name);
   unregisterAgent(agent.projectDir);
-  // safe-git-allow: incremental-migration
-  fs.rmSync(agent.projectDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(agent.projectDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:169' });
 }
 
 function makeEnvelope(
@@ -448,14 +448,12 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
         expect(remainingFiles.length).toBe(0);
 
         await pickupStore.destroy();
-        // safe-git-allow: incremental-migration
-        fs.rmSync(pickupStoreDir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(pickupStoreDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:452' });
       } finally {
         deleteAgentToken(offlineAgent);
         // Clean up drop directory
         const dropDir = path.join(os.homedir(), '.instar', 'messages', 'drop', offlineAgent);
-        // safe-git-allow: incremental-migration
-        try { fs.rmSync(dropDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeRmSync(dropDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:458' }); } catch { /* ignore */ }
       }
     });
 
@@ -499,13 +497,11 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
         expect(result.rejections[0].reason).toContain('invalid HMAC');
 
         await pickupStore.destroy();
-        // safe-git-allow: incremental-migration
-        fs.rmSync(pickupStoreDir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(pickupStoreDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:503' });
       } finally {
         deleteAgentToken(offlineAgent);
         const dropDir = path.join(os.homedir(), '.instar', 'messages', 'drop', offlineAgent);
-        // safe-git-allow: incremental-migration
-        try { fs.rmSync(dropDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeRmSync(dropDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:508' }); } catch { /* ignore */ }
       }
     });
 
@@ -547,13 +543,11 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
         }
 
         await pickupStore.destroy();
-        // safe-git-allow: incremental-migration
-        fs.rmSync(pickupStoreDir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(pickupStoreDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:551' });
       } finally {
         deleteAgentToken(offlineAgent);
         const dropDir = path.join(os.homedir(), '.instar', 'messages', 'drop', offlineAgent);
-        // safe-git-allow: incremental-migration
-        try { fs.rmSync(dropDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeRmSync(dropDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:556' }); } catch { /* ignore */ }
       }
     });
   });

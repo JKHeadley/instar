@@ -23,6 +23,7 @@ import {
   type OverlapCheckResult,
   type OverlapNotificationConfig,
 } from '../../src/core/OverlapGuard.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -54,8 +55,7 @@ describe('OverlapGuard wiring integrity', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/overlap-wiring.test.ts:58' });
   });
 
   // ── 1. Construction — not null/undefined ────────────────────────────
@@ -578,8 +578,7 @@ describe('OverlapGuard wiring integrity', () => {
       // Let's reconfigure with explicit userId on writer
 
       // Reset
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/overlap-wiring.test.ts:582' });
       fs.mkdirSync(tmpDir, { recursive: true });
 
       const writerLedger2 = makeLedger(stateDir, 'writer-machine', 'user-A');

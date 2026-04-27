@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { detectProjectDir, ensureStateDir, loadConfig } from '../../src/core/Config.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Config module', () => {
   let tmpDir: string;
@@ -19,8 +20,7 @@ describe('Config module', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/config-loadconfig.test.ts:23' });
   });
 
   describe('detectProjectDir', () => {

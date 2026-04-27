@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { initProject } from '../../src/commands/init.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Autonomous skill deployment', () => {
   const testBase = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-autonomous-'));
@@ -24,8 +25,7 @@ describe('Autonomous skill deployment', () => {
   const projectDir = path.join(testBase, projectName);
 
   afterAll(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(testBase, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(testBase, { recursive: true, force: true, operation: 'tests/unit/autonomous-skill-deployment.test.ts:28' });
   });
 
   it('creates project with autonomous skill', async () => {

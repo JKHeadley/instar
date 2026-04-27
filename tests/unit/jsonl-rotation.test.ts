@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { maybeRotateJsonl } from '../../src/utils/jsonl-rotation.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('maybeRotateJsonl', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('maybeRotateJsonl', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/jsonl-rotation.test.ts:18' });
   });
 
   // Helper to write N lines of ~100 bytes each

@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CapabilityRegistryGenerator, type StoredCapabilityRegistry } from '../../src/core/CapabilityRegistryGenerator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,8 +35,7 @@ function setup() {
 }
 
 function teardown() {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/capability-registry-generator.test.ts:38' });
 }
 
 function writeConfig(config: unknown) {

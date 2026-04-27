@@ -13,6 +13,7 @@ import type { CredentialProvider, ClaudeCredentials } from '../../src/monitoring
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ────────────────────────────────────────────────────
 
@@ -73,8 +74,7 @@ describe('AccountSwitcher with CredentialProvider', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/account-switcher-provider.test.ts:77' });
   });
 
   it('exposes the provider via getProvider()', () => {

@@ -29,6 +29,7 @@ import { CoordinationProtocol } from '../../src/core/CoordinationProtocol.js';
 import type { FileAvoidanceRequest, FileAvoidanceResponse } from '../../src/core/CoordinationProtocol.js';
 import { ConflictNegotiator } from '../../src/core/ConflictNegotiator.js';
 import type { NegotiationProposal, NegotiationResponse } from '../../src/core/ConflictNegotiator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // -- Helpers ----------------------------------------------------------------
 
@@ -38,8 +39,7 @@ function createTempStateDir(prefix: string): string {
 
 function cleanupDir(dir: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/realtime-lifecycle.test.ts:42' });
   } catch {
     // Best-effort cleanup
   }

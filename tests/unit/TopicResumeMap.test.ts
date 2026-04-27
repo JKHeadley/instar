@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TopicResumeMap', () => {
   let tmpDir: string;
@@ -26,8 +27,7 @@ describe('TopicResumeMap', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TopicResumeMap.test.ts:30' });
   });
 
   // ── save() and get() ────────────────────────────────────────────
@@ -284,8 +284,7 @@ describe('TopicResumeMap', () => {
 
   afterEach(() => {
     for (const dir of testProjectDirs) {
-      // safe-git-allow: incremental-migration
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/TopicResumeMap.test.ts:288' }); } catch { /* best effort */ }
     }
     testProjectDirs.length = 0;
   });

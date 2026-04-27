@@ -167,7 +167,6 @@ function tryPrebuild(pkgDir, betterSqliteVersion) {
     console.log(`[fix-better-sqlite3] Downloading ${url}`);
     execSync(`curl -L -f -o "${tmpFile}" "${url}"`, { stdio: 'pipe', timeout: 30000 });
 
-    // safe-git-allow: incremental-migration
     if (fs.existsSync(buildDir)) fs.rmSync(buildDir, { recursive: true });
     execSync(`tar xzf "${tmpFile}" -C "${pkgDir}"`, { stdio: 'pipe' });
     return true;
@@ -175,7 +174,6 @@ function tryPrebuild(pkgDir, betterSqliteVersion) {
     console.warn(`[fix-better-sqlite3] prebuild download/extract failed: ${err.message}`);
     return false;
   } finally {
-    // safe-git-allow: incremental-migration
     try { fs.unlinkSync(tmpFile); } catch {}
   }
 }

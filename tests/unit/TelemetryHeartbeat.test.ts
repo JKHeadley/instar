@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { TelemetryHeartbeat } from '../../src/monitoring/TelemetryHeartbeat.js';
 import type { TelemetryConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TelemetryHeartbeat', () => {
   let tmpDir: string;
@@ -13,8 +14,7 @@ describe('TelemetryHeartbeat', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/TelemetryHeartbeat.test.ts:17' });
   });
 
   function createHeartbeat(overrides: Partial<TelemetryConfig> = {}): TelemetryHeartbeat {

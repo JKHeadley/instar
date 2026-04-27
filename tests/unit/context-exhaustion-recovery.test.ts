@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Mock the detector modules before importing SessionRecovery
 vi.mock('../../src/monitoring/stall-detector.js', () => ({
@@ -160,8 +161,7 @@ describe('SessionRecovery — context exhaustion', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     try {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/context-exhaustion-recovery.test.ts:164' });
     } catch { /* cleanup best-effort */ }
   });
 

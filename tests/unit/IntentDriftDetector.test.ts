@@ -13,6 +13,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { IntentDriftDetector } from '../../src/core/IntentDriftDetector.js';
 import type { DecisionJournalEntry } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /** Write journal entries directly to the JSONL file. */
 function writeJournal(stateDir: string, entries: Partial<DecisionJournalEntry>[]): void {
@@ -43,8 +44,7 @@ describe('IntentDriftDetector', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/IntentDriftDetector.test.ts:47' });
     vi.restoreAllMocks();
   });
 

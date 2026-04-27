@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TelegramAdapter registry and message log', () => {
   let adapter: TelegramAdapter;
@@ -18,8 +19,7 @@ describe('TelegramAdapter registry and message log', () => {
 
   afterEach(async () => {
     await adapter.stop();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/telegram-registry-log.test.ts:22' });
   });
 
   describe('topic-session registry', () => {

@@ -11,6 +11,7 @@ import { createTempProject } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('KnowledgeManager', () => {
   let project: TempProject;
@@ -179,8 +180,7 @@ describe('KnowledgeManager', () => {
       const fullPath = path.join(km.getKnowledgeDir(), result.filePath);
 
       // Manually delete the file first
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(fullPath);
+      SafeFsExecutor.safeUnlinkSync(fullPath, { operation: 'tests/unit/knowledge-manager.test.ts:183' });
 
       // remove should still succeed (removes catalog entry)
       const removed = km.remove(result.sourceId);

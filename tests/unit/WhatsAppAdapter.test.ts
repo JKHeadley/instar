@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { WhatsAppAdapter } from '../../src/messaging/WhatsAppAdapter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('WhatsAppAdapter', () => {
   let tmpDir: string;
@@ -12,8 +13,7 @@ describe('WhatsAppAdapter', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/WhatsAppAdapter.test.ts:16' });
   });
 
   function createAdapter(overrides: Record<string, unknown> = {}): WhatsAppAdapter {

@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
@@ -131,8 +132,7 @@ export function writeAuthFile(filePath: string, content: string, passphrase?: st
     fs.writeFileSync(tmpPath, output);
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/shared/EncryptedAuthStore.ts:135' }); } catch { /* ignore */ }
     throw err;
   }
 }
@@ -207,8 +207,7 @@ export async function useEncryptedAuthState(authDir: string, passphrase?: string
               if (value) {
                 writeFile(file, value);
               } else {
-                // safe-git-allow: incremental-migration
-                try { fs.unlinkSync(file); } catch { /* ignore */ }
+                try { SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/messaging/shared/EncryptedAuthStore.ts:211' }); } catch { /* ignore */ }
               }
             }
           }

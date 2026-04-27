@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadJobs, validateJob } from '../../src/scheduler/JobLoader.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('JobLoader', () => {
   let tmpDir: string;
@@ -12,8 +13,7 @@ describe('JobLoader', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/JobLoader.test.ts:16' });
   });
 
   const validJob = {

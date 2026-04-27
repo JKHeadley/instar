@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadConfig } from '../../src/core/Config.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Mock loadConfig to avoid dependency on tmux/Claude CLI being installed (CI)
 vi.mock('../../src/core/Config.js', () => ({
@@ -52,8 +53,7 @@ describe('intent drift', () => {
   afterEach(() => {
     process.exit = originalExit;
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/intent-drift.test.ts:56' });
   });
 
   it('shows empty journal message when no entries exist', async () => {

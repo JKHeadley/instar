@@ -34,6 +34,7 @@ import { MessageEncryptor } from './client/MessageEncryptor.js';
 import type { RelayClientConfig, MessageEnvelope } from './relay/types.js';
 import type { IdentityInfo } from './client/IdentityManager.js';
 import type { InboxEntry } from './ListenerSessionManager.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -80,8 +81,7 @@ class DaemonLogger {
         const stat = fs.statSync(this.logPath);
         if (stat.size > this.maxBytes) {
           const rotated = `${this.logPath}.1`;
-          // safe-git-allow: incremental-migration
-          if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+          if (fs.existsSync(rotated)) SafeFsExecutor.safeUnlinkSync(rotated, { operation: 'src/threadline/listener-daemon.ts:84' });
           fs.renameSync(this.logPath, rotated);
         }
       }
@@ -563,8 +563,7 @@ export class ListenerDaemon extends EventEmitter {
     // Remove PID file
     try {
       if (fs.existsSync(this.pidPath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(this.pidPath);
+        SafeFsExecutor.safeUnlinkSync(this.pidPath, { operation: 'src/threadline/listener-daemon.ts:567' });
       }
     } catch {
       // Non-critical

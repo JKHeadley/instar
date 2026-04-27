@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ApprovalQueue } from '../../../src/threadline/ApprovalQueue.js';
 import type { MessageEnvelope } from '../../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -13,8 +14,7 @@ function createTempDir(): { stateDir: string; cleanup: () => void } {
   fs.mkdirSync(stateDir, { recursive: true });
   return {
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/ApprovalQueue.test.ts:17' }),
   };
 }
 

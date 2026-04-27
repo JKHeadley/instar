@@ -22,6 +22,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
@@ -52,8 +53,7 @@ describe('PostUpdateMigrator — build-stop-hook.sh deployment', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-buildStopHook.test.ts:56' });
   });
 
   it('installs build-stop-hook.sh when it is missing', () => {
@@ -111,8 +111,7 @@ describe('PostUpdateMigrator — validateHookReferences', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-buildStopHook.test.ts:115' });
   });
 
   function validate(): MigrationResult {

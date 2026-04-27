@@ -12,7 +12,7 @@
  *   - relationships/ is git-ignored by default (GDPR Article 6)
  */
 
-import { execSync, type ExecSyncOptions } from 'node:child_process';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { GitStateConfig, GitLogEntry, GitStatus } from './types.js';
@@ -393,22 +393,11 @@ export class GitStateManager {
    * Execute a git command in the state directory.
    */
   private git(...args: string[]): string {
-    const opts: ExecSyncOptions = {
+    return SafeGitExecutor.run(args, {
       cwd: this.stateDir,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-    };
-
-    // Escape arguments for shell
-    const escaped = args.map(arg => {
-      // If argument contains spaces or special chars, quote it
-      if (/[^a-zA-Z0-9_\-=./:%@+]/.test(arg)) {
-        return `'${arg.replace(/'/g, "'\\''")}'`;
-      }
-      return arg;
+      operation: 'src/core/GitStateManager.ts:git',
     });
-
-    // safe-git-allow: incremental-migration
-    return execSync(`git ${escaped.join(' ')}`, opts) as string;
   }
 }

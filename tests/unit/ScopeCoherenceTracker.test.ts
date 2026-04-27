@@ -19,6 +19,7 @@ import os from 'node:os';
 import { ScopeCoherenceTracker } from '../../src/core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceConfig } from '../../src/core/ScopeCoherenceTracker.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -46,8 +47,7 @@ describe('ScopeCoherenceTracker', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ScopeCoherenceTracker.test.ts:50' });
   });
 
   describe('recordAction() — implementation depth', () => {

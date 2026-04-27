@@ -15,6 +15,7 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export class TelemetryAuth {
   private telemetryDir: string;
@@ -130,10 +131,8 @@ export class TelemetryAuth {
    * Delete all local identity files. Called on `instar telemetry disable`.
    */
   deprovision(): void {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(this.installIdPath); } catch { /* may not exist */ }
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(this.secretPath); } catch { /* may not exist */ }
+    try { SafeFsExecutor.safeUnlinkSync(this.installIdPath, { operation: 'src/monitoring/TelemetryAuth.ts:134' }); } catch { /* may not exist */ }
+    try { SafeFsExecutor.safeUnlinkSync(this.secretPath, { operation: 'src/monitoring/TelemetryAuth.ts:136' }); } catch { /* may not exist */ }
   }
 
   /**

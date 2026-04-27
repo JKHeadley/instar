@@ -11,6 +11,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { Session, SessionManagerConfig, ModelTier, JobDefinition } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Temp Project ──────────────────────────────────────────────────
 
@@ -36,8 +37,7 @@ export function createTempProject(): TempProject {
     dir,
     stateDir,
     state,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/helpers/setup.ts:40' }),
   };
 }
 

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function buildApp(): { server: Server; port: number } {
   const app = express();
@@ -79,8 +80,7 @@ describe('POST /health/degradations/mark-reported', () => {
     if (handle) handle.server.close();
     handle = null;
     DegradationReporter.resetForTesting();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/routes-degradations-mark-reported.test.ts:83' });
   });
 
   it('flips by exact feature name', async () => {

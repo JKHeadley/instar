@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 const SNAPSHOT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$/;
 const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
@@ -384,8 +385,7 @@ export class BackupManager {
       const dir = path.resolve(this.backupsDir, snapshot.id);
       if (dir.startsWith(this.backupsDir + path.sep)) {
         try {
-          // safe-git-allow: incremental-migration
-          fs.rmSync(dir, { recursive: true, force: true });
+          SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:388' });
           removed++;
         } catch {
           // Skip on error

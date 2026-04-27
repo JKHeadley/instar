@@ -13,6 +13,7 @@ import type { ResponseReviewConfig } from '../../src/core/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock the Anthropic API at fetch level ────────────────────────────
 
@@ -113,8 +114,7 @@ describe('CoherenceGate', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/CoherenceGate.test.ts:117' });
   });
 
   describe('PEL integration', () => {

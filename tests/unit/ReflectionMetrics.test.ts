@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ReflectionMetrics } from '../../src/monitoring/ReflectionMetrics.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempStateDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'reflection-metrics-test-'));
@@ -24,8 +25,7 @@ describe('ReflectionMetrics', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ReflectionMetrics.test.ts:28' });
   });
 
   describe('initialization', () => {

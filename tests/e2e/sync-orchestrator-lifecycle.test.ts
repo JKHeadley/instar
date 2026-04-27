@@ -41,6 +41,7 @@ import type { OverlapCheckResult } from '../../src/core/OverlapGuard.js';
 import type { MergeResult } from '../../src/core/BranchManager.js';
 import type { RedactionResult } from '../../src/core/SecretRedactor.js';
 import type { ContentScanResult } from '../../src/core/PromptGuard.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Module Mock ──────────────────────────────────────────────────────
 
@@ -148,8 +149,7 @@ describe('SyncOrchestrator E2E lifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/sync-orchestrator-lifecycle.test.ts:152' });
   });
 
   // ── 1. Full Periodic Sync Lifecycle ──────────────────────────────────

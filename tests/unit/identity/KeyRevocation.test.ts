@@ -11,6 +11,7 @@ import {
   generateRecoverySalt,
 } from '../../../src/identity/RecoveryPhrase.js';
 import { computeCanonicalId, RECOVERY_TIMELOCK_MS, MAX_RECOVERY_ATTEMPTS } from '../../../src/identity/types.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('RevocationManager', () => {
   let tmpDir: string;
@@ -37,8 +38,7 @@ describe('RevocationManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/identity/KeyRevocation.test.ts:41' });
   });
 
   describe('initiate', () => {

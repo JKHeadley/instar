@@ -17,6 +17,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { generateSoulMd } from '../../src/scaffold/templates.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let projectDir: string;
 let stateDir: string;
@@ -142,8 +143,7 @@ describe('Identity / Soul API Routes', () => {
     if (server) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/integration/soul-identity-api.test.ts:146' });
   });
 
   describe('GET /identity', () => {

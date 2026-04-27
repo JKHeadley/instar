@@ -18,6 +18,7 @@ import type { ClaudeCredentials } from '../../src/monitoring/CredentialProvider.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ────────────────────────────────────────────────────
 
@@ -83,8 +84,7 @@ describe('Credential Switching (integration)', () => {
 
   afterEach(() => {
     credManager.clear();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/credential-switching.test.ts:87' });
   });
 
   it('full flow: switch account via provider and verify file was written', async () => {

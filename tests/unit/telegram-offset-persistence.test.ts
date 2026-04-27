@@ -90,7 +90,7 @@ describe('TelegramAdapter — offset persistence', () => {
       const start = source.indexOf('private saveOffset');
       const end = source.indexOf('private async poll');
       const saveSection = source.slice(start, end);
-      expect(saveSection).toContain('unlinkSync(tmpPath)');
+      expect(saveSection).toMatch(/safeUnlinkSync\(tmpPath/);
     });
   });
 

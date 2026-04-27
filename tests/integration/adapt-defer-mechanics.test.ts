@@ -26,6 +26,7 @@ import type { Dispatch } from '../../src/core/DispatchManager.js';
 import type { SignedDispatch } from '../../src/core/DispatchVerifier.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 import type { ContextualEvaluation } from '../../src/core/ContextualEvaluator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -98,8 +99,7 @@ describe('Adapt and Defer Mechanics (Milestone 5)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/adapt-defer-mechanics.test.ts:102' });
   });
 
   // ── Adaptation scope enforcement ─────────────────────────────────

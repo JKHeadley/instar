@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BackupManager } from '../../src/core/BackupManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'backup-sharedstate-test-'));
@@ -31,8 +32,7 @@ describe('BackupManager — shared-state.jsonl* glob', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/BackupManager-sharedState.test.ts:35' });
   });
 
   it('includes all shared-state files when integrated-being enabled', () => {

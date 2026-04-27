@@ -27,6 +27,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig, ensureStateDir, detectTmuxPath, getInstarVersion } from '../core/Config.js';
 import { registerAgent, unregisterAgent, startHeartbeat } from '../core/AgentRegistry.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the lifeline on older Node versions
 // import { installAutoStart } from '../commands/setup.js';
@@ -142,8 +143,7 @@ function releaseLockFile(lockPath: string): void {
       const data = JSON.parse(raw);
       // Only remove if we own it
       if (data.pid === process.pid) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(lockPath);
+        SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'src/lifeline/TelegramLifeline.ts:146' });
       }
     }
   } catch { /* best effort */ }

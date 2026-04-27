@@ -11,6 +11,7 @@ import type { QuotaState, JobSchedulerConfig } from '../../src/core/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const thresholds: JobSchedulerConfig['quotaThresholds'] = {
   normal: 50,
@@ -29,8 +30,7 @@ describe('QuotaTracker — boundary values', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-boundary.test.ts:33' });
   });
 
   function createTracker(usagePercent: number): QuotaTracker {

@@ -15,17 +15,16 @@ import { execFileSync } from 'node:child_process';
 import { HandoffManager } from '../../src/core/HandoffManager.js';
 import { WorkLedger } from '../../src/core/WorkLedger.js';
 import type { HandoffNote, HandoffWorkItem } from '../../src/core/HandoffManager.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function git(cwd: string, ...args: string[]): string {
-  // safe-git-allow: incremental-migration
-  return execFileSync('git', args, {
-    cwd,
+  return SafeGitExecutor.run(args, { cwd,
     encoding: 'utf-8',
     timeout: 10_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  }).trim();
+    stdio: ['pipe', 'pipe', 'pipe'], operation: 'tests/unit/handoff-manager.test.ts:23' }).trim();
 }
 
 function makeManager(
@@ -104,23 +103,17 @@ describe('HandoffManager', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-'));
     stateDir = path.join(tmpDir, '.instar');
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['init', '-b', 'main'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir });
+    SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:108' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:110' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:112' });
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n');
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['add', '.'], { cwd: tmpDir });
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: tmpDir });
+    SafeGitExecutor.execSync(['add', '.'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:115' });
+    SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:117' });
     ledger = makeLedger(stateDir, 'machine-a');
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/handoff-manager.test.ts:123' });
   });
 
   // ── 1. initiateHandoff — basic ────────────────────────────────────

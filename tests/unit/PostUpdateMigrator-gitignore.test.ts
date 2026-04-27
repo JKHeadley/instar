@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface MigrationResult {
   upgraded: string[];
@@ -25,8 +26,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-gitignore.test.ts:29' });
 }
 
 describe('PostUpdateMigrator.addGitignoreEntry', () => {

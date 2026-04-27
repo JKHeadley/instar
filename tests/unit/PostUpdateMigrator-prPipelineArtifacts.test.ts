@@ -28,6 +28,8 @@ import {
   PR_GATE_SETUP_MD,
   PR_GATE_SETUP_MD_SHA256,
 } from '../../src/data/pr-gate-artifacts.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 interface MigrationResult {
   upgraded: string[];
@@ -40,16 +42,17 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-prPipelineArtifacts.test.ts:44' });
 }
 
 function initGitRepo(dir: string, originUrl: string | null): void {
-  // safe-git-allow: incremental-migration
-  execSync('git init -q', { cwd: dir, stdio: 'ignore' });
+  SafeGitExecutor.execSync(['init', '-q'], { cwd: dir, stdio: 'ignore', operation: 'tests/unit/PostUpdateMigrator-prPipelineArtifacts.test.ts:49' });
   if (originUrl) {
-    // safe-git-allow: incremental-migration
-    execSync(`git remote add origin ${originUrl}`, { cwd: dir, stdio: 'ignore' });
+    SafeGitExecutor.execSync(['remote', 'add', 'origin', originUrl], {
+      cwd: dir,
+      stdio: 'ignore',
+      operation: 'tests/unit/PostUpdateMigrator-prPipelineArtifacts.test.ts:initGitRepo',
+    });
   }
 }
 
@@ -202,10 +205,7 @@ describe('PostUpdateMigrator.migratePrPipelineArtifacts — instar source repo',
   it('accepts upstream remote when origin is a fork', () => {
     const forkDir = createTempDir();
     initGitRepo(forkDir, 'https://github.com/someone-forked/instar.git');
-    // safe-git-allow: incremental-migration
-    execSync('git remote add upstream https://github.com/JKHeadley/instar.git', {
-      cwd: forkDir, stdio: 'ignore',
-    });
+    SafeGitExecutor.execSync(['remote', 'add', 'upstream', 'https://github.com/JKHeadley/instar.git'], { cwd: forkDir, stdio: 'ignore', operation: 'tests/unit/PostUpdateMigrator-prPipelineArtifacts.test.ts:206' });
     writePackageJson(forkDir, 'instar');
 
     const forkMigrator = new PostUpdateMigrator({

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import { WhatsAppAdapter } from '../../src/messaging/WhatsAppAdapter.js';
 import { MessageBridge } from '../../src/messaging/shared/MessageBridge.js';
 import { MessagingEventBus } from '../../src/messaging/shared/MessagingEventBus.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -56,8 +57,7 @@ describe('WhatsApp Bridge Wiring Integration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/whatsapp-bridge-wiring.test.ts:60' });
   });
 
   // ════════════════════════════════════════════════════════════

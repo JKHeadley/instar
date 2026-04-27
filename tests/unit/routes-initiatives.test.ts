@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let tmpDir: string;
 let tracker: InitiativeTracker;
@@ -92,8 +93,7 @@ beforeEach(() => {
 
 afterEach(() => {
   server.close();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/routes-initiatives.test.ts:96' });
 });
 
 const body = {

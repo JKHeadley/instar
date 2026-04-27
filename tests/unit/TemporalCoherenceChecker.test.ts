@@ -30,6 +30,7 @@ import type {
 import type { IntelligenceProvider } from '../../src/core/types.js';
 import type { PlatformActivityRegistry, PlatformAction } from '../../src/core/PlatformActivityRegistry.js';
 import type { CanonicalState, QuickFact } from '../../src/core/CanonicalState.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -40,8 +41,7 @@ function createTmpProject(): { projectDir: string; stateDir: string; cleanup: ()
   return {
     projectDir,
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(projectDir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/TemporalCoherenceChecker.test.ts:44' }),
   };
 }
 

@@ -30,6 +30,7 @@ import type {
 } from './types.js';
 import { SOUL_SECTION_TRUST } from './types.js';
 import type { IntegrityManager } from '../knowledge/IntegrityManager.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Trust Level Ordering ────────────────────────────────────────────
 
@@ -564,8 +565,7 @@ export class SoulManager {
       try {
         const stat = fs.statSync(this.lockPath);
         if (Date.now() - stat.mtimeMs > 30000) {
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(this.lockPath);
+          SafeFsExecutor.safeUnlinkSync(this.lockPath, { operation: 'src/core/SoulManager.ts:568' });
           break;
         }
       } catch {
@@ -587,8 +587,7 @@ export class SoulManager {
 
   private releaseLock(): void {
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(this.lockPath);
+      SafeFsExecutor.safeUnlinkSync(this.lockPath, { operation: 'src/core/SoulManager.ts:591' });
     } catch {
       // Already released
     }

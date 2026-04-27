@@ -28,6 +28,7 @@ import os from 'node:os';
 import { SemanticMemory } from '../../src/memory/SemanticMemory.js';
 import { MemoryMigrator } from '../../src/memory/MemoryMigrator.js';
 import type { MigrationReport, MigrationSource } from '../../src/memory/MemoryMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -65,8 +66,7 @@ async function createTestSetup(): Promise<TestSetup> {
     migrator,
     cleanup: () => {
       memory.close();
-      // safe-git-allow: incremental-migration
-      fs.rmSync(dir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/memory-migrator.test.ts:69' });
     },
   };
 }

@@ -21,14 +21,14 @@ import { MultiMachineCoordinator } from '../../src/core/MultiMachineCoordinator.
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { HeartbeatManager } from '../../src/core/HeartbeatManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-coordinator-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/multi-machine-coordinator.test.ts:31' });
 }
 
 /**

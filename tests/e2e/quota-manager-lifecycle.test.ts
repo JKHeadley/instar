@@ -26,6 +26,7 @@ import { SessionCredentialManager } from '../../src/monitoring/SessionCredential
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -137,8 +138,7 @@ describe('QuotaManager E2E Lifecycle', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/quota-manager-lifecycle.test.ts:141' });
   });
 
   it('full lifecycle: normal → high usage → threshold events → migration → cooldown', async () => {

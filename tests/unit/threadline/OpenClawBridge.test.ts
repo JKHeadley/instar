@@ -28,6 +28,7 @@ import {
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import { ComputeMeter } from '../../../src/threadline/ComputeMeter.js';
 import { ContextThreadMap } from '../../../src/threadline/ContextThreadMap.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -91,8 +92,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/OpenClawBridge.test.ts:95' });
 });
 
 // ── 1. Constructor ───────────────────────────────────────────────────

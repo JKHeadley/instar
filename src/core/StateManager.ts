@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Session, JobState, ActivityEvent } from './types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /**
  * Discriminate filesystem read errors into operator-actionable categories.
@@ -162,8 +163,7 @@ export class StateManager {
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${sessionId}.json`);
     if (!fs.existsSync(filePath)) return false;
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(filePath);
+      SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/core/StateManager.ts:166' });
       return true;
     } catch {
       return false;
@@ -301,8 +301,7 @@ export class StateManager {
     const filePath = path.join(this.stateDir, 'state', `${key}.json`);
     if (!fs.existsSync(filePath)) return false;
     try {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(filePath);
+      SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/core/StateManager.ts:305' });
       return true;
     } catch {
       return false;
@@ -322,8 +321,7 @@ export class StateManager {
       fs.renameSync(tmpPath, filePath);
     } catch (err) {
       // Clean up temp file on failure
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/StateManager.ts:326' }); } catch { /* ignore */ }
       throw err;
     }
   }

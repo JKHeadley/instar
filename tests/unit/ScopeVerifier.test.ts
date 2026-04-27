@@ -19,6 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ScopeVerifier } from '../../src/core/ScopeVerifier.js';
 import type { ScopeVerifierConfig, TopicProjectBinding } from '../../src/core/ScopeVerifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -49,8 +50,7 @@ describe('ScopeVerifier', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/ScopeVerifier.test.ts:53' });
     vi.restoreAllMocks();
   });
 

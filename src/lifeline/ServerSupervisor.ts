@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { detectTmuxPath } from '../core/Config.js';
 import { SleepWakeDetector } from '../core/SleepWakeDetector.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -361,8 +363,7 @@ export class ServerSupervisor extends EventEmitter {
         const nodePath = this.findNodePath();
         if (nodePath) {
           fs.mkdirSync(path.dirname(nodeSymlink), { recursive: true });
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(nodeSymlink); } catch { /* may not exist */ }
+          try { SafeFsExecutor.safeUnlinkSync(nodeSymlink, { operation: 'src/lifeline/ServerSupervisor.ts:365' }); } catch { /* may not exist */ }
           fs.symlinkSync(nodePath, nodeSymlink);
           healed.push('node symlink repaired');
           console.log(`[Supervisor] Preflight: node symlink → ${nodePath}`);
@@ -374,26 +375,26 @@ export class ServerSupervisor extends EventEmitter {
 
     // 3. Stuck git rebase — prevents git-sync from working, blocks updates
     try {
-      // safe-git-allow: incremental-migration
-      const gitStatus = spawnSync('git', ['status'], {
+      const statusText = SafeGitExecutor.readSync(['status'], {
         encoding: 'utf-8',
         timeout: 5000,
         cwd: this.projectDir,
+        operation: 'src/lifeline/ServerSupervisor.ts:378',
       });
-      const statusText = gitStatus.stdout || '';
       if (statusText.includes('rebase in progress') || statusText.includes('interactive rebase in progress')) {
         console.log('[Supervisor] Preflight: stuck git rebase detected — aborting');
-        // safe-git-allow: incremental-migration
-        const abortResult = spawnSync('git', ['rebase', '--abort'], {
-          encoding: 'utf-8',
-          timeout: 10_000,
-          cwd: this.projectDir,
-        });
-        if (abortResult.status === 0) {
+        try {
+          SafeGitExecutor.execSync(['rebase', '--abort'], {
+            encoding: 'utf-8',
+            timeout: 10_000,
+            cwd: this.projectDir,
+            operation: 'src/lifeline/ServerSupervisor.ts:387',
+          });
           healed.push('stuck git rebase aborted');
           console.log('[Supervisor] Preflight: git rebase aborted successfully');
-        } else {
-          console.error(`[Supervisor] Preflight: git rebase --abort failed: ${abortResult.stderr}`);
+        } catch (abortErr) {
+          const message = abortErr instanceof Error ? abortErr.message : String(abortErr);
+          console.error(`[Supervisor] Preflight: git rebase --abort failed: ${message}`);
         }
       }
     } catch (err) {
@@ -459,8 +460,7 @@ export class ServerSupervisor extends EventEmitter {
       if (fs.existsSync(lockFile)) {
         const lockAge = Date.now() - fs.statSync(lockFile).mtimeMs;
         if (lockAge > 10 * 60_000) { // 10 minutes
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(lockFile);
+          SafeFsExecutor.safeUnlinkSync(lockFile, { operation: 'src/lifeline/ServerSupervisor.ts:463' });
           healed.push('stale lifeline lock removed');
           console.log(`[Supervisor] Preflight: removed stale lifeline lock (${Math.round(lockAge / 60_000)}m old)`);
         }
@@ -823,8 +823,7 @@ export class ServerSupervisor extends EventEmitter {
 
       // Check TTL
       if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(flagPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:827' }); } catch { /* ignore */ }
         console.log('[Supervisor] Expired restart request — ignoring');
         return;
       }
@@ -846,11 +845,9 @@ export class ServerSupervisor extends EventEmitter {
 
       if (restartCount >= 2) {
         console.log(`[Supervisor] Restart loop detected — already restarted ${restartCount}x for v${data.targetVersion}. Skipping.`);
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(flagPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:850' }); } catch { /* ignore */ }
         // Clean up the count file so it doesn't block future real updates
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(restartCountFile); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(restartCountFile, { operation: 'src/lifeline/ServerSupervisor.ts:853' }); } catch { /* ignore */ }
         return;
       }
 
@@ -873,8 +870,7 @@ export class ServerSupervisor extends EventEmitter {
       }
 
       // Clear the flag BEFORE restarting to prevent re-triggering
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(flagPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:877' }); } catch { /* ignore */ }
 
       // Also clean up legacy flag if present
       this.clearLegacyRestartFlag();
@@ -886,8 +882,7 @@ export class ServerSupervisor extends EventEmitter {
       this.performGracefulRestart(`update to v${data.targetVersion}`);
     } catch {
       // Malformed flag — clean up
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(flagPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:890' }); } catch { /* ignore */ }
     }
   }
 
@@ -905,8 +900,7 @@ export class ServerSupervisor extends EventEmitter {
       if (!fs.existsSync(requestPath)) return;
 
       const raw = fs.readFileSync(requestPath, 'utf-8');
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(requestPath); // consume the request immediately
+      SafeFsExecutor.safeUnlinkSync(requestPath, { operation: 'src/lifeline/ServerSupervisor.ts:909' }); // consume the request immediately
 
       const request = JSON.parse(raw);
 
@@ -1213,8 +1207,7 @@ export class ServerSupervisor extends EventEmitter {
       if (!fs.existsSync(flagPath)) return false;
       const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
       if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(flagPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:1217' }); } catch { /* ignore */ }
         return false;
       }
       return true;
@@ -1228,8 +1221,7 @@ export class ServerSupervisor extends EventEmitter {
     const flagPath = path.join(this.stateDir, 'state', 'update-restart.json');
     try {
       if (fs.existsSync(flagPath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(flagPath);
+        SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:1232' });
         console.log('[Supervisor] Cleared legacy update-restart flag');
       }
     } catch { /* ignore */ }
@@ -1274,8 +1266,7 @@ export class ServerSupervisor extends EventEmitter {
       const markerTtlMs = 10 * 60_000; // 10 minutes
       if (markerAge > markerTtlMs) {
         console.warn(`[Supervisor] Planned-exit marker expired (${Math.round(markerAge / 60_000)}m old) — clearing and falling back to normal alerting`);
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(markerPath); } catch { /* ignore */ }
+        try { SafeFsExecutor.safeUnlinkSync(markerPath, { operation: 'src/lifeline/ServerSupervisor.ts:1278' }); } catch { /* ignore */ }
         return false;
       }
 
@@ -1297,8 +1288,7 @@ export class ServerSupervisor extends EventEmitter {
     const markerPath = path.join(this.stateDir, 'state', 'planned-exit-marker.json');
     try {
       if (fs.existsSync(markerPath)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(markerPath);
+        SafeFsExecutor.safeUnlinkSync(markerPath, { operation: 'src/lifeline/ServerSupervisor.ts:1301' });
       }
     } catch { /* ignore */ }
   }

@@ -8,6 +8,7 @@ import type {
   TrustChangeNotification,
   TrustAuditEntry,
 } from '../../../src/threadline/AgentTrustManager.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('AgentTrustManager', () => {
   let tmpDir: string;
@@ -19,8 +20,7 @@ describe('AgentTrustManager', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/AgentTrustManager.test.ts:23' });
   });
 
   function createManager(opts?: {

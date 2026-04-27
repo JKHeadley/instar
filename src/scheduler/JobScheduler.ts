@@ -12,6 +12,7 @@ import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 const execFileAsync = promisify(execFile);
 import path from 'node:path';
@@ -855,8 +856,7 @@ export class JobScheduler {
         });
         // Clean up sentinel file
         const sentinelPath = path.join(this.stateDir, 'state', 'execution-journal', `_ls-enabled-${job.slug}`);
-        // safe-git-allow: incremental-migration
-        try { fs.unlinkSync(sentinelPath); } catch { /* already gone */ }
+        try { SafeFsExecutor.safeUnlinkSync(sentinelPath, { operation: 'src/scheduler/JobScheduler.ts:859' }); } catch { /* already gone */ }
       } catch (err) {
         console.error(`[scheduler] ExecutionJournal finalization failed for "${job.slug}": ${err}`);
       }

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentDiscovery, type ThreadlineAgentInfo, type HttpFetcher } from '../../../src/threadline/AgentDiscovery.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // Mock the AgentRegistry module
 vi.mock('../../../src/core/AgentRegistry.js', () => ({
@@ -24,8 +25,7 @@ describe('AgentDiscovery', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/AgentDiscovery.test.ts:28' });
     vi.restoreAllMocks();
   });
 

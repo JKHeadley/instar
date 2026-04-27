@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
 import { initProject } from './commands/init.js';
+import { SafeFsExecutor } from './core/SafeFsExecutor.js';
 // setup.ts is imported dynamically — it depends on @inquirer/prompts which requires Node 20.12+
 import { startServer, stopServer, restartServer } from './commands/server.js';
 import { showStatus } from './commands/status.js';
@@ -89,8 +90,7 @@ async function addTelegram(opts: { token?: string; chatId?: string }): Promise<v
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/cli.ts:93' }); } catch { /* ignore */ }
     throw err;
   }
 
@@ -144,8 +144,7 @@ async function addSentry(opts: { dsn?: string }): Promise<void> {
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/cli.ts:148' }); } catch { /* ignore */ }
     throw err;
   }
 
@@ -207,8 +206,7 @@ async function addEmail(opts: { credentialsFile?: string; tokenFile?: string }):
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/cli.ts:211' }); } catch { /* ignore */ }
     throw err;
   }
 
@@ -253,8 +251,7 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/cli.ts:257' }); } catch { /* ignore */ }
     throw err;
   }
 

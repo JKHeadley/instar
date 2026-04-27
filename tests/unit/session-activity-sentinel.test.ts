@@ -19,6 +19,7 @@ import os from 'node:os';
 import type { Session, IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 import { SessionActivitySentinel } from '../../src/monitoring/SessionActivitySentinel.js';
 import { EpisodicMemory } from '../../src/memory/EpisodicMemory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ─── Test Helpers ───────────────────────────────────────────────────
 
@@ -35,8 +36,7 @@ function createTestDir(): TestSetup {
   return {
     dir,
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/session-activity-sentinel.test.ts:39' }),
   };
 }
 

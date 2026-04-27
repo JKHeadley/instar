@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import type { Probe, ProbeResult } from '../SystemReviewer.js';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 
 export interface PlatformProbeDeps {
   /** Path to the tmux binary being used */
@@ -64,8 +65,7 @@ function testTmuxFdaAccess(tmuxPath: string): { hasAccess: boolean; error?: stri
     const output = fs.readFileSync(tmpFile, 'utf-8');
 
     // Clean up temp file
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpFile, { operation: 'src/monitoring/probes/PlatformProbe.ts:68' }); } catch { /* ok */ }
 
     // Parse exit code from output
     const exitMatch = output.match(/EXIT_CODE:(\d+)/);
@@ -87,8 +87,7 @@ function testTmuxFdaAccess(tmuxPath: string): { hasAccess: boolean; error?: stri
   } catch (err) {
     // Clean up on any error
     try { execSync(`${tmuxPath} kill-session -t ${testSessionName} 2>/dev/null`, { timeout: 3000 }); } catch { /* ok */ }
-    // safe-git-allow: incremental-migration
-    try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
+    try { SafeFsExecutor.safeUnlinkSync(tmpFile, { operation: 'src/monitoring/probes/PlatformProbe.ts:91' }); } catch { /* ok */ }
     return { hasAccess: true, error: `Probe failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }

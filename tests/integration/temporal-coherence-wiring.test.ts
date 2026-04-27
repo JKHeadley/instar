@@ -20,6 +20,7 @@ import { PlatformActivityRegistry } from '../../src/core/PlatformActivityRegistr
 import { CanonicalState } from '../../src/core/CanonicalState.js';
 import type { TemporalCoherenceConfig } from '../../src/core/TemporalCoherenceChecker.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -30,8 +31,7 @@ function createTmpProject(): { projectDir: string; stateDir: string; cleanup: ()
   return {
     projectDir,
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(projectDir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/integration/temporal-coherence-wiring.test.ts:34' }),
   };
 }
 
@@ -320,8 +320,7 @@ describe('TemporalCoherenceChecker integration', () => {
       expect(checker.hasStateDocuments).toBe(true);
 
       // Remove AGENT.md
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(path.join(projectDir, 'AGENT.md'));
+      SafeFsExecutor.safeUnlinkSync(path.join(projectDir, 'AGENT.md'), { operation: 'tests/integration/temporal-coherence-wiring.test.ts:324' });
 
       // Should handle gracefully
       expect(checker.hasStateDocuments).toBe(false);

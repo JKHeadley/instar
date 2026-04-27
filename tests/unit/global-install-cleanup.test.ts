@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanupGlobalInstalls } from '../../src/core/GlobalInstallCleanup.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // We test the actual function against a temp directory structure
 describe('GlobalInstallCleanup', () => {
@@ -18,8 +19,7 @@ describe('GlobalInstallCleanup', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpBase, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpBase, { recursive: true, force: true, operation: 'tests/unit/global-install-cleanup.test.ts:22' });
   });
 
   describe('cleanupGlobalInstalls', () => {

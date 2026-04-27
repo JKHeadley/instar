@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RegistryStore } from '../../../../src/threadline/relay/RegistryStore.js';
 import { PresenceRegistry } from '../../../../src/threadline/relay/PresenceRegistry.js';
+import { SafeFsExecutor } from '../../../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -50,8 +51,7 @@ describe('RegistryStore persistence', () => {
 
   afterEach(() => {
     store.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dataDir, { recursive: true, force: true, operation: 'tests/unit/threadline/relay/PersistentDiscovery.test.ts:54' });
   });
 
   it('persists agents across store re-creation (simulated restart)', () => {
@@ -145,8 +145,7 @@ describe('Discovery merge logic', () => {
 
   afterEach(() => {
     registry?.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dataDir, { recursive: true, force: true, operation: 'tests/unit/threadline/relay/PersistentDiscovery.test.ts:149' });
   });
 
   /**
@@ -303,8 +302,7 @@ describe('Auto-registration of public agents', () => {
 
   afterEach(() => {
     registry?.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dataDir, { recursive: true, force: true, operation: 'tests/unit/threadline/relay/PersistentDiscovery.test.ts:307' });
   });
 
   it('public agents are auto-registered in registry on connect', () => {

@@ -8,6 +8,7 @@ import { DigestCollector } from '../../../src/threadline/DigestCollector.js';
 import type { ThreadlineNotifier } from '../../../src/threadline/AutonomyGate.js';
 import type { MessageEnvelope } from '../../../src/messaging/types.js';
 import type { AutonomyProfileLevel } from '../../../src/core/types.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -42,8 +43,7 @@ function createTempDir(): { stateDir: string; cleanup: () => void } {
   fs.mkdirSync(stateDir, { recursive: true });
   return {
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/AutonomyGate.test.ts:46' }),
   };
 }
 

@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { Session, MessagingAdapter, JobDefinition, SessionManagerConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // We need to test JobScheduler internals without starting cron.
 // The approach: construct the scheduler with mock dependencies,
@@ -82,8 +83,7 @@ describe('JobScheduler Telegram notifications', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/job-scheduler-telegram.test.ts:86' });
   });
 
   /**

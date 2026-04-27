@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import type { TopicMessage } from '../../src/memory/TopicMemory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test helpers ──────────────────────────────────────────────────
 
@@ -32,8 +33,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   memory.close();
-  // safe-git-allow: incremental-migration
-  fs.rmSync(testDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(testDir, { recursive: true, force: true, operation: 'tests/unit/topic-memory-privacy.test.ts:36' });
 });
 
 // ── Schema v3 Migration ──────────────────────────────────────────
@@ -61,8 +61,7 @@ describe('schema v3 migration', () => {
     // Create a v2 database manually (without user_id/privacy_scope columns)
     const BetterSqlite3 = (await import('better-sqlite3')).default;
     const dbPath = path.join(testDir, 'topic-memory.db');
-    // safe-git-allow: incremental-migration
-    fs.unlinkSync(dbPath); // Remove the v3 db
+    SafeFsExecutor.safeUnlinkSync(dbPath, { operation: 'tests/unit/topic-memory-privacy.test.ts:65' }); // Remove the v3 db
 
     const db = new BetterSqlite3(dbPath);
     db.exec(`

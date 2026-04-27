@@ -15,6 +15,7 @@ import { createMoltBridgeRoutes } from '../../src/moltbridge/routes.js';
 import { MoltBridgeClient } from '../../src/moltbridge/MoltBridgeClient.js';
 import { ProfileCompiler } from '../../src/moltbridge/ProfileCompiler.js';
 import { CanonicalIdentityManager } from '../../src/identity/IdentityManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Mock the moltbridge SDK
 vi.mock('moltbridge', () => ({
@@ -97,8 +98,7 @@ Thorough and systematic.
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/rich-profile-integration.test.ts:101' });
   });
 
   it('full profile lifecycle: compile → review → approve → publish', async () => {

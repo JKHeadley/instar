@@ -5,6 +5,7 @@ import os from 'node:os';
 import { SelfKnowledgeTree } from '../../src/knowledge/SelfKnowledgeTree.js';
 import { TreeGenerator } from '../../src/knowledge/TreeGenerator.js';
 import { CoverageAuditor } from '../../src/knowledge/CoverageAuditor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Coverage Audit + Evolution (Phase 4)', () => {
   let tmpDir: string;
@@ -27,8 +28,7 @@ describe('Coverage Audit + Evolution (Phase 4)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/CoverageAudit.test.ts:31' });
   });
 
   function createTree(platforms: string[] = []): SelfKnowledgeTree {

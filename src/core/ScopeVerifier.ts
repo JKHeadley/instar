@@ -22,6 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 export interface ScopeVerificationResult {
   /** Whether the action passed all coherence checks */
@@ -446,12 +447,9 @@ export class ScopeVerifier {
 
   private detectGitRemote(): string | null {
     try {
-      // safe-git-allow: incremental-migration
-      return execFileSync('git', ['remote', 'get-url', 'origin'], {
-        cwd: this.config.projectDir,
+      return SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: this.config.projectDir,
         encoding: 'utf-8',
-        stdio: 'pipe',
-      }).trim() || null;
+        stdio: 'pipe', operation: 'src/core/ScopeVerifier.ts:450' }).trim() || null;
     } catch {
       // @silent-fallback-ok — git remote detection
       return null;

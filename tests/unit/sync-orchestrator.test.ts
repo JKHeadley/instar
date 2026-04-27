@@ -15,6 +15,7 @@ import { SyncOrchestrator } from '../../src/core/SyncOrchestrator.js';
 import type { SyncOrchestratorConfig, SyncLock } from '../../src/core/SyncOrchestrator.js';
 import type { LedgerEntry } from '../../src/core/WorkLedger.js';
 import type { MergeResult } from '../../src/core/BranchManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock Factories ──────────────────────────────────────────────────
 
@@ -237,8 +238,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/sync-orchestrator.test.ts:241' });
   vi.restoreAllMocks();
 });
 
@@ -1289,8 +1289,7 @@ describe('Edge Cases', () => {
     expect(fs.existsSync(path.join(freshState, 'state'))).toBe(true);
 
     // Cleanup
-    // safe-git-allow: incremental-migration
-    fs.rmSync(freshTmp, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(freshTmp, { recursive: true, force: true, operation: 'tests/unit/sync-orchestrator.test.ts:1293' });
   });
 
   it('releaseLock returns true when no lock file exists', () => {

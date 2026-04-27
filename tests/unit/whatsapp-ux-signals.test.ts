@@ -10,6 +10,7 @@ import { WhatsAppAdapter, type BackendCapabilities } from '../../src/messaging/W
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test helpers ──────────────────────────────────────────
 
@@ -54,8 +55,7 @@ describe('WhatsApp UX Signals', () => {
 
   afterEach(() => {
     if (tmpDir && fs.existsSync(tmpDir)) {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/whatsapp-ux-signals.test.ts:58' });
     }
   });
 

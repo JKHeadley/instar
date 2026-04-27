@@ -36,6 +36,7 @@ import {
   verify,
 } from '../../../src/threadline/ThreadlineCrypto.js';
 import type { KeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -201,8 +202,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/threadline/A2AE2E.test.ts:205' });
 });
 
 // ── Tests ────────────────────────────────────────────────────────────

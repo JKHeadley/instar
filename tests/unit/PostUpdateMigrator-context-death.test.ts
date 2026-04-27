@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const MARKER = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
 const OPEN = `<!-- ${MARKER} -->`;
@@ -57,8 +58,7 @@ describe('PostUpdateMigrator — context-death anti-pattern migration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(home.tmp, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(home.tmp, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-context-death.test.ts:61' });
   });
 
   it('injects the marker block into CLAUDE.md under Critical Anti-Patterns', () => {

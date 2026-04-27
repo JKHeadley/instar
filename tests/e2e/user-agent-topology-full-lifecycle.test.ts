@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Phase 1: Pipeline & Sanitization
 import {
@@ -79,8 +80,7 @@ function createTempDir(): string {
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/user-agent-topology-full-lifecycle.test.ts:83' });
 }
 
 /** Simulate a raw Telegram message from the Bot API */

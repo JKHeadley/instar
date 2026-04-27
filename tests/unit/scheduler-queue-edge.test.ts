@@ -11,6 +11,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import type { JobSchedulerConfig, SessionManagerConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Scheduler queue edge cases', () => {
   let stateDir: string;
@@ -43,8 +44,7 @@ describe('Scheduler queue edge cases', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/scheduler-queue-edge.test.ts:47' });
   });
 
   it('builds skill prompt correctly', () => {

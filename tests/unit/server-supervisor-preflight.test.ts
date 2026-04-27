@@ -9,10 +9,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawnSync, execFileSync, type SpawnSyncReturns } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Mock child_process
 vi.mock('node:child_process', async () => {
@@ -62,28 +63,20 @@ describe('ServerSupervisor preflight self-heal', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // safe-git-allow: incremental-migration
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* cleanup */ }
+    try { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/server-supervisor-preflight.test.ts:66' }); } catch { /* cleanup */ }
   });
 
   it('detects and aborts stuck git rebase during preflight', () => {
-    const mockSpawnSync = vi.mocked(spawnSync);
-    mockSpawnSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+    const mockExecFileSync = vi.mocked(execFileSync);
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
       const argsArr = args as string[] | undefined;
       if (cmd === 'git' && argsArr?.[0] === 'status') {
-        return {
-          stdout: 'interactive rebase in progress; onto abc123\n',
-          stderr: '', status: 0, signal: null, pid: 0, output: [],
-        } as unknown as SpawnSyncReturns<string>;
+        return 'interactive rebase in progress; onto abc123\n' as any;
       }
       if (cmd === 'git' && argsArr?.[0] === 'rebase' && argsArr?.[1] === '--abort') {
-        return {
-          stdout: '', stderr: '', status: 0, signal: null, pid: 0, output: [],
-        } as unknown as SpawnSyncReturns<string>;
+        return '' as any;
       }
-      return {
-        stdout: '', stderr: '', status: 0, signal: null, pid: 0, output: [],
-      } as unknown as SpawnSyncReturns<string>;
+      return '' as any;
     });
 
     // Call preflight via the private method (access for testing)
@@ -92,7 +85,7 @@ describe('ServerSupervisor preflight self-heal', () => {
     expect(healed).toContain('stuck git rebase aborted');
 
     // Verify git rebase --abort was called
-    const abortCalls = mockSpawnSync.mock.calls.filter(
+    const abortCalls = mockExecFileSync.mock.calls.filter(
       (call) => call[0] === 'git' && (call[1] as string[])?.[0] === 'rebase'
     );
     expect(abortCalls.length).toBe(1);

@@ -9,13 +9,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function createTempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-relay-test-'));
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/ThreadlineMCPServer-relay.test.ts:18' }) };
 }
 
 function writeConfig(stateDir: string, config: Record<string, unknown>): void {

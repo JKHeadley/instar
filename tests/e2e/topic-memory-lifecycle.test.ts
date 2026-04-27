@@ -24,6 +24,7 @@ import { TopicSummarizer } from '../../src/memory/TopicSummarizer.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('TopicMemory E2E lifecycle', () => {
   let tmpDir: string;
@@ -113,8 +114,7 @@ describe('TopicMemory E2E lifecycle', () => {
   afterAll(async () => {
     await server.stop();
     topicMemory.close();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/topic-memory-lifecycle.test.ts:117' });
   });
 
   // ── Phase 1: Verify import worked ──────────────────────────

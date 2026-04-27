@@ -20,6 +20,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { loadJobs, validateJob } from '../../src/scheduler/JobLoader.js';
 import { refreshHooksAndSettings } from '../../src/commands/init.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('Memory Export Job definition', () => {
   let tmpDir: string;
@@ -47,8 +48,7 @@ describe('Memory Export Job definition', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/memory-export-job.test.ts:51' });
   });
 
   function getJobs() {

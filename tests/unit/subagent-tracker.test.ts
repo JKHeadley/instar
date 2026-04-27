@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SubagentTracker } from '../../src/monitoring/SubagentTracker.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -36,8 +37,7 @@ describe('SubagentTracker', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/subagent-tracker.test.ts:40' });
   });
 
   // ── Start Tracking ────────────────────────────────────────────

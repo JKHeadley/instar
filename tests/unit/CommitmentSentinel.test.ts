@@ -21,6 +21,7 @@ import type { CommitmentSentinelConfig } from '../../src/monitoring/CommitmentSe
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Mock IntelligenceProvider ────────────────────────────────────
 
@@ -49,8 +50,7 @@ function createTmpState(): { stateDir: string; cleanup: () => void } {
   );
   return {
     stateDir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(stateDir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/CommitmentSentinel.test.ts:53' }),
   };
 }
 

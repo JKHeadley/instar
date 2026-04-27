@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { UserProfile, UserChannel, Message } from '../core/types.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export class UserManager {
   private users: Map<string, UserProfile> = new Map();
@@ -216,8 +217,7 @@ export class UserManager {
       fs.writeFileSync(tmpPath, JSON.stringify(Array.from(this.users.values()), null, 2));
       fs.renameSync(tmpPath, this.usersFile);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/users/UserManager.ts:220' }); } catch { /* ignore */ }
       throw err;
     }
   }

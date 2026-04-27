@@ -20,6 +20,7 @@ import type {
   NegotiationSession,
   ConflictNegotiatorConfig,
 } from '../../src/core/ConflictNegotiator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * Create a pair of AgentBus + ConflictNegotiator instances for an initiator and responder.
@@ -126,8 +127,7 @@ describe('ConflictNegotiator', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/conflict-negotiator.test.ts:130' });
   });
 
   // ── Session Tracking ────────────────────────────────────────────

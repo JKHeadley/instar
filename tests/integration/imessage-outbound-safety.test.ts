@@ -26,6 +26,7 @@ import {
   normalizeIdentifierSet,
   identifiersMatch,
 } from '../../src/messaging/imessage/normalize-phone.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Phone Number Normalization ──────────────────────────────────────
 
@@ -85,8 +86,7 @@ describe('authorizedContacts (unified allowlist)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:89' });
   });
 
   it('accepts authorizedContacts config', () => {
@@ -161,8 +161,7 @@ describe('sendEnabled / proactiveSendEnabled', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:165' });
   });
 
   it('defaults to sendEnabled: false (read-only mode)', () => {
@@ -253,8 +252,7 @@ describe('Reactive window tracking', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:257' });
   });
 
   it('getSendMode returns proactive when no inbound received', () => {
@@ -345,8 +343,7 @@ describe('OutboundAuditLog', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:349' });
   });
 
   it('writes audit entries as JSONL', () => {
@@ -424,8 +421,7 @@ describe('Send token lifecycle (TOCTOU mitigation)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:428' });
   });
 
   it('validateSend issues a token for authorized contacts', () => {
@@ -501,8 +497,7 @@ describe('Config caching (runtime immutability)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:505' });
   });
 
   it('sendEnabled is cached at construction and immutable', () => {
@@ -554,8 +549,7 @@ describe('HTTP endpoints (validate-send + reply)', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:558' });
   });
 
   it('validateSend + confirmSend full flow', () => {
@@ -644,8 +638,7 @@ describe('Trigger Mode', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/imessage-outbound-safety.test.ts:648' });
   });
 
   function makeAdapter(overrides: Record<string, unknown> = {}) {

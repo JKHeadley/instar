@@ -18,6 +18,7 @@ import { WorktreeMonitor } from '../../src/monitoring/WorktreeMonitor.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Test Helpers ────────────────────────────────────────────────
 
@@ -111,8 +112,7 @@ describe('Serendipity routes', () => {
   beforeEach(() => {
     // Clean serendipity directory
     if (fs.existsSync(serendipityDir)) {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(serendipityDir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(serendipityDir, { recursive: true, force: true, operation: 'tests/integration/serendipity-routes.test.ts:115' });
     }
   });
 
@@ -238,8 +238,7 @@ describe('WorktreeMonitor serendipity copy-back', () => {
     // Clean both directories
     for (const dir of [mainSerendipityDir, worktreeSerendipityDir]) {
       if (fs.existsSync(dir)) {
-        // safe-git-allow: incremental-migration
-        fs.rmSync(dir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/serendipity-routes.test.ts:242' });
       }
     }
   });

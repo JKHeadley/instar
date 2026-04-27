@@ -14,6 +14,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
@@ -48,8 +49,7 @@ describe('PostUpdateMigrator — skill port hardcoding migration', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-skillPortHardcoding.test.ts:52' });
   });
 
   it('rewrites hardcoded ports in a default skill', () => {

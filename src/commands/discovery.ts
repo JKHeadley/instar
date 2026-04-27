@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -713,8 +714,7 @@ export function writeSetupLock(lock: SetupLock): void {
 export function deleteSetupLock(): void {
   try {
     if (fs.existsSync(LOCK_PATH)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(LOCK_PATH);
+      SafeFsExecutor.safeUnlinkSync(LOCK_PATH, { operation: 'src/commands/discovery.ts:717' });
     }
   } catch { /* non-fatal */ }
 }

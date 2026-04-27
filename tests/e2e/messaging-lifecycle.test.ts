@@ -23,6 +23,7 @@ import { MessageRouter } from '../../src/messaging/MessageRouter.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { generateAgentToken } from '../../src/messaging/AgentTokenManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('E2E: Messaging lifecycle', () => {
   let projectDir: string;
@@ -112,8 +113,7 @@ describe('E2E: Messaging lifecycle', () => {
   afterAll(async () => {
     await server.stop();
     await messageStore.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-lifecycle.test.ts:116' });
   });
 
   // ── Phase 1 Tests: "Feature is alive" ──────────────────────────

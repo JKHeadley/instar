@@ -53,6 +53,7 @@ import {
   generateSoulMd,
 } from '../scaffold/templates.js';
 import type { InstarConfig } from '../core/types.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -383,8 +384,7 @@ node_modules/
   // Initialize git repo
   try {
     const { execFileSync } = await import('node:child_process');
-    // safe-git-allow: incremental-migration
-    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'pipe' });
+    SafeGitExecutor.execSync(['init'], { cwd: projectDir, stdio: 'pipe', operation: 'src/commands/init.ts:387' });
     console.log(`  ${pc.green('✓')} Initialized git repository`);
 
     // Configure git commit signing with machine identity
@@ -3327,8 +3327,7 @@ function refreshJobs(stateDir: string): void {
       let hasRemote = false;
       if (hasGit) {
         try {
-          // safe-git-allow: incremental-migration
-          const remote = execFileSync('git', ['remote'], { cwd: projectDir, stdio: 'pipe' }).toString().trim();
+          const remote = SafeGitExecutor.readSync(['remote'], { cwd: projectDir, stdio: 'pipe', operation: 'src/commands/init.ts:3331' }).toString().trim();
           hasRemote = remote.length > 0;
         } catch { /* no git or no remote */ }
       }

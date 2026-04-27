@@ -10,6 +10,7 @@ import { QuotaTracker } from '../../src/monitoring/QuotaTracker.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('QuotaTracker — invalid input handling', () => {
   let tmpDir: string;
@@ -21,8 +22,7 @@ describe('QuotaTracker — invalid input handling', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-tracker-invalid-input.test.ts:25' });
   });
 
   function writeRawQuota(data: Record<string, unknown>) {

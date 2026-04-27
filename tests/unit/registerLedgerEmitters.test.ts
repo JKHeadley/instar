@@ -10,6 +10,7 @@ import os from 'node:os';
 import { SharedStateLedger } from '../../src/core/SharedStateLedger.js';
 import { registerLedgerEmitters } from '../../src/core/registerLedgerEmitters.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'rle-test-'));
@@ -31,8 +32,7 @@ describe('registerLedgerEmitters', () => {
 
   afterEach(() => {
     ledger.shutdown();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/registerLedgerEmitters.test.ts:35' });
   });
 
   it('dispatch emitter appends a decision entry on successful execute', async () => {

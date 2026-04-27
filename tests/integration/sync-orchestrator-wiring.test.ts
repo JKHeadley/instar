@@ -20,6 +20,7 @@ import os from 'node:os';
 
 import { SyncOrchestrator } from '../../src/core/SyncOrchestrator.js';
 import type { SyncOrchestratorConfig } from '../../src/core/SyncOrchestrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Module Mocks ──────────────────────────────────────────────────────
 
@@ -212,8 +213,7 @@ describe('SyncOrchestrator wiring integrity', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/sync-orchestrator-wiring.test.ts:216' });
   });
 
   function makeOrchestrator(overrides?: Partial<SyncOrchestratorConfig>): SyncOrchestrator {

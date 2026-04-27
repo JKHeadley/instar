@@ -25,6 +25,7 @@ import os from 'node:os';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { InputGuard } from '../../src/core/InputGuard.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -34,8 +35,7 @@ function createTempDir(prefix: string): string {
 
 function cleanupDir(dir: string): void {
   try {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/input-guard-e2e.test.ts:38' });
   } catch { /* best-effort */ }
 }
 
@@ -792,8 +792,7 @@ describe('Group 9: Full injectTelegramMessage integration', () => {
       try {
         const files = fs.readdirSync(telegramTmpDir).filter(f => f.startsWith('msg-'));
         for (const f of files) {
-          // safe-git-allow: incremental-migration
-          try { fs.unlinkSync(path.join(telegramTmpDir, f)); } catch { /* ignore */ }
+          try { SafeFsExecutor.safeUnlinkSync(path.join(telegramTmpDir, f), { operation: 'tests/e2e/input-guard-e2e.test.ts:796' }); } catch { /* ignore */ }
         }
       } catch { /* ignore */ }
     }

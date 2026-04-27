@@ -31,6 +31,7 @@ import type {
 import type { TrustElevationTracker } from './TrustElevationTracker.js';
 import type { AutonomousEvolution, ReviewResult } from './AutonomousEvolution.js';
 import type { AutonomyProfileManager } from './AutonomyProfileManager.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 interface EvolutionState {
   proposals: EvolutionProposal[];
@@ -143,8 +144,7 @@ export class EvolutionManager {
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
       fs.renameSync(tmpPath, fp);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/EvolutionManager.ts:147' }); } catch { /* ignore */ }
       throw err;
     }
   }

@@ -23,6 +23,7 @@ import type {
   TrackRecordEntry,
 } from './types.js';
 import { PROFILE_LIMITS } from './types.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 
 export interface ProfileCompilerConfig {
   /** Path to the agent's state directory (e.g., .instar/) */
@@ -201,18 +202,13 @@ export class ProfileCompiler {
 
   private getGitStats(): { totalCommits: number; languages: string[]; repos: string[] } {
     try {
-      // safe-git-allow: incremental-migration
-      const commitCount = execSync(
-        'git log --oneline 2>/dev/null | wc -l',
-        { cwd: this.config.projectRoot, encoding: 'utf-8', timeout: 5000 },
-      ).trim();
+      const opts = { cwd: this.config.projectRoot, encoding: 'utf-8' as const, timeout: 5000, operation: 'src/moltbridge/ProfileCompiler.ts:getGitStats' };
+      const log = SafeGitExecutor.readSync(['log', '--oneline'], opts).trim();
+      const commitCount = String(log ? log.split('\n').length : 0);
 
       // Get languages from file extensions
-      // safe-git-allow: incremental-migration
-      const files = execSync(
-        'git ls-files 2>/dev/null | head -500',
-        { cwd: this.config.projectRoot, encoding: 'utf-8', timeout: 5000 },
-      ).trim();
+      const filesAll = SafeGitExecutor.readSync(['ls-files'], opts).trim();
+      const files = filesAll.split('\n').slice(0, 500).join('\n');
 
       const extensions = new Set<string>();
       for (const file of files.split('\n')) {
@@ -228,11 +224,10 @@ export class ProfileCompiler {
       }
 
       // Get repo name from remote
-      // safe-git-allow: incremental-migration
-      const remote = execSync(
-        'git remote get-url origin 2>/dev/null || echo "local"',
-        { cwd: this.config.projectRoot, encoding: 'utf-8', timeout: 5000 },
-      ).trim();
+      let remote = 'local';
+      try {
+        remote = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], opts).trim() || 'local';
+      } catch { remote = 'local'; }
       const repoName = remote.split('/').pop()?.replace('.git', '') ?? 'unknown';
 
       return {

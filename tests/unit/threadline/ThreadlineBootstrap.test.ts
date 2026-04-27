@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('ThreadlineBootstrap', () => {
   let tmpDir: string;
@@ -22,8 +23,7 @@ describe('ThreadlineBootstrap', () => {
   });
 
   afterEach(async () => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/ThreadlineBootstrap.test.ts:26' });
   });
 
   it('bootstraps successfully and returns all components', async () => {

@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { InstructionsVerifier } from '../../src/monitoring/InstructionsVerifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -33,8 +34,7 @@ describe('InstructionsVerifier', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/instructions-verifier.test.ts:37' });
   });
 
   // ── Recording ─────────────────────────────────────────────────

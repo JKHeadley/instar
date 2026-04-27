@@ -13,11 +13,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { SubagentTracker } from '../../src/monitoring/SubagentTracker.js';
 import { HelperWatchdog } from '../../src/monitoring/HelperWatchdog.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tmp() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hw-wireup-'));
-  // safe-git-allow: incremental-migration
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/HelperWatchdog.wireup.test.ts:20' }) };
 }
 
 describe('HelperWatchdog wire-up contract', () => {

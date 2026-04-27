@@ -12,14 +12,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-state-ro-test-'));
 }
 
 function cleanup(dir: string): void {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/state-manager-readonly.test.ts:22' });
 }
 
 describe('StateManager read-only mode', () => {

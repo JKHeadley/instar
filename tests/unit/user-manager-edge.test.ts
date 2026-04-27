@@ -11,6 +11,7 @@ import type { UserProfile } from '../../src/core/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('UserManager — edge cases', () => {
   let tmpDir: string;
@@ -20,8 +21,7 @@ describe('UserManager — edge cases', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/user-manager-edge.test.ts:24' });
   });
 
   const alice: UserProfile = {
@@ -208,7 +208,7 @@ describe('UserManager — edge cases', () => {
       expect(source).toContain('.tmp');
       expect(source).toContain('renameSync');
       // Should clean up temp file on failure
-      expect(source).toContain('unlinkSync(tmpPath)');
+      expect(source).toMatch(/safeUnlinkSync\(tmpPath/);
     });
 
     it('no .tmp files left after persist', () => {

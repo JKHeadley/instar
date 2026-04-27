@@ -15,6 +15,7 @@ import { MessageEncryptor, computeFingerprint, deriveX25519PublicKey } from '../
 import { IdentityManager } from '../../../src/threadline/client/IdentityManager.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import type { MessageEnvelope, AckFrame } from '../../../src/threadline/relay/types.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('Threadline Relay E2E', () => {
   let server: RelayServer;
@@ -72,8 +73,7 @@ describe('Threadline Relay E2E', () => {
   afterAll(async () => {
     await server.stop();
     for (const dir of tmpDirs) {
-      // safe-git-allow: incremental-migration
-      fs.rmSync(dir, { recursive: true, force: true });
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/threadline/RelayE2E.test.ts:76' });
     }
   });
 

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TrustAuditLog } from '../../../src/threadline/TrustAuditLog.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('TrustAuditLog', () => {
   let tmpDir: string;
@@ -14,8 +15,7 @@ describe('TrustAuditLog', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/TrustAuditLog.test.ts:18' });
   });
 
   describe('append', () => {

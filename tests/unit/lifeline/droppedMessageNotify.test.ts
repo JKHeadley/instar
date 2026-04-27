@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { notifyMessageDropped } from '../../../src/lifeline/droppedMessages.js';
 import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('notifyMessageDropped', () => {
   let stateDir: string;
@@ -15,8 +16,7 @@ describe('notifyMessageDropped', () => {
 
   afterEach(() => {
     DegradationReporter.resetForTesting();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/lifeline/droppedMessageNotify.test.ts:19' });
   });
 
   it('persists the drop, reports to DegradationReporter, and sends a user-visible notice', async () => {

@@ -12,6 +12,7 @@ import os from 'node:os';
 import { SpawnRequestManager } from '../../src/messaging/SpawnRequestManager.js';
 import type { SpawnRequest, SpawnRequestManagerConfig } from '../../src/messaging/SpawnRequestManager.js';
 import { AgentTrustManager } from '../../src/threadline/AgentTrustManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -19,8 +20,7 @@ function createTempDir(): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threadline-fix-test-'));
   return {
     dir,
-    // safe-git-allow: incremental-migration
-    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline-fixes.test.ts:23' }),
   };
 }
 

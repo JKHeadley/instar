@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -25,8 +26,7 @@ function setup() {
 }
 
 function teardown() {
-  // safe-git-allow: incremental-migration
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/graceful-updates-phase1.test.ts:29' });
 }
 
 function writeFlagFile(data: Record<string, unknown>): void {

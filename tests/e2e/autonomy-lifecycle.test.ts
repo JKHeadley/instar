@@ -20,6 +20,7 @@ import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js
 import { StateManager } from '../../src/core/StateManager.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig, AutonomyProfileLevel } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('E2E: Adaptive Autonomy Lifecycle', () => {
   let projectDir: string;
@@ -122,8 +123,7 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
     if (server) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/autonomy-lifecycle.test.ts:126' });
   });
 
   // ── Phase 1: Initial State ─────────────────────────────────────

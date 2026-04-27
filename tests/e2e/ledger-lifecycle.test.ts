@@ -17,6 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { WorkLedger } from '../../src/core/WorkLedger.js';
 import type { LedgerEntry, MachineLedger } from '../../src/core/WorkLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -82,8 +83,7 @@ describe('WorkLedger E2E lifecycle', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/e2e/ledger-lifecycle.test.ts:86' });
   });
 
   // ── Scenario 1: Multi-machine collaboration lifecycle ────────────
@@ -384,8 +384,7 @@ describe('WorkLedger E2E lifecycle', () => {
         const allEntries = ledger.getAllEntries();
         expect(allEntries).toHaveLength(1);
       } finally {
-        // safe-git-allow: incremental-migration
-        fs.rmSync(freshStateDir, { recursive: true, force: true });
+        SafeFsExecutor.safeRmSync(freshStateDir, { recursive: true, force: true, operation: 'tests/e2e/ledger-lifecycle.test.ts:388' });
       }
     });
   });

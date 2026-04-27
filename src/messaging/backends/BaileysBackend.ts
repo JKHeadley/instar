@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { WhatsAppAdapter, BaileysConfig, ConnectionState, BackendCapabilities } from '../WhatsAppAdapter.js';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 
 // ── Reconnection constants ──────────────────────────────
 
@@ -254,8 +255,7 @@ export class BaileysBackend {
             if (isStaleIncomplete) {
               console.log('[baileys] 401 with recent credentials — likely incomplete pairing. Clearing auth state and retrying.');
               try {
-                // safe-git-allow: incremental-migration
-                fs.rmSync(this.config.authDir, { recursive: true, force: true });
+                SafeFsExecutor.safeRmSync(this.config.authDir, { recursive: true, force: true, operation: 'src/messaging/backends/BaileysBackend.ts:258' });
                 fs.mkdirSync(this.config.authDir, { recursive: true });
               } catch (clearErr) {
                 console.error('[baileys] Failed to clear auth state:', clearErr);
@@ -587,8 +587,7 @@ export class BaileysBackend {
       throw transcribeErr;
     } finally {
       // Clean up temp file
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(filepath); } catch { /* @silent-fallback-ok */ }
+      try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/messaging/backends/BaileysBackend.ts:591' }); } catch { /* @silent-fallback-ok */ }
     }
   }
 

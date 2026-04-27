@@ -19,6 +19,7 @@ import { MessageStore } from '../../src/messaging/MessageStore.js';
 import { pickupDroppedMessages } from '../../src/messaging/DropPickup.js';
 import { generateAgentToken, computeDropHmac } from '../../src/messaging/AgentTokenManager.js';
 import type { MessageEnvelope } from '../../src/messaging/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-drop-test-'));
@@ -74,8 +75,7 @@ describe('DropPickup', () => {
 
   afterEach(async () => {
     await store.destroy();
-    // safe-git-allow: incremental-migration
-    fs.rmSync(storeDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(storeDir, { recursive: true, force: true, operation: 'tests/unit/drop-pickup.test.ts:78' });
   });
 
   function dropDir(): string {

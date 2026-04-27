@@ -25,6 +25,7 @@ import type {
   OnboardingQuestion,
 } from '../core/types.js';
 import { UserManager } from './UserManager.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -336,8 +337,7 @@ export class JoinRequestManager {
       fs.writeFileSync(tmpPath, JSON.stringify(Array.from(this.requests.values()), null, 2));
       fs.renameSync(tmpPath, this.requestsFile);
     } catch (err) {
-      // safe-git-allow: incremental-migration
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/users/UserOnboarding.ts:340' }); } catch { /* ignore */ }
       throw err;
     }
   }

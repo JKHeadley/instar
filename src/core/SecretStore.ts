@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -299,8 +300,7 @@ export class SecretStore {
   /** Delete the encrypted store file. */
   destroy(): void {
     if (fs.existsSync(this.encryptedPath)) {
-      // safe-git-allow: incremental-migration
-      fs.unlinkSync(this.encryptedPath);
+      SafeFsExecutor.safeUnlinkSync(this.encryptedPath, { operation: 'src/core/SecretStore.ts:303' });
     }
   }
 

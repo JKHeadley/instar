@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability } from './types.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -385,8 +386,7 @@ export class MachineIdentityManager {
   removeLocalIdentity(): void {
     for (const file of [this.identityPath, this.signingKeyPath, this.encryptionKeyPath]) {
       if (fs.existsSync(file)) {
-        // safe-git-allow: incremental-migration
-        fs.unlinkSync(file);
+        SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/core/MachineIdentity.ts:389' });
       }
     }
   }

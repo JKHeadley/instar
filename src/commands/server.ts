@@ -105,6 +105,7 @@ import type { Message, IntelligenceProvider, UserProfile, InstarConfig } from '.
 import { UserManager } from '../users/UserManager.js';
 import { formatUserContextForSession, hasUserContext } from '../users/UserContextBuilder.js';
 import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -1253,8 +1254,7 @@ function wireIMessageRouting(
         const cutoff = Date.now() - 3_600_000;
         for (const f of fs.readdirSync(tmpDir)) {
           const fp = path.join(tmpDir, f);
-          // safe-git-allow: incremental-migration
-          try { if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp); } catch { /* ignore */ }
+          try { if (fs.statSync(fp).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(fp, { operation: 'src/commands/server.ts:1257' }); } catch { /* ignore */ }
         }
       } catch { /* non-critical */ }
       const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
@@ -1588,8 +1588,7 @@ function cleanupTelegramTempFiles(): void {
         const filepath = path.join(tmpDir, file);
         const stat = fs.statSync(filepath);
         if (stat.isFile() && now - stat.mtimeMs > maxAge) {
-          // safe-git-allow: incremental-migration
-          fs.unlinkSync(filepath);
+          SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/commands/server.ts:1592' });
           cleaned++;
         }
       } catch { /* @silent-fallback-ok — temp file cleanup */ }

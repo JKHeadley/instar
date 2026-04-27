@@ -5,6 +5,7 @@ import path from 'node:path';
 import { SecureInvitationManager } from '../../../src/threadline/SecureInvitation.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('SecureInvitation', () => {
   let tmpDir: string;
@@ -24,8 +25,7 @@ describe('SecureInvitation', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/threadline/SecureInvitation.test.ts:28' });
   });
 
   describe('create', () => {

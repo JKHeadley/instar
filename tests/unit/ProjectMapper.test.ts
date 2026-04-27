@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ProjectMapper } from '../../src/core/ProjectMapper.js';
 import type { ProjectMapConfig } from '../../src/core/ProjectMapper.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -43,8 +44,7 @@ describe('ProjectMapper', () => {
   });
 
   afterEach(() => {
-    // safe-git-allow: incremental-migration
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/ProjectMapper.test.ts:47' });
   });
 
   describe('generate()', () => {
