@@ -3664,6 +3664,11 @@ process.stdin.on('end', async () => {
     // Pre-port-config version (HTTP 408 handling, INSTAR_PORT-or-4040 default,
     // no agent-id header). Shipped through 2026-04-27.
     '3d08c63c6280d0a7ba94a345c259673a461ee5c1d116cb47c95c7626c67cee23',
+    // Layer 1 shipped version (port-from-config + agent-id header, no
+    // recoverable-class detection). Shipped 2026-04-27 with the Layer 1
+    // PR #100. Adding here so the Layer 2 migration cleanly upgrades from
+    // a Layer-1-deployed copy without producing a `.new` candidate.
+    '5ec2eb19bf35310471f107cb54219097698abad1c11166eb14daf746a63a2f08',
   ]);
 
   /**
