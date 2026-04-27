@@ -227,7 +227,7 @@ describe('Fix 2: temp file permissions and cleanup', () => {
     );
     // The cleanup code should sweep files older than 1 hour
     expect(serverTs).toContain('3_600_000');
-    expect(serverTs).toContain('unlinkSync');
+    expect(serverTs).toMatch(/(safeUnlinkSync|unlinkSync)/);
   });
 });
 

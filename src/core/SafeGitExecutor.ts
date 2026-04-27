@@ -149,6 +149,35 @@ const GIT_ENV_DENYLIST: ReadonlySet<string> = new Set([
   'GIT_DISCOVERY_ACROSS_FILESYSTEM',
 ]);
 
+// Cache of host's git identity, read once before we neutralize the global
+// gitconfig. Identity is not an alias-attack vector — it's just who-am-I.
+// Neutralizing gitconfig kills it, so we re-inject as env vars below.
+let _cachedIdentity: { name?: string; email?: string } | null = null;
+function getHostGitIdentity(): { name?: string; email?: string } {
+  if (_cachedIdentity) return _cachedIdentity;
+  _cachedIdentity = {};
+  // Allow tests to override.
+  if (process.env.GIT_AUTHOR_NAME || process.env.GIT_COMMITTER_NAME) {
+    _cachedIdentity.name = process.env.GIT_AUTHOR_NAME || process.env.GIT_COMMITTER_NAME;
+  }
+  if (process.env.GIT_AUTHOR_EMAIL || process.env.GIT_COMMITTER_EMAIL) {
+    _cachedIdentity.email = process.env.GIT_AUTHOR_EMAIL || process.env.GIT_COMMITTER_EMAIL;
+  }
+  // Fall back to host gitconfig — read directly via execFileSync since we
+  // haven't yet neutralized GIT_CONFIG_GLOBAL.
+  try {
+    if (!_cachedIdentity.name) {
+      _cachedIdentity.name = execFileSync('git', ['config', '--global', 'user.name'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim() || undefined;
+    }
+  } catch { /* not configured */ }
+  try {
+    if (!_cachedIdentity.email) {
+      _cachedIdentity.email = execFileSync('git', ['config', '--global', 'user.email'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim() || undefined;
+    }
+  } catch { /* not configured */ }
+  return _cachedIdentity;
+}
+
 function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Start from a copy of process.env, then strip the denylist, then strip
   // anything the caller supplied that's on the denylist or that matches
@@ -163,6 +192,15 @@ function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       delete merged[k];
     }
   }
+  // Preserve host git identity before we neutralize global config — without
+  // this, every commit through SafeGitExecutor would fail with "Author
+  // identity unknown" because the global config is at /dev/null. Identity is
+  // not an alias-attack vector; alias rebinding is.
+  const id = getHostGitIdentity();
+  if (id.name && !merged.GIT_AUTHOR_NAME) merged.GIT_AUTHOR_NAME = id.name;
+  if (id.email && !merged.GIT_AUTHOR_EMAIL) merged.GIT_AUTHOR_EMAIL = id.email;
+  if (id.name && !merged.GIT_COMMITTER_NAME) merged.GIT_COMMITTER_NAME = id.name;
+  if (id.email && !merged.GIT_COMMITTER_EMAIL) merged.GIT_COMMITTER_EMAIL = id.email;
   // Inject unconditional config disables.
   merged.GIT_CONFIG_GLOBAL = '/dev/null';
   merged.GIT_CONFIG_SYSTEM = '/dev/null';

@@ -366,7 +366,7 @@ describe('WhatsApp Message Routing E2E', () => {
       );
       expect(closeSection).toContain('creds.json');
       expect(closeSection).toContain('5 * 60 * 1000');
-      expect(closeSection).toContain('rmSync');
+      expect(closeSection).toMatch(/(safeRmSync|rmSync)/);
     });
 
     it('_pairingCodeRequested flag prevents duplicate requests', () => {

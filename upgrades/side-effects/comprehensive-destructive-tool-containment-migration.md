@@ -25,6 +25,14 @@ Production code (`src/`):
 
 Two messaging-adapter `fs.unlinkSync` calls (in `IMessageAdapter.ts` and `NativeBackend.ts`, in hardlink-recreation paths) remain on the lint allowlist. They are not adapter-API changes (just local file delete), but the pre-push gate's adapter contract check triggers on any modification to those files. Migrating them requires a follow-up micro-PR shipped alongside contract test evidence.
 
+## CI follow-up — git identity preservation
+
+First CI run (PR #99 build 24973685487) surfaced a real architectural issue: SafeGitExecutor's `GIT_CONFIG_GLOBAL=/dev/null` injection (defense against alias rebinding) also killed the global `user.name` / `user.email` config that test runners and production code rely on for commits. Result: every commit through SafeGitExecutor failed with "Author identity unknown."
+
+Fix: `sanitizeEnv` now reads the host's git identity once (via direct `execFileSync`) BEFORE redirecting global config, then re-injects it as `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` env vars. These env vars survive sanitization (they're not in the denylist — they're not an alias-attack vector). Identity is preserved; alias rebinding remains blocked.
+
+Test setup that depended on `git config --global user.email ...` updated to set `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars directly. One source-grep test (`whatsapp-message-routing-e2e.test.ts:369`) updated to match `safeRmSync` as well as `rmSync`.
+
 Generic git-helper methods (`BranchManager.git`, `HandoffManager.git`, `GitSync.gitExec`, `SyncOrchestrator.gitExecSafe`, `GitStateManager.git`) take dynamic args and could be either read-only or destructive at the call site. They now route through the new `SafeGitExecutor.run(args, opts)` dispatcher, which inspects the verb (and shape for ambiguous verbs like `branch`, `remote`, `worktree`, `config`) and forwards to `readSync` or `execSync` accordingly.
 
 ## Decision-point inventory

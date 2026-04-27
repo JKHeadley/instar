@@ -49,13 +49,12 @@ describe('GitStateManager', () => {
     fs.writeFileSync(path.join(stateDir, 'MEMORY.md'), '# Memory\nSome memories.');
     fs.writeFileSync(path.join(stateDir, 'jobs.json'), '{}');
 
-    // Configure git user for commits in test env
-    try {
-      SafeGitExecutor.execSync(['config', '--global', 'user.email', '"test@test.com"', '2>/dev/null', '||', 'true'], { stdio: 'pipe', operation: 'tests/unit/git-state-manager.test.ts:54' });
-      SafeGitExecutor.execSync(['config', '--global', 'user.name', '"Test"', '2>/dev/null', '||', 'true'], { stdio: 'pipe', operation: 'tests/unit/git-state-manager.test.ts:56' });
-    } catch {
-      // May already be configured
-    }
+    // Configure git identity via env vars — SafeGitExecutor neutralizes the
+    // global gitconfig (anti-alias defense) but reads identity from env.
+    process.env.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || 'Test';
+    process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || 'test@test.com';
+    process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || 'Test';
+    process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || 'test@test.com';
   });
 
   afterEach(() => {
