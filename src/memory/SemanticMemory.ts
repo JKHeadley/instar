@@ -175,9 +175,19 @@ export class SemanticMemory {
 
     // Auto-rebuild from JSONL after corruption recovery
     if (this._needsRebuild) {
+      const maxBytes = this.config.autoRebuildMaxBytes ?? 50 * 1024 * 1024;
       if (fs.existsSync(this.jsonlPath)) {
-        const result = this.importFromJsonl(this.jsonlPath);
-        console.log(`[SemanticMemory] Auto-rebuilt from JSONL: ${result.entities} entities, ${result.edges} edges reimported`);
+        const jsonlSize = fs.statSync(this.jsonlPath).size;
+        if (maxBytes > 0 && jsonlSize > maxBytes) {
+          console.warn(
+            `[SemanticMemory] JSONL too large for synchronous rebuild ` +
+            `(${(jsonlSize / 1024 / 1024).toFixed(1)} MB, limit ${(maxBytes / 1024 / 1024).toFixed(0)} MB). ` +
+            `Starting with empty DB — rebuild manually via importFromJsonl().`
+          );
+        } else {
+          const result = this.importFromJsonl(this.jsonlPath);
+          console.log(`[SemanticMemory] Auto-rebuilt from JSONL: ${result.entities} entities, ${result.edges} edges reimported`);
+        }
       } else {
         console.warn('[SemanticMemory] No JSONL log found for rebuild — starting fresh');
       }

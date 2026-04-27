@@ -11,6 +11,8 @@
  *   7. A healthy DB is not quarantined.
  *   8. The quarantined file is a real file (not a symlink, not empty).
  *   9. Rename failure falls back to delete (does not abort startup).
+ *  10. Partial corruption (valid SQLite header, bad interior page) is detected.
+ *  11. Auto-rebuild is skipped when JSONL exceeds autoRebuildMaxBytes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -39,8 +41,27 @@ function makeSetup(): Setup {
 }
 
 function writeGarbage(dbPath: string): void {
-  // Write something that is clearly not a valid SQLite database (no magic header).
   fs.writeFileSync(dbPath, 'this is definitely not a sqlite database — garbage bytes');
+}
+
+async function writePartiallyCorruptDb(dbPath: string): Promise<void> {
+  // Create a real SQLite DB, then corrupt interior pages while preserving the header.
+  // This simulates the most common real-world failure: torn page from WAL replay or disk error.
+  const BetterSqlite3 = (await import('better-sqlite3')).default;
+  const db = new BetterSqlite3(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.exec('CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)');
+  for (let i = 0; i < 100; i++) {
+    db.prepare('INSERT INTO test (data) VALUES (?)').run(`row-${i}-${'x'.repeat(200)}`);
+  }
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  db.close();
+
+  // Overwrite bytes past the 100-byte SQLite header to corrupt interior pages.
+  const fd = fs.openSync(dbPath, 'r+');
+  const garbage = Buffer.alloc(512, 0xFF);
+  fs.writeSync(fd, garbage, 0, garbage.length, 2048);
+  fs.closeSync(fd);
 }
 
 function listCorruptArtifacts(dir: string): { corruptFiles: string[]; markerFiles: string[] } {
@@ -107,11 +128,15 @@ describe('SemanticMemory corruption auto-recovery', () => {
     await mem.open();
     mem.close();
 
-    // Fresh DB should have written its own -wal/-shm (or none, depending on journal mode).
-    // But the STALE ones we planted should be gone — the new files must be SQLite-valid.
+    // The stale WAL/SHM we planted must no longer contain the planted content —
+    // either the files are gone, or they've been replaced by fresh SQLite-valid ones.
     const walAfter = setup.dbPath + '-wal';
+    const shmAfter = setup.dbPath + '-shm';
     if (fs.existsSync(walAfter)) {
       expect(fs.readFileSync(walAfter, 'utf-8')).not.toBe('stale wal');
+    }
+    if (fs.existsSync(shmAfter)) {
+      expect(fs.readFileSync(shmAfter, 'utf-8')).not.toBe('stale shm');
     }
   });
 
@@ -184,6 +209,49 @@ describe('SemanticMemory corruption auto-recovery', () => {
     expect(markerFiles.length).toBe(1);
     const marker = JSON.parse(fs.readFileSync(path.join(setup.dir, markerFiles[0]), 'utf-8'));
     expect(marker.reason).toMatch(/pragma threw/);
+  });
+
+  it('detects partial corruption (valid header, bad interior page)', async () => {
+    await writePartiallyCorruptDb(setup.dbPath);
+    // Verify the file has a valid SQLite header (first 16 bytes: "SQLite format 3\0")
+    const header = Buffer.alloc(16);
+    const fd = fs.openSync(setup.dbPath, 'r');
+    fs.readSync(fd, header, 0, 16, 0);
+    fs.closeSync(fd);
+    expect(header.toString('utf-8', 0, 15)).toBe('SQLite format 3');
+
+    const mem = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    await expect(mem.open()).resolves.not.toThrow();
+    mem.close();
+
+    const { corruptFiles, markerFiles } = listCorruptArtifacts(setup.dir);
+    expect(corruptFiles.length).toBeGreaterThanOrEqual(1);
+    expect(markerFiles.length).toBe(1);
+    const marker = JSON.parse(fs.readFileSync(path.join(setup.dir, markerFiles[0]), 'utf-8'));
+    expect(marker.reason).toMatch(/integrity_check/);
+  });
+
+  it('skips auto-rebuild when JSONL exceeds autoRebuildMaxBytes', async () => {
+    // Seed: create entities so JSONL has content
+    const seed = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    await seed.open();
+    const nowIso = new Date().toISOString();
+    seed.remember({ type: 'concept', name: 'Alpha', content: 'seed alpha', confidence: 0.9, lastVerified: nowIso, source: 'test', tags: [] });
+    seed.close();
+
+    // Corrupt the DB
+    writeGarbage(setup.dbPath);
+
+    // Reopen with a tiny max — should skip rebuild
+    const recovered = new SemanticMemory({
+      dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2,
+      autoRebuildMaxBytes: 1,
+    });
+    await recovered.open();
+
+    // DB should be empty — rebuild was skipped
+    expect(recovered.search('Alpha')).toEqual([]);
+    recovered.close();
   });
 
   it('subsequent opens of the fresh DB remain stable (no lingering _needsRebuild state)', async () => {
