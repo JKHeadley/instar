@@ -7161,6 +7161,29 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ query: q, topicId: topicId ?? null, results, totalResults: results.length });
   });
 
+  function assembleAndRespond(
+    assembler: NonNullable<typeof ctx.workingMemory>,
+    topicId: number,
+    opts: { prompt?: string; jobSlug?: string; assembled?: boolean },
+    res: import('express').Response,
+  ): void {
+    const assembly = assembler.assemble({
+      topicId,
+      prompt: opts.prompt,
+      jobSlug: opts.jobSlug,
+    });
+    res.json({
+      topicId,
+      ...(opts.assembled != null ? { assembled: opts.assembled } : {}),
+      context: assembly.context,
+      estimatedTokens: assembly.estimatedTokens,
+      budgets: assembler.getBudgets(),
+      sources: assembly.sources,
+      queryTerms: assembly.queryTerms,
+      assembledAt: assembly.assembledAt,
+    });
+  }
+
   /**
    * Get full context for a topic (summary + recent messages).
    * GET /topic/context/:topicId?recent=30
@@ -7178,23 +7201,11 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    // Assembled mode: use WorkingMemoryAssembler with token budgets
     if (req.query.assembled === 'true' && ctx.workingMemory) {
-      const prompt = req.query.prompt as string | undefined;
-      const assembly = ctx.workingMemory.assemble({
-        topicId,
-        prompt: prompt ?? undefined,
-      });
-      res.json({
-        topicId,
+      assembleAndRespond(ctx.workingMemory, topicId, {
+        prompt: req.query.prompt as string | undefined,
         assembled: true,
-        context: assembly.context,
-        estimatedTokens: assembly.estimatedTokens,
-        budgets: ctx.workingMemory.getBudgets(),
-        sources: assembly.sources,
-        queryTerms: assembly.queryTerms,
-        assembledAt: assembly.assembledAt,
-      });
+      }, res);
       return;
     }
 
@@ -7210,8 +7221,9 @@ export function createRoutes(ctx: RouteContext): Router {
    *
    * GET /session/context/:topicId?prompt=...
    *
-   * Returns a formatted context string ready for session-start hook injection,
-   * plus metadata about what was included and token usage.
+   * Both routes sit behind the global authMiddleware applied at app level in
+   * AgentServer.ts — no per-route middleware needed. Neither route is in the
+   * exemption list (/health, /ping, /dashboard/unlock, etc.).
    */
   router.get('/session/context/:topicId', (req, res) => {
     if (!ctx.workingMemory) {
@@ -7228,24 +7240,10 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const prompt = req.query.prompt as string | undefined;
-    const jobSlug = req.query.job as string | undefined;
-
-    const assembly = ctx.workingMemory.assemble({
-      topicId,
-      prompt: prompt ?? undefined,
-      jobSlug: jobSlug ?? undefined,
-    });
-
-    res.json({
-      topicId,
-      context: assembly.context,
-      estimatedTokens: assembly.estimatedTokens,
-      budgets: ctx.workingMemory.getBudgets(),
-      sources: assembly.sources,
-      queryTerms: assembly.queryTerms,
-      assembledAt: assembly.assembledAt,
-    });
+    assembleAndRespond(ctx.workingMemory, topicId, {
+      prompt: req.query.prompt as string | undefined,
+      jobSlug: req.query.job as string | undefined,
+    }, res);
   });
 
   /**
