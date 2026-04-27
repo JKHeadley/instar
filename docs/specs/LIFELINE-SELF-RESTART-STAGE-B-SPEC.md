@@ -55,7 +55,7 @@ lifelineVersion?: string   // semver: /^\d{1,4}\.\d{1,4}\.\d{1,4}(-[A-Za-z0-9.-]
 ### Input validation
 
 - If `lifelineVersion` is present but does not match the regex, or exceeds 64 chars: respond `400 Bad Request` with `{ ok: false, error: "invalid lifelineVersion" }`. No echo of the raw input.
-- If `lifelineVersion` is absent: accept the forward (backward compatibility with pre-Stage-B lifelines). Emit a `TelegramLifeline.versionMissing` informational DegradationReporter signal (1 h cooldown) so operators can see un-migrated lifelines.
+- If `lifelineVersion` is absent: accept the forward (backward compatibility with pre-Stage-B lifelines). Log a one-shot `console.info` per server process so operators can observe un-migrated lifelines in logs without polluting the feedback pipeline (DegradationReporter call removed in v0.28.76; see `docs/specs/telegram-lifeline-version-missing-info.md`).
 
 ### Version resolution and boot window
 
@@ -357,7 +357,7 @@ The PATCH-drift observation (`versionSkewInfo`) is a Stage B addition; Stage A d
 ## Rollout ordering
 
 1. Stage B ships in release `0.28.66` (or next).
-2. Servers on `0.28.66` begin accepting `lifelineVersion` and enforcing policy. Old lifelines continue to send no version and are accepted (versionMissing signal fires).
+2. Servers on `0.28.66` begin accepting `lifelineVersion` and enforcing policy. Old lifelines continue to send no version and are accepted (one-shot `console.info` per process; no DegradationReporter signal since v0.28.76).
 3. `instar update apply` pulls the new shadow install and calls `instar lifeline restart` as its last step. Lifelines pick up new code.
 4. Post-migration, old lifelines still running will either self-restart via watchdog (if stuck) or be forcibly restarted by the updater; either way, within a day or two the entire fleet runs Stage B.
 
