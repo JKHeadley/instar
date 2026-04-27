@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type {
   MemoryEntity,
   MemoryEdge,
@@ -241,13 +242,13 @@ export class SemanticMemory {
     } catch (err) {
       // If rename fails (cross-device, permissions), fall back to delete so the rebuild can proceed.
       console.warn(`[SemanticMemory] Could not quarantine corrupt DB (${(err as Error).message}) — falling back to delete`);
-      try { fs.unlinkSync(this.config.dbPath); } catch { /* already gone */ }
+      try { SafeFsExecutor.safeUnlinkSync(this.config.dbPath, { operation: 'SemanticMemory.quarantineCorruptDb' }); } catch { /* already gone */ }
     }
 
     // WAL/SHM are always removed — they're tied to the now-quarantined main file
     // and keeping them around would confuse a fresh DB opened at the same path.
     for (const ext of ['-wal', '-shm']) {
-      try { fs.unlinkSync(this.config.dbPath + ext); } catch { /* may not exist */ }
+      try { SafeFsExecutor.safeUnlinkSync(this.config.dbPath + ext, { operation: 'SemanticMemory.quarantineCorruptDb:sidecar' }); } catch { /* may not exist */ }
     }
 
     // Drop a marker file so operators / monitoring can detect the auto-recovery

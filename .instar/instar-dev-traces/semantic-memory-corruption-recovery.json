@@ -1,0 +1,11 @@
+{
+  "phase": "complete",
+  "slug": "semantic-memory-corruption-recovery",
+  "coveredFiles": [
+    "src/memory/SemanticMemory.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/semantic-memory-corruption-recovery.md",
+  "artifactSha256": "07fb43a844e6bcb30267a7eeb352bb78a4a5a7a7728466f9073b560c7882ef65",
+  "specPath": "docs/specs/SEMANTIC-MEMORY-CORRUPTION-RECOVERY-SPEC.md",
+  "createdAt": "2026-04-27T17:05:21Z"
+}

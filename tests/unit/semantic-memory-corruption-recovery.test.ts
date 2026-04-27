@@ -1,3 +1,4 @@
+// safe-git-allow: test file — fs.rmSync is for temp directory cleanup in afterEach only.
 /**
  * Tests for SemanticMemory corruption auto-recovery.
  *

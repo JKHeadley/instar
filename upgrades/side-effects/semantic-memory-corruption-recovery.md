@@ -75,8 +75,20 @@ Pure code change. Revert removes the integrity check — corrupt DBs would again
 
 ---
 
+## 8. Destructive-tool containment compliance
+
+`quarantineCorruptDb()` uses `fs.unlinkSync` to remove the corrupt DB and its WAL/SHM sidecars. Per the Comprehensive Destructive-Tool Containment spec (PRs #98/#99), all destructive filesystem calls must go through `SafeFsExecutor`. Updated:
+
+- `fs.unlinkSync(this.config.dbPath)` → `SafeFsExecutor.safeUnlinkSync(this.config.dbPath, { operation: 'SemanticMemory.quarantineCorruptDb' })`
+- `fs.unlinkSync(this.config.dbPath + ext)` → `SafeFsExecutor.safeUnlinkSync(this.config.dbPath + ext, { operation: 'SemanticMemory.quarantineCorruptDb:sidecar' })`
+
+The test file uses `fs.rmSync` in `afterEach` cleanup only (temp directory in `os.tmpdir()`). Annotated with `// safe-git-allow:` escape comment per the lint spec.
+
+---
+
 ## Evidence pointers
 
 - Typecheck: `tsc --noEmit` — 0 errors.
+- Lint: `node scripts/lint-no-direct-destructive.js` — 0 violations.
 - Tests: 11 contract tests covering all recovery paths including partial corruption (valid SQLite header + corrupted interior pages) and size-gate behavior.
 - TopicMemory parity: pattern mirrors `TopicMemory.open()` which has been production-stable since v0.27.x.
