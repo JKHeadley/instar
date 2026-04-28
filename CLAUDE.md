@@ -26,6 +26,10 @@ src/
                   # UpdateChecker, RelationshipManager, SleepWakeDetector,
                   # SourceTreeGuard (blocks destructive managers against the instar
                   # source tree; throws SourceTreeGuardError before any mutation),
+                  # SafeGitExecutor (single-funnel for all destructive git ops —
+                  # execFileSync/execSync callsites replaced; enforces audit trail),
+                  # SafeFsExecutor (single-funnel for all destructive fs ops —
+                  # rmSync/unlinkSync/rmdirSync callsites replaced; enforces audit trail),
                   # types
   scheduler/      # Cron-based job scheduling with quota awareness
   monitoring/     # Health checks, QuotaTracker (threshold-based load shedding),
@@ -46,13 +50,22 @@ src/
                   # sequence; watchdog-notifications for user-facing messages),
                   # HelperWatchdog (stall + failure detection for spawned subagents
                   # via SubagentTracker events; signal-only: emits `stall` and
-                  # `helper-failed` events; consumers handle retry/messaging)
+                  # `helper-failed` events; consumers handle retry/messaging),
+                  # DeliveryFailureSentinel (Telegram relay recovery engine — drains
+                  # PendingRelayStore, deterministic state machine, fixed-template
+                  # escalation after retry exhaustion; Layer 3 of delivery-robustness),
+                  # TemplatesDriftVerifier (verifies deployed relay scripts against
+                  # shipped instar versions via SHA-history lint; Layer 7 of
+                  # delivery-robustness)
   messaging/      # TelegramAdapter (long-polling, JSONL history),
                   # WhatsAppAdapter, SlackAdapter, iMessage (platform adapters);
                   # TelegramMarkdownFormatter (GFM→HTML for Telegram; disabled by
                   # default via telegramFormatMode: 'legacy-passthrough'),
                   # MessageRouter (topic → adapter routing),
                   # DeliveryRetryManager (retry on failed delivery),
+                  # PendingRelayStore (durable SQLite queue for Telegram relay;
+                  # per-agent-id isolation; WAL + busy_timeout; Layer 2 of
+                  # delivery-robustness),
                   # SpawnRequestManager (cross-session spawn coordination),
                   # MessageStore (cross-platform message persistence)
   users/          # Multi-user identity resolution and permissions
@@ -321,3 +334,4 @@ Just tell me: "connect to the agent network" or "enable Threadline relay." I'll 
 
 MCP tools: `threadline_discover`, `threadline_send`, `threadline_trust`, `threadline_relay`
 Use `threadline_relay explain` for full details.
+
