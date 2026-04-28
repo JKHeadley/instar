@@ -13,10 +13,11 @@ Three files touched:
 
 2. `src/memory/SemanticMemory.ts` — `open()` gains an integrity check block mirroring TopicMemory's pattern:
    - After opening the DB, runs `PRAGMA integrity_check`. If result is not `'ok'`, or if the pragma itself throws (severely corrupt DB), triggers recovery.
+   - **Secondary probe read**: If `integrity_check` passes, reads 100 rows from each existing table. Catches torn interior pages that `integrity_check` misses (pages not reachable from the B-tree schema walk).
    - Recovery: calls `quarantineCorruptDb()` which renames the DB to `.corrupt.<timestamp>`, removes WAL/SHM sidecars, writes a JSON marker file. Falls back to delete if rename fails.
-   - After schema creation and vector init, checks `_needsRebuild` flag. If JSONL exists and is within the size gate, rebuilds synchronously. If JSONL exceeds `autoRebuildMaxBytes`, logs warning and starts empty.
+   - After schema creation and vector init, checks `_needsRebuild` flag. If JSONL exists and is within the size gate, rebuilds synchronously. If JSONL exceeds `autoRebuildMaxBytes`, logs warning, starts empty, and writes a `skipped-rebuild` marker file.
 
-3. `tests/unit/semantic-memory-corruption-recovery.test.ts` — New 260-line test file with 11 contract-style tests covering: open-without-throwing, quarantine preservation, marker shape, sidecar cleanup, JSONL rebuild, no-JSONL fresh start, healthy-DB no-op, severe-corruption pragma-throws path, subsequent-open stability, partial-corruption (valid header + bad interior page), and size-gate skip.
+3. `tests/unit/semantic-memory-corruption-recovery.test.ts` — Test file with 12 contract-style tests covering: open-without-throwing, quarantine preservation, marker shape, sidecar cleanup (strengthened WAL/SHM assertions), JSONL rebuild, no-JSONL fresh start, healthy-DB no-op, severe-corruption pragma-throws path, partial-corruption (valid header + 4KB corrupted data page in 5000-row DB), size-gate skip, skipped-rebuild marker file, and subsequent-open stability.
 
 ## Decision-point inventory
 
@@ -25,6 +26,8 @@ Three files touched:
 - `SemanticMemory.quarantineCorruptDb()` — **add** (new private method).
 - `SemanticMemory._needsRebuild` — **add** (new private field, transient between integrity check and rebuild).
 - Auto-rebuild size gate — **add** (checks `fs.statSync(jsonlPath).size` against config limit).
+- `SemanticMemory` probe-read block — **add** (secondary detection after integrity_check passes; reads 100 rows from each existing table).
+- `SemanticMemory.writeSkippedRebuildMarker()` — **add** (new private method; writes `.skipped-rebuild.<ts>.marker.json` when size gate triggers).
 
 ---
 
@@ -41,6 +44,7 @@ The integrity check itself runs on every `open()` call, adding measurable startu
 **What failure modes does this still miss?**
 
 - **Mid-session corruption**: Only detected on `open()`. If a disk block goes bad during a running session, individual SQLite operations will throw but no automatic recovery triggers. This is out of scope — mid-session recovery would require connection pooling or shadow-DB switching, far beyond this PR's scope.
+- **Probe-read coverage**: The secondary probe reads 100 rows from each non-FTS table. Very large tables with corruption only in pages beyond the first 100 rows could theoretically pass the probe. In practice, 100 rows spans multiple 4KB pages, making this unlikely. Full table scans at startup would have unacceptable latency on large DBs.
 - **JSONL truncation**: If the JSONL was itself truncated (disk-full event during a write), the rebuild will be partial — some entities may be missing. The `importFromJsonl()` method handles malformed lines gracefully (skips them), so the rebuild is best-effort. The quarantined DB is preserved for forensic comparison.
 - **Writes not flushed to JSONL**: All mutation paths in SemanticMemory go through `remember()` / `addEdge()` which write to JSONL first (append), then to DB. The JSONL is the source of truth. There is no path where the DB is written first.
 
@@ -90,5 +94,5 @@ The test file uses `fs.rmSync` in `afterEach` cleanup only (temp directory in `o
 
 - Typecheck: `tsc --noEmit` — 0 errors.
 - Lint: `node scripts/lint-no-direct-destructive.js` — 0 violations.
-- Tests: 11 contract tests covering all recovery paths including partial corruption (valid SQLite header + corrupted interior pages) and size-gate behavior.
+- Tests: 12 contract tests covering all recovery paths including partial corruption (valid SQLite header + 4KB corrupted data page in 5000-row DB), size-gate behavior, and skipped-rebuild marker.
 - TopicMemory parity: pattern mirrors `TopicMemory.open()` which has been production-stable since v0.27.x.

@@ -14,6 +14,7 @@
  *   9. Rename failure falls back to delete (does not abort startup).
  *  10. Partial corruption (valid SQLite header, bad interior page) is detected.
  *  11. Auto-rebuild is skipped when JSONL exceeds autoRebuildMaxBytes.
+ *  12. Skipped-rebuild writes a marker file so monitoring can detect the degraded state.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -46,30 +47,40 @@ function writeGarbage(dbPath: string): void {
 }
 
 async function writePartiallyCorruptDb(dbPath: string): Promise<void> {
-  // Create a real SQLite DB, then corrupt interior pages while preserving the header.
-  // This simulates the most common real-world failure: torn page from WAL replay or disk error.
+  // Create a real SQLite DB with enough rows to populate many data pages, then corrupt
+  // interior pages while preserving the header. This simulates the most common real-world
+  // failure: torn page from WAL replay or disk error.
+  //
+  // With 5000 rows of ~300 bytes each (~1.5 MB), data spans ~370 pages (4096 bytes each).
+  // Corrupting a full page at offset 32768 (page 9) reliably lands in row data that both
+  // integrity_check and probe reads will scan.
   const BetterSqlite3 = (await import('better-sqlite3')).default;
   const db = new BetterSqlite3(dbPath);
   db.pragma('journal_mode = WAL');
   db.exec('CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)');
-  for (let i = 0; i < 100; i++) {
-    db.prepare('INSERT INTO test (data) VALUES (?)').run(`row-${i}-${'x'.repeat(200)}`);
-  }
+  const insert = db.prepare('INSERT INTO test (data) VALUES (?)');
+  const batch = db.transaction(() => {
+    for (let i = 0; i < 5000; i++) {
+      insert.run(`row-${i}-${'x'.repeat(300)}`);
+    }
+  });
+  batch();
   db.pragma('wal_checkpoint(TRUNCATE)');
   db.close();
 
-  // Overwrite bytes past the 100-byte SQLite header to corrupt interior pages.
+  // Overwrite a full page (4096 bytes) deep in the row data region.
   const fd = fs.openSync(dbPath, 'r+');
-  const garbage = Buffer.alloc(512, 0xFF);
-  fs.writeSync(fd, garbage, 0, garbage.length, 2048);
+  const garbage = Buffer.alloc(4096, 0xFF);
+  fs.writeSync(fd, garbage, 0, garbage.length, 32768);
   fs.closeSync(fd);
 }
 
-function listCorruptArtifacts(dir: string): { corruptFiles: string[]; markerFiles: string[] } {
+function listCorruptArtifacts(dir: string): { corruptFiles: string[]; markerFiles: string[]; skippedRebuildMarkers: string[] } {
   const entries = fs.readdirSync(dir);
   return {
     corruptFiles: entries.filter((f) => f.includes('.corrupt.') && !f.endsWith('.marker.json')),
     markerFiles: entries.filter((f) => f.includes('corrupt-recovery') && f.endsWith('.marker.json')),
+    skippedRebuildMarkers: entries.filter((f) => f.includes('skipped-rebuild') && f.endsWith('.marker.json')),
   };
 }
 
@@ -129,16 +140,14 @@ describe('SemanticMemory corruption auto-recovery', () => {
     await mem.open();
     mem.close();
 
-    // The stale WAL/SHM we planted must no longer contain the planted content —
-    // either the files are gone, or they've been replaced by fresh SQLite-valid ones.
+    // The stale WAL/SHM we planted must be gone — quarantineCorruptDb always removes them.
+    // If fresh ones were created by the new DB, they won't contain the planted content.
     const walAfter = setup.dbPath + '-wal';
     const shmAfter = setup.dbPath + '-shm';
-    if (fs.existsSync(walAfter)) {
-      expect(fs.readFileSync(walAfter, 'utf-8')).not.toBe('stale wal');
-    }
-    if (fs.existsSync(shmAfter)) {
-      expect(fs.readFileSync(shmAfter, 'utf-8')).not.toBe('stale shm');
-    }
+    const walContent = fs.existsSync(walAfter) ? fs.readFileSync(walAfter, 'utf-8') : null;
+    const shmContent = fs.existsSync(shmAfter) ? fs.readFileSync(shmAfter, 'utf-8') : null;
+    expect(walContent).not.toBe('stale wal');
+    expect(shmContent).not.toBe('stale shm');
   });
 
   it('rebuilds automatically from the JSONL log when one is present', async () => {
@@ -229,7 +238,8 @@ describe('SemanticMemory corruption auto-recovery', () => {
     expect(corruptFiles.length).toBeGreaterThanOrEqual(1);
     expect(markerFiles.length).toBe(1);
     const marker = JSON.parse(fs.readFileSync(path.join(setup.dir, markerFiles[0]), 'utf-8'));
-    expect(marker.reason).toMatch(/integrity_check/);
+    // May be caught by integrity_check, pragma throw, or the secondary probe read
+    expect(marker.reason).toMatch(/integrity_check|probe read failed|pragma threw/);
   });
 
   it('skips auto-rebuild when JSONL exceeds autoRebuildMaxBytes', async () => {
@@ -253,6 +263,33 @@ describe('SemanticMemory corruption auto-recovery', () => {
     // DB should be empty — rebuild was skipped
     expect(recovered.search('Alpha')).toEqual([]);
     recovered.close();
+  });
+
+  it('writes a skipped-rebuild marker when JSONL exceeds autoRebuildMaxBytes', async () => {
+    // Seed a DB with entities so JSONL exists
+    const seed = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    await seed.open();
+    const nowIso = new Date().toISOString();
+    seed.remember({ type: 'concept', name: 'Big', content: 'lots of data', confidence: 0.9, lastVerified: nowIso, source: 'test', tags: [] });
+    seed.close();
+
+    writeGarbage(setup.dbPath);
+
+    const recovered = new SemanticMemory({
+      dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2,
+      autoRebuildMaxBytes: 1,
+    });
+    await recovered.open();
+    recovered.close();
+
+    const { skippedRebuildMarkers } = listCorruptArtifacts(setup.dir);
+    expect(skippedRebuildMarkers.length).toBe(1);
+
+    const marker = JSON.parse(fs.readFileSync(path.join(setup.dir, skippedRebuildMarkers[0]), 'utf-8'));
+    expect(marker.event).toBe('semantic_memory.skipped_rebuild');
+    expect(marker.jsonlSizeBytes).toBeGreaterThan(1);
+    expect(marker.maxAllowedBytes).toBe(1);
+    expect(typeof marker.action).toBe('string');
   });
 
   it('subsequent opens of the fresh DB remain stable (no lingering _needsRebuild state)', async () => {

@@ -162,6 +162,23 @@ export class SemanticMemory {
         this.db = constructor(this.config.dbPath) as Database;
         this._needsRebuild = true;
       }
+
+      // Secondary probe: integrity_check can miss torn interior pages that aren't
+      // reachable from the B-tree schema walk. A probe read on existing tables catches these.
+      if (!this._needsRebuild) {
+        try {
+          const tables = this.db!.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%'"
+          ).all() as Array<{ name: string }>;
+          for (const t of tables) {
+            this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
+          }
+        } catch (err) {
+          this.quarantineCorruptDb(`probe read failed: ${(err as Error).message}`);
+          this.db = constructor(this.config.dbPath) as Database;
+          this._needsRebuild = true;
+        }
+      }
     }
 
     this.db!.pragma('journal_mode = WAL');
@@ -185,6 +202,7 @@ export class SemanticMemory {
             `(${(jsonlSize / 1024 / 1024).toFixed(1)} MB, limit ${(maxBytes / 1024 / 1024).toFixed(0)} MB). ` +
             `Starting with empty DB — rebuild manually via importFromJsonl().`
           );
+          this.writeSkippedRebuildMarker(jsonlSize, maxBytes);
         } else {
           const result = this.importFromJsonl(this.jsonlPath);
           console.log(`[SemanticMemory] Auto-rebuilt from JSONL: ${result.entities} entities, ${result.edges} edges reimported`);
@@ -264,6 +282,26 @@ export class SemanticMemory {
       fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
     } catch {
       // @silent-fallback-ok: marker is a hint for operators; recovery itself already succeeded
+    }
+  }
+
+  private writeSkippedRebuildMarker(jsonlSize: number, maxBytes: number): void {
+    const ts = Date.now();
+    const dir = path.dirname(this.config.dbPath);
+    const base = path.basename(this.config.dbPath);
+    const markerPath = path.join(dir, `${base}.skipped-rebuild.${ts}.marker.json`);
+    try {
+      fs.writeFileSync(markerPath, JSON.stringify({
+        event: 'semantic_memory.skipped_rebuild',
+        timestamp: new Date(ts).toISOString(),
+        dbPath: this.config.dbPath,
+        jsonlPath: this.jsonlPath,
+        jsonlSizeBytes: jsonlSize,
+        maxAllowedBytes: maxBytes,
+        action: 'Started with empty DB — operator should run importFromJsonl() manually',
+      }, null, 2));
+    } catch {
+      // @silent-fallback-ok: marker is advisory
     }
   }
 
