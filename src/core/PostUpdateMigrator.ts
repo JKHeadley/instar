@@ -3307,7 +3307,7 @@ process.stdin.on('end', async () => {
   private getFreeTextGuardHook(): string {
     // Read the hook from the templates directory instead of inline generation.
     // This avoids multi-layer escaping issues (TypeScript -> bash -> Python -> regex).
-    const hookPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'templates', 'hooks', 'free-text-guard.sh');
+    const hookPath = path.join(__dirname, '..', 'templates', 'hooks', 'free-text-guard.sh');
     return fs.readFileSync(hookPath, 'utf-8');
   }
 
