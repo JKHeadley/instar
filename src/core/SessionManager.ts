@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Diagnostics for a single running session */
 export interface SessionDiagnostic {

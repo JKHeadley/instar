@@ -12,7 +12,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
@@ -1629,7 +1632,7 @@ function getInstalledVersion(): string {
  */
 function resolvePackageJsonPath(): string | null {
   try {
-    const pkgPath = path.resolve(new URL(import.meta.url).pathname, '../../../package.json');
+    const pkgPath = path.resolve(__dirname, '../../package.json');
     if (fs.existsSync(pkgPath)) return pkgPath;
   } catch {
     // @silent-fallback-ok — best-effort path resolution for package.json; null return is the documented default
