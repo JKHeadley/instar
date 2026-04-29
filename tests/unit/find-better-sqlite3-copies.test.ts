@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { findBetterSqlite3Copies } from '../../src/lifeline/ServerSupervisor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const tmpDirs: string[] = [];
 
@@ -32,7 +33,7 @@ function writeFakeBinary(p: string): void {
 afterEach(() => {
   while (tmpDirs.length > 0) {
     const d = tmpDirs.pop()!;
-    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/find-better-sqlite3-copies.test.ts:cleanup' }); } catch { /* ignore */ }
   }
 });
 
