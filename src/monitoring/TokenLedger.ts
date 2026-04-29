@@ -16,6 +16,28 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+
+/**
+ * Compute a small content fingerprint for a JSONL file. Used to detect
+ * file rotation/replacement even when the OS reuses the same inode number
+ * after unlink+recreate (Linux kernel behavior on tmpfs/ext4).
+ */
+function computeHeadHash(filePath: string, size: number): string {
+  const len = Math.min(size, 256);
+  if (len <= 0) return 'empty';
+  const buf = Buffer.alloc(len);
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buf, 0, len, 0);
+    return crypto.createHash('sha256').update(buf.slice(0, len)).digest('hex').slice(0, 16);
+  } catch {
+    return 'unreadable';
+  } finally {
+    if (fd != null) try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+}
 
 // ── Schema ────────────────────────────────────────────────────────────
 
@@ -41,8 +63,11 @@ const SCHEMA = [
      offset    INTEGER NOT NULL DEFAULT 0,
      inode     INTEGER,
      size      INTEGER,
+     head_hash TEXT,
      last_read INTEGER NOT NULL
    )`,
+  // Migration for installs that pre-date head_hash (idempotent).
+  `ALTER TABLE file_offsets ADD COLUMN head_hash TEXT`,
 ];
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -144,7 +169,17 @@ export class TokenLedger {
     this.db = new Database(opts.dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
-    for (const ddl of SCHEMA) this.db.exec(ddl);
+    for (const ddl of SCHEMA) {
+      try {
+        this.db.exec(ddl);
+      } catch (err) {
+        // ALTER TABLE … ADD COLUMN is idempotent at the column level but
+        // SQLite throws if the column already exists. Swallow that one
+        // case; rethrow anything else.
+        const msg = (err as Error).message || '';
+        if (!/duplicate column name/i.test(msg)) throw err;
+      }
+    }
     this.prepareStatements();
   }
 
@@ -161,15 +196,16 @@ export class TokenLedger {
            @serviceTier)
       `),
       getOffset: this.db.prepare(
-        `SELECT offset, inode, size FROM file_offsets WHERE file_path = ?`
+        `SELECT offset, inode, size, head_hash FROM file_offsets WHERE file_path = ?`
       ),
       upsertOffset: this.db.prepare(`
-        INSERT INTO file_offsets (file_path, offset, inode, size, last_read)
-        VALUES (@filePath, @offset, @inode, @size, @lastRead)
+        INSERT INTO file_offsets (file_path, offset, inode, size, head_hash, last_read)
+        VALUES (@filePath, @offset, @inode, @size, @headHash, @lastRead)
         ON CONFLICT(file_path) DO UPDATE SET
           offset = excluded.offset,
           inode = excluded.inode,
           size = excluded.size,
+          head_hash = excluded.head_hash,
           last_read = excluded.last_read
       `),
     };
@@ -231,11 +267,20 @@ export class TokenLedger {
     if (!stat.isFile()) return { inserted: 0, skipped: 0 };
 
     const prev = this.stmts.getOffset.get(filePath) as
-      | { offset: number; inode: number | null; size: number | null }
+      | { offset: number; inode: number | null; size: number | null; head_hash: string | null }
       | undefined;
+
+    // Compute a small content fingerprint (first 256 bytes) to detect rotation
+    // even when the OS reuses the same inode number on unlink+recreate (Linux).
+    const headHash = computeHeadHash(filePath, stat.size);
+
     let startOffset = 0;
-    if (prev && prev.inode === stat.ino && prev.offset <= stat.size) {
-      startOffset = prev.offset;
+    const sameFile = prev
+      && prev.inode === stat.ino
+      && prev.offset <= stat.size
+      && (prev.head_hash == null || prev.head_hash === headHash);
+    if (sameFile) {
+      startOffset = prev!.offset;
     }
 
     if (startOffset >= stat.size) {
@@ -245,6 +290,7 @@ export class TokenLedger {
         offset: startOffset,
         inode: stat.ino,
         size: stat.size,
+        headHash,
         lastRead: Date.now(),
       });
       return { inserted: 0, skipped: 0 };
@@ -295,6 +341,7 @@ export class TokenLedger {
           offset: newOffset,
           inode: stat.ino,
           size: stat.size,
+          headHash,
           lastRead: Date.now(),
         });
       } catch (err) {

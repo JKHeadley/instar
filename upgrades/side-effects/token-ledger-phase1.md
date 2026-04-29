@@ -105,6 +105,17 @@ Not required. This change does not touch any of the trigger criteria from the sk
 
 ---
 
+## Follow-up fix (2026-04-29, post-CI)
+
+CI surfaced a Linux-specific failure in the inode-rotation test: Linux can reuse the same inode number when a file is unlinked and immediately recreated (tmpfs/ext4 behavior). On macOS (where the implementation was first tested) the inode always differs, so the issue was invisible locally.
+
+**Fix:** added a 256-byte content fingerprint (`head_hash` column) to `file_offsets`. Rotation is now detected by `(inode change) OR (head_hash change)`, which is robust across both filesystems. Schema migration is idempotent (`ALTER TABLE … ADD COLUMN` is wrapped in a "duplicate column" swallow).
+
+This change is internal to the ledger and does not affect any of the seven side-effects review answers above. Specifically:
+- No new decision-point surface (still pure observability).
+- No new external surfaces.
+- Rollback cost unchanged — pure code revert; the extra column is harmless if left in place.
+
 ## Evidence pointers
 
 - Unit tests: `tests/unit/token-ledger.test.ts` — 12/12 passing locally on `token-ledger-phase1` branch.
