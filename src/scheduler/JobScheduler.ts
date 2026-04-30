@@ -33,6 +33,13 @@ import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { JobClaimManager } from './JobClaimManager.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 
+/**
+ * Fallback expected duration (minutes) used when a run is encountered for a
+ * slug that's no longer present in `jobs` (e.g., job config was removed
+ * or reloaded mid-sleep). Reaper threshold = this × thresholdMultiplier.
+ */
+const DEFAULT_EXPECTED_MINUTES = 30;
+
 interface QueuedJob {
   slug: string;
   reason: string;
@@ -546,7 +553,7 @@ export class JobScheduler {
         continue;
       }
       const job = jobMap.get(run.slug);
-      const expMin = job?.expectedDurationMinutes ?? 30;
+      const expMin = job?.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES;
       const thresholdMs = expMin * multiplier * 60_000;
       const elapsedMs = now - new Date(run.startedAt).getTime();
       if (elapsedMs <= thresholdMs) {
@@ -567,11 +574,17 @@ export class JobScheduler {
           error: `Reaped on wake — sleep gap of ${sleepEvent.sleepDurationSeconds}s exceeded ${expMin}min × ${multiplier} threshold`,
         });
       } catch (err) {
-        console.error(`[scheduler][reaper] recordCompletion failed for ${runId}:`, err);
+        // Leave activeRunIds entry intact: run is still 'pending' in the ledger,
+        // so the next reaper invocation will retry. Log slug+runId so a structural
+        // failure (disk full, file locked) is greppable in operator output.
+        console.error(`[scheduler][reaper] recordCompletion failed for ${run.slug} (runId=${runId}):`, err);
         continue;
       }
 
       try {
+        // Note: claim is finalized as 'failure' (slug is unblocked for the next tick)
+        // while run history records 'timeout' (preserves the cause for diagnostics).
+        // The asymmetry is intentional — don't "fix" it.
         this.claimManager?.completeClaim(run.slug, 'failure');
       } catch {
         // Best-effort — claim may have already cleared.
