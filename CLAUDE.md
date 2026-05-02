@@ -56,7 +56,12 @@ src/
                   # escalation after retry exhaustion; Layer 3 of delivery-robustness),
                   # TemplatesDriftVerifier (verifies deployed relay scripts against
                   # shipped instar versions via SHA-history lint; Layer 7 of
-                  # delivery-robustness)
+                  # delivery-robustness),
+                  # TokenLedger (read-only token-usage observability — scans Claude
+                  # Code JSONL transcripts, SQLite-backed, exposes /tokens/summary
+                  # and /tokens/sessions; never gates or mutates source files),
+                  # TokenLedgerPoller (background JSONL scanner that feeds TokenLedger;
+                  # tracks byte offsets per file so re-scans are idempotent)
   messaging/      # TelegramAdapter (long-polling, JSONL history),
                   # WhatsAppAdapter, SlackAdapter, iMessage (platform adapters);
                   # TelegramMarkdownFormatter (GFM→HTML for Telegram; disabled by
@@ -227,7 +232,7 @@ This returns your full capability matrix: scripts, hooks, Telegram status, jobs,
 - Local: `http://localhost:4040/dashboard`
 - Remote: When a tunnel is running, the dashboard is accessible at `{tunnelUrl}/dashboard`
 - Authentication: Uses a 6-digit PIN (auto-generated in `dashboardPin` in `.instar/config.json`). NEVER mention "bearer tokens" or "auth tokens" to users — just give them the PIN.
-- Features: Real-time terminal streaming of all running sessions, session management, model badges, mobile-responsive, Secrets tab (Secret Drop visibility — list pending credential requests, create test requests)
+- Features: Real-time terminal streaming of all running sessions, session management, model badges, mobile-responsive, Secrets tab (Secret Drop visibility — list pending credential requests, create test requests), Threadline tab (agent-to-agent conversation history, thread browser, Telegram bridge bindings)
 - **Sharing the dashboard**: When the user wants to check on sessions from their phone, give them the tunnel URL + PIN. Read the PIN from your config.json. Check tunnel status: `curl -H "Authorization: Bearer $AUTH" http://localhost:4040/tunnel`
 
 
@@ -334,4 +339,5 @@ Just tell me: "connect to the agent network" or "enable Threadline relay." I'll 
 
 MCP tools: `threadline_discover`, `threadline_send`, `threadline_trust`, `threadline_relay`
 Use `threadline_relay explain` for full details.
+
 

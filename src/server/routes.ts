@@ -576,6 +576,18 @@ export interface RouteContext {
   ledgerSessionRegistry: import('../core/LedgerSessionRegistry.js').LedgerSessionRegistry | null;
   /** Initiative tracker — persisted record of multi-phase long-running work. */
   initiativeTracker: import('../core/InitiativeTracker.js').InitiativeTracker | null;
+  /** Threadline → Telegram bridge config — toggles + allow/deny list. Read by
+   *  /threadline/telegram-bridge/config endpoints and by the bridge module
+   *  to decide whether to mirror an inbound message into
+   *  a Telegram topic. Null when LiveConfig is not wired. */
+  telegramBridgeConfig: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig | null;
+  /** Threadline → Telegram bridge — mirrors threadline messages into per-thread
+   *  Telegram topics. RELAY-ONLY: never blocks routing, swallows its own
+   *  errors. Null when no Telegram adapter is wired. */
+  telegramBridge: import('../threadline/TelegramBridge.js').TelegramBridge | null;
+  /** Threadline observability — read-only view layer over inbox/outbox/bindings.
+   *  Powers the dashboard Threadline tab via /threadline/observability/*. */
+  threadlineObservability: import('../threadline/ThreadlineObservability.js').ThreadlineObservability | null;
   /** Pending reply waiters for threadline relay-send waitForReply support.
    *  Key: threadId (UUID — unique per conversation, unlike agent names which
    *  can collide when multiple agents share a name). Value: resolve callback
@@ -589,6 +601,9 @@ export interface RouteContext {
    *  the evaluate route will still produce a response, just without
    *  persistence. */
   stopGateDb: StopGateDb | null;
+  /** Token-usage ledger (read-only observability over Claude Code JSONL
+   *  transcripts). Null when stateDir is unavailable. */
+  tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   startTime: Date;
 }
 
@@ -3763,6 +3778,68 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Token Ledger ────────────────────────────────────────────────
+  // Read-only token-usage observability backed by SQLite. Source data
+  // is Claude Code's per-session JSONL transcripts at
+  // ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl.
+  // Auth is enforced globally by authMiddleware.
+
+  const TOKEN_DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const TOKEN_DEFAULT_ORPHAN_IDLE_MS = 30 * 60 * 1000;
+
+  function parseSinceMs(raw: unknown): number {
+    if (typeof raw === 'string' && /^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (n >= 0) return n;
+    }
+    return Date.now() - TOKEN_DEFAULT_WINDOW_MS;
+  }
+
+  router.get('/tokens/summary', (req, res) => {
+    if (!ctx.tokenLedger) {
+      res.status(503).json({ error: 'token ledger unavailable' });
+      return;
+    }
+    const sinceMs = parseSinceMs(req.query.since);
+    res.json({ sinceMs, summary: ctx.tokenLedger.summary({ sinceMs }) });
+  });
+
+  router.get('/tokens/sessions', (req, res) => {
+    if (!ctx.tokenLedger) {
+      res.status(503).json({ error: 'token ledger unavailable' });
+      return;
+    }
+    const sinceMs = parseSinceMs(req.query.since);
+    let limit = 20;
+    if (typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit)) {
+      const n = Number(req.query.limit);
+      if (n > 0 && n <= 500) limit = n;
+    }
+    res.json({ sinceMs, limit, sessions: ctx.tokenLedger.topSessions({ limit, sinceMs }) });
+  });
+
+  router.get('/tokens/by-project', (req, res) => {
+    if (!ctx.tokenLedger) {
+      res.status(503).json({ error: 'token ledger unavailable' });
+      return;
+    }
+    const sinceMs = parseSinceMs(req.query.since);
+    res.json({ sinceMs, projects: ctx.tokenLedger.byProject({ sinceMs }) });
+  });
+
+  router.get('/tokens/orphans', (req, res) => {
+    if (!ctx.tokenLedger) {
+      res.status(503).json({ error: 'token ledger unavailable' });
+      return;
+    }
+    let idleMs = TOKEN_DEFAULT_ORPHAN_IDLE_MS;
+    if (typeof req.query.idleMs === 'string' && /^\d+$/.test(req.query.idleMs)) {
+      const n = Number(req.query.idleMs);
+      if (n > 0) idleMs = n;
+    }
+    res.json({ idleMs, orphans: ctx.tokenLedger.orphans({ idleMs }) });
+  });
+
   // ── Jobs ────────────────────────────────────────────────────────
 
   router.get('/jobs', (_req, res) => {
@@ -4811,6 +4888,84 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     res.json(ctx.telegram.getLogStats());
+  });
+
+  // ── Threadline → Telegram Bridge: settings surface ─────────────
+  //
+  // Read/write toggles + allow-list/deny-list that gate the bridge module
+  // (deliverable b). Default-OFF auto-create is a hard requirement — these
+  // endpoints are how the user opts in. Bearer-auth enforced globally.
+
+  router.get('/threadline/telegram-bridge/config', (_req, res) => {
+    if (!ctx.telegramBridgeConfig) {
+      res.status(503).json({ error: 'Telegram bridge config not initialized' });
+      return;
+    }
+    res.json(ctx.telegramBridgeConfig.getSettings());
+  });
+
+  // ── Threadline observability — read-only views over inbox/outbox/bindings ──
+
+  router.get('/threadline/observability/threads', (req, res) => {
+    if (!ctx.threadlineObservability) {
+      res.status(503).json({ error: 'Threadline observability not initialized' });
+      return;
+    }
+    const remoteAgent = typeof req.query.remoteAgent === 'string' ? req.query.remoteAgent : undefined;
+    const sinceIso = typeof req.query.since === 'string' ? req.query.since : undefined;
+    const untilIso = typeof req.query.until === 'string' ? req.query.until : undefined;
+    const hasTopicRaw = typeof req.query.hasTopic === 'string' ? req.query.hasTopic : undefined;
+    const hasTopic = hasTopicRaw === 'yes' || hasTopicRaw === 'no' ? hasTopicRaw : undefined;
+    const threads = ctx.threadlineObservability.listThreads({ remoteAgent, sinceIso, untilIso, hasTopic });
+    res.json({ threads, count: threads.length });
+  });
+
+  router.get('/threadline/observability/threads/:threadId', (req, res) => {
+    if (!ctx.threadlineObservability) {
+      res.status(503).json({ error: 'Threadline observability not initialized' });
+      return;
+    }
+    const detail = ctx.threadlineObservability.getThread(req.params.threadId);
+    if (!detail) { res.status(404).json({ error: 'Thread not found' }); return; }
+    res.json(detail);
+  });
+
+  router.get('/threadline/observability/search', (req, res) => {
+    if (!ctx.threadlineObservability) {
+      res.status(503).json({ error: 'Threadline observability not initialized' });
+      return;
+    }
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 50;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
+    const hits = ctx.threadlineObservability.searchMessages(q, limit);
+    res.json({ hits, count: hits.length });
+  });
+
+  router.patch('/threadline/telegram-bridge/config', (req, res) => {
+    if (!ctx.telegramBridgeConfig) {
+      res.status(503).json({ error: 'Telegram bridge config not initialized' });
+      return;
+    }
+    try {
+      const body = req.body as {
+        enabled?: unknown;
+        autoCreateTopics?: unknown;
+        mirrorExisting?: unknown;
+        allowList?: unknown;
+        denyList?: unknown;
+      };
+      const patch: Record<string, unknown> = {};
+      if ('enabled' in body) patch.enabled = body.enabled;
+      if ('autoCreateTopics' in body) patch.autoCreateTopics = body.autoCreateTopics;
+      if ('mirrorExisting' in body) patch.mirrorExisting = body.mirrorExisting;
+      if ('allowList' in body) patch.allowList = body.allowList;
+      if ('denyList' in body) patch.denyList = body.denyList;
+      const settings = ctx.telegramBridgeConfig.update(patch);
+      res.json(settings);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── Slack ──────────────────────────────────────────────────────
@@ -10643,6 +10798,36 @@ export function createRoutes(ctx: RouteContext): Router {
                     : 'accepted';
                   console.log(`[relay-send] Local delivery to ${localTarget.name}:${localTarget.port} (thread: ${effectiveThreadId}) — ${outcome}`);
 
+                  // Canonical outbox write — single source of truth for outbound messages
+                  // across BOTH delivery paths (local + relay). Powers the dashboard
+                  // observability tab. Mirrors the inbound canonical write from PR #113.
+                  if (ctx.listenerManager) {
+                    try {
+                      ctx.listenerManager.appendCanonicalOutboxEntry({
+                        from: ctx.config.projectName ?? 'self',
+                        senderName: ctx.config.projectName ?? 'self',
+                        to: localTarget.name,
+                        recipientName: localTarget.name,
+                        threadId: effectiveThreadId,
+                        text: message,
+                        messageId: msgId,
+                        outcome,
+                      });
+                    } catch (err) {
+                      console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+                    }
+                  }
+                  // Mirror outbound into Telegram bridge (relay-only — best effort).
+                  if (ctx.telegramBridge) {
+                    ctx.telegramBridge.mirrorOutbound({
+                      threadId: effectiveThreadId,
+                      remoteAgent: localTarget.name,
+                      remoteAgentName: localTarget.name,
+                      text: message,
+                      messageId: msgId,
+                      outcome,
+                    }).catch(() => { /* swallow — bridge is relay-only */ });
+                  }
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
@@ -10700,6 +10885,37 @@ export function createRoutes(ctx: RouteContext): Router {
 
       const relayMsgId = relayClient.sendAuto(resolvedId, message, threadId);
       const effectiveRelayThreadId = threadId ?? relayMsgId;
+
+      // Canonical outbox write for the relay-delivery path — same shape as the
+      // local-delivery path above, so the observability tab sees both paths.
+      if (ctx.listenerManager) {
+        try {
+          ctx.listenerManager.appendCanonicalOutboxEntry({
+            from: ctx.config.projectName ?? 'self',
+            senderName: ctx.config.projectName ?? 'self',
+            to: resolvedId,
+            recipientName: targetAgent,
+            threadId: effectiveRelayThreadId,
+            text: message,
+            messageId: relayMsgId,
+            outcome: 'relay-sent',
+          });
+        } catch (err) {
+          console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      // Mirror outbound into Telegram bridge (relay-only — best effort).
+      if (ctx.telegramBridge) {
+        ctx.telegramBridge.mirrorOutbound({
+          threadId: effectiveRelayThreadId,
+          remoteAgent: resolvedId,
+          remoteAgentName: targetAgent,
+          text: message,
+          messageId: relayMsgId,
+          outcome: 'relay-sent',
+        }).catch(() => { /* swallow — bridge is relay-only */ });
+      }
 
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);

@@ -138,7 +138,113 @@ export class ListenerSessionManager {
     return path.join(this.stateDir, 'state', 'listener-rotation-sentinel');
   }
 
+  /**
+   * Path to the canonical threadline inbox — single source of truth across all
+   * routing branches (pipe / warm-listener / cold-spawn). Read by the dashboard
+   * observability tab and the threadline → telegram bridge.
+   */
+  get canonicalInboxPath(): string {
+    return path.join(this.stateDir, 'threadline', 'inbox.jsonl.active');
+  }
+
+  /**
+   * Path to the canonical threadline outbox — every outbound threadline
+   * message sent via `/threadline/relay-send` is appended here, regardless
+   * of delivery path (local-delivery or relay-delivery). Read by the
+   * dashboard observability tab so the conversation view can render BOTH
+   * sides of an agent-to-agent thread.
+   */
+  get canonicalOutboxPath(): string {
+    return path.join(this.stateDir, 'threadline', 'outbox.jsonl.active');
+  }
+
   // ── Write to Inbox ───────────────────────────────────────────────
+
+  /**
+   * Append an HMAC-signed entry to the canonical threadline inbox at
+   * `.instar/threadline/inbox.jsonl.active`. Called once at relay-ingest before
+   * any pipe/listener/cold-spawn branching, so the canonical inbox is the single
+   * source of truth regardless of which routing path handles the message.
+   *
+   * Distinct from `writeToInbox`, which targets the warm-listener's per-rotation
+   * queue file (`state/listener-inbox-{rotation}.jsonl`). Both files coexist:
+   * canonical = audit + observability + bridge source; rotated = warm queue.
+   */
+  appendCanonicalInboxEntry(opts: {
+    from: string;
+    senderName: string;
+    trustLevel: string;
+    threadId: string;
+    text: string;
+    messageId?: string;
+  }): InboxEntry {
+    const entryData: Omit<InboxEntry, 'hmac'> = {
+      id: opts.messageId || crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      from: opts.from,
+      senderName: opts.senderName,
+      trustLevel: opts.trustLevel,
+      threadId: opts.threadId,
+      text: opts.text,
+    };
+    const hmac = this.computeHMAC(entryData);
+    const fullEntry: InboxEntry = { ...entryData, hmac };
+
+    const inboxPath = this.canonicalInboxPath;
+    const inboxDir = path.dirname(inboxPath);
+    if (!fs.existsSync(inboxDir)) {
+      fs.mkdirSync(inboxDir, { recursive: true });
+    }
+    fs.appendFileSync(inboxPath, JSON.stringify(fullEntry) + '\n', { mode: 0o600 });
+    return fullEntry;
+  }
+
+  /**
+   * Append an HMAC-signed entry to the canonical threadline outbox at
+   * `.instar/threadline/outbox.jsonl.active`. Mirror of
+   * `appendCanonicalInboxEntry` — same shape, same key, written from the
+   * `/threadline/relay-send` route on every successful outbound delivery
+   * (local or relay) so the dashboard observability tab can render both
+   * sides of a conversation.
+   */
+  appendCanonicalOutboxEntry(opts: {
+    /** This agent's identifier (the sender). */
+    from: string;
+    /** Display name of this agent. */
+    senderName: string;
+    /** Target agent fingerprint or name. */
+    to: string;
+    /** Display name of the target. */
+    recipientName: string;
+    threadId: string;
+    text: string;
+    messageId?: string;
+    /** Delivery outcome from /threadline/relay-send (e.g. "accepted", "queued (no live session)"). */
+    outcome?: string;
+  }): InboxEntry & { to: string; recipientName: string; outcome?: string } {
+    const entryData = {
+      id: opts.messageId || crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      from: opts.from,
+      senderName: opts.senderName,
+      trustLevel: 'self',
+      threadId: opts.threadId,
+      text: opts.text,
+      to: opts.to,
+      recipientName: opts.recipientName,
+      outcome: opts.outcome,
+    };
+    const hmac = this.computeHMAC(entryData);
+    const fullEntry = { ...entryData, hmac };
+
+    const outboxPath = this.canonicalOutboxPath;
+    const outboxDir = path.dirname(outboxPath);
+    if (!fs.existsSync(outboxDir)) {
+      fs.mkdirSync(outboxDir, { recursive: true });
+    }
+    fs.appendFileSync(outboxPath, JSON.stringify(fullEntry) + '\n', { mode: 0o600 });
+    return fullEntry;
+  }
 
   /**
    * Write a message to the inbox file.

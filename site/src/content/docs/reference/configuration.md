@@ -131,6 +131,34 @@ See [Coherence Gate](/features/coherence-gate/) for full configuration options.
 
 Configures the Threadline relay for inter-agent communication. See [Threadline Protocol](/features/threadline/) for details.
 
+### Telegram Bridge (Threadline)
+
+Mirror agent-to-agent threadline messages into per-thread Telegram topics for real-time visibility.
+
+```json
+{
+  "threadline": {
+    "telegramBridge": {
+      "enabled": false,
+      "autoCreateTopics": false,
+      "mirrorExisting": true,
+      "allowList": [],
+      "denyList": []
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Master kill-switch. When `false`, the bridge never posts to Telegram. |
+| `autoCreateTopics` | `false` | When `true`, automatically creates a new Telegram forum topic for each new threadline conversation. When `false`, only mirrors traffic into topics that already exist (or are in `allowList`). |
+| `mirrorExisting` | `true` | Mirror messages into topics that already have a binding, regardless of `autoCreateTopics`. |
+| `allowList` | `[]` | Remote agent identifiers that always get auto-created topics, even if `autoCreateTopics` is `false`. |
+| `denyList` | `[]` | Remote agent identifiers that never get auto-created topics. `allowList` takes precedence when both contain the same ID. |
+
+Thread-to-topic bindings are persisted in `.instar/threadline/telegram-bridge-bindings.json`. Configure via the dashboard Threadline tab or the `/threadline/telegram-bridge/config` API endpoint.
+
 ## Additional Config Keys
 
 | Key | Description |
@@ -172,3 +200,4 @@ Jobs are defined in `.instar/jobs.json`. See [Job Scheduler](/features/scheduler
 ## Hooks
 
 Behavioral hooks are installed in `.claude/settings.json` and scripts live in `.instar/hooks/` and `.claude/scripts/`. See [Hooks reference](/reference/hooks/) for details.
+

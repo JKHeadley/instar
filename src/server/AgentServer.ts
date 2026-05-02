@@ -47,6 +47,9 @@ import { WebSocketManager } from './WebSocketManager.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
 import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
+import os from 'node:os';
+import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 
 export class AgentServer {
   private app: Express;
@@ -61,6 +64,8 @@ export class AgentServer {
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
+  private tokenLedger: TokenLedger | null = null;
+  private tokenLedgerPoller: TokenLedgerPoller | null = null;
 
   constructor(options: {
     config: InstarConfig;
@@ -153,6 +158,12 @@ export class AgentServer {
     stopGateDb?: import('../core/StopGateDb.js').StopGateDb;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
+    /** Threadline → Telegram bridge config — toggles + allow/deny list. */
+    telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
+    /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
+    telegramBridge?: import('../threadline/TelegramBridge.js').TelegramBridge;
+    /** Threadline observability — read-only views over inbox/outbox/bindings. */
+    threadlineObservability?: import('../threadline/ThreadlineObservability.js').ThreadlineObservability;
   }) {
     this.config = options.config;
     this.startTime = new Date();
@@ -309,6 +320,33 @@ export class AgentServer {
       '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     }));
 
+    // ── Token Ledger ──────────────────────────────────────────────────
+    // Read-only token-usage observability. Reads Claude Code's per-session
+    // JSONL transcripts and rolls up into SQLite. Never mutates source files.
+    try {
+      if (options.config.stateDir) {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        const dbPath = path.join(serverDataDir, 'token-ledger.db');
+        const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+        // Bound the first-boot scan: with deep history (eg one local agent
+        // had 119k JSONLs / 12GB of transcripts), an unbounded synchronous
+        // scan blocks the event loop for minutes. We cap per-tick work and
+        // skip files older than the backfill window — the source JSONLs
+        // remain authoritative if the operator wants to widen the window.
+        this.tokenLedger = new TokenLedger({
+          dbPath,
+          claudeProjectsDir,
+          maxFileAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 days
+          maxFilesPerScan: 500,
+          yieldEveryNFiles: 25,
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] token-ledger init failed (non-fatal):', err);
+      this.tokenLedger = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -386,6 +424,10 @@ export class AgentServer {
       unjustifiedStopGate: options.unjustifiedStopGate ?? null,
       stopGateDb: options.stopGateDb ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
+      tokenLedger: this.tokenLedger,
+      telegramBridgeConfig: options.telegramBridgeConfig ?? null,
+      telegramBridge: options.telegramBridge ?? null,
+      threadlineObservability: options.threadlineObservability ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
@@ -474,6 +516,18 @@ export class AgentServer {
         // Update route context with WebSocket manager (deferred — created after routes)
         if (this.routeContext) {
           this.routeContext.wsManager = this.wsManager;
+        }
+
+        // ── Token Ledger Poller ─────────────────────────────────────────
+        // 60s tick scans `~/.claude/projects/*/*.jsonl` and rolls up into
+        // the token_events table. Strictly read-only against source files.
+        if (this.tokenLedger) {
+          try {
+            this.tokenLedgerPoller = new TokenLedgerPoller({ ledger: this.tokenLedger });
+            this.tokenLedgerPoller.start();
+          } catch (err) {
+            console.warn('[instar] token-ledger poller start failed:', err);
+          }
         }
 
         // ── Layer 3 DeliveryFailureSentinel — default-OFF feature flag ──
@@ -587,6 +641,24 @@ export class AgentServer {
         // best-effort
       }
       this.deliveryStore = null;
+    }
+
+    // Stop the token-ledger poller and close its DB.
+    if (this.tokenLedgerPoller) {
+      try {
+        this.tokenLedgerPoller.stop();
+      } catch {
+        // best-effort
+      }
+      this.tokenLedgerPoller = null;
+    }
+    if (this.tokenLedger) {
+      try {
+        this.tokenLedger.close();
+      } catch {
+        // best-effort
+      }
+      this.tokenLedger = null;
     }
 
     // Shutdown WebSocket manager first
