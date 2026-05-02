@@ -3910,7 +3910,7 @@ process.stdin.on('end', async () => {
    * a healthy install). The caller is responsible for handling the null case.
    */
   private loadRelayTemplate(filename: string): string | null {
-    const modDir = path.dirname(new URL(import.meta.url).pathname);
+    const modDir = __dirname;
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', filename),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', filename),
