@@ -15,7 +15,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { SafeGitExecutor } from '../src/core/SafeGitExecutor.js';
+// Import from compiled output, not source. The script runs as part of the
+// `prepublishOnly` chain (`npm run build && check:upgrade-guide &&
+// check:contract-evidence`), so `dist/` is guaranteed to exist by the time
+// we reach this import. Importing from `src/` fails because that tree is
+// `.ts` only — Node's ESM resolver cannot map `.js` → `.ts` here.
+import { SafeGitExecutor } from '../dist/core/SafeGitExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
