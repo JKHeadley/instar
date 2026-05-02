@@ -5730,6 +5730,26 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch (ackErr) { console.error(`[relay] Auto-ack failed: ${ackErr instanceof Error ? ackErr.message : ackErr}`); }
           }
 
+          // Canonical inbox write — single source of truth across all routing branches.
+          // Runs once at relay-ingest, BEFORE pipe / warm-listener / cold-spawn branching,
+          // so .instar/threadline/inbox.jsonl.active reflects every inbound message regardless
+          // of which path handles it. Read by the dashboard observability tab and the
+          // threadline → telegram bridge. Non-fatal on failure — routing continues either way.
+          if (listenerManager) {
+            try {
+              listenerManager.appendCanonicalInboxEntry({
+                from: senderFingerprint,
+                senderName,
+                trustLevel,
+                threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint),
+                text: textContent,
+                messageId: msg.messageId,
+              });
+            } catch (err) {
+              console.warn(`[relay] Canonical inbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+            }
+          }
+
           // Phase 2a: Pipe-mode session for simple queries (lightweight, auto-exit)
           // Rapid-fire same-thread guard: if an active pipe session already exists for this
           // thread, fall through to the listener/cold-spawn path so messages queue serially

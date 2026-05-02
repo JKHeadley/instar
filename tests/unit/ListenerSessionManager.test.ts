@@ -375,4 +375,72 @@ describe('ListenerSessionManager', () => {
       expect(manager.getState().messagesHandled).toBe(2);
     });
   });
+
+  // ── Canonical inbox (single source of truth across routing branches) ──
+
+  describe('canonical inbox', () => {
+    it('exposes canonicalInboxPath at threadline/inbox.jsonl.active', () => {
+      expect(manager.canonicalInboxPath).toBe(path.join(temp.dir, 'threadline', 'inbox.jsonl.active'));
+    });
+
+    it('appends a canonical entry, creating the threadline/ directory on first write', () => {
+      const entry = manager.appendCanonicalInboxEntry({
+        from: 'fp-cold-spawn-1',
+        senderName: 'Dawn',
+        trustLevel: 'trusted',
+        threadId: 'thread-cold-1',
+        text: 'inbound message that takes the cold-spawn path',
+      });
+
+      expect(entry.id).toBeTruthy();
+      expect(entry.hmac).toBeTruthy();
+      expect(fs.existsSync(manager.canonicalInboxPath)).toBe(true);
+
+      const line = fs.readFileSync(manager.canonicalInboxPath, 'utf-8').trim();
+      const parsed = JSON.parse(line) as InboxEntry;
+      expect(parsed.text).toBe('inbound message that takes the cold-spawn path');
+      expect(parsed.from).toBe('fp-cold-spawn-1');
+      expect(parsed.threadId).toBe('thread-cold-1');
+      expect(parsed.senderName).toBe('Dawn');
+    });
+
+    it('signs the canonical entry with the same HMAC key as warm-listener entries', () => {
+      const entry = manager.appendCanonicalInboxEntry({
+        from: 'fp-2',
+        senderName: 'Ada',
+        trustLevel: 'trusted',
+        threadId: 'thread-2',
+        text: 'verify me',
+      });
+      // Round-trip through verifyEntry — proves the canonical writer uses
+      // the same signing key the verifier uses, so daemon/listener/relay
+      // all share one HMAC truth.
+      expect(manager.verifyEntry(entry)).toBe(true);
+    });
+
+    it('appends multiple entries (one per cold-spawn message)', () => {
+      manager.appendCanonicalInboxEntry({ from: 'a', senderName: 'A', trustLevel: 'trusted', threadId: 't1', text: 'one' });
+      manager.appendCanonicalInboxEntry({ from: 'b', senderName: 'B', trustLevel: 'trusted', threadId: 't2', text: 'two' });
+      manager.appendCanonicalInboxEntry({ from: 'c', senderName: 'C', trustLevel: 'trusted', threadId: 't3', text: 'three' });
+
+      const lines = fs.readFileSync(manager.canonicalInboxPath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(3);
+      const texts = lines.map(l => (JSON.parse(l) as InboxEntry).text);
+      expect(texts).toEqual(['one', 'two', 'three']);
+    });
+
+    it('respects an optional messageId so writers can dedupe by sender-supplied id', () => {
+      const entry = manager.appendCanonicalInboxEntry({
+        from: 'fp', senderName: 'X', trustLevel: 'trusted', threadId: 't', text: 'dedupe me',
+        messageId: 'caller-supplied-msg-id-001',
+      });
+      expect(entry.id).toBe('caller-supplied-msg-id-001');
+    });
+
+    it('writes the canonical inbox file with restrictive 0o600 permissions', () => {
+      manager.appendCanonicalInboxEntry({ from: 'fp', senderName: 'X', trustLevel: 'trusted', threadId: 't', text: 'perms test' });
+      const stats = fs.statSync(manager.canonicalInboxPath);
+      expect(stats.mode & 0o777).toBe(0o600);
+    });
+  });
 });
