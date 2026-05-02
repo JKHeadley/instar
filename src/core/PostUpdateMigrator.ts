@@ -28,6 +28,7 @@ import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
+import { regenerateBuiltinSkills } from './BuiltinSkillRegenerator.js';
 import {
   ELIGIBILITY_SCHEMA_SQL,
   ELIGIBILITY_SCHEMA_SQL_SHA256,
@@ -87,6 +88,7 @@ export class PostUpdateMigrator {
     this.migrateBackupManifest(result);
     this.migrateGitignore(result);
     this.migrateBuiltinSkills(result);
+    this.migrateBuiltinSkillRegeneration(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -247,6 +249,35 @@ export class PostUpdateMigrator {
       } catch (err) {
         result.errors.push(`skills/${name}/SKILL.md port migration: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+
+  /**
+   * PROP-337: regenerate built-in SKILL.md files when their bundled
+   * templates have been updated upstream. Fingerprint-gated so
+   * user-modified skills are preserved; see BuiltinSkillRegenerator
+   * for the decision logic.
+   *
+   * Runs AFTER `migrateBuiltinSkills` so fresh installs are seeded by
+   * the existing non-destructive path first, then this method handles
+   * any drift between the on-disk file and the freshly-rendered
+   * bundled template.
+   */
+  private migrateBuiltinSkillRegeneration(result: MigrationResult): void {
+    try {
+      const regen = regenerateBuiltinSkills({
+        projectDir: this.config.projectDir,
+        stateDir: this.config.stateDir,
+        port: this.config.port,
+        apply: true,
+      });
+      result.upgraded.push(...regen.upgraded);
+      result.skipped.push(...regen.skipped);
+      result.errors.push(...regen.errors);
+    } catch (err) {
+      result.errors.push(
+        `builtin-skill-regen: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
