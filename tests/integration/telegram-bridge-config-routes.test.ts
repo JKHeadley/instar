@@ -19,6 +19,7 @@ import {
   TelegramBridgeConfig,
   DEFAULT_TELEGRAM_BRIDGE_SETTINGS,
 } from '../../src/threadline/TelegramBridgeConfig.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeCtx(stateDir: string, telegramBridgeConfig: TelegramBridgeConfig | null): RouteContext {
   return {
@@ -52,7 +53,7 @@ describe('Threadline → Telegram bridge config routes', () => {
 
   afterEach(() => {
     live.stop();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/telegram-bridge-config-routes.test.ts' });
   });
 
   describe('GET /threadline/telegram-bridge/config', () => {

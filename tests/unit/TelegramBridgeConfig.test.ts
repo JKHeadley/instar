@@ -14,6 +14,7 @@ import {
   DEFAULT_TELEGRAM_BRIDGE_SETTINGS,
   type TelegramBridgeConfigChangeEvent,
 } from '../../src/threadline/TelegramBridgeConfig.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function createTempConfig(): { dir: string; live: LiveConfig; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlbridge-cfg-'));
@@ -22,7 +23,7 @@ function createTempConfig(): { dir: string; live: LiveConfig; cleanup: () => voi
   return {
     dir,
     live,
-    cleanup: () => { live.stop(); fs.rmSync(dir, { recursive: true, force: true }); },
+    cleanup: () => { live.stop(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/TelegramBridgeConfig.test.ts' }); },
   };
 }
 
