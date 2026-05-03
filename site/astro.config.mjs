@@ -94,6 +94,7 @@ export default defineConfig({
             { label: 'File Structure', slug: 'reference/file-structure' },
             { label: 'Hooks', slug: 'reference/hooks' },
             { label: 'Default Jobs', slug: 'reference/default-jobs' },
+            { label: 'Threadline Protocol', slug: 'reference/threadline-protocol' },
           ],
         },
         {

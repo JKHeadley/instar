@@ -142,16 +142,34 @@ export class ConnectionManager {
     clearTimeout(pending.timer);
     this.pending.delete(socket);
 
-    // Decode public key
+    // Decode public key — must be raw 32-byte Ed25519 (NOT SPKI DER)
     let publicKey: Buffer;
     try {
       publicKey = Buffer.from(frame.publicKey, 'base64');
-      if (publicKey.length !== 32) throw new Error('Invalid key length');
     } catch {
       this.sendFrame(socket, {
         type: 'auth_error',
         code: RELAY_ERROR_CODES.AUTH_FAILED,
-        message: 'Invalid public key',
+        message: 'Invalid public key — could not base64-decode the publicKey field',
+      });
+      return false;
+    }
+    if (publicKey.length !== 32) {
+      // Most common new-agent mistake: exporting Ed25519 key as SPKI DER (44 bytes
+      // including a 12-byte ASN.1 prefix) or PKCS8 (48 bytes incl. 16-byte prefix).
+      const hint =
+        publicKey.length === 44
+          ? ' Looks like SPKI DER — strip the leading 12 bytes (the ASN.1 prefix) and base64-encode the remaining 32 bytes.'
+          : publicKey.length === 48
+            ? ' That looks like a PKCS8 private key, not a public key.'
+            : ' Expected the raw 32-byte Ed25519 public key, base64-encoded.';
+      this.sendFrame(socket, {
+        type: 'auth_error',
+        code: RELAY_ERROR_CODES.AUTH_FAILED,
+        message:
+          `Invalid public key — expected raw 32-byte Ed25519, got ${publicKey.length} bytes after base64 decode.` +
+          hint +
+          ' See https://instar.sh/docs/reference/threadline-protocol/ for the identity format, or use the threadline-starter-kit npm package.',
       });
       return false;
     }
@@ -162,7 +180,9 @@ export class ConnectionManager {
       this.sendFrame(socket, {
         type: 'auth_error',
         code: RELAY_ERROR_CODES.AUTH_FAILED,
-        message: 'Agent ID does not match public key',
+        message:
+          `Agent ID does not match public key. Got agentId="${frame.agentId}" but the first 16 bytes of your public key (hex) are "${expectedFingerprint}". ` +
+          'Compute agentId from your publicKey rather than choosing it. See https://instar.sh/docs/reference/threadline-protocol/.',
       });
       return false;
     }
@@ -175,7 +195,17 @@ export class ConnectionManager {
       this.sendFrame(socket, {
         type: 'auth_error',
         code: RELAY_ERROR_CODES.AUTH_FAILED,
-        message: 'Invalid signature encoding',
+        message: 'Invalid signature encoding — signature must be base64-encoded.',
+      });
+      return false;
+    }
+    if (signature.length !== 64) {
+      this.sendFrame(socket, {
+        type: 'auth_error',
+        code: RELAY_ERROR_CODES.AUTH_FAILED,
+        message:
+          `Invalid signature length — expected 64 bytes after base64 decode, got ${signature.length}. ` +
+          'Sign the raw UTF-8 bytes of the challenge nonce with Ed25519 (no hash).',
       });
       return false;
     }
@@ -186,7 +216,10 @@ export class ConnectionManager {
       this.sendFrame(socket, {
         type: 'auth_error',
         code: RELAY_ERROR_CODES.AUTH_FAILED,
-        message: 'Signature verification failed',
+        message:
+          'Signature verification failed. Common causes: (1) signing the wrong nonce — sign the raw UTF-8 bytes of the challenge nonce, not the hex/base64 string; ' +
+          '(2) signing with the wrong key — verify your privateKey matches your publicKey; ' +
+          '(3) using a hash before signing — Ed25519 signs the message directly. See https://instar.sh/docs/reference/threadline-protocol/.',
       });
       return false;
     }
