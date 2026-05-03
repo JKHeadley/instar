@@ -6,10 +6,7 @@ status: "converged"
 review-convergence: "2026-05-02T12:30:00Z"
 review-iterations: 1
 review-completed-at: "2026-05-02T12:30:00Z"
-approved: true
-approved-by: "gfrankgva"
-approved-date: "2026-05-02"
-approval-note: "Bug fix for issue #93 — POST /feedback 500 when feedback.json contains non-array data"
+approved: false
 ---
 
 # Guard against non-array feedback.json and widen route try/catch
