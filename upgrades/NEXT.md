@@ -1,4 +1,4 @@
-# Upgrade Guide — v0.28.79
+# Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
 
