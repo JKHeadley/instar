@@ -3306,6 +3306,28 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // Wire the topic-binding checker for the zombie-killer. Topic-bound sessions
+    // (live Telegram topic, Slack channel, iMessage thread) are *waiting* for the
+    // user; "idle at prompt" is healthy. Without this exemption, the killer cuts
+    // sessions at 15m of idle and the user's next message has to navigate a
+    // respawn-with-resume — which sometimes crashes — instead of going straight
+    // to a live agent.
+    sessionManager.setTopicBindingChecker((tmuxSession: string): string | number | null => {
+      if (telegram) {
+        const topicId = telegram.getTopicForSession(tmuxSession);
+        if (topicId != null) return topicId;
+      }
+      if (_slackAdapter) {
+        const channelId = _slackAdapter.getChannelForSession(tmuxSession);
+        if (channelId != null) return channelId;
+      }
+      if (imessageAdapter) {
+        const sender = imessageAdapter.getSenderForSession(tmuxSession);
+        if (sender != null) return sender;
+      }
+      return null;
+    });
+
     // Initialize SemanticMemory — the knowledge graph that unifies all memory systems.
     // Uses the same better-sqlite3 as TopicMemory; shares the rebuild path.
     let semanticMemory: SemanticMemory | undefined;
@@ -3473,6 +3495,31 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Auto-respawn sessions that die with unanswered Telegram injections.
       // When a session crashes or is cleaned up before replying, re-forward the
       // user's message so it gets a fresh session and a response.
+      // Clear the bad resume UUID when --resume crashes during startup.
+      // SessionManager handles the fresh-spawn fallback itself; we only need to
+      // make sure the next user message doesn't try the same broken UUID.
+      //
+      // UUID-equality gate: only clear when the currently-stored UUID matches
+      // the failed one. The fresh-spawn fallback may save a *new* UUID via the
+      // proactive-save heartbeat between this event firing and the listener
+      // running. Clearing without checking would wipe the new, valid UUID and
+      // force a fresh spawn on every subsequent message.
+      sessionManager.on('resumeFailed', (info: { tmuxSession: string; resumeSessionId: string; telegramTopicId?: number; slackChannelId?: string }) => {
+        if (info.telegramTopicId != null && _topicResumeMap) {
+          try {
+            const stored = _topicResumeMap.get(info.telegramTopicId);
+            if (stored === info.resumeSessionId) {
+              _topicResumeMap.remove(info.telegramTopicId);
+              console.log(`[resumeFailed] Cleared bad resume UUID for topic ${info.telegramTopicId} (tmux: "${info.tmuxSession}", uuid: ${info.resumeSessionId})`);
+            } else {
+              console.log(`[resumeFailed] Skipping UUID clear for topic ${info.telegramTopicId} — stored UUID (${stored ?? 'none'}) no longer matches failed UUID (${info.resumeSessionId}); fresh spawn likely already saved a new one.`);
+            }
+          } catch (err) {
+            console.error(`[resumeFailed] Failed to clear resume UUID for topic ${info.telegramTopicId}:`, err);
+          }
+        }
+      });
+
       sessionManager.on('injectionDropped', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
         const elapsed = Date.now() - info.injectedAt;
         // Only respawn if the injection is recent (< 10 minutes old).

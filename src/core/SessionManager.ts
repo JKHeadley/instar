@@ -58,9 +58,20 @@ const DEFAULT_MAX_DURATION_MINUTES = 240;
 /** Minutes of idle-at-prompt before a non-protected session is killed */
 const IDLE_PROMPT_KILL_MINUTES = 15;
 
+/** Minutes of idle-at-prompt before a session bound to a live messaging topic is killed.
+ *  Topic-bound sessions are *waiting* for the user — idle is healthy.
+ *  Default 4h (240m): conservative balance between "conversational pauses through a
+ *  workday don't trigger respawn" and "memory/connection pressure from sessions held
+ *  indefinitely". Each held session retains a Claude TUI process (~200-500MB RSS)
+ *  and an Anthropic connection — multi-topic agents on smaller hosts could feel a
+ *  longer default. Operators with always-on conversations can override via
+ *  `idlePromptKillMinutesBoundToTopic` in config. */
+const IDLE_PROMPT_KILL_MINUTES_BOUND_TO_TOPIC = 240;
+
 /** Fallback constants — used when config values are not set */
 const FALLBACK_MAX_DURATION_MINUTES = DEFAULT_MAX_DURATION_MINUTES;
 const FALLBACK_IDLE_PROMPT_KILL_MINUTES = IDLE_PROMPT_KILL_MINUTES;
+const FALLBACK_IDLE_PROMPT_KILL_MINUTES_BOUND_TO_TOPIC = IDLE_PROMPT_KILL_MINUTES_BOUND_TO_TOPIC;
 
 /** Patterns that indicate Claude is sitting at its idle prompt (not actively working) */
 const IDLE_PROMPT_PATTERNS = [
@@ -131,6 +142,12 @@ export class SessionManager extends EventEmitter {
   /** Optional callback: is this session currently in active compaction recovery? If so, skip zombie kill. */
   private activeRecoveryChecker?: (session: Session) => boolean;
 
+  /** Optional callback: is this tmux session currently bound to a live messaging topic
+   *  (Telegram/Slack/iMessage)? Returns a stable identifier (e.g. topic ID or channel ID)
+   *  when bound, null otherwise. When bound, the zombie-kill threshold is extended via
+   *  `effectiveBoundIdleKillMinutes` since "idle at prompt" is the healthy waiting state. */
+  private topicBindingChecker?: (tmuxSession: string) => string | number | null;
+
   /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
   private promptDetector?: InputDetector;
 
@@ -170,6 +187,13 @@ export class SessionManager extends EventEmitter {
   /** Effective idle-at-prompt kill threshold (config override or hardcoded default) */
   private get effectiveIdleKillMinutes(): number {
     return this.config.idlePromptKillMinutes ?? FALLBACK_IDLE_PROMPT_KILL_MINUTES;
+  }
+
+  /** Effective idle-at-prompt kill threshold for sessions bound to a live messaging topic.
+   *  Much higher than the default — topic-bound sessions sit at the prompt waiting for the
+   *  next user message; that's the healthy state, not a zombie. */
+  private get effectiveBoundIdleKillMinutes(): number {
+    return this.config.idlePromptKillMinutesBoundToTopic ?? FALLBACK_IDLE_PROMPT_KILL_MINUTES_BOUND_TO_TOPIC;
   }
 
   /** Effective absolute max session duration (config override or hardcoded default) */
@@ -257,6 +281,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setSubagentChecker(checker: (session: Session) => boolean): void {
     this.subagentChecker = checker;
+  }
+
+  /**
+   * Set the topic-binding checker — used by the zombie-kill loop to distinguish
+   * sessions that are waiting for the next message from a live conversation
+   * (healthy "idle at prompt") from sessions that have nothing to do (zombies).
+   *
+   * When the checker returns a non-null identifier for a session, the kill
+   * threshold is extended to {@link effectiveBoundIdleKillMinutes} (default 24h).
+   * This is a structural exemption — the binding is an authoritative fact, not a
+   * judgment call. If Claude truly dies inside the tmux pane, isSessionAlive in
+   * the bridge's message-routing path will detect it and trigger a clean respawn.
+   *
+   * Must be called after the messaging adapter is constructed.
+   */
+  setTopicBindingChecker(checker: (tmuxSession: string) => string | number | null): void {
+    this.topicBindingChecker = checker;
   }
 
   /**
@@ -519,7 +560,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
             } else {
               const idleMs = now - this.idlePromptSince.get(session.id)!;
-              if (idleMs > this.effectiveIdleKillMinutes * 60_000) {
+              // Topic-bound exemption: if this session is bound to a live messaging
+              // topic, "idle at prompt" is the *healthy* waiting state — the agent is
+              // waiting for the user's next message. Use a much longer threshold so
+              // we don't kill healthy idle sessions and force the user through a
+              // respawn-with-resume on every message after a pause.
+              const binding = this.topicBindingChecker?.(session.tmuxSession);
+              const killThresholdMinutes = binding != null
+                ? this.effectiveBoundIdleKillMinutes
+                : this.effectiveIdleKillMinutes;
+              if (idleMs > killThresholdMinutes * 60_000) {
                 // Veto: active compaction recovery in flight — skip kill and
                 // reset the idle clock so we don't race the recovery window.
                 if (this.activeRecoveryChecker && this.activeRecoveryChecker(session)) {
@@ -539,7 +589,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
                     injectedAt: pendingInjection.injectedAt,
                   });
                 }
-                console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes. Killing zombie.`);
+                const bindingNote = binding != null ? ` (topic-bound, threshold ${killThresholdMinutes}m)` : ` (threshold ${killThresholdMinutes}m)`;
+                console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
                 this.emit('beforeSessionKill', session);
                 try {
                   await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
@@ -1340,29 +1391,126 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // large CLAUDE.md loading, and session-start hook execution.
     const readyTimeout = options?.resumeSessionId ? 120_000 : 90_000;
     if (initialMessage) {
-      this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout).then((ready) => {
-        if (ready) {
-          // Stabilization delay: Claude's TUI may redraw after loading large JONSLs,
-          // clearing any text injected too early. Wait for the redraw to settle.
-          const stabilizationMs = options?.resumeSessionId ? 5000 : 1000;
-          setTimeout(() => {
-            this.injectMessage(tmuxSession, initialMessage);
-            console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars${stabilizationMs ? ', after stabilization delay' : ''})`);
-          }, stabilizationMs);
-        } else {
-          console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
-          // Still try to inject — Claude might be ready but prompt detection failed
-          if (this.tmuxSessionExists(tmuxSession)) {
-            console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
-            this.injectMessage(tmuxSession, initialMessage);
-          }
-        }
-      }).catch((err) => {
-        console.error(`[SessionManager] Error waiting for Claude ready in "${tmuxSession}": ${err}`);
+      this.handleReadyAndInject(tmuxSession, name, initialMessage, readyTimeout, options).catch((err) => {
+        console.error(`[SessionManager] Error during ready-and-inject for "${tmuxSession}": ${err}`);
       });
     }
 
     return tmuxSession;
+  }
+
+  /**
+   * Wait for Claude to be ready, inject the initial message, and — when the
+   * resume path crashes during startup — fall back to a fresh spawn carrying
+   * the same message instead of silently dropping it.
+   *
+   * Why this exists: a stale --resume UUID can crash Claude during startup
+   * (`Session died during startup` in the logs). Without fallback, the user's
+   * first message after an idle pause vanishes; the presence proxy fires its
+   * "session appears stopped" 5 minutes later; the user must re-send to
+   * recover. The fallback closes that gap by retrying once without --resume.
+   *
+   * Single retry only — if the fresh-spawn also fails, we surface the error
+   * via the existing degradation reporter and the bridge's own respawn paths.
+   */
+  private async handleReadyAndInject(
+    tmuxSession: string,
+    originalName: string | undefined,
+    initialMessage: string,
+    readyTimeout: number,
+    options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string },
+  ): Promise<void> {
+    const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
+    if (ready) {
+      const stabilizationMs = options?.resumeSessionId ? 5000 : 1000;
+      await new Promise(r => setTimeout(r, stabilizationMs));
+      this.injectMessage(tmuxSession, initialMessage);
+      console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars${stabilizationMs ? ', after stabilization delay' : ''})`);
+      return;
+    }
+
+    // Not ready. Two flavors:
+    //   (a) tmux is gone — startup crash. With --resume, the saved UUID is most
+    //       likely stale or corrupt. Fall back to a fresh spawn (no --resume)
+    //       carrying the same initial message.
+    //   (b) tmux is alive but readiness probe couldn't see the prompt. Best
+    //       effort: inject anyway, the original behavior.
+    const stillAlive = this.tmuxSessionExists(tmuxSession);
+    if (!stillAlive && options?.resumeSessionId) {
+      console.warn(`[SessionManager] Resume failed for "${tmuxSession}" (UUID ${options.resumeSessionId}) — tmux died during startup. Falling back to fresh spawn.`);
+
+      // Mark the failed session BEFORE emitting the event. A concurrent
+      // monitor tick that reads state in between would otherwise see a dead
+      // pane still flagged `running`. Also matters because some
+      // resumeFailed listeners may consult listRunningSessions to confirm
+      // the failure shape.
+      try {
+        const failed = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+        if (failed) {
+          failed.status = 'failed';
+          failed.endedAt = new Date().toISOString();
+          this.state.saveSession(failed);
+        }
+      } catch { /* state cleanup is best-effort */ }
+
+      this.emit('resumeFailed', {
+        tmuxSession,
+        resumeSessionId: options.resumeSessionId,
+        telegramTopicId: options.telegramTopicId,
+        slackChannelId: options.slackChannelId,
+      });
+
+      // Best-effort tmux cleanup in case a zombie pane survived.
+      try {
+        await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`]);
+      } catch { /* expected if tmux pane is already gone */ }
+
+      // Single fresh-spawn retry. Pass the original `name` parameter through
+      // so the recursive call reconstructs the same tmux name — important
+      // because the bridge's session→topic mapping was registered against
+      // that name. Stripping the project-base prefix from the tmux name
+      // would not preserve the auto-generated `interactive-${ts}` form.
+      // resumeSessionId is intentionally omitted to break the bad-UUID cycle.
+      try {
+        await this.spawnInteractiveSession(initialMessage, originalName, {
+          telegramTopicId: options.telegramTopicId,
+          slackChannelId: options.slackChannelId,
+        });
+        console.log(`[SessionManager] Fresh-spawn fallback succeeded for "${tmuxSession}".`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[SessionManager] Fresh-spawn fallback FAILED for "${tmuxSession}": ${errMsg}`);
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.handleReadyAndInject',
+          primary: 'Resume failed → fresh-spawn fallback',
+          fallback: 'Both resume and fresh-spawn failed; message not delivered',
+          reason: `Why: ${errMsg}`,
+          impact: 'User message not delivered; bridge will respawn on next message',
+        });
+      }
+      return;
+    }
+
+    // Tmux still alive but readiness probe couldn't confirm — best-effort inject.
+    // (Preserves the original behavior for prompt-detection false negatives.)
+    if (stillAlive) {
+      console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
+      console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
+      this.injectMessage(tmuxSession, initialMessage);
+      return;
+    }
+
+    // tmux dead AND not a resume case — fresh spawn that crashed during startup.
+    // No fallback (no UUID to blame); surface as a degradation so the bridge can
+    // notice. The bridge already retries on the next inbound message.
+    console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
+    DegradationReporter.getInstance().report({
+      feature: 'SessionManager.handleReadyAndInject',
+      primary: 'Wait for Claude ready, inject initial message',
+      fallback: 'tmux died during startup with no --resume to fall back from',
+      reason: 'fresh-spawn crashed during startup; readiness probe could not verify prompt',
+      impact: 'Initial message dropped; bridge will respawn on next inbound message',
+    });
   }
 
   /**
