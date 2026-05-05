@@ -78,7 +78,10 @@ For dashboard web access, a simpler `dashboardPin` is also available:
     "maxConcurrent": 5,
     "timeoutMinutes": 120,
     "claudePath": "/path/to/claude",
-    "tmuxPath": "/path/to/tmux"
+    "tmuxPath": "/path/to/tmux",
+    "idlePromptKillMinutes": 15,
+    "idlePromptKillMinutesBoundToTopic": 240,
+    "defaultMaxDurationMinutes": 240
   }
 }
 ```
@@ -89,6 +92,9 @@ For dashboard web access, a simpler `dashboardPin` is also available:
 | `timeoutMinutes` | `120` | Session idle timeout in minutes |
 | `claudePath` | auto-detected | Path to the `claude` CLI binary. Override if your Claude Code installation is in a non-standard location or if auto-detection fails. |
 | `tmuxPath` | auto-detected | Path to the `tmux` binary. Override if tmux is installed in a non-standard location. |
+| `idlePromptKillMinutes` | `15` | Minutes a session can sit idle at the Claude prompt before being killed. Increase for long-running research or cataloguing sessions. |
+| `idlePromptKillMinutesBoundToTopic` | `240` | Idle threshold for sessions actively bound to a Telegram/Slack/iMessage topic. Topic-bound sessions sit at the prompt waiting for the user — that is healthy, not a zombie. The default 4h covers normal conversational pauses through a workday; raise it if your conversations frequently span longer gaps. |
+| `defaultMaxDurationMinutes` | `240` | Absolute maximum session duration in minutes (4 hours by default). Safety net for sessions without an explicit per-session timeout. |
 
 ## Safety & Autonomy
 

@@ -59,6 +59,13 @@ export interface SessionManagerConfig {
   anthropicBaseUrl?: string;
   /** Minutes of idle-at-prompt before a non-protected session is killed (default: 15) */
   idlePromptKillMinutes?: number;
+  /** Minutes of idle-at-prompt before killing a session bound to a live Telegram/Slack/iMessage
+   *  topic. Topic-bound sessions are agents *waiting* for the next user message — "idle at
+   *  prompt" is the healthy state, not a zombie. Default: 240 (4h) — long enough that
+   *  conversational pauses through a workday don't kill the session, short enough to release
+   *  resources from sessions the user has truly abandoned. The bridge will detect truly-dead
+   *  Claude processes via isSessionAlive on the next message and respawn cleanly. */
+  idlePromptKillMinutesBoundToTopic?: number;
   /** Absolute maximum session duration in minutes — safety net for sessions
    *  without an explicit timeout (default: 240) */
   defaultMaxDurationMinutes?: number;
