@@ -6195,7 +6195,51 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { InitiativeTracker } = await import('../core/InitiativeTracker.js');
     const initiativeTracker = new InitiativeTracker(config.stateDir);
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, threadlineNicknames, threadlineNicknameSuggester, workingMemory });
+    // Wire InitiativeExplainer — Haiku-backed plain-English rewrites of
+    // initiative descriptions and their digest signals, so the dashboard
+    // shows readable summaries instead of developer shorthand. No-op
+    // (returns null on demand) when no intelligence provider is wired.
+    let initiativeExplainer: import('../core/InitiativeExplainer.js').InitiativeExplainer | null = null;
+    if (sharedIntelligence) {
+      const { InitiativeExplainer } = await import('../core/InitiativeExplainer.js');
+      initiativeExplainer = new InitiativeExplainer({
+        tracker: initiativeTracker,
+        intelligence: sharedIntelligence,
+        logger: (line) => console.log(pc.gray(line)),
+      });
+      // Periodic sweep so the user-facing explanations stay current as
+      // the agent edits initiatives. Same cadence + bounding as the
+      // ThreadlineNicknameSuggester sweep above.
+      const explainSweepIntervalMs = 15 * 60 * 1000;
+      const explainInitialDelayMs = 90 * 1000;
+      let explainInFlight = false;
+      const runExplainSweep = async () => {
+        if (explainInFlight) return;
+        explainInFlight = true;
+        try {
+          const result = await initiativeExplainer!.run();
+          if (result.applied.length > 0) {
+            console.log(
+              pc.cyan(`  Initiative explanation sweep: rewrote ${result.applied.length} initiative(s)`)
+            );
+          }
+        } catch (err) {
+          console.error(
+            pc.yellow(
+              `  Initiative explanation sweep failed: ${err instanceof Error ? err.message : String(err)}`
+            )
+          );
+        } finally {
+          explainInFlight = false;
+        }
+      };
+      setTimeout(() => {
+        void runExplainSweep();
+        setInterval(() => void runExplainSweep(), explainSweepIntervalMs);
+      }, explainInitialDelayMs);
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, initiativeExplainer, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, threadlineNicknames, threadlineNicknameSuggester, workingMemory });
     await server.start();
 
     // Connect DegradationReporter downstream systems now that everything is initialized.

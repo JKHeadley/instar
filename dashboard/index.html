@@ -3020,6 +3020,9 @@
         </div>
       </div>
         <button class="wa-status-btn" id="waStatusBtn" onclick="toggleQrPanel()">WhatsApp</button>
+        <button id="globalHelpBtn" type="button" title="What is each tab for? (open Help)"
+          style="margin-left:8px;width:32px;height:32px;line-height:30px;padding:0;border-radius:50%;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center"
+          onclick="if(typeof helpShow==='function') helpShow()">?</button>
         <div class="status-badge" id="connStatus">
           <span class="dot"></span>
           <span id="connText">Connected</span>
@@ -7459,6 +7462,33 @@
       for (const ini of sorted) {
         list.appendChild(renderInitiativeCard(ini));
       }
+
+      // Fire-and-forget: if any visible initiative is missing a cached
+      // plain-English explanation, kick the sweep so the user gets the
+      // upgraded text on the next render. Throttled so we don't spam
+      // the LLM on every refresh.
+      maybeKickInitiativeExplainSweep(items);
+    }
+
+    let _lastInitiativeExplainKick = 0;
+    function maybeKickInitiativeExplainSweep(items) {
+      try {
+        const needsRender = (items || []).some(i => !i?.userExplanation || !i.userExplanation.summary);
+        if (!needsRender) return;
+        const now = Date.now();
+        if (now - _lastInitiativeExplainKick < 60_000) return;
+        _lastInitiativeExplainKick = now;
+        apiFetch('/initiatives/explain-sweep?max=5', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        }).then((res) => {
+          if (res && Array.isArray(res.applied) && res.applied.length > 0) {
+            // Refresh once explanations land so the user sees them.
+            setTimeout(() => loadInitiatives(), 500);
+          }
+        }).catch(() => { /* best-effort */ });
+      } catch { /* best-effort */ }
     }
 
     function renderSignalCard(sig) {
@@ -7528,19 +7558,43 @@
 
       card.appendChild(top);
 
-      // Context line: phase + one-line summary of the initiative itself
+      // Plain-English summary of the initiative — uses Haiku-generated
+      // userExplanation.summary when available, falls back to phase + first
+      // sentence of description.
       const cur = activePhase(ini);
-      const summary = firstSentence(ini.description || '', 140);
-      const contextBits = [];
-      if (cur && cur.name) contextBits.push(`Phase: ${cur.name}`);
-      if (summary) contextBits.push(summary);
-      if (contextBits.length) {
-        const ctx = document.createElement('div');
-        ctx.style.fontSize = '13px';
-        ctx.style.lineHeight = '1.45';
-        ctx.style.color = 'var(--text-dim)';
-        ctx.textContent = contextBits.join(' · ');
-        card.appendChild(ctx);
+      const explanation = ini.userExplanation || null;
+      const summaryText = (explanation && explanation.summary)
+        ? explanation.summary
+        : firstSentence(ini.description || '', 200);
+      if (summaryText) {
+        const summaryEl = document.createElement('div');
+        summaryEl.style.fontSize = '16px';
+        summaryEl.style.lineHeight = '1.6';
+        summaryEl.style.color = 'var(--text-bright)';
+        summaryEl.textContent = summaryText;
+        card.appendChild(summaryEl);
+      }
+      // Phase + age line — small, separate from the summary so it doesn't clutter prose.
+      const phaseAgeBits = [];
+      if (cur && cur.name) phaseAgeBits.push(`Currently on: ${cur.name}`);
+      const startedAgo = ini.createdAt ? relativeTimeShort(ini.createdAt) : null;
+      const updatedAgo = ini.lastTouchedAt ? relativeTimeShort(ini.lastTouchedAt) : null;
+      if (startedAgo) phaseAgeBits.push(`Started ${startedAgo}`);
+      if (updatedAgo && updatedAgo !== startedAgo) phaseAgeBits.push(`Updated ${updatedAgo}`);
+      if (phaseAgeBits.length) {
+        const phaseEl = document.createElement('div');
+        phaseEl.style.fontSize = '13px';
+        phaseEl.style.color = 'var(--text)';
+        phaseEl.style.opacity = '0.85';
+        phaseEl.style.display = 'flex';
+        phaseEl.style.flexWrap = 'wrap';
+        phaseEl.style.gap = '14px';
+        for (const bit of phaseAgeBits) {
+          const span = document.createElement('span');
+          span.textContent = bit;
+          phaseEl.appendChild(span);
+        }
+        card.appendChild(phaseEl);
       }
 
       // Divider before the actual signal/question
@@ -7551,13 +7605,30 @@
       divider.style.margin = '2px 0';
       card.appendChild(divider);
 
-      // The question / detail (the heart of the signal)
+      // The question / detail (the heart of the signal). Prefer the
+      // Haiku-rewritten plain-English version when available.
+      const detailText = (explanation && explanation.signalText)
+        ? explanation.signalText
+        : (sig.detail || '(no detail)');
       const detail = document.createElement('div');
-      detail.style.fontSize = '15px';
-      detail.style.lineHeight = '1.5';
-      detail.style.color = 'var(--text)';
-      detail.textContent = sig.detail || '(no detail)';
+      detail.style.fontSize = '17px';
+      detail.style.lineHeight = '1.6';
+      detail.style.color = 'var(--text-bright)';
+      detail.style.fontWeight = '500';
+      detail.textContent = detailText;
       card.appendChild(detail);
+
+      // If we used the raw shorthand (no explainer cached yet), show a
+      // tiny "Translating…" line so the user knows it'll improve.
+      if (!explanation || !explanation.signalText) {
+        const note = document.createElement('div');
+        note.style.fontSize = '11px';
+        note.style.color = 'var(--text-dim)';
+        note.style.opacity = '0.7';
+        note.style.fontStyle = 'italic';
+        note.textContent = 'Translating to plain English…';
+        card.appendChild(note);
+      }
 
       // Action row
       const actions = document.createElement('div');
@@ -7599,7 +7670,145 @@
       }
 
       card.appendChild(actions);
+
+      // ── Comments thread + reply box ──
+      const commentsRoot = renderInitiativeComments(ini);
+      card.appendChild(commentsRoot);
+
+      const replyBox = renderInitiativeReplyBox(ini.id);
+      card.appendChild(replyBox);
+
       return card;
+    }
+
+    // Render the existing comments on an initiative as a small inline
+    // thread. Empty container when there are no comments yet.
+    function renderInitiativeComments(ini) {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.gap = '6px';
+      const comments = Array.isArray(ini.comments) ? ini.comments : [];
+      if (comments.length === 0) return wrap;
+      const heading = document.createElement('div');
+      heading.style.fontSize = '11px';
+      heading.style.textTransform = 'uppercase';
+      heading.style.letterSpacing = '0.4px';
+      heading.style.color = 'var(--text-dim)';
+      heading.style.marginTop = '4px';
+      heading.textContent = `Conversation · ${comments.length}`;
+      wrap.appendChild(heading);
+      for (const c of comments.slice(-6)) {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.flexDirection = 'column';
+        row.style.gap = '2px';
+        row.style.padding = '8px 10px';
+        row.style.borderRadius = '6px';
+        row.style.background = c.author === 'agent' ? 'rgba(82,140,210,0.08)' : 'var(--bg-dim)';
+        row.style.border = '1px solid var(--border)';
+        const meta = document.createElement('div');
+        meta.style.fontSize = '12px';
+        meta.style.color = 'var(--text)';
+        meta.style.opacity = '0.85';
+        meta.style.display = 'flex';
+        meta.style.gap = '10px';
+        const who = document.createElement('span');
+        who.style.fontWeight = '600';
+        who.textContent = c.author === 'agent' ? 'Echo' : 'You';
+        const when = document.createElement('span');
+        when.textContent = relativeTimeShort(c.ts) || '';
+        if (c.ts) when.title = new Date(c.ts).toLocaleString();
+        meta.appendChild(who);
+        meta.appendChild(when);
+        row.appendChild(meta);
+        const body = document.createElement('div');
+        body.style.fontSize = '13px';
+        body.style.lineHeight = '1.45';
+        body.style.whiteSpace = 'pre-wrap';
+        body.textContent = c.text;
+        row.appendChild(body);
+        wrap.appendChild(row);
+      }
+      return wrap;
+    }
+
+    // Inline textarea + Send button for asking questions / adding input
+    // on a specific initiative. Posts to /initiatives/:id/comment.
+    function renderInitiativeReplyBox(iniId) {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.gap = '6px';
+      wrap.style.marginTop = '4px';
+
+      const ta = document.createElement('textarea');
+      ta.placeholder = 'Ask a question or share input on this initiative…';
+      ta.rows = 2;
+      ta.style.width = '100%';
+      ta.style.boxSizing = 'border-box';
+      ta.style.padding = '8px 10px';
+      ta.style.fontSize = '13px';
+      ta.style.fontFamily = 'inherit';
+      ta.style.lineHeight = '1.4';
+      ta.style.borderRadius = '6px';
+      ta.style.border = '1px solid var(--border)';
+      ta.style.background = 'var(--bg)';
+      ta.style.color = 'var(--text)';
+      ta.style.resize = 'vertical';
+
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'flex-end';
+      row.style.gap = '8px';
+      const send = document.createElement('button');
+      send.textContent = 'Send';
+      send.style.padding = '6px 14px';
+      send.style.fontSize = '13px';
+      send.style.fontWeight = '500';
+      send.style.borderRadius = '6px';
+      send.style.background = 'var(--accent)';
+      send.style.color = '#fff';
+      send.style.border = '1px solid var(--accent)';
+      send.style.cursor = 'pointer';
+      send.disabled = true;
+      send.style.opacity = '0.5';
+
+      ta.addEventListener('input', () => {
+        const has = ta.value.trim().length > 0;
+        send.disabled = !has;
+        send.style.opacity = has ? '1' : '0.5';
+      });
+      ta.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          if (!send.disabled) send.click();
+        }
+      });
+      send.onclick = async () => {
+        const text = ta.value.trim();
+        if (!text) return;
+        send.disabled = true;
+        send.style.opacity = '0.5';
+        try {
+          await apiFetch(`/initiatives/${iniId}/comment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, author: 'user', source: 'dashboard' }),
+          });
+          if (typeof showToast === 'function') showToast('Sent — Echo will see this on next session');
+          ta.value = '';
+          await loadInitiatives();
+        } catch (err) {
+          if (typeof showToast === 'function') showToast('Send failed', 'error');
+          send.disabled = false;
+          send.style.opacity = '1';
+        }
+      };
+      row.appendChild(send);
+      wrap.appendChild(ta);
+      wrap.appendChild(row);
+      return wrap;
     }
 
     function primaryButton(label, onClick) {
@@ -8744,6 +8953,234 @@
           }
         } catch {}
       });
+    }
+
+    // ── Per-tab help (info icon next to each panel's h2) + Help page ──
+    //
+    // Every tab panel gets a small (?) icon attached to its <h2>. Hovering
+    // shows a one-line description; clicking opens the unified Help page
+    // with focus on that tab's section. Goal: a reader who has never seen
+    // the dashboard can land on any tab and answer "what is this?" in
+    // under 5 seconds.
+    const TAB_HELP = {
+      initiativesPanel: {
+        title: 'Initiatives',
+        short: 'Multi-week efforts the agent is working on, with phases, signals, and an inline reply box.',
+        long:
+          'An initiative is a multi-week project the agent is tracking — things like "PR Review Hardening" or "Initiative Tracker". Each one has a description, a list of phases, and a status. The "Needs you" zone at the top lists initiatives waiting on YOUR input — a decision, an acknowledgment, or a phase advance. The reply box on each card sends your text both as a comment on the initiative AND as a Telegram message to the agent.',
+      },
+      filesTab: {
+        title: 'Files',
+        short: 'Browse and edit project files from any device.',
+        long:
+          'A read-and-edit view of the directories the agent has access to. Markdown is rendered, code is syntax-highlighted, and you can edit allowed paths inline (Cmd/Ctrl+S to save). Useful for reading agent identity files, learnings, and project notes from your phone.',
+      },
+      prPipelinePanel: {
+        title: 'PR Pipeline',
+        short: 'Recent pull requests the agent has opened or reviewed.',
+        long:
+          'A snapshot of pull request activity — what is open, what just merged, what is failing CI. Click any row to jump to GitHub. Useful when you want to see what the agent is shipping without leaving the dashboard.',
+      },
+      sessionsTab: {
+        title: 'Sessions',
+        short: 'Live agent sessions — what the agent is working on right now.',
+        long:
+          'Every conversation, scheduled job, or autonomous run shows up as a session. You can see what the agent is doing, when it last responded, and how long it has been running.',
+      },
+      commitmentsPanel: {
+        title: 'Commitments',
+        short: 'Promises the agent has made — "I will do X by Y" — and whether it followed through.',
+        long:
+          'When the agent says "I\'ll come back with X" or "I will set up Y", that is recorded as a commitment. This tab shows whether each commitment is pending, delivered, or violated, so promises do not silently slip.',
+      },
+      tokensPanel: {
+        title: 'Tokens',
+        short: 'Claude API spend — running totals and per-day usage.',
+        long:
+          'How many tokens (and dollars) the agent has used today, this week, and overall. Use this to spot runaway sessions or budget for the month.',
+      },
+      systemsTab: {
+        title: 'Health',
+        short: 'Is the agent healthy? Any degraded subsystems?',
+        long:
+          'A live readout of the agent\'s subsystems — server, sessions, memory, integrations. Anything degraded is listed with a fallback note. If the agent stops responding to messages, this is the first place to look.',
+      },
+      integratedBeingPanel: {
+        title: 'Integrated Being',
+        short: 'How the agent\'s identity, memory, and learning systems are doing.',
+        long:
+          'The internal coherence layer — does the agent\'s identity match its conversation history, are memories pruned, are learnings being captured. Mostly informational; you rarely need to act here.',
+      },
+      secretsPanel: {
+        title: 'Secrets',
+        short: 'Securely drop secrets to the agent (one-time links).',
+        long:
+          'When the agent needs an API key or password, it generates a one-time link here. You paste the secret in, the agent stores it, and the link burns. Avoids ever sending credentials over chat.',
+      },
+      dropzoneTab: {
+        title: 'Send Content',
+        short: 'Paste text or a URL for the agent to read.',
+        long:
+          'Drop a long article, log file, or URL here and the agent will read it asynchronously. Faster than pasting into Telegram, especially for things over a few hundred words.',
+      },
+      featuresTab: {
+        title: 'Features',
+        short: 'Configuration and feature flags for this agent.',
+        long:
+          'Toggle integrations on and off (Telegram, Slack, GitHub), set per-feature config, and review which capabilities are enabled. Most setup happens here once; day-to-day use lives on the other tabs.',
+      },
+      threadlineTab: {
+        title: 'Threadline',
+        short: 'Conversations the agent has had with other agents on the network.',
+        long:
+          'A chat-app view of agent-to-agent conversations. Each thread is named (✏ to rename, ✨ for an automatic name suggestion). Settings for the Telegram bridge and allow/deny lists are tucked behind the gear icon.',
+      },
+      jobsTab: {
+        title: 'Jobs',
+        short: 'Scheduled tasks the agent runs on a cron.',
+        long:
+          'Recurring tasks the agent runs on a schedule — health checks, digests, cleanup. You can see when each one last ran, what it did, and trigger one manually if needed.',
+      },
+    };
+
+    function ensureHelpPanel() {
+      if (document.getElementById('helpModal')) return;
+      const modal = document.createElement('div');
+      modal.id = 'helpModal';
+      modal.style.cssText = [
+        'display:none','position:fixed','inset:0','background:rgba(0,0,0,0.7)',
+        'z-index:9999','justify-content:center','align-items:center','padding:24px',
+      ].join(';');
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) helpHide();
+      });
+      const inner = document.createElement('div');
+      inner.style.cssText = [
+        'background:var(--bg-panel)','color:var(--text-bright)','border:1px solid var(--border)',
+        'border-radius:12px','max-width:780px','width:100%','max-height:85vh','overflow-y:auto',
+        'padding:28px 32px','font-size:15px','line-height:1.6','box-shadow:0 16px 48px rgba(0,0,0,0.55)',
+      ].join(';');
+      inner.id = 'helpModalInner';
+      modal.appendChild(inner);
+      document.body.appendChild(modal);
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.style.display !== 'none') helpHide();
+      });
+    }
+
+    function helpShow(focusKey) {
+      ensureHelpPanel();
+      const inner = document.getElementById('helpModalInner');
+      const modal = document.getElementById('helpModal');
+      inner.innerHTML = '';
+      const heading = document.createElement('div');
+      heading.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px';
+      const h = document.createElement('h2');
+      h.textContent = 'Dashboard Help';
+      h.style.cssText = 'margin:0;font-size:22px;color:var(--text-bright)';
+      const close = document.createElement('button');
+      close.textContent = '✕';
+      close.title = 'Close (Esc)';
+      close.style.cssText = 'background:transparent;border:1px solid var(--border);color:var(--text);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:18px';
+      close.onclick = helpHide;
+      heading.appendChild(h);
+      heading.appendChild(close);
+      inner.appendChild(heading);
+
+      const intro = document.createElement('p');
+      intro.style.cssText = 'margin:0 0 22px 0;color:var(--text);font-size:15px;line-height:1.6';
+      intro.textContent = 'Each tab below is one capability of the agent. Click on a tab name in the dashboard to switch to it, or hover the (?) icon next to any tab heading for a one-line summary in place.';
+      inner.appendChild(intro);
+
+      for (const [key, info] of Object.entries(TAB_HELP)) {
+        const section = document.createElement('div');
+        section.style.cssText = 'margin-bottom:18px;padding:14px 16px;border:1px solid var(--border);border-radius:8px;background:var(--bg)';
+        if (key === focusKey) {
+          section.style.borderColor = 'var(--accent)';
+          section.style.boxShadow = '0 0 0 2px rgba(74,222,128,0.18)';
+          section.id = 'helpFocusSection';
+        }
+        const t = document.createElement('div');
+        t.style.cssText = 'font-size:16px;font-weight:600;color:var(--text-bright);margin-bottom:6px';
+        t.textContent = info.title;
+        section.appendChild(t);
+        const s = document.createElement('div');
+        s.style.cssText = 'font-size:14px;color:var(--text);margin-bottom:8px;font-style:italic;opacity:0.85';
+        s.textContent = info.short;
+        section.appendChild(s);
+        const l = document.createElement('div');
+        l.style.cssText = 'font-size:14px;color:var(--text-bright);line-height:1.6';
+        l.textContent = info.long;
+        section.appendChild(l);
+        inner.appendChild(section);
+      }
+      modal.style.display = 'flex';
+      const focused = document.getElementById('helpFocusSection');
+      if (focused) {
+        setTimeout(() => focused.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+      } else {
+        inner.scrollTop = 0;
+      }
+    }
+
+    function helpHide() {
+      const modal = document.getElementById('helpModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function attachTabHelpIcons() {
+      for (const [panelId, info] of Object.entries(TAB_HELP)) {
+        const panel = document.getElementById(panelId);
+        if (!panel) continue;
+        // Find the h2 inside (most panels use one). Fall back to first heading.
+        const heading = panel.querySelector('h2') || panel.querySelector('h1') || panel.querySelector('h3');
+        if (!heading) continue;
+        if (heading.querySelector('.tab-help-icon')) continue; // already attached
+        const btn = document.createElement('button');
+        btn.className = 'tab-help-icon';
+        btn.type = 'button';
+        btn.textContent = '?';
+        btn.title = info.short + '\n\nClick for full Help page.';
+        btn.style.cssText = [
+          'margin-left:10px','width:24px','height:24px','line-height:22px','padding:0',
+          'border-radius:50%','border:1px solid var(--border)','background:var(--bg)',
+          'color:var(--text)','font-size:13px','font-weight:600','cursor:pointer',
+          'vertical-align:middle','display:inline-flex','align-items:center','justify-content:center',
+        ].join(';');
+        btn.onmouseenter = () => { btn.style.background = 'var(--bg-hover)'; btn.style.color = 'var(--text-bright)'; };
+        btn.onmouseleave = () => { btn.style.background = 'var(--bg)'; btn.style.color = 'var(--text)'; };
+        btn.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); helpShow(panelId); };
+        // Make heading inline-flex so the button sits inline regardless of inline styles
+        heading.style.display = heading.style.display || 'inline-flex';
+        heading.style.alignItems = heading.style.alignItems || 'center';
+        heading.appendChild(btn);
+      }
+    }
+
+    // Run after the DOM is ready and again on visibility/tab changes — cheap
+    // idempotent: attachTabHelpIcons skips panels already wired.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', attachTabHelpIcons);
+    } else {
+      attachTabHelpIcons();
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) attachTabHelpIcons();
+    });
+    // Safety net: re-run a few times during the first few seconds in case
+    // the script raced ahead of dynamically-rendered panel contents.
+    setTimeout(attachTabHelpIcons, 100);
+    setTimeout(attachTabHelpIcons, 500);
+    setTimeout(attachTabHelpIcons, 2000);
+    // Wrap switchTab so it re-attaches every time the user changes panels.
+    if (typeof switchTab === 'function' && !switchTab.__helpWrapped) {
+      const _origSwitchTab = switchTab;
+      window.switchTab = function(name) {
+        const r = _origSwitchTab(name);
+        setTimeout(attachTabHelpIcons, 0);
+        return r;
+      };
+      window.switchTab.__helpWrapped = true;
     }
 
   </script>

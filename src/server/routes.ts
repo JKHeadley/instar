@@ -576,6 +576,9 @@ export interface RouteContext {
   ledgerSessionRegistry: import('../core/LedgerSessionRegistry.js').LedgerSessionRegistry | null;
   /** Initiative tracker — persisted record of multi-phase long-running work. */
   initiativeTracker: import('../core/InitiativeTracker.js').InitiativeTracker | null;
+  /** Initiative explainer — Haiku-backed plain-English rewrites of
+   *  initiative descriptions and digest signals for the dashboard. */
+  initiativeExplainer: import('../core/InitiativeExplainer.js').InitiativeExplainer | null;
   /** Threadline → Telegram bridge config — toggles + allow/deny list. Read by
    *  /threadline/telegram-bridge/config endpoints and by the bridge module
    *  to decide whether to mirror an inbound message into
@@ -5427,6 +5430,117 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ id: req.params.id, deleted: true });
+  });
+
+  // POST /initiatives/:id/comment — append user/agent input on an initiative.
+  // Body: { text: string, author?: 'user'|'agent', source?: string }
+  // Surfaced on the dashboard as an inline thread per initiative — gives the
+  // user a way to ask questions or leave feedback against a specific signal
+  // without leaving the page.
+  //
+  // Side-effect: when author === 'user', the comment is also relayed to
+  // Telegram (best-effort) so the live agent sees it as a message. The
+  // target topic is resolved in this priority:
+  //   1. The initiative's first link of type 'topic' with a numeric ref
+  //   2. The general topic (topicId 1) — universal fallback
+  // Failure to relay never fails the request — comments are durably stored
+  // on the initiative regardless.
+  router.post('/initiatives/:id/comment', async (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    const text = typeof req.body?.text === 'string' ? req.body.text : '';
+    if (!text.trim()) {
+      res.status(400).json({ error: 'text is required' });
+      return;
+    }
+    const author: 'user' | 'agent' = req.body?.author === 'agent' ? 'agent' : 'user';
+    const source =
+      typeof req.body?.source === 'string' && req.body.source.length <= 64
+        ? req.body.source
+        : 'dashboard';
+    let result;
+    try {
+      result = ctx.initiativeTracker.addComment(req.params.id, text, author, source);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'failed to add comment';
+      const status = /not found/i.test(msg) ? 404 : 400;
+      res.status(status).json({ error: msg });
+      return;
+    }
+
+    // Relay user-authored comments to Telegram so the live agent can pick
+    // them up like any other message. Best-effort.
+    if (author === 'user' && ctx.telegram) {
+      try {
+        const ini = result.initiative;
+        const topicLink = (ini.links || []).find(
+          (l) => l.type === 'topic' && l.ref && /^\d+$/.test(String(l.ref)),
+        );
+        const topicId = topicLink ? Number.parseInt(String(topicLink.ref), 10) : 1;
+        const relayText = `📝 Dashboard comment on initiative "${ini.title}":\n\n${result.comment.text}`;
+        await ctx.telegram.sendToTopic(topicId, relayText, { skipStallClear: true });
+      } catch {
+        // Relay failure must never break comment storage.
+      }
+    }
+
+    res.json({ initiative: result.initiative, comment: result.comment });
+  });
+
+  // POST /initiatives/:id/explain — generate (or refresh) a plain-English
+  // rewrite of this initiative + its current signal.
+  // Query: ?force=1 to bypass the source-hash freshness check.
+  router.post('/initiatives/:id/explain', async (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    if (!ctx.initiativeExplainer || !ctx.initiativeExplainer.isAvailable()) {
+      res.status(503).json({
+        error: 'Initiative explainer not available (no intelligence provider configured)',
+      });
+      return;
+    }
+    const ini = ctx.initiativeTracker.get(req.params.id);
+    if (!ini) {
+      res.status(404).json({ error: 'initiative not found' });
+      return;
+    }
+    const digest = ctx.initiativeTracker.digest();
+    const InitiativeExplainerCls = (await import('../core/InitiativeExplainer.js'))
+      .InitiativeExplainer;
+    const signal = InitiativeExplainerCls.pickSignal(ini, digest);
+    const force = req.query.force === '1' || req.query.force === 'true';
+    try {
+      const explanation = await ctx.initiativeExplainer.explainOne(ini, signal, { force });
+      const refreshed = ctx.initiativeTracker.get(req.params.id) ?? ini;
+      res.json({ initiative: refreshed, explanation });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'explainer failed';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // POST /initiatives/explain-sweep — sweep all initiatives, refreshing
+  // any whose cached explanation is stale (or all of them with ?force=1).
+  // Cap the run with ?max=N (default 5).
+  router.post('/initiatives/explain-sweep', async (req, res) => {
+    if (!ctx.initiativeExplainer) {
+      res.status(503).json({ error: 'Initiative explainer not configured' });
+      return;
+    }
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const maxRaw = Number.parseInt(String(req.query.max ?? ''), 10);
+    const max = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : undefined;
+    try {
+      const result = await ctx.initiativeExplainer.run({ force, max });
+      res.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'sweep failed';
+      res.status(500).json({ error: msg });
+    }
   });
 
   // ── WhatsApp ────────────────────────────────────────────────────

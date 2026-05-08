@@ -38,6 +38,41 @@ export interface InitiativeLink {
   ref?: string;
 }
 
+/** Plain-English re-rendering of an initiative for the user-facing dashboard.
+ *  Produced by InitiativeExplainer (Haiku-backed). Cached; refreshed when
+ *  the source hash (description + active signal text) changes. */
+export interface InitiativeUserExplanation {
+  /** A 1–3 sentence plain-English summary of what this initiative is about. */
+  summary: string;
+  /** A clear, jargon-free version of the current signal — what's needed
+   *  from the user and why, written for someone who doesn't know the
+   *  internal codenames. Empty when the initiative has no live signal. */
+  signalText: string;
+  /** ISO timestamp when this explanation was generated. */
+  generatedAt: string;
+  /** Hash of the inputs the explanation was generated from. When the
+   *  inputs change (description edit, signal switch), the explainer
+   *  recomputes. */
+  sourceHash: string;
+}
+
+/** A comment / question / piece of input on an initiative. Surfaced on the
+ *  dashboard as a lightweight conversation thread per initiative. */
+export interface InitiativeComment {
+  /** Stable id (random short string) so the UI can reference comments. */
+  id: string;
+  /** The comment text — plain text, no markup. */
+  text: string;
+  /** Who wrote it. 'user' for human input from the dashboard,
+   *  'agent' for replies the agent leaves on the initiative. */
+  author: 'user' | 'agent';
+  /** Where it came from — 'dashboard', 'telegram', 'cli'. Helps later
+   *  tooling distinguish channels. */
+  source: string;
+  /** ISO timestamp. */
+  ts: string;
+}
+
 export interface Initiative {
   /** URL-safe slug (stable identifier). */
   id: string;
@@ -59,6 +94,10 @@ export interface Initiative {
   blockers: string[];
   /** External references: spec docs, PRs, commits, Telegram topics, etc. */
   links: InitiativeLink[];
+  /** Cached plain-English explainer (added by InitiativeExplainer). */
+  userExplanation?: InitiativeUserExplanation;
+  /** User input + agent replies on this initiative. Newest last. */
+  comments?: InitiativeComment[];
   createdAt: string;
   updatedAt: string;
 }
@@ -247,6 +286,57 @@ export class InitiativeTracker {
     const removed = this.initiatives.delete(id);
     if (removed) this.save();
     return removed;
+  }
+
+  /**
+   * Cache a plain-English re-rendering produced by InitiativeExplainer.
+   * Does NOT bump lastTouchedAt — the explainer is a derived view, not a
+   * change in the initiative's substance.
+   */
+  setUserExplanation(id: string, explanation: InitiativeUserExplanation): Initiative {
+    const existing = this.initiatives.get(id);
+    if (!existing) throw new Error(`Initiative "${id}" not found`);
+    const next: Initiative = { ...existing, userExplanation: explanation };
+    this.initiatives.set(id, next);
+    this.save();
+    return next;
+  }
+
+  /**
+   * Append a comment (user input or agent reply) to an initiative.
+   * Trims and length-caps the text. Does NOT bump lastTouchedAt — comments
+   * are conversation, not work progress.
+   */
+  addComment(
+    id: string,
+    text: string,
+    author: 'user' | 'agent' = 'user',
+    source: string = 'dashboard',
+  ): { initiative: Initiative; comment: InitiativeComment } {
+    const existing = this.initiatives.get(id);
+    if (!existing) throw new Error(`Initiative "${id}" not found`);
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) throw new Error('Comment text is required');
+    if (trimmed.length > 4000) {
+      throw new Error('Comment text must be 4000 chars or fewer');
+    }
+    const comment: InitiativeComment = {
+      id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      text: trimmed,
+      author,
+      source,
+      ts: new Date().toISOString(),
+    };
+    const comments = Array.isArray(existing.comments)
+      ? [...existing.comments, comment]
+      : [comment];
+    // Bound the in-memory comment list — last 100 stay attached to the
+    // initiative; older ones could be archived later if needed.
+    const trimmedList = comments.length > 100 ? comments.slice(-100) : comments;
+    const next: Initiative = { ...existing, comments: trimmedList };
+    this.initiatives.set(id, next);
+    this.save();
+    return { initiative: next, comment };
   }
 
   /**

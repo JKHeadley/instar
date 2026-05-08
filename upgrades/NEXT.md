@@ -88,8 +88,109 @@ It now opens with a clear answer to "what should I do right now?":
 No new endpoints; the rebuild uses existing
 `PATCH /initiatives/:id` and `POST /initiatives/:id/phase/:phaseId`.
 
+## Initiatives — plain-English rewriter + inline reply box
+
+Initiatives are usually authored in developer shorthand by the building
+agent. Phrases like "Phase B scope call: gate handlers vs validate
+Phase A in production first" are fine for the agent but unreadable for
+a non-technical reader glancing at the dashboard. Two new pieces close
+that gap:
+
+- **`InitiativeExplainer`** — a Haiku-backed re-renderer that produces a
+  plain-English `summary` (what the initiative IS) and `signalText`
+  (what's pending and why your input matters) for each initiative + its
+  active digest signal. Output is cached on the initiative as
+  `userExplanation`, keyed by a content hash of the inputs (title,
+  description, current phase, signal). When any input changes, the next
+  sweep recomputes; otherwise calls are skipped.
+- **Per-initiative reply box.** Every "Needs you" card now ends with a
+  textarea + Send button. Submissions append to `Initiative.comments`
+  AND, for `author === 'user'` from the dashboard, are relayed to
+  Telegram so the live agent sees the input as a normal message.
+  Telegram routing best-effort: any failure is silently swallowed, the
+  comment remains durably stored on the initiative.
+
+### New endpoints
+
+| Method | Path                                  | Purpose                                       |
+|--------|---------------------------------------|-----------------------------------------------|
+| POST   | `/initiatives/:id/comment`            | Append a comment + relay to Telegram if user  |
+| POST   | `/initiatives/:id/explain`            | Refresh the plain-English explanation         |
+| POST   | `/initiatives/explain-sweep`          | Sweep all initiatives (max=5 default)         |
+
+`?force=1` on `/explain` and `/explain-sweep` bypasses the source-hash
+freshness check and always recomputes.
+
+### Background sweep
+
+Same shape as the threadline nickname suggester: 90s initial delay,
+15-minute periodic sweep, capped at 5 initiatives per run, in-flight
+guard so overlapping intervals can't double-bill the LLM. No-op when no
+intelligence provider is wired.
+
+### Privacy / cost note
+
+The explainer sends each initiative's title, description, phase list,
+blockers, and digest signal detail to whichever IntelligenceProvider you
+have wired. If your initiatives carry sensitive material, leave
+`intelligenceProvider` unset — the explainer becomes a no-op
+(`/explain*` endpoints return 503), and the dashboard falls back to the
+first sentence of the raw description with a "Translating to plain
+English…" hint.
+
+### Telegram relay routing
+
+The per-initiative comment relay picks its target topic in this order:
+
+1. The initiative's first `links[]` entry where `type === 'topic'` and
+   `ref` is a numeric topic id.
+2. Topic id `1` (the general topic) as the universal fallback.
+
+This keeps relay scope tight while letting initiatives that already
+carry a topic link route their comments to the right thread.
+
 ## Migration
 
 No migration. The nicknames file is created on first write. Existing
 threadline state, registry, and bindings are unchanged. The Initiatives
 rebuild is purely client-side and uses existing tracker routes.
+
+The new `Initiative.userExplanation` and `Initiative.comments` fields
+are optional — existing initiatives load and serialize fine without
+them. The first sweep after upgrade populates explanations
+automatically when an intelligence provider is wired.
+
+## What to Tell Your User
+
+The Initiatives tab on your dashboard is now readable.
+
+Before this release, every "Needs you" card showed the agent's
+internal shorthand — phrases like "Phase B scope call: gate handlers
+vs validate Phase A in production first" — which is fine if you wrote
+the code yourself but unhelpful if you didn't. The dashboard now
+re-renders each initiative + its current question into plain English,
+so you can tell what an initiative is about and what the agent needs
+from you in one glance.
+
+Every "Needs you" card also has a reply box at the bottom now.
+Whatever you type lands as a comment on that initiative AND shows up
+in your Telegram conversation with the agent, so you can ask a
+question or leave input without leaving the page.
+
+If you don't want the agent to send your initiatives to an
+intelligence model for re-rendering, leave `intelligenceProvider`
+unset in your config. The dashboard falls back to the first sentence
+of the raw description with a small "Translating to plain English…"
+hint, and the explainer endpoints return 503.
+
+## Summary of New Capabilities
+
+| Capability                          | Endpoint / surface                       |
+|-------------------------------------|------------------------------------------|
+| Plain-English initiative summary    | `Initiative.userExplanation` (cached)    |
+| Refresh one initiative's summary    | `POST /initiatives/:id/explain`          |
+| Sweep all initiatives' summaries    | `POST /initiatives/explain-sweep`        |
+| Comment on a specific initiative    | `POST /initiatives/:id/comment`          |
+| Inline reply box on Needs-you cards | Dashboard "Initiatives" tab              |
+| Telegram relay of dashboard replies | Auto, on `author === 'user'` comments    |
+| Background rewrite sweep            | 15-min interval, capped at 5 per run     |

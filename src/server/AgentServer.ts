@@ -158,6 +158,9 @@ export class AgentServer {
     stopGateDb?: import('../core/StopGateDb.js').StopGateDb;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
+    /** Initiative explainer — Haiku rewrites of titles/descriptions/signals
+     *  into plain English for the dashboard reader. */
+    initiativeExplainer?: import('../core/InitiativeExplainer.js').InitiativeExplainer | null;
     /** Threadline → Telegram bridge config — toggles + allow/deny list. */
     telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
     /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
@@ -428,6 +431,7 @@ export class AgentServer {
       unjustifiedStopGate: options.unjustifiedStopGate ?? null,
       stopGateDb: options.stopGateDb ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
+      initiativeExplainer: options.initiativeExplainer ?? null,
       tokenLedger: this.tokenLedger,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
