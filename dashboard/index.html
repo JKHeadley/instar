@@ -7472,21 +7472,44 @@
       const meta = reasonMeta[sig.reason] || reasonMeta['stale'];
 
       const card = document.createElement('div');
-      card.style.padding = '14px 16px';
+      card.style.padding = '16px 18px';
       card.style.borderRadius = '8px';
       card.style.border = `1px solid ${meta.border}`;
       card.style.background = meta.bg;
       card.style.display = 'flex';
       card.style.flexDirection = 'column';
-      card.style.gap = '10px';
+      card.style.gap = '12px';
 
-      // Top row: badge + initiative title (link)
+      // Top row: initiative title (heading) + reason badge
       const top = document.createElement('div');
       top.style.display = 'flex';
       top.style.justifyContent = 'space-between';
-      top.style.alignItems = 'center';
-      top.style.gap = '10px';
+      top.style.alignItems = 'flex-start';
+      top.style.gap = '12px';
       top.style.flexWrap = 'wrap';
+
+      const titleBtn = document.createElement('button');
+      titleBtn.textContent = sig.title || '(untitled initiative)';
+      titleBtn.style.background = 'transparent';
+      titleBtn.style.border = 'none';
+      titleBtn.style.color = 'var(--text)';
+      titleBtn.style.fontSize = '17px';
+      titleBtn.style.fontWeight = '600';
+      titleBtn.style.cursor = 'pointer';
+      titleBtn.style.padding = '0';
+      titleBtn.style.textAlign = 'left';
+      titleBtn.style.flex = '1 1 auto';
+      titleBtn.style.minWidth = '0';
+      titleBtn.style.lineHeight = '1.3';
+      titleBtn.title = 'Open this initiative below';
+      titleBtn.onclick = () => {
+        initiativesState.expandedIds.add(sig.initiativeId);
+        loadInitiatives().then(() => {
+          const target = document.getElementById('iniCard-' + sig.initiativeId);
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      };
+      top.appendChild(titleBtn);
 
       const badge = document.createElement('span');
       badge.style.fontSize = '11px';
@@ -7494,38 +7517,44 @@
       badge.style.letterSpacing = '0.4px';
       badge.style.textTransform = 'uppercase';
       badge.style.color = meta.color;
+      badge.style.padding = '3px 8px';
+      badge.style.borderRadius = '10px';
+      badge.style.border = `1px solid ${meta.border}`;
+      badge.style.background = 'var(--bg)';
+      badge.style.whiteSpace = 'nowrap';
+      badge.style.flex = '0 0 auto';
       badge.textContent = meta.label;
       top.appendChild(badge);
 
-      const titleLink = document.createElement('button');
-      titleLink.textContent = sig.title;
-      titleLink.style.background = 'transparent';
-      titleLink.style.border = 'none';
-      titleLink.style.color = 'var(--text-dim)';
-      titleLink.style.fontSize = '12px';
-      titleLink.style.cursor = 'pointer';
-      titleLink.style.padding = '0';
-      titleLink.style.textAlign = 'right';
-      titleLink.style.maxWidth = '60%';
-      titleLink.style.overflow = 'hidden';
-      titleLink.style.textOverflow = 'ellipsis';
-      titleLink.style.whiteSpace = 'nowrap';
-      titleLink.title = 'Scroll to initiative';
-      titleLink.onclick = () => {
-        initiativesState.expandedIds.add(sig.initiativeId);
-        loadInitiatives().then(() => {
-          const target = document.getElementById('iniCard-' + sig.initiativeId);
-          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
-      };
-      top.appendChild(titleLink);
-
       card.appendChild(top);
 
-      // The question / detail (the headline of the card)
+      // Context line: phase + one-line summary of the initiative itself
+      const cur = activePhase(ini);
+      const summary = firstSentence(ini.description || '', 140);
+      const contextBits = [];
+      if (cur && cur.name) contextBits.push(`Phase: ${cur.name}`);
+      if (summary) contextBits.push(summary);
+      if (contextBits.length) {
+        const ctx = document.createElement('div');
+        ctx.style.fontSize = '13px';
+        ctx.style.lineHeight = '1.45';
+        ctx.style.color = 'var(--text-dim)';
+        ctx.textContent = contextBits.join(' · ');
+        card.appendChild(ctx);
+      }
+
+      // Divider before the actual signal/question
+      const divider = document.createElement('div');
+      divider.style.height = '1px';
+      divider.style.background = meta.border;
+      divider.style.opacity = '0.5';
+      divider.style.margin = '2px 0';
+      card.appendChild(divider);
+
+      // The question / detail (the heart of the signal)
       const detail = document.createElement('div');
       detail.style.fontSize = '15px';
-      detail.style.lineHeight = '1.4';
+      detail.style.lineHeight = '1.5';
       detail.style.color = 'var(--text)';
       detail.textContent = sig.detail || '(no detail)';
       card.appendChild(detail);
