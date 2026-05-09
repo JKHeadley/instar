@@ -164,6 +164,7 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
+import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
@@ -10743,6 +10744,93 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // Nickname-first resolution. User-curated names in nicknames.json are the
+    // highest-authority mapping (signal-vs-authority: relay discovery is signal,
+    // user nickname is authority). If "Dawn" maps to fingerprint X here, we
+    // route to X regardless of what the relay's discovery cache says about
+    // some other agent that also calls itself "Dawn". Skip when caller used
+    // a "name:fpPrefix" qualifier (they're explicitly disambiguating) or
+    // when the input already looks like a fingerprint.
+    let nicknameResolvedFp: string | null = null;
+    const looksLikeFingerprint = /^[0-9a-f]{16,64}$/i.test(targetAgent);
+    // Parse "name:fpPrefix" once so both branches below can reuse it.
+    const fpPrefixParse = (() => {
+      const ci = targetAgent.lastIndexOf(':');
+      if (ci <= 0 || ci >= targetAgent.length - 1) return null;
+      const suffix = targetAgent.substring(ci + 1);
+      if (!/^[0-9a-f]{4,32}$/i.test(suffix)) return null;
+      return { name: targetAgent.substring(0, ci), fpPrefix: suffix.toLowerCase() };
+    })();
+    const usesFpPrefixSyntax = fpPrefixParse !== null;
+    if (!looksLikeFingerprint) {
+      try {
+        const nicknameStore = new ThreadlineNicknames({ stateDir: ctx.config.stateDir });
+        // For "name:fpPrefix" inputs, look up the bare name in the nickname
+        // store and filter the candidates by the prefix. This lets the user
+        // disambiguate ambiguous nickname entries with the same syntax that
+        // works for known-agents.json — the spec promises this remedy.
+        // Without this, "Dawn:abcd" would skip nickname lookup entirely and
+        // the documented disambiguation path would be a dead end.
+        const lookupName = fpPrefixParse ? fpPrefixParse.name : targetAgent;
+        const lookup = nicknameStore.resolveByName(lookupName);
+        if (lookup && 'ambiguous' in lookup) {
+          if (fpPrefixParse) {
+            const matched = lookup.candidates.filter(c =>
+              c.fingerprint.toLowerCase().startsWith(fpPrefixParse.fpPrefix)
+            );
+            if (matched.length === 1) {
+              nicknameResolvedFp = matched[0].fingerprint;
+            } else if (matched.length === 0) {
+              const hints = lookup.candidates
+                .map(c => `${c.entry.nickname}:${c.fingerprint.substring(0, 8)}`)
+                .join(', ');
+              res.status(409).json({
+                success: false,
+                error: `Nickname "${fpPrefixParse.name}" has no candidate matching prefix "${fpPrefixParse.fpPrefix}". Candidates: ${hints}.`,
+              });
+              return;
+            } else {
+              const hints = matched
+                .map(c => `${c.entry.nickname}:${c.fingerprint.substring(0, 8)}`)
+                .join(', ');
+              res.status(409).json({
+                success: false,
+                error: `Prefix "${fpPrefixParse.fpPrefix}" still ambiguous among nickname "${fpPrefixParse.name}" candidates: ${hints}. Use a longer prefix.`,
+              });
+              return;
+            }
+          } else {
+            const hints = lookup.candidates
+              .map(c => `${c.entry.nickname}:${c.fingerprint.substring(0, 8)} (${c.fingerprint})`)
+              .join(', ');
+            res.status(409).json({
+              success: false,
+              error: `Ambiguous nickname "${targetAgent}" — multiple fingerprints share this name in nicknames.json: ${hints}. Send by fingerprint or use "name:fpPrefix" syntax.`,
+            });
+            return;
+          }
+        } else if (lookup) {
+          // Single-candidate match. If caller also passed a fpPrefix, sanity-
+          // check that it agrees with the curated mapping; on disagreement,
+          // honor the caller's explicit prefix (they may be telling us the
+          // nickname is stale) and skip nickname authority for this send.
+          if (fpPrefixParse && !lookup.fingerprint.toLowerCase().startsWith(fpPrefixParse.fpPrefix)) {
+            console.warn(
+              `[relay-send] Nickname/prefix disagreement for "${fpPrefixParse.name}": ` +
+              `nickname maps to ${lookup.fingerprint.substring(0, 8)}…, ` +
+              `caller prefix is "${fpPrefixParse.fpPrefix}". Honoring caller prefix.`,
+            );
+          } else {
+            nicknameResolvedFp = lookup.fingerprint;
+          }
+        }
+      } catch (err) {
+        // Nickname store read failed — fall through to existing resolution.
+        // Don't block sends on a corrupt nicknames file.
+        console.warn(`[relay-send] Nickname store read failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // Mint a stable UUID threadId when caller didn't provide one so
     // first-contact messages aren't dropped on the recipient side. Both
@@ -10771,9 +10859,16 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
 
-        const nameMatches = agents.filter(a =>
-          a.name === targetName || a.name?.toLowerCase() === targetName?.toLowerCase()
-        );
+        // If a nickname resolved upstream, prefer fingerprint match over
+        // name match — the user-curated mapping is authoritative.
+        const nameMatches = nicknameResolvedFp
+          ? agents.filter(a => {
+              const fp = (a.fingerprint || a.publicKey?.substring(0, 32) || '').toLowerCase();
+              return fp === nicknameResolvedFp!.toLowerCase();
+            })
+          : agents.filter(a =>
+              a.name === targetName || a.name?.toLowerCase() === targetName?.toLowerCase()
+            );
 
         // PR-3: Fingerprint-based disambiguation. If multiple known agents
         // share a name, require a `name:fpPrefix` qualifier to pick one.
@@ -10970,8 +11065,31 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     try {
-      // Resolve name → fingerprint if targetAgent isn't already a fingerprint
-      const resolvedId = await relayClient.resolveAgent(targetAgent);
+      // Resolve name → fingerprint. Nickname store wins over relay discovery
+      // when the user has explicitly curated a mapping (set above). Falling
+      // back to relay discovery only when no nickname matched. If the relay
+      // happens to also know this name but maps it to a different fingerprint,
+      // we silently override with the nickname mapping — the user's choice is
+      // authority. Logged so the conflict is visible in operator logs.
+      let resolvedId: string | null;
+      if (nicknameResolvedFp) {
+        resolvedId = nicknameResolvedFp;
+        try {
+          const discoveryFp = await relayClient.resolveAgent(targetAgent);
+          if (discoveryFp && discoveryFp.toLowerCase() !== nicknameResolvedFp.toLowerCase()) {
+            console.warn(
+              `[relay-send] Nickname/discovery mismatch for "${targetAgent}": ` +
+              `nickname maps to ${nicknameResolvedFp.substring(0, 8)}…, ` +
+              `relay discovery returned ${discoveryFp.substring(0, 8)}…. ` +
+              `Honoring user-curated nickname.`,
+            );
+          }
+        } catch {
+          // Discovery probe is best-effort for the conflict warning only.
+        }
+      } else {
+        resolvedId = await relayClient.resolveAgent(targetAgent);
+      }
       if (!resolvedId) {
         res.status(404).json({
           success: false,
