@@ -50,6 +50,10 @@ import {
 import type { EmbeddingProvider } from './EmbeddingProvider.js';
 import { VectorSearch } from './VectorSearch.js';
 import { buildPrivacySqlFilter } from '../utils/privacy.js';
+import {
+  isEntityVisibleAtScope as rendererIsEntityVisibleAtScope,
+  isEvidenceVisibleAtScope as rendererIsEvidenceVisibleAtScope,
+} from './EvidenceRenderer.js';
 
 // Dynamic import for better-sqlite3 (optional dependency)
 type Database = import('better-sqlite3').Database;
@@ -1913,20 +1917,10 @@ export class EvidencePolicyError extends Error {
 }
 
 /**
- * Entity-level privacy ordering for inverse-query filtering.
- * `private` > `shared-topic` > `shared-project`. A viewer at higher tier
- * sees their tier and below.
- */
-const ENTITY_SCOPE_ORDER: Record<PrivacyScopeType, number> = {
-  'shared-project': 0,
-  'shared-topic': 1,
-  'private': 2,
-};
-
-/**
- * Evidence-level privacy ordering. Wider vocabulary than entity scope:
- * adds `public` (more permissive than shared-project) and `sensitive`
- * (more restrictive than private). Per spec § Schema Changes line 136.
+ * Evidence-level privacy ordering. Used by the write-time
+ * `assertNarrowingOnly` invariant. Mirrors EvidenceRenderer's local copy
+ * (which owns the READ path); kept here so the write-side check has no
+ * module-cycle dependency on the renderer.
  */
 const EVIDENCE_TIER_ORDER: Record<EvidencePrivacyTier, number> = {
   'public': 0,
@@ -1950,30 +1944,14 @@ function entityScopeToTierOrdinal(scope: PrivacyScopeType): number {
   }
 }
 
-/** Map a viewer scope onto the comparable evidence-tier scale. */
-function viewerScopeToTierOrdinal(scope: PrivacyScopeType): number {
-  return entityScopeToTierOrdinal(scope);
-}
-
-/** Whether an entity is visible at a viewer scope (entity-vocabulary). */
-function isEntityVisibleAtScope(
-  itemScope: PrivacyScopeType | undefined,
-  viewerScope: PrivacyScopeType,
-): boolean {
-  const item = itemScope ?? 'shared-project';
-  return ENTITY_SCOPE_ORDER[viewerScope] >= ENTITY_SCOPE_ORDER[item];
-}
-
-/** Whether an evidence row is visible at a viewer scope (tier-vocabulary). */
-function isEvidenceVisibleAtScope(
-  evidenceTier: EvidencePrivacyTier | undefined,
-  viewerScope: PrivacyScopeType,
-): boolean {
-  // No tier set ⇒ inherits entity scope; the entity-level filter has already
-  // accepted this row, so let it through.
-  if (evidenceTier === undefined) return true;
-  return viewerScopeToTierOrdinal(viewerScope) >= EVIDENCE_TIER_ORDER[evidenceTier];
-}
+/**
+ * Visibility predicates are owned by EvidenceRenderer (the single
+ * privacy-enforcement helper per spec § Storage and Privacy line 315).
+ * SemanticMemory's read paths delegate to those exports so the filter
+ * rule lives in exactly one place. Local aliases keep the call-site shape.
+ */
+const isEntityVisibleAtScope = rendererIsEntityVisibleAtScope;
+const isEvidenceVisibleAtScope = rendererIsEvidenceVisibleAtScope;
 
 /**
  * Narrowing-only constraint: an evidence entry's `privacyTier` may be equal
