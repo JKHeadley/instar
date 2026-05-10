@@ -261,16 +261,46 @@ export async function intentValidate(options: IntentValidateOptions): Promise<vo
       console.log();
     }
 
-    // Log conflicts to decision journal
+    // Log conflicts to decision journal.
+    //
+    // WikiClaim Phase 3 (spec § Producers line 258): each decision must cite
+    // at least one evidence row. The conflict is grounded in two ledger-style
+    // sources: ORG-INTENT.md and AGENT.md (the org constraint and the agent
+    // statement the validator surfaced). We cite both as `ledger-entry`
+    // evidence — config files act as the durable ledger for intent contracts.
+    // Spec line 227 allows DecisionJournal to write `ledger-entry` kind.
     const journal = new DecisionJournal(config.stateDir);
+    const nowIso = new Date().toISOString();
     for (const conflict of result.conflicts) {
-      journal.log({
-        sessionId: 'intent-validate',
-        decision: `Org-agent intent conflict: ${conflict.description}`,
-        principle: 'org-alignment',
-        conflict: true,
-        tags: ['org-intent', 'validation'],
-      });
+      journal.log(
+        {
+          sessionId: 'intent-validate',
+          decision: `Org-agent intent conflict: ${conflict.description}`,
+          principle: 'org-alignment',
+          conflict: true,
+          tags: ['org-intent', 'validation'],
+        },
+        [
+          {
+            kind: 'ledger-entry',
+            sourceId: 'ORG-INTENT.md',
+            path: 'ORG-INTENT.md',
+            note: conflict.orgConstraint.slice(0, 200),
+            weight: 0.5,
+            confidence: 0.9,
+            updatedAt: nowIso,
+          },
+          {
+            kind: 'ledger-entry',
+            sourceId: 'AGENT.md#intent',
+            path: '.instar/AGENT.md',
+            note: conflict.agentStatement.slice(0, 200),
+            weight: 0.5,
+            confidence: 0.9,
+            updatedAt: nowIso,
+          },
+        ],
+      );
     }
 
     console.log(pc.dim(`  Conflicts logged to decision journal.`));

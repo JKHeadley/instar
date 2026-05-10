@@ -8,11 +8,28 @@
  * Storage: JSONL file at {stateDir}/decision-journal.jsonl
  * Format: One JSON object per line, newest entries appended at the end.
  * Creation: Lazy — file is only created when the first entry is logged.
+ *
+ * WikiClaim Phase 3 (spec § Producers line 258, § Migration Plan line 339):
+ * Every recorded decision REQUIRES at least one evidence entry. When a
+ * SemanticMemory handle is wired via `setSemanticMemory()`, each `log()` call
+ * also promotes the entry to a `decision` MemoryEntity via
+ * `rememberWithEvidence(..., 'DecisionJournal')`, and the JSONL row carries
+ * the resulting `entityId` as a back-reference for inverse-traceability.
+ *
+ * The kind allowlist for DecisionJournal (per spec line 227):
+ *   `message` | `commit` | `ledger-entry` | `session`
+ * Mismatches reject with `EvidencePolicyError` inside SemanticMemory.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DecisionJournalEntry } from './types.js';
+import type {
+  DecisionJournalEntry,
+  MemoryEvidence,
+  PrivacyScopeType,
+} from './types.js';
+import type { SemanticMemory } from '../memory/SemanticMemory.js';
+import { EvidencePolicyError } from '../memory/SemanticMemory.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 
@@ -31,19 +48,134 @@ export interface DecisionJournalStats {
 
 export class DecisionJournal {
   private journalFile: string;
+  /**
+   * SemanticMemory handle for the WikiClaim Phase 3 producer bridge. When set,
+   * `log()` promotes each entry to a `decision` MemoryEntity with the supplied
+   * evidence. Unset (null) by default for backwards compatibility with
+   * pre-Phase-3 wiring; callers must still pass evidence — the gate is
+   * structural, not opt-in.
+   *
+   * See spec § Producers line 217 (integration note).
+   */
+  private semanticMemory: SemanticMemory | null = null;
+  /**
+   * Privacy scope to use when promoting decision entries to MemoryEntity.
+   * Defaults to `shared-project` (matches `rememberWithEvidence` writer-scope
+   * default). Operators may override via `setSemanticMemory(memory, scope)`.
+   */
+  private entityPrivacyScope: PrivacyScopeType = 'shared-project';
 
   constructor(stateDir: string) {
     this.journalFile = path.join(stateDir, 'decision-journal.jsonl');
   }
 
   /**
-   * Log a decision to the journal.
-   * Appends a JSONL line with an auto-generated timestamp.
+   * Wire a SemanticMemory handle for the Phase 3 producer bridge.
+   *
+   * After this call, each `log()` invocation calls
+   * `memory.rememberWithEvidence(..., 'DecisionJournal')` inside the same
+   * append flow and stamps `entityId` onto the JSONL row.
+   *
+   * Wiring is OPTIONAL — without it, evidence is still required at the API
+   * level (compile-time + write-time gate), but no MemoryEntity is created.
+   * This lets callers adopt the contract change before the server fully wires
+   * SemanticMemory (Phase 4).
+   *
+   * @param memory SemanticMemory instance
+   * @param entityPrivacyScope Privacy scope for the promoted `decision`
+   *   entity. Defaults to `shared-project`. Per spec § Storage and Privacy,
+   *   evidence narrowing-only is enforced relative to this scope.
    */
-  log(entry: Omit<DecisionJournalEntry, 'timestamp'>): DecisionJournalEntry {
+  setSemanticMemory(
+    memory: SemanticMemory,
+    entityPrivacyScope: PrivacyScopeType = 'shared-project',
+  ): void {
+    this.semanticMemory = memory;
+    this.entityPrivacyScope = entityPrivacyScope;
+  }
+
+  /**
+   * Log a decision to the journal.
+   *
+   * Spec § Producers line 258 + § Migration Plan line 339: every decision
+   * REQUIRES at least one evidence entry. Passing an empty array (or omitting
+   * the parameter) throws `EvidencePolicyError`. This is a breaking contract
+   * change from pre-Phase-3 callers — every call site MUST cite at least one
+   * source for the decision.
+   *
+   * When SemanticMemory is wired, the entry is also promoted to a `decision`
+   * MemoryEntity in the same flow; the resulting `entityId` is back-referenced
+   * onto the JSONL row.
+   *
+   * @param entry Decision payload (timestamp + entityId are filled in here)
+   * @param evidence At least one `MemoryEvidence` row. Allowed kinds for
+   *   DecisionJournal per spec line 227: `message` | `commit` | `ledger-entry`
+   *   | `session`. Mismatches reject with `EvidencePolicyError`.
+   * @returns The completed `DecisionJournalEntry` including timestamp and (if
+   *   SemanticMemory is wired) `entityId`.
+   * @throws EvidencePolicyError if `evidence` is empty.
+   */
+  log(
+    entry: Omit<DecisionJournalEntry, 'timestamp' | 'evidence' | 'entityId'>,
+    evidence: MemoryEvidence[],
+  ): DecisionJournalEntry {
+    // Structural required-evidence gate. Spec § Migration Plan line 340:
+    // "DecisionJournal entries require at least one evidence entry."
+    if (!Array.isArray(evidence) || evidence.length === 0) {
+      throw new EvidencePolicyError(
+        'DecisionJournal.log requires at least one evidence entry ' +
+          '(spec § Producers line 258). Pass an array with at least one ' +
+          'MemoryEvidence row citing the source that informed this decision.',
+      );
+    }
+
+    const timestamp = new Date().toISOString();
+    let entityId: string | undefined;
+
+    // Bridge to SemanticMemory if wired. The producer-kind allowlist + privacy
+    // narrowing + evidence cap are enforced inside `rememberWithEvidence`;
+    // we don't re-implement them here.
+    if (this.semanticMemory) {
+      try {
+        entityId = this.semanticMemory.rememberWithEvidence(
+          {
+            type: 'decision',
+            name: entry.decision.slice(0, 200),
+            content: entry.decision,
+            source: entry.sessionId ? `session:${entry.sessionId}` : 'decision-journal',
+            sourceSession: entry.sessionId,
+            confidence: entry.confidence ?? 0.8,
+            lastVerified: timestamp,
+            domain: entry.jobSlug,
+            tags: entry.tags ?? [],
+            privacyScope: this.entityPrivacyScope,
+          },
+          evidence,
+          'DecisionJournal',
+        );
+      } catch (err) {
+        // EvidencePolicyError surfaces caller-facing policy violations
+        // (kind not allowed, narrowing-only breach, cap exceeded). Surface
+        // those as-is — the caller MUST fix the evidence shape.
+        if (err instanceof EvidencePolicyError) throw err;
+        // Other errors (DB issues): degrade-report and continue with
+        // JSONL-only write so the journal stays functional. Spec § Threat
+        // Model: producer crash mid-bridge must not corrupt the journal.
+        DegradationReporter.getInstance().report({
+          feature: 'DecisionJournal.log/semanticMemoryBridge',
+          primary: 'Promote decision to MemoryEntity via rememberWithEvidence',
+          fallback: 'Write JSONL row without entityId back-reference',
+          reason: err instanceof Error ? err.message : String(err),
+          impact: 'Decision logged but not inverse-queryable by evidence',
+        });
+      }
+    }
+
     const full: DecisionJournalEntry = {
       ...entry,
-      timestamp: new Date().toISOString(),
+      timestamp,
+      evidence,
+      ...(entityId ? { entityId } : {}),
     };
 
     // Ensure parent directory exists (lazy creation)

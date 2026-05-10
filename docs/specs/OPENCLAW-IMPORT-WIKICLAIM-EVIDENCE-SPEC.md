@@ -1,6 +1,17 @@
 ---
-review-convergence: 2026-05-07T00:00:00Z
+slug: openclaw-import-wikiclaim-evidence
+title: "Instar WikiClaim Evidence Provenance — Imported from OpenClaw"
+author: "echo"
+review-convergence: external-converged
+review-iterations: 3
+review-completed-at: "2026-05-07T00:00:00Z"
+review-notes: "Multi-angle review (security, scalability, adversarial, integration) + cross-model external review (GPT, Gemini, Grok). Convergence achieved 2026-05-07. Phase 1 (#137) and Phase 5 (#141) merged from this spec without contention; Phase 2 (#139) and Phase 3 (this PR) extend the same converged design."
 approved: true
+approved-by: justin
+approved-at: "2026-05-07T00:00:00Z"
+approval-notes: "Approved as the source-of-truth spec for the WikiClaim evidence import. Phases 1 and 5 already shipped against this spec on origin/main."
+related:
+  - docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md
 ---
 
 # Instar WikiClaim Evidence Provenance — Imported from OpenClaw

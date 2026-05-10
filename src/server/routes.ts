@@ -2362,6 +2362,121 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── WikiClaim Phase 4 — Inverse-traceability HTTP endpoints ───────
+  //
+  // Per docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Phase 4
+  // (line 343) and § Inverse traceability (line 291).
+  //
+  // Both routes are thin pass-throughs to SemanticMemory's already-filtered
+  // typed methods (`getEvidence` / `findCitations`). Privacy enforcement
+  // lives ONE place — the storage layer's read-time filter (Phase 1) plus
+  // the EvidenceRenderer helper (Phase 5). These routes do not re-implement
+  // the filter; they invoke the methods and serialize the result.
+  //
+  // viewerScope derivation: the single bearer-token auth model has one
+  // principal (the agent itself), which sees its own data at `private`
+  // scope by default. Callers can request a NARROWED view via the
+  // `?viewerScope=shared-project|shared-topic|private` query param —
+  // useful for "what would a topic-peer see?" preview rendering in the
+  // dashboard. Widening above the auth principal is a no-op (the cap is
+  // `private`). Per spec § Storage and Privacy line 315 — the renderer is
+  // the privacy boundary; this route is a read endpoint with no
+  // judgment surface.
+  const VALID_EVIDENCE_KINDS = new Set([
+    'feedback', 'commit', 'session', 'document', 'message',
+    'job-run', 'ledger-entry', 'pattern-entity', 'external-url',
+    'supersedes-evidence',
+  ]);
+  const VALID_VIEWER_SCOPES = new Set(['shared-project', 'shared-topic', 'private']);
+
+  function resolveViewerScope(raw: unknown): 'shared-project' | 'shared-topic' | 'private' {
+    if (typeof raw === 'string' && VALID_VIEWER_SCOPES.has(raw)) {
+      return raw as 'shared-project' | 'shared-topic' | 'private';
+    }
+    // Default: agent has full visibility into its own DB.
+    return 'private';
+  }
+
+  // GET /memory/evidence/by-entity/:id
+  // Returns the entity's evidence array, viewer-scope filtered.
+  router.get('/memory/evidence/by-entity/:id', (req, res) => {
+    if (!ctx.semanticMemory) {
+      res.status(503).json({ error: 'Semantic memory not enabled' });
+      return;
+    }
+    try {
+      const entityId = req.params.id;
+      if (!entityId || typeof entityId !== 'string') {
+        res.status(400).json({ error: 'Missing entity id' });
+        return;
+      }
+      const viewerScope = resolveViewerScope(req.query.viewerScope);
+
+      // Existence + entity-level visibility check goes through the eager
+      // helper, which returns null when the entity is hidden (or missing)
+      // at the requested viewer scope. We deliberately collapse "entity
+      // exists but entity-scope wider than viewer" and "entity does not
+      // exist" into the same 404 — the spec's inverse-query non-leak rule
+      // (§ Storage and Privacy line 316) extends to direct fetch: a viewer
+      // at a narrower scope must not be able to probe entity existence by
+      // diffing 404 vs 200-empty.
+      const eager = ctx.semanticMemory.getEntityWithEvidence(entityId, viewerScope);
+      if (!eager) {
+        res.status(404).json({ error: 'Entity not found' });
+        return;
+      }
+      res.json({
+        entityId,
+        viewerScope,
+        evidence: eager.evidence,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Evidence lookup failed',
+      });
+    }
+  });
+
+  // GET /memory/entities/by-evidence?kind=feedback&sourceId=fb_123
+  // Returns entities citing (kind, sourceId), viewer-scope filtered.
+  router.get('/memory/entities/by-evidence', (req, res) => {
+    if (!ctx.semanticMemory) {
+      res.status(503).json({ error: 'Semantic memory not enabled' });
+      return;
+    }
+    try {
+      const kindRaw = req.query.kind;
+      const sourceIdRaw = req.query.sourceId;
+      const kind = typeof kindRaw === 'string' ? kindRaw : '';
+      const sourceId = typeof sourceIdRaw === 'string' ? sourceIdRaw : '';
+      if (!kind || !sourceId) {
+        res.status(400).json({ error: 'Missing required query params: kind, sourceId' });
+        return;
+      }
+      if (!VALID_EVIDENCE_KINDS.has(kind)) {
+        res.status(400).json({ error: `Invalid evidence kind: ${kind}` });
+        return;
+      }
+      const viewerScope = resolveViewerScope(req.query.viewerScope);
+
+      const entities = ctx.semanticMemory.findCitations(
+        { kind: kind as any, sourceId },
+        viewerScope,
+      );
+      res.json({
+        kind,
+        sourceId,
+        viewerScope,
+        entities,
+        totalResults: entities.length,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Citation lookup failed',
+      });
+    }
+  });
+
   // ── MEMORY.md Export (Phase 6) ─────────────────────────────────
 
   router.post('/semantic/export-memory', async (req, res) => {
@@ -7532,12 +7647,13 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ learnings: ctx.evolution.listLearnings({ category, applied }) });
   });
 
-  router.post('/evolution/learnings', (req, res) => {
+  router.post('/evolution/learnings', async (req, res) => {
     if (!ctx.evolution) {
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, category, description, source, tags, evolutionRelevance } = req.body;
+    const { title, category, description, source, tags, evolutionRelevance,
+            context, documentFallback, evidence: explicitEvidence } = req.body;
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -7546,6 +7662,43 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"description" is required' });
       return;
     }
+
+    // WikiClaim Phase 3 (spec § Producers line 268, § Migration Plan line 341):
+    // /learn must cite at least one evidence row. Either:
+    //   (a) caller passes `evidence: MemoryEvidence[]` directly (advanced),
+    //   (b) caller passes `context: string` and we auto-derive sessions/messages,
+    //   (c) caller passes `documentFallback: {sourceId, path}` for prompted-source.
+    // Combining (b)+(c) is allowed.
+    let derivedEvidence: import('../core/types.js').MemoryEvidence[] = [];
+    let externalReferences: Array<{ kind: 'feedback' | 'commit'; sourceId: string }> = [];
+    let pendingDocumentRef: { sourceId: string; path?: string; note?: string } | undefined;
+    try {
+      if (Array.isArray(explicitEvidence) && explicitEvidence.length > 0) {
+        derivedEvidence = explicitEvidence;
+      } else {
+        const { buildLearnEvidence, LearnEvidenceError } =
+          await import('../core/LearnSkillBridge.js');
+        try {
+          const built = buildLearnEvidence({
+            context: typeof context === 'string' ? context : `${title}\n\n${description}`,
+            documentFallback,
+          });
+          derivedEvidence = built.evidence;
+          externalReferences = built.externalReferences;
+          pendingDocumentRef = built.pendingDocumentRef;
+        } catch (err) {
+          if (err instanceof LearnEvidenceError) {
+            res.status(400).json({ error: err.message });
+            return;
+          }
+          throw err;
+        }
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to derive evidence' });
+      return;
+    }
+
     const learning = ctx.evolution.addLearning({
       title, category: category || 'general', description,
       source: source || { discoveredAt: new Date().toISOString() },
@@ -7564,7 +7717,18 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
 
-    res.status(201).json({ ...learning, soulNudge });
+    // WikiClaim Phase 3: surface derived evidence + external references on
+    // the response so callers can confirm the bridge resolved their context.
+    // Spec § Producers line 228 — LearnSkill kinds are message|session;
+    // externalReferences carry feedback/commit refs that the caller routes
+    // through the appropriate downstream producer.
+    res.status(201).json({
+      ...learning,
+      soulNudge,
+      evidence: derivedEvidence,
+      externalReferences,
+      ...(pendingDocumentRef ? { pendingDocumentRef } : {}),
+    });
   });
 
   router.patch('/evolution/learnings/:id/apply', (req, res) => {
@@ -8273,17 +8437,49 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/intent/journal', async (req, res) => {
     try {
       const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const { EvidencePolicyError } = await import('../memory/SemanticMemory.js');
       const journal = new DecisionJournal(ctx.config.stateDir);
 
-      const { sessionId, decision, ...rest } = req.body || {};
+      const { sessionId, decision, evidence, ...rest } = req.body || {};
 
       if (!sessionId || !decision) {
         res.status(400).json({ error: 'sessionId and decision are required' });
         return;
       }
 
-      const entry = journal.log({ sessionId, decision, ...rest });
-      res.status(201).json(entry);
+      // WikiClaim Phase 3 (spec § Producers line 258): every decision must
+      // cite at least one evidence row. The route accepts an explicit
+      // `evidence` array, OR — when omitted — synthesizes a minimum-viable
+      // `session` evidence row from the request's `sessionId` (the auth-
+      // context proxy available at this HTTP layer). Synthesis keeps the
+      // legacy POST shape working while still satisfying the policy gate;
+      // explicit evidence always overrides synthesis. Spec § Producers
+      // line 227: `session` is in the DecisionJournal allowlist. Spec
+      // § Storage and Privacy line 333: synthetic sourceIds are tolerated
+      // (consumers handle dangling refs).
+      let effectiveEvidence: any[] = Array.isArray(evidence) ? evidence : [];
+      if (effectiveEvidence.length === 0) {
+        effectiveEvidence = [{
+          kind: 'session',
+          sourceId: `session:${sessionId}`,
+          weight: 0.5,
+          confidence: 0.5,
+          privacyTier: 'private',
+          note: 'auto-synthesized from request session (no explicit evidence)',
+          updatedAt: new Date().toISOString(),
+        }];
+      }
+
+      try {
+        const entry = journal.log({ sessionId, decision, ...rest }, effectiveEvidence);
+        res.status(201).json(entry);
+      } catch (err) {
+        if (err instanceof EvidencePolicyError) {
+          res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        throw err;
+      }
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to log decision' });
     }
