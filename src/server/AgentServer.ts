@@ -166,6 +166,8 @@ export class AgentServer {
     threadlineObservability?: import('../threadline/ThreadlineObservability.js').ThreadlineObservability;
     /** TaskFlow registry — durable multi-step job records (OpenClaw import). */
     taskFlowRegistry?: import('../tasks/TaskFlowRegistry.js').TaskFlowRegistry;
+    /** ThreadlineFlowBridge — resumes flows on cross-agent-callback inbound. */
+    threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
     this.startTime = new Date();
@@ -431,6 +433,7 @@ export class AgentServer {
       telegramBridge: options.telegramBridge ?? null,
       threadlineObservability: options.threadlineObservability ?? null,
       taskFlowRegistry: options.taskFlowRegistry ?? null,
+      threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;

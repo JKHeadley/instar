@@ -610,6 +610,10 @@ export interface RouteContext {
    *  Null when not enabled. Phase 1: no business consumers; admin endpoints
    *  only. */
   taskFlowRegistry: import('../tasks/TaskFlowRegistry.js').TaskFlowRegistry | null;
+  /** ThreadlineFlowBridge — resumes TaskFlow flows waiting on
+   *  cross-agent-callback when a matching threadline message arrives. Null
+   *  when TaskFlow is not enabled. */
+  threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | null;
   startTime: Date;
 }
 
@@ -10113,6 +10117,22 @@ export function createRoutes(ctx: RouteContext): Router {
               console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
               waiter.resolve(textContent);
             }
+          }
+        }
+
+        // ThreadlineFlowBridge: resume any TaskFlow flow waiting on a
+        // cross-agent-callback whose correlationId matches this inbound. The
+        // bridge runs after relay-accept (auth has passed), inspects only the
+        // envelope, and never alters the HTTP response — failures or misses
+        // are logged but not surfaced.
+        if (ctx.threadlineFlowBridge) {
+          try {
+            const bridgeResult = await ctx.threadlineFlowBridge.consumeInbound(envelope);
+            if (bridgeResult.resumed) {
+              console.log(`[relay-agent] ThreadlineFlowBridge resumed ${bridgeResult.flowIds.length} flow(s): ${bridgeResult.flowIds.join(', ')}`);
+            }
+          } catch (err) {
+            if (err instanceof Error) console.error('[routes] ThreadlineFlowBridge error:', err.message);
           }
         }
 
