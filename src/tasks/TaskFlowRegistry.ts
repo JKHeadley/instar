@@ -15,6 +15,8 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import { TaskFlowStore } from './task-flow-registry.store.sqlite.js';
+import { RateLimiter } from './RateLimiter.js';
+import { LruCache } from './LruCache.js';
 import {
   TaskFlowRecord,
   TaskFlowStatus,
@@ -28,6 +30,8 @@ import {
   SupersededRef,
   ApplyResult,
   WaitMatch,
+  RateLimitConfig,
+  CacheConfig,
   createFlowInputSchema,
   waitJsonSchema,
   isTerminalStatus,
@@ -38,6 +42,9 @@ import {
   MAX_CURRENT_STEP_CHARS,
   MAX_CACHE_ENTRIES,
   DEFAULT_THRESHOLDS,
+  DEFAULT_RATE_LIMITS,
+  DEFAULT_CACHE_CONFIG,
+  ACTIVE_STATUSES,
   RESERVED_MAINTENANCE_CONTROLLER,
 } from './task-flow-types.js';
 import type { SharedStateLedger } from '../core/SharedStateLedger.js';
@@ -46,6 +53,8 @@ export interface TaskFlowRegistryOptions {
   store: TaskFlowStore;
   ledger?: SharedStateLedger;
   thresholds?: Partial<TaskFlowThresholds>;
+  rateLimits?: Partial<RateLimitConfig>;
+  cache?: Partial<CacheConfig>;
   now?: () => number;
 }
 
@@ -58,20 +67,68 @@ export class TaskFlowRegistry extends EventEmitter {
   private readonly store: TaskFlowStore;
   private readonly ledger?: SharedStateLedger;
   private readonly thresholds: TaskFlowThresholds;
+  private readonly rateLimits: RateLimitConfig;
+  private readonly cacheConfig: CacheConfig;
   private readonly now: () => number;
-  private readonly cache = new Map<string, TaskFlowRecord>();
+  private readonly cache: LruCache<TaskFlowRecord>;
+  private readonly createLimiter: RateLimiter;
+  private readonly pingLimiter: RateLimiter;
+  /** Per-controller in-memory active count cache; populated lazily from DB. */
+  private readonly activeCountByController = new Map<string, number>();
+  /** Set of controllerIds whose count has been loaded from DB at least once. */
+  private readonly activeCountLoaded = new Set<string>();
   readonly notifyMetrics: NotifyMetrics = { emitted: 0, byKind: {} };
+  /** Counter for cache evictions (Prometheus-style metric source). */
+  cacheEvictionsTotal = 0;
+  /** Counter for rate-limit rejections, broken out by kind. */
+  rateLimitRejections: Record<string, number> = {
+    create_rate: 0,
+    max_active: 0,
+    ping_rate: 0,
+  };
 
   constructor(opts: TaskFlowRegistryOptions) {
     super();
     this.store = opts.store;
     this.ledger = opts.ledger;
     this.thresholds = { ...DEFAULT_THRESHOLDS, ...(opts.thresholds ?? {}) };
+    this.rateLimits = { ...DEFAULT_RATE_LIMITS, ...(opts.rateLimits ?? {}) };
+    this.cacheConfig = { ...DEFAULT_CACHE_CONFIG, ...(opts.cache ?? {}) };
     this.now = opts.now ?? (() => Date.now());
+    this.cache = new LruCache<TaskFlowRecord>({
+      maxEntries: this.cacheConfig.maxEntries,
+      onEvict: (_k, _v) => {
+        this.cacheEvictionsTotal++;
+        this.emitCacheEvictionMetric();
+      },
+    });
+    this.createLimiter = new RateLimiter({
+      windowMs: 1000,
+      limit: this.rateLimits.createPerSecPerController,
+      now: this.now,
+    });
+    this.pingLimiter = new RateLimiter({
+      windowMs: 60_000,
+      limit: this.rateLimits.pingPerMinPerFlow,
+      now: this.now,
+    });
   }
 
   getThresholds(): TaskFlowThresholds {
     return { ...this.thresholds };
+  }
+
+  getRateLimits(): RateLimitConfig {
+    return { ...this.rateLimits };
+  }
+
+  getCacheConfig(): CacheConfig {
+    return { ...this.cacheConfig };
+  }
+
+  /** Test-only: returns the LRU cache size. */
+  get cacheSize(): number {
+    return this.cache.size;
   }
 
   // ────────────────── reads ──────────────────
@@ -83,7 +140,7 @@ export class TaskFlowRegistry extends EventEmitter {
     }
     const rec = this.store.getFlow(flowId);
     if (rec) this.cachePut(rec);
-    return rec;
+    return rec ?? null;
   }
 
   /** Returns the redacted view safe to expose to non-owning callers. */
@@ -181,7 +238,50 @@ export class TaskFlowRegistry extends EventEmitter {
     if (parsed.data.stateJson !== undefined) {
       this.validateStateJsonSize(parsed.data.stateJson);
     }
+    // ── Phase 5 rate limits ────────────────────────────────────────────
+    // Idempotent-replay carve-out: a duplicate idempotencyKey replay must
+    // NOT count against the per-second rate limit. Check idempotency in a
+    // cheap read first; if the flow exists, short-circuit before counting.
+    const preExisting = this.store.findIdempotent(
+      parsed.data.controllerId,
+      parsed.data.ownerKey,
+      parsed.data.idempotencyKey
+    );
+    if (preExisting) return { flow: preExisting, created: false };
+
+    const rateRes = this.createLimiter.tryAcquire(parsed.data.controllerId);
+    if (!rateRes.ok) {
+      this.rateLimitRejections.create_rate++;
+      throw new TaskFlowError(
+        'quota_exceeded',
+        `createFlow rate limit exceeded for controllerId=${parsed.data.controllerId}`,
+        {
+          code: 'rate_limit',
+          scope: 'create',
+          limit: this.rateLimits.createPerSecPerController,
+          windowMs: 1000,
+          retryAfterMs: rateRes.retryAfterMs ?? 1000,
+          controllerId: parsed.data.controllerId,
+        }
+      );
+    }
+    const active = this.getActiveCount(parsed.data.controllerId);
+    if (active >= this.rateLimits.maxActivePerController) {
+      this.rateLimitRejections.max_active++;
+      throw new TaskFlowError(
+        'quota_exceeded',
+        `max active flows exceeded for controllerId=${parsed.data.controllerId}`,
+        {
+          code: 'max_active',
+          scope: 'create',
+          limit: this.rateLimits.maxActivePerController,
+          currentActive: active,
+          controllerId: parsed.data.controllerId,
+        }
+      );
+    }
     return this.store.withWriteTransaction(() => {
+      // Re-check idempotency inside the transaction (race-safe).
       const existing = this.store.findIdempotent(
         parsed.data.controllerId,
         parsed.data.ownerKey,
@@ -208,9 +308,44 @@ export class TaskFlowRegistry extends EventEmitter {
       };
       this.store.insertFlow(rec, parsed.data.idempotencyKey);
       this.cachePut(rec);
+      // bump in-memory active count cache; if not yet loaded, leave it for the
+      // next getActiveCount to load lazily.
+      if (this.activeCountLoaded.has(parsed.data.controllerId)) {
+        this.activeCountByController.set(
+          parsed.data.controllerId,
+          (this.activeCountByController.get(parsed.data.controllerId) ?? 0) + 1
+        );
+      }
       this.emitTransitionLedgerNote(rec, null, 'queued', 'createFlow');
       return { flow: rec, created: true };
     });
+  }
+
+  /**
+   * Returns count of non-terminal flows for a controller. Lazy-loaded from DB
+   * on first call, then maintained incrementally via createFlow / applyOcc.
+   *
+   * The bookkeeping is best-effort — if it drifts (e.g. server restart),
+   * the next call resets from DB. The hot path never goes to DB twice.
+   */
+  private getActiveCount(controllerId: string): number {
+    if (!this.activeCountLoaded.has(controllerId)) {
+      let total = 0;
+      for (const s of ACTIVE_STATUSES) {
+        total += this.store.findByControllerId(controllerId, { status: s }).length;
+      }
+      this.activeCountByController.set(controllerId, total);
+      this.activeCountLoaded.add(controllerId);
+      return total;
+    }
+    return this.activeCountByController.get(controllerId) ?? 0;
+  }
+
+  /** Hook: invoked after a flow transitions to a terminal status. */
+  private onTerminalTransition(rec: TaskFlowRecord): void {
+    if (!this.activeCountLoaded.has(rec.controllerId)) return;
+    const cur = this.activeCountByController.get(rec.controllerId) ?? 0;
+    if (cur > 0) this.activeCountByController.set(rec.controllerId, cur - 1);
   }
 
   // ────────────────── transitions ──────────────────
@@ -565,6 +700,25 @@ export class TaskFlowRegistry extends EventEmitter {
         op: 'pingFlow',
       });
     }
+    // ── Phase 5 ping rate limit ──────────────────────────────────────
+    // Spec § Threat Model line 685 — heartbeat-flood mitigation. Authority
+    // check first (above): bogus pings don't even count against the limit.
+    const rateRes = this.pingLimiter.tryAcquire(args.flowId);
+    if (!rateRes.ok) {
+      this.rateLimitRejections.ping_rate++;
+      throw new TaskFlowError(
+        'quota_exceeded',
+        `pingFlow rate limit exceeded for flowId=${args.flowId}`,
+        {
+          code: 'rate_limited',
+          scope: 'ping',
+          limit: this.rateLimits.pingPerMinPerFlow,
+          windowMs: 60_000,
+          retryAfterMs: rateRes.retryAfterMs ?? 60_000,
+          flowId: args.flowId,
+        }
+      );
+    }
     const ts = this.now();
     const updated = this.store.pingFlowRow({
       flowId: args.flowId,
@@ -630,6 +784,12 @@ export class TaskFlowRegistry extends EventEmitter {
       return { prev: cur, next };
     });
     this.cachePut(result.next);
+    // Active-count bookkeeping: decrement on terminal entry.
+    if (!isTerminalStatus(result.prev.status) && isTerminalStatus(result.next.status)) {
+      this.onTerminalTransition(result.next);
+      // Heartbeat bucket is also pointless for terminal flows — let it GC.
+      this.pingLimiter.forget(result.next.flowId);
+    }
     this.emitTransitionLedgerNote(result.next, result.prev.status, result.next.status, op);
     if (afterCommit) {
       try {
@@ -645,23 +805,18 @@ export class TaskFlowRegistry extends EventEmitter {
 
   private cachePut(rec: TaskFlowRecord): void {
     this.cache.set(rec.flowId, rec);
-    if (this.cache.size > MAX_CACHE_ENTRIES) {
-      // Evict the oldest insertion-order key. (Map preserves insertion order.)
-      // Prefer terminal flows for eviction by scanning the head a bit.
-      let evicted = false;
-      let i = 0;
-      for (const [k, v] of this.cache) {
-        if (i++ > 32) break;
-        if (v.endedAt != null) {
-          this.cache.delete(k);
-          evicted = true;
-          break;
-        }
-      }
-      if (!evicted) {
-        const firstKey = this.cache.keys().next().value as string | undefined;
-        if (firstKey) this.cache.delete(firstKey);
-      }
+  }
+
+  private emitCacheEvictionMetric(): void {
+    // Lightweight metric surface — instar emits `[metric] name=value labels`
+    // tagged lines that the dashboard scrapes. Keep emission identical
+    // shape to DivergenceChecker.emitMetric for consistency.
+    try {
+      console.log(
+        `[metric] taskflow_cache_evictions_total=${this.cacheEvictionsTotal} ${JSON.stringify({ scope: 'TaskFlowRegistry' })}`
+      );
+    } catch {
+      /* swallow */
     }
   }
 
@@ -712,6 +867,17 @@ export class TaskFlowRegistry extends EventEmitter {
 
   // ────────────────── audit + notify ──────────────────
 
+  /**
+   * Emit a redacted state-transition audit note. Per spec § Threat Model
+   * lines 681-682, the audit shape carries only structural metadata:
+   *   { flowId, revision, currentStep, from_status, to_status, waitJson.kind, controllerId, op }
+   *
+   * It MUST NOT include `stateJson` (controller-private; spec line 705) and
+   * MUST NOT include any field of `waitJson` other than `kind` (spec line 681).
+   *
+   * Audit emission is fire-and-forget; failures never affect state-machine
+   * correctness (tier-2 audit per spec § Storage and Concurrency).
+   */
   private emitTransitionLedgerNote(
     rec: TaskFlowRecord,
     fromStatus: TaskFlowStatus | null,
@@ -719,16 +885,48 @@ export class TaskFlowRegistry extends EventEmitter {
     op: string
   ): void {
     if (!this.crossesAuditBoundary(fromStatus, toStatus, op)) return;
-    this.emitLedgerNote('taskflow-transition', {
+    if (!this.ledger) return;
+
+    // Redacted shape per spec lines 681-682.
+    const auditPayload = {
       flowId: rec.flowId,
       revision: rec.revision,
+      currentStep: rec.currentStep ?? null,
       from_status: fromStatus,
       to_status: toStatus,
-      currentStep: rec.currentStep,
       waitKind: rec.waitJson?.kind ?? null,
       controllerId: rec.controllerId,
       op,
-    });
+    };
+    // Summary embeds only the redacted fields; subject is the static kind tag.
+    // This keeps the SharedStateLedger schema (subject required, max 200 chars,
+    // summary max 400) happy without leaking stateJson.
+    const summary =
+      `flow=${rec.flowId} rev=${rec.revision} ` +
+      `${fromStatus ?? 'null'}->${toStatus} ` +
+      `step=${rec.currentStep ?? 'none'} ` +
+      `wait=${rec.waitJson?.kind ?? 'none'} ` +
+      `op=${op}`;
+    void Promise.resolve()
+      .then(() =>
+        this.ledger!.append({
+          kind: 'note',
+          provenance: 'subsystem-asserted',
+          emittedBy: {
+            subsystem: 'taskflow-transition',
+            instance: 'TaskFlowRegistry',
+          },
+          counterparty: { type: 'self', name: rec.controllerId.slice(0, 64).replace(/[^a-zA-Z0-9\-_.:]/g, '_'), trustTier: 'trusted' },
+          subject: 'taskflow-transition',
+          summary: summary.length > 400 ? summary.slice(0, 400) : summary,
+          dedupKey: `taskflow-transition:${rec.flowId}:${rec.revision}:${op}`,
+        } as any)
+      )
+      .catch(() => {
+        /* swallow — audit best-effort */
+      });
+    // Expose the redacted payload via an event for tests / dashboards.
+    this.emit('taskflow:audit-emitted', auditPayload);
   }
 
   private crossesAuditBoundary(
@@ -744,24 +942,29 @@ export class TaskFlowRegistry extends EventEmitter {
     return false;
   }
 
+  /**
+   * Emit a generic redacted ledger note (used by cancel-requested path).
+   * Same redaction discipline as emitTransitionLedgerNote.
+   */
   private emitLedgerNote(kind: string, payload: Record<string, unknown>): void {
     if (!this.ledger) return;
-    // Best-effort: ledger.append is async but we don't await — tier-2 audit, never
-    // blocks state correctness (per spec § Storage and Concurrency).
     void Promise.resolve()
       .then(() =>
         this.ledger!.append({
-          kind: `note:${kind}`,
-          provenance: 'TaskFlowRegistry',
-          emittedBy: 'TaskFlowRegistry',
-          counterparty: 'self',
-          subject: kind,
+          kind: 'note',
+          provenance: 'subsystem-asserted',
+          emittedBy: {
+            subsystem: 'taskflow-transition',
+            instance: 'TaskFlowRegistry',
+          },
+          counterparty: { type: 'self', name: 'TaskFlowRegistry', trustTier: 'trusted' },
+          subject: kind.slice(0, 200),
+          summary: `flow=${payload.flowId} rev=${payload.revision ?? 'na'} kind=${kind}`,
           dedupKey: `${kind}:${payload.flowId}:${payload.revision ?? 'na'}`,
-          payload,
         } as any)
       )
       .catch(() => {
-        /* swallow — audit best-effort */
+        /* swallow */
       });
   }
 

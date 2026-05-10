@@ -12988,6 +12988,14 @@ export function createRoutes(ctx: RouteContext): Router {
         wait_collision: 422,
         quota_exceeded: 429,
       } as Record<string, number>)[e.code ?? ''] ?? 500;
+      // Phase 5: rate-limit responses surface Retry-After header for HTTP-compliant
+      // clients in addition to the in-body retryAfterMs hint. RFC 7231 § 7.1.3
+      // specifies seconds; we round UP so a sub-second retry maps to 1.
+      if (status === 429 && typeof (e.detail as any)?.retryAfterMs === 'number') {
+        const retryAfterMs = (e.detail as any).retryAfterMs as number;
+        const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+        try { res.setHeader('Retry-After', String(seconds)); } catch { /* swallow */ }
+      }
       res.status(status).json({ error: e.code, ...(e.detail ?? {}), message: e.message });
     };
 

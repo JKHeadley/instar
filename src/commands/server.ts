@@ -6222,6 +6222,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           store,
           ledger: sharedStateLedger ?? undefined,
           thresholds: (config as any).taskFlow?.thresholds,
+          // Phase 5: rate limits + cache cap. Each field has a documented
+          // default in DEFAULT_RATE_LIMITS / DEFAULT_CACHE_CONFIG.
+          rateLimits: (config as any).taskFlow?.rateLimits,
+          cache: (config as any).taskFlow?.cache,
         });
         taskFlowSweeper = new TaskFlowMaintenanceSweeper({
           registry: taskFlowRegistry,

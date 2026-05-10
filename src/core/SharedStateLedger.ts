@@ -51,6 +51,10 @@ const VALID_SUBSYSTEMS: readonly LedgerEntrySubsystem[] = [
   'session',
   // v2 slice 5: CommitmentSweeper subsystem-asserted emissions.
   'commitment-sweeper',
+  // TaskFlow Phase 3a: DivergenceChecker mismatch notes.
+  'taskflow-divergence',
+  // TaskFlow Phase 5: state-transition audit notes.
+  'taskflow-transition',
 ];
 const VALID_KINDS: readonly LedgerEntryKind[] = [
   'commitment',
