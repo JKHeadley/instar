@@ -35,6 +35,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionManager } from './SessionManager.js';
+import type { SemanticMemory } from '../memory/SemanticMemory.js';
+import type { MemoryEvidence } from './types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -128,10 +130,60 @@ export interface DispatchLedgerEvent {
   timestamp: string;
 }
 
+/**
+ * Per-execute provenance context for WikiClaim evidence emission. When
+ * provided AND a SemanticMemory handle is wired, a successful dispatch
+ * creates a `decision` MemoryEntity carrying evidence rows linking the
+ * decision back to the source cluster (`kind: 'pattern-entity'`) and to
+ * any prior dispatch attempts (`kind: 'job-run'`).
+ *
+ * Spec § Producers (DispatchExecutor): allowed kinds are
+ * `pattern-entity`, `job-run`, `ledger-entry`. The optional
+ * `priorDispatchEntityIds` field becomes `pattern-entity` rows pointing at
+ * the prior decision's own cluster — used when the new decision overrides
+ * a prior dispatch (the spec's "supersedes" semantics carried by the
+ * pattern-entity edge, not the kind label, since DispatchExecutor's
+ * allowlist does not include `supersedes-evidence`).
+ *
+ * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Producers.
+ */
+export interface DispatchEvidenceContext {
+  /** Cluster MemoryEntity id (the EvolutionManager-created pattern entity). */
+  clusterEntityId: string;
+  /** Optional dispatch id; persisted as ledger-entry evidence on success. */
+  dispatchId?: string;
+  /** Optional prior dispatch run-ids; emitted as `job-run` evidence rows. */
+  priorRunIds?: string[];
+  /**
+   * Optional prior decision-entity ids. When present, a
+   * `pattern-entity` row is added per id, marking that the new decision
+   * supersedes those prior decisions. Allowed under DispatchExecutor's
+   * `pattern-entity` kind; the override semantics is captured by the edge,
+   * not by a `supersedes-evidence` kind.
+   */
+  priorDispatchEntityIds?: string[];
+}
+
 export class DispatchExecutor {
   private projectDir: string;
   private sessionManager: SessionManager | null;
   private onLedgerEvent: ((evt: DispatchLedgerEvent) => void) | null = null;
+  /**
+   * Optional SemanticMemory handle for WikiClaim Phase 2 evidence emission.
+   * When wired, `execute()` accepts a `DispatchEvidenceContext` and on
+   * successful completion records a `decision` MemoryEntity with evidence
+   * pointing at the source cluster and any prior dispatch runs. Without
+   * this handle, evidence emission is a no-op — dispatch flow is
+   * unaffected.
+   */
+  private semanticMemory: SemanticMemory | null = null;
+  /**
+   * Last decision-entity id created by `execute()`. Exposed for chaining —
+   * a follow-up dispatch can pass this in `priorDispatchEntityIds` to
+   * record the supersedes edge. Reset to null on each execute call before
+   * any evidence is emitted.
+   */
+  private lastDecisionEntityId: string | null = null;
 
   constructor(projectDir: string, sessionManager?: SessionManager | null) {
     this.projectDir = projectDir;
@@ -146,9 +198,112 @@ export class DispatchExecutor {
     this.onLedgerEvent = sink;
   }
 
+  /**
+   * Wire a SemanticMemory handle for WikiClaim Phase 2 evidence emission.
+   * Idempotent — safe to call multiple times.
+   *
+   * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Producers.
+   */
+  setSemanticMemory(memory: SemanticMemory): void {
+    this.semanticMemory = memory;
+  }
+
+  getSemanticMemory(): SemanticMemory | null {
+    return this.semanticMemory;
+  }
+
+  /** Test/inspection hook: id of the most recent decision MemoryEntity. */
+  getLastDecisionEntityId(): string | null {
+    return this.lastDecisionEntityId;
+  }
+
   private emitLedger(evt: DispatchLedgerEvent): void {
     if (!this.onLedgerEvent) return;
     try { this.onLedgerEvent(evt); } catch { /* signal-only */ }
+  }
+
+  /**
+   * Build the evidence array for a dispatch decision. Spec § Producers
+   * example shape: cluster reference at high weight, prior runs at low
+   * weight, optional ledger-entry for the dispatch id itself.
+   */
+  private buildDispatchEvidence(ctx: DispatchEvidenceContext): MemoryEvidence[] {
+    const now = new Date().toISOString();
+    const evidence: MemoryEvidence[] = [
+      {
+        kind: 'pattern-entity',
+        sourceId: ctx.clusterEntityId,
+        weight: 0.6,
+        confidence: 0.85,
+        updatedAt: now,
+      },
+    ];
+    if (ctx.dispatchId) {
+      evidence.push({
+        kind: 'ledger-entry',
+        sourceId: ctx.dispatchId,
+        weight: 0.3,
+        confidence: 0.9,
+        updatedAt: now,
+      });
+    }
+    for (const runId of ctx.priorRunIds ?? []) {
+      evidence.push({
+        kind: 'job-run',
+        sourceId: runId,
+        weight: 0.1,
+        confidence: 0.7,
+        updatedAt: now,
+      });
+    }
+    for (const priorEntityId of ctx.priorDispatchEntityIds ?? []) {
+      evidence.push({
+        kind: 'pattern-entity',
+        sourceId: priorEntityId,
+        weight: 0.05,
+        confidence: 0.8,
+        note: 'supersedes prior dispatch decision',
+        updatedAt: now,
+      });
+    }
+    return evidence;
+  }
+
+  /**
+   * Best-effort decision-entity emission. Never throws to the caller —
+   * dispatch execution is the source of truth; evidence emission is a
+   * downstream signal. Returns the entity id on success, null on failure or
+   * when memory is not wired.
+   */
+  private recordDispatchDecision(
+    payload: ActionPayload,
+    ctx: DispatchEvidenceContext,
+  ): string | null {
+    if (!this.semanticMemory) return null;
+    try {
+      const evidence = this.buildDispatchEvidence(ctx);
+      const id = this.semanticMemory.rememberWithEvidence(
+        {
+          type: 'decision',
+          name: `dispatch:${ctx.dispatchId ?? 'anon'}`.slice(0, 200),
+          content: payload.description,
+          confidence: 0.85,
+          lastVerified: new Date().toISOString(),
+          source: ctx.dispatchId ? `dispatch:${ctx.dispatchId}` : 'dispatch',
+          tags: ['dispatch', 'decision'],
+          privacyScope: 'shared-project',
+        },
+        evidence,
+        'DispatchExecutor',
+      );
+      return id;
+    } catch (err) {
+      console.warn(
+        `[DispatchExecutor] decision-entity record failed:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   /**
@@ -175,9 +330,15 @@ export class DispatchExecutor {
    * 3. Verify success
    * 4. Rollback on failure (if rollback steps provided)
    */
-  async execute(payload: ActionPayload): Promise<ExecutionResult> {
+  async execute(
+    payload: ActionPayload,
+    evidenceCtx?: DispatchEvidenceContext,
+  ): Promise<ExecutionResult> {
     const stepResults: StepResult[] = [];
     let completedSteps = 0;
+    // Reset before any evidence is emitted; preserves "last successful"
+    // semantics — a failed dispatch leaves the prior decision id intact.
+    let nextDecisionEntityId: string | null = null;
 
     // Check preconditions
     if (payload.conditions) {
@@ -238,12 +399,23 @@ export class DispatchExecutor {
 
     // Integrated-Being ledger: emit decision entry on successful execution.
     this.emitLedger({
+      dispatchId: evidenceCtx?.dispatchId,
       description: payload.description,
       completedSteps,
       totalSteps: payload.steps.length,
       verified,
       timestamp: new Date().toISOString(),
     });
+
+    // WikiClaim Phase 2: record the decision MemoryEntity with evidence
+    // pointing at the source cluster + prior dispatch runs. Best-effort —
+    // failure does not affect the dispatch result.
+    if (evidenceCtx) {
+      nextDecisionEntityId = this.recordDispatchDecision(payload, evidenceCtx);
+      if (nextDecisionEntityId) {
+        this.lastDecisionEntityId = nextDecisionEntityId;
+      }
+    }
 
     return {
       success: true,
