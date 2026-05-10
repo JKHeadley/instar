@@ -498,11 +498,14 @@ describe('DispatchDecisionJournal', () => {
     it('dispatch and base entries share the same JSONL file', () => {
       const base = journal.getBaseJournal();
 
-      // Log a base entry
+      // Log a base entry — WikiClaim Phase 3 requires evidence on every
+      // DecisionJournal.log call (spec § Producers line 258). A minimal
+      // `message` row satisfies the gate without exercising the producer-kind
+      // allowlist, which is covered in decision-journal-evidence.test.ts.
       base.log({
         sessionId: 'sess-base',
         decision: 'Regular decision',
-      });
+      }, [{ kind: 'message', sourceId: 'inline:test', updatedAt: '2026-05-09T00:00:00Z' }]);
 
       // Log a dispatch entry
       journal.logDispatchDecision(makeEntry({ dispatchId: 'disp-1' }));

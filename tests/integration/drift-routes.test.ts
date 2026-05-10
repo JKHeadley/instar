@@ -217,7 +217,16 @@ describe('Drift & Alignment Routes (integration)', () => {
 
   describe('POST then GET round-trip', () => {
     it('entries logged via POST are reflected in drift and alignment', async () => {
-      // Log entries via the journal POST endpoint
+      // Log entries via the journal POST endpoint.
+      //
+      // WikiClaim Phase 3 (spec § Producers line 258): POST /intent/journal
+      // requires an `evidence` array citing at least one source. We pass a
+      // single minimal `message` row (allowed for DecisionJournal per spec
+      // line 227) to satisfy the gate. Required-evidence enforcement itself
+      // is covered in tests/unit/decision-journal-evidence.test.ts.
+      const evidence = [
+        { kind: 'message', sourceId: 'inline:roundtrip-test', updatedAt: '2026-05-10T00:00:00Z' },
+      ];
       for (let i = 0; i < 5; i++) {
         await request(app)
           .post('/intent/journal')
@@ -226,6 +235,7 @@ describe('Drift & Alignment Routes (integration)', () => {
             decision: `Round-trip decision ${i}`,
             principle: 'accuracy',
             confidence: 0.8,
+            evidence,
           });
       }
 

@@ -13,8 +13,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DecisionJournal } from '../../src/core/DecisionJournal.js';
-import type { DecisionJournalEntry } from '../../src/core/types.js';
+import type { DecisionJournalEntry, MemoryEvidence } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+/**
+ * WikiClaim Phase 3: DecisionJournal.log requires evidence. These tests are
+ * scoped to journal mechanics (JSONL append/read/stats), so we pass a single
+ * minimal `message`-kind row (allowed for DecisionJournal per spec line 227)
+ * to satisfy the gate. The required-evidence + auto-derivation tests live
+ * in tests/unit/decision-journal-evidence.test.ts.
+ */
+const ev: MemoryEvidence[] = [
+  { kind: 'message', sourceId: 'inline:test', updatedAt: '2026-05-09T00:00:00Z' },
+];
 
 describe('DecisionJournal', () => {
   let tmpDir: string;
@@ -42,7 +53,7 @@ describe('DecisionJournal', () => {
       journal.log({
         sessionId: 'sess-1',
         decision: 'Use caching for performance',
-      });
+      }, ev);
 
       expect(fs.existsSync(stateDir)).toBe(true);
       expect(fs.existsSync(path.join(stateDir, 'decision-journal.jsonl'))).toBe(true);
@@ -52,7 +63,7 @@ describe('DecisionJournal', () => {
       journal.log({
         sessionId: 'sess-1',
         decision: 'Chose REST over GraphQL',
-      });
+      }, ev);
 
       const content = fs.readFileSync(path.join(stateDir, 'decision-journal.jsonl'), 'utf-8');
       const lines = content.trim().split('\n');
@@ -72,7 +83,7 @@ describe('DecisionJournal', () => {
         decision: 'Deploy to staging first',
         principle: 'safety-first',
         confidence: 0.9,
-      });
+      }, ev);
 
       expect(result.sessionId).toBe('sess-2');
       expect(result.decision).toBe('Deploy to staging first');
@@ -82,9 +93,9 @@ describe('DecisionJournal', () => {
     });
 
     it('appends multiple entries without overwriting', () => {
-      journal.log({ sessionId: 's1', decision: 'First decision' });
-      journal.log({ sessionId: 's2', decision: 'Second decision' });
-      journal.log({ sessionId: 's3', decision: 'Third decision' });
+      journal.log({ sessionId: 's1', decision: 'First decision' }, ev);
+      journal.log({ sessionId: 's2', decision: 'Second decision' }, ev);
+      journal.log({ sessionId: 's3', decision: 'Third decision' }, ev);
 
       const content = fs.readFileSync(path.join(stateDir, 'decision-journal.jsonl'), 'utf-8');
       const lines = content.trim().split('\n');
@@ -107,7 +118,7 @@ describe('DecisionJournal', () => {
         context: 'During maintenance window',
         conflict: true,
         tags: ['infra', 'critical'],
-      });
+      }, ev);
 
       expect(entry.topicId).toBe(42);
       expect(entry.jobSlug).toBe('health-check');
@@ -125,7 +136,7 @@ describe('DecisionJournal', () => {
       const entry = journal.log({
         sessionId: 'sess-x',
         decision: 'Works with existing dir',
-      });
+      }, ev);
 
       expect(entry.decision).toBe('Works with existing dir');
     });
@@ -280,9 +291,9 @@ describe('DecisionJournal', () => {
     });
 
     it('counts total entries', () => {
-      journal.log({ sessionId: 's1', decision: 'D1' });
-      journal.log({ sessionId: 's2', decision: 'D2' });
-      journal.log({ sessionId: 's3', decision: 'D3' });
+      journal.log({ sessionId: 's1', decision: 'D1' }, ev);
+      journal.log({ sessionId: 's2', decision: 'D2' }, ev);
+      journal.log({ sessionId: 's3', decision: 'D3' }, ev);
 
       const stats = journal.stats();
       expect(stats.count).toBe(3);
@@ -341,7 +352,7 @@ describe('DecisionJournal', () => {
     });
 
     it('handles single entry correctly', () => {
-      journal.log({ sessionId: 's1', decision: 'Only entry', principle: 'caution', conflict: true });
+      journal.log({ sessionId: 's1', decision: 'Only entry', principle: 'caution', conflict: true }, ev);
 
       const stats = journal.stats();
       expect(stats.count).toBe(1);
