@@ -35,6 +35,8 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import type { TaskFlowRegistry } from '../tasks/TaskFlowRegistry.js';
 import type { TaskFlowRecord, TaskFlowPrincipal } from '../tasks/task-flow-types.js';
 import { TaskFlowError } from '../tasks/task-flow-types.js';
+import type { SemanticMemory } from '../memory/SemanticMemory.js';
+import type { MemoryEvidence } from './types.js';
 
 /**
  * TaskFlow controller identity for EvolutionManager (Phase 3a dual-write).
@@ -168,6 +170,18 @@ export class EvolutionManager {
    */
   private taskFlowShadowWritesHaltSource: string | null = null;
 
+  // ── WikiClaim Evidence Phase 2 fields ───────────────────────────
+  /**
+   * SemanticMemory handle. When wired, EvolutionManager creates a `pattern`
+   * MemoryEntity for each new proposal (the cluster) and populates evidence
+   * rows linking the cluster to its constituent feedback IDs / commit SHAs /
+   * session IDs. JSON state remains the source of truth for proposals; the
+   * cluster entity is a parallel surface for inverse-traceability queries.
+   *
+   * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Producers.
+   */
+  private semanticMemory: SemanticMemory | null = null;
+
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
@@ -218,6 +232,115 @@ export class EvolutionManager {
       reason: this.taskFlowShadowWritesHaltReason,
       source: this.taskFlowShadowWritesHaltSource,
     };
+  }
+
+  // ── WikiClaim Evidence Phase 2 wiring ───────────────────────────
+
+  /**
+   * Wire a SemanticMemory handle for cluster evidence emission. After this
+   * call, `addProposal()` creates a `pattern` MemoryEntity for the cluster
+   * with evidence linking to the proposal source, and `addClusterEvidence()`
+   * appends evidence atomically as more inputs join the cluster.
+   *
+   * Idempotent — safe to call multiple times; subsequent calls overwrite.
+   * Producers emit signals (evidence rows); they do NOT gate proposal flow.
+   *
+   * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Producers.
+   */
+  setSemanticMemory(memory: SemanticMemory): void {
+    this.semanticMemory = memory;
+  }
+
+  getSemanticMemory(): SemanticMemory | null {
+    return this.semanticMemory;
+  }
+
+  /**
+   * Append evidence to the cluster MemoryEntity for an existing proposal.
+   * Used when more feedback / commits / sessions join an open cluster.
+   * No-op when SemanticMemory is not wired or when the proposal has no
+   * cluster entity yet (legacy proposals from before Phase 2).
+   *
+   * Allowed kinds (per spec § Producers): `feedback`, `pattern-entity`,
+   * `supersedes-evidence`. Mismatches throw `EvidencePolicyError`.
+   */
+  addClusterEvidence(proposalId: string, evidence: MemoryEvidence | MemoryEvidence[]): void {
+    if (!this.semanticMemory) return;
+    const state = this.loadEvolution();
+    const proposal = state.proposals.find((p) => p.id === proposalId);
+    if (!proposal || !proposal.entityId) return;
+    // Throws EvidencePolicyError on producer/kind mismatch — surfaced to caller
+    // by design so a buggy emit-site isn't silently dropped.
+    this.semanticMemory.addEvidence(proposal.entityId, evidence, 'EvolutionManager');
+  }
+
+  /**
+   * Build the initial evidence array for a newly-created cluster from the
+   * proposal's `source` field. Recognized patterns (mirrors backfill rules
+   * in spec § Migration of Existing MemoryEntity Records, restricted to
+   * EvolutionManager's allowlist):
+   *
+   *   - `feedback:<id>` → kind: 'feedback', sourceId: '<id>'
+   *
+   * Unrecognized sources produce no evidence (cluster is created with
+   * `evidence: []`). Subsequent `addClusterEvidence()` calls populate as
+   * inputs join. Empty evidence arrays are valid — `rememberWithEvidence`
+   * with `evidence: []` is functionally equivalent to `remember()` plus the
+   * consolidated JSONL action.
+   */
+  private buildInitialClusterEvidence(p: EvolutionProposal): MemoryEvidence[] {
+    const now = this.now();
+    const evidence: MemoryEvidence[] = [];
+    const feedbackMatch = p.source.match(/^feedback:(.+)$/);
+    if (feedbackMatch) {
+      evidence.push({
+        kind: 'feedback',
+        sourceId: feedbackMatch[1],
+        weight: 1.0,
+        confidence: 0.8,
+        // privacyTier omitted — inherits cluster's privacyScope ('shared-project')
+        note: p.title.slice(0, 200),
+        updatedAt: now,
+      });
+    }
+    return evidence;
+  }
+
+  /**
+   * Best-effort cluster-entity creation for a new proposal. Never throws to
+   * the caller — JSON state remains the source of truth for proposals.
+   * `EvidencePolicyError` (e.g., cap exceeded, kind mismatch) is logged and
+   * swallowed; subsequent `addClusterEvidence()` calls can recover.
+   *
+   * Returns the entity id when created, or null when memory is not wired or
+   * the cluster entity cannot be created.
+   */
+  private createClusterEntity(p: EvolutionProposal): string | null {
+    if (!this.semanticMemory) return null;
+    try {
+      const evidence = this.buildInitialClusterEvidence(p);
+      const id = this.semanticMemory.rememberWithEvidence(
+        {
+          type: 'pattern',
+          name: p.title.slice(0, 200),
+          content: p.description,
+          confidence: p.impact === 'high' ? 0.85 : p.impact === 'low' ? 0.6 : 0.75,
+          lastVerified: p.proposedAt,
+          source: `evolution:${p.id}`,
+          tags: ['cluster', 'evolution', p.type, ...(p.tags ?? [])],
+          privacyScope: 'shared-project',
+        },
+        evidence,
+        'EvolutionManager',
+      );
+      return id;
+    } catch (err) {
+      console.warn(
+        `[EvolutionManager] cluster-entity create failed for ${p.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   private taskFlowPrincipal(): TaskFlowPrincipal | null {
@@ -635,6 +758,13 @@ export class EvolutionManager {
       proposedAt: this.now(),
       tags: opts.tags,
     };
+    // WikiClaim Phase 2: create cluster MemoryEntity and capture entityId BEFORE
+    // saving JSON, so the persisted proposal carries its cluster reference.
+    // Failure to create the cluster entity is logged and swallowed inside
+    // createClusterEntity — the proposal still ships with `entityId: undefined`.
+    const entityId = this.createClusterEntity(proposal);
+    if (entityId) proposal.entityId = entityId;
+
     state.proposals.push(proposal);
     this.saveEvolution(state);
 
