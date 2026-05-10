@@ -2362,6 +2362,121 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── WikiClaim Phase 4 — Inverse-traceability HTTP endpoints ───────
+  //
+  // Per docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Phase 4
+  // (line 343) and § Inverse traceability (line 291).
+  //
+  // Both routes are thin pass-throughs to SemanticMemory's already-filtered
+  // typed methods (`getEvidence` / `findCitations`). Privacy enforcement
+  // lives ONE place — the storage layer's read-time filter (Phase 1) plus
+  // the EvidenceRenderer helper (Phase 5). These routes do not re-implement
+  // the filter; they invoke the methods and serialize the result.
+  //
+  // viewerScope derivation: the single bearer-token auth model has one
+  // principal (the agent itself), which sees its own data at `private`
+  // scope by default. Callers can request a NARROWED view via the
+  // `?viewerScope=shared-project|shared-topic|private` query param —
+  // useful for "what would a topic-peer see?" preview rendering in the
+  // dashboard. Widening above the auth principal is a no-op (the cap is
+  // `private`). Per spec § Storage and Privacy line 315 — the renderer is
+  // the privacy boundary; this route is a read endpoint with no
+  // judgment surface.
+  const VALID_EVIDENCE_KINDS = new Set([
+    'feedback', 'commit', 'session', 'document', 'message',
+    'job-run', 'ledger-entry', 'pattern-entity', 'external-url',
+    'supersedes-evidence',
+  ]);
+  const VALID_VIEWER_SCOPES = new Set(['shared-project', 'shared-topic', 'private']);
+
+  function resolveViewerScope(raw: unknown): 'shared-project' | 'shared-topic' | 'private' {
+    if (typeof raw === 'string' && VALID_VIEWER_SCOPES.has(raw)) {
+      return raw as 'shared-project' | 'shared-topic' | 'private';
+    }
+    // Default: agent has full visibility into its own DB.
+    return 'private';
+  }
+
+  // GET /memory/evidence/by-entity/:id
+  // Returns the entity's evidence array, viewer-scope filtered.
+  router.get('/memory/evidence/by-entity/:id', (req, res) => {
+    if (!ctx.semanticMemory) {
+      res.status(503).json({ error: 'Semantic memory not enabled' });
+      return;
+    }
+    try {
+      const entityId = req.params.id;
+      if (!entityId || typeof entityId !== 'string') {
+        res.status(400).json({ error: 'Missing entity id' });
+        return;
+      }
+      const viewerScope = resolveViewerScope(req.query.viewerScope);
+
+      // Existence + entity-level visibility check goes through the eager
+      // helper, which returns null when the entity is hidden (or missing)
+      // at the requested viewer scope. We deliberately collapse "entity
+      // exists but entity-scope wider than viewer" and "entity does not
+      // exist" into the same 404 — the spec's inverse-query non-leak rule
+      // (§ Storage and Privacy line 316) extends to direct fetch: a viewer
+      // at a narrower scope must not be able to probe entity existence by
+      // diffing 404 vs 200-empty.
+      const eager = ctx.semanticMemory.getEntityWithEvidence(entityId, viewerScope);
+      if (!eager) {
+        res.status(404).json({ error: 'Entity not found' });
+        return;
+      }
+      res.json({
+        entityId,
+        viewerScope,
+        evidence: eager.evidence,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Evidence lookup failed',
+      });
+    }
+  });
+
+  // GET /memory/entities/by-evidence?kind=feedback&sourceId=fb_123
+  // Returns entities citing (kind, sourceId), viewer-scope filtered.
+  router.get('/memory/entities/by-evidence', (req, res) => {
+    if (!ctx.semanticMemory) {
+      res.status(503).json({ error: 'Semantic memory not enabled' });
+      return;
+    }
+    try {
+      const kindRaw = req.query.kind;
+      const sourceIdRaw = req.query.sourceId;
+      const kind = typeof kindRaw === 'string' ? kindRaw : '';
+      const sourceId = typeof sourceIdRaw === 'string' ? sourceIdRaw : '';
+      if (!kind || !sourceId) {
+        res.status(400).json({ error: 'Missing required query params: kind, sourceId' });
+        return;
+      }
+      if (!VALID_EVIDENCE_KINDS.has(kind)) {
+        res.status(400).json({ error: `Invalid evidence kind: ${kind}` });
+        return;
+      }
+      const viewerScope = resolveViewerScope(req.query.viewerScope);
+
+      const entities = ctx.semanticMemory.findCitations(
+        { kind: kind as any, sourceId },
+        viewerScope,
+      );
+      res.json({
+        kind,
+        sourceId,
+        viewerScope,
+        entities,
+        totalResults: entities.length,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Citation lookup failed',
+      });
+    }
+  });
+
   // ── MEMORY.md Export (Phase 6) ─────────────────────────────────
 
   router.post('/semantic/export-memory', async (req, res) => {
