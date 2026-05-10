@@ -281,6 +281,24 @@ export class TaskFlowStore {
     return rows.map((r) => this.rowToRecord(r));
   }
 
+  /**
+   * Find all flows owned by a controller. Optional status filter.
+   * Used by DivergenceChecker to compare TaskFlow records against JSON state.
+   */
+  findByControllerId(
+    controllerId: string,
+    opts: { status?: TaskFlowStatus } = {}
+  ): TaskFlowRecord[] {
+    const params: any[] = [controllerId];
+    let sql = `SELECT * FROM flows WHERE controller_id = ?`;
+    if (opts.status) {
+      sql += ` AND status = ?`;
+      params.push(opts.status);
+    }
+    const rows = this.db.prepare(sql).all(...params) as FlowRow[];
+    return rows.map((r) => this.rowToRecord(r));
+  }
+
   // ───────────── writes ─────────────
 
   insertFlow(rec: TaskFlowRecord, idempotencyKey: string): void {

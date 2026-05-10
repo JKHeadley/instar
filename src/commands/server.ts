@@ -6207,6 +6207,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let taskFlowSweeper: import('../tasks/TaskFlowMaintenanceSweeper.js').TaskFlowMaintenanceSweeper | undefined;
     let taskFlowDueWaker: import('../tasks/TaskFlowDueWaker.js').TaskFlowDueWaker | undefined;
     let threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | undefined;
+    let divergenceChecker: import('../tasks/DivergenceChecker.js').DivergenceChecker | undefined;
     if ((config as any).taskFlow?.enabled) {
       try {
         const { TaskFlowStore } = await import('../tasks/task-flow-registry.store.sqlite.js');
@@ -6232,16 +6233,43 @@ export async function startServer(options: StartOptions): Promise<void> {
         taskFlowDueWaker.start();
         const { ThreadlineFlowBridge } = await import('../tasks/ThreadlineFlowBridge.js');
         threadlineFlowBridge = new ThreadlineFlowBridge({ registry: taskFlowRegistry });
+
+        // Phase 3a — wire EvolutionManager dual-write + divergence checker.
+        const crypto = await import('node:crypto');
+        const controllerInstanceId = crypto.randomUUID();
+        evolution.setTaskFlowRegistry(taskFlowRegistry, controllerInstanceId);
+        // Backfill in-flight clusters into TaskFlow. Idempotent via
+        // `evolution-cluster-create-<id>` idempotency key.
+        try {
+          const migrationReport = await evolution.migrateExistingToTaskFlow();
+          console.log(
+            pc.green(
+              `  TaskFlow: backfilled evolution clusters created=${migrationReport.created} ` +
+              `existed=${migrationReport.alreadyExisted} advanced=${migrationReport.advanced} ` +
+              `skipped=${migrationReport.skipped}`
+            )
+          );
+        } catch (err) {
+          console.warn('[instar] taskflow evolution backfill failed (non-fatal):', err);
+        }
+        const { DivergenceChecker } = await import('../tasks/DivergenceChecker.js');
+        divergenceChecker = new DivergenceChecker({
+          registry: taskFlowRegistry,
+          evolutionManager: evolution,
+          ledger: sharedStateLedger ?? undefined,
+        });
+        divergenceChecker.start();
       } catch (err) {
         console.warn('[instar] task-flow init failed (non-fatal):', err);
         taskFlowRegistry = undefined;
         threadlineFlowBridge = undefined;
+        divergenceChecker = undefined;
       }
     }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
-    void taskFlowSweeper; void taskFlowDueWaker;
+    void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
     // Any degradation events queued during startup will drain to feedback + telegram.

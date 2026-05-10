@@ -134,6 +134,29 @@ export class TaskFlowRegistry extends EventEmitter {
       .map((r) => this.toWaitMatch(r));
   }
 
+  /**
+   * List all flows for a controllerId, optionally filtered by status.
+   * Used by DivergenceChecker — read-only, not on the hot mutation path.
+   */
+  findByControllerId(
+    controllerId: string,
+    opts: { status?: TaskFlowStatus } = {}
+  ): TaskFlowRecord[] {
+    return this.store.findByControllerId(controllerId, opts);
+  }
+
+  /**
+   * Look up a flow by (controllerId, ownerKey, idempotencyKey). Returns null
+   * if no matching record. Useful for migrate-existing backfill and for tests.
+   */
+  findByIdempotency(
+    controllerId: string,
+    ownerKey: string,
+    idempotencyKey: string
+  ): TaskFlowRecord | null {
+    return this.store.findIdempotent(controllerId, ownerKey, idempotencyKey);
+  }
+
   // ────────────────── createFlow ──────────────────
 
   async createFlow(

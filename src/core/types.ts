@@ -1676,7 +1676,9 @@ export type LedgerEntrySubsystem =
   /** v2: session-asserted writes via POST /shared-state/append. instance = session id. */
   | 'session'
   /** v2 slice 5: CommitmentSweeper expired/stranded emissions. */
-  | 'commitment-sweeper';
+  | 'commitment-sweeper'
+  /** TaskFlow Phase 3a: DivergenceChecker JSON↔TaskFlow mismatch notes. */
+  | 'taskflow-divergence';
 
 /** Ledger entry kind. */
 export type LedgerEntryKind =

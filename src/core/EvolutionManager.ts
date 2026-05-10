@@ -32,6 +32,70 @@ import type { TrustElevationTracker } from './TrustElevationTracker.js';
 import type { AutonomousEvolution, ReviewResult } from './AutonomousEvolution.js';
 import type { AutonomyProfileManager } from './AutonomyProfileManager.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import type { TaskFlowRegistry } from '../tasks/TaskFlowRegistry.js';
+import type { TaskFlowRecord, TaskFlowPrincipal } from '../tasks/task-flow-types.js';
+import { TaskFlowError } from '../tasks/task-flow-types.js';
+
+/**
+ * TaskFlow controller identity for EvolutionManager (Phase 3a dual-write).
+ * Every proposal's flow is owned by this controllerId; the registry uses it
+ * for OCC scope checks. Single-instance per server process.
+ */
+const EVOLUTION_TASKFLOW_CONTROLLER_ID = 'EvolutionManager';
+
+/**
+ * Map an `EvolutionStatus` to a TaskFlow-side status. Returned values match
+ * the legal TaskFlow state-machine transitions:
+ *   proposed     → queued (createFlow)
+ *   approved     → running (startStep step='approved')
+ *   in_progress  → running (startStep step='in_progress')
+ *   implemented  → succeeded (finishFlow)
+ *   rejected     → failed (failFlow)
+ *   deferred     → cancelled (treated as soft-end; uses requestFlowCancel + cancelFlow)
+ */
+type ProposalFlowAction =
+  | { kind: 'create'; step?: undefined }
+  | { kind: 'start'; step: string }
+  | { kind: 'finish' }
+  | { kind: 'fail'; reason: string }
+  | { kind: 'cancel'; reason: string }
+  | { kind: 'noop' };
+
+function statusToFlowAction(
+  prev: EvolutionStatus | null,
+  next: EvolutionStatus,
+  resolution?: string
+): ProposalFlowAction {
+  // Initial create-from-proposed is handled in addProposal directly.
+  if (prev === null && next === 'proposed') return { kind: 'create' };
+  if (prev === next) return { kind: 'noop' };
+  switch (next) {
+    case 'approved':
+      return { kind: 'start', step: 'approved' };
+    case 'in_progress':
+      return { kind: 'start', step: 'in_progress' };
+    case 'implemented':
+      return { kind: 'finish' };
+    case 'rejected':
+      return { kind: 'fail', reason: resolution ?? 'rejected' };
+    case 'deferred':
+      return { kind: 'cancel', reason: resolution ?? 'deferred' };
+    case 'proposed':
+      // Re-opening is not a legal transition; treat as no-op for v1.
+      return { kind: 'noop' };
+    default:
+      return { kind: 'noop' };
+  }
+}
+
+/**
+ * Owner-key for a proposal-flow. Deterministic — used as both the TaskFlow
+ * `ownerKey` and the basis of the `idempotencyKey`. Phase 3b's cutover
+ * gate relies on `evolution:cluster:<id>` being a stable bidirectional join.
+ */
+function ownerKeyForProposal(proposalId: string): string {
+  return `evolution:cluster:${proposalId}`;
+}
 
 interface EvolutionState {
   proposals: EvolutionProposal[];
@@ -83,9 +147,358 @@ export class EvolutionManager {
   private autonomousEvolution: AutonomousEvolution | null = null;
   private autonomyManager: AutonomyProfileManager | null = null;
 
+  // ── TaskFlow Phase 3a dual-write fields ──────────────────────────
+  /** Registry handle (set when TaskFlow is enabled). */
+  private taskFlowRegistry: TaskFlowRegistry | null = null;
+  /** Per-process controller-instance id (server uuid). */
+  private taskFlowControllerInstanceId: string | null = null;
+  /**
+   * Set to true by DivergenceChecker when state-divergence is detected.
+   * When true, EvolutionManager continues JSON-only writes and DOES NOT
+   * dual-write to TaskFlow. The signal is reset on next divergence pass that
+   * reports zero divergence. This is a signal-emitted brake, not a hard gate.
+   */
+  private taskFlowShadowWritesHalted = false;
+  /** Most recent reason for halting; surfaced in /health and tests. */
+  private taskFlowShadowWritesHaltReason: string | null = null;
+  /**
+   * Source of the most recent halt. DivergenceChecker uses this to ensure it
+   * only auto-clears halts that DivergenceChecker itself imposed — an operator
+   * or sibling system's manual halt stays in place until that source clears it.
+   */
+  private taskFlowShadowWritesHaltSource: string | null = null;
+
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
+  }
+
+  // ── TaskFlow wiring ─────────────────────────────────────────────
+
+  /**
+   * Wire a TaskFlow registry for Phase 3a dual-write. After this call:
+   *   - addProposal / updateProposalStatus shadow-write to TaskFlow
+   *   - migrateExistingToTaskFlow() backfills any in-flight clusters
+   *   - DivergenceChecker can call setShadowWritesHalted() to brake writes
+   *
+   * Idempotent — safe to call multiple times; subsequent calls overwrite.
+   */
+  setTaskFlowRegistry(
+    registry: TaskFlowRegistry,
+    controllerInstanceId: string
+  ): void {
+    this.taskFlowRegistry = registry;
+    this.taskFlowControllerInstanceId = controllerInstanceId;
+  }
+
+  getTaskFlowRegistry(): TaskFlowRegistry | null {
+    return this.taskFlowRegistry;
+  }
+
+  /**
+   * Halt or resume TaskFlow shadow-writes. Called by DivergenceChecker on a
+   * mismatch. Signal-vs-authority compliance: this is a signal-consumed brake,
+   * not a brittle blocker — the divergence checker decides, EvolutionManager
+   * obeys. JSON writes continue regardless (read-authoritative TaskFlow is
+   * shadow-mode in Phase 3a).
+   *
+   * The optional `source` parameter tags the halt with its origin so an
+   * automatic clearer (DivergenceChecker) only cancels halts it caused.
+   * Defaults to `'manual'` when omitted.
+   */
+  setShadowWritesHalted(halted: boolean, reason?: string, source?: string): void {
+    this.taskFlowShadowWritesHalted = halted;
+    this.taskFlowShadowWritesHaltReason = halted ? (reason ?? 'divergence-detected') : null;
+    this.taskFlowShadowWritesHaltSource = halted ? (source ?? 'manual') : null;
+  }
+
+  isShadowWritesHalted(): { halted: boolean; reason: string | null; source: string | null } {
+    return {
+      halted: this.taskFlowShadowWritesHalted,
+      reason: this.taskFlowShadowWritesHaltReason,
+      source: this.taskFlowShadowWritesHaltSource,
+    };
+  }
+
+  private taskFlowPrincipal(): TaskFlowPrincipal | null {
+    if (!this.taskFlowRegistry || !this.taskFlowControllerInstanceId) return null;
+    return {
+      scope: 'controller',
+      controllerId: EVOLUTION_TASKFLOW_CONTROLLER_ID,
+      controllerInstanceId: this.taskFlowControllerInstanceId,
+    };
+  }
+
+  /**
+   * Best-effort dual-write to TaskFlow. NEVER throws to the caller — JSON
+   * remains the local durability path; TaskFlow is shadow until Phase 3b
+   * cutover. All TaskFlow errors land in console and the divergence checker
+   * picks up via state comparison.
+   */
+  private async dualWriteCreate(p: EvolutionProposal): Promise<void> {
+    if (!this.taskFlowRegistry || this.taskFlowShadowWritesHalted) return;
+    const principal = this.taskFlowPrincipal();
+    if (!principal || principal.scope !== 'controller') return;
+    try {
+      await this.taskFlowRegistry.createFlow({
+        controllerId: EVOLUTION_TASKFLOW_CONTROLLER_ID,
+        controllerInstanceId: principal.controllerInstanceId,
+        ownerKey: ownerKeyForProposal(p.id),
+        idempotencyKey: `evolution-cluster-create-${p.id}`,
+        goal: p.title.slice(0, 1024),
+        currentStep: 'proposed',
+        stateJson: { proposalId: p.id, type: p.type, source: p.source },
+      });
+    } catch (err) {
+      // Swallow — JSON is the source of truth in Phase 3a.
+      this.logTaskFlowError('createFlow', p.id, err);
+    }
+  }
+
+  private async dualWriteTransition(
+    proposalId: string,
+    action: ProposalFlowAction
+  ): Promise<void> {
+    if (!this.taskFlowRegistry || this.taskFlowShadowWritesHalted) return;
+    if (action.kind === 'noop' || action.kind === 'create') return;
+    const principal = this.taskFlowPrincipal();
+    if (!principal) return;
+    const registry = this.taskFlowRegistry;
+    try {
+      // Look up current flow by owner key + deterministic idempotency key.
+      const existing = registry.findByIdempotency(
+        EVOLUTION_TASKFLOW_CONTROLLER_ID,
+        ownerKeyForProposal(proposalId),
+        `evolution-cluster-create-${proposalId}`
+      );
+      if (!existing) {
+        // No backfill yet — proposal exists in JSON but not TaskFlow. Skip
+        // the transition silently; the next migrate-existing pass will pick
+        // it up at its terminal state.
+        return;
+      }
+      const flow = registry.getFlow(existing.flowId, { bypassCache: true });
+      if (!flow) return;
+      const expectedRevision = flow.revision;
+      switch (action.kind) {
+        case 'start': {
+          if (flow.status !== 'queued' && flow.status !== 'running') return;
+          await registry.startStep({
+            flowId: flow.flowId,
+            expectedRevision,
+            principal,
+            currentStep: action.step,
+          });
+          break;
+        }
+        case 'finish': {
+          // Need flow in `running` state for finishFlow. If currently queued,
+          // promote first.
+          let rev = expectedRevision;
+          let cur = flow;
+          if (cur.status === 'queued') {
+            const r = await registry.startStep({
+              flowId: flow.flowId,
+              expectedRevision: rev,
+              principal,
+              currentStep: 'implementing',
+            });
+            cur = r.flow;
+            rev = r.flow.revision;
+          }
+          if (cur.status !== 'running') return;
+          await registry.finishFlow({
+            flowId: flow.flowId,
+            expectedRevision: rev,
+            principal,
+          });
+          break;
+        }
+        case 'fail': {
+          let rev = expectedRevision;
+          let cur = flow;
+          // failFlow requires running|waiting. Promote queued → running.
+          if (cur.status === 'queued') {
+            const r = await registry.startStep({
+              flowId: flow.flowId,
+              expectedRevision: rev,
+              principal,
+              currentStep: 'reject-transition',
+            });
+            cur = r.flow;
+            rev = r.flow.revision;
+          }
+          if (cur.status !== 'running' && cur.status !== 'waiting') return;
+          await registry.failFlow({
+            flowId: flow.flowId,
+            expectedRevision: rev,
+            principal,
+            failureReason: action.reason,
+          });
+          break;
+        }
+        case 'cancel': {
+          if (flow.status === 'succeeded' || flow.status === 'failed' ||
+              flow.status === 'cancelled' || flow.status === 'lost') return;
+          // Two-phase: request, then cancel.
+          const r = await registry.requestFlowCancel({
+            flowId: flow.flowId,
+            expectedRevision,
+            requesterOrigin: { kind: 'system', id: 'EvolutionManager' },
+          });
+          await registry.cancelFlow({
+            flowId: flow.flowId,
+            expectedRevision: r.flow.revision,
+            principal,
+          });
+          break;
+        }
+      }
+    } catch (err) {
+      this.logTaskFlowError(`transition:${action.kind}`, proposalId, err);
+    }
+  }
+
+  private logTaskFlowError(op: string, proposalId: string, err: unknown): void {
+    if (err instanceof TaskFlowError) {
+      // OCC conflicts and invalid-transition errors are expected during
+      // races and concurrent updates — log at debug level only.
+      console.warn(
+        `[EvolutionManager] taskflow ${op} for ${proposalId} skipped: ${err.code} (${err.message})`
+      );
+    } else {
+      console.warn(
+        `[EvolutionManager] taskflow ${op} for ${proposalId} unexpected error:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  /**
+   * Backfill all in-flight proposals (status !== 'implemented' && !== 'rejected')
+   * into TaskFlow. Idempotent via `findIdempotent` on
+   * `evolution:cluster:<proposalId>` ownerKey. Safe to call multiple times.
+   *
+   * Returns counts: created, alreadyExisted, advanced (transitioned beyond
+   * 'queued' to match the proposal's current status).
+   */
+  async migrateExistingToTaskFlow(): Promise<{
+    created: number;
+    alreadyExisted: number;
+    advanced: number;
+    skipped: number;
+  }> {
+    if (!this.taskFlowRegistry) {
+      return { created: 0, alreadyExisted: 0, advanced: 0, skipped: 0 };
+    }
+    const principal = this.taskFlowPrincipal();
+    if (!principal || principal.scope !== 'controller') {
+      return { created: 0, alreadyExisted: 0, advanced: 0, skipped: 0 };
+    }
+    const registry = this.taskFlowRegistry;
+    const state = this.loadEvolution();
+    let created = 0;
+    let alreadyExisted = 0;
+    let advanced = 0;
+    let skipped = 0;
+    for (const p of state.proposals) {
+      try {
+        const existing = registry.findByIdempotency(
+          EVOLUTION_TASKFLOW_CONTROLLER_ID,
+          ownerKeyForProposal(p.id),
+          `evolution-cluster-create-${p.id}`
+        );
+        let flow: TaskFlowRecord;
+        if (existing) {
+          alreadyExisted++;
+          flow = existing;
+        } else {
+          const r = await registry.createFlow({
+            controllerId: EVOLUTION_TASKFLOW_CONTROLLER_ID,
+            controllerInstanceId: principal.controllerInstanceId,
+            ownerKey: ownerKeyForProposal(p.id),
+            idempotencyKey: `evolution-cluster-create-${p.id}`,
+            goal: p.title.slice(0, 1024),
+            currentStep: 'proposed',
+            stateJson: { proposalId: p.id, type: p.type, source: p.source },
+          });
+          if (r.created) created++;
+          else alreadyExisted++;
+          flow = r.flow;
+        }
+        // Catch the flow up to the proposal's current status.
+        const advancedThis = await this.catchUpFlowToStatus(flow, p, principal);
+        if (advancedThis) advanced++;
+      } catch (err) {
+        skipped++;
+        this.logTaskFlowError('migrate', p.id, err);
+      }
+    }
+    return { created, alreadyExisted, advanced, skipped };
+  }
+
+  /** Catch a flow record up to the proposal's current status. */
+  private async catchUpFlowToStatus(
+    flow: TaskFlowRecord,
+    p: EvolutionProposal,
+    principal: TaskFlowPrincipal
+  ): Promise<boolean> {
+    if (!this.taskFlowRegistry) return false;
+    const registry = this.taskFlowRegistry;
+    let cur = registry.getFlow(flow.flowId, { bypassCache: true }) ?? flow;
+    let mutated = false;
+    const target = p.status;
+    // Already terminal — leave alone.
+    if (cur.status === 'succeeded' || cur.status === 'failed' ||
+        cur.status === 'cancelled' || cur.status === 'lost') {
+      return false;
+    }
+    // Promote queued → running if target is running/terminal-success/failed.
+    if (cur.status === 'queued' && (target === 'approved' || target === 'in_progress' ||
+        target === 'implemented' || target === 'rejected' || target === 'deferred')) {
+      const step = target === 'in_progress' ? 'in_progress'
+        : target === 'approved' ? 'approved' : 'catch-up';
+      const r = await registry.startStep({
+        flowId: cur.flowId,
+        expectedRevision: cur.revision,
+        principal,
+        currentStep: step,
+      });
+      cur = r.flow;
+      mutated = true;
+    }
+    // Finalize.
+    if (target === 'implemented' && cur.status === 'running') {
+      await registry.finishFlow({
+        flowId: cur.flowId,
+        expectedRevision: cur.revision,
+        principal,
+      });
+      mutated = true;
+    } else if (target === 'rejected' &&
+               (cur.status === 'running' || cur.status === 'waiting')) {
+      await registry.failFlow({
+        flowId: cur.flowId,
+        expectedRevision: cur.revision,
+        principal,
+        failureReason: p.resolution ?? 'rejected',
+      });
+      mutated = true;
+    } else if (target === 'deferred' &&
+               (cur.status === 'running' || cur.status === 'waiting' || cur.status === 'queued')) {
+      const r = await registry.requestFlowCancel({
+        flowId: cur.flowId,
+        expectedRevision: cur.revision,
+        requesterOrigin: { kind: 'system', id: 'EvolutionManager' },
+      });
+      await registry.cancelFlow({
+        flowId: cur.flowId,
+        expectedRevision: r.flow.revision,
+        principal,
+      });
+      mutated = true;
+    }
+    return mutated;
   }
 
   /**
@@ -224,6 +637,10 @@ export class EvolutionManager {
     };
     state.proposals.push(proposal);
     this.saveEvolution(state);
+
+    // TaskFlow Phase 3a shadow-write — best-effort, JSON remains source of truth.
+    void this.dualWriteCreate(proposal);
+
     return proposal;
   }
 
@@ -231,6 +648,7 @@ export class EvolutionManager {
     const state = this.loadEvolution();
     const proposal = state.proposals.find(p => p.id === id);
     if (!proposal) return false;
+    const prevStatus = proposal.status;
     proposal.status = status;
     if (resolution) proposal.resolution = resolution;
     if (status === 'implemented') proposal.implementedAt = this.now();
@@ -241,6 +659,10 @@ export class EvolutionManager {
       const decision = status === 'approved' ? 'approved' : 'rejected';
       this.trustElevationTracker.recordProposalDecision(proposal, decision, false);
     }
+
+    // TaskFlow Phase 3a shadow-write — best-effort, JSON remains source of truth.
+    const action = statusToFlowAction(prevStatus, status, resolution);
+    void this.dualWriteTransition(id, action);
 
     return true;
   }
