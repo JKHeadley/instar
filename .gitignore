@@ -21,6 +21,11 @@ dist/
 .instar/shared-state.jsonl
 .instar/shared-state.jsonl.*
 
+# TaskFlow registry — local SQLite + WAL/SHM. May contain user PII in stateJson.
+# Cross-machine sync of flow state is not in v1 scope.
+.instar/task-flows.db
+.instar/task-flows.db-*
+
 # OS
 .DS_Store
 Thumbs.db

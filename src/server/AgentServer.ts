@@ -164,6 +164,8 @@ export class AgentServer {
     telegramBridge?: import('../threadline/TelegramBridge.js').TelegramBridge;
     /** Threadline observability — read-only views over inbox/outbox/bindings. */
     threadlineObservability?: import('../threadline/ThreadlineObservability.js').ThreadlineObservability;
+    /** TaskFlow registry — durable multi-step job records (OpenClaw import). */
+    taskFlowRegistry?: import('../tasks/TaskFlowRegistry.js').TaskFlowRegistry;
   }) {
     this.config = options.config;
     this.startTime = new Date();
@@ -428,6 +430,7 @@ export class AgentServer {
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
       threadlineObservability: options.threadlineObservability ?? null,
+      taskFlowRegistry: options.taskFlowRegistry ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;

@@ -606,6 +606,10 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** TaskFlow registry — durable multi-step job records (OpenClaw import).
+   *  Null when not enabled. Phase 1: no business consumers; admin endpoints
+   *  only. */
+  taskFlowRegistry: import('../tasks/TaskFlowRegistry.js').TaskFlowRegistry | null;
   startTime: Date;
 }
 
@@ -12937,6 +12941,243 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     }
   );
+
+  // ─── TaskFlow registry (OpenClaw import — Phase 1) ──────────────────
+  // Admin Bearer-token auth via global authMiddleware. The HTTP API exists for
+  // debugging and out-of-process tooling; production controllers run
+  // in-process inside the server and call the registry directly.
+  // See docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md.
+  {
+    const taskFlowError = (
+      res: ExpressResponse,
+      err: unknown
+    ): void => {
+      const e = err as { name?: string; code?: string; message?: string; detail?: Record<string, unknown> };
+      if (e?.name !== 'TaskFlowError') {
+        res.status(500).json({ error: 'internal_error', message: e?.message });
+        return;
+      }
+      const status = ({
+        not_found: 404,
+        revision_conflict: 409,
+        already_terminal: 410,
+        invalid_transition: 422,
+        invalid_argument: 422,
+        unauthorized_controller: 422,
+        already_consumed: 422,
+        wait_collision: 422,
+        quota_exceeded: 429,
+      } as Record<string, number>)[e.code ?? ''] ?? 500;
+      res.status(status).json({ error: e.code, ...(e.detail ?? {}), message: e.message });
+    };
+
+    router.post('/flows', async (req, res) => {
+      if (!ctx.taskFlowRegistry) {
+        res.status(503).json({ error: 'taskflow_not_enabled' });
+        return;
+      }
+      try {
+        const out = await ctx.taskFlowRegistry.createFlow(req.body ?? {});
+        res.status(out.created ? 201 : 200).json(out.flow);
+      } catch (err) {
+        taskFlowError(res, err);
+      }
+    });
+
+    router.get('/flows/:flowId', (req, res) => {
+      if (!ctx.taskFlowRegistry) {
+        res.status(503).json({ error: 'taskflow_not_enabled' });
+        return;
+      }
+      const flow = ctx.taskFlowRegistry.getFlow(req.params.flowId);
+      if (!flow) {
+        res.status(404).json({ error: 'not_found', flowId: req.params.flowId });
+        return;
+      }
+      // The owning controller may identify itself via header to receive the
+      // unredacted record. Otherwise we return the redacted shape (no
+      // stateJson, waitJson reduced to {kind}).
+      const callerControllerId = req.header('x-taskflow-controller-id');
+      if (callerControllerId && callerControllerId === flow.controllerId) {
+        res.json(flow);
+        return;
+      }
+      res.json(ctx.taskFlowRegistry.getRedactedFlow(req.params.flowId));
+    });
+
+    router.get('/flows/waiting', (req, res) => {
+      if (!ctx.taskFlowRegistry) {
+        res.status(503).json({ error: 'taskflow_not_enabled' });
+        return;
+      }
+      const channel = typeof req.query.channel === 'string' ? req.query.channel : undefined;
+      const threadId = typeof req.query.threadId === 'string' ? req.query.threadId : undefined;
+      const peer = typeof req.query.peer === 'string' ? req.query.peer : undefined;
+      const correlationId =
+        typeof req.query.correlationId === 'string' ? req.query.correlationId : undefined;
+      const waitKind = typeof req.query.waitKind === 'string' ? req.query.waitKind : undefined;
+      if (channel && threadId && peer) {
+        res.json({
+          matches: ctx.taskFlowRegistry.findWaitingByReply({ channel, threadId, peer }),
+        });
+        return;
+      }
+      if (correlationId && (waitKind === 'external-call' || waitKind === 'cross-agent-callback')) {
+        res.json({
+          matches: ctx.taskFlowRegistry.findWaitingByCorrelation({ waitKind, correlationId }),
+        });
+        return;
+      }
+      res.status(400).json({ error: 'invalid_query', message: 'specify (channel,threadId,peer) or (correlationId,waitKind)' });
+    });
+
+    const occMutationHandler = (
+      op: 'startStep' | 'setFlowWaiting' | 'resumeFlow' | 'finishFlow' | 'failFlow' | 'cancelFlow' | 'markLost'
+    ) => async (req: ExpressRequest, res: ExpressResponse) => {
+      if (!ctx.taskFlowRegistry) {
+        res.status(503).json({ error: 'taskflow_not_enabled' });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const flowId = req.params.flowId;
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isFinite(expectedRevision)) {
+        res.status(422).json({ error: 'invalid_argument', field: 'expectedRevision' });
+        return;
+      }
+      const principal = body.principal as
+        | { scope: 'controller'; controllerId: string; controllerInstanceId: string }
+        | { scope: 'system-waker'; wakerId: string }
+        | { scope: 'admin' }
+        | undefined;
+      if (!principal || typeof principal !== 'object' || !('scope' in principal)) {
+        res.status(422).json({ error: 'invalid_argument', field: 'principal' });
+        return;
+      }
+      try {
+        let result;
+        switch (op) {
+          case 'startStep':
+            result = await ctx.taskFlowRegistry.startStep({
+              flowId,
+              expectedRevision,
+              principal: principal as any,
+              currentStep: String(body.currentStep ?? ''),
+            });
+            break;
+          case 'setFlowWaiting':
+            result = await ctx.taskFlowRegistry.setFlowWaiting({
+              flowId,
+              expectedRevision,
+              principal: principal as any,
+              waitJson: body.waitJson as any,
+              currentStep: body.currentStep as string | undefined,
+              statePatch: body.statePatch,
+            });
+            break;
+          case 'resumeFlow':
+            result = await ctx.taskFlowRegistry.resumeFlow({
+              flowId,
+              expectedRevision,
+              principal: principal as any,
+              waitInstanceId: String(body.waitInstanceId ?? ''),
+              currentStep: body.currentStep as string | undefined,
+              statePatch: body.statePatch,
+            });
+            break;
+          case 'finishFlow':
+            result = await ctx.taskFlowRegistry.finishFlow({
+              flowId,
+              expectedRevision,
+              principal: principal as any,
+              result: body.result,
+            });
+            break;
+          case 'failFlow':
+            result = await ctx.taskFlowRegistry.failFlow({
+              flowId,
+              expectedRevision,
+              principal: principal as any,
+              failureReason: String(body.failureReason ?? ''),
+            });
+            break;
+          case 'cancelFlow':
+            result = await ctx.taskFlowRegistry.cancelFlow({
+              flowId,
+              expectedRevision,
+              principal: principal as any,
+            });
+            break;
+          case 'markLost':
+            result = await ctx.taskFlowRegistry.markLost({
+              flowId,
+              expectedRevision,
+              ledgerEntryId: String(body.ledgerEntryId ?? ''),
+              reason: body.reason === 'stranded' ? 'stranded' : 'lost',
+            });
+            break;
+        }
+        res.json(result);
+      } catch (err) {
+        taskFlowError(res, err);
+      }
+    };
+
+    router.post('/flows/:flowId/start-step', occMutationHandler('startStep'));
+    router.post('/flows/:flowId/wait', occMutationHandler('setFlowWaiting'));
+    router.post('/flows/:flowId/resume', occMutationHandler('resumeFlow'));
+    router.post('/flows/:flowId/finish', occMutationHandler('finishFlow'));
+    router.post('/flows/:flowId/fail', occMutationHandler('failFlow'));
+    router.post('/flows/:flowId/cancel-flow', occMutationHandler('cancelFlow'));
+    router.post('/flows/:flowId/mark-lost', occMutationHandler('markLost'));
+
+    router.post('/flows/:flowId/cancel-request', async (req, res) => {
+      if (!ctx.taskFlowRegistry) {
+        res.status(503).json({ error: 'taskflow_not_enabled' });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isFinite(expectedRevision)) {
+        res.status(422).json({ error: 'invalid_argument', field: 'expectedRevision' });
+        return;
+      }
+      try {
+        const result = await ctx.taskFlowRegistry.requestFlowCancel({
+          flowId: req.params.flowId,
+          expectedRevision,
+          requesterOrigin: body.requesterOrigin as any,
+        });
+        res.json(result);
+      } catch (err) {
+        taskFlowError(res, err);
+      }
+    });
+
+    router.post('/flows/:flowId/ping', async (req, res) => {
+      if (!ctx.taskFlowRegistry) {
+        res.status(503).json({ error: 'taskflow_not_enabled' });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const principal = body.principal as
+        | { scope: 'controller'; controllerId: string; controllerInstanceId: string }
+        | undefined;
+      if (!principal || principal.scope !== 'controller') {
+        res.status(422).json({ error: 'invalid_argument', field: 'principal' });
+        return;
+      }
+      try {
+        const flow = await ctx.taskFlowRegistry.pingFlow({
+          flowId: req.params.flowId,
+          principal,
+        });
+        res.json(flow);
+      } catch (err) {
+        taskFlowError(res, err);
+      }
+    });
+  }
 
   return router;
 }

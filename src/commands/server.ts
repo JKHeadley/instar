@@ -6199,8 +6199,45 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { InitiativeTracker } = await import('../core/InitiativeTracker.js');
     const initiativeTracker = new InitiativeTracker(config.stateDir);
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory });
+    // TaskFlow registry — opt-in via config.taskFlow.enabled (default: off in v1).
+    // Owns its own SQLite file under .instar/task-flows.db. The maintenance
+    // sweeper and due-waker start with the registry; both .unref() their timers
+    // so they never keep the process alive on shutdown.
+    let taskFlowRegistry: import('../tasks/TaskFlowRegistry.js').TaskFlowRegistry | undefined;
+    let taskFlowSweeper: import('../tasks/TaskFlowMaintenanceSweeper.js').TaskFlowMaintenanceSweeper | undefined;
+    let taskFlowDueWaker: import('../tasks/TaskFlowDueWaker.js').TaskFlowDueWaker | undefined;
+    if ((config as any).taskFlow?.enabled) {
+      try {
+        const { TaskFlowStore } = await import('../tasks/task-flow-registry.store.sqlite.js');
+        const { TaskFlowRegistry } = await import('../tasks/TaskFlowRegistry.js');
+        const { TaskFlowMaintenanceSweeper } = await import('../tasks/TaskFlowMaintenanceSweeper.js');
+        const { TaskFlowDueWaker } = await import('../tasks/TaskFlowDueWaker.js');
+        const path = await import('node:path');
+        const dbPath = path.default.join(config.stateDir, 'task-flows.db');
+        const store = new TaskFlowStore({ dbPath });
+        await store.open();
+        taskFlowRegistry = new TaskFlowRegistry({
+          store,
+          ledger: sharedStateLedger ?? undefined,
+          thresholds: (config as any).taskFlow?.thresholds,
+        });
+        taskFlowSweeper = new TaskFlowMaintenanceSweeper({
+          registry: taskFlowRegistry,
+          store,
+          ledger: sharedStateLedger ?? undefined,
+        });
+        taskFlowDueWaker = new TaskFlowDueWaker({ registry: taskFlowRegistry });
+        taskFlowSweeper.start();
+        taskFlowDueWaker.start();
+      } catch (err) {
+        console.warn('[instar] task-flow init failed (non-fatal):', err);
+        taskFlowRegistry = undefined;
+      }
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry });
     await server.start();
+    void taskFlowSweeper; void taskFlowDueWaker;
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
     // Any degradation events queued during startup will drain to feedback + telegram.
