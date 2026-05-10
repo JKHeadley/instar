@@ -2527,6 +2527,7 @@
           <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
           <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
+          <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -2987,6 +2988,66 @@
         <div id="tokensOrphansBody" style="font-size:13px">
           <div style="color:var(--text-dim)">Loading...</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Evidence Tab (WikiClaim Phase 4) — per-entity evidence + reverse "what cites this?" view.
+         Spec: docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Phase 4 (line 343). -->
+    <div id="evidenceTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Evidence</h2>
+        <div style="font-size:12px;color:var(--text-dim)">Per-entity evidence + reverse citations</div>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+        Inspect the evidence trail behind any memory entity, or ask "what cites this?" given a kind + sourceId.
+        All results are viewer-scope filtered by SemanticMemory before they reach this view.
+      </div>
+
+      <!-- Viewer scope selector (default: private — agent's own data) -->
+      <div style="display:flex;align-items:center;gap:10px;font-size:13px">
+        <label for="evViewerScope" style="color:var(--text-dim)">Viewer scope:</label>
+        <select id="evViewerScope" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:4px">
+          <option value="private" selected>private (full)</option>
+          <option value="shared-topic">shared-topic</option>
+          <option value="shared-project">shared-project</option>
+        </select>
+        <span style="color:var(--text-dim);font-size:12px">Narrowing-only — controls what a narrower viewer would see.</span>
+      </div>
+
+      <!-- Panel 1: Per-entity evidence lookup -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px">
+        <div style="font-weight:600">Evidence by entity</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="evEntityId" type="text" placeholder="Entity ID (e.g. ent_abc123)"
+                 style="flex:1;min-width:240px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px;font-family:monospace" />
+          <button onclick="loadEvidenceByEntity()" style="padding:6px 12px">Lookup</button>
+        </div>
+        <div id="evEntityStatus" style="font-size:12px;color:var(--text-dim);min-height:1em"></div>
+        <div id="evEntityResults" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+
+      <!-- Panel 2: Reverse citation lookup ("what cites this?") -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px">
+        <div style="font-weight:600">What cites this?</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="evCitationKind" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px">
+            <option value="feedback">feedback</option>
+            <option value="commit">commit</option>
+            <option value="session">session</option>
+            <option value="document">document</option>
+            <option value="message">message</option>
+            <option value="job-run">job-run</option>
+            <option value="ledger-entry">ledger-entry</option>
+            <option value="pattern-entity">pattern-entity</option>
+            <option value="external-url">external-url</option>
+            <option value="supersedes-evidence">supersedes-evidence</option>
+          </select>
+          <input id="evCitationSourceId" type="text" placeholder="sourceId (e.g. fb_abc123)"
+                 style="flex:1;min-width:240px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px;font-family:monospace" />
+          <button onclick="loadEntitiesByEvidence()" style="padding:6px 12px">Find citing entities</button>
+        </div>
+        <div id="evCitationStatus" style="font-size:12px;color:var(--text-dim);min-height:1em"></div>
+        <div id="evCitationResults" style="display:flex;flex-direction:column;gap:8px"></div>
       </div>
     </div>
 
@@ -4152,6 +4213,12 @@
         },
       },
       {
+        id: 'evidence',
+        panels: ['evidenceTab'],
+        display: ['flex'],
+        onActivate: null,
+      },
+      {
         id: 'secrets',
         panels: ['secretsPanel'],
         display: ['flex'],
@@ -4327,6 +4394,178 @@
     function escapeHtml(s) {
       return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
     }
+
+    // ── Evidence Tab (WikiClaim Phase 4) ─────────────────────────────
+    //
+    // All evidence rendering MUST escape user-supplied strings (note,
+    // sourceId, path). The route already viewer-scope-filters via
+    // SemanticMemory — the dashboard never makes a visibility decision.
+
+    function evCurrentViewerScope() {
+      const sel = document.getElementById('evViewerScope');
+      return sel ? sel.value : 'private';
+    }
+
+    function evRenderTierBadge(tier) {
+      const v = tier == null ? 'inherited' : String(tier);
+      const colorMap = {
+        'public': '#4a9a4a',
+        'shared-project': '#7aa9d6',
+        'private': '#e27d3b',
+        'sensitive': '#c14a4a',
+        'inherited': 'var(--text-dim)',
+      };
+      const color = colorMap[v] || 'var(--text-dim)';
+      return `<span style="font-size:11px;padding:2px 6px;border-radius:3px;border:1px solid ${color};color:${color}">${escapeHtml(v)}</span>`;
+    }
+
+    function evRenderEvidenceRow(ev) {
+      const kind = escapeHtml(ev?.kind ?? '');
+      const sourceId = escapeHtml(ev?.sourceId ?? '');
+      const path = ev?.path ? escapeHtml(ev.path) : '';
+      const lineStart = ev?.lineStart;
+      const lineEnd = ev?.lineEnd;
+      let fileLine = '';
+      if (path) {
+        let suffix = '';
+        if (Number.isFinite(lineStart)) {
+          suffix = ':' + escapeHtml(String(lineStart));
+          if (Number.isFinite(lineEnd) && lineEnd !== lineStart) {
+            suffix += '-' + escapeHtml(String(lineEnd));
+          }
+        } else if (typeof ev?.lines === 'string') {
+          suffix = ':' + escapeHtml(ev.lines);
+        }
+        fileLine = `<span style="font-family:monospace;font-size:12px;color:var(--text-dim)">${path}${suffix}</span>`;
+      }
+      const weight = (typeof ev?.weight === 'number') ? ev.weight.toFixed(2) : '—';
+      const confidence = (typeof ev?.confidence === 'number') ? ev.confidence.toFixed(2) : '—';
+      const note = ev?.note ? escapeHtml(ev.note) : '';
+      const updatedAt = escapeHtml(ev?.updatedAt ?? '');
+
+      return `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--bg-panel)">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-weight:600;font-size:13px">${kind}</span>
+            <span style="font-family:monospace;font-size:12px;color:var(--text-dim)">${sourceId}</span>
+            ${evRenderTierBadge(ev?.privacyTier)}
+          </div>
+          ${fileLine ? `<div>${fileLine}</div>` : ''}
+          <div style="font-size:12px;color:var(--text-dim);display:flex;gap:12px;flex-wrap:wrap">
+            <span>weight: ${escapeHtml(weight)}</span>
+            <span>confidence: ${escapeHtml(confidence)}</span>
+            <span>updated: ${updatedAt}</span>
+          </div>
+          ${note ? `<div style="font-size:13px;line-height:1.4;white-space:pre-wrap;word-break:break-word">${note}</div>` : ''}
+        </div>
+      `;
+    }
+
+    function evRenderEntityRow(entity) {
+      const id = escapeHtml(entity?.id ?? '');
+      const type = escapeHtml(entity?.type ?? '');
+      const name = escapeHtml(entity?.name ?? '');
+      const content = entity?.content ? escapeHtml(String(entity.content).slice(0, 240)) : '';
+      const scope = escapeHtml(entity?.privacyScope ?? 'shared-project');
+      const confidence = (typeof entity?.confidence === 'number') ? entity.confidence.toFixed(2) : '—';
+      return `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--bg-panel)">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-weight:600;font-size:13px">${type}</span>
+            <span style="font-size:13px">${name}</span>
+            <span style="font-family:monospace;font-size:11px;color:var(--text-dim)">${id}</span>
+            <span style="font-size:11px;padding:2px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text-dim)">${scope}</span>
+            <span style="font-size:11px;color:var(--text-dim)">confidence: ${escapeHtml(confidence)}</span>
+            <button class="ev-inspect-btn" data-entity-id="${id}" style="margin-left:auto;padding:2px 8px;font-size:11px">Inspect evidence</button>
+          </div>
+          ${content ? `<div style="font-size:12px;color:var(--text-dim);line-height:1.4">${content}</div>` : ''}
+        </div>
+      `;
+    }
+
+    async function loadEvidenceByEntity() {
+      const idInput = document.getElementById('evEntityId');
+      const status = document.getElementById('evEntityStatus');
+      const results = document.getElementById('evEntityResults');
+      if (!idInput || !status || !results) return;
+      const id = (idInput.value || '').trim();
+      if (!id) {
+        status.textContent = 'Enter an entity ID.';
+        results.innerHTML = '';
+        return;
+      }
+      status.textContent = 'Loading…';
+      results.innerHTML = '';
+      try {
+        const viewerScope = evCurrentViewerScope();
+        const url = '/memory/evidence/by-entity/' + encodeURIComponent(id)
+          + '?viewerScope=' + encodeURIComponent(viewerScope);
+        const data = await apiFetch(url);
+        const ev = Array.isArray(data.evidence) ? data.evidence : [];
+        if (ev.length === 0) {
+          status.textContent = 'No evidence visible at viewer scope "' + viewerScope + '".';
+          results.innerHTML = '';
+          return;
+        }
+        status.textContent = ev.length + ' evidence row(s) at scope "' + viewerScope + '".';
+        results.innerHTML = ev.map(evRenderEvidenceRow).join('');
+      } catch (err) {
+        const msg = (err && err.message) ? err.message : 'Lookup failed';
+        status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(msg) + '</span>';
+        results.innerHTML = '';
+      }
+    }
+
+    function evLookupFromCitation(entityId) {
+      const idInput = document.getElementById('evEntityId');
+      if (idInput) idInput.value = entityId;
+      loadEvidenceByEntity();
+    }
+
+    async function loadEntitiesByEvidence() {
+      const kindEl = document.getElementById('evCitationKind');
+      const sourceIdEl = document.getElementById('evCitationSourceId');
+      const status = document.getElementById('evCitationStatus');
+      const results = document.getElementById('evCitationResults');
+      if (!kindEl || !sourceIdEl || !status || !results) return;
+      const kind = kindEl.value;
+      const sourceId = (sourceIdEl.value || '').trim();
+      if (!sourceId) {
+        status.textContent = 'Enter a sourceId.';
+        results.innerHTML = '';
+        return;
+      }
+      status.textContent = 'Loading…';
+      results.innerHTML = '';
+      try {
+        const viewerScope = evCurrentViewerScope();
+        const url = '/memory/entities/by-evidence'
+          + '?kind=' + encodeURIComponent(kind)
+          + '&sourceId=' + encodeURIComponent(sourceId)
+          + '&viewerScope=' + encodeURIComponent(viewerScope);
+        const data = await apiFetch(url);
+        const entities = Array.isArray(data.entities) ? data.entities : [];
+        if (entities.length === 0) {
+          status.textContent = 'No entities cite (' + kind + ', ' + sourceId + ') at scope "' + viewerScope + '".';
+          results.innerHTML = '';
+          return;
+        }
+        status.textContent = entities.length + ' entity(ies) cite this source at scope "' + viewerScope + '".';
+        results.innerHTML = entities.map(evRenderEntityRow).join('');
+        // Attach click handlers via data attribute (no inline onclick injection).
+        results.querySelectorAll('button.ev-inspect-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const targetId = btn.getAttribute('data-entity-id') || '';
+            if (targetId) evLookupFromCitation(targetId);
+          });
+        });
+      } catch (err) {
+        const msg = (err && err.message) ? err.message : 'Lookup failed';
+        status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(msg) + '</span>';
+        results.innerHTML = '';
+      }
+    }
+
     async function loadTokens() {
       const summaryEl = document.getElementById('tokensSummaryBody');
       const sessionsEl = document.getElementById('tokensSessionsBody');
