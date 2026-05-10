@@ -58,8 +58,8 @@ A new **Evidence** tab in the dashboard wraps both routes: enter an entity ID to
 
 ## What to Tell Your User
 
-- **Your TaskFlow API now has resource budgets**: "I added per-controller rate limits and a max-active-flows cap so a buggy or malicious controller can't flood the registry. Defaults: 10 new flows/sec, 50 active flows, 60 heartbeats/min/flow. All configurable. If a real workload hits a limit, raise it in `config.taskFlow.rateLimits`; setting `Infinity` disables a gate."
-- **You can now read a full state-machine audit trail in `.instar/shared-state.jsonl`** — every TaskFlow state transition is logged under subsystem `taskflow-transition` with the redacted metadata (no controller-private state ever leaves the registry).
+- **Your TaskFlow API now has resource budgets**: "I added per-controller rate limits and a max-active-flows cap so a buggy or malicious controller can't flood the registry. Defaults: 10 new flows per second, 50 active flows, 60 heartbeats per minute per flow — all configurable. If a real workload hits a limit, just let me know and I'll raise it."
+- **You can now read a full state-machine audit trail in shared-state.jsonl** — every TaskFlow state transition is logged under the taskflow-transition subsystem with redacted metadata (no controller-private state ever leaves the registry).
 - **Divergence and cancellation notes that should have been landing since Phase 2/3a now actually land** — a schema-validation gap was silently dropping them. Operator dashboards now see those notes for the first time.
 - **Memory evidence is now browsable**: "I added an Evidence tab in your dashboard and two HTTP routes that let me trace any claim back to its sources, or pivot from a source (a feedback report, a commit, a session) to every entity that cites it. Everything is viewer-scope filtered, so a narrower viewer never sees evidence above their tier."
 
