@@ -695,6 +695,15 @@ export interface EvolutionProposal {
   resolution?: string;
   /** Tags for categorization */
   tags?: string[];
+  /**
+   * Optional MemoryEntity id for the cluster's pattern entity.
+   * Populated by Phase 2 WikiClaim evidence integration when SemanticMemory is
+   * wired into EvolutionManager. Stable across the proposal's lifetime; older
+   * proposals (created before Phase 2 wiring) leave this undefined.
+   *
+   * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Producers.
+   */
+  entityId?: string;
 }
 
 export type EvolutionType =
