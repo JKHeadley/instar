@@ -12980,7 +12980,8 @@ export function createRoutes(ctx: RouteContext): Router {
         const out = await ctx.taskFlowRegistry.createFlow(req.body ?? {});
         res.status(out.created ? 201 : 200).json(out.flow);
       } catch (err) {
-        taskFlowError(res, err);
+        if (err instanceof Error) taskFlowError(res, err);
+        else res.status(500).json({ error: 'internal_error' });
       }
     });
 
@@ -13119,7 +13120,8 @@ export function createRoutes(ctx: RouteContext): Router {
         }
         res.json(result);
       } catch (err) {
-        taskFlowError(res, err);
+        if (err instanceof Error) taskFlowError(res, err);
+        else res.status(500).json({ error: 'internal_error' });
       }
     };
 
@@ -13150,7 +13152,8 @@ export function createRoutes(ctx: RouteContext): Router {
         });
         res.json(result);
       } catch (err) {
-        taskFlowError(res, err);
+        if (err instanceof Error) taskFlowError(res, err);
+        else res.status(500).json({ error: 'internal_error' });
       }
     });
 
@@ -13174,7 +13177,8 @@ export function createRoutes(ctx: RouteContext): Router {
         });
         res.json(flow);
       } catch (err) {
-        taskFlowError(res, err);
+        if (err instanceof Error) taskFlowError(res, err);
+        else res.status(500).json({ error: 'internal_error' });
       }
     });
   }

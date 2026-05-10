@@ -125,5 +125,6 @@ The artifact's claims match the code: (1) `applyOcc` updates the cache only afte
 
 - Test run: `npx vitest run tests/unit/task-flow-registry.test.ts` → 24/24 passing (135ms).
 - Typecheck: `npx tsc --noEmit` → clean across modified files.
+- Route-completeness test: `npx vitest run tests/unit/route-completeness.test.ts` → 9/9 passing. Catch blocks in new TaskFlow routes guard with `if (err instanceof Error)` to satisfy the routes-source invariant (every `catch (err)` paired with an `instanceof Error` check).
 - Spec source of truth: `docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md` (Convergence: 2026-05-07; rounded through three review passes).
 - OpenClaw provenance: commit `f482e4d335`, files `src/tasks/task-flow-registry.ts:376-586`, `task-flow-registry.types.ts:14-43`, `task-flow-registry.store.sqlite.ts:361-371`.
