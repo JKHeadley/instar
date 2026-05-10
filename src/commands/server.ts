@@ -6263,6 +6263,24 @@ export async function startServer(options: StartOptions): Promise<void> {
           ledger: sharedStateLedger ?? undefined,
         });
         divergenceChecker.start();
+
+        // Phase 4 — wire InitiativeTracker to TaskFlow as the single source of
+        // truth. Backfill any initiatives present in the legacy
+        // `initiatives.json` file. Idempotent via `findIdempotent` on
+        // `(controllerId="InitiativeTracker", ownerKey, idempotencyKey)`.
+        initiativeTracker.setTaskFlowRegistry(taskFlowRegistry, controllerInstanceId);
+        try {
+          const initiativeReport = await initiativeTracker.migrateExistingToTaskFlow();
+          console.log(
+            pc.green(
+              `  TaskFlow: backfilled initiatives created=${initiativeReport.created} ` +
+              `existed=${initiativeReport.alreadyExisted} advanced=${initiativeReport.advanced} ` +
+              `skipped=${initiativeReport.skipped}`
+            )
+          );
+        } catch (err) {
+          console.warn('[instar] taskflow initiative backfill failed (non-fatal):', err);
+        }
       } catch (err) {
         console.warn('[instar] task-flow init failed (non-fatal):', err);
         taskFlowRegistry = undefined;

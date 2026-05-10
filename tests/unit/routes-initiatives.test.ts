@@ -40,41 +40,41 @@ function mountRoutes(tr: InitiativeTracker): { server: Server; port: number } {
     if (!i) return res.status(404).json({ error: 'not found' });
     res.json(i);
   });
-  router.post('/initiatives', (req, res) => {
+  router.post('/initiatives', async (req, res) => {
     const { id, title, description, phases } = req.body ?? {};
     if (typeof id !== 'string' || !initiativeIdRe.test(id)) return res.status(400).json({ error: 'bad id' });
     if (typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'bad title' });
     if (typeof description !== 'string') return res.status(400).json({ error: 'bad description' });
     if (!Array.isArray(phases) || phases.length === 0) return res.status(400).json({ error: 'bad phases' });
     try {
-      const created = tr.create(req.body);
+      const created = await tr.create(req.body);
       res.status(201).json(created);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
-  router.patch('/initiatives/:id', (req, res) => {
+  router.patch('/initiatives/:id', async (req, res) => {
     try {
-      res.json(tr.update(req.params.id, req.body ?? {}));
+      res.json(await tr.update(req.params.id, req.body ?? {}));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(msg.includes('not found') ? 404 : 400).json({ error: msg });
     }
   });
-  router.post('/initiatives/:id/phase/:phaseId', (req, res) => {
+  router.post('/initiatives/:id/phase/:phaseId', async (req, res) => {
     const { status } = req.body ?? {};
     if (!['pending', 'in-progress', 'done', 'blocked'].includes(status)) {
       return res.status(400).json({ error: 'bad status' });
     }
     try {
-      res.json(tr.setPhaseStatus(req.params.id, req.params.phaseId, status));
+      res.json(await tr.setPhaseStatus(req.params.id, req.params.phaseId, status));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(msg.includes('not found') ? 404 : 400).json({ error: msg });
     }
   });
-  router.delete('/initiatives/:id', (req, res) => {
-    if (!tr.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
+  router.delete('/initiatives/:id', async (req, res) => {
+    if (!(await tr.remove(req.params.id))) return res.status(404).json({ error: 'not found' });
     res.json({ id: req.params.id, deleted: true });
   });
 

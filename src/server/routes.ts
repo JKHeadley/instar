@@ -5437,7 +5437,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(initiative);
   });
 
-  router.post('/initiatives', (req, res) => {
+  router.post('/initiatives', async (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
@@ -5460,7 +5460,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const created = ctx.initiativeTracker.create({
+      const created = await ctx.initiativeTracker.create({
         id, title, description, phases, links, nextCheckAt,
         needsUser, needsUserReason, blockers,
       });
@@ -5470,7 +5470,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.patch('/initiatives/:id', (req, res) => {
+  router.patch('/initiatives/:id', async (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
@@ -5480,7 +5480,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const updated = ctx.initiativeTracker.update(req.params.id, req.body ?? {});
+      const updated = await ctx.initiativeTracker.update(req.params.id, req.body ?? {});
       res.json(updated);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -5489,7 +5489,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.post('/initiatives/:id/phase/:phaseId', (req, res) => {
+  router.post('/initiatives/:id/phase/:phaseId', async (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
@@ -5500,7 +5500,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const updated = ctx.initiativeTracker.setPhaseStatus(req.params.id, req.params.phaseId, status);
+      const updated = await ctx.initiativeTracker.setPhaseStatus(req.params.id, req.params.phaseId, status);
       res.json(updated);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -5508,12 +5508,12 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.delete('/initiatives/:id', (req, res) => {
+  router.delete('/initiatives/:id', async (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
     }
-    const removed = ctx.initiativeTracker.remove(req.params.id);
+    const removed = await ctx.initiativeTracker.remove(req.params.id);
     if (!removed) {
       res.status(404).json({ error: 'initiative not found' });
       return;
