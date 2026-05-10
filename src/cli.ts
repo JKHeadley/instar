@@ -573,6 +573,19 @@ memoryCmd
     return memoryExport(opts);
   });
 
+memoryCmd
+  .command('backfill-evidence')
+  .description(
+    'One-shot WikiClaim migration: pattern-match legacy MemoryEntity.source ' +
+      'and synthesize typed evidence rows (URL-only — see spec § Migration)',
+  )
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--dry-run', 'Print what would be backfilled without writing')
+  .action(async (opts) => {
+    const { memoryBackfillEvidence } = await import('./commands/memoryBackfillEvidence.js');
+    return memoryBackfillEvidence(opts);
+  });
+
 // ── Knowledge Base ────────────────────────────────────────────────
 
 const knowledgeCmd = program
