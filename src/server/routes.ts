@@ -7647,12 +7647,13 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ learnings: ctx.evolution.listLearnings({ category, applied }) });
   });
 
-  router.post('/evolution/learnings', (req, res) => {
+  router.post('/evolution/learnings', async (req, res) => {
     if (!ctx.evolution) {
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, category, description, source, tags, evolutionRelevance } = req.body;
+    const { title, category, description, source, tags, evolutionRelevance,
+            context, documentFallback, evidence: explicitEvidence } = req.body;
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -7661,6 +7662,43 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"description" is required' });
       return;
     }
+
+    // WikiClaim Phase 3 (spec § Producers line 268, § Migration Plan line 341):
+    // /learn must cite at least one evidence row. Either:
+    //   (a) caller passes `evidence: MemoryEvidence[]` directly (advanced),
+    //   (b) caller passes `context: string` and we auto-derive sessions/messages,
+    //   (c) caller passes `documentFallback: {sourceId, path}` for prompted-source.
+    // Combining (b)+(c) is allowed.
+    let derivedEvidence: import('../core/types.js').MemoryEvidence[] = [];
+    let externalReferences: Array<{ kind: 'feedback' | 'commit'; sourceId: string }> = [];
+    let pendingDocumentRef: { sourceId: string; path?: string; note?: string } | undefined;
+    try {
+      if (Array.isArray(explicitEvidence) && explicitEvidence.length > 0) {
+        derivedEvidence = explicitEvidence;
+      } else {
+        const { buildLearnEvidence, LearnEvidenceError } =
+          await import('../core/LearnSkillBridge.js');
+        try {
+          const built = buildLearnEvidence({
+            context: typeof context === 'string' ? context : `${title}\n\n${description}`,
+            documentFallback,
+          });
+          derivedEvidence = built.evidence;
+          externalReferences = built.externalReferences;
+          pendingDocumentRef = built.pendingDocumentRef;
+        } catch (err) {
+          if (err instanceof LearnEvidenceError) {
+            res.status(400).json({ error: err.message });
+            return;
+          }
+          throw err;
+        }
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to derive evidence' });
+      return;
+    }
+
     const learning = ctx.evolution.addLearning({
       title, category: category || 'general', description,
       source: source || { discoveredAt: new Date().toISOString() },
@@ -7679,7 +7717,18 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
 
-    res.status(201).json({ ...learning, soulNudge });
+    // WikiClaim Phase 3: surface derived evidence + external references on
+    // the response so callers can confirm the bridge resolved their context.
+    // Spec § Producers line 228 — LearnSkill kinds are message|session;
+    // externalReferences carry feedback/commit refs that the caller routes
+    // through the appropriate downstream producer.
+    res.status(201).json({
+      ...learning,
+      soulNudge,
+      evidence: derivedEvidence,
+      externalReferences,
+      ...(pendingDocumentRef ? { pendingDocumentRef } : {}),
+    });
   });
 
   router.patch('/evolution/learnings/:id/apply', (req, res) => {
@@ -8388,17 +8437,49 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/intent/journal', async (req, res) => {
     try {
       const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const { EvidencePolicyError } = await import('../memory/SemanticMemory.js');
       const journal = new DecisionJournal(ctx.config.stateDir);
 
-      const { sessionId, decision, ...rest } = req.body || {};
+      const { sessionId, decision, evidence, ...rest } = req.body || {};
 
       if (!sessionId || !decision) {
         res.status(400).json({ error: 'sessionId and decision are required' });
         return;
       }
 
-      const entry = journal.log({ sessionId, decision, ...rest });
-      res.status(201).json(entry);
+      // WikiClaim Phase 3 (spec § Producers line 258): every decision must
+      // cite at least one evidence row. The route accepts an explicit
+      // `evidence` array, OR — when omitted — synthesizes a minimum-viable
+      // `session` evidence row from the request's `sessionId` (the auth-
+      // context proxy available at this HTTP layer). Synthesis keeps the
+      // legacy POST shape working while still satisfying the policy gate;
+      // explicit evidence always overrides synthesis. Spec § Producers
+      // line 227: `session` is in the DecisionJournal allowlist. Spec
+      // § Storage and Privacy line 333: synthetic sourceIds are tolerated
+      // (consumers handle dangling refs).
+      let effectiveEvidence: any[] = Array.isArray(evidence) ? evidence : [];
+      if (effectiveEvidence.length === 0) {
+        effectiveEvidence = [{
+          kind: 'session',
+          sourceId: `session:${sessionId}`,
+          weight: 0.5,
+          confidence: 0.5,
+          privacyTier: 'private',
+          note: 'auto-synthesized from request session (no explicit evidence)',
+          updatedAt: new Date().toISOString(),
+        }];
+      }
+
+      try {
+        const entry = journal.log({ sessionId, decision, ...rest }, effectiveEvidence);
+        res.status(201).json(entry);
+      } catch (err) {
+        if (err instanceof EvidencePolicyError) {
+          res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        throw err;
+      }
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to log decision' });
     }

@@ -1076,6 +1076,31 @@ export interface DecisionJournalEntry {
   conflict?: boolean;
   /** Tags for categorization */
   tags?: string[];
+  /**
+   * Evidence supporting this decision (WikiClaim Phase 3).
+   *
+   * REQUIRED at write time when DecisionJournal is wired with SemanticMemory
+   * (the producer bridge promotes the entry to a `decision` MemoryEntity).
+   * Spec § Producers line 227 allows DecisionJournal to write evidence kinds:
+   *   `message` | `commit` | `ledger-entry` | `session`
+   * Mismatched kinds reject with `EvidencePolicyError`.
+   *
+   * On read, this field is read-through from the JSONL row — entries written
+   * before Phase 3 have `evidence: undefined` (legacy), entries written after
+   * with SemanticMemory unwired retain whatever the caller passed (defaults
+   * to `[]`).
+   *
+   * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Producers
+   * line 258 (Decision journal) and line 339 (Phase 3).
+   */
+  evidence?: MemoryEvidence[];
+  /**
+   * MemoryEntity id of the `decision` entity promoted from this journal row
+   * by the DecisionJournal→SemanticMemory bridge (Phase 3). Present when
+   * SemanticMemory was wired at log time; absent otherwise. Acts as the
+   * back-reference for inverse-traceability queries.
+   */
+  entityId?: string;
 }
 
 /**
