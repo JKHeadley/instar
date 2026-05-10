@@ -2640,7 +2640,113 @@ export interface MemoryEntity {
   ownerId?: string;
   /** Privacy scope controlling visibility (default: 'shared-project' for backward compat) */
   privacyScope?: PrivacyScopeType;
+
+  /**
+   * Typed evidence array — per-claim provenance with file:line citations,
+   * weights, and confidence (OpenClaw WikiClaim shape).
+   *
+   * Loaded lazily — `recall()` and `searchHybrid()` do NOT populate this
+   * field; use `getEntityWithEvidence()` or `getEvidence()` to read evidence.
+   * Empty array `[]` means "loaded but the entity has no evidence";
+   * `undefined` means "not loaded by this code path".
+   */
+  evidence?: MemoryEvidence[];
 }
+
+/**
+ * Typed citation kind for `MemoryEvidence`. Free-form `kind` would defeat
+ * inverse queries; the enum keeps the lookup surface small and indexable.
+ */
+export type MemoryEvidenceKind =
+  | 'feedback'
+  | 'commit'
+  | 'session'
+  | 'document'
+  | 'message'
+  | 'job-run'
+  | 'ledger-entry'
+  | 'pattern-entity'
+  | 'external-url'
+  | 'supersedes-evidence';
+
+/**
+ * A single piece of evidence supporting a `MemoryEntity` claim. Evidence is
+ * append-only-mostly; existing entries can have `updatedAt` refreshed and
+ * weights recomputed, but entries are not destructively edited. Retire an
+ * evidence entry by adding a new one with `kind:'supersedes-evidence'`
+ * pointing at the old `sourceId`.
+ *
+ * See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md.
+ */
+export interface MemoryEvidence {
+  /** Kind of source — typed, not free-form, for queryability. */
+  kind: MemoryEvidenceKind;
+  /** Foreign key to the source system. Cross-store FK is best-effort —
+   *  consumers tolerate dangling references. */
+  sourceId: string;
+  /** Optional file path or URL (relative to repo root or absolute URL). */
+  path?: string;
+  /** Inclusive start line. */
+  lineStart?: number;
+  /** Inclusive end line; equal to `lineStart` for single-line citations. */
+  lineEnd?: number;
+  /** Optional freeform line range, e.g. "42-58". Derived from
+   *  `lineStart`/`lineEnd` when both present. Kept for OpenClaw shape parity. */
+  lines?: string;
+  /** Optional contribution weight (0–1). */
+  weight?: number;
+  /** Optional trust in the source (0–1) — separate from weight. */
+  confidence?: number;
+  /** Optional privacy tier; defaults to entity's privacyScope. Narrowing-only
+   *  at write time (see § Storage and Privacy). The evidence vocabulary
+   *  diverges from `PrivacyScopeType` per spec § Schema Changes — adds
+   *  'public' and 'sensitive' as endpoint tiers. */
+  privacyTier?: EvidencePrivacyTier;
+  /** Optional free-form annotation. Hard cap MAX_EVIDENCE_NOTE_BYTES = 500. */
+  note?: string;
+  /** ISO 8601 timestamp of when this evidence was added or refreshed. */
+  updatedAt: string;
+}
+
+/**
+ * Privacy tier vocabulary for `MemoryEvidence.privacyTier`. Distinct from
+ * `PrivacyScopeType` (which is the entity-level vocabulary): adds `public`
+ * and `sensitive` endpoint tiers per spec § Schema Changes line 136.
+ *
+ * Ordering for narrowing-only constraint:
+ *   public < shared-project < private < sensitive
+ *
+ * Entity vocabulary maps onto this:
+ *   PrivacyScopeType.shared-project → EvidencePrivacyTier.shared-project
+ *   PrivacyScopeType.shared-topic    → EvidencePrivacyTier.private
+ *                                        (shared-topic is conservative-mapped
+ *                                         to private; topic-scope evidence is
+ *                                         not in the spec's privacyTier set).
+ *   PrivacyScopeType.private         → EvidencePrivacyTier.private
+ */
+export type EvidencePrivacyTier = 'public' | 'shared-project' | 'private' | 'sensitive';
+
+/** Per-entity cap; overridable up to MAX_EVIDENCE_CAP_PER_ENTITY via config. */
+export const DEFAULT_EVIDENCE_CAP_PER_ENTITY = 50;
+/** Hard upper bound on per-entity evidence cap. */
+export const MAX_EVIDENCE_CAP_PER_ENTITY = 500;
+/** Hard cap on `note` field bytes. */
+export const MAX_EVIDENCE_NOTE_BYTES = 500;
+/** Bound for traversal of `kind:'supersedes-evidence'` chains. */
+export const MAX_SUPERSEDES_DEPTH = 32;
+
+/**
+ * Producer identifier — capability token for `addEvidence` /
+ * `rememberWithEvidence` calls. Restricts which kinds each subsystem may
+ * write (per-caller kind allowlist). Cross-process spoofing is NOT in the
+ * threat model — the producer ID is a process-internal symbol.
+ */
+export type EvidenceProducerId =
+  | 'EvolutionManager'
+  | 'DispatchExecutor'
+  | 'DecisionJournal'
+  | 'LearnSkill'
+  | 'manual';
 
 /**
  * A directional connection between two entities.

@@ -35,8 +35,18 @@ import type {
   ExploreOptions,
   EntityType,
   RelationType,
+  MemoryEvidence,
+  MemoryEvidenceKind,
+  EvidenceProducerId,
+  EvidencePrivacyTier,
 } from '../core/types.js';
 import type { PrivacyScopeType } from '../core/types.js';
+import {
+  DEFAULT_EVIDENCE_CAP_PER_ENTITY,
+  MAX_EVIDENCE_CAP_PER_ENTITY,
+  MAX_EVIDENCE_NOTE_BYTES,
+  MAX_SUPERSEDES_DEPTH,
+} from '../core/types.js';
 import type { EmbeddingProvider } from './EmbeddingProvider.js';
 import { VectorSearch } from './VectorSearch.js';
 import { buildPrivacySqlFilter } from '../utils/privacy.js';
@@ -65,6 +75,12 @@ export class SemanticMemory {
   private jsonlPath: string;
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
+  /** When true, `remember()` skips its own JSONL append (the wrapping
+   *  `rememberWithEvidence` will emit a consolidated action instead). */
+  private _suppressRememberJournal = false;
+  /** Last full entity payload captured by `remember()` — read by
+   *  `rememberWithEvidence` to build a full-fidelity JSONL action. */
+  private _lastRememberedEntity: Record<string, unknown> | null = null;
 
   constructor(config: SemanticMemoryConfig) {
     this.config = config;
@@ -391,7 +407,36 @@ export class SemanticMemory {
         INSERT INTO entities_fts(rowid, name, content, tags)
         VALUES (new.rowid, new.name, new.content, new.tags);
       END;
+
+      CREATE TABLE IF NOT EXISTS entity_evidence (
+        evidence_id TEXT PRIMARY KEY,
+        entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        path TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        lines TEXT,
+        weight REAL,
+        confidence REAL,
+        privacy_tier TEXT,
+        note TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity ON entity_evidence(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_entity_evidence_source ON entity_evidence(kind, source_id);
     `);
+
+    // Foreign keys must be ON for the entity_evidence ON DELETE CASCADE to fire.
+    // open() sets the pragma; assert it here so a future caller that forgets
+    // the pragma fails loud rather than silently leaking orphan rows.
+    const fk = db.pragma('foreign_keys', { simple: true }) as number;
+    if (fk !== 1) {
+      throw new Error(
+        'SemanticMemory.createSchema: PRAGMA foreign_keys is OFF — entity_evidence cascade-delete will silently fail. open() must set it ON.',
+      );
+    }
   }
 
   /**
@@ -463,17 +508,29 @@ export class SemanticMemory {
       input.privacyScope ?? 'shared-project',
     );
 
-    // Dual-write to JSONL append log
-    this.appendToJournal('remember', {
-      entity: {
-        id, type: input.type, name: input.name, content: input.content,
-        confidence: input.confidence, createdAt: now, lastVerified: input.lastVerified,
-        lastAccessed: now, expiresAt: input.expiresAt ?? null,
-        source: input.source, sourceSession: input.sourceSession ?? null,
-        tags: input.tags, domain: input.domain ?? null,
-        ownerId: input.ownerId ?? null, privacyScope: input.privacyScope ?? 'shared-project',
-      },
-    });
+    // Dual-write to JSONL append log. The flag lets `rememberWithEvidence`
+    // suppress this and emit a single consolidated action carrying both the
+    // entity and the evidence payload.
+    if (!this._suppressRememberJournal) {
+      this.appendToJournal('remember', {
+        entity: {
+          id, type: input.type, name: input.name, content: input.content,
+          confidence: input.confidence, createdAt: now, lastVerified: input.lastVerified,
+          lastAccessed: now, expiresAt: input.expiresAt ?? null,
+          source: input.source, sourceSession: input.sourceSession ?? null,
+          tags: input.tags, domain: input.domain ?? null,
+          ownerId: input.ownerId ?? null, privacyScope: input.privacyScope ?? 'shared-project',
+        },
+      });
+    }
+    this._lastRememberedEntity = {
+      id, type: input.type, name: input.name, content: input.content,
+      confidence: input.confidence, createdAt: now, lastVerified: input.lastVerified,
+      lastAccessed: now, expiresAt: input.expiresAt ?? null,
+      source: input.source, sourceSession: input.sourceSession ?? null,
+      tags: input.tags, domain: input.domain ?? null,
+      ownerId: input.ownerId ?? null, privacyScope: input.privacyScope ?? 'shared-project',
+    };
 
     // Generate embedding asynchronously (fire-and-forget for write performance)
     if (this._vectorAvailable && this.embeddingProvider && this.vectorSearch) {
@@ -560,6 +617,284 @@ export class SemanticMemory {
 
     // Dual-write to JSONL
     this.appendToJournal('forget', { entityId: id, reason: _reason ?? null });
+  }
+
+  // ─── Evidence (WikiClaim-shape provenance) ─────────────────────
+  //
+  // See docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md.
+  //
+  // Phase 1 ships the schema, the typed API, and the policy gates
+  // (per-producer kind allowlist, narrowing-only privacy tier, evidence cap,
+  // supersedes-cycle bound, note-byte cap). Producer integration into
+  // EvolutionManager / DispatchExecutor / DecisionJournal lands in Phase 2-3.
+
+  /**
+   * Atomic create-with-evidence. Equivalent to `remember()` followed by
+   * `addEvidence()`, but in one better-sqlite3 transaction so a producer
+   * crash mid-call cannot leave an orphan entity.
+   */
+  rememberWithEvidence(
+    input: Parameters<typeof this.remember>[0],
+    evidence: MemoryEvidence[],
+    producer: EvidenceProducerId,
+  ): string {
+    const db = this.ensureOpen();
+    this.assertProducerKindsAllowed(producer, evidence);
+    if (evidence.length > this.evidenceCapPerEntity()) {
+      throw new EvidencePolicyError(
+        `evidence array exceeds per-entity cap (${this.evidenceCapPerEntity()})`,
+      );
+    }
+    return db.transaction(() => {
+      this._suppressRememberJournal = true;
+      let id: string;
+      try {
+        id = this.remember(input);
+      } finally {
+        this._suppressRememberJournal = false;
+      }
+      const writerScope = input.privacyScope ?? 'shared-project';
+      this.insertEvidenceRows(id, evidence, writerScope);
+      // Emit a single consolidated JSONL action with the FULL entity payload
+      // (not just the id) so JSONL replay can reconstruct without
+      // referencing a non-existent prior `remember` action.
+      this.appendToJournal('rememberWithEvidence', {
+        entity: this._lastRememberedEntity ?? { id },
+        evidence: evidence.map((e) => ({ ...e })),
+        producer,
+      });
+      this._lastRememberedEntity = null;
+      return id;
+    })();
+  }
+
+  /**
+   * Append one or more evidence entries to an existing entity. When called
+   * with an array, all rows are inserted inside a single better-sqlite3
+   * transaction so a partial-write crash cannot leave half the rows landed.
+   */
+  addEvidence(
+    entityId: string,
+    evidence: MemoryEvidence | MemoryEvidence[],
+    producer: EvidenceProducerId,
+  ): void {
+    const db = this.ensureOpen();
+    const list = Array.isArray(evidence) ? evidence : [evidence];
+    if (list.length === 0) return;
+    this.assertProducerKindsAllowed(producer, list);
+
+    const entityRow = db
+      .prepare('SELECT privacy_scope FROM entities WHERE id = ?')
+      .get(entityId) as { privacy_scope: string | null } | undefined;
+    if (!entityRow) {
+      throw new EvidencePolicyError(`entity ${entityId} not found`);
+    }
+    const writerScope = (entityRow.privacy_scope ?? 'shared-project') as PrivacyScopeType;
+
+    db.transaction(() => {
+      const existingCount = db
+        .prepare('SELECT COUNT(*) AS n FROM entity_evidence WHERE entity_id = ?')
+        .get(entityId) as { n: number };
+      if (existingCount.n + list.length > this.evidenceCapPerEntity()) {
+        throw new EvidencePolicyError(
+          `evidence cap exceeded for entity ${entityId} (cap ${this.evidenceCapPerEntity()})`,
+        );
+      }
+      this.insertEvidenceRows(entityId, list, writerScope);
+      this.appendToJournal('addEvidence', { entityId, evidence: list, producer });
+    })();
+  }
+
+  /**
+   * Read evidence for an entity, filtered by viewer scope. Producers may
+   * have written `privacyTier` more restrictive than the entity's own
+   * `privacyScope`; we filter at read time so the renderer is the single
+   * privacy-enforcement point.
+   */
+  getEvidence(entityId: string, viewerScope: PrivacyScopeType): MemoryEvidence[] {
+    const db = this.ensureOpen();
+    const rows = db
+      .prepare('SELECT * FROM entity_evidence WHERE entity_id = ? ORDER BY updated_at DESC')
+      .all(entityId) as EvidenceRow[];
+    return rows
+      .map(rowToEvidence)
+      .filter((e) => isEvidenceVisibleAtScope(e.privacyTier, viewerScope));
+  }
+
+  /**
+   * Inverse query: which entities cite this `(kind, sourceId)`? Filtered by
+   * BOTH the entity's own privacyScope AND the citing evidence row's
+   * privacyTier — per spec § Storage and Privacy line 316, no leak via
+   * inverse query at any (viewerScope × evidence tier × entity scope)
+   * combination.
+   */
+  findCitations(
+    ref: { kind: MemoryEvidenceKind; sourceId: string },
+    viewerScope: PrivacyScopeType,
+  ): MemoryEntity[] {
+    const db = this.ensureOpen();
+    const rows = db
+      .prepare(
+        `SELECT ent.*, ev.privacy_tier AS ev_privacy_tier FROM entity_evidence ev
+         JOIN entities ent ON ent.id = ev.entity_id
+         WHERE ev.kind = ? AND ev.source_id = ?`,
+      )
+      .all(ref.kind, ref.sourceId) as Array<EntityRow & { ev_privacy_tier: string | null }>;
+    const seen = new Set<string>();
+    const results: MemoryEntity[] = [];
+    for (const row of rows) {
+      if (seen.has(row.id)) continue;
+      const entityScope = (row.privacy_scope ?? 'shared-project') as PrivacyScopeType;
+      if (!isEntityVisibleAtScope(entityScope, viewerScope)) continue;
+      const evTier = (row.ev_privacy_tier ?? undefined) as EvidencePrivacyTier | undefined;
+      if (!isEvidenceVisibleAtScope(evTier, viewerScope)) continue;
+      seen.add(row.id);
+      results.push(rowToEntity(row));
+    }
+    return results;
+  }
+
+  /**
+   * Eager variant of `recall()` (without `connections`). Returns the entity
+   * with its evidence array attached, viewer-scope filtered.
+   */
+  getEntityWithEvidence(
+    entityId: string,
+    viewerScope: PrivacyScopeType,
+  ): (MemoryEntity & { evidence: MemoryEvidence[] }) | null {
+    const db = this.ensureOpen();
+    const row = db
+      .prepare('SELECT * FROM entities WHERE id = ?')
+      .get(entityId) as EntityRow | undefined;
+    if (!row) return null;
+    const entityScope = (row.privacy_scope ?? 'shared-project') as PrivacyScopeType;
+    if (!isEntityVisibleAtScope(entityScope, viewerScope)) return null;
+    const entity = rowToEntity(row);
+    const evidence = this.getEvidence(entityId, viewerScope);
+    return { ...entity, evidence };
+  }
+
+  // ─── Evidence helpers (private) ────────────────────────────────
+
+  private evidenceCapPerEntity(): number {
+    const configured = (this.config as SemanticMemoryConfig & { evidenceCapPerEntity?: number })
+      .evidenceCapPerEntity;
+    if (typeof configured === 'number') {
+      return Math.max(0, Math.min(configured, MAX_EVIDENCE_CAP_PER_ENTITY));
+    }
+    return DEFAULT_EVIDENCE_CAP_PER_ENTITY;
+  }
+
+  private assertProducerKindsAllowed(
+    producer: EvidenceProducerId,
+    list: readonly MemoryEvidence[],
+  ): void {
+    const allowed = PRODUCER_KIND_ALLOWLIST[producer];
+    if (!allowed) {
+      throw new EvidencePolicyError(`unknown producer ${producer}`);
+    }
+    for (const e of list) {
+      if (!allowed.has(e.kind)) {
+        throw new EvidencePolicyError(
+          `producer ${producer} cannot write evidence kind ${e.kind}`,
+        );
+      }
+      if (typeof e.note === 'string' && Buffer.byteLength(e.note, 'utf8') > MAX_EVIDENCE_NOTE_BYTES) {
+        throw new EvidencePolicyError(
+          `evidence note exceeds ${MAX_EVIDENCE_NOTE_BYTES} bytes`,
+        );
+      }
+    }
+  }
+
+  private insertEvidenceRows(
+    entityId: string,
+    list: readonly MemoryEvidence[],
+    writerScope: PrivacyScopeType,
+  ): void {
+    const db = this.ensureOpen();
+    const stmt = db.prepare(
+      `INSERT INTO entity_evidence (
+        evidence_id, entity_id, kind, source_id, path, line_start, line_end, lines,
+        weight, confidence, privacy_tier, note, updated_at
+      ) VALUES (
+        @evidence_id, @entity_id, @kind, @source_id, @path, @line_start, @line_end, @lines,
+        @weight, @confidence, @privacy_tier, @note, @updated_at
+      )`,
+    );
+    for (const ev of list) {
+      this.assertEvidenceShape(ev);
+      assertNarrowingOnly(writerScope, ev.privacyTier);
+      if (ev.kind === 'supersedes-evidence') {
+        this.assertSupersedesAcyclic(entityId, ev.sourceId);
+      }
+      const lines =
+        ev.lines ??
+        (typeof ev.lineStart === 'number'
+          ? typeof ev.lineEnd === 'number' && ev.lineEnd !== ev.lineStart
+            ? `${ev.lineStart}-${ev.lineEnd}`
+            : `${ev.lineStart}`
+          : null);
+      stmt.run({
+        evidence_id: crypto.randomUUID(),
+        entity_id: entityId,
+        kind: ev.kind,
+        source_id: ev.sourceId,
+        path: ev.path ?? null,
+        line_start: ev.lineStart ?? null,
+        line_end: ev.lineEnd ?? null,
+        lines,
+        weight: typeof ev.weight === 'number' ? ev.weight : null,
+        confidence: typeof ev.confidence === 'number' ? ev.confidence : null,
+        privacy_tier: ev.privacyTier ?? null,
+        note: ev.note ?? null,
+        updated_at: ev.updatedAt,
+      });
+    }
+  }
+
+  private assertEvidenceShape(ev: MemoryEvidence): void {
+    if (!ev.sourceId || ev.sourceId.length === 0) {
+      throw new EvidencePolicyError('evidence.sourceId is required');
+    }
+    if (typeof ev.weight === 'number' && (ev.weight < 0 || ev.weight > 1)) {
+      throw new EvidencePolicyError('evidence.weight must be in [0, 1]');
+    }
+    if (typeof ev.confidence === 'number' && (ev.confidence < 0 || ev.confidence > 1)) {
+      throw new EvidencePolicyError('evidence.confidence must be in [0, 1]');
+    }
+    if (!ev.updatedAt || isNaN(Date.parse(ev.updatedAt))) {
+      throw new EvidencePolicyError('evidence.updatedAt must be a valid ISO 8601 timestamp');
+    }
+  }
+
+  /**
+   * Bounded defenses for `kind:'supersedes-evidence'`:
+   * 1. The supersedes-evidence row's `sourceId` MUST NOT equal the entity's
+   *    own id — that's a self-loop with no useful semantics.
+   * 2. The total count of supersedes-evidence rows on this entity MUST stay
+   *    under MAX_SUPERSEDES_DEPTH. This bounds chain length without
+   *    requiring a parent-pointer column (the spec leaves the chain shape
+   *    underspecified; bounding count is the conservative defense).
+   */
+  private assertSupersedesAcyclic(entityId: string, supersededSourceId: string): void {
+    if (supersededSourceId === entityId) {
+      throw new EvidencePolicyError(
+        `supersedes-evidence cycle detected: sourceId equals entity id`,
+      );
+    }
+    const db = this.ensureOpen();
+    const count = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM entity_evidence
+         WHERE entity_id = ? AND kind = 'supersedes-evidence'`,
+      )
+      .get(entityId) as { n: number };
+    if (count.n >= MAX_SUPERSEDES_DEPTH) {
+      throw new EvidencePolicyError(
+        `supersedes-evidence depth ${count.n} >= ${MAX_SUPERSEDES_DEPTH} on entity ${entityId}`,
+      );
+    }
   }
 
   // ─── User-Scoped Queries ────────────────────────────────────────
@@ -1518,6 +1853,144 @@ interface EdgeRow {
   weight: number;
   context: string | null;
   created_at: string;
+}
+
+interface EvidenceRow {
+  evidence_id: string;
+  entity_id: string;
+  kind: string;
+  source_id: string;
+  path: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  lines: string | null;
+  weight: number | null;
+  confidence: number | null;
+  privacy_tier: string | null;
+  note: string | null;
+  updated_at: string;
+}
+
+function rowToEvidence(row: EvidenceRow): MemoryEvidence {
+  const ev: MemoryEvidence = {
+    kind: row.kind as MemoryEvidenceKind,
+    sourceId: row.source_id,
+    updatedAt: row.updated_at,
+  };
+  if (row.path !== null) ev.path = row.path;
+  if (row.line_start !== null) ev.lineStart = row.line_start;
+  if (row.line_end !== null) ev.lineEnd = row.line_end;
+  if (row.lines !== null) ev.lines = row.lines;
+  if (row.weight !== null) ev.weight = row.weight;
+  if (row.confidence !== null) ev.confidence = row.confidence;
+  if (row.privacy_tier !== null) ev.privacyTier = row.privacy_tier as EvidencePrivacyTier;
+  if (row.note !== null) ev.note = row.note;
+  return ev;
+}
+
+/**
+ * Per-producer allowlist of evidence kinds. Mismatches reject with
+ * EvidencePolicyError. Cross-process spoofing is NOT in the threat model
+ * — the producer is a process-internal symbol the calling subsystem passes.
+ */
+const PRODUCER_KIND_ALLOWLIST: Record<EvidenceProducerId, ReadonlySet<MemoryEvidenceKind>> = {
+  EvolutionManager: new Set(['feedback', 'pattern-entity', 'supersedes-evidence']),
+  DispatchExecutor: new Set(['pattern-entity', 'job-run', 'ledger-entry']),
+  DecisionJournal: new Set(['message', 'commit', 'ledger-entry', 'session']),
+  LearnSkill: new Set(['message', 'session']),
+  // Spec § Producers line 229: `manual` is for `external-url` only and
+  // additionally requires entity owner == caller user. The owner check
+  // requires caller-identity threading (Phase 2 producer integration),
+  // documented as a tracked deferral in the side-effects artifact.
+  manual: new Set(['external-url']),
+};
+
+export class EvidencePolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EvidencePolicyError';
+  }
+}
+
+/**
+ * Entity-level privacy ordering for inverse-query filtering.
+ * `private` > `shared-topic` > `shared-project`. A viewer at higher tier
+ * sees their tier and below.
+ */
+const ENTITY_SCOPE_ORDER: Record<PrivacyScopeType, number> = {
+  'shared-project': 0,
+  'shared-topic': 1,
+  'private': 2,
+};
+
+/**
+ * Evidence-level privacy ordering. Wider vocabulary than entity scope:
+ * adds `public` (more permissive than shared-project) and `sensitive`
+ * (more restrictive than private). Per spec § Schema Changes line 136.
+ */
+const EVIDENCE_TIER_ORDER: Record<EvidencePrivacyTier, number> = {
+  'public': 0,
+  'shared-project': 1,
+  'private': 2,
+  'sensitive': 3,
+};
+
+/** Map an entity scope onto the comparable evidence-tier scale. */
+function entityScopeToTierOrdinal(scope: PrivacyScopeType): number {
+  switch (scope) {
+    case 'shared-project':
+      return EVIDENCE_TIER_ORDER['shared-project'];
+    case 'shared-topic':
+      // No 'shared-topic' in the evidence vocabulary; conservative-map to
+      // 'private' so a topic-scope entity cannot accept wider-than-private
+      // evidence tiers.
+      return EVIDENCE_TIER_ORDER['private'];
+    case 'private':
+      return EVIDENCE_TIER_ORDER['private'];
+  }
+}
+
+/** Map a viewer scope onto the comparable evidence-tier scale. */
+function viewerScopeToTierOrdinal(scope: PrivacyScopeType): number {
+  return entityScopeToTierOrdinal(scope);
+}
+
+/** Whether an entity is visible at a viewer scope (entity-vocabulary). */
+function isEntityVisibleAtScope(
+  itemScope: PrivacyScopeType | undefined,
+  viewerScope: PrivacyScopeType,
+): boolean {
+  const item = itemScope ?? 'shared-project';
+  return ENTITY_SCOPE_ORDER[viewerScope] >= ENTITY_SCOPE_ORDER[item];
+}
+
+/** Whether an evidence row is visible at a viewer scope (tier-vocabulary). */
+function isEvidenceVisibleAtScope(
+  evidenceTier: EvidencePrivacyTier | undefined,
+  viewerScope: PrivacyScopeType,
+): boolean {
+  // No tier set ⇒ inherits entity scope; the entity-level filter has already
+  // accepted this row, so let it through.
+  if (evidenceTier === undefined) return true;
+  return viewerScopeToTierOrdinal(viewerScope) >= EVIDENCE_TIER_ORDER[evidenceTier];
+}
+
+/**
+ * Narrowing-only constraint: an evidence entry's `privacyTier` may be equal
+ * to or MORE restrictive than its entity's `privacyScope`, never less. This
+ * stops a producer from publishing an evidence row at a wider visibility
+ * than the entity it cites.
+ */
+function assertNarrowingOnly(
+  entityScope: PrivacyScopeType,
+  evidenceTier: EvidencePrivacyTier | undefined,
+): void {
+  if (evidenceTier === undefined) return; // inherits entity scope; safe
+  if (EVIDENCE_TIER_ORDER[evidenceTier] < entityScopeToTierOrdinal(entityScope)) {
+    throw new EvidencePolicyError(
+      `evidence privacyTier '${evidenceTier}' is wider than entity privacyScope '${entityScope}' (narrowing-only)`,
+    );
+  }
 }
 
 /** Row from a JOIN query with explicit column aliases */
