@@ -1678,7 +1678,9 @@ export type LedgerEntrySubsystem =
   /** v2 slice 5: CommitmentSweeper expired/stranded emissions. */
   | 'commitment-sweeper'
   /** TaskFlow Phase 3a: DivergenceChecker JSON↔TaskFlow mismatch notes. */
-  | 'taskflow-divergence';
+  | 'taskflow-divergence'
+  /** TaskFlow Phase 5: state-transition audit notes from TaskFlowRegistry. */
+  | 'taskflow-transition';
 
 /** Ledger entry kind. */
 export type LedgerEntryKind =

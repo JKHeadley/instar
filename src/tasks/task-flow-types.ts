@@ -117,6 +117,41 @@ export const BUSY_CAP_DELAY_MS = 5000;
 
 export const RESERVED_MAINTENANCE_CONTROLLER = 'TaskFlowMaintenance';
 
+// ---------- Phase 5: rate limits + cache cap defaults ----------
+// Spec § Threat Model lines 679, 685; § Phase 5 line 650-653.
+
+export const DEFAULT_CREATE_PER_SEC_PER_CONTROLLER = 10;
+export const DEFAULT_MAX_ACTIVE_PER_CONTROLLER = 50;
+export const DEFAULT_PING_PER_MIN_PER_FLOW = 60;
+export const DEFAULT_CACHE_MAX_ENTRIES = MAX_CACHE_ENTRIES;
+
+export interface RateLimitConfig {
+  /** Max createFlow calls per second per controllerId. Default 10. Set Infinity to disable. */
+  createPerSecPerController: number;
+  /** Max non-terminal flows per controllerId. Default 50. Set Infinity to disable. */
+  maxActivePerController: number;
+  /** Max pingFlow calls per minute per flowId. Default 60. Set Infinity to disable. */
+  pingPerMinPerFlow: number;
+}
+
+export interface CacheConfig {
+  /** Cache cap; on overflow LRU eviction. Default 1000. */
+  maxEntries: number;
+}
+
+export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
+  createPerSecPerController: DEFAULT_CREATE_PER_SEC_PER_CONTROLLER,
+  maxActivePerController: DEFAULT_MAX_ACTIVE_PER_CONTROLLER,
+  pingPerMinPerFlow: DEFAULT_PING_PER_MIN_PER_FLOW,
+};
+
+export const DEFAULT_CACHE_CONFIG: CacheConfig = {
+  maxEntries: DEFAULT_CACHE_MAX_ENTRIES,
+};
+
+/** Active (non-terminal) flow statuses for max-active-per-controller bookkeeping. */
+export const ACTIVE_STATUSES: ReadonlyArray<TaskFlowStatus> = ['queued', 'running', 'waiting'];
+
 // ---------- error shapes ----------
 
 export type TaskFlowErrorCode =
