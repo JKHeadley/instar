@@ -11379,6 +11379,43 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Threadline Relay Discover ────────────────────────────────────────
+  // Proxies a discover query through the agent server's relay WebSocket so
+  // the MCP stdio subprocess can ask the relay for its live presence registry
+  // (the MCP subprocess doesn't have its own relay client — same arrangement
+  // as /threadline/relay-send above).
+  router.post('/threadline/relay-discover', async (req, res) => {
+    const relayClient = ctx.threadlineRelayClient;
+    if (!relayClient || relayClient.connectionState !== 'connected') {
+      res.status(503).json({
+        success: false,
+        error: 'Relay not connected',
+        connectionState: relayClient?.connectionState ?? 'absent',
+      });
+      return;
+    }
+    const filter = (req.body && typeof req.body === 'object') ? req.body.filter : undefined;
+    try {
+      const agents = await relayClient.discover(filter);
+      res.json({
+        success: true,
+        agents: agents.map(a => ({
+          agentId: a.agentId,
+          name: a.name,
+          publicKey: Buffer.isBuffer(a.publicKey) ? a.publicKey.toString('hex') : a.publicKey,
+          framework: a.framework,
+          capabilities: a.capabilities,
+          lastSeen: a.lastSeen,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : 'Discover failed',
+      });
+    }
+  });
+
   // ── Response Review Pipeline (Coherence Gate) ────────────────────────
   //
   // Evaluates agent responses before delivery. Implements PEL + Gate + Specialist

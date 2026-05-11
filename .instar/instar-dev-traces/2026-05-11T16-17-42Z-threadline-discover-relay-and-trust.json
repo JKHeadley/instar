@@ -1,0 +1,16 @@
+{
+  "sessionId": "echo-topic-9210-threadline-discover-fix",
+  "timestamp": "2026-05-11T16:17:42Z",
+  "artifactPath": "upgrades/side-effects/threadline-discover-relay-and-trust.md",
+  "artifactSha256": "608b2829e9bb7b101a28c9cbe9c0d93e948ffe14d18fe6aa82209edc5861581e",
+  "coveredFiles": [
+    "src/threadline/ThreadlineMCPServer.ts",
+    "src/threadline/mcp-stdio-entry.ts",
+    "src/server/routes.ts",
+    "tests/unit/threadline/ThreadlineMCPServer.test.ts",
+    "upgrades/side-effects/threadline-discover-relay-and-trust.md"
+  ],
+  "phase": "complete",
+  "secondPass": false,
+  "reviewerConcurred": null
+}

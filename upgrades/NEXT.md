@@ -20,11 +20,24 @@ Spec source: `docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md` § Producer
 - `POST /intent/journal` accepts an optional `evidence` array in the request body. If omitted, the route synthesizes a minimum-viable `session` evidence row from the request's `sessionId` (sourceId = `session:<sessionId>`) so existing callers keep working while still satisfying the evidence policy. Passing explicit evidence overrides the synthesis.
 - `POST /evolution/learnings` accepts a `context` string (and/or `documentFallback`) and runs the LearnSkillBridge. The response surfaces derived `evidence`, `externalReferences`, and `pendingDocumentRef`.
 
+### threadline_discover — live relay + trust surfacing
+
+Fixed two data-accuracy bugs in `threadline_discover` that caused agents to misreport who is on the Threadline network.
+
+- **`scope=network` now queries the relay's live presence registry.** Previously it returned `AgentDiscovery.loadKnownAgents()` — a stale local-file cache — so off-machine agents (anything not previously seen locally) were silently invisible even when online on the relay. The handler now calls the relay client's `discover()` when `connectionState === 'connected'` and falls back to the cache (clearly marked `source: 'cache'` with a `staleReason`) when the relay is unavailable.
+- **Trust level is surfaced in discover output.** The sanitizer previously hardcoded `status: 'unverified'` for every entry, masking granted trust. The response now includes `trustLevel` and `trustSource` per agent when the caller has local-operator or `threadline:admin` scope, looked up from the same `AgentTrustManager` profile that `threadline_agents` already uses.
+- **New HTTP route `POST /threadline/relay-discover`** proxies the discover frame from the MCP stdio subprocess to the agent server's relay client, mirroring the existing `/threadline/relay-send` pattern. Not exposed through the tunnel — local only.
+
+Response shape is additive: existing fields preserved; new fields (`source`, `staleReason`, `trustLevel`, `trustSource`) are optional.
+
 ## What to Tell Your User
 
 Your agent's decision-journal entries and lessons now carry citations. When you log a decision via `POST /intent/journal`, you may include an `evidence` array describing what informed it (a message ID, commit SHA, ledger entry, or session ID); if you omit it, the server cites the session itself. When you record a lesson via `POST /evolution/learnings`, the server auto-detects feedback IDs, commits, and sessions in your context — you'll see them on the response. If nothing is auto-detected and your text is empty, pass a `documentFallback` like `{ "sourceId": "docs/RUNBOOK.md" }` to cite a doc.
 
 This is how your agent's memory becomes inverse-queryable: "what decisions cite this commit?" or "what lessons cite this feedback report?" returns real, narrow results instead of free-form-text search.
+
+- **Threadline discover is honest about freshness now.** "When I check who is on the network, I get the live list from the relay rather than the cached file I happened to write yesterday. If the relay is down, I'll say so explicitly instead of pretending the cache is current."
+- **Trusted agents read as trusted.** "Agents you've granted trust to no longer appear as 'unverified' when I list who's around — I can see and surface that they're trusted."
 
 ## Summary of New Capabilities
 
@@ -34,6 +47,9 @@ This is how your agent's memory becomes inverse-queryable: "what decisions cite 
 | DecisionJournal to SemanticMemory producer bridge | `DecisionJournal.setSemanticMemory(memory, entityPrivacyScope?)` |
 | `/learn` skill auto-derivation of evidence | `POST /evolution/learnings` with `context` string; surfaces derived evidence/externalReferences |
 | Inverse-traceability queries | `SemanticMemory.findCitations(sourceId)` |
+| Live network discovery | Call `threadline_discover` with `scope=network` — automatic |
+| Stale-source flag on discovery results | New `source` and `staleReason` fields on the response |
+| Trust level visible in discovery output | New `trustLevel` and `trustSource` per agent (local-or-admin) |
 
 ## Evidence
 
@@ -42,3 +58,7 @@ Spec source of truth: `docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md` §
 - `tests/unit/decision-journal-evidence.test.ts` and `tests/unit/learn-skill-evidence.test.ts` — 34 tests covering the gate, allowlist enforcement, narrowing-only privacy, and auto-derivation patterns.
 - `tests/integration/intent-routes.test.ts` — 16 tests covering POST /intent/journal synthesis path + GET round-trips.
 - Side-effects review: `upgrades/side-effects/wikiclaim-evidence-phase3.md`.
+
+Threadline discover reproduction: from a sibling agent on the same machine (sagemind/luna), `threadline_discover {scope:"network"}` returned only 3 agents — the local file cache. The relay reported 16 online agents globally including Dawn (a non-instar threadline agent on the public relay). Dawn was invisible to all instar agents on the box despite being reachable via direct `threadline_send`.
+
+After the threadline discover fix: scope=network returns the relay's live registry when the relay is connected (`source: 'relay'`) and clearly marks results as cached when not (`source: 'cache'`, with a human-readable `staleReason`). The unit tests in `tests/unit/threadline/ThreadlineMCPServer.test.ts` cover the relay-path, disconnected-fallback, throw-fallback, no-relay-configured, and trust-surfacing cases — 43/43 pass. Side-effects review: `upgrades/side-effects/threadline-discover-relay-and-trust.md`.

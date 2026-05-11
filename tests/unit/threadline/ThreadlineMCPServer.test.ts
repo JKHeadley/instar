@@ -271,6 +271,118 @@ describe('ThreadlineMCPServer', () => {
         const data = JSON.parse((result.content as any)[0].text);
         expect(data.scope).toBe('network');
         expect(deps.discovery.loadKnownAgents).toHaveBeenCalled();
+        // When no relayClient is wired in deps, scope=network must mark the
+        // result as cache so consumers know the data is stale.
+        expect(data.source).toBe('cache');
+        expect(data.staleReason).toMatch(/not configured/i);
+      } finally {
+        await close();
+      }
+    });
+
+    it('scope=network queries the relay when connected and marks source=relay', async () => {
+      // Inject a relay discoverer that returns live presence and reports connected.
+      const relayDiscover = vi.fn().mockResolvedValue([
+        {
+          agentId: 'abcdef0123456789abcdef0123456789',
+          name: 'dawn',
+          publicKey: 'abcdef0123456789abcdef0123456789',
+          framework: 'threadline',
+          capabilities: ['chat'],
+          lastSeen: new Date().toISOString(),
+        },
+      ]);
+      deps.relayClient = {
+        get connectionState() { return 'connected'; },
+        discover: relayDiscover,
+      };
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_discover',
+          arguments: { scope: 'network' },
+        });
+        const data = JSON.parse((result.content as any)[0].text);
+
+        expect(relayDiscover).toHaveBeenCalled();
+        // Local-cache fallback path must NOT have run when relay succeeded.
+        expect(deps.discovery.loadKnownAgents).not.toHaveBeenCalled();
+        expect(data.source).toBe('relay');
+        expect(data.staleReason).toBeUndefined();
+        expect(data.agents.some((a: any) => a.name === 'dawn')).toBe(true);
+      } finally {
+        await close();
+      }
+    });
+
+    it('scope=network falls back to cache when relay is disconnected', async () => {
+      deps.relayClient = {
+        get connectionState() { return 'disconnected'; },
+        discover: vi.fn(),
+      };
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_discover',
+          arguments: { scope: 'network' },
+        });
+        const data = JSON.parse((result.content as any)[0].text);
+
+        expect(data.source).toBe('cache');
+        expect(data.staleReason).toMatch(/disconnected/i);
+        expect((deps.relayClient as any).discover).not.toHaveBeenCalled();
+        expect(deps.discovery.loadKnownAgents).toHaveBeenCalled();
+      } finally {
+        await close();
+      }
+    });
+
+    it('scope=network falls back to cache when relay query throws', async () => {
+      deps.relayClient = {
+        get connectionState() { return 'connected'; },
+        discover: vi.fn().mockRejectedValue(new Error('socket gone')),
+      };
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_discover',
+          arguments: { scope: 'network' },
+        });
+        const data = JSON.parse((result.content as any)[0].text);
+
+        expect(data.source).toBe('cache');
+        expect(data.staleReason).toMatch(/relay query failed.*socket gone/i);
+        expect(deps.discovery.loadKnownAgents).toHaveBeenCalled();
+      } finally {
+        await close();
+      }
+    });
+
+    it('surfaces granted trust level in discover output (local operator)', async () => {
+      // makeAgent uses publicKey "abc123" (< 32 chars), so the fingerprint
+      // lookup will miss; the trustManager mock then matches by name.
+      (deps.trustManager.getProfile as any).mockImplementation((key: string) => {
+        if (key === 'test-agent') {
+          return makeTrustProfile({ level: 'trusted', source: 'user-granted' });
+        }
+        return null;
+      });
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_discover',
+          arguments: { scope: 'local' },
+        });
+        const data = JSON.parse((result.content as any)[0].text);
+
+        const agent = data.agents.find((a: any) => a.name === 'test-agent');
+        expect(agent).toBeDefined();
+        expect(agent.trustLevel).toBe('trusted');
+        expect(agent.trustSource).toBe('user-granted');
       } finally {
         await close();
       }
