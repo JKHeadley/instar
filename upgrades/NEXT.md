@@ -57,38 +57,15 @@ Phase 1.9 (session-start + compaction-recovery hooks).
 
 ## What to Tell Your User
 
-PR 3 closes the Phase 1a slice. Your agent now has a built-in
-`/project` slash command for inspecting and registering projects, and
-a session-start orientation line that keeps active projects visible at
-the top of every new conversation.
+PR 3 closes the first slice of the project-tracking work. Your agent now has a built-in slash command for inspecting and registering projects, plus a session-start orientation line that keeps active projects visible at the top of every new conversation.
 
-What you'll see at session start: a short `--- ACTIVE PROJECTS ---`
-block with up to five projects, one line each (`Project [id]: X of Y
-rounds done. Next round: <name>.`). If you have more than five active
-projects, the block ends with `+N more on dashboard.` — open the
-dashboard to see the rest. If your agent has no projects registered
-yet, the block is empty.
+What you'll see at session start: a short Active Projects block with up to five projects, one line each — telling you the project name, how many rounds are done out of the total, and what the next round is. If you have more than five active projects, the block ends with a note saying how many more are on the dashboard. If your agent has no projects registered yet, the block is empty.
 
-What this changes day-to-day: your agent won't lose track of multi-spec
-projects after a session restart or a context compaction. Before this,
-the first few features in a project would get attention and the rest
-would drift off the radar. Now the project roster is structurally
-visible at every new conversation. The same digest re-injects after
-context compression, so a long session that hits the compaction window
-still keeps the active-project orientation in context.
+What this changes day-to-day: your agent won't lose track of multi-spec projects after a session restart or a context compaction. Before this, the first few features in a project would get attention and the rest would drift off the radar. Now the project roster is structurally visible at every new conversation. The same digest re-injects after context compression, so a long session that hits the compaction window still keeps the active-project orientation in context.
 
-The `/project` skill itself is Phase 1a's read-only slice: you can
-register a project from a markdown plan doc, list all projects, fetch
-one with its children, or ask "what's next?" (which currently returns
-a placeholder — Phase 1b will wire the real answer). The mutating
-commands (`advance`, `halt`, `ack`, `resume`, `abandon`,
-`run-round`, `drift`, `accept-partial`, `claim-ownership`) ship in
-Phase 1b once the round-runner lands.
+The project skill itself is this slice's read-only surface: you can register a project from a markdown plan doc, list all projects, fetch one with its children, or ask "what's next?" (which currently returns a placeholder — the next phase will wire the real answer). The mutating commands that actually drive a project forward — advancing rounds, halting, acknowledging, resuming, abandoning, running a round, drift-checking, accepting a partial round, and claiming ownership across machines — ship in the next phase once the round-runner lands.
 
-Nothing existing changes shape. The `/initiatives/*` routes still
-return what they always did. The new session-start block appears at
-the end of the orientation output and is plain text. If your agent
-doesn't register projects, you won't see any difference.
+Nothing existing changes shape. The initiatives routes still return what they always did. The new session-start block appears at the end of the orientation output and is plain text. If your agent doesn't register projects, you won't see any difference.
 
 ## Summary of New Capabilities
 
