@@ -32,12 +32,12 @@ Response shape is additive: existing fields preserved; new fields (`source`, `st
 
 ## What to Tell Your User
 
-Your agent's decision-journal entries and lessons now carry citations. When you log a decision via `POST /intent/journal`, you may include an `evidence` array describing what informed it (a message ID, commit SHA, ledger entry, or session ID); if you omit it, the server cites the session itself. When you record a lesson via `POST /evolution/learnings`, the server auto-detects feedback IDs, commits, and sessions in your context — you'll see them on the response. If nothing is auto-detected and your text is empty, pass a `documentFallback` like `{ "sourceId": "docs/RUNBOOK.md" }` to cite a doc.
+Your agent's decision-journal entries and lessons now carry citations. When your agent records a decision, it can attach evidence describing what informed it — a message, a commit, a ledger entry, or a session — and when it omits that, the server cites the session itself. When your agent records a lesson, the server auto-detects feedback IDs, commits, and sessions in the conversation and links them in for you. If nothing is detected and the text is empty, your agent can point to a doc as a fallback.
 
-This is how your agent's memory becomes inverse-queryable: "what decisions cite this commit?" or "what lessons cite this feedback report?" returns real, narrow results instead of free-form-text search.
+This is how your agent's memory becomes inverse-queryable: questions like "what decisions cite this commit?" or "what lessons cite this feedback report?" return real, narrow results instead of free-form-text search.
 
-- **Threadline discover is honest about freshness now.** "When I check who is on the network, I get the live list from the relay rather than the cached file I happened to write yesterday. If the relay is down, I'll say so explicitly instead of pretending the cache is current."
-- **Trusted agents read as trusted.** "Agents you've granted trust to no longer appear as 'unverified' when I list who's around — I can see and surface that they're trusted."
+- Threadline discover is honest about freshness now. When your agent checks who is on the network, it pulls the live list from the relay rather than the cached file it happened to write yesterday. If the relay is down, your agent will say so explicitly instead of pretending the cache is current.
+- Trusted agents read as trusted. Agents you've granted trust to no longer appear as "unverified" when your agent lists who's around — your agent can see and surface that they're trusted.
 
 ## Summary of New Capabilities
 
