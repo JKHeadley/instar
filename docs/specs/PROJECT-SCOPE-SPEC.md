@@ -2,7 +2,10 @@
 title: "Project Scope — Keep Multi-Spec Plans From Falling Off The Radar"
 slug: "project-scope"
 author: "echo"
-review-convergence: false
+review-convergence: true
+review-iterations: 5
+review-completed-at: "2026-05-11T17:30:00Z"
+review-report: "docs/specs/reports/project-scope-convergence.md"
 approved: false
 ---
 
