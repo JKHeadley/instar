@@ -60,7 +60,63 @@ export interface InitiativePhase {
   completedAt?: string;
 }
 
-export type InitiativeStatus = 'active' | 'completed' | 'archived' | 'abandoned';
+export type InitiativeStatus =
+  | 'active'
+  | 'completed'
+  | 'archived'
+  | 'abandoned'
+  | 'paused'
+  | 'halted'
+  | 'awaiting-user';
+
+export type InitiativeKind = 'task' | 'project';
+
+export type PipelineStage =
+  | 'outline'
+  | 'spec-drafted'
+  | 'spec-converged'
+  | 'approved'
+  | 'building'
+  | 'merged'
+  | 'regressed'
+  | 'skipped';
+
+export type RoundStatus =
+  | 'pending'
+  | 'ready'
+  | 'in-progress'
+  | 'partially-complete'
+  | 'complete'
+  | 'complete-with-skips'
+  | 'failed'
+  | 'regressed';
+
+export interface InitiativeRound {
+  name: string;
+  /** Child initiative IDs in this round. */
+  itemIds: string[];
+  status: RoundStatus;
+  /** ISO; populated when prior round completes and this one becomes ready. */
+  autoAdvanceAt?: string;
+  completedAt?: string;
+  haltedAt?: string;
+  haltReason?: string;
+  /** Counter; round-runner caps this at 3. */
+  resumeAttempts?: number;
+  /** Cached drift verdict from the most recent attempt. Typed in Phase 1b. */
+  lastDriftVerdict?: unknown;
+}
+
+export interface InitiativeConflictPatch {
+  patchId: string;
+  recordId: string;
+  path: string;
+  oursValue: unknown;
+  theirsValue: unknown;
+  baseValue?: unknown;
+  losingMachineId: string;
+  capturedAt: string;
+}
 
 export interface InitiativeLink {
   type: 'spec' | 'pr' | 'commit' | 'topic' | 'doc' | 'other';
@@ -92,6 +148,63 @@ export interface Initiative {
   links: InitiativeLink[];
   createdAt: string;
   updatedAt: string;
+
+  // ── Project-scope additions (Phase 1.1) ──────────────────────────
+  // All fields below are OPTIONAL. Pre-project-scope records leave them
+  // undefined; backfill writes `kind: 'task' + schemaVersion: 1` to legacy
+  // records on first load.
+
+  /** Distinguishes leaf work items ('task') from rollups ('project').
+   *  Immutable after creation. Defaults to 'task' when omitted. */
+  kind?: InitiativeKind;
+  /** Bumped on backfill / migration. */
+  schemaVersion?: number;
+  /** Optimistic concurrency counter. Increments on every successful write.
+   *  Starts at 1 on create. */
+  version?: number;
+  /** Back-pointer to a project that lists this child in `rounds[].itemIds`. */
+  parentProjectId?: string;
+
+  // Child-only fields (only meaningful when `kind === 'task'`):
+  pipelineStage?: PipelineStage;
+  /** Relative to repo root; required for stages ≥ 'spec-drafted'. */
+  specPath?: string;
+  /** Required for stages = 'building' or 'merged'. */
+  prNumber?: number;
+  /** GitHub-reported merge commit; recorded at building → merged. */
+  mergeCommitOid?: string;
+  /** ISO; last revalidation against origin/main. */
+  ciCheckedAt?: string;
+  skippedAt?: string;
+  skippedBy?: string;
+  skippedReason?: string;
+  /** Recorded on skipped → outline reverse transition. */
+  unskippedAt?: string;
+  /** Default true at runtime; false marks infrastructure-of-tracker specs. */
+  driftCheck?: boolean;
+
+  // Project-only fields (only meaningful when `kind === 'project'`):
+  rounds?: InitiativeRound[];
+  /** Paths jailed to project-root allowlist. */
+  sourceDocs?: string[];
+  /** Default true at runtime. */
+  autoAdvance?: boolean;
+  /** For round-complete and halt notifications. */
+  telegramTopicId?: string;
+  /** Current round owner (Phase 1.5). */
+  ownerMachineId?: string;
+  /** Absolute path to the target source repo; required for projects. */
+  targetRepoPath?: string;
+  /** Increments on each auto-advance without ack; pauses project at ≥ 2. */
+  unacknowledgedAdvanceCount?: number;
+  /** Populated when user acks the first-launch digest. */
+  firstLaunchAckAt?: string;
+  /** Highest round index acked. */
+  lastAckedRoundIndex?: number;
+  /** Populated by git-sync conflict handler (Phase 1.12). */
+  awaitingReconciliation?: InitiativeConflictPatch[];
+  /** For cache invalidation on drift-prompt edits. */
+  driftPromptTemplateVersion?: number;
 }
 
 export interface InitiativeCreateInput {
@@ -104,6 +217,24 @@ export interface InitiativeCreateInput {
   needsUser?: boolean;
   needsUserReason?: string;
   blockers?: string[];
+
+  // ── Project-scope additions ─────────────────────────────────────
+  /** Defaults to 'task' if omitted. Immutable after creation. */
+  kind?: InitiativeKind;
+  parentProjectId?: string;
+  pipelineStage?: PipelineStage;
+  specPath?: string;
+  prNumber?: number;
+  mergeCommitOid?: string;
+  ciCheckedAt?: string;
+  driftCheck?: boolean;
+  rounds?: InitiativeRound[];
+  sourceDocs?: string[];
+  autoAdvance?: boolean;
+  telegramTopicId?: string;
+  ownerMachineId?: string;
+  targetRepoPath?: string;
+  driftPromptTemplateVersion?: number;
 }
 
 export interface InitiativeUpdateInput {
@@ -115,6 +246,77 @@ export interface InitiativeUpdateInput {
   needsUserReason?: string | null;
   blockers?: string[];
   links?: InitiativeLink[];
+
+  // ── Project-scope additions ─────────────────────────────────────
+  /** Optimistic concurrency guard. When provided, must equal the current
+   *  `version` or update() throws `OccVersionMismatchError`. Backward
+   *  compatible: callers that omit ifMatch get unconditional writes. */
+  ifMatch?: number;
+  /** Presence triggers immutability check: any value that differs from
+   *  the current `kind` throws `KindImmutableError`. */
+  kind?: InitiativeKind;
+  /** Set to a project id to attach; set to null to clear. Bidirectional
+   *  validation against the named project's `rounds[].itemIds` runs on set. */
+  parentProjectId?: string | null;
+  pipelineStage?: PipelineStage;
+  specPath?: string | null;
+  prNumber?: number | null;
+  mergeCommitOid?: string | null;
+  ciCheckedAt?: string | null;
+  skippedAt?: string | null;
+  skippedBy?: string | null;
+  skippedReason?: string | null;
+  unskippedAt?: string | null;
+  driftCheck?: boolean;
+  rounds?: InitiativeRound[];
+  sourceDocs?: string[];
+  autoAdvance?: boolean;
+  telegramTopicId?: string | null;
+  ownerMachineId?: string | null;
+  targetRepoPath?: string;
+  unacknowledgedAdvanceCount?: number;
+  firstLaunchAckAt?: string | null;
+  lastAckedRoundIndex?: number;
+  awaitingReconciliation?: InitiativeConflictPatch[];
+  driftPromptTemplateVersion?: number;
+}
+
+/**
+ * Thrown by `update()` when the caller supplied `ifMatch` and it didn't
+ * equal the current `version`. The HTTP layer (Phase 1.3) translates this
+ * to a 409 response with body `{ currentVersion }`.
+ */
+export class OccVersionMismatchError extends Error {
+  readonly currentVersion: number;
+  constructor(message: string, currentVersion: number) {
+    super(message);
+    this.name = 'OccVersionMismatchError';
+    this.currentVersion = currentVersion;
+  }
+}
+
+/**
+ * Thrown by `update()` when the caller attempted to change `kind`. The
+ * `kind` field is set at creation time and never changes thereafter.
+ */
+export class KindImmutableError extends Error {
+  constructor(message = '`kind` is immutable after initiative creation') {
+    super(message);
+    this.name = 'KindImmutableError';
+  }
+}
+
+/**
+ * Thrown by `update()` when setting `parentProjectId` and the named parent
+ * either doesn't exist, isn't a `kind: 'project'` initiative, or doesn't
+ * list this child in any of its `rounds[].itemIds`. Bidirectional check
+ * keeps the parent/child relationship internally consistent.
+ */
+export class InvalidParentProjectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidParentProjectError';
+  }
 }
 
 export interface DigestItem {
@@ -142,6 +344,51 @@ export const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const INITIATIVE_TASKFLOW_CONTROLLER_ID = 'InitiativeTracker';
 
+/**
+ * JSON.stringify replacer that omits any property whose value is exactly
+ * `undefined`. Native JSON.stringify already drops undefined object values,
+ * but using an explicit replacer makes intent visible AND ensures we never
+ * accidentally serialize a `null` for an optional field — the runtime
+ * guards in `update()` already reject `null`, so this is belt-and-braces.
+ *
+ * Round-trip stability: a record loaded and saved without mutation
+ * produces byte-identical output (asserted by the unit tests).
+ */
+function omitUndefinedReplacer(_key: string, value: unknown): unknown {
+  return value === undefined ? undefined : value;
+}
+
+/**
+ * Reject `null` for any of the project-scope optional fields when supplied
+ * via `InitiativeCreateInput`. (Update inputs are field-by-field; null
+ * means "clear" for nullable fields and "reject" for the rest, enforced
+ * inline in `update()`.)
+ */
+function rejectNullCreateInput(input: InitiativeCreateInput): void {
+  const forbiddenNullKeys: Array<keyof InitiativeCreateInput> = [
+    'kind',
+    'parentProjectId',
+    'pipelineStage',
+    'specPath',
+    'prNumber',
+    'mergeCommitOid',
+    'ciCheckedAt',
+    'driftCheck',
+    'rounds',
+    'sourceDocs',
+    'autoAdvance',
+    'telegramTopicId',
+    'ownerMachineId',
+    'targetRepoPath',
+    'driftPromptTemplateVersion',
+  ];
+  for (const k of forbiddenNullKeys) {
+    if ((input as unknown as Record<string, unknown>)[k as string] === null) {
+      throw new Error(`Initiative create input field "${k}" must not be null`);
+    }
+  }
+}
+
 function ownerKeyForInitiative(initiativeId: string): string {
   return `initiative:${initiativeId}`;
 }
@@ -160,9 +407,25 @@ export class InitiativeTracker {
   private taskFlowRegistry: TaskFlowRegistry | null = null;
   private taskFlowControllerInstanceId: string | null = null;
 
+  // ── Digest cache invalidator hook (Phase 1.1) ──────────────────
+  // PR 3 wires the real invalidator (clears the project-scope digest cache
+  // so the next read recomputes). Until then this is a no-op. The hook
+  // fires after every successful mutating call.
+  private digestCacheInvalidator: () => void = () => {};
+
   constructor(stateDir: string) {
     this.filePath = path.join(stateDir, 'initiatives.json');
     this.loadFromDisk();
+  }
+
+  /**
+   * Register a callback invoked once after every successful mutating call
+   * (`create`, `update`, `setPhaseStatus`, `remove`). The default is a
+   * no-op so legacy callers see no change. PR 3 wires the real cache
+   * invalidator.
+   */
+  setDigestCacheInvalidator(fn: () => void): void {
+    this.digestCacheInvalidator = typeof fn === 'function' ? fn : () => {};
   }
 
   /**
@@ -207,10 +470,26 @@ export class InitiativeTracker {
       if (!fs.existsSync(this.filePath)) return;
       const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
       if (Array.isArray(raw?.initiatives)) {
+        let backfilled = 0;
         for (const item of raw.initiatives) {
           if (item && typeof item.id === 'string') {
+            // Phase 1.1 idempotent backfill: legacy records (missing `kind`)
+            // get `kind: 'task'` + `schemaVersion: 1`. Records that already
+            // carry `kind` are untouched. Second load is a no-op because
+            // nothing changes after the first pass.
+            if (item.kind === undefined) {
+              item.kind = 'task';
+              if (item.schemaVersion === undefined) item.schemaVersion = 1;
+              backfilled++;
+            }
             this.initiatives.set(item.id, item as Initiative);
           }
+        }
+        // Rewrite the file exactly once if any record was backfilled. The
+        // rewrite uses the same omit-undefined replacer as `saveToDisk()`
+        // so the file is stable on a subsequent load.
+        if (backfilled > 0) {
+          this.saveToDisk();
         }
       }
     } catch (err) {
@@ -224,7 +503,7 @@ export class InitiativeTracker {
     fs.mkdirSync(dir, { recursive: true });
     const payload = { initiatives: Array.from(this.initiatives.values()) };
     const tmp = `${this.filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(payload, omitUndefinedReplacer, 2));
     fs.renameSync(tmp, this.filePath);
   }
 
@@ -607,6 +886,7 @@ export class InitiativeTracker {
     if (!input.phases.length) {
       throw new Error('Initiative must have at least one phase');
     }
+    rejectNullCreateInput(input);
     if (this.isTaskFlowEnabled()) {
       if (this.findFlowIdForInitiative(input.id)) {
         throw new Error(`Initiative "${input.id}" already exists`);
@@ -639,18 +919,72 @@ export class InitiativeTracker {
       links: input.links ?? [],
       createdAt: now,
       updatedAt: now,
+
+      // Project-scope: default kind to 'task' and start version at 1. Both
+      // are persisted from create-time so subsequent backfill is a no-op.
+      kind: input.kind ?? 'task',
+      schemaVersion: 1,
+      version: 1,
     };
-    this.initiatives.set(initiative.id, initiative);
-    if (this.isTaskFlowEnabled()) {
-      return await this.persistThroughTaskFlow(initiative);
+    // Optional project-layer fields are passed through if present. Stored
+    // as-is; runtime validation (parentProjectId existence, etc.) happens
+    // on subsequent updates that mutate the relationship.
+    if (input.parentProjectId !== undefined) initiative.parentProjectId = input.parentProjectId;
+    if (input.pipelineStage !== undefined) initiative.pipelineStage = input.pipelineStage;
+    if (input.specPath !== undefined) initiative.specPath = input.specPath;
+    if (input.prNumber !== undefined) initiative.prNumber = input.prNumber;
+    if (input.mergeCommitOid !== undefined) initiative.mergeCommitOid = input.mergeCommitOid;
+    if (input.ciCheckedAt !== undefined) initiative.ciCheckedAt = input.ciCheckedAt;
+    if (input.driftCheck !== undefined) initiative.driftCheck = input.driftCheck;
+    if (input.rounds !== undefined) initiative.rounds = input.rounds;
+    if (input.sourceDocs !== undefined) initiative.sourceDocs = input.sourceDocs;
+    if (input.autoAdvance !== undefined) initiative.autoAdvance = input.autoAdvance;
+    if (input.telegramTopicId !== undefined) initiative.telegramTopicId = input.telegramTopicId;
+    if (input.ownerMachineId !== undefined) initiative.ownerMachineId = input.ownerMachineId;
+    if (input.targetRepoPath !== undefined) initiative.targetRepoPath = input.targetRepoPath;
+    if (input.driftPromptTemplateVersion !== undefined) {
+      initiative.driftPromptTemplateVersion = input.driftPromptTemplateVersion;
     }
-    this.saveToDisk();
-    return initiative;
+
+    this.initiatives.set(initiative.id, initiative);
+    let result: Initiative;
+    if (this.isTaskFlowEnabled()) {
+      result = await this.persistThroughTaskFlow(initiative);
+    } else {
+      this.saveToDisk();
+      result = initiative;
+    }
+    this.digestCacheInvalidator();
+    return result;
   }
 
   async update(id: string, input: InitiativeUpdateInput): Promise<Initiative> {
     const existing = this.get(id);
     if (!existing) throw new Error(`Initiative "${id}" not found`);
+
+    // ── kind immutability check (Phase 1.1) ────────────────────────
+    // The `kind` field is set at creation and never mutates. We treat the
+    // current kind as 'task' when undefined (legacy records pre-backfill).
+    if (input.kind !== undefined) {
+      const currentKind = existing.kind ?? 'task';
+      if (input.kind !== currentKind) {
+        throw new KindImmutableError(
+          `Cannot change kind from "${currentKind}" to "${input.kind}"`
+        );
+      }
+    }
+
+    // ── OCC version check (Phase 1.1) ──────────────────────────────
+    // Only enforce when caller supplied ifMatch — preserves backward
+    // compatibility for legacy callers that never knew about versioning.
+    const currentVersion = existing.version ?? 1;
+    if (input.ifMatch !== undefined && input.ifMatch !== currentVersion) {
+      throw new OccVersionMismatchError(
+        `Initiative "${id}" version mismatch: expected ${input.ifMatch}, current ${currentVersion}`,
+        currentVersion
+      );
+    }
+
     const now = new Date().toISOString();
     const next: Initiative = { ...existing, updatedAt: now, lastTouchedAt: now };
     if (input.title !== undefined) next.title = input.title;
@@ -665,12 +999,112 @@ export class InitiativeTracker {
     }
     if (input.blockers !== undefined) next.blockers = input.blockers;
     if (input.links !== undefined) next.links = input.links;
-    this.initiatives.set(id, next);
-    if (this.isTaskFlowEnabled()) {
-      return await this.persistThroughTaskFlow(next);
+
+    // ── Project-scope field updates ────────────────────────────────
+    // Bidirectional parentProjectId validation: when setting (not clearing),
+    // the named parent must exist as kind:'project' AND list this child in
+    // rounds[].itemIds. Clearing (null) skips validation.
+    if (input.parentProjectId !== undefined) {
+      if (input.parentProjectId === null) {
+        next.parentProjectId = undefined;
+      } else {
+        this.assertValidParentProject(input.parentProjectId, id);
+        next.parentProjectId = input.parentProjectId;
+      }
     }
-    this.saveToDisk();
-    return next;
+    if (input.pipelineStage !== undefined) next.pipelineStage = input.pipelineStage;
+    if (input.specPath !== undefined) {
+      next.specPath = input.specPath === null ? undefined : input.specPath;
+    }
+    if (input.prNumber !== undefined) {
+      next.prNumber = input.prNumber === null ? undefined : input.prNumber;
+    }
+    if (input.mergeCommitOid !== undefined) {
+      next.mergeCommitOid = input.mergeCommitOid === null ? undefined : input.mergeCommitOid;
+    }
+    if (input.ciCheckedAt !== undefined) {
+      next.ciCheckedAt = input.ciCheckedAt === null ? undefined : input.ciCheckedAt;
+    }
+    if (input.skippedAt !== undefined) {
+      next.skippedAt = input.skippedAt === null ? undefined : input.skippedAt;
+    }
+    if (input.skippedBy !== undefined) {
+      next.skippedBy = input.skippedBy === null ? undefined : input.skippedBy;
+    }
+    if (input.skippedReason !== undefined) {
+      next.skippedReason = input.skippedReason === null ? undefined : input.skippedReason;
+    }
+    if (input.unskippedAt !== undefined) {
+      next.unskippedAt = input.unskippedAt === null ? undefined : input.unskippedAt;
+    }
+    if (input.driftCheck !== undefined) next.driftCheck = input.driftCheck;
+    if (input.rounds !== undefined) next.rounds = input.rounds;
+    if (input.sourceDocs !== undefined) next.sourceDocs = input.sourceDocs;
+    if (input.autoAdvance !== undefined) next.autoAdvance = input.autoAdvance;
+    if (input.telegramTopicId !== undefined) {
+      next.telegramTopicId = input.telegramTopicId === null ? undefined : input.telegramTopicId;
+    }
+    if (input.ownerMachineId !== undefined) {
+      next.ownerMachineId = input.ownerMachineId === null ? undefined : input.ownerMachineId;
+    }
+    if (input.targetRepoPath !== undefined) next.targetRepoPath = input.targetRepoPath;
+    if (input.unacknowledgedAdvanceCount !== undefined) {
+      next.unacknowledgedAdvanceCount = input.unacknowledgedAdvanceCount;
+    }
+    if (input.firstLaunchAckAt !== undefined) {
+      next.firstLaunchAckAt =
+        input.firstLaunchAckAt === null ? undefined : input.firstLaunchAckAt;
+    }
+    if (input.lastAckedRoundIndex !== undefined) {
+      next.lastAckedRoundIndex = input.lastAckedRoundIndex;
+    }
+    if (input.awaitingReconciliation !== undefined) {
+      next.awaitingReconciliation = input.awaitingReconciliation;
+    }
+    if (input.driftPromptTemplateVersion !== undefined) {
+      next.driftPromptTemplateVersion = input.driftPromptTemplateVersion;
+    }
+
+    // Bump version on every successful write.
+    next.version = currentVersion + 1;
+
+    this.initiatives.set(id, next);
+    let result: Initiative;
+    if (this.isTaskFlowEnabled()) {
+      result = await this.persistThroughTaskFlow(next);
+    } else {
+      this.saveToDisk();
+      result = next;
+    }
+    this.digestCacheInvalidator();
+    return result;
+  }
+
+  /**
+   * Verify that `parentId` names an existing `kind: 'project'` initiative
+   * AND that one of its rounds lists `childId` in itemIds. Throws
+   * `InvalidParentProjectError` on any failure. Used by `update()` when
+   * a child's `parentProjectId` is set to a non-null value.
+   */
+  private assertValidParentProject(parentId: string, childId: string): void {
+    const parent = this.get(parentId);
+    if (!parent) {
+      throw new InvalidParentProjectError(
+        `Parent project "${parentId}" not found`
+      );
+    }
+    if ((parent.kind ?? 'task') !== 'project') {
+      throw new InvalidParentProjectError(
+        `Initiative "${parentId}" is not a project (kind="${parent.kind ?? 'task'}")`
+      );
+    }
+    const rounds = parent.rounds ?? [];
+    const listed = rounds.some((r) => Array.isArray(r.itemIds) && r.itemIds.includes(childId));
+    if (!listed) {
+      throw new InvalidParentProjectError(
+        `Project "${parentId}" does not list child "${childId}" in any round`
+      );
+    }
   }
 
   async setPhaseStatus(
@@ -696,20 +1130,27 @@ export class InitiativeTracker {
       status: allDone ? 'completed' : existing.status === 'completed' ? 'active' : existing.status,
       updatedAt: now,
       lastTouchedAt: now,
+      version: (existing.version ?? 1) + 1,
     };
     this.initiatives.set(id, next);
+    let result: Initiative;
     if (this.isTaskFlowEnabled()) {
-      return await this.persistThroughTaskFlow(next);
+      result = await this.persistThroughTaskFlow(next);
+    } else {
+      this.saveToDisk();
+      result = next;
     }
-    this.saveToDisk();
-    return next;
+    this.digestCacheInvalidator();
+    return result;
   }
 
   async remove(id: string): Promise<boolean> {
     if (this.isTaskFlowEnabled()) {
       const fid = this.findFlowIdForInitiative(id);
       if (!fid) {
-        return this.initiatives.delete(id);
+        const removed = this.initiatives.delete(id);
+        if (removed) this.digestCacheInvalidator();
+        return removed;
       }
       const registry = this.taskFlowRegistry!;
       const principal = this.taskFlowPrincipal();
@@ -767,11 +1208,56 @@ export class InitiativeTracker {
         }
       }
       this.initiatives.delete(id);
+      this.digestCacheInvalidator();
       return true;
     }
     const removed = this.initiatives.delete(id);
-    if (removed) this.saveToDisk();
+    if (removed) {
+      this.saveToDisk();
+      this.digestCacheInvalidator();
+    }
     return removed;
+  }
+
+  /**
+   * One-time backfill helper for TaskFlow-enabled installs: scans all
+   * records, identifies those missing `kind`, and updates them through
+   * TaskFlow. Idempotent — running twice produces no change after the
+   * first pass. The legacy-JSON path runs an equivalent backfill inside
+   * `loadFromDisk()` on first load.
+   *
+   * Returns counts so callers can log/observe what happened.
+   */
+  async backfillKindAndSchema(): Promise<{ backfilled: number; scanned: number }> {
+    if (!this.isTaskFlowEnabled()) {
+      // Legacy path is backfilled during load. A no-op here is correct
+      // because the in-memory cache already reflects the backfill.
+      let backfilled = 0;
+      for (const init of this.initiatives.values()) {
+        if (init.kind === undefined) {
+          init.kind = 'task';
+          if (init.schemaVersion === undefined) init.schemaVersion = 1;
+          backfilled++;
+        }
+      }
+      if (backfilled > 0) this.saveToDisk();
+      return { backfilled, scanned: this.initiatives.size };
+    }
+    this.refreshCacheFromTaskFlow();
+    let backfilled = 0;
+    const records = Array.from(this.initiatives.values());
+    for (const init of records) {
+      if (init.kind !== undefined) continue;
+      const patched: Initiative = {
+        ...init,
+        kind: 'task',
+        schemaVersion: init.schemaVersion ?? 1,
+      };
+      this.initiatives.set(init.id, patched);
+      await this.persistThroughTaskFlow(patched);
+      backfilled++;
+    }
+    return { backfilled, scanned: records.length };
   }
 
   /**
