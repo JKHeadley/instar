@@ -92,7 +92,9 @@ type ConflictPatch = {
 
 5. Auto-advance is disabled while any project's `awaitingReconciliation` is non-empty (gate check in Phase 1.5 preflight).
 
-**Defense in depth — pre-parser:** even with the merge driver, `InitiativeTracker.load()` detects raw conflict markers (`<<<<<<<`) at parse time and refuses to start the server with a clear error message (rather than crashing on `JSON.parse`). This covers the case where a user merges by hand without the driver installed.
+**Driver installation (per-clone):** `.gitattributes` registers the merge attribute; the driver itself must be registered in local git config (`git config merge.instar-initiatives.driver "node scripts/git-merge-driver-initiatives.js %O %A %B %P"`). The instar server's first-start path (`src/commands/server.ts`) checks for this registration and runs the config command if missing. Server refuses to start if the script file is absent. Documented in `docs/multi-machine.md`.
+
+**Defense in depth — pre-parser:** even with the merge driver, `InitiativeTracker.load()` detects raw conflict markers (`<<<<<<<`) at parse time and refuses to start the server with a clear error message (rather than crashing on `JSON.parse`). The tracker's `reload()` path (used on git-sync pull events at runtime) also detects raw markers and halts any active round-runner with `awaitingUser: 'conflict markers in initiatives.json — driver may not be registered'`, rather than continuing with partial state.
 
 This avoids the case where field-wise LWW silently breaks OCC guarantees (e.g., two machines incrementing `unacknowledgedAdvanceCount` produce a corrupt count).
 
@@ -245,7 +247,7 @@ A new module `src/core/StageTransitionValidator.ts` defines per-edge preconditio
 
 **Target repo:** `mergeCommit.oid` reachability is checked in the project's `targetRepoPath` (see Phase 1.1), NOT the agent's cwd. The reconciler `cd`s into `targetRepoPath` (or uses `git -C`) before running `git merge-base --is-ancestor`. Default for new projects: read `targetRepoPath` from plan-doc frontmatter; missing → reject project creation.
 
-`POST /projects/:id/advance` calls the validator and rejects with 409 on artifact-check failure. A new `merged-state reconciler` runs on `GET /projects/:id` (**lazy**, debounced per-child: skip if `ciCheckedAt < 6h ago`, AND capped at ≤3 child-revalidations per GET to bound `gh pr view` shell-out cost) and as a periodic job (every 6 hours, no per-call cap). On miss → transition to `regressed`, roll back round status, clear future `autoAdvanceAt`, surface via `awaitingUser`.
+`POST /projects/:id/advance` calls the validator and rejects with 409 on artifact-check failure. A new `merged-state reconciler` runs on `GET /projects/:id` (**lazy**, debounced per-child: skip if `ciCheckedAt < 6h ago`, AND capped at ≤3 child-revalidations per GET to bound `gh pr view` shell-out cost; selection order is oldest `ciCheckedAt` first, ties broken by `roundIndex` ASC then `itemId` ASC, so no child can starve) and as a periodic job (every 6 hours, no per-call cap). On miss → transition to `regressed`, roll back round status, clear future `autoAdvanceAt`, surface via `awaitingUser`.
 
 **API contract on lazy reconciliation:** `GET /projects/:id` is documented as **may mutate** (state can transition from `merged → regressed` during the read). Clients that need pure-read semantics use `GET /projects/:id?reconcile=false`.
 
@@ -273,12 +275,16 @@ POST   /projects/:id/halt              — immediate cancel; halts active TaskFl
 POST   /projects/:id/ack               — record user acknowledgment; resets unacknowledgedAdvanceCount;
                                          body: {forRoundIndex} — idempotent on lastAckedRoundIndex
 POST   /projects/:id/accept-partial    — close partially-complete round: missing items → skipped
-                                         (body: reason); transitions round to complete-with-skips
+                                         (body: reason); transitions round to complete-with-skips.
+                                         Counts as an ack for the current roundIndex (advances
+                                         lastAckedRoundIndex); does NOT increment unacknowledgedAdvanceCount.
 POST   /projects/:id/claim-ownership   — leader-election; checks heartbeat < 48h; OCC-protected;
                                          must commit+push+wait-60s before acting
 POST   /projects/:id/resolve-conflict  — clear an awaitingReconciliation entry
                                          body: {patchId, action: 'accept' | 'reject', If-Match required}
-                                         accept = apply losingMachineId's value; reject = drop the patch
+                                         accept = apply losingMachineId's value; reject = drop the patch.
+                                         Both outcomes appended to .instar/conflict-resolutions.jsonl
+                                         (audit trail: {patchId, action, resolvedAt, resolvedBy}).
 DELETE /projects/:id                   — archive; refuses if any round is `in-progress` (must halt first)
 ```
 
@@ -340,7 +346,7 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 
 **Failure modes:** timeout = 30 seconds, fail-closed (round halts with `manual-review-required`). One retry on timeout. Repeated failure (3 in a row across resumes within the same round) → round status `failed`.
 
-**Cost ceiling (corrected from iter 2):** total drift-check spend per agent ≤ $1/day. Tracked via daily-rotated append-only ledger at `.instar/drift-spend-YYYY-MM-DD.jsonl` (one file per UTC day; old files retained ≤30 days then archived to a monthly tarball). Each row: `{recordId, projectId, estimatedCost, actualCost?, timestamp}`. Each call pre-reserves estimated cost via this read-check-append sequence under an **advisory file lock** on `.instar/drift-spend.lock` (POSIX `fcntl` flock) — protects against concurrent drift-checks across different projects on the same machine. After the call, an `actualCost` row reconciles. Cap check uses `sum(estimatedCost where actualCost is null) + sum(actualCost where present)` for the current UTC day, O(day-rows-only). Boundary: `spent + estimated > $1.00` → reject (strict greater-than). Per-machine ledger; on multi-machine, total is sum of machines' ledgers in git-sync — documented as "per-agent ceiling, up to N machines × $1/day in worst case" (not a true cross-machine atomic cap; deferred as same-PR-registered child `drift-spend-cross-machine`).
+**Cost ceiling (corrected from iter 2):** total drift-check spend per agent ≤ $1/day. Tracked via daily-rotated append-only ledger at `.instar/drift-spend-YYYY-MM-DD.jsonl` (one file per UTC day; old files retained ≤30 days then archived to a monthly tarball). Each row: `{recordId, projectId, estimatedCost, actualCost?, timestamp}`. Each call pre-reserves estimated cost via this read-check-append sequence under an **advisory file lock** on `.instar/local/drift-spend.lock` (POSIX `fcntl` flock; lock file lives under machine-local `.instar/local/` to avoid git-sync deltas on a 0-byte file) — protects against concurrent drift-checks across different projects on the same machine. After the call, an `actualCost` row reconciles. Cap check uses `sum(estimatedCost where actualCost is null) + sum(actualCost where present)` for the current UTC day, O(day-rows-only). Boundary: `spent + estimated > $1.00` → reject (strict greater-than). Per-machine ledger; on multi-machine, total is sum of machines' ledgers in git-sync — documented as "per-agent ceiling, up to N machines × $1/day in worst case" (not a true cross-machine atomic cap; deferred as same-PR-registered child `drift-spend-cross-machine`).
 
 **Path jail for file reads:** all paths in `specPath`, `sourceDocs`, and the file references inside specs must (a) be relative to `targetRepoPath`, (b) resolve via `path.realpath` to a location inside `targetRepoPath`, (c) not traverse symlinks that escape. YAML frontmatter parsed with `js-yaml` safe-load. Tests cover `../`, absolute paths, symlink escape.
 
@@ -365,9 +371,9 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 **Run loop:**
 1. **Acquire lock** with PID + projectId + roundIndex. Refuse if exists and PID is alive.
 2. **Compute INITIAL stop condition:** "all `prNumber` values for round itemIds present on `origin/main` with CI green (per Phase 1.2 validator)."
-3. **For each itemId, lazy-allocate** worktree at `path.join(targetRepoPath, '.worktrees', projectId, String(roundIndex), itemId)` via `git -C targetRepoPath worktree add ...` as the autonomous run reaches that item. Worktrees live INSIDE the target repo, not the agent cwd. Refuse if any exists. (Path uses `/` separators to avoid slug collision.)
+3. **For each itemId, lazy-allocate** worktree at `path.join(targetRepoPath, '.worktrees', projectId, String(roundIndex), itemId)` via `git -C targetRepoPath worktree add ...` as the autonomous run reaches that item. Worktrees live INSIDE the target repo, not the agent cwd. On first allocation in a target repo, the runner appends `.worktrees/` to `.git/info/exclude` (per-clone, not committed) so worktrees don't pollute `git status` or get caught by `git add -A`. Refuse if the path already exists. (Path uses `/` separators to avoid slug collision.)
 4. **Delegate to `/autonomous`** with the project id + round index + initial stop condition passed via env. Autonomous skill runs in its own process; runner watches for exit AND polls the project record every 60s.
-5. **Dynamic stop condition revalidation:** every poll cycle, re-read the round's `itemIds` from the project record. If an item was manually transitioned to `skipped` mid-round (or `outline`), the runner emits SIGTERM to the autonomous process's **process group** (`kill -- -PGID`) so spawned children (compilers, test runners) are also reaped. After SIGTERM, runner waits up to 5s; SIGKILL the group otherwise. Then runner recomputes the stop condition and **loops back to step 4** to relaunch `/autonomous` with the new condition — UNLESS the new stop condition is already satisfied by current artifact state, in which case proceed to step 6.
+5. **Dynamic stop condition revalidation:** every poll cycle, re-read the round's `itemIds` from the project record. If an item was manually transitioned to `skipped` mid-round (or `outline`), the runner emits SIGTERM to the autonomous process's **process group** (`kill -- -PGID`) so spawned children (compilers, test runners) are also reaped. **The autonomous child is spawned with `detached: true` (Node `child_process.spawn`, or `setsid` equivalent) so the runner is NOT a member of the child's process group; `kill -- -PGID` targets only the child's group and never reaps the runner itself.** After SIGTERM, runner waits up to 5s; SIGKILL the group otherwise. Then runner recomputes the stop condition and **loops back to step 4** to relaunch `/autonomous` with the new condition — UNLESS the new stop condition is already satisfied by current artifact state, in which case proceed to step 6.
 6. **On autonomous natural exit** (not SIGTERM-relaunch): for each itemId, verify the artifact (mergeCommit.oid reachable + CI green via `gh pr view`). If all verified → round.status = `complete`. If subset → round.status = `partially-complete` with missing items listed. Never mass-advance.
 7. **Cleanup:** `git -C targetRepoPath worktree prune` for the round's worktree namespace.
 8. **Release lock.**
@@ -535,12 +541,12 @@ Initiatives tab filter:
 - **Single writer per machine:** lock file at `.instar/local/round-runner.lock` enforces one round-runner per machine. **Path is machine-local** (`.instar/local/` is in `.gitignore` — does NOT sync). Cross-machine single-writer enforcement comes from `ownerMachineId` (P5), not the lock file.
 - **Stale-PID recovery:** on every preflight, check the lock's PID with `ps -p <pid>`; if dead, remove and proceed. No server restart required.
 - **Machine ownership (P5):** `ownerMachineId` set at round start. Auto-advance polling only fires when current machine matches. Heartbeat file `.instar/machine-health/<machineId>.json` updated every 30 minutes by each machine, git-synced. Each machine writes only its own heartbeat file (one-file-per-machine convention; no cross-machine OCC needed). Leader-election claim only fires when owner's heartbeat is >48h stale.
-- **Ownership claim path:** `POST /projects/:id/claim-ownership` returns 202 Accepted immediately with `{operationId, settleAt}` instead of blocking for the 60s sync settle (avoids client-timeout / gate-latency footgun per MEMORY `feedback_gate_latency_vs_client_timeout.md`). The claim is OCC-protected (If-Match on project version), checks heartbeat staleness, writes the new owner, commits-and-pushes the change to git-sync. The background worker waits 60s for sync convergence then re-reads heartbeat; aborts the claim if the original owner just heartbeated, otherwise finalizes ownership at `settleAt`. `GET /projects/:id/ownership-claim/:operationId` polls status. Original owner that reconnects must re-read `ownerMachineId` before any auto-action (60s git-sync settle period enforced).
+- **Ownership claim path:** `POST /projects/:id/claim-ownership` returns 202 Accepted immediately with `{operationId, settleAt}` instead of blocking for the 60s sync settle (avoids client-timeout / gate-latency footgun per MEMORY `feedback_gate_latency_vs_client_timeout.md`). `operationId` is a `crypto.randomUUID()` (128-bit entropy). The claim is OCC-protected (If-Match on project version), checks heartbeat staleness, writes the new owner, commits-and-pushes the change to git-sync. The background worker waits 60s for sync convergence then re-reads heartbeat; aborts the claim if the original owner just heartbeated, otherwise finalizes ownership at `settleAt`. `GET /projects/:id/ownership-claim/:operationId` polls status. Operation records expire and are garbage-collected 1 hour after `settleAt`. Original owner that reconnects must re-read `ownerMachineId` before any auto-action (60s git-sync settle period enforced).
 - **Git-sync conflict resolution (corrected from iter 2, P4):** on a record-level merge conflict, the merge IS a reconciliation event. Winning version is the higher `version`. Any writes from the losing side that don't appear in the winning record are surfaced as entries in `awaitingReconciliation: ConflictPatch[]`. Auto-advance is disabled while this array is non-empty. User resolves via `POST /projects/:id/resolve-conflict`. NO field-wise auto-merge for OCC-protected fields.
 
 ### Phase 1.13: Backup/restore and machine-local-vs-synced
 
-**Snapshot include:** `.instar/initiatives.json`, `.instar/projects-digest.cache` (regenerable, included for fast post-restore startup), `.instar/drift-spend.jsonl`, `.instar/machine-health/`.
+**Snapshot include:** `.instar/initiatives.json`, `.instar/projects-digest.cache` (regenerable, included for fast post-restore startup), `.instar/drift-spend-*.jsonl` (daily-rotated files within retention window), `.instar/machine-health/`, `.instar/conflict-resolutions.jsonl`.
 
 **Snapshot exclude:** `.instar/local/` (machine-local; includes `round-runner.lock`). Lock files never restored.
 
@@ -573,7 +579,7 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 | `src/server/routes.ts` | Add `/projects/*` route group with auth middleware and If-Match enforcement; `/initiatives` filter params |
 | `scripts/git-merge-driver-initiatives.js` | NEW. Custom git merge driver for `.instar/initiatives.json` that produces `awaitingReconciliation` patches instead of leaving raw conflict markers. |
 | `.gitattributes` | Register `.instar/initiatives.json merge=instar-initiatives`. |
-| `src/commands/server.ts` | Wire reconciler + round-runner-tick poller; post-restore reconciler |
+| `src/commands/server.ts` | Wire reconciler + round-runner-tick poller; post-restore reconciler; merge-driver auto-registration on first start |
 | `scripts/check-defers.sh` | NEW. Pre-commit hook for `defers:` list enforcement |
 | `.claude/skills/instar-project/SKILL.md` | NEW skill |
 | `.instar/hooks/instar/session-start.sh` | Read `.instar/projects-digest.cache` (50ms budget) |
@@ -700,7 +706,7 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 24. Stale-PID lock removed without server restart on next preflight.
 25. Skipped item can transition back to `outline` via `/project advance <id> outline` with `unskippedAt`.
 26. User skips item mid-round → autonomous run receives SIGTERM within 60s + 5s grace + SIGKILL; runner recomputes stop condition.
-27. Cost ledger at `.instar/drift-spend.jsonl` reserves estimated cost atomically before each call; concurrent calls at $0.97 boundary → second rejected.
+27. Cost ledger at `.instar/drift-spend-YYYY-MM-DD.jsonl` reserves estimated cost atomically before each call; concurrent calls at $0.97 boundary → second rejected (via advisory flock on `.instar/local/drift-spend.lock`).
 28. `partially-complete` round → `POST /projects/:id/accept-partial` transitions to `complete-with-skips`; missing items become `skipped` with the supplied reason.
 29. Round status `failed` after 3-attempt cap; auto-advance poller skips; only `/project resume --force` or `/project abandon` accepted.
 30. `targetRepoPath` enforced on project creation; merge-commit reachability checked in that repo, not agent cwd.
@@ -713,6 +719,13 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 37. claim-ownership returns 202 + operationId; finalization at settleAt; status pollable via `GET /projects/:id/ownership-claim/:operationId`.
 38. Cost-ledger advisory lock prevents two concurrent drift-checks on different projects from both crossing the $1/day boundary.
 39. `GET /projects/:id?reconcile=false` produces stable read with no state mutation.
+40. Server first-start runs `git config --local merge.instar-initiatives.driver ...` if absent; refuses to start if `scripts/git-merge-driver-initiatives.js` is missing.
+41. Autonomous child spawned with `detached: true`; `kill -- -PGID` of child group does NOT reap the runner.
+42. `accept-partial` advances `lastAckedRoundIndex` to the closed round's index; does NOT increment `unacknowledgedAdvanceCount`.
+43. `.worktrees/` automatically appended to `.git/info/exclude` on first allocation per target repo.
+44. `claim-ownership` operationId is `crypto.randomUUID()`; operation records garbage-collected 1h after settleAt.
+45. `resolve-conflict` writes audit row to `.instar/conflict-resolutions.jsonl` regardless of accept/reject.
+46. Tracker's `reload()` (git-sync pull) path detects raw conflict markers at runtime and halts active runner with `awaitingUser`, not just at `load()`.
 
 ## Resolved design choices
 
