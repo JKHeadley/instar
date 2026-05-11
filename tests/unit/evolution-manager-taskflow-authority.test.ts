@@ -1,20 +1,29 @@
 /**
- * EvolutionManager × TaskFlow Phase 3a dual-write tests.
+ * EvolutionManager × TaskFlow Phase 3b authority tests.
  *
- * Real SQLite (no mocking) per /instar-dev constraints. Verifies:
- *   1. addProposal creates a queued flow under controllerId=EvolutionManager.
- *   2. updateProposalStatus(approved) startSteps the flow to running.
- *   3. updateProposalStatus(implemented) finishes the flow to succeeded.
- *   4. updateProposalStatus(rejected) fails the flow.
- *   5. updateProposalStatus(deferred) cancels the flow.
- *   6. migrateExistingToTaskFlow is idempotent — running twice = no duplicates.
- *   7. setShadowWritesHalted(true) suppresses subsequent dual-writes.
- *   8. Without setTaskFlowRegistry wired, no flows are written.
- *   9. JSON state remains the source of truth — dual-write failures don't
- *      affect EvolutionManager's local state.
+ * Phase 3b cutover (per docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md § Phase 3b
+ * line 641): TaskFlow is the sole authority for proposal lifecycle state when
+ * the registry is wired. The legacy `evolution-queue.json` is a read-only
+ * historical artifact and the JSONL shadow writes have been removed from the
+ * cluster lifecycle methods.
+ *
+ * This file is the renamed/repurposed Phase 3a `evolution-manager-taskflow-
+ * dualwrite.test.ts`. Five wired-TaskFlow cases continue as regression
+ * coverage for the TaskFlow-authority write path. Three cases changed shape:
+ *   - The `setShadowWritesHalted` test was removed (the brake API was
+ *     deleted along with `DivergenceChecker`).
+ *   - The "JSON-state survives a registry blowup" test became a
+ *     "no JSON shadow write when registry fails under wired-TaskFlow"
+ *     assertion — the proposal is intentionally dropped on the floor under
+ *     Phase 3b semantics; we verify the local JSON file is NOT written.
+ *   - The "without taskflow, no flows are written" case grew a sibling
+ *     assertion: when TaskFlow is NOT wired (opt-out installs), the legacy
+ *     JSON write continues so proposals aren't silently lost.
+ *
+ * Real SQLite (no mocking) per /instar-dev constraints.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -54,7 +63,7 @@ async function rig(opts: { wireTaskFlow: boolean } = { wireTaskFlow: true }): Pr
       SafeFsExecutor.safeRmSync(dir, {
         recursive: true,
         force: true,
-        operation: 'tests/unit/evolution-manager-taskflow-dualwrite.test.ts',
+        operation: 'tests/unit/evolution-manager-taskflow-authority.test.ts',
       });
     },
   };
@@ -70,7 +79,7 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-describe('EvolutionManager × TaskFlow Phase 3a dual-write', () => {
+describe('EvolutionManager × TaskFlow Phase 3b authority', () => {
   let r: Rig;
 
   afterEach(async () => {
@@ -162,7 +171,8 @@ describe('EvolutionManager × TaskFlow Phase 3a dual-write', () => {
 
   it('migrateExistingToTaskFlow is idempotent — second run produces no duplicates', async () => {
     r = await rig({ wireTaskFlow: false });
-    // Add proposals WITHOUT taskflow wiring (so no dual-write yet).
+    // Add proposals WITHOUT taskflow wiring — these write to the legacy JSON
+    // file (Phase 3b keeps the JSON fallback when TaskFlow is opt-out).
     const p1 = r.evolution.addProposal({
       title: 'A',
       source: 't',
@@ -176,7 +186,7 @@ describe('EvolutionManager × TaskFlow Phase 3a dual-write', () => {
       type: 'workflow',
     });
     r.evolution.updateProposalStatus(p2.id, 'implemented');
-    // Now wire taskflow and migrate.
+    // Now wire taskflow and migrate the pre-cutover proposals.
     r.evolution.setTaskFlowRegistry(r.registry, 'test-instance');
     const first = await r.evolution.migrateExistingToTaskFlow();
     expect(first.created).toBe(2);
@@ -197,41 +207,9 @@ describe('EvolutionManager × TaskFlow Phase 3a dual-write', () => {
     expect(after2).toHaveLength(2);
   });
 
-  it('setShadowWritesHalted(true) suppresses subsequent dual-writes', async () => {
-    r = await rig();
-    r.evolution.setShadowWritesHalted(true, 'test-divergence');
-    expect(r.evolution.isShadowWritesHalted().halted).toBe(true);
-    const p = r.evolution.addProposal({
-      title: 'while halted',
-      source: 't',
-      description: 'd',
-      type: 'capability',
-    });
-    await flush();
-    let flows = r.registry.findByControllerId('EvolutionManager');
-    expect(flows).toHaveLength(0);
-
-    // Resume — subsequent additions write through.
-    r.evolution.setShadowWritesHalted(false);
-    const p2 = r.evolution.addProposal({
-      title: 'after resume',
-      source: 't',
-      description: 'd',
-      type: 'capability',
-    });
-    await flush();
-    flows = r.registry.findByControllerId('EvolutionManager');
-    expect(flows).toHaveLength(1);
-    expect(flows[0].ownerKey).toBe(ownerKey(p2.id));
-    // p1 is still JSON-only; that's the expected behavior — halted writes are
-    // never retroactively replayed. The next migrate-existing pass would
-    // backfill it on demand.
-    void p;
-  });
-
-  it('without setTaskFlowRegistry, no flows are written', async () => {
+  it('without setTaskFlowRegistry, the legacy JSON write continues (opt-out fallback)', async () => {
     r = await rig({ wireTaskFlow: false });
-    r.evolution.addProposal({
+    const p = r.evolution.addProposal({
       title: 'no taskflow',
       source: 't',
       description: 'd',
@@ -239,23 +217,46 @@ describe('EvolutionManager × TaskFlow Phase 3a dual-write', () => {
     });
     await flush();
     expect(r.registry.findByControllerId('EvolutionManager')).toHaveLength(0);
+    // listProposals reads `evolution-queue.json` — verify the legacy fallback
+    // is intact for opt-out installs.
+    const proposals = r.evolution.listProposals();
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0].id).toBe(p.id);
   });
 
-  it('JSON state survives even if taskflow registry blows up mid-dualwrite', async () => {
-    r = await rig();
-    // Close the underlying store — subsequent createFlow calls will throw.
-    r.store.close();
-    const p = r.evolution.addProposal({
-      title: 'corrupt taskflow',
+  it('with TaskFlow wired, the legacy JSON file is NOT written by addProposal (Phase 3b cutover)', async () => {
+    r = await rig({ wireTaskFlow: true });
+    const queueFile = path.join(r.stateDir, 'evolution-queue.json');
+    expect(fs.existsSync(queueFile)).toBe(false);
+    r.evolution.addProposal({
+      title: 'authority',
       source: 't',
       description: 'd',
       type: 'capability',
     });
     await flush();
-    // JSON-side: proposal still present.
-    const proposals = r.evolution.listProposals();
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0].id).toBe(p.id);
+    // Phase 3b: TaskFlow is sole authority — JSON file is NOT written.
+    expect(fs.existsSync(queueFile)).toBe(false);
+    // TaskFlow row exists.
+    const flows = r.registry.findByControllerId('EvolutionManager');
+    expect(flows).toHaveLength(1);
+  });
+
+  it('TaskFlow registry blowup under wired Phase 3b drops the proposal (no JSON shadow rescue)', async () => {
+    r = await rig({ wireTaskFlow: true });
+    // Close the underlying store — subsequent createFlow calls will throw,
+    // get warn-logged, and absorbed inside writeCreateToTaskFlow.
+    r.store.close();
+    r.evolution.addProposal({
+      title: 'registry down',
+      source: 't',
+      description: 'd',
+      type: 'capability',
+    });
+    await flush();
+    // No JSON shadow rescue in Phase 3b — the queue file is not written.
+    const queueFile = path.join(r.stateDir, 'evolution-queue.json');
+    expect(fs.existsSync(queueFile)).toBe(false);
   });
 
   it('TaskFlow record is read-authoritative via findByControllerId', async () => {
@@ -269,8 +270,8 @@ describe('EvolutionManager × TaskFlow Phase 3a dual-write', () => {
     await flush();
     r.evolution.updateProposalStatus(p.id, 'approved');
     await flush();
-    // Restart-from-disk simulation: discard the in-memory EvolutionManager
-    // and rebuild from the registry — the flow row tells us status=running.
+    // Restart-from-disk simulation: the flow row is the authoritative
+    // record of proposal state.
     const flowsAfter = r.registry.findByControllerId('EvolutionManager');
     expect(flowsAfter[0].status).toBe('running');
     expect(flowsAfter[0].currentStep).toBe('approved');

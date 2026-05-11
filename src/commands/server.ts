@@ -6207,7 +6207,6 @@ export async function startServer(options: StartOptions): Promise<void> {
     let taskFlowSweeper: import('../tasks/TaskFlowMaintenanceSweeper.js').TaskFlowMaintenanceSweeper | undefined;
     let taskFlowDueWaker: import('../tasks/TaskFlowDueWaker.js').TaskFlowDueWaker | undefined;
     let threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | undefined;
-    let divergenceChecker: import('../tasks/DivergenceChecker.js').DivergenceChecker | undefined;
     if ((config as any).taskFlow?.enabled) {
       try {
         const { TaskFlowStore } = await import('../tasks/task-flow-registry.store.sqlite.js');
@@ -6238,12 +6237,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { ThreadlineFlowBridge } = await import('../tasks/ThreadlineFlowBridge.js');
         threadlineFlowBridge = new ThreadlineFlowBridge({ registry: taskFlowRegistry });
 
-        // Phase 3a — wire EvolutionManager dual-write + divergence checker.
+        // Phase 3b — TaskFlow is the sole authority for evolution clusters.
+        // The DivergenceChecker (Phase 3a) was removed after the 7-day
+        // quiet-period gate cleared (per OPENCLAW-IMPORT-TASKFLOW-SPEC.md
+        // Phase 3b, line 641). The local `evolution-queue.json` file is
+        // retained on disk as a read-only historical artifact of pre-cutover
+        // proposal history; new state is written only to TaskFlow.
         const crypto = await import('node:crypto');
         const controllerInstanceId = crypto.randomUUID();
         evolution.setTaskFlowRegistry(taskFlowRegistry, controllerInstanceId);
-        // Backfill in-flight clusters into TaskFlow. Idempotent via
-        // `evolution-cluster-create-<id>` idempotency key.
+        // Backfill any in-flight clusters into TaskFlow. Idempotent via
+        // `evolution-cluster-create-<id>` idempotency key — safe to keep
+        // running every startup; pre-cutover proposals already migrated to
+        // TaskFlow during Phase 3a will hit `alreadyExisted`.
         try {
           const migrationReport = await evolution.migrateExistingToTaskFlow();
           console.log(
@@ -6256,13 +6262,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch (err) {
           console.warn('[instar] taskflow evolution backfill failed (non-fatal):', err);
         }
-        const { DivergenceChecker } = await import('../tasks/DivergenceChecker.js');
-        divergenceChecker = new DivergenceChecker({
-          registry: taskFlowRegistry,
-          evolutionManager: evolution,
-          ledger: sharedStateLedger ?? undefined,
-        });
-        divergenceChecker.start();
 
         // Phase 4 — wire InitiativeTracker to TaskFlow as the single source of
         // truth. Backfill any initiatives present in the legacy
@@ -6285,13 +6284,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn('[instar] task-flow init failed (non-fatal):', err);
         taskFlowRegistry = undefined;
         threadlineFlowBridge = undefined;
-        divergenceChecker = undefined;
       }
     }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
-    void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
+    void taskFlowSweeper; void taskFlowDueWaker;
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
     // Any degradation events queued during startup will drain to feedback + telegram.
