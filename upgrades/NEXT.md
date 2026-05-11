@@ -8,6 +8,34 @@
 
 ## What Changed
 
+### Stuck Telegram messages — auto-resend Enter after paste
+
+On Claude Code v2.1.105 and newer, the Enter keypress after a bracketed-paste
+sequence is occasionally eaten by a race with the paste-end handler. The
+injected message — including Telegram and Slack relays — would land in the
+prompt and sit there forever, never submitted, until someone pressed Enter
+in the dashboard or tmux session manually.
+
+Two-layer fix:
+
+- **`SessionManager.verifyInjection`** (proactive). After every `rawInject`,
+  schedule a 1.5-second check that compares the first 40 chars of the message
+  against the pane at the `❯` prompt. If it's still there, send one extra
+  Enter. Single-shot per injection, no-op when the text submitted normally,
+  reports recovery via `DegradationReporter`.
+- **`StallTriageNurse` fast-path** (recovery-time backstop). Before paying for
+  an LLM diagnosis call, the triage nurse checks for ≥20 chars of text at the
+  `❯` prompt without any processing glyphs (`⎿ ✶ ⏺` / "Coalescing" /
+  "thinking" / "esc to interrupt"). If detected, nudge with a single Enter and
+  skip the LLM round-trip. Conservative heuristic — false positives at worst
+  send a harmless Enter.
+
+Tests: `tests/unit/session-injection-verify.test.ts` (7 tests),
+`tests/unit/stall-triage-typed-not-submitted.test.ts` (5 tests).
+
+Side-effects review:
+`upgrades/side-effects/verify-injection-stuck-input.md`.
+
 ### Project-scope Phase 1a PR 2 — Stage validator + `/projects` API
 
 Second of three PRs scaffolding the project-scope feature. PR 1 added
