@@ -6199,6 +6199,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { InitiativeTracker } = await import('../core/InitiativeTracker.js');
     const initiativeTracker = new InitiativeTracker(config.stateDir);
 
+    // Project-scope Phase 1.9 — wire the digest cache writer so every
+    // project mutation re-renders `.instar/projects-digest.cache`. The
+    // session-start + compaction-recovery hooks read this file directly
+    // (≤50ms budget, no HTTP). First-start writes the file unconditionally
+    // so the hooks always have something to read on a fresh install.
+    const { ProjectDigestCache } = await import('../core/ProjectDigestCache.js');
+    const projectDigestCache = new ProjectDigestCache(config.stateDir, initiativeTracker);
+    initiativeTracker.setDigestCacheInvalidator(() => projectDigestCache.writeDigestCache());
+    projectDigestCache.writeDigestCache();
+
     // TaskFlow registry — opt-in via config.taskFlow.enabled (default: off in v1).
     // Owns its own SQLite file under .instar/task-flows.db. The maintenance
     // sweeper and due-waker start with the registry; both .unref() their timers

@@ -355,4 +355,54 @@ except Exception:
   fi
 fi
 
+# Active projects digest — file-first, no HTTP (PROJECT-SCOPE-SPEC Phase 1.9).
+# Reads .instar/projects-digest.cache, written by the server on every
+# project mutation. Re-sanitizes each line on read for defense in depth.
+DIGEST_FILE="$INSTAR_DIR/projects-digest.cache"
+echo ""
+if [ -f "$DIGEST_FILE" ]; then
+  PROJ_DIGEST=$(python3 - "$DIGEST_FILE" <<'PYEOF' 2>/dev/null
+import json, re, sys
+path = sys.argv[1]
+try:
+    with open(path, 'r', encoding='utf-8') as f:
+        d = json.load(f)
+    lines = d.get('digestLines') or []
+    if not isinstance(lines, list):
+        sys.exit(0)
+    ctrl = re.compile(r'[\x00-\x1F\x7F]')
+    cleaned = []
+    for ln in lines[:5]:
+        if not isinstance(ln, str):
+            continue
+        s = ctrl.sub(' ', ln)
+        s = re.sub(r'\s+', ' ', s).strip()
+        if not s:
+            continue
+        cleaned.append(s[:200])
+    if not cleaned:
+        print('Active projects: none')
+    else:
+        print('--- ACTIVE PROJECTS ---')
+        for c in cleaned:
+            print(c)
+        truncated = bool(d.get('truncated'))
+        total = d.get('totalActiveProjects')
+        if truncated and isinstance(total, int) and total > len(cleaned):
+            more = total - len(cleaned)
+            print(f'+{more} more on dashboard.')
+        print('--- END ACTIVE PROJECTS ---')
+except Exception:
+    sys.exit(0)
+PYEOF
+)
+  if [ -n "$PROJ_DIGEST" ]; then
+    echo "$PROJ_DIGEST"
+  else
+    echo "Active projects: state unavailable — run /project status when ready"
+  fi
+else
+  echo "Active projects: state unavailable — run /project status when ready"
+fi
+
 exit 0
