@@ -29,7 +29,7 @@ import { ThreadResumeMap } from './ThreadResumeMap.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
-import type { SendMessageParams, SendMessageResult, ThreadHistoryResult, ThreadHistoryMessage, RegistryClient } from './ThreadlineMCPServer.js';
+import type { SendMessageParams, SendMessageResult, ThreadHistoryResult, ThreadHistoryMessage, RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
 
 const DEFAULT_RELAY_URL = 'wss://relay.threadline.dev/v1/connect';
 
@@ -267,6 +267,64 @@ async function setupRegistryClient(
   }
 }
 
+// ── Relay discovery proxy (HTTP → agent server's relay client) ──────
+
+/**
+ * RelayDiscoverer implementation that proxies through the agent server's
+ * /threadline/relay-discover endpoint. The MCP stdio subprocess has no
+ * relay WebSocket of its own — the agent server is what holds the
+ * persistent connection, so discover queries go through it.
+ *
+ * connectionState is cached briefly from the last /threadline/status read.
+ * On every discover() call we re-check status first so cache fallback in
+ * the MCP server's discover handler reflects the live relay state, not a
+ * stale snapshot from MCP-process start.
+ */
+function createHttpRelayDiscoverer(serverPort: number, agentToken: string): RelayDiscoverer {
+  let lastState = 'unknown';
+  const refreshState = async (): Promise<string> => {
+    try {
+      const res = await fetch(`http://localhost:${serverPort}/threadline/status`);
+      if (!res.ok) return (lastState = 'unavailable');
+      const body = await res.json() as { relay?: { connected?: boolean } };
+      lastState = body.relay?.connected ? 'connected' : 'disconnected';
+      return lastState;
+    } catch {
+      return (lastState = 'unavailable');
+    }
+  };
+  return {
+    get connectionState(): string { return lastState; },
+    async discover(filter) {
+      // Refresh status before discovering so the MCP server's connectionState
+      // check (which decides cache fallback) sees a live read, not a stale one.
+      const state = await refreshState();
+      if (state !== 'connected') return [];
+      try {
+        const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${agentToken}`,
+          },
+          body: JSON.stringify({ filter }),
+        });
+        if (!res.ok) return [];
+        const body = await res.json() as {
+          success?: boolean;
+          agents?: Array<{
+            agentId: string; name: string; publicKey?: string;
+            framework?: string; capabilities?: string[]; lastSeen?: string;
+          }>;
+        };
+        return body.success && Array.isArray(body.agents) ? body.agents : [];
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -321,6 +379,7 @@ async function main(): Promise<void> {
       getThreadHistory: (threadId, limit, before) =>
         getThreadHistoryViaHttp(threadId, limit, serverPort, agentToken, before),
       registry: registryClient,
+      relayClient: createHttpRelayDiscoverer(serverPort, agentToken),
     },
   );
 
