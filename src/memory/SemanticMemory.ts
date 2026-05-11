@@ -54,6 +54,7 @@ import {
   isEntityVisibleAtScope as rendererIsEntityVisibleAtScope,
   isEvidenceVisibleAtScope as rendererIsEvidenceVisibleAtScope,
 } from './EvidenceRenderer.js';
+import { NativeModuleHealer } from './NativeModuleHealer.js';
 
 // Dynamic import for better-sqlite3 (optional dependency)
 type Database = import('better-sqlite3').Database;
@@ -147,22 +148,30 @@ export class SemanticMemory {
   async open(): Promise<void> {
     if (this.db) return;
 
-    let BetterSqlite3: any;
-    try {
-      BetterSqlite3 = await import('better-sqlite3');
-    } catch {
-      throw new Error(
-        'SemanticMemory requires better-sqlite3. Run: npm install better-sqlite3'
-      );
-    }
-
-    const constructor = BetterSqlite3.default || BetterSqlite3;
-
     // Ensure parent directory exists
     const dbDir = path.dirname(this.config.dbPath);
     if (!fs.existsSync(dbDir)) {
       fs.mkdirSync(dbDir, { recursive: true });
     }
+
+    // Resolve the better-sqlite3 constructor through NativeModuleHealer.
+    // better-sqlite3 loads its native binding at module-load time, so a
+    // NODE_MODULE_VERSION mismatch throws inside `await import(...)`. The
+    // healer rebuilds better-sqlite3 synchronously and retries once. See PROP-399.
+    const constructor = await NativeModuleHealer.openWithHeal('SemanticMemory', async () => {
+      let BetterSqlite3: any;
+      try {
+        BetterSqlite3 = await import('better-sqlite3');
+      } catch (importErr) {
+        // Preserve NODE_MODULE_VERSION errors so openWithHeal can detect them.
+        // Other errors (e.g. module not installed) get the original user-friendly message.
+        if (NativeModuleHealer.isNodeModuleVersionError(importErr)) throw importErr;
+        throw new Error(
+          'SemanticMemory requires better-sqlite3. Run: npm install better-sqlite3'
+        );
+      }
+      return BetterSqlite3.default || BetterSqlite3;
+    });
 
     this.db = constructor(this.config.dbPath) as Database;
 

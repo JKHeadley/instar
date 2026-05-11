@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { NativeModuleHealer } from './NativeModuleHealer.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -142,11 +143,18 @@ export class TopicMemory {
   async open(): Promise<void> {
     if (this.db) return;
 
-    const BetterSqlite3 = (await import('better-sqlite3')).default;
     const dir = path.dirname(this.dbPath);
     fs.mkdirSync(dir, { recursive: true });
 
-    this.db = new BetterSqlite3(this.dbPath);
+    // Wrap import + construct in NativeModuleHealer so a NODE_MODULE_VERSION
+    // mismatch is auto-rebuilt and retried once. See PROP-399.
+    const opened = await NativeModuleHealer.openWithHeal('TopicMemory', async () => {
+      const mod = await import('better-sqlite3');
+      const Ctor = mod.default;
+      return { Ctor, db: new Ctor(this.dbPath) };
+    });
+    const BetterSqlite3: any = opened.Ctor;
+    this.db = opened.db;
 
     // Integrity check — auto-recover from corruption (JSONL is source of truth)
     if (fs.existsSync(this.dbPath) && fs.statSync(this.dbPath).size > 0) {
@@ -178,8 +186,8 @@ export class TopicMemory {
     }
 
     // WAL mode for concurrent reads during writes
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('busy_timeout = 5000');
+    this.db!.pragma('journal_mode = WAL');
+    this.db!.pragma('busy_timeout = 5000');
 
     this.createSchema();
 
