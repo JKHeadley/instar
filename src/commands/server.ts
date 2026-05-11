@@ -314,6 +314,11 @@ let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
+// SessionRefresh — agent-initiated respawn. Module-scope so onRestartSession
+// (defined outside startServer) can delegate to it once startServer wires it.
+// Null until startServer constructs it; the Telegram /restart handler falls
+// back to the inline kill+respawn path when null (e.g. early in boot).
+let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null = null;
 
 async function spawnSessionForTopic(
   sessionManager: SessionManager,
@@ -637,25 +642,29 @@ function wireTelegramCallbacks(
     }
   };
 
-  // /restart — kill session and respawn
+  // /restart — kill session and respawn. Delegates to SessionRefresh, the
+  // consolidated lifecycle owner: it routes the kill through
+  // sessionManager.killSession (which fires beforeSessionKill so the UUID
+  // listener persists session.claudeSessionId), then spawns a fresh tmux
+  // running `claude --resume <uuid>`. Includes the rate guard against
+  // infinite-respawn loops.
+  //
+  // If SessionRefresh isn't wired yet (very narrow early-boot window
+  // before startServer reaches the construction point), we no-op with a
+  // warning instead of falling back to a broken inline path — the
+  // pre-PR inline kill bypassed sessionManager.killSession and so the
+  // beforeSessionKill listener never fired, meaning resume UUIDs were
+  // silently dropped. Routing exclusively through SessionRefresh fixes
+  // that latent issue.
   telegram.onRestartSession = async (sessionName: string, topicId: number): Promise<void> => {
-    // Save resume UUID before killing so the new session can --resume
-    if (_topicResumeMap) {
-      try {
-        const uuid = _topicResumeMap.findUuidForSession(sessionName);
-        if (uuid) {
-          _topicResumeMap.save(topicId, uuid, sessionName);
-        }
-      } catch { /* best effort */ }
+    if (!_sessionRefresh) {
+      console.warn(`[telegram /restart] SessionRefresh not yet wired; deferring restart for sessionName=${sessionName} topicId=${topicId}`);
+      return;
     }
-
-    // Kill existing session
-    try {
-      execFileSync(detectTmuxPath()!, ['kill-session', '-t', `=${sessionName}`], { stdio: 'ignore' });
-    } catch { /* may already be dead */ }
-
-    // Respawn with thread history
-    await respawnSessionForTopic(sessionManager, telegram, sessionName, topicId, undefined, topicMemory);
+    const result = await _sessionRefresh.refreshSession({ sessionName, reason: 'telegram-/restart' });
+    if (!result.ok) {
+      console.warn(`[telegram /restart] SessionRefresh refused sessionName=${sessionName} code=${result.code}`);
+    }
   };
 
   // /sessions — list running sessions
@@ -6299,7 +6308,30 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    // SessionRefresh — agent-initiated session respawn. Requires a Telegram
+    // adapter (v1 scope: Telegram-bound sessions only). The respawner closure
+    // captures `topicMemory` by reference, so even if topicMemory is wired up
+    // after this point it will be resolved at refresh-time.
+    if (telegram) {
+      const { SessionRefresh } = await import('../core/SessionRefresh.js');
+      const telegramRef = telegram; // narrow for closure
+      _sessionRefresh = new SessionRefresh({
+        sessionManager,
+        state,
+        telegram: telegramRef,
+        topicResumeMap: _topicResumeMap,
+        respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined): Promise<string> => {
+          // killSession (called inside SessionRefresh) has already fired
+          // beforeSessionKill (UUID persisted) and destroyed the tmux
+          // session. respawnSessionForTopic spawns the new tmux running
+          // `claude --resume <uuid>` and registers the topic mapping.
+          await respawnSessionForTopic(sessionManager, telegramRef, sessionName, topicId, followUpPrompt, topicMemory);
+          return telegramRef.getSessionForTopic(topicId) ?? sessionName;
+        },
+      });
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 

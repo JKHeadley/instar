@@ -111,6 +111,7 @@ export class AgentServer {
     selfKnowledgeTree?: import('../knowledge/SelfKnowledgeTree.js').SelfKnowledgeTree;
     coverageAuditor?: import('../knowledge/CoverageAuditor.js').CoverageAuditor;
     topicResumeMap?: import('../core/TopicResumeMap.js').TopicResumeMap;
+    sessionRefresh?: import('../core/SessionRefresh.js').SessionRefresh;
     autonomyManager?: import('../core/AutonomyProfileManager.js').AutonomyProfileManager;
     trustElevationTracker?: import('../core/TrustElevationTracker.js').TrustElevationTracker;
     autonomousEvolution?: import('../core/AutonomousEvolution.js').AutonomousEvolution;
@@ -396,6 +397,7 @@ export class AgentServer {
       selfKnowledgeTree: options.selfKnowledgeTree ?? null,
       coverageAuditor: options.coverageAuditor ?? null,
       topicResumeMap: options.topicResumeMap ?? null,
+      sessionRefresh: options.sessionRefresh ?? null,
       autonomyManager: options.autonomyManager ?? null,
       trustElevationTracker: options.trustElevationTracker ?? null,
       autonomousEvolution: options.autonomousEvolution ?? null,

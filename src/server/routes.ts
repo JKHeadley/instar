@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
+import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig } from '../core/types.js';
@@ -536,6 +537,9 @@ export interface RouteContext {
   selfKnowledgeTree: SelfKnowledgeTree | null;
   coverageAuditor: CoverageAuditor | null;
   topicResumeMap: TopicResumeMap | null;
+  /** Agent-initiated session respawn. Null when no Telegram adapter is
+   *  wired (v1 requires a Telegram-bound session). */
+  sessionRefresh: SessionRefresh | null;
   autonomyManager: AutonomyProfileManager | null;
   trustElevationTracker: TrustElevationTracker | null;
   autonomousEvolution: AutonomousEvolution | null;
@@ -3931,6 +3935,59 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // POST /sessions/refresh — agent-initiated session respawn.
+  //
+  // The agent calls this when it needs new MCPs/skills (just installed via
+  // `claude mcp add`) to attach. We kill its tmux session and respawn with
+  // `claude --resume <uuid>`, which loads the new tools while keeping the
+  // conversation. The response is 202 immediately because the kill itself
+  // ends the requester's process — there is no synchronous result.
+  //
+  // Rate limit and lifecycle live in SessionRefresh (the orchestrator);
+  // this route is a thin entry point.
+  router.post('/sessions/refresh', spawnLimiter, (req, res) => {
+    if (!ctx.sessionRefresh) {
+      res.status(503).json({ error: 'Session refresh not enabled (no Telegram adapter wired)' });
+      return;
+    }
+
+    const { sessionName, followUpPrompt, reason } = req.body || {};
+
+    if (!sessionName || typeof sessionName !== 'string' || !SESSION_NAME_RE.test(sessionName)) {
+      res.status(400).json({ error: '"sessionName" is required and must contain only letters, numbers, hyphens, underscores (max 200)' });
+      return;
+    }
+    if (followUpPrompt !== undefined && (typeof followUpPrompt !== 'string' || followUpPrompt.length > 500_000)) {
+      res.status(400).json({ error: '"followUpPrompt" must be a string under 500KB' });
+      return;
+    }
+    if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) {
+      res.status(400).json({ error: '"reason" must be a string under 1000 chars' });
+      return;
+    }
+
+    // Acknowledge BEFORE killing — the requester is the session being killed,
+    // so it needs to receive the 202 before its process disappears.
+    res.status(202).json({ ok: true, message: 'Refresh scheduled', sessionName });
+
+    // Schedule the kill+spawn after the response has flushed and the agent
+    // has a moment to log its last action. 500ms is enough for HTTP flush
+    // on a local loopback without being a noticeable user-facing delay.
+    const sessionRefresh = ctx.sessionRefresh;
+    setTimeout(() => {
+      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason }).then(result => {
+        if (!result.ok) {
+          // Structured logging so over-blocks (rate guard) are detectable
+          // in operations per signal-vs-authority logging rule. The agent's
+          // process may already be dead — nothing to reply to.
+          console.warn(`[sessions/refresh] refused sessionName=${sessionName} code=${result.code} message="${result.message}"`);
+        }
+      }).catch(err => {
+        console.error(`[sessions/refresh] unexpected error for sessionName=${sessionName}:`, err);
+      });
+    }, 500);
   });
 
   router.delete('/sessions/:id', (req, res) => {
