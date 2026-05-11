@@ -622,6 +622,140 @@ const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 const JOB_SLUG_RE = /^[a-zA-Z0-9_-]{1,100}$/;
 const VALID_SORTS = ['significance', 'recent', 'name'] as const;
 
+// ── Project-scope helpers (Phase 1a PR 2) ─────────────────────────
+
+/**
+ * Hash the incoming Authorization header to derive a per-token identity
+ * for the projects-rate counter. We never store the raw token; the hash
+ * is a stable per-token key.
+ */
+function hashAuthHeader(header: unknown): string {
+  if (typeof header !== 'string') return 'anon';
+  return createHash('sha256').update(header).digest('hex').slice(0, 16);
+}
+
+/**
+ * Read-check-increment for the per-token projects-creation counter.
+ * Returns `{ok: true}` if the request is within the 5/hour window, or
+ * `{ok: false, windowEnds}` if the limit is reached.
+ *
+ * The counter file lives under `.instar/local/projects-rate.json` — the
+ * `.instar/local/` directory is gitignored (Phase 1.12) so the counter
+ * never syncs across machines. We bound file size by retaining only
+ * tokens whose window is still open.
+ */
+function checkAndIncrementProjectsRate(
+  stateDir: string,
+  tokenHash: string
+): { ok: true } | { ok: false; windowEnds: string } {
+  const localDir = path.join(stateDir, 'local');
+  try {
+    fs.mkdirSync(localDir, { recursive: true });
+  } catch {
+    // mkdir failures fall through; we'll fail the write below.
+  }
+  const ratePath = path.join(localDir, 'projects-rate.json');
+  type Window = { count: number; windowStart: number };
+  let table: Record<string, Window> = {};
+  try {
+    if (fs.existsSync(ratePath)) {
+      const raw = JSON.parse(fs.readFileSync(ratePath, 'utf-8'));
+      if (raw && typeof raw === 'object') table = raw as Record<string, Window>;
+    }
+  } catch {
+    table = {};
+  }
+  const now = Date.now();
+  const WINDOW_MS = 60 * 60 * 1000;
+  // GC entries whose window has expired.
+  for (const k of Object.keys(table)) {
+    if (now - (table[k]?.windowStart ?? 0) >= WINDOW_MS) delete table[k];
+  }
+  const entry = table[tokenHash];
+  if (!entry || now - entry.windowStart >= WINDOW_MS) {
+    table[tokenHash] = { count: 1, windowStart: now };
+  } else if (entry.count >= 5) {
+    return {
+      ok: false,
+      windowEnds: new Date(entry.windowStart + WINDOW_MS).toISOString(),
+    };
+  } else {
+    entry.count += 1;
+  }
+  try {
+    fs.writeFileSync(ratePath, JSON.stringify(table, null, 2), 'utf-8');
+  } catch {
+    // If we can't persist, fail open: still allow the call (rate-limit
+    // is best-effort, not a security boundary).
+  }
+  return { ok: true };
+}
+
+/** Project + children creation as a single logical operation. */
+async function createProjectAndChildren(
+  tracker: import('../core/InitiativeTracker.js').InitiativeTracker,
+  parsed: import('../core/PlanDocParser.js').ParsedPlanDoc
+): Promise<{ project: unknown; children: unknown[] }> {
+  if (!parsed.project) throw new Error('parsed.project is null');
+  const proj = parsed.project;
+
+  // Group children by roundName, preserving first-seen order.
+  const roundOrder: string[] = [];
+  const byRound = new Map<string, string[]>();
+  for (const c of parsed.children) {
+    if (!byRound.has(c.roundName)) {
+      roundOrder.push(c.roundName);
+      byRound.set(c.roundName, []);
+    }
+    byRound.get(c.roundName)!.push(c.id);
+  }
+  const rounds = roundOrder.map((name) => ({
+    name,
+    itemIds: byRound.get(name)!,
+    status: 'pending' as const,
+  }));
+
+  const projectInit = await tracker.create({
+    id: proj.id,
+    title: proj.title,
+    description: proj.description,
+    phases: [{ id: 'overview', name: 'overview', status: 'pending' }],
+    kind: 'project',
+    rounds,
+    sourceDocs: proj.sourceDocs,
+    autoAdvance: proj.autoAdvance,
+    telegramTopicId: proj.telegramTopicId,
+    targetRepoPath: proj.targetRepoPath,
+  });
+
+  const createdChildren: unknown[] = [];
+  for (const child of parsed.children) {
+    const c = await tracker.create({
+      id: child.id,
+      title: child.title,
+      description: `Source: ${child.sourceTag}; effort: ${child.effortTag}`,
+      phases: [{ id: 'outline', name: 'outline', status: 'pending' }],
+      kind: 'task',
+      pipelineStage: child.pipelineStage,
+      parentProjectId: proj.id,
+    });
+    createdChildren.push(c);
+  }
+  return { project: projectInit, children: createdChildren };
+}
+
+/** Subset a record by an allowlist of fields. */
+function pickFields(
+  obj: Record<string, unknown>,
+  fields: Set<string>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of fields) {
+    if (k in obj) out[k] = obj[k];
+  }
+  return out;
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
 
@@ -5519,6 +5653,204 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ id: req.params.id, deleted: true });
+  });
+
+  // ── Projects (project-scope, Phase 1a PR 2) ─────────────────────
+  //
+  // Subset of Phase 1.3 endpoints from PROJECT-SCOPE-SPEC.md. Full
+  // advance/halt/ack endpoints ship in PR 3 (skill) + Phase 1b (runner).
+  //
+  // Auth is enforced globally by `authMiddleware` on the AgentServer; we
+  // don't re-check the bearer here. Rate limiting on POST /projects is
+  // enforced via a small per-token counter in `.instar/local/projects-rate.json`.
+
+  router.get('/projects', (_req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    const items = ctx.initiativeTracker.list({ kind: 'project' });
+    res.json({ items, count: items.length });
+  });
+
+  router.get('/projects/:id', (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    if (!initiativeIdRe.test(req.params.id)) {
+      res.status(400).json({ error: 'invalid project id' });
+      return;
+    }
+    const project = ctx.initiativeTracker.get(req.params.id);
+    if (!project || (project.kind ?? 'task') !== 'project') {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    // Join children that point at this project via parentProjectId.
+    const children = ctx.initiativeTracker
+      .list()
+      .filter((i) => i.parentProjectId === project.id);
+
+    // Optional field selector: `?fields=id,title,pipelineStage`. Used by
+    // the dashboard projects selector (Phase 1.10). Always preserves `id`.
+    const fieldsParam = typeof req.query.fields === 'string' ? req.query.fields : '';
+    if (fieldsParam.trim()) {
+      const fields = new Set(
+        fieldsParam
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+      fields.add('id');
+      const pickProj = pickFields(project as unknown as Record<string, unknown>, fields);
+      const pickKids = children.map((c) => pickFields(c as unknown as Record<string, unknown>, fields));
+      res.json({ project: pickProj, children: pickKids });
+      return;
+    }
+    res.json({ project, children });
+  });
+
+  router.get('/projects/:id/next', (req, res) => {
+    if (!initiativeIdRe.test(req.params.id)) {
+      res.status(400).json({ error: 'invalid project id' });
+      return;
+    }
+    // Next-action computation lands in Phase 1b's ProjectRoundRunner.
+    res.status(501).json({
+      action: 'not-implemented',
+      message: 'next-action computation lands in Phase 1b',
+    });
+  });
+
+  router.post('/projects', async (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    const planDocPath = (req.body ?? {}).planDocPath;
+    if (typeof planDocPath !== 'string' || !planDocPath.trim()) {
+      res.status(400).json({ error: '"planDocPath" required (absolute path)' });
+      return;
+    }
+
+    // ── Rate limit: 5 creates/hour per auth token ──────────────────
+    // Per-token counter persisted under `.instar/local/projects-rate.json`.
+    // `.instar/local/` is gitignored (Phase 1.12) so the counter never
+    // syncs across machines — matches the spec's per-agent semantics.
+    const tokenHash = hashAuthHeader(req.headers.authorization);
+    const rateCheck = checkAndIncrementProjectsRate(ctx.config.stateDir, tokenHash);
+    if (!rateCheck.ok) {
+      res.status(429).json({
+        error: 'rate limit exceeded',
+        windowEnds: rateCheck.windowEnds,
+        limit: 5,
+      });
+      return;
+    }
+
+    const { parsePlanDoc } = await import('../core/PlanDocParser.js');
+    const parsed = await parsePlanDoc(planDocPath);
+    if (!parsed.project || parsed.errors.length > 0) {
+      res.status(400).json({
+        error: 'plan doc validation failed',
+        errors: parsed.errors,
+      });
+      return;
+    }
+
+    // Existing slug? Reject unless `unarchive: true` (Phase 1.6).
+    const existing = ctx.initiativeTracker.get(parsed.project.id);
+    if (existing) {
+      if (existing.status !== 'archived' || parsed.project.unarchive !== true) {
+        res.status(409).json({
+          error: `project "${parsed.project.id}" already exists`,
+          archived: existing.status === 'archived',
+        });
+        return;
+      }
+      // Un-archive path is implemented in Phase 1.6 via re-parse rules.
+      // Phase 1a defers full re-parse mutation table to PR 3+; for now we
+      // reject with a clear message so users don't accidentally clobber.
+      res.status(409).json({
+        error: 'unarchive flow not yet implemented; archive then re-create with a new id',
+      });
+      return;
+    }
+
+    try {
+      const created = await createProjectAndChildren(ctx.initiativeTracker, parsed);
+      res.status(201).json(created);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/projects/validate', async (req, res) => {
+    const planDocPath = (req.body ?? {}).planDocPath;
+    if (typeof planDocPath !== 'string' || !planDocPath.trim()) {
+      res.status(400).json({ error: '"planDocPath" required (absolute path)' });
+      return;
+    }
+    const { parsePlanDoc } = await import('../core/PlanDocParser.js');
+    const parsed = await parsePlanDoc(planDocPath);
+    res.json({
+      ok: parsed.errors.length === 0 && !!parsed.project,
+      project: parsed.project,
+      children: parsed.children,
+      errors: parsed.errors,
+    });
+  });
+
+  router.delete('/projects/:id', async (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    if (!initiativeIdRe.test(req.params.id)) {
+      res.status(400).json({ error: 'invalid project id' });
+      return;
+    }
+    const project = ctx.initiativeTracker.get(req.params.id);
+    if (!project || (project.kind ?? 'task') !== 'project') {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    // If-Match required for archive (P4: OCC on mutating endpoints).
+    const ifMatchHeader = req.headers['if-match'];
+    if (typeof ifMatchHeader !== 'string' || !ifMatchHeader.trim()) {
+      res.status(428).json({ error: 'If-Match header required for archive' });
+      return;
+    }
+    const ifMatch = parseInt(ifMatchHeader.replace(/"/g, ''), 10);
+    if (!Number.isInteger(ifMatch) || ifMatch <= 0) {
+      res.status(400).json({ error: 'If-Match must be a positive integer version' });
+      return;
+    }
+    // Refuse archive if any round is in-progress.
+    const activeRound = (project.rounds ?? []).find((r) => r.status === 'in-progress');
+    if (activeRound) {
+      res.status(409).json({
+        error: 'cannot archive while a round is in-progress',
+        activeRound: activeRound.name,
+      });
+      return;
+    }
+    try {
+      const updated = await ctx.initiativeTracker.update(project.id, {
+        status: 'archived',
+        ifMatch,
+      });
+      res.json({ id: updated.id, status: updated.status, version: updated.version });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (err && (err as Error).name === 'OccVersionMismatchError') {
+        const currentVersion = (err as unknown as { currentVersion: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion });
+        return;
+      }
+      res.status(400).json({ error: msg });
+    }
   });
 
   // ── WhatsApp ────────────────────────────────────────────────────

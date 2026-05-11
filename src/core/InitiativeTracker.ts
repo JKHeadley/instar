@@ -855,10 +855,17 @@ export class InitiativeTracker {
 
   // ── Public API ─────────────────────────────────────────────────
 
-  list(filter?: { status?: InitiativeStatus }): Initiative[] {
+  list(filter?: { status?: InitiativeStatus; kind?: InitiativeKind }): Initiative[] {
     if (this.isTaskFlowEnabled()) this.refreshCacheFromTaskFlow();
     const all = Array.from(this.initiatives.values());
-    const filtered = filter?.status ? all.filter((i) => i.status === filter.status) : all;
+    let filtered = filter?.status ? all.filter((i) => i.status === filter.status) : all;
+    if (filter?.kind) {
+      // Records without explicit `kind` are treated as 'task' (default).
+      // Backfill writes `kind: 'task'` on load; this guard covers in-memory
+      // records that haven't been persisted yet.
+      const wanted = filter.kind;
+      filtered = filtered.filter((i) => (i.kind ?? 'task') === wanted);
+    }
     return filtered.sort((a, b) => b.lastTouchedAt.localeCompare(a.lastTouchedAt));
   }
 
