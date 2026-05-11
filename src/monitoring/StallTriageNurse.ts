@@ -98,6 +98,42 @@ Respond with a JSON object (no markdown fences):
   "userMessage": "Friendly message to send to the user explaining what's happening and what you're doing"
 }`;
 
+// ─── Fast-path heuristic ─────────────────────────────────────
+
+/**
+ * Detect the "typed-but-not-submitted" terminal state: the ❯ prompt has
+ * non-empty text in it, but no processing indicators suggest work is in flight.
+ * This exact state occurs when bracketed-paste injection typed the message
+ * but the trailing Enter was eaten, leaving the session idle at the prompt.
+ *
+ * Conservative thresholds (length >= 20 chars, no processing glyphs) keep
+ * false positives near-zero — and even a false positive would just send a
+ * safe Enter keystroke.
+ */
+export function detectTypedButNotSubmitted(tmuxOutput: string): boolean {
+  if (!tmuxOutput) return false;
+  // Processing indicators — if any of these are present, the session is NOT stuck.
+  // ⎿ = tool result header, ✶ = Coalescing, ⏺ = assistant speaking,
+  // plus common text indicators.
+  const processingGlyphs = ['⎿', '✶', '⏺', 'Coalescing', 'thinking', 'esc to interrupt'];
+  for (const glyph of processingGlyphs) {
+    if (tmuxOutput.includes(glyph)) return false;
+  }
+  // Find the most recent ❯ line and check that it has meaningful content after the glyph.
+  const lines = tmuxOutput.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const idx = line.indexOf('❯');
+    if (idx === -1) continue;
+    const after = line.slice(idx + 1).trim();
+    // Text length > 20 chars avoids false positives from stray characters
+    // or terminal rendering artifacts.
+    if (after.length >= 20) return true;
+    return false;
+  }
+  return false;
+}
+
 // ─── Class ──────────────────────────────────────────────────
 
 export class StallTriageNurse extends EventEmitter {
@@ -268,6 +304,35 @@ export class StallTriageNurse extends EventEmitter {
         const result: TriageResult = { resolved: true, actionsTaken, diagnosis, trigger };
         this.recordResult(topicId, sessionName, result);
         return result;
+      }
+
+      // Fast-path: typed-but-not-submitted → nudge (single Enter) without LLM.
+      // This is the exact failure mode where bracketed-paste injection lands text
+      // in the input box but the trailing Enter gets eaten; a single Enter
+      // unsticks it. We short-circuit the LLM both to save a round-trip and to
+      // recover in seconds instead of waiting on model latency.
+      if (detectTypedButNotSubmitted(context.tmuxOutput)) {
+        const userMessage = 'Detected typed-but-not-submitted input — pressing Enter to submit.';
+        const diagnosis: TriageDiagnosis = {
+          summary: 'Input text present at ❯ prompt with no processing activity — Enter was eaten.',
+          action: 'nudge',
+          confidence: 'high',
+          userMessage,
+        };
+        await this.executeAction('nudge', context, userMessage);
+        actionsTaken.push('nudge');
+        this.emit('triage:treated', { topicId, action: 'nudge' });
+        const recovered = await this.verifyAction('nudge', context);
+        if (recovered) {
+          this.deps.clearStallForTopic(topicId);
+          this.emit('triage:resolved', { topicId, actionsTaken });
+          const result: TriageResult = { resolved: true, actionsTaken, diagnosis, trigger };
+          this.recordResult(topicId, sessionName, result);
+          return result;
+        }
+        // Nudge didn't unstick it — refresh context so the LLM sees the post-nudge state,
+        // then fall through to normal diagnosis + escalation.
+        context.tmuxOutput = this.deps.captureSessionOutput(sessionName, 50)?.slice(-3000) || '';
       }
 
       // Diagnose via LLM
