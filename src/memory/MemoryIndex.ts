@@ -27,6 +27,7 @@ import type {
   MemoryIndexStats,
 } from '../core/types.js';
 import { chunkMarkdown, chunkJson, chunkJsonl } from './Chunker.js';
+import { NativeModuleHealer } from './NativeModuleHealer.js';
 
 // Dynamic import for better-sqlite3 (optional dependency)
 type Database = import('better-sqlite3').Database;
@@ -110,29 +111,34 @@ export class MemoryIndex {
   async open(): Promise<void> {
     if (this.db) return;
 
-    let BetterSqlite3: any;
-    try {
-      BetterSqlite3 = await import('better-sqlite3');
-    } catch {
-      throw new Error(
-        'Memory search enabled but better-sqlite3 is not installed. ' +
-        'Run: npm install better-sqlite3. Memory search will be unavailable until installed.'
-      );
-    }
-
-    // Handle both ESM default export and CJS module.exports
-    const constructor = BetterSqlite3.default || BetterSqlite3;
-
     // Ensure parent directory exists
     const dbDir = path.dirname(this.dbPath);
     if (!fs.existsSync(dbDir)) {
       fs.mkdirSync(dbDir, { recursive: true });
     }
 
-    this.db = constructor(this.dbPath) as Database;
-    this.db!.pragma('journal_mode = WAL');
-    this.db!.pragma('busy_timeout = 5000');
-    this.db!.pragma('foreign_keys = ON');
+    // Wrap import + construct in NativeModuleHealer so a NODE_MODULE_VERSION
+    // mismatch is auto-rebuilt and retried once. See PROP-399.
+    this.db = await NativeModuleHealer.openWithHeal('MemoryIndex', async () => {
+      let BetterSqlite3: any;
+      try {
+        BetterSqlite3 = await import('better-sqlite3');
+      } catch (importErr) {
+        if (NativeModuleHealer.isNodeModuleVersionError(importErr)) throw importErr;
+        throw new Error(
+          'Memory search enabled but better-sqlite3 is not installed. ' +
+          'Run: npm install better-sqlite3. Memory search will be unavailable until installed.'
+        );
+      }
+
+      // Handle both ESM default export and CJS module.exports
+      const ctor = BetterSqlite3.default || BetterSqlite3;
+      const db = ctor(this.dbPath) as Database;
+      db.pragma('journal_mode = WAL');
+      db.pragma('busy_timeout = 5000');
+      db.pragma('foreign_keys = ON');
+      return db;
+    });
 
     this.createSchema();
   }
