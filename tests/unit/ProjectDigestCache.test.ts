@@ -172,6 +172,12 @@ describe('writeDigestCache — over MAX_PROJECTS_IN_DIGEST', () => {
     for (let i = 0; i < 7; i++) {
       await tracker.create(projectInput(`p${i}`));
     }
+    // On fast CI hardware, all 7 creates can resolve in the same millisecond,
+    // tying their lastTouchedAt timestamps. The subsequent update must land
+    // in a strictly later millisecond to be reliably-greatest under sort.
+    // Without this gap, sort order is unstable (observed flake on node 22
+    // shard 4/4, attempt 1 of PR #155 CI).
+    await new Promise((r) => setTimeout(r, 5));
     // Touch p3 last — should appear in the digest even though it was
     // created 4th of 7.
     await tracker.update('p3', { blockers: ['marker'] });
