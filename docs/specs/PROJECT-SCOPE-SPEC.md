@@ -62,11 +62,37 @@ The 24-hour auto-advance window is a persisted ISO timestamp polled by the exist
 
 Project records and round state are mutated through optimistic-concurrency-control. Every mutating endpoint requires an `If-Match: <version>` header. Mismatch returns 409 with the conflict body `{currentVersion, conflictingPaths?: [], rebaseHint?: string}`. The round runner is the only writer of round-status during an active round; all other paths use OCC to avoid clobbering its work.
 
-**Git-sync conflict semantics (corrected from iter 2):** on a git-sync merge conflict between two machines on the same project record, the merge is treated as a *reconciliation event*, not a field-wise three-way merge. The reconciler:
+**Git-sync conflict semantics (corrected from iter 2):** on a git-sync merge conflict between two machines on the same project record, the merge is treated as a *reconciliation event*, not a field-wise three-way merge.
 
-1. Compares both versions' `version` field; the higher version wins as the base.
-2. The losing side's writes are NOT silently merged. Instead, any writes the losing machine made are surfaced into an `awaitingReconciliation: ConflictPatch[]` field on the project for user resolution.
-3. Auto-advance is disabled while `awaitingReconciliation` is non-empty.
+**Integration point:** the integration ships a **custom git merge driver** for `.instar/initiatives.json`, registered via `.gitattributes`:
+
+```
+.instar/initiatives.json merge=instar-initiatives
+```
+
+The driver `scripts/git-merge-driver-initiatives.js` runs at `git merge` time BEFORE any in-process parser sees the file. It:
+
+1. Parses both sides (ours, theirs, base) as JSON — never lets raw conflict markers reach `InitiativeTracker.load()`.
+2. For each conflicting record: compares `version` fields; the higher version wins as the base.
+3. The losing side's per-field writes (those that don't appear in the winning record) are captured as `ConflictPatch` entries and appended to that record's `awaitingReconciliation: ConflictPatch[]` array.
+4. Writes the resolved JSON back; merge completes cleanly with no in-tree conflict markers.
+
+```typescript
+type ConflictPatch = {
+  patchId: string;       // uuid
+  recordId: string;
+  path: string;          // JSON path inside the record
+  oursValue: unknown;
+  theirsValue: unknown;
+  baseValue?: unknown;
+  losingMachineId: string;
+  capturedAt: string;
+};
+```
+
+5. Auto-advance is disabled while any project's `awaitingReconciliation` is non-empty (gate check in Phase 1.5 preflight).
+
+**Defense in depth — pre-parser:** even with the merge driver, `InitiativeTracker.load()` detects raw conflict markers (`<<<<<<<`) at parse time and refuses to start the server with a clear error message (rather than crashing on `JSON.parse`). This covers the case where a user merges by hand without the driver installed.
 
 This avoids the case where field-wise LWW silently breaks OCC guarantees (e.g., two machines incrementing `unacknowledgedAdvanceCount` produce a corrupt count).
 
@@ -219,7 +245,9 @@ A new module `src/core/StageTransitionValidator.ts` defines per-edge preconditio
 
 **Target repo:** `mergeCommit.oid` reachability is checked in the project's `targetRepoPath` (see Phase 1.1), NOT the agent's cwd. The reconciler `cd`s into `targetRepoPath` (or uses `git -C`) before running `git merge-base --is-ancestor`. Default for new projects: read `targetRepoPath` from plan-doc frontmatter; missing → reject project creation.
 
-`POST /projects/:id/advance` calls the validator and rejects with 409 on artifact-check failure. A new `merged-state reconciler` runs on `GET /projects/:id` (lazy, debounced: skip if `ciCheckedAt < 6h ago`) and as a periodic job (every 6 hours) — for any child in `merged`, it verifies via `gh pr view` that the PR is still MERGED and `mergeCommit.oid` is still on `origin/main`. On miss → transition to `regressed`, roll back round status, clear future `autoAdvanceAt`, surface via `awaitingUser`.
+`POST /projects/:id/advance` calls the validator and rejects with 409 on artifact-check failure. A new `merged-state reconciler` runs on `GET /projects/:id` (**lazy**, debounced per-child: skip if `ciCheckedAt < 6h ago`, AND capped at ≤3 child-revalidations per GET to bound `gh pr view` shell-out cost) and as a periodic job (every 6 hours, no per-call cap). On miss → transition to `regressed`, roll back round status, clear future `autoAdvanceAt`, surface via `awaitingUser`.
+
+**API contract on lazy reconciliation:** `GET /projects/:id` is documented as **may mutate** (state can transition from `merged → regressed` during the read). Clients that need pure-read semantics use `GET /projects/:id?reconcile=false`.
 
 ### Phase 1.3: HTTP endpoints
 
@@ -231,7 +259,12 @@ GET    /projects/:id                   — fetch one project + joined children
                                          (?fields=id,title,pipelineStage,driftStatus)
 GET    /projects/:id/next              — next action with structured payload:
                                          {action, params, estimatedCost?, skillCommand?}
-POST   /projects                       — create from plan doc; rate-limited 5/hour
+                                         Ordering: (roundIndex asc, pipelineStage asc, itemId asc); first action returned.
+                                         Possible actions: 'run-spec-converge', 'await-user-approval',
+                                         'run-drift-check', 'start-round', 'resolve-conflict',
+                                         'accept-partial', 'ack-required', etc.
+POST   /projects                       — create from plan doc; rate-limited 5/hour per agent token
+                                         (counter persisted at .instar/local/projects-rate.json)
 POST   /projects/validate              — dry-run plan-doc parse; no persist
 POST   /projects/:id/advance           — advance one item one stage OR the active round
                                          (body: itemId, targetStage, artifact); If-Match required
@@ -243,7 +276,9 @@ POST   /projects/:id/accept-partial    — close partially-complete round: missi
                                          (body: reason); transitions round to complete-with-skips
 POST   /projects/:id/claim-ownership   — leader-election; checks heartbeat < 48h; OCC-protected;
                                          must commit+push+wait-60s before acting
-POST   /projects/:id/resolve-conflict  — clear an awaitingReconciliation entry by accepting/rejecting
+POST   /projects/:id/resolve-conflict  — clear an awaitingReconciliation entry
+                                         body: {patchId, action: 'accept' | 'reject', If-Match required}
+                                         accept = apply losingMachineId's value; reject = drop the patch
 DELETE /projects/:id                   — archive; refuses if any round is `in-progress` (must halt first)
 ```
 
@@ -305,7 +340,7 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 
 **Failure modes:** timeout = 30 seconds, fail-closed (round halts with `manual-review-required`). One retry on timeout. Repeated failure (3 in a row across resumes within the same round) → round status `failed`.
 
-**Cost ceiling (corrected from iter 2):** total drift-check spend per agent ≤ $1/day. Tracked via append-only ledger at `.instar/drift-spend.jsonl`, daily-keyed (`{day, projectId, estimatedCost, actualCost?, timestamp}`). Each call pre-reserves estimated cost atomically (write a row before the call); after the call, an `actualCost` row reconciles. Cap check uses `sum(estimatedCost where actualCost is null) + sum(actualCost where present)` for the current UTC day. Boundary: `spent + estimated > $1.00` → reject (strict greater-than). Per-machine ledger; on multi-machine, total is sum of machines' ledgers in git-sync — documented as "per-agent ceiling, up to N machines × $1/day in worst case" (not a true cross-machine atomic cap; if Justin wants stricter, that's Phase 2).
+**Cost ceiling (corrected from iter 2):** total drift-check spend per agent ≤ $1/day. Tracked via daily-rotated append-only ledger at `.instar/drift-spend-YYYY-MM-DD.jsonl` (one file per UTC day; old files retained ≤30 days then archived to a monthly tarball). Each row: `{recordId, projectId, estimatedCost, actualCost?, timestamp}`. Each call pre-reserves estimated cost via this read-check-append sequence under an **advisory file lock** on `.instar/drift-spend.lock` (POSIX `fcntl` flock) — protects against concurrent drift-checks across different projects on the same machine. After the call, an `actualCost` row reconciles. Cap check uses `sum(estimatedCost where actualCost is null) + sum(actualCost where present)` for the current UTC day, O(day-rows-only). Boundary: `spent + estimated > $1.00` → reject (strict greater-than). Per-machine ledger; on multi-machine, total is sum of machines' ledgers in git-sync — documented as "per-agent ceiling, up to N machines × $1/day in worst case" (not a true cross-machine atomic cap; deferred as same-PR-registered child `drift-spend-cross-machine`).
 
 **Path jail for file reads:** all paths in `specPath`, `sourceDocs`, and the file references inside specs must (a) be relative to `targetRepoPath`, (b) resolve via `path.realpath` to a location inside `targetRepoPath`, (c) not traverse symlinks that escape. YAML frontmatter parsed with `js-yaml` safe-load. Tests cover `../`, absolute paths, symlink escape.
 
@@ -318,7 +353,7 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 2. PID in lock (if present) is alive; if not, remove (handles crash without restart).
 3. All round items at `pipelineStage: 'approved'` AND each item's spec frontmatter re-validates (`review-convergence: true` AND `approved: true` still set, convergence report still on disk).
 4. Project `status: 'active'` (not `paused`, `halted`, `awaiting-user`).
-5. `firstLaunchAckAt` populated (only required for the FIRST round of the project).
+5. `firstLaunchAckAt` populated (only required for the FIRST round of the project; deliberately a one-time gate covering round 0). For subsequent rounds, the brake is `unacknowledgedAdvanceCount < 2` AND `lastAckedRoundIndex >= currentRoundIndex - 2` (no more than two rounds-ahead-of-ack at any time).
 6. `unacknowledgedAdvanceCount < 2`.
 7. Owner machine == current machine (or owner empty AND this round is the first claim).
 8. `targetRepoPath` exists and is a git repo.
@@ -330,11 +365,11 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 **Run loop:**
 1. **Acquire lock** with PID + projectId + roundIndex. Refuse if exists and PID is alive.
 2. **Compute INITIAL stop condition:** "all `prNumber` values for round itemIds present on `origin/main` with CI green (per Phase 1.2 validator)."
-3. **For each itemId, lazy-allocate** worktree at `.worktrees/<projectId>/<roundIndex>/<itemId>` as the autonomous run reaches that item. Refuse if any exists. (Path uses `/` separators to avoid slug collision.)
+3. **For each itemId, lazy-allocate** worktree at `path.join(targetRepoPath, '.worktrees', projectId, String(roundIndex), itemId)` via `git -C targetRepoPath worktree add ...` as the autonomous run reaches that item. Worktrees live INSIDE the target repo, not the agent cwd. Refuse if any exists. (Path uses `/` separators to avoid slug collision.)
 4. **Delegate to `/autonomous`** with the project id + round index + initial stop condition passed via env. Autonomous skill runs in its own process; runner watches for exit AND polls the project record every 60s.
-5. **Dynamic stop condition revalidation:** every poll cycle, re-read the round's `itemIds` from the project record. If an item was manually transitioned to `skipped` mid-round (or `outline`), the runner emits a SIGTERM to the autonomous process and recomputes the stop condition. After SIGTERM, runner waits up to 5s for clean shutdown; SIGKILL otherwise.
-6. **On autonomous exit:** for each itemId, verify the artifact (mergeCommit.oid reachable + CI green via `gh pr view`). If all verified → round.status = `complete`. If subset → round.status = `partially-complete` with missing items listed. Never mass-advance.
-7. **Cleanup:** `git worktree prune` for the round's worktree namespace.
+5. **Dynamic stop condition revalidation:** every poll cycle, re-read the round's `itemIds` from the project record. If an item was manually transitioned to `skipped` mid-round (or `outline`), the runner emits SIGTERM to the autonomous process's **process group** (`kill -- -PGID`) so spawned children (compilers, test runners) are also reaped. After SIGTERM, runner waits up to 5s; SIGKILL the group otherwise. Then runner recomputes the stop condition and **loops back to step 4** to relaunch `/autonomous` with the new condition — UNLESS the new stop condition is already satisfied by current artifact state, in which case proceed to step 6.
+6. **On autonomous natural exit** (not SIGTERM-relaunch): for each itemId, verify the artifact (mergeCommit.oid reachable + CI green via `gh pr view`). If all verified → round.status = `complete`. If subset → round.status = `partially-complete` with missing items listed. Never mass-advance.
+7. **Cleanup:** `git -C targetRepoPath worktree prune` for the round's worktree namespace.
 8. **Release lock.**
 9. **On `complete`:** populate `autoAdvanceAt = now + 24h` for the next pending round IF `autoAdvance: true` AND `unacknowledgedAdvanceCount < 2` AND project not first-launch-pending-ack for the next round (first-launch ack is a one-time gate). Send Telegram digest.
 10. **On `partially-complete`:** do NOT auto-advance. Surface as `awaitingUser: 'round N partially complete; accept partial (M-of-K items skipped) or resolve missing items'`. User runs `POST /projects/:id/accept-partial` or `/project advance` per item.
@@ -383,9 +418,35 @@ defers:                       # optional but recommended; structural follow-thro
 
 **Idempotency:** re-parsing the same plan doc updates the project record + children without creating duplicates (matched by `id` slug).
 
+**Reparse immutability table — what re-parse may change vs may not:**
+
+| Field on child initiative | Reparse-mutable while `outline`? | Reparse-mutable while `≥ spec-drafted`? |
+|---------------------------|----------------------------------|------------------------------------------|
+| title | yes | yes |
+| pipelineStage | no — never reset by reparse | no |
+| specPath | yes | no |
+| prNumber / mergeCommitOid / ciCheckedAt | no | no |
+| parentProjectId | yes (initial set) | no |
+| skippedAt/By/Reason | no | no |
+| Round membership (rounds[].itemIds) | yes | yes (with warning on next preflight) |
+
+**Mid-round mutation table — what `/project advance` / `PATCH` may do while round status is `in-progress`:**
+
+| Mutation | Allowed mid-round? | Effect |
+|----------|--------------------|---------|
+| Child `→ skipped` | yes | Triggers runner SIGTERM → relaunch |
+| Child `skipped → outline` | no | 409; must halt round first |
+| Child `building → merged` | yes (via validator) | Counted toward stop condition |
+| Child `merged → regressed` | yes (reconciler-only) | Rolls back round status |
+| Round membership change | no | 409; must halt round first |
+| `autoAdvance` flip | yes | Affects next round; current round unaffected |
+| `targetRepoPath` mutation | no | 409 |
+
+**Slug reuse after archive:** `POST /projects` with the slug of an `archived` project is rejected with 409 unless the plan-doc frontmatter contains `unarchive: true`, which un-archives the existing record and re-parses it (subject to immutability rules above).
+
 **Dry-run:** `POST /projects/validate` returns the parsed structure with validation errors and the would-be child-initiative list; does NOT persist.
 
-**Defers enforcement (replaces iter-2 success-criterion-only check):** a new pre-commit hook script `scripts/check-defers.sh` (installed in the same PR) scans any committed spec frontmatter for a `defers:` list and verifies each listed slug appears as a registered initiative at HEAD with `parentProjectId` set. Commit rejected if not. Closes the "out of scope" trap structurally.
+**Defers enforcement (replaces iter-2 success-criterion-only check):** a new pre-commit hook script `scripts/check-defers.sh` (installed in the same PR) is **path-filtered** — only runs when `docs/specs/**/*.md` files are in the staged paths. Scans any staged spec frontmatter for a `defers:` list and verifies each listed slug appears as a registered initiative at HEAD with `parentProjectId` set. Commit rejected if not. Closes the "out of scope" trap structurally.
 
 ### Phase 1.7: Skill surface
 
@@ -473,8 +534,8 @@ Initiatives tab filter:
 - **OCC (P4):** every mutating endpoint requires `If-Match: <version>`. Server increments `version` on every successful write. Mismatch → 409 with `{currentVersion, conflictingPaths?: []}`. The full record is NOT returned (callers `GET` on demand to avoid 40KB 409 bodies on polls). Round runner re-reads + reconciles on 409, idempotently keyed by `(projectId, roundIndex, eventKind)`.
 - **Single writer per machine:** lock file at `.instar/local/round-runner.lock` enforces one round-runner per machine. **Path is machine-local** (`.instar/local/` is in `.gitignore` — does NOT sync). Cross-machine single-writer enforcement comes from `ownerMachineId` (P5), not the lock file.
 - **Stale-PID recovery:** on every preflight, check the lock's PID with `ps -p <pid>`; if dead, remove and proceed. No server restart required.
-- **Machine ownership (P5):** `ownerMachineId` set at round start. Auto-advance polling only fires when current machine matches. Heartbeat file `.instar/machine-health/<machineId>.json` updated every 30 minutes by each machine, git-synced. Leader-election claim only fires when owner's heartbeat is >48h stale.
-- **Ownership claim path:** `POST /projects/:id/claim-ownership` is OCC-protected (If-Match on project version), checks heartbeat staleness, writes the new owner, requires the claimer to commit-and-push the change to git-sync, then waits 60s for sync convergence before acting on it. Re-reads heartbeat after the wait; aborts if the original owner just heartbeated. Original owner that reconnects must re-read `ownerMachineId` before any auto-action (60s git-sync settle period enforced).
+- **Machine ownership (P5):** `ownerMachineId` set at round start. Auto-advance polling only fires when current machine matches. Heartbeat file `.instar/machine-health/<machineId>.json` updated every 30 minutes by each machine, git-synced. Each machine writes only its own heartbeat file (one-file-per-machine convention; no cross-machine OCC needed). Leader-election claim only fires when owner's heartbeat is >48h stale.
+- **Ownership claim path:** `POST /projects/:id/claim-ownership` returns 202 Accepted immediately with `{operationId, settleAt}` instead of blocking for the 60s sync settle (avoids client-timeout / gate-latency footgun per MEMORY `feedback_gate_latency_vs_client_timeout.md`). The claim is OCC-protected (If-Match on project version), checks heartbeat staleness, writes the new owner, commits-and-pushes the change to git-sync. The background worker waits 60s for sync convergence then re-reads heartbeat; aborts the claim if the original owner just heartbeated, otherwise finalizes ownership at `settleAt`. `GET /projects/:id/ownership-claim/:operationId` polls status. Original owner that reconnects must re-read `ownerMachineId` before any auto-action (60s git-sync settle period enforced).
 - **Git-sync conflict resolution (corrected from iter 2, P4):** on a record-level merge conflict, the merge IS a reconciliation event. Winning version is the higher `version`. Any writes from the losing side that don't appear in the winning record are surfaced as entries in `awaitingReconciliation: ConflictPatch[]`. Auto-advance is disabled while this array is non-empty. User resolves via `POST /projects/:id/resolve-conflict`. NO field-wise auto-merge for OCC-protected fields.
 
 ### Phase 1.13: Backup/restore and machine-local-vs-synced
@@ -510,6 +571,8 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 | `src/core/PlanDocParser.ts` | NEW. Frontmatter schema + roster-table parser; safe YAML; path jail; dry-run mode |
 | `src/core/ProjectIntegrityReconciler.ts` | NEW. Merged-state revalidation via `gh pr view` (lazy + periodic); round-status rollback on regressed |
 | `src/server/routes.ts` | Add `/projects/*` route group with auth middleware and If-Match enforcement; `/initiatives` filter params |
+| `scripts/git-merge-driver-initiatives.js` | NEW. Custom git merge driver for `.instar/initiatives.json` that produces `awaitingReconciliation` patches instead of leaving raw conflict markers. |
+| `.gitattributes` | Register `.instar/initiatives.json merge=instar-initiatives`. |
 | `src/commands/server.ts` | Wire reconciler + round-runner-tick poller; post-restore reconciler |
 | `scripts/check-defers.sh` | NEW. Pre-commit hook for `defers:` list enforcement |
 | `.claude/skills/instar-project/SKILL.md` | NEW skill |
@@ -526,6 +589,8 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 | `tests/integration/projects-api.test.ts` | All endpoints; auth required; If-Match enforced; 409 conflict body shape; first-launch ack required regardless of entry path |
 | `tests/integration/multi-machine.test.ts` | Two-machine ownership, auto-advance behavior, claim-ownership flow, ownership-handover safety, reconciliation conflict surfacing |
 | `tests/integration/squash-merge.test.ts` | NEW. End-to-end: PR squash-merged on GitHub → `gh pr view` reports MERGED → transition succeeds (regression guard) |
+| `tests/integration/git-merge-driver.test.ts` | NEW. Concurrent two-machine edits → merge driver produces `awaitingReconciliation` patches; raw conflict markers never reach `InitiativeTracker.load()`. |
+| `tests/unit/InitiativeTracker.load.test.ts` | Loader rejects raw `<<<<<<<` conflict markers with a clear error instead of crashing on JSON.parse. |
 
 ## Non-goals
 
@@ -586,6 +651,18 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 | `partially-complete` deadlock | `/project accept-partial` resolves; missing items → skipped with reason |
 | Attempt-4 infinite resume | `failed` terminal state; only `--force` resume or `abandon` accepted; auto-advance poller skips |
 | `awaitingReconciliation` ignored | Auto-advance gated on empty array; surfaced in digest until resolved |
+| Raw conflict markers crash JSON.parse | Custom git merge driver runs BEFORE in-process parser; loader also detects raw markers and refuses to start with clear error |
+| Worktree in wrong repo (agent cwd vs target) | Worktree path uses `path.join(targetRepoPath, ...)` and `git -C targetRepoPath` |
+| Orphan child processes after SIGKILL | Kill the autonomous process group (`kill -- -PGID`), not just the leader |
+| Mid-round skip falls through to partially-complete | Step 5 explicitly loops back to step 4 to relaunch autonomous with new stop condition; step 6 only on natural exit |
+| Cost ledger concurrent-call double-count | Advisory file lock (`fcntl flock`) on `.instar/drift-spend.lock` around read-check-append |
+| claim-ownership 60s wait hits client timeout | Endpoint returns 202 immediately; background worker finalizes after settle |
+| Drift cost ledger unbounded growth | Daily-rotated files; retained ≤30 days; archived to monthly tarball |
+| Reconciler `gh pr view` shell-out pile-up on dashboard polls | Lazy reconciler capped at ≤3 child-revalidations per GET; periodic job unbounded |
+| Lazy reconciler mutating during a read | Documented in API contract; `?reconcile=false` for pure-read |
+| Slug reuse after archive silently un-archives | Reject 409 unless plan-doc has `unarchive: true` |
+| Reparse silently changes immutable fields | Reparse immutability table enforced server-side |
+| `firstLaunchAckAt` covers only round 0 | Documented; subsequent rounds gated on `lastAckedRoundIndex ≥ currentRoundIndex - 2` |
 
 ## Migration
 
@@ -629,6 +706,13 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 30. `targetRepoPath` enforced on project creation; merge-commit reachability checked in that repo, not agent cwd.
 31. All new tests green; tsc clean.
 32. OpenClaw imports project surfaces correctly at session start and via `/project status`.
+33. Two-machine simulation: concurrent edits to the same project record → merge driver populates `awaitingReconciliation`; no raw conflict markers in `.instar/initiatives.json` after merge.
+34. Worktree allocation uses `git -C targetRepoPath worktree add ...`; worktrees live under target repo, not agent cwd.
+35. Process-group SIGTERM/SIGKILL reaps autonomous spawned children (compilers, test runners).
+36. Mid-round item skip → runner SIGTERMs, recomputes stop condition, loops back to step 4 (NOT step 6). Round stays `in-progress` unless natural autonomous exit.
+37. claim-ownership returns 202 + operationId; finalization at settleAt; status pollable via `GET /projects/:id/ownership-claim/:operationId`.
+38. Cost-ledger advisory lock prevents two concurrent drift-checks on different projects from both crossing the $1/day boundary.
+39. `GET /projects/:id?reconcile=false` produces stable read with no state mutation.
 
 ## Resolved design choices
 
