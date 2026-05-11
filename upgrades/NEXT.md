@@ -55,14 +55,13 @@ Spec source: `docs/specs/PROJECT-SCOPE-SPEC.md` § Phase 1.1.
 Your agent now has the type-level scaffolding for multi-spec projects.
 This PR alone doesn't change anything visible — no new commands, no new
 dashboard tab, no new behavior on existing endpoints. It lays the
-foundation so PR 2 can expose `/projects` HTTP routes and PR 3 can wire
-the `/project` skill and the session-start digest.
+foundation so PR 2 can expose the projects HTTP routes and PR 3 can wire
+the project skill and the session-start digest.
 
 The only thing you might notice is a very small one-time write at server
-startup if your `.instar/initiatives.json` predates this version — your
-agent will mark existing records as `kind: "task"` and add a
-`schemaVersion: 1` field so they roundtrip cleanly with new project
-records.
+startup if your initiatives file predates this version — your agent will
+quietly mark existing records as task-type and add a schema version marker
+so they work correctly alongside new project records.
 
 ## Summary of New Capabilities
 
