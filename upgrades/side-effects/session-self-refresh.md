@@ -365,4 +365,12 @@ pending re-test. Full test suite is re-running on the fixed code.
   - On qalatra (Echo's primary), `claude mcp add fathom -- npx mcp-remote@latest https://api.fathom.ai/mcp` was run mid-session. `claude mcp list` showed `fathom: ... ✓ Connected`. Within the same running Claude Code session, `ToolSearch` query "fathom" returned "No matching deferred tools found" — confirming the new MCP tools were NOT loaded into the running session.
   - User's only available path today: send another Telegram message to trigger a fresh CONTINUATION spawn via `respawnSessionForTopic`. There was no agent-initiated path.
   - With this PR: agent calls `POST /sessions/refresh` → tmux kill + `claude --resume <uuid>` → new process picks up Fathom tools and continues conversation.
-- **Test output:** 17 new tests pass (11 SessionRefresh unit + 6 route integration). Full suite run: in progress at artifact-write time; will be confirmed in the trace + commit phase.
+- **Test output:** 21 new tests pass (15 SessionRefresh unit + 6 route integration; corrected from earlier 17 count after the second-pass rework added in-flight guard + ordering assertions). Full suite: 564/564 locally + on CI after the test-anchor fix noted below.
+
+## Post-push CI fix (2026-05-11)
+
+CI shard 2 (Unit Tests, node 20 + 22) caught a real test-fragility regression that the local push gate did not surface: `tests/unit/slack-context-exhaustion-recovery.test.ts:78` uses `source.indexOf('beforeSessionKill')` as its anchor for slicing the listener body. The original commit's `onRestartSession` explainer contained the literal word "beforeSessionKill" earlier in the file than the real listener, so the test sliced the wrong block and the `contextExhaustionKills` assertion failed.
+
+Fix: reworded the comment in `src/commands/server.ts:645–657` from "beforeSessionKill listener" to "kill hook" — comment intent preserved, the literal anchor string now appears only at the real listener registration. Verified the suspect test passes locally after the reword (12/12 in 278ms). The test-anchor fragility itself is filed as a follow-up (test hygiene change, separate PR) — anchoring on `sessionManager.on('beforeSessionKill'` would be more robust.
+
+This is exactly the memory-noted pattern "Refactors break tests that assert on inlined content" — my `npm run test:push` gate happened to pass locally (564/564) but the same test failed on CI shard 2. Root cause confirmed and shipped the fix in the same PR rather than splitting.

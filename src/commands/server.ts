@@ -644,7 +644,7 @@ function wireTelegramCallbacks(
 
   // /restart — kill session and respawn. Delegates to SessionRefresh, the
   // consolidated lifecycle owner: it routes the kill through
-  // sessionManager.killSession (which fires beforeSessionKill so the UUID
+  // sessionManager.killSession (which fires the kill hook so the UUID
   // listener persists session.claudeSessionId), then spawns a fresh tmux
   // running `claude --resume <uuid>`. Includes the rate guard against
   // infinite-respawn loops.
@@ -653,9 +653,8 @@ function wireTelegramCallbacks(
   // before startServer reaches the construction point), we no-op with a
   // warning instead of falling back to a broken inline path — the
   // pre-PR inline kill bypassed sessionManager.killSession and so the
-  // beforeSessionKill listener never fired, meaning resume UUIDs were
-  // silently dropped. Routing exclusively through SessionRefresh fixes
-  // that latent issue.
+  // kill hook never fired, meaning resume UUIDs were silently dropped.
+  // Routing exclusively through SessionRefresh fixes that latent issue.
   telegram.onRestartSession = async (sessionName: string, topicId: number): Promise<void> => {
     if (!_sessionRefresh) {
       console.warn(`[telegram /restart] SessionRefresh not yet wired; deferring restart for sessionName=${sessionName} topicId=${topicId}`);
