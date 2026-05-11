@@ -82,28 +82,38 @@ in Phase 1b once the round-runner exists.
 
 ## What to Tell Your User
 
-Your agent now has a real HTTP surface for projects. You (or your
-agent) can register a multi-spec project from a plan-doc markdown file
-and have the agent track it as a top-level project-kind initiative
-with children rolled up underneath.
+Two things landed in this release.
 
-Right now this PR is the plumbing. It lets a caller do six things:
-list projects, fetch one, dry-run a plan doc, create from a plan doc,
-ask "what's next?" (currently returns a placeholder — PR 3 plus Phase
-1b wires the real answer), and archive a project. The endpoints are
-auth-gated and creation is rate-limited to 5/hour so a buggy caller
-can't accidentally spawn a flood of projects. The advance/halt/ack
-endpoints — the ones that actually drive a project forward — land in
-Phase 1b along with the round-runner that powers them.
+First — a fix for the stuck-Telegram-message bug. Sometimes your message would
+land in my input box but never actually submit, and you'd have to press Enter
+in the dashboard to unstick me. That race is now caught automatically: after
+every injection I do a quick re-check, and if your message is still sitting
+there waiting, I press Enter for it. There's also a backstop in the stall
+recovery path. You shouldn't have to nudge me again.
 
-Nothing existing changes shape. The `/initiatives/*` routes still
-return what they always did. If you don't use the new endpoints, you
-won't notice anything.
+Second — your agent now has a real HTTP surface for projects. You (or your
+agent) can register a multi-spec project from a plan-doc markdown file and
+have the agent track it as a top-level project-kind initiative with children
+rolled up underneath.
+
+Right now the projects piece is plumbing. It lets a caller do six things:
+list projects, fetch one, dry-run a plan doc, create from a plan doc, ask
+"what's next?" (currently returns a placeholder — the round-runner lands in
+the next phase), and archive a project. The endpoints are auth-gated and
+creation is rate-limited to five per hour so a buggy caller cannot
+accidentally spawn a flood of projects. The advance, halt, and acknowledge
+endpoints — the ones that actually drive a project forward — land in the
+next phase along with the round-runner that powers them.
+
+Nothing existing changes shape. The initiatives routes still return what
+they always did. If you do not use the new endpoints, you will not notice
+anything.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
+| Auto-recover stuck Telegram/Slack injections | automatic — `SessionManager.verifyInjection` resends Enter when needed |
 | Register a project from a plan doc | `POST /projects` with `{"planDocPath": "<abs-path>"}` |
 | Dry-run validate a plan doc | `POST /projects/validate` with `{"planDocPath": "<abs-path>"}` |
 | List all projects | `GET /projects` |
@@ -113,7 +123,26 @@ won't notice anything.
 
 ## Evidence
 
-Spec: `docs/specs/PROJECT-SCOPE-SPEC.md` §§ 1.2, 1.3, 1.6, 1.10, 1.12.
+**Stuck-input fix (PR #151).** Reproduction: Justin observed Telegram messages
+landing in Claude Code's input buffer at the `❯` prompt without being submitted
+on Claude Code v2.1.139, confirmed by a 2026-05-11 dashboard screenshot showing
+the message text visible at the prompt with no processing glyphs. The race
+matches the original failure mode that the verifyInjection design (April 13,
+commit a81699d4) was written for. Observed-before: message sat in input
+indefinitely until a manual Enter from the dashboard. Verified-after: with
+verifyInjection in `rawInject`, a 1.5s post-injection check fires and
+auto-resends Enter when the marker text is still at the prompt; recovery
+reported via DegradationReporter. Coverage:
+- `tests/unit/session-injection-verify.test.ts` — 7 tests covering marker
+  extraction, captureOutput, Enter resend, and the no-op when the text
+  submitted normally.
+- `tests/unit/stall-triage-typed-not-submitted.test.ts` — 5 tests covering the
+  StallTriage fast-path: detection thresholds, glyph-presence refusal, the
+  LLM-bypass nudge.
+- Side-effects review: `upgrades/side-effects/verify-injection-stuck-input.md`.
+
+**Project-scope Phase 1a PR 2.** Spec:
+`docs/specs/PROJECT-SCOPE-SPEC.md` §§ 1.2, 1.3, 1.6, 1.10, 1.12.
 
 - `tests/unit/PlanDocParser.test.ts` — 9 new tests covering frontmatter
   parsing, slug validation, source/effort/scope tags, child uniqueness.
