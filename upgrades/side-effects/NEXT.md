@@ -1,61 +1,68 @@
-# Side-Effects Review — Compaction-resume payload carries real context
+# Side-effects review — validator: tighten FIX_PATTERNS to reduce false positives
 
-**Version / slug:** `NEXT` (will be assigned on publish)
-**Date:** `2026-04-17`
-**Author:** `echo`
-**Second-pass reviewer:** `(this is a prompt-shape fix with no Guard surface — second pass not required per skill Phase 5)`
+**Scope**: Three `FIX_PATTERNS` in `upgrade-guide-validator.mjs` were matching
+technical prose that was not claiming a bug fix, causing the publish CI to
+block with a false "no Evidence section" error on the Phase 1b connect-the-dots
+release (NEXT.md v0.28.96).
 
-## Summary of the change
+**Root cause**: The NEXT.md for the Phase 1b connect-the-dots release used
+three words in technical contexts that the validator treated as bug-fix claims:
+- `broken` — "while a child is broken" (describes a runtime state, not a defect
+  we fixed)
+- `crashed` — "a crashed runner" (adjective, describes a process that exited
+  non-zero, not a crash we fixed)
+- `resolve` — "items resolve" and `resolve-conflict` (validation-check language
+  and API action-verb name, not "I fixed an issue")
 
-Replaces the one-sentence `COMPACTION_RESUME_PROMPT` constant with a payload built from `topicMemory.formatContextForSession(topicId, 20)` (summary + last 20 real messages + search hint). For Slack and TopicMemory-not-ready fallback, the same payload is built from inline log entries via a new `formatInlineHistory` helper. A `prepareInjectionText` helper writes payloads over 500 chars to `/tmp/instar-compaction-resume/` and replaces the inject with a "read this file immediately" reference — matching the `spawnSessionForTopic` bootstrap pattern.
+**Files touched**:
+- `scripts/upgrade-guide-validator.mjs` — three pattern changes:
+  1. `/\bcrashed\b/i` removed. `crashes?` and `crashing` (verb forms) are kept.
+  2. `/\bbroken\b/i` tightened to `/\b(?:was|were)\s+broken\b/i` — only the
+     predicate form ("X was broken") triggers; attributive uses ("a broken
+     pipeline") and present-state descriptions ("is broken") do not.
+  3. `/\bresolves?\b/i` tightened to `/\bresolves?\s+(?:an?\b|the\b)/i` — only
+     "resolves a/an/the <defect>" triggers; bare "resolve" as a technical verb
+     ("items resolve") and hyphenated action verbs ("resolve-conflict") do not.
+- `tests/unit/upgrade-guide-evidence.test.ts` — three regression tests added,
+  one per false-positive pattern.
 
-Slack recovery path picks up `findLastRealMessage` as well, so proxy standbys / delivery acks newer than the user's message no longer mask unanswered state.
+**Under-block**: Three narrow edge cases are no longer caught:
 
-## Over-block risk
+1. `crashed` standalone past tense: "the server crashed when X" without also
+   containing "fix" or another trigger. In practice any guide describing a crash
+   fix would also say "fixed a crash" or "fixes the crash" — caught by the
+   existing `\bfix(es|ed|ing)?\b` pattern. Removal of `crashed` alone is
+   low-risk.
 
-**None.** The decision of whether to recover is unchanged — `lastReal?.fromUser` still gates re-injection on both paths. The change is purely in the *content* of the injected text. No new filter, no new gate, no new "do not recover" conditions.
+2. `broken` as attributive adjective or present state: "fixed the broken poller"
+   still triggers because "fixed" catches it. "X is broken (and we fixed it)"
+   would also need "fixed" or another trigger — acceptable.
 
-## Under-block risk
+3. `resolves` without article: "Resolves race condition" (unusual English, almost
+   always "Resolves the/a race condition"). The tightened pattern retains all
+   natural phrasing.
 
-**None.** The module doesn't classify or authorize anything; it builds strings. The existing InputGuard check in `sessionManager.injectMessage` still applies — the Telegram inject still starts with `[telegram:${topicId}]` so provenance is `verified`, bypassing the Layer 1.5 injection-pattern check (unchanged behavior).
+**Over-block**: None introduced. The change makes the validator more permissive.
+Historical guide warnings decrease slightly.
 
-## Level-of-abstraction fit
+**Level-of-abstraction fit**: `claimsFix` is a pure heuristic signal. The gate
+(`validateGuideContent` requiring Evidence) is the authority. These changes stay
+entirely within the signal layer. Evidence requirement, Evidence validation, and
+all structural checks are unchanged.
 
-The new module sits at `src/messaging/shared/` alongside `isSystemOrProxyMessage.ts` — same layer as other prompt/classifier helpers shared between the Telegram and Slack messaging paths. It does **not** reach into `SessionManager` internals, does **not** reinvent `InputGuard` logic, and does **not** read/write any state-dir files. It only writes to `/tmp`, which matches the `spawnSessionForTopic` bootstrap pattern (`/tmp/instar-telegram/`).
+**Signal vs authority**: Compliant. Tightened patterns are still signals; blocking
+authority remains in the Evidence-section check. No new blocking authority.
 
-## Signal-vs-authority compliance
+**Interactions**: `claimsFix` is called only from `validateGuideContent`, called
+by `check-upgrade-guide.js` (CI publish gate) and the test suite. No other
+callers. Historical guide warnings decrease slightly — correct noise reduction.
 
-Not applicable. The preamble is a **prompt to the agent**, not a gate with blocking authority. It can only influence; the agent still decides what to say. There is no downstream check that treats the preamble's output as authoritative.
+**External surfaces**: None. `claimsFix`/`evidenceIssues` are not part of the
+public npm package surface. No API, config, or CLI change.
 
-## Interactions
+**Rollback cost**: Trivial. 7 lines changed in validator, 18 lines added to test.
+Revert brings back the over-broad patterns.
 
-- **`isSystemOrProxyMessage` / `findLastRealMessage`** — now used on both Telegram and Slack recovery paths. Existing contract preserved: filters system/proxy entries, walks backward, returns last real entry. Slack log entries have the same `{ text, fromUser, timestamp }` shape the classifier expects.
-- **`topicMemory.formatContextForSession`** — already used on the session-spawn path. The compaction-resume path now calls the same function with the same args (`recentLimit=20`). No new dependency; no new failure modes.
-- **`sessionManager.injectMessage`** — receives a larger text in the common case. Input handling unchanged: bracketed-paste mode for multi-line content. The 500-char file-threshold keeps us inside the spawn-path's tested envelope.
-- **`PresenceProxy`** — unaffected. Continues to call `isSystemOrProxyMessage` unchanged.
-- **`CompactionSentinel`** — unaffected. It calls `recoverCompactedSession` with the same signature and interprets the boolean return value the same way.
-- **`checkLogForAgentResponse`** — unaffected. Same classifier delegate, same log-scan semantics.
-- **`InputGuard` Layer 2 (coherence review)** — the new payload has more context, which may change LLM verdicts at the margin, but the review is non-blocking (inject already happened) and only emits a warning message. No blocking impact.
-
-## Rollback cost
-
-**Low.** The new module is purely additive — nothing else depends on it. To roll back: revert `src/commands/server.ts` to use the one-line `COMPACTION_RESUME_PROMPT` constant, delete `src/messaging/shared/compactionResumePayload.ts`, delete `tests/unit/compactionResumePayload.test.ts`. No schema changes, no state-file migrations, no API contract changes.
-
-## File-system footprint
-
-The file-reference path creates one file per compaction event in `/tmp/instar-compaction-resume/resume-<topicId>-<ts>-<uuid>.txt`. `/tmp` is cleaned on macOS reboot; files are small (one summary + ~20 messages, typically <10KB). For bounded hygiene we rely on the OS reboot sweep — same as the existing `/tmp/instar-telegram/` and `/tmp/instar-paste/` dirs. No new disk-leak risk.
-
-## Test coverage
-
-`tests/unit/compactionResumePayload.test.ts` (12 tests) covers:
-- Preamble shape and empty-context handling
-- Inline history formatting (sender, timestamp, truncation, missing fields)
-- File-threshold cutover + stub language
-- Topic 6795 regression shape — user's verbatim last message survives the pipeline
-
-Existing `tests/unit/isSystemOrProxyMessage.test.ts` (25 tests) still green — the walk-back contract now used on both recovery paths is unchanged.
-
-## Failure modes explicitly left unfixed
-
-- **Huge conversation summaries.** If `topicMemory`'s rolling summary itself exceeds some absurd size, the file-reference payload could grow large. We cap at `recentLimit=20` messages + summary, so in practice this tops out at ~20–50 KB. Not a concern at current scale; will revisit if we hit it.
-- **Racing compaction events.** If two triggers (PreCompact hook + watchdog poll) fire within milliseconds, `CompactionSentinel` already dedupes — unchanged here.
+**Tests**: 24/24 unit tests pass in `upgrade-guide-evidence.test.ts` (3 new +
+21 prior). 1294/1294 tests pass across all three upgrade-guide test files.
+`check-upgrade-guide.js` passes against the previously-blocking NEXT.md.

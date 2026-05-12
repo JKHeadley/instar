@@ -67,6 +67,24 @@ describe('claimsFix', () => {
     expect(claimsFix(withChangedBody('New endpoint: POST /foo that accepts a payload and returns JSON.'))).toBe(false);
   });
 
+  it('does NOT flag action-verb names like "resolve-conflict" as a fix claim', () => {
+    expect(claimsFix(withChangedBody(
+      "Returns a structured action. Verbs include 'await-user-approval', 'resolve-conflict', 'start-round'."
+    ))).toBe(false);
+  });
+
+  it('does NOT flag "is broken" used to describe a runtime state (not a fix claim)', () => {
+    expect(claimsFix(withChangedBody(
+      'Clears autoAdvanceAt so the chain does not auto-fire while a child is broken.'
+    ))).toBe(false);
+  });
+
+  it('does NOT flag "a crashed <noun>" used as an adjective (not a fix claim)', () => {
+    expect(claimsFix(withChangedBody(
+      'A crashed runner does not permanently block subsequent acquires — stale-PID sweep on every acquire.'
+    ))).toBe(false);
+  });
+
   it('does NOT scan "What to Tell Your User" for fix keywords (reduces false positives)', () => {
     // Put the word "fix" only in the user-facing section — should NOT trigger.
     const guide = BASE_GUIDE

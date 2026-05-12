@@ -18,12 +18,11 @@ const FIX_PATTERNS = [
   /\bfix(es|ed|ing)?\b/i,
   /\bbug(fix)?\b/i,
   /\bregression\b/i,
-  /\bresolves?\b/i,
-  /\bresolved\b/i,
+  /\bresolves?\s+(?:an?\b|the\b)/i,
+  /\bresolved\b(?!-)/i,
   /\bcrashes?\b/i,
-  /\bcrashed\b/i,
   /\bcrashing\b/i,
-  /\bbroken\b/i,
+  /\b(?:was|were)\s+broken\b/i,
   /\bstall(s|ed|ing)?\b/i,
 ];
 
