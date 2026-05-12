@@ -157,6 +157,31 @@ export interface Commitment {
   externalKey?: string;
   /** Verified delivery message id (set by POST /commitments/:id/deliver). */
   deliveryMessageId?: string;
+  /**
+   * Non-terminal: beacon is paused because nothing has changed for
+   * `beaconAutoPauseAfterUnchanged` consecutive heartbeats. Status stays
+   * `pending`. Cleared by POST /commitments/:id/resume (or by a "keep watching"
+   * Telegram reply on the same topic).
+   */
+  beaconPaused?: boolean;
+  /** Reason accompanying `beaconPaused` (e.g. `"auto-paused-no-progress"`). */
+  beaconPausedReason?: string;
+  /** When the beacon was paused (ISO). */
+  beaconPausedAt?: string;
+  /**
+   * Number of consecutive unchanged-snapshot heartbeats before auto-pausing.
+   * Default 12 (≈2h at 10-min cadence). 0 disables auto-pause.
+   */
+  beaconAutoPauseAfterUnchanged?: number;
+  /**
+   * Snapshot of the unchanged-streak length at the pause boundary, written
+   * only when the beacon auto-pauses or when /resume zeroes it. Hot-state
+   * (in PromiseBeacon's per-id JSON) is authoritative during a live run;
+   * this cold-state field exists for dashboard / API observability of paused
+   * beacons. Not updated on every heartbeat to avoid serialized-write
+   * amplification on the mutate queue.
+   */
+  consecutiveUnchanged?: number;
 }
 
 export interface CommitmentStore {
@@ -449,6 +474,33 @@ export class CommitmentTracker extends EventEmitter {
     console.log(`[CommitmentTracker] Withdrawn ${id}: ${reason}`);
     this.emit('withdrawn', updated);
     return true;
+  }
+
+  /**
+   * Resume a paused beacon. Clears `beaconPaused`/`beaconPausedReason`/
+   * `beaconPausedAt` and resets `consecutiveUnchanged` to zero. The caller
+   * (PromiseBeacon) re-schedules on the `resumed` event.
+   *
+   * Returns the updated commitment, or null if not found or not in a
+   * resumable state (terminal status, or not paused).
+   */
+  resume(id: string): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) return null;
+    if (['verified', 'violated', 'expired', 'withdrawn', 'delivered'].includes(existing.status)) {
+      return null;
+    }
+    if (!existing.beaconPaused) return null;
+    const updated = this.mutateSync(id, c => ({
+      ...c,
+      beaconPaused: false,
+      beaconPausedReason: undefined,
+      beaconPausedAt: undefined,
+      consecutiveUnchanged: 0,
+    }));
+    console.log(`[CommitmentTracker] Resumed ${id}`);
+    this.emit('resumed', updated);
+    return updated;
   }
 
   /**

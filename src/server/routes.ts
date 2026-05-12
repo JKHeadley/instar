@@ -10563,6 +10563,27 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ withdrawn: true, id: req.params.id });
   });
 
+  /**
+   * POST /commitments/:id/resume
+   * Resume a beacon that was auto-paused after a run of unchanged heartbeats.
+   * Clears `beaconPaused` / `beaconPausedReason` / `beaconPausedAt` and resets
+   * `consecutiveUnchanged`. PromiseBeacon re-arms the timer on the `resumed`
+   * event. No-op (404) for commitments that aren't paused or are in a terminal
+   * status.
+   */
+  router.post('/commitments/:id/resume', (req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const updated = ctx.commitmentTracker.resume(req.params.id);
+    if (!updated) {
+      res.status(404).json({ error: `Commitment ${req.params.id} not found, not paused, or in terminal status` });
+      return;
+    }
+    res.json({ resumed: true, id: updated.id, commitment: updated });
+  });
+
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────
 
   router.get('/episodes/stats', (req, res) => {
