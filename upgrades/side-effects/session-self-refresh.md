@@ -374,3 +374,9 @@ CI shard 2 (Unit Tests, node 20 + 22) caught a real test-fragility regression th
 Fix: reworded the comment in `src/commands/server.ts:645–657` from "beforeSessionKill listener" to "kill hook" — comment intent preserved, the literal anchor string now appears only at the real listener registration. Verified the suspect test passes locally after the reword (12/12 in 278ms). The test-anchor fragility itself is filed as a follow-up (test hygiene change, separate PR) — anchoring on `sessionManager.on('beforeSessionKill'` would be more robust.
 
 This is exactly the memory-noted pattern "Refactors break tests that assert on inlined content" — my `npm run test:push` gate happened to pass locally (564/564) but the same test failed on CI shard 2. Root cause confirmed and shipped the fix in the same PR rather than splitting.
+
+## Post-rebase manifest regeneration (2026-05-12)
+
+Recovery session picked the PR back up after the previous session hit context death. Rebase against main (which had landed v0.28.87 → v0.28.88 plus PRs #150/#155) surfaced a conflict in `src/data/builtin-manifest.json`. Resolved by taking main's manifest as the base and re-running `node scripts/generate-builtin-manifest.cjs` to capture the updated `contentHash` values for `route-group:sessions` and adjacent groups whose content shifted due to my new `/sessions/refresh` route registration in `src/server/routes.ts`. Entry count unchanged (188 in, 188 out — no new entries, just hash refresh).
+
+Also bumped `package.json` from `0.28.88` → `0.28.89` to satisfy the pre-push version-increment gate after the rebase pulled main's release-cut bump in. The npm publish workflow derives the actual next version from npm at release time, so this bump is just a placeholder that keeps the local gate happy — the workflow may pick a different next-version (likely also 0.28.89) when it runs. No code/test changes in this commit.
