@@ -722,4 +722,162 @@ goal: try escape
     const noAuth = await request(app).post('/projects/claim-5/claim-ownership').send({});
     expect(noAuth.status).toBe(401);
   });
+
+  // ── /projects/:id/run-round, /resume, /abandon (Phase 1.7 surface) ──
+
+  it('POST /projects/:id/run-round — 409 when preflight rejects (no firstLaunchAckAt)', async () => {
+    await seedProject('rr-1');
+    const res = await request(app)
+      .post('/projects/rr-1/run-round')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0 });
+    // First round always rejected until firstLaunchAckAt is set.
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('preflight rejected');
+    expect(typeof res.body.code).toBe('string');
+    expect(typeof res.body.reason).toBe('string');
+  });
+
+  it('POST /projects/:id/run-round — 200 schedules round when preflight passes', async () => {
+    await seedProject('rr-2');
+    const proj = tracker.get('rr-2')!;
+    // Satisfy preflight steps 5+6: record first-launch ack.
+    await tracker.update(proj.id, {
+      firstLaunchAckAt: new Date().toISOString(),
+      ifMatch: proj.version,
+    });
+    const res = await request(app)
+      .post('/projects/rr-2/run-round')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0 });
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe('rr-2');
+    expect(res.body.roundIndex).toBe(0);
+    expect(typeof res.body.scheduledAt).toBe('string');
+    // Verify autoAdvanceAt actually landed on the round.
+    const updated = tracker.get('rr-2')!;
+    expect(updated.rounds![0].autoAdvanceAt).toBe(res.body.scheduledAt);
+  });
+
+  it('POST /projects/:id/run-round — 404 on out-of-range round index', async () => {
+    await seedProject('rr-3');
+    const res = await request(app)
+      .post('/projects/rr-3/run-round')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 99 });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /projects/:id/resume — 200 clears haltedAt and schedules round', async () => {
+    await seedProject('rs-1');
+    const proj = tracker.get('rs-1')!;
+    const haltedRounds = (proj.rounds ?? []).map((r, i) =>
+      i === 0
+        ? { ...r, haltedAt: new Date().toISOString(), haltReason: 'test halt' }
+        : r
+    );
+    await tracker.update(proj.id, {
+      rounds: haltedRounds,
+      status: 'halted',
+      ifMatch: proj.version,
+    });
+    const res = await request(app)
+      .post('/projects/rs-1/resume')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0 });
+    expect(res.status).toBe(200);
+    expect(typeof res.body.scheduledAt).toBe('string');
+    const after = tracker.get('rs-1')!;
+    expect(after.rounds![0].haltedAt).toBeUndefined();
+    expect(after.rounds![0].haltReason).toBeUndefined();
+    expect(after.status).toBe('active');
+  });
+
+  it('POST /projects/:id/resume — 409 when round is neither halted nor failed', async () => {
+    await seedProject('rs-2');
+    const res = await request(app)
+      .post('/projects/rs-2/resume')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0 });
+    expect(res.status).toBe(409);
+  });
+
+  it('POST /projects/:id/resume — 409 on failed round at cap without force', async () => {
+    await seedProject('rs-3');
+    const proj = tracker.get('rs-3')!;
+    const failedRounds = (proj.rounds ?? []).map((r, i) =>
+      i === 0 ? { ...r, status: 'failed' as const, resumeAttempts: 3 } : r
+    );
+    await tracker.update(proj.id, { rounds: failedRounds, ifMatch: proj.version });
+    const res = await request(app)
+      .post('/projects/rs-3/resume')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0 });
+    expect(res.status).toBe(409);
+    expect(res.body.resumeAttempts).toBe(3);
+  });
+
+  it('POST /projects/:id/resume — 200 force-resumes failed round and zeroes resumeAttempts', async () => {
+    await seedProject('rs-4');
+    const proj = tracker.get('rs-4')!;
+    const failedRounds = (proj.rounds ?? []).map((r, i) =>
+      i === 0 ? { ...r, status: 'failed' as const, resumeAttempts: 3 } : r
+    );
+    await tracker.update(proj.id, { rounds: failedRounds, ifMatch: proj.version });
+    const res = await request(app)
+      .post('/projects/rs-4/resume')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0, force: true });
+    expect(res.status).toBe(200);
+    expect(res.body.forced).toBe(true);
+    const after = tracker.get('rs-4')!;
+    expect(after.rounds![0].resumeAttempts).toBe(0);
+  });
+
+  it('POST /projects/:id/abandon — 200 sets status=abandoned and clears autoAdvanceAt', async () => {
+    await seedProject('ab-1');
+    const proj = tracker.get('ab-1')!;
+    const withSchedule = (proj.rounds ?? []).map((r, i) =>
+      i === 0 ? { ...r, autoAdvanceAt: new Date().toISOString() } : r
+    );
+    await tracker.update(proj.id, { rounds: withSchedule, ifMatch: proj.version });
+    const res = await request(app)
+      .post('/projects/ab-1/abandon')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('abandoned');
+    const after = tracker.get('ab-1')!;
+    expect(after.status).toBe('abandoned');
+    expect(after.rounds![0].autoAdvanceAt).toBeUndefined();
+  });
+
+  it('POST /projects/:id/abandon — 409 when a round is in-progress', async () => {
+    await seedProject('ab-2');
+    const proj = tracker.get('ab-2')!;
+    const running = (proj.rounds ?? []).map((r, i) =>
+      i === 0 ? { ...r, status: 'in-progress' as const } : r
+    );
+    await tracker.update(proj.id, { rounds: running, ifMatch: proj.version });
+    const res = await request(app)
+      .post('/projects/ab-2/abandon')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.activeRound).toBeDefined();
+  });
+
+  it('POST /projects/:id/abandon — idempotent, returns alreadyAbandoned on repeat', async () => {
+    await seedProject('ab-3');
+    await request(app)
+      .post('/projects/ab-3/abandon')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({});
+    const res = await request(app)
+      .post('/projects/ab-3/abandon')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.alreadyAbandoned).toBe(true);
+  });
 });

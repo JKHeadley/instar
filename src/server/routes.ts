@@ -47,7 +47,7 @@ import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
-import type { PipelineStage } from '../core/InitiativeTracker.js';
+import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
 
 const execFile = promisify(execFileCb);
 
@@ -786,11 +786,12 @@ function pickFields(
   return out;
 }
 
-/** Maps a /projects/:id/next action verb to the suggested skill invocation. */
+/** Maps a /projects/:id/next action verb to the suggested skill invocation.
+ *  Names are the canonical command set from PROJECT-SCOPE-SPEC § Phase 1.7. */
 function skillCommandForAction(action: string, projectId: string, roundIndex: number): string {
   switch (action) {
     case 'await-user-approval':
-      return `/project approve ${projectId}`;
+      return `/project ack ${projectId}`;
     case 'ack-required':
       return `/project ack ${projectId}`;
     case 'resolve-conflict':
@@ -800,7 +801,7 @@ function skillCommandForAction(action: string, projectId: string, roundIndex: nu
     case 'run-spec-converge':
       return `/spec-converge`;
     case 'run-drift-check':
-      return `/project drift-check ${projectId} ${roundIndex}`;
+      return `/project drift ${projectId} ${roundIndex}`;
     case 'start-round':
     default:
       return `/project run-round ${projectId} ${roundIndex}`;
@@ -6405,6 +6406,190 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     } finally {
       driftInFlight.delete(project.id);
+    }
+  });
+
+  // POST /projects/:id/run-round — manual round-start trigger.
+  //
+  // Spec § Phase 1.7: `/project run-round` is the user-invoked entry path.
+  // Per § Phase 1.5, every entry path goes through `ProjectRoundRunner.preflight`.
+  // On a successful preflight the route schedules the round for the auto-advance
+  // poller by setting `autoAdvanceAt = now`; the poller fires the executor on
+  // its next tick (≤60s). This avoids spawning a long-running child process
+  // from a request handler and keeps a single fire path through the poller.
+  //
+  // Body: { roundIndex: number }
+  // Returns 200 with the preflight verdict + scheduling timestamp on accept,
+  // 409 with the preflight reason on reject, 503 if the runner is not wired.
+  router.post('/projects/:id/run-round', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.initiativeTracker) return;
+    if (!ctx.projectRoundRunner) {
+      res.status(503).json({ error: 'ProjectRoundRunner not configured' });
+      return;
+    }
+    const body = (req.body ?? {}) as { roundIndex?: unknown };
+    const idx = typeof body.roundIndex === 'number' ? body.roundIndex : 0;
+    if (!Number.isInteger(idx) || idx < 0) {
+      res.status(400).json({ error: '"roundIndex" must be a non-negative integer' });
+      return;
+    }
+    const rounds = project.rounds ?? [];
+    if (idx >= rounds.length) {
+      res.status(404).json({ error: `round index ${idx} out of range (0..${rounds.length - 1})` });
+      return;
+    }
+    const verdict = ctx.projectRoundRunner.preflight(project.id, idx);
+    if (!verdict.ok) {
+      res.status(409).json({ error: 'preflight rejected', code: verdict.code, reason: verdict.reason });
+      return;
+    }
+    try {
+      const now = new Date().toISOString();
+      const nextRounds = rounds.map((r, i) => (i === idx ? { ...r, autoAdvanceAt: now } : r));
+      const updated = await ctx.initiativeTracker.update(project.id, {
+        rounds: nextRounds,
+        ifMatch: project.version,
+      });
+      res.json({
+        id: updated.id,
+        roundIndex: idx,
+        scheduledAt: now,
+        version: updated.version,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /projects/:id/resume — resume a halted round.
+  //
+  // Spec § Phase 1.5: clears `haltedAt`/`haltReason` on the round and schedules
+  // it for the auto-advance poller. For rounds with status='failed' that have
+  // hit the 3-attempt resume cap (`resumeAttempts >= 3`), the body must include
+  // `{ force: true }`; otherwise the route returns 409. Resetting a `failed`
+  // round also zeroes `resumeAttempts` so the runner gets a fresh budget.
+  //
+  // Body: { roundIndex?: number (default 0), force?: boolean }
+  router.post('/projects/:id/resume', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.initiativeTracker) return;
+    const body = (req.body ?? {}) as { roundIndex?: unknown; force?: unknown };
+    const idx = typeof body.roundIndex === 'number' ? body.roundIndex : 0;
+    const force = body.force === true;
+    if (!Number.isInteger(idx) || idx < 0) {
+      res.status(400).json({ error: '"roundIndex" must be a non-negative integer' });
+      return;
+    }
+    const rounds = project.rounds ?? [];
+    if (idx >= rounds.length) {
+      res.status(404).json({ error: `round index ${idx} out of range (0..${rounds.length - 1})` });
+      return;
+    }
+    const round = rounds[idx];
+    if (round.status === 'failed' && (round.resumeAttempts ?? 0) >= 3 && !force) {
+      res.status(409).json({
+        error: 'round at resume-attempts cap; pass {force:true} to override',
+        resumeAttempts: round.resumeAttempts,
+      });
+      return;
+    }
+    if (!round.haltedAt && round.status !== 'failed') {
+      res.status(409).json({
+        error: 'round is not halted or failed',
+        status: round.status,
+      });
+      return;
+    }
+    try {
+      const now = new Date().toISOString();
+      const nextRounds = rounds.map((r, i) => {
+        if (i !== idx) return r;
+        const { haltedAt: _h, haltReason: _r, ...rest } = r;
+        const resetAttempts = r.status === 'failed' && force;
+        return {
+          ...rest,
+          status: 'pending' as RoundStatus,
+          autoAdvanceAt: now,
+          resumeAttempts: resetAttempts ? 0 : r.resumeAttempts,
+        };
+      });
+      const nextStatus = project.status === 'halted' || project.status === 'abandoned' ? 'active' : project.status;
+      const updated = await ctx.initiativeTracker.update(project.id, {
+        rounds: nextRounds,
+        status: nextStatus,
+        ifMatch: project.version,
+      });
+      res.json({
+        id: updated.id,
+        roundIndex: idx,
+        scheduledAt: now,
+        forced: force,
+        version: updated.version,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /projects/:id/abandon — archive a halted/failed project.
+  //
+  // Spec § Phase 1.7: "archive a halted round; children remain at current stage."
+  // Sets project.status='abandoned' and clears any future `autoAdvanceAt` on
+  // remaining rounds so the poller stops considering them. Children's
+  // `pipelineStage` is left untouched (per spec). Idempotent.
+  //
+  // Refuses (409) if any round is currently in-progress — halt first.
+  router.post('/projects/:id/abandon', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.initiativeTracker) return;
+    const rounds = project.rounds ?? [];
+    const active = rounds.find((r) => r.status === 'in-progress');
+    if (active) {
+      res.status(409).json({
+        error: 'cannot abandon while a round is in-progress; halt the round first',
+        activeRound: active.name,
+      });
+      return;
+    }
+    if (project.status === 'abandoned') {
+      res.json({ id: project.id, status: 'abandoned', version: project.version, alreadyAbandoned: true });
+      return;
+    }
+    try {
+      const clearedRounds = rounds.map((r) => {
+        if (r.autoAdvanceAt) {
+          const { autoAdvanceAt: _x, ...rest } = r;
+          return rest;
+        }
+        return r;
+      });
+      const updated = await ctx.initiativeTracker.update(project.id, {
+        rounds: clearedRounds,
+        status: 'abandoned',
+        ifMatch: project.version,
+      });
+      res.json({ id: updated.id, status: updated.status, version: updated.version });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
