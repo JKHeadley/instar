@@ -2523,6 +2523,7 @@
           <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
           <button class="tab" data-tab="pr-pipeline" onclick="switchTab('pr-pipeline')">PR Pipeline</button>
+          <button class="tab" data-tab="projects" onclick="switchTab('projects')">Projects <span class="tab-count" id="tabProjectCount">0</span></button>
           <button class="tab" data-tab="initiatives" onclick="switchTab('initiatives')">Initiatives <span class="tab-count" id="tabInitiativeCount">0</span></button>
           <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
           <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
@@ -2892,6 +2893,21 @@
       <div id="prPipelineList" style="display:flex;flex-direction:column;gap:12px"></div>
     </div>
 
+    <!-- Projects Tab — PROJECT-SCOPE-SPEC Phase 1.10 read-only view -->
+    <div id="projectsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Projects</h2>
+        <button onclick="loadProjects()" style="padding:6px 12px">Refresh</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+        Multi-spec project plans. Each project bundles related child initiatives across rounds with structurally-gated round advance.
+      </div>
+      <div id="projectsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
+        No active projects. Create one via <code>POST /projects</code> with a plan-doc path.
+      </div>
+      <div id="projectsList" style="display:flex;flex-direction:column;gap:12px"></div>
+    </div>
+
     <!-- Initiatives Tab — multi-phase long-running work -->
     <div id="initiativesPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
@@ -2904,6 +2920,9 @@
             <option value="archived">Archived</option>
             <option value="abandoned">Abandoned</option>
           </select>
+          <label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="initiativesShowAll" onchange="loadInitiatives()"> Show projects + children
+          </label>
           <button onclick="loadInitiatives()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
@@ -4184,6 +4203,13 @@
         panels: ['prPipelinePanel'],
         display: ['flex'],
         onActivate: () => { if (typeof loadPrPipeline === 'function') loadPrPipeline(); },
+      },
+      {
+        id: 'projects',
+        panels: ['projectsPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadProjects === 'function') loadProjects(); if (typeof startProjectsPoll === 'function') startProjectsPoll(); },
+        onDeactivate: () => { if (typeof stopProjectsPoll === 'function') stopProjectsPoll(); },
       },
       {
         id: 'initiatives',
@@ -6682,6 +6708,216 @@
       }
     }
 
+    // ── Projects Tab (PROJECT-SCOPE-SPEC Phase 1.10) ─────────────
+    //
+    // Read-only project view. Per spec: progress bar per round +
+    // pipelineStage histogram, drift status badge per pending item
+    // (cached verdict only; clicking does NOT trigger a new check),
+    // halt + ack buttons, 15s poll, textContent rendering on every
+    // user/agent-authored string, 409 response silently refreshes.
+    let __projectsPollTimer = null;
+    function startProjectsPoll() {
+      if (__projectsPollTimer) return;
+      __projectsPollTimer = setInterval(() => { loadProjects().catch(() => {}); }, 15000);
+    }
+    function stopProjectsPoll() {
+      if (__projectsPollTimer) { clearInterval(__projectsPollTimer); __projectsPollTimer = null; }
+    }
+
+    function escapeText(s) {
+      // textContent assignment handles XSS for us; this is a no-op
+      // helper that documents the intent for future authors.
+      return typeof s === 'string' ? s : '';
+    }
+
+    async function loadProjects() {
+      const list = document.getElementById('projectsList');
+      const empty = document.getElementById('projectsEmpty');
+      const countBadge = document.getElementById('tabProjectCount');
+      if (!list || !empty) return;
+
+      let projRes = null;
+      try {
+        projRes = await apiFetch('/projects').catch(() => null);
+      } catch { /* handled by null check below */ }
+
+      while (list.firstChild) list.removeChild(list.firstChild);
+      empty.style.display = 'none';
+
+      if (!projRes || !Array.isArray(projRes.items)) {
+        empty.style.display = 'block';
+        empty.textContent = 'Projects endpoint unavailable.';
+        if (countBadge) countBadge.textContent = '0';
+        return;
+      }
+
+      const items = projRes.items.filter((p) => p.status === 'active');
+      if (countBadge) countBadge.textContent = String(items.length);
+      if (items.length === 0) {
+        empty.style.display = 'block';
+        return;
+      }
+
+      // We need each project's children for the progress bar; fetch
+      // them in parallel via /projects/:id (server returns children
+      // alongside the project record). Cap at 25 to avoid a flood.
+      const detailed = await Promise.all(items.slice(0, 25).map((p) =>
+        apiFetch('/projects/' + encodeURIComponent(p.id) + '?reconcile=false').catch(() => null)
+      ));
+
+      for (const detail of detailed) {
+        if (!detail || !detail.project) continue;
+        list.appendChild(renderProjectCard(detail.project, detail.children || []));
+      }
+    }
+
+    function renderProjectCard(project, children) {
+      const card = document.createElement('div');
+      card.style.padding = '14px';
+      card.style.border = '1px solid var(--border)';
+      card.style.borderRadius = '6px';
+      card.style.background = 'var(--bg-dim)';
+
+      const titleRow = document.createElement('div');
+      titleRow.style.display = 'flex';
+      titleRow.style.justifyContent = 'space-between';
+      titleRow.style.alignItems = 'baseline';
+      titleRow.style.gap = '12px';
+
+      const title = document.createElement('div');
+      title.style.fontWeight = '600';
+      title.style.fontSize = '15px';
+      title.textContent = project.title || project.id;
+      titleRow.appendChild(title);
+
+      const idEl = document.createElement('div');
+      idEl.style.fontSize = '11px';
+      idEl.style.color = 'var(--text-dim)';
+      idEl.style.fontFamily = 'monospace';
+      idEl.textContent = project.id + '  v' + project.version;
+      titleRow.appendChild(idEl);
+      card.appendChild(titleRow);
+
+      // Drift status badge.
+      const drift = project.rounds && project.rounds[0] ? project.rounds[0].lastDriftVerdict : null;
+      if (drift && drift.verdict) {
+        const badge = document.createElement('span');
+        badge.style.display = 'inline-block';
+        badge.style.marginTop = '4px';
+        badge.style.padding = '2px 8px';
+        badge.style.fontSize = '11px';
+        badge.style.borderRadius = '10px';
+        badge.style.border = '1px solid var(--border)';
+        const colors = {
+          'no-drift': '#4a9a4a',
+          'minor-drift': '#e2b94a',
+          'premise-violated': '#d65f5f',
+          'manual-review-required': '#888',
+        };
+        badge.style.color = colors[drift.verdict] || '#888';
+        badge.textContent = 'drift: ' + drift.verdict;
+        card.appendChild(badge);
+      }
+
+      // Rounds progress bars.
+      const rounds = Array.isArray(project.rounds) ? project.rounds : [];
+      const childById = new Map(children.map((c) => [c.id, c]));
+      for (let i = 0; i < rounds.length; i++) {
+        const r = rounds[i];
+        const wrap = document.createElement('div');
+        wrap.style.marginTop = '10px';
+
+        const rTitle = document.createElement('div');
+        rTitle.style.fontSize = '12px';
+        rTitle.style.color = 'var(--text-dim)';
+        rTitle.textContent = `Round ${i}: ${r.name} — ${r.status || 'pending'}`;
+        wrap.appendChild(rTitle);
+
+        // pipelineStage histogram counts.
+        const stages = {};
+        let total = 0;
+        for (const id of (r.itemIds || [])) {
+          const child = childById.get(id);
+          const stage = (child && child.pipelineStage) || 'outline';
+          stages[stage] = (stages[stage] || 0) + 1;
+          total++;
+        }
+        const merged = stages['merged'] || 0;
+        const bar = document.createElement('div');
+        bar.style.marginTop = '4px';
+        bar.style.height = '6px';
+        bar.style.borderRadius = '3px';
+        bar.style.background = 'var(--bg)';
+        bar.style.overflow = 'hidden';
+        const fill = document.createElement('div');
+        fill.style.height = '100%';
+        fill.style.background = '#4a9a4a';
+        fill.style.width = total > 0 ? `${Math.round((merged / total) * 100)}%` : '0%';
+        bar.appendChild(fill);
+        wrap.appendChild(bar);
+
+        const histo = document.createElement('div');
+        histo.style.fontSize = '11px';
+        histo.style.color = 'var(--text-dim)';
+        histo.style.marginTop = '4px';
+        histo.textContent = Object.entries(stages).map(([k, v]) => `${k}: ${v}`).join('  •  ') || 'no items';
+        wrap.appendChild(histo);
+        card.appendChild(wrap);
+      }
+
+      // Halt + ack buttons.
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '8px';
+      actions.style.marginTop = '12px';
+
+      const haltBtn = document.createElement('button');
+      haltBtn.textContent = 'Halt';
+      haltBtn.style.padding = '4px 10px';
+      haltBtn.style.fontSize = '12px';
+      haltBtn.addEventListener('click', () => projectHalt(project.id));
+      actions.appendChild(haltBtn);
+
+      const ackBtn = document.createElement('button');
+      ackBtn.textContent = 'Ack round 0';
+      ackBtn.style.padding = '4px 10px';
+      ackBtn.style.fontSize = '12px';
+      ackBtn.addEventListener('click', () => projectAck(project.id, 0));
+      actions.appendChild(ackBtn);
+      card.appendChild(actions);
+
+      return card;
+    }
+
+    async function projectHalt(projectId) {
+      try {
+        const res = await apiFetch('/projects/' + encodeURIComponent(projectId) + '/halt', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'user-halt-from-dashboard' }),
+        });
+        // 409 from a stale read → silent refresh, no error toast.
+        if (res && res.error && /version mismatch/.test(res.error)) {
+          await loadProjects();
+          return;
+        }
+        await loadProjects();
+      } catch { /* ignore — refresh on next poll */ }
+    }
+
+    async function projectAck(projectId, forRoundIndex) {
+      try {
+        const res = await apiFetch('/projects/' + encodeURIComponent(projectId) + '/ack', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ forRoundIndex }),
+        });
+        if (res && res.error && /version mismatch/.test(res.error)) {
+          await loadProjects();
+          return;
+        }
+        await loadProjects();
+      } catch { /* ignore — refresh on next poll */ }
+    }
+
     // ── Initiatives Tab (INITIATIVE-TRACKER-SPEC v1) ─────────────
     //
     // Fetches /initiatives and /initiatives/digest on panel activation.
@@ -6703,9 +6939,20 @@
       let itemsRes = null;
       let digestRes = null;
       try {
-        const statusQ = filter && filter.value ? `?status=${encodeURIComponent(filter.value)}` : '';
+        // PROJECT-SCOPE-SPEC Phase 1.10 — by default hide project-kind
+        // records (shown in the Projects tab) and parented children
+        // (shown inside their parent's card). Server-side filter so
+        // we don't ship them over the wire.
+        const showAll = document.getElementById('initiativesShowAll');
+        const params = [];
+        if (filter && filter.value) params.push(`status=${encodeURIComponent(filter.value)}`);
+        if (!showAll || !showAll.checked) {
+          params.push('excludeKind=project');
+          params.push('excludeParented=true');
+        }
+        const q = params.length ? '?' + params.join('&') : '';
         const [a, b] = await Promise.all([
-          apiFetch('/initiatives' + statusQ).catch(() => null),
+          apiFetch('/initiatives' + q).catch(() => null),
           apiFetch('/initiatives/digest').catch(() => null),
         ]);
         itemsRes = a;
