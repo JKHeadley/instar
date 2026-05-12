@@ -8,6 +8,44 @@
 
 ## What Changed
 
+### Project-scope Phase 1b PR 7 — autonomous run loop
+
+Final PR of project-scope Phase 1b. Ships the autonomous run loop the
+spec § Phase 1.5 names (steps 1-11), wired against the lock, preflight,
+and runner primitives that landed in PRs 3-6:
+
+- **`ProjectRoundWorktrees`** — lazy worktree allocator under
+  `<targetRepoPath>/.worktrees/<projectId>/<roundIndex>/<itemId>`.
+  Appends `.worktrees/` to `.git/info/exclude` on first allocation so
+  the namespace doesn't pollute `git status`. Helpers for prune +
+  remove + ensure-exclude-entry.
+- **`runRound(input, deps)`** — the run loop itself. Acquires the
+  round-runner lock, lazily allocates the first worktree, spawns the
+  autonomous child in a detached process group, polls the project
+  record every 60 seconds. On mid-round mutation to `round.itemIds`,
+  SIGTERMs the child's process group (5s grace, then SIGKILL) and
+  relaunches with the new stop condition. On the child's natural
+  exit, verifies per-item artifacts via the caller-injected
+  `verifyMergedItems` and sets `round.status` to `complete` or
+  `partially-complete`. On `haltedAt` set mid-run, kills the child
+  and returns `halted`. Three-attempt resume cap on transient
+  non-zero exits before `failed`.
+- **`verifyMergedItemsViaGit`** — exported helper for production
+  callers; runs `git merge-base --is-ancestor <child.mergeCommitOid>
+  origin/main` per item.
+
+The run loop is a module function, not a method on `ProjectRoundRunner`,
+because it has different lifecycle semantics (long-running, subprocess
+manager) than the synchronous verbs in PR 3's runner. Both modules
+work in concert: callers call `runner.preflight(...)` first, then
+`runRound(...)` if preflight passes.
+
+Phase 1b is now fully decomposed: 7 PRs across drift + cache + ledger
++ runner + halt/advance/ack + auto-advance + claim-ownership +
+dashboard + filter + round-complete-message + run-loop. The remaining
+spec items (lazy merged-state reconciler on GET, `GET /next` real
+implementation) are wiring tasks rather than new infrastructure.
+
 ### Project-scope Phase 1b PR 6 — tone-gated round-complete message + delivery
 
 Sixth PR of project-scope Phase 1b. Ships the two final primitives the
@@ -138,6 +176,15 @@ permanently block subsequent acquires.
 
 ## What to Tell Your User
 
+- **The autonomous round loop is wired up end-to-end**: when a round
+  starts, I now spawn the actual autonomous work in its own process
+  group, watch every minute for changes to which items the round is
+  working on, and clean up after myself (process group + worktrees)
+  when I am done or you halt me. If you manually skip an item or
+  re-order the round mid-run, I gracefully stop the work I am doing
+  and relaunch with the new plan — no orphaned compilers, no
+  orphaned worktrees.
+
 - **Round-complete digests are duplicate-safe**: when I finish a
   round, the message I send you is built from a template that refuses
   to send if any required field is missing, and the delivery layer
@@ -224,6 +271,18 @@ permanently block subsequent acquires.
   required-field PRESENCE gate (empty strings accepted, undefined
   rejected). Halt-flavor events additionally require `whatHalted`.
   Returns `{message, idempotencyKey}` on success.
+- `ProjectRoundWorktrees` class — lazy worktree allocator under
+  `<targetRepoPath>/.worktrees/<projectId>/<roundIndex>/<itemId>`.
+  Static `pathFor`/`allocate`/`prune`/`remove`/`ensureExcludeEntry`.
+- `runRound(input, deps)` function — the run loop. Acquires lock,
+  spawns autonomous child detached, polls every 60s, SIGTERMs on
+  dynamic-stop changes or halt, verifies per-item artifacts on
+  natural exit, sets `round.status`. Returns
+  `{outcome, mergedItemIds, unmergedItemIds, relaunchCount,
+  resumeAttempts, reason}`.
+- `verifyMergedItemsViaGit(targetRepoPath, childIds, tracker)` —
+  exported production verifier; checks `git merge-base --is-ancestor
+  <child.mergeCommitOid> origin/main` per item.
 - `RoundCompleteDeliveryHelper` class — retry + idempotency wrapper.
   3-attempt exponential backoff (configurable); records the
   idempotency key in `.instar/local/round-complete-sent.json` so
