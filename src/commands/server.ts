@@ -19,6 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
+import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { JobScheduler } from '../scheduler/JobScheduler.js';
 import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
@@ -3406,6 +3407,14 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     sessionManager.startMonitoring();
 
+    // StuckInputSentinel — persistent, restart-safe recovery for tmux prompts
+    // that hold text but never submitted Enter. Complements the in-process
+    // verifyInjection timers (PR #159) which die when the server crashes.
+    const stuckInputSentinel = new StuckInputSentinel(sessionManager, {
+      stateDir: config.stateDir,
+    });
+    stuckInputSentinel.start();
+
     // Proactive resume heartbeat: every 60s, update the topic→UUID mapping
     // for all active topic-linked sessions. Ensures crash recovery via --resume.
     if (_topicResumeMap && (telegram || _slackAdapter)) {
@@ -6673,6 +6682,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       scheduler?.stop();
       if (telegram) await telegram.stop();
       sessionManager.stopMonitoring();
+      stuckInputSentinel.stop();
       // Close SQLite databases before exit — prevents "mutex lock failed" crash
       // when better-sqlite3 destructors fire during process teardown.
       topicMemory?.close();

@@ -78,7 +78,9 @@ describe('SessionManager — submission verification', () => {
   it('escalates recovery method across attempts (Enter → C-m → Enter+sleep+Enter)', () => {
     // The recovery helper should use at least 2 distinct tmux key names so a
     // single eaten-Enter pattern can't defeat every attempt.
-    const recoveryStart = source.search(/private\s+fireStuckInputRecovery\s*\(/);
+    // Visibility relaxed (private → public) so the persistent StuckInputSentinel can reuse this helper.
+    // Match the DEFINITION (not call sites like this.fireStuckInputRecovery(...)).
+    const recoveryStart = source.search(/(?:private\s+|public\s+)?fireStuckInputRecovery\s*\(\s*tmuxSession\s*:/);
     if (recoveryStart < 0) {
       throw new Error('Expected fireStuckInputRecovery helper');
     }
