@@ -8,6 +8,30 @@
 
 ## What Changed
 
+### Project-scope Phase 1b PR 6 — tone-gated round-complete message + delivery
+
+Sixth PR of project-scope Phase 1b. Ships the two final primitives the
+autonomous run loop will need to emit round-complete digests safely:
+
+- **`formatRoundCompleteMessage(input)`** — pure template function.
+  Enforces required-field PRESENCE (not non-emptiness, per spec —
+  "the gate never silently rejects on a legitimate halt"). Returns
+  `{ok:true, message, idempotencyKey}` or `{ok:false, missingFields}`.
+  Halt-flavor events additionally require `whatHalted`.
+
+- **`RoundCompleteDeliveryHelper`** — retry + idempotency wrapper.
+  3-attempt exponential backoff (1s, 2s, 4s by default). Records
+  the `(projectId, roundIndex, eventKind, projectVersion)` key in
+  `.instar/local/round-complete-sent.json` after the first successful
+  send so tone-gate retries don't produce duplicates. On permanent
+  failure, fires the caller's `onPermanentFail` callback (the run
+  loop will wire it to attention-queue + audit-log + awaitingUser
+  population when it ships).
+
+Nothing wires these up yet — the autonomous run loop is the consumer.
+PR 6 ships the primitives so the run loop in a follow-up PR doesn't
+fork either of them.
+
 ### Project-scope Phase 1b PR 5 — dashboard Projects tab + Initiatives filter
 
 Fifth PR of project-scope Phase 1b. Ships the dashboard view of the
@@ -114,6 +138,14 @@ permanently block subsequent acquires.
 
 ## What to Tell Your User
 
+- **Round-complete digests are duplicate-safe**: when I finish a
+  round, the message I send you is built from a template that refuses
+  to send if any required field is missing, and the delivery layer
+  remembers what it already sent so a tone-gate retry can't spam you
+  with the same digest twice. If delivery fails permanently, I will
+  surface it through your attention queue rather than retry forever
+  in silence.
+
 - **Projects have a dashboard tab now**: open the dashboard and you'll
   see every active project I'm tracking with its round-by-round
   progress, which items have merged vs which are still in flight, and
@@ -188,3 +220,12 @@ permanently block subsequent acquires.
   (drops records where `kind ?? 'task'` matches) and
   `excludeParented=true` (drops records with a `parentProjectId`).
   Additive; existing clients see no behavior change.
+- `formatRoundCompleteMessage(input)` — pure template function with
+  required-field PRESENCE gate (empty strings accepted, undefined
+  rejected). Halt-flavor events additionally require `whatHalted`.
+  Returns `{message, idempotencyKey}` on success.
+- `RoundCompleteDeliveryHelper` class — retry + idempotency wrapper.
+  3-attempt exponential backoff (configurable); records the
+  idempotency key in `.instar/local/round-complete-sent.json` so
+  duplicate sends are suppressed. `onPermanentFail` callback fires
+  once when all retries are exhausted.
