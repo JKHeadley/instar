@@ -22,7 +22,9 @@ import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -110,15 +112,25 @@ auto_advance: true
     targetRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-api-target-'));
     fs.mkdirSync(path.join(targetRepo, 'docs/specs'), { recursive: true });
     fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+    // The /advance + /halt + /ack routes (Phase 1b PR 3) require the
+    // target repo to be a real git repository for ProjectRoundRunner
+    // preflight step 8 to pass.
+    SafeGitExecutor.run(['init', '-q'], { cwd: targetRepo, operation: 'tests/integration/projects-api.test.ts:beforeAll-git-init' });
     plansDir = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-api-plans-'));
 
     tracker = new InitiativeTracker(project.stateDir);
+    const projectRoundRunner = new ProjectRoundRunner({
+      tracker,
+      stateDir: project.stateDir,
+      machineId: 'test-machine',
+    });
     const mockSM = createMockSessionManager();
     server = new AgentServer({
       config: makeConfig(),
       sessionManager: mockSM as never,
       state: project.state,
       initiativeTracker: tracker,
+      projectRoundRunner,
     });
     app = server.getApp();
   });
@@ -365,5 +377,163 @@ goal: try escape
       .set('Authorization', `Bearer ${AUTH_TOKEN}`)
       .send({});
     expect(res.status).toBe(400);
+  });
+
+  // ── /projects/:id mutating routes (Phase 1b PR 3) ──────────────────
+
+  /** Bootstrap a project + one child item, return the project version. */
+  async function seedProject(id: string): Promise<{ projectVersion: number; itemId: string }> {
+    await request(app)
+      .post('/projects')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ planDocPath: goodPlan(id) });
+    const proj = tracker.get(id)!;
+    return { projectVersion: proj.version, itemId: proj.rounds![0].itemIds[0] };
+  }
+
+  it('POST /projects/:id/advance — outline → spec-drafted with a real spec file', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-1');
+    // Materialize the spec file the validator will look for.
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '# spec');
+    const res = await request(app)
+      .post('/projects/adv-1/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({
+        itemId,
+        targetStage: 'spec-drafted',
+        artifact: { specPath: 'docs/specs/a.md' },
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.item.pipelineStage).toBe('spec-drafted');
+    expect(tracker.get(itemId)?.pipelineStage).toBe('spec-drafted');
+  });
+
+  it('POST /projects/:id/advance — missing If-Match returns 428', async () => {
+    const { itemId } = await seedProject('adv-2');
+    const res = await request(app)
+      .post('/projects/adv-2/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ itemId, targetStage: 'spec-drafted', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(res.status).toBe(428);
+  });
+
+  it('POST /projects/:id/advance — stale If-Match returns 409', async () => {
+    const { itemId } = await seedProject('adv-3');
+    const res = await request(app)
+      .post('/projects/adv-3/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', '999')
+      .send({ itemId, targetStage: 'spec-drafted', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(res.status).toBe(409);
+  });
+
+  it('POST /projects/:id/advance — artifact-fail (missing specPath file) returns 409', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-4');
+    // Spec path the plan lists doesn't exist on disk → validator rejects.
+    SafeFsExecutor.safeUnlinkSync(path.join(targetRepo, 'docs/specs/a.md'), { operation: 'tests/integration/projects-api.test.ts:advance-no-spec' });
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), ''); // re-create empty for other tests
+    SafeFsExecutor.safeUnlinkSync(path.join(targetRepo, 'docs/specs/a.md'), { operation: 'tests/integration/projects-api.test.ts:advance-no-spec-2' });
+    const res = await request(app)
+      .post('/projects/adv-4/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({
+        itemId,
+        targetStage: 'spec-drafted',
+        artifact: { specPath: 'docs/specs/a.md' },
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('SPEC_FILE_MISSING');
+    // Restore the spec file for subsequent tests.
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+  });
+
+  it('POST /projects/:id/advance — unknown child returns 404', async () => {
+    const { projectVersion } = await seedProject('adv-5');
+    const res = await request(app)
+      .post('/projects/adv-5/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({ itemId: 'no-such-child', targetStage: 'spec-drafted', artifact: {} });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /projects/:id/halt — halts the active round (idempotent)', async () => {
+    await seedProject('halt-1');
+    const res = await request(app)
+      .post('/projects/halt-1/halt')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ reason: 'user said stop' });
+    expect(res.status).toBe(200);
+    expect(res.body.roundIndex).toBe(0);
+    const proj = tracker.get('halt-1')!;
+    expect(proj.rounds![0].haltedAt).toBeDefined();
+    expect(proj.rounds![0].haltReason).toBe('user said stop');
+    // Idempotent: second call returns 200 referencing the same halted round.
+    const res2 = await request(app)
+      .post('/projects/halt-1/halt')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ reason: 'second time' });
+    expect(res2.status).toBe(200);
+    // Original reason preserved.
+    expect(tracker.get('halt-1')!.rounds![0].haltReason).toBe('user said stop');
+  });
+
+  it('POST /projects/:id/ack — populates firstLaunchAckAt + lastAckedRoundIndex', async () => {
+    await seedProject('ack-1');
+    const res = await request(app)
+      .post('/projects/ack-1/ack')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ forRoundIndex: 0 });
+    expect(res.status).toBe(200);
+    expect(res.body.firstLaunchAckAt).toBeDefined();
+    expect(res.body.lastAckedRoundIndex).toBe(0);
+    expect(res.body.unacknowledgedAdvanceCount).toBe(0);
+  });
+
+  it('POST /projects/:id/ack — rejects non-integer roundIndex', async () => {
+    await seedProject('ack-2');
+    const res = await request(app)
+      .post('/projects/ack-2/ack')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ forRoundIndex: -1 });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /projects/:id/accept-partial — skips remaining items + marks complete-with-skips', async () => {
+    await seedProject('partial-1');
+    const res = await request(app)
+      .post('/projects/partial-1/accept-partial')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0, reason: 'time pressure', skippedBy: 'echo' });
+    expect(res.status).toBe(200);
+    expect(res.body.skippedItemIds.length).toBeGreaterThan(0);
+    const proj = tracker.get('partial-1')!;
+    expect(proj.rounds![0].status).toBe('complete-with-skips');
+    expect(proj.lastAckedRoundIndex).toBe(0);
+  });
+
+  it('POST /projects/:id/accept-partial — requires reason + skippedBy', async () => {
+    await seedProject('partial-2');
+    const a = await request(app)
+      .post('/projects/partial-2/accept-partial')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0, skippedBy: 'echo' });
+    expect(a.status).toBe(400);
+    const b = await request(app)
+      .post('/projects/partial-2/accept-partial')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0, reason: 'time' });
+    expect(b.status).toBe(400);
+  });
+
+  it('halt / ack / accept-partial require Bearer auth', async () => {
+    const a = await request(app).post('/projects/foo/halt').send({ reason: 'r' });
+    expect(a.status).toBe(401);
+    const b = await request(app).post('/projects/foo/ack').send({ forRoundIndex: 0 });
+    expect(b.status).toBe(401);
+    const c = await request(app).post('/projects/foo/accept-partial').send({ roundIndex: 0, reason: 'r', skippedBy: 'e' });
+    expect(c.status).toBe(401);
   });
 });

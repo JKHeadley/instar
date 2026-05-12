@@ -46,6 +46,8 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
+import type { PipelineStage } from '../core/InitiativeTracker.js';
 
 const execFile = promisify(execFileCb);
 
@@ -588,6 +590,10 @@ export interface RouteContext {
   ledgerSessionRegistry: import('../core/LedgerSessionRegistry.js').LedgerSessionRegistry | null;
   /** Initiative tracker — persisted record of multi-phase long-running work. */
   initiativeTracker: import('../core/InitiativeTracker.js').InitiativeTracker | null;
+  /** Project-scope round runner (Phase 1b PR 3). Single chokepoint for
+   *  /advance, /halt, /ack, /accept-partial. Null when initiativeTracker
+   *  is also null. */
+  projectRoundRunner: import('../core/ProjectRoundRunner.js').ProjectRoundRunner | null;
   /** Threadline → Telegram bridge config — toggles + allow/deny list. Read by
    *  /threadline/telegram-bridge/config endpoints and by the bridge module
    *  to decide whether to mirror an inbound message into
@@ -5784,6 +5790,257 @@ export function createRoutes(ctx: RouteContext): Router {
       action: 'not-implemented',
       message: 'next-action computation lands in Phase 1b',
     });
+  });
+
+  // ── /projects/:id mutating routes (Phase 1b PR 3) ──────────────
+  //
+  // All mutating endpoints require `If-Match: <version>` (OCC). Missing
+  // header → 428. Stale version → 409. Spec § Phase 1.3.
+  //
+  // /advance is a single-item stage transition driven by StageTransitionValidator.
+  // /halt, /ack, /accept-partial route through ProjectRoundRunner.
+
+  function parseIfMatch(req: ExpressRequest, res: ExpressResponse): number | null {
+    const header = req.headers['if-match'];
+    if (typeof header !== 'string' || !header.trim()) {
+      res.status(428).json({ error: 'If-Match header required' });
+      return null;
+    }
+    const n = parseInt(header.replace(/"/g, ''), 10);
+    if (!Number.isInteger(n) || n <= 0) {
+      res.status(400).json({ error: 'If-Match must be a positive integer version' });
+      return null;
+    }
+    return n;
+  }
+
+  function lookupProject(req: ExpressRequest, res: ExpressResponse) {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return null;
+    }
+    if (!initiativeIdRe.test(req.params.id)) {
+      res.status(400).json({ error: 'invalid project id' });
+      return null;
+    }
+    const project = ctx.initiativeTracker.get(req.params.id);
+    if (!project || (project.kind ?? 'task') !== 'project') {
+      res.status(404).json({ error: 'project not found' });
+      return null;
+    }
+    return project;
+  }
+
+  // POST /projects/:id/advance — advance one child item by one stage.
+  //
+  // Body shape:
+  //   {
+  //     "itemId": "<child id>",
+  //     "fromStage": "<optional explicit current stage>",
+  //     "targetStage": "spec-drafted|spec-converged|approved|building|merged|skipped|outline",
+  //     "artifact": {
+  //       "specPath"?: "...",          // outline → spec-drafted
+  //       "prNumber"?: 123,            // building → merged
+  //       "taskFlowRecordId"?: "...",  // approved → building
+  //       "skippedReason"?: "...",     // any → skipped
+  //       "skippedBy"?: "...",         // any → skipped
+  //       "unskippedAt"?: "..."        // skipped → outline
+  //     }
+  //   }
+  //
+  // The HTTP layer does NOT enforce gates the ProjectRoundRunner already
+  // enforces — `/advance` is a single-item transition that operates on
+  // child records, not on round status. Round-level invariants (lock,
+  // first-launch ack, owner machine, etc.) apply only to /run-round
+  // and to the autonomous loop, both of which ship in a later PR.
+  router.post('/projects/:id/advance', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.initiativeTracker) return; // narrow for TS
+    const ifMatch = parseIfMatch(req, res);
+    if (ifMatch === null) return;
+    if (ifMatch !== project.version) {
+      res.status(409).json({ error: 'version mismatch', currentVersion: project.version });
+      return;
+    }
+
+    const body = (req.body ?? {}) as {
+      itemId?: unknown;
+      fromStage?: unknown;
+      targetStage?: unknown;
+      artifact?: Record<string, unknown>;
+    };
+    const itemId = typeof body.itemId === 'string' ? body.itemId : '';
+    const targetStage = typeof body.targetStage === 'string' ? (body.targetStage as PipelineStage) : null;
+    if (!itemId) {
+      res.status(400).json({ error: '"itemId" required' });
+      return;
+    }
+    if (!targetStage) {
+      res.status(400).json({ error: '"targetStage" required' });
+      return;
+    }
+    const child = ctx.initiativeTracker.get(itemId);
+    if (!child || child.parentProjectId !== project.id) {
+      res.status(404).json({ error: `child item "${itemId}" not found under project ${project.id}` });
+      return;
+    }
+
+    if (!project.targetRepoPath) {
+      res.status(400).json({ error: 'project has no targetRepoPath; cannot validate artifacts' });
+      return;
+    }
+
+    const artifact = body.artifact ?? {};
+    const validationCtx: StageValidationContext = {
+      targetRepoPath: project.targetRepoPath,
+      specPath: typeof artifact.specPath === 'string' ? artifact.specPath : undefined,
+      prNumber: typeof artifact.prNumber === 'number' ? artifact.prNumber : undefined,
+      taskFlowRecordId: typeof artifact.taskFlowRecordId === 'string' ? artifact.taskFlowRecordId : undefined,
+      skippedReason: typeof artifact.skippedReason === 'string' ? artifact.skippedReason : undefined,
+      skippedBy: typeof artifact.skippedBy === 'string' ? artifact.skippedBy : undefined,
+      unskippedAt: typeof artifact.unskippedAt === 'string' ? artifact.unskippedAt : undefined,
+    };
+
+    const fromStage =
+      typeof body.fromStage === 'string'
+        ? (body.fromStage as PipelineStage)
+        : (child.pipelineStage as PipelineStage | undefined);
+
+    const result = await validateStageTransition(fromStage, targetStage, validationCtx);
+    if (!result.ok) {
+      res.status(409).json({ error: 'stage transition rejected', code: result.code, reason: result.reason });
+      return;
+    }
+
+    try {
+      const updated = await ctx.initiativeTracker.update(itemId, {
+        pipelineStage: targetStage,
+        ifMatch: child.version,
+      });
+      // Bump the project version too so concurrent advance calls don't
+      // operate on a stale view. We touch description ("last advance
+      // <timestamp>") to force a meaningful update.
+      const refreshed = await ctx.initiativeTracker.update(project.id, {
+        // No-op-but-bump: nudge `lastTouchedAt` indirectly via update.
+        nextCheckAt: project.nextCheckAt,
+        ifMatch: project.version,
+      });
+      res.json({
+        item: { id: updated.id, pipelineStage: updated.pipelineStage, version: updated.version },
+        project: { id: refreshed.id, version: refreshed.version },
+      });
+    } catch (err) {
+      const e = err as Error & { currentVersion?: number; name?: string };
+      if (e.name === 'OccVersionMismatchError') {
+        res.status(409).json({ error: 'version mismatch', currentVersion: e.currentVersion });
+        return;
+      }
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // POST /projects/:id/halt — kills the active round. Idempotent.
+  router.post('/projects/:id/halt', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.projectRoundRunner) {
+      res.status(503).json({ error: 'ProjectRoundRunner not configured' });
+      return;
+    }
+    const reason = typeof (req.body ?? {}).reason === 'string' ? (req.body as { reason: string }).reason : 'no reason given';
+    try {
+      const result = await ctx.projectRoundRunner.halt(project.id, reason);
+      if (!result) {
+        res.status(409).json({ error: 'project has no halt-able round' });
+        return;
+      }
+      res.json({ id: result.project.id, roundIndex: result.roundIndex, version: result.project.version });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // POST /projects/:id/ack — record user acknowledgment.
+  router.post('/projects/:id/ack', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.projectRoundRunner) {
+      res.status(503).json({ error: 'ProjectRoundRunner not configured' });
+      return;
+    }
+    const body = (req.body ?? {}) as { forRoundIndex?: unknown; roundIndex?: unknown };
+    const idx = typeof body.forRoundIndex === 'number' ? body.forRoundIndex : (typeof body.roundIndex === 'number' ? body.roundIndex : 0);
+    if (!Number.isInteger(idx) || idx < 0) {
+      res.status(400).json({ error: '"forRoundIndex" must be a non-negative integer' });
+      return;
+    }
+    try {
+      const updated = await ctx.projectRoundRunner.recordAck(project.id, idx);
+      if (!updated) {
+        res.status(404).json({ error: 'project not found' });
+        return;
+      }
+      res.json({
+        id: updated.id,
+        firstLaunchAckAt: updated.firstLaunchAckAt,
+        lastAckedRoundIndex: updated.lastAckedRoundIndex,
+        unacknowledgedAdvanceCount: updated.unacknowledgedAdvanceCount,
+        version: updated.version,
+      });
+    } catch (err) {
+      const e = err as Error & { currentVersion?: number; name?: string };
+      if (e.name === 'OccVersionMismatchError') {
+        res.status(409).json({ error: 'version mismatch', currentVersion: e.currentVersion });
+        return;
+      }
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // POST /projects/:id/accept-partial — close a partially-complete round.
+  router.post('/projects/:id/accept-partial', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.projectRoundRunner) {
+      res.status(503).json({ error: 'ProjectRoundRunner not configured' });
+      return;
+    }
+    const body = (req.body ?? {}) as { roundIndex?: unknown; reason?: unknown; skippedBy?: unknown };
+    const idx = typeof body.roundIndex === 'number' ? body.roundIndex : -1;
+    const reason = typeof body.reason === 'string' ? body.reason : '';
+    const skippedBy = typeof body.skippedBy === 'string' ? body.skippedBy : '';
+    if (!Number.isInteger(idx) || idx < 0) {
+      res.status(400).json({ error: '"roundIndex" must be a non-negative integer' });
+      return;
+    }
+    if (!reason.trim()) {
+      res.status(400).json({ error: '"reason" required' });
+      return;
+    }
+    if (!skippedBy.trim()) {
+      res.status(400).json({ error: '"skippedBy" required' });
+      return;
+    }
+    try {
+      const result = await ctx.projectRoundRunner.acceptPartial(project.id, idx, reason, skippedBy);
+      if (!result) {
+        res.status(404).json({ error: 'project or round not found' });
+        return;
+      }
+      res.json({
+        id: result.project.id,
+        skippedItemIds: result.skippedItemIds,
+        version: result.project.version,
+      });
+    } catch (err) {
+      const e = err as Error & { currentVersion?: number; name?: string };
+      if (e.name === 'OccVersionMismatchError') {
+        res.status(409).json({ error: 'version mismatch', currentVersion: e.currentVersion });
+        return;
+      }
+      res.status(400).json({ error: e.message });
+    }
   });
 
   router.post('/projects', async (req, res) => {

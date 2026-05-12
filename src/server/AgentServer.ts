@@ -164,6 +164,8 @@ export class AgentServer {
     stopGateDb?: import('../core/StopGateDb.js').StopGateDb;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
+    /** Project-scope round runner (Phase 1b PR 3). */
+    projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
     /** Threadline → Telegram bridge config — toggles + allow/deny list. */
     telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
     /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
@@ -437,6 +439,7 @@ export class AgentServer {
       unjustifiedStopGate: options.unjustifiedStopGate ?? null,
       stopGateDb: options.stopGateDb ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
+      projectRoundRunner: options.projectRoundRunner ?? null,
       tokenLedger: this.tokenLedger,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
