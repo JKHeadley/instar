@@ -104,6 +104,13 @@ export interface PromiseBeaconConfig {
    * Spec Round 3 #2. Default: 20.
    */
   maxActiveBeacons?: number;
+  /**
+   * Default cycle count for auto-pause when a commitment doesn't specify
+   * `beaconAutoPauseAfterUnchanged`. At default 10-min cadence, 12 cycles
+   * ≈ 2 hours of silence before the beacon stops firing. Set to 0 to
+   * disable globally. Default 12.
+   */
+  defaultAutoPauseAfterUnchanged?: number;
 }
 
 interface HotState {
@@ -159,6 +166,28 @@ function sha256(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
 
+/**
+ * Build a short promise-text excerpt to suffix on heartbeat messages so the
+ * user can tell *which* watched promise this heartbeat is about.
+ *
+ * Prefers `agentResponse` (what the agent actually said it would do),
+ * falls back to `userRequest`. Strips newlines, collapses whitespace,
+ * truncates with an ellipsis at ~80 chars on a word boundary.
+ *
+ * Returns an empty string if no usable text is available (defensive only —
+ * a commitment without either field is malformed).
+ */
+function promiseExcerpt(c: Pick<Commitment, 'agentResponse' | 'userRequest'>): string {
+  const raw = (c.agentResponse || c.userRequest || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  const MAX = 80;
+  if (raw.length <= MAX) return raw;
+  const cut = raw.slice(0, MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  const boundary = lastSpace > 40 ? lastSpace : MAX;
+  return cut.slice(0, boundary) + '…';
+}
+
 // Cap tmux capture (spec #16b).
 function capOutput(raw: string, maxBytes = 4096, maxLines = 200): string {
   const lines = raw.split('\n').slice(-maxLines);
@@ -182,6 +211,7 @@ export class PromiseBeacon extends EventEmitter {
   private timerMult: number;
   private now: () => number;
   private maxActiveBeacons: number;
+  private defaultAutoPauseAfterUnchanged: number;
 
   constructor(config: PromiseBeaconConfig) {
     super();
@@ -192,6 +222,7 @@ export class PromiseBeacon extends EventEmitter {
     this.timerMult = config.__dev_timerMultiplier ?? 1.0;
     this.now = config.now ?? (() => Date.now());
     this.maxActiveBeacons = config.maxActiveBeacons ?? 20;
+    this.defaultAutoPauseAfterUnchanged = config.defaultAutoPauseAfterUnchanged ?? 12;
     this.stateDir = path.join(config.stateDir, 'state', 'promise-beacon');
     try { fs.mkdirSync(this.stateDir, { recursive: true }); } catch { /* ok */ }
   }
@@ -244,6 +275,16 @@ export class PromiseBeacon extends EventEmitter {
     this.config.commitmentTracker.on('withdrawn', (c: Commitment) => {
       this.stopFor(c.id);
     });
+    // Re-arm when a paused beacon is resumed via API / Telegram intent.
+    this.config.commitmentTracker.on('resumed', (c: Commitment) => {
+      if (c.beaconEnabled && c.status === 'pending' && c.topicId) {
+        // Reset the hot-state counter so the resumed run starts fresh.
+        const hot = this.loadHotState(c.id);
+        hot.consecutiveUnchanged = 0;
+        this.saveHotState(c.id, hot);
+        this.schedule(c);
+      }
+    });
     console.log(`[PromiseBeacon] Started (${this.prefix})`);
   }
 
@@ -268,7 +309,7 @@ export class PromiseBeacon extends EventEmitter {
   schedule(c: Commitment): void {
     if (!this.started) return;
     if (!c.topicId) return;
-    if (c.status !== 'pending' || c.beaconSuppressed) return;
+    if (c.status !== 'pending' || c.beaconSuppressed || c.beaconPaused) return;
 
     // atRisk doubles cadence (spec Round 3 #1) — softer-toned + less frequent.
     const baseCadence = c.cadenceMs ?? 10 * 60_000;
@@ -296,7 +337,7 @@ export class PromiseBeacon extends EventEmitter {
   async fire(id: string): Promise<void> {
     const c = this.config.commitmentTracker.getAll().find(x => x.id === id);
     if (!c) return;
-    if (c.status !== 'pending' || c.beaconSuppressed) return;
+    if (c.status !== 'pending' || c.beaconSuppressed || c.beaconPaused) return;
     if (!c.topicId) return;
 
     // ── Ownership gate ──
@@ -350,6 +391,9 @@ export class PromiseBeacon extends EventEmitter {
       const hot = this.loadHotState(c.id);
       const unchanged = hash === hot.lastSnapshotHash;
 
+      const excerpt = promiseExcerpt(c);
+      const suffix = excerpt ? ` — re: ${excerpt}` : '';
+
       let text: string;
       let atRiskSignal = false;
       if (!snapshot || unchanged) {
@@ -358,7 +402,7 @@ export class PromiseBeacon extends EventEmitter {
         const unchangedIsAtRisk = hot.consecutiveUnchanged >= 2;
         const variants = unchangedIsAtRisk ? AT_RISK_VARIANTS : TEMPLATED_VARIANTS;
         const phrase = variants[hot.templatedVariantCursor % variants.length];
-        text = `${this.prefix} ${phrase}`;
+        text = `${this.prefix} ${phrase}${suffix}`;
         if (unchangedIsAtRisk) atRiskSignal = true;
         hot.consecutiveUnchanged += 1;
         hot.templatedVariantCursor += 1;
@@ -402,13 +446,13 @@ export class PromiseBeacon extends EventEmitter {
             }
           }
 
-          text = `${this.prefix} ${safeLine}`;
+          text = `${this.prefix} ${safeLine}${suffix}`;
           hot.consecutiveUnchanged = 0;
         } catch (err) {
           if (err instanceof LlmAbortedError || (err as Error).message.includes('cap exceeded') || (err as Error).message.includes('reserve')) {
-            text = `${this.prefix} still working (update deferred)`;
+            text = `${this.prefix} still working (update deferred)${suffix}`;
           } else {
-            text = `${this.prefix} still working (status fetch failed)`;
+            text = `${this.prefix} still working (status fetch failed)${suffix}`;
           }
         }
       }
@@ -443,6 +487,18 @@ export class PromiseBeacon extends EventEmitter {
         templated: !snapshot || unchanged,
         atRisk: atRiskSignal,
       });
+
+      // ── Auto-pause gate ───────────────────────────────────────────
+      // After enough consecutive unchanged-snapshot heartbeats, emit one
+      // final "auto-paused" message and stop firing. Non-terminal: status
+      // stays `pending`; resume via POST /commitments/:id/resume or a
+      // "keep watching" reply on the same topic.
+      const threshold = c.beaconAutoPauseAfterUnchanged ?? this.defaultAutoPauseAfterUnchanged;
+      const isUnchangedThisCycle = !snapshot || unchanged;
+      if (threshold > 0 && isUnchangedThisCycle && hot.consecutiveUnchanged >= threshold) {
+        await this.autoPause(c, excerpt);
+        return; // do NOT re-arm
+      }
     } finally {
       this.config.proxyCoordinator.release(c.topicId, 'promise-beacon');
     }
@@ -450,6 +506,38 @@ export class PromiseBeacon extends EventEmitter {
     // Re-arm.
     const next = this.config.commitmentTracker.getAll().find(x => x.id === id);
     if (next) this.schedule(next);
+  }
+
+  /**
+   * Auto-pause a beacon after a run of unchanged heartbeats. Emits one final
+   * user-visible line telling them how to resume, mutates the commitment to
+   * set `beaconPaused`, and clears the timer. Non-terminal: status stays
+   * `pending`. Resume re-arms via the `resumed` event handler.
+   */
+  private async autoPause(c: Commitment, excerpt: string): Promise<void> {
+    const suffix = excerpt ? ` — re: ${excerpt}` : '';
+    const finalText = `${this.prefix} auto-paused after long quiet${suffix}\nReply "keep watching" on this topic to resume.`;
+    try {
+      await this.config.sendMessage(c.topicId!, finalText, {
+        source: 'promise-beacon',
+        isProxy: true,
+        tier: 1,
+      });
+    } catch (err) {
+      console.warn(`[PromiseBeacon] auto-pause send failed for ${c.id}:`, (err as Error).message);
+    }
+    const hot = this.loadHotState(c.id);
+    await this.config.commitmentTracker.mutate(c.id, prev => ({
+      ...prev,
+      beaconPaused: true,
+      beaconPausedReason: 'auto-paused-no-progress',
+      beaconPausedAt: new Date(this.now()).toISOString(),
+      // Snapshot the streak length that triggered the pause — written ONLY
+      // at the pause boundary, not on every heartbeat (review feedback).
+      consecutiveUnchanged: hot.consecutiveUnchanged,
+    }));
+    this.stopFor(c.id);
+    this.emit('auto-paused', { id: c.id, topicId: c.topicId });
   }
 
   // ─── Internals ────────────────────────────────────────────────────────────

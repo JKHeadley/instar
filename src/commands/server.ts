@@ -4992,6 +4992,69 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
+
+          // ── "keep watching" resume detector ─────────────────────────────
+          // When a user replies on a topic that has any auto-paused beacons,
+          // a literal "keep watching" match resumes them. Brittle detector
+          // (regex) with no blocking authority — it only triggers the
+          // structurally-symmetric /resume endpoint. False-positive cost:
+          // one extra heartbeat that re-pauses on next idle cycle.
+          const KEEP_WATCHING_RE = /\bkeep[\s-]?watching\b/i;
+          const previousTelegramHook = telegram.onMessageLogged;
+          telegram.onMessageLogged = (entry) => {
+            if (previousTelegramHook) previousTelegramHook(entry);
+            if (!entry.fromUser) return;
+            if (!entry.topicId) return;
+            if (!entry.text || !KEEP_WATCHING_RE.test(entry.text)) return;
+            const topicId = entry.topicId;
+            const paused = commitmentTracker
+              .getActive()
+              .filter(c => c.topicId === topicId && c.beaconPaused);
+            if (paused.length === 0) return;
+            (async () => {
+              let resumed = 0;
+              for (const c of paused) {
+                try {
+                  const url = `http://localhost:${config.port}/commitments/${c.id}/resume`;
+                  const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${config.authToken}`,
+                    },
+                  });
+                  if (resp.ok) resumed += 1;
+                  else console.warn(`[PromiseBeacon] resume call returned ${resp.status} for ${c.id}`);
+                } catch (err) {
+                  console.warn(`[PromiseBeacon] resume call failed for ${c.id}:`, (err as Error).message);
+                }
+              }
+              let ackText: string;
+              if (resumed === paused.length && resumed > 0) {
+                ackText = `⏳ resumed ${resumed === 1 ? 'watcher' : `${resumed} watchers`} on this topic.`;
+              } else if (resumed > 0) {
+                ackText = `⏳ resumed ${resumed} of ${paused.length} watchers — ${paused.length - resumed} didn't resume. Try again or open the dashboard.`;
+              } else {
+                ackText = `⚠️ couldn't resume the watcher${paused.length === 1 ? '' : 's'} on this topic — try again or open the dashboard.`;
+              }
+              try {
+                const ackUrl = `http://localhost:${config.port}/telegram/reply/${topicId}`;
+                await fetch(ackUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.authToken}`,
+                  },
+                  body: JSON.stringify({
+                    text: ackText,
+                    metadata: { source: 'promise-beacon', isProxy: true, tier: 1 },
+                  }),
+                });
+              } catch (err) {
+                console.warn('[PromiseBeacon] resume ack send failed:', (err as Error).message);
+              }
+            })();
+          };
         } catch (err) {
           console.warn('[PromiseBeacon] init failed:', (err as Error).message);
         }
