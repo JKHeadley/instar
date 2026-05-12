@@ -64,6 +64,8 @@ import path from 'node:path';
 
 import { jailPath } from './StageTransitionValidator.js';
 import type { DriftVerdict, IntelligenceProvider, VerifiedCitation } from './types.js';
+import type { ProjectDriftCheckerCache } from './ProjectDriftCheckerCache.js';
+import { DriftSpendLedger, OverBudgetError } from './DriftSpendLedger.js';
 
 /** Bumped whenever the system prompt changes; part of the future cache key. */
 export const DRIFT_PROMPT_TEMPLATE_VERSION = 1;
@@ -142,15 +144,31 @@ export interface ProjectDriftCheckerConfig {
   intelligence?: IntelligenceProvider;
   /** Defaults to spec § Phase 1.4 hard limits; tests can override. */
   limits?: Partial<typeof DRIFT_LIMITS>;
+  /** Optional verdict cache. When absent, every call recomputes from scratch. */
+  cache?: ProjectDriftCheckerCache;
+  /** Optional spend ledger. When absent, no cap enforcement. */
+  ledger?: DriftSpendLedger;
+  /**
+   * Best-effort cost estimate per call in USD; ledger pre-reserves this
+   * amount before the LLM call. Default $0.01 — conservative for the
+   * 'balanced' tier on the 50k-token-budget cap.
+   */
+  estimatedCostPerCallUsd?: number;
 }
 
 export class ProjectDriftChecker {
   private intelligence?: IntelligenceProvider;
   private limits: typeof DRIFT_LIMITS;
+  private cache?: ProjectDriftCheckerCache;
+  private ledger?: DriftSpendLedger;
+  private estimatedCostPerCallUsd: number;
 
   constructor(config: ProjectDriftCheckerConfig = {}) {
     this.intelligence = config.intelligence;
     this.limits = { ...DRIFT_LIMITS, ...(config.limits ?? {}) };
+    this.cache = config.cache;
+    this.ledger = config.ledger;
+    this.estimatedCostPerCallUsd = config.estimatedCostPerCallUsd ?? 0.01;
   }
 
   async run(input: DriftCheckInput): Promise<DriftVerdict> {
@@ -265,11 +283,59 @@ export class ProjectDriftChecker {
       };
     }
 
+    // ── Cache lookup ──────────────────────────────────────────────
+    // After validation but BEFORE the LLM call. A hit returns the
+    // cached verdict directly; no ledger spend, no provider call.
+    const resolvedModelId = input.modelId ?? 'balanced';
+    let cacheKey: string | undefined;
+    if (this.cache) {
+      const lookup = this.cache.lookup({
+        projectId: input.projectId,
+        roundIndex: input.roundIndex,
+        promptTemplateVersion: DRIFT_PROMPT_TEMPLATE_VERSION,
+        modelId: resolvedModelId,
+        specPath: specJailed.absPath,
+        referencedFilePaths: prepared.map((p) => p.absPath),
+        referencedFileBytes: prepared.map((p) => p.bytes),
+        specBytes,
+      });
+      if (lookup.hit) {
+        return lookup.verdict;
+      }
+      cacheKey = lookup.key;
+    }
+
+    // ── Ledger pre-reserve ────────────────────────────────────────
+    // Strict spec § Phase 1.4: `spent + estimated > cap` → reject as
+    // manual-review-required (over-budget). The reserve appends a pending
+    // row; reconcile() at the end of the call upgrades it with the actual
+    // cost. If the call throws/crashes, the pending estimate still counts
+    // toward the cap until UTC rollover — fail-safe rather than fail-open.
+    let ledgerRecordId: string | undefined;
+    if (this.ledger) {
+      try {
+        const reservation = await this.ledger.reserve({
+          projectId: input.projectId,
+          estimatedCost: this.estimatedCostPerCallUsd,
+        });
+        ledgerRecordId = reservation.recordId;
+      } catch (err) {
+        if (err instanceof OverBudgetError) {
+          return {
+            verdict: 'manual-review-required',
+            reason: 'over-budget',
+            rationale: err.message,
+          };
+        }
+        throw err;
+      }
+    }
+
     // ── Build prompt ──────────────────────────────────────────────
     const prompt = buildPrompt({
       specBody: specBytes.toString('utf-8'),
       files: prepared,
-      modelId: input.modelId,
+      modelId: resolvedModelId,
       templateVersion: DRIFT_PROMPT_TEMPLATE_VERSION,
       deletedFiles: deleted,
     });
@@ -346,11 +412,47 @@ export class ProjectDriftChecker {
       };
     }
 
-    return {
+    const finalVerdict: DriftVerdict = {
       verdict,
       rationale,
       evidenceCitations: verified,
     };
+
+    // ── Cache + ledger reconciliation ─────────────────────────────
+    // Cache only "real" verdicts — no-drift / minor-drift / premise-violated.
+    // LLM-failure paths (schema-fail / timeout) are not cached so a retry
+    // can succeed. Input-validation failures (over-budget etc.) are cheap
+    // to recompute and don't benefit from caching.
+    if (this.cache && cacheKey) {
+      this.cache.put(
+        {
+          projectId: input.projectId,
+          roundIndex: input.roundIndex,
+          promptTemplateVersion: DRIFT_PROMPT_TEMPLATE_VERSION,
+          modelId: resolvedModelId,
+          specPath: specJailed.absPath,
+          referencedFilePaths: prepared.map((p) => p.absPath),
+          referencedFileBytes: prepared.map((p) => p.bytes),
+          specBytes,
+        },
+        cacheKey,
+        finalVerdict
+      );
+    }
+    if (this.ledger && ledgerRecordId) {
+      // Best-effort reconcile. We don't currently get usage stats back from
+      // the provider abstraction, so actual ≈ estimated. When a future
+      // provider returns token usage, reconcile to the real number.
+      try {
+        await this.ledger.reconcile(ledgerRecordId, this.estimatedCostPerCallUsd);
+      } catch {
+        // Reconcile failure is non-fatal — the pending reservation already
+        // counts toward the cap, so the worst case is a slight overshoot
+        // of "spent" vs "actually spent" until UTC rollover.
+      }
+    }
+
+    return finalVerdict;
   }
 }
 
