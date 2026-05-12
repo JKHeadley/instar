@@ -6326,6 +6326,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     initiativeTracker.setDigestCacheInvalidator(() => projectDigestCache.writeDigestCache());
     projectDigestCache.writeDigestCache();
 
+    // Project-scope Phase 1b PR 3 — round runner (single chokepoint for
+    // /advance, /halt, /ack, /accept-partial; lock-protected; future
+    // autonomous-delegating run loop).
+    const { ProjectRoundRunner } = await import('../core/ProjectRoundRunner.js');
+    const projectRoundRunner = new ProjectRoundRunner({
+      tracker: initiativeTracker,
+      stateDir: config.stateDir,
+      machineId: coordinator.identity?.machineId ?? os.hostname(),
+    });
+
     // TaskFlow registry — opt-in via config.taskFlow.enabled (default: off in v1).
     // Owns its own SQLite file under .instar/task-flows.db. The maintenance
     // sweeper and due-waker start with the registry; both .unref() their timers
@@ -6439,7 +6449,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 
