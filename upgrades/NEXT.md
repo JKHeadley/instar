@@ -20,29 +20,34 @@ of PRs #164, #166, #167, and #168.
   guard prevents a slow run from being relaunched on the next 60s
   tick. Errors are captured in `result.executorErrors[]` — they never
   throw out of `tick()`.
-- **`GET /projects/:id/next` returns the real next round.** Replaces
-  the 501 placeholder. Returns
-  `{ projectId, projectVersion, roundIndex, name, itemIds, status,
-  autoAdvanceAt? }` for the first round whose `status !== 'complete'`,
-  204 when all complete, 404 on non-project initiative. Read-only —
-  no OCC required.
-- **`GET /projects/:id` lazy reconciler.** For up to 3 children at
-  `pipelineStage = 'building'` with a populated `mergeCommitOid`, the
-  GET handler now verifies them against `origin/main` via git and
-  bumps the verified ones to `'merged'`. Errors are silenced; the
-  reconciler can be disabled with `?reconcile=false`.
+- **`GET /projects/:id/next` returns a structured action.** Replaces
+  the 501 placeholder with the spec § 1.5 line 268 contract:
+  `{ action, params, skillCommand }`. Verbs include
+  `'await-user-approval'`, `'ack-required'`, `'resolve-conflict'`,
+  `'accept-partial'`, `'run-spec-converge'`, `'run-drift-check'`,
+  `'start-round'`. Each maps to a `/project ...` invocation so the
+  dashboard + skill UI can act on a single GET. 204 when all rounds
+  complete, 404 on non-project initiative.
+- **`GET /projects/:id` lazy reconciler.** Per spec § 1.4 lines 256-258.
+  For 'building' children with `mergeCommitOid` set: 6h debounce via
+  `ciCheckedAt`, selection order oldest-`ciCheckedAt`-first
+  (ties → `roundIndex` ASC → `itemId` ASC, no starvation), cap of 3
+  per GET. Verified ancestor of `origin/main` → `'merged'`. NOT an
+  ancestor → `'regressed'` AND clear future `autoAdvanceAt` so the
+  chain doesn't auto-fire while a child is broken. `ciCheckedAt` is
+  written on every revalidation attempt (success or git failure) so
+  the debounce always backs off. Opt-out: `?reconcile=false`.
 - **`POST /projects/:id/drift-check` route.** New HTTP wrapper around
-  `ProjectDriftChecker.run()`. Body:
+  `ProjectDriftChecker.run()`. **Mutex-guarded per project (spec line
+  279)** — concurrent calls against the same project return 409,
+  protecting the drift-spend ledger from double-spend. Body:
   `{ roundIndex, specPath, referencedFiles[], timeoutMs?, modelId? }`.
-  Returns 503 when no `IntelligenceProvider` is configured (no
-  checker wired), 200 with `{ verdict, projectId, roundIndex }` on
-  success. The shared provider auto-wires the checker at server
-  startup.
+  Returns 503 when no `IntelligenceProvider` is configured.
 
 Drift cache + spend-ledger wiring are intentionally deferred until the
 dashboard surfaces live verdicts and cost telemetry needs the cap. The
-reconciler's predicate is intentionally narrow (only `'building'` ×
-`mergeCommitOid`) to keep `GET /projects/:id` fast.
+mutex is in-process per-server; multi-process protection comes from
+the existing `proper-lockfile` on the drift-spend ledger itself.
 
 ### Project-scope Phase 1b PR 7 — autonomous run loop
 

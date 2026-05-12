@@ -16,22 +16,42 @@ gets its consumer."
    Errors land in `result.executorErrors[]`; they never throw out of
    `tick()`. Server startup wires the executor against
    `ProjectRoundExecution.runRound`.
-2. **`GET /projects/:id/next`** — replaces the 501 placeholder. Returns
-   the first round whose `status !== 'complete'` as
-   `{ projectId, projectVersion, roundIndex, name, itemIds, status,
-   autoAdvanceAt? }`. Returns 204 when all rounds are complete, 404 on
-   non-project initiative. Read-only, no OCC required.
-3. **`GET /projects/:id` lazy merged-state reconciler** — for up to 3
-   children with `pipelineStage = 'building'` and a populated
-   `mergeCommitOid`, calls `verifyMergedItemsViaGit()` against the
-   project's `targetRepoPath`. Any verified child is bumped to
-   `pipelineStage = 'merged'`. Errors (git missing, network down, OCC
-   race, validator reject) are silenced; the child stays as-is until
-   the next GET. Skipped when `?reconcile=false`, or when the project
-   has no `targetRepoPath`.
+2. **`GET /projects/:id/next`** — per spec § Phase 1.5 line 268.
+   Returns `{ action, params, skillCommand }` for the first
+   non-complete round. Action verbs (a non-exhaustive contract):
+   `'await-user-approval'` (no `firstLaunchAckAt`), `'ack-required'`
+   (unacked counter at cap), `'resolve-conflict'` (awaiting
+   reconciliation), `'accept-partial'` (round partially-complete),
+   `'run-spec-converge'` (item at spec-drafted), `'run-drift-check'`
+   (item approved, no fresh verdict), `'start-round'` (default). Each
+   verb maps to a suggested `/project ...` skill invocation via
+   `skillCommandForAction()`. Returns 204 when all rounds complete,
+   404 on non-project initiative. Read-only, no OCC required.
+3. **`GET /projects/:id` lazy merged-state reconciler** — per spec
+   § Phase 1.4 lines 256-258. For 'building' children with
+   `mergeCommitOid` set:
+   - **6h debounce** via `ciCheckedAt`: skip any child checked in the
+     last 6 hours.
+   - **Selection order**: oldest `ciCheckedAt` first (treat missing as
+     epoch 0), ties broken by `roundIndex` ASC, then `itemId` ASC. No
+     child starves.
+   - **Cap**: at most 3 child-revalidations per GET.
+   - **Both directions**: verified ancestor of origin/main → bump to
+     `'merged'`. NOT an ancestor → transition to `'regressed'` AND
+     clear future `autoAdvanceAt` on subsequent rounds so the chain
+     doesn't auto-fire while a child is broken.
+   - **ciCheckedAt is always written** on a revalidation attempt
+     (even on git-shell-out failure) so the debounce backs off
+     instead of hot-looping.
+   - Skipped when `?reconcile=false`, or when the project has no
+     `targetRepoPath`.
 4. **`POST /projects/:id/drift-check`** — wraps
    `ProjectDriftChecker.run()`. Body: `{ roundIndex, specPath,
-   referencedFiles[], timeoutMs?, modelId? }`. Returns 503 when no
+   referencedFiles[], timeoutMs?, modelId? }`. **Mutex-guarded per
+   project (spec § Phase 1.5 line 279)**: a concurrent call against
+   the same `projectId` returns 409 `{error: 'drift-check already in
+   flight for this project'}` — protects the drift-spend ledger from
+   double-spend and the LLM from double-billing. Returns 503 when no
    `IntelligenceProvider` is configured (no checker wired), 400 on
    validation, 200 with `{ verdict, projectId, roundIndex }` on
    success. `AgentServer.routeContext` and the server-startup wiring

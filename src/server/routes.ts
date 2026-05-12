@@ -786,6 +786,27 @@ function pickFields(
   return out;
 }
 
+/** Maps a /projects/:id/next action verb to the suggested skill invocation. */
+function skillCommandForAction(action: string, projectId: string, roundIndex: number): string {
+  switch (action) {
+    case 'await-user-approval':
+      return `/project approve ${projectId}`;
+    case 'ack-required':
+      return `/project ack ${projectId}`;
+    case 'resolve-conflict':
+      return `/project resolve-conflict ${projectId}`;
+    case 'accept-partial':
+      return `/project accept-partial ${projectId} ${roundIndex}`;
+    case 'run-spec-converge':
+      return `/spec-converge`;
+    case 'run-drift-check':
+      return `/project drift-check ${projectId} ${roundIndex}`;
+    case 'start-round':
+    default:
+      return `/project run-round ${projectId} ${roundIndex}`;
+  }
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
 
@@ -5787,39 +5808,94 @@ export function createRoutes(ctx: RouteContext): Router {
       .list()
       .filter((i) => i.parentProjectId === project.id);
 
-    // Lazy merged-state reconciler: revalidate up to 3 'building' children
-    // whose mergeCommitOid is set, in case the PR has landed on origin/main
-    // since we last looked. Skipped when `?reconcile=false` or no
-    // targetRepoPath. Errors are silenced (the child stays as-is).
+    // Lazy merged-state reconciler — spec § Phase 1.4 lines 256-258.
+    //
+    // GET /projects/:id is documented as "may mutate": when a 'building' child's
+    // mergeCommitOid is no longer ancestor of origin/main, we transition it to
+    // 'regressed' and clear future autoAdvanceAt on its round.
+    //
+    // Selection contract:
+    //   - debounce: skip any child with `ciCheckedAt < 6h ago`
+    //   - cap: at most 3 child-revalidations per GET
+    //   - order: oldest `ciCheckedAt` first (treat undefined as 1970), ties broken
+    //     by `roundIndex` ASC, then `itemId` ASC — no child can starve.
+    //   - opt-out: `?reconcile=false` (or `?reconcile=0`) skips entirely
     const reconcileFlag = req.query.reconcile;
     const wantReconcile = reconcileFlag !== 'false' && reconcileFlag !== '0';
     if (wantReconcile && project.targetRepoPath) {
+      const nowMs = Date.now();
+      const debounceMs = 6 * 60 * 60 * 1000; // 6 hours
+      const roundIndexOf = (childId: string): number => {
+        const rounds = project.rounds ?? [];
+        for (let i = 0; i < rounds.length; i++) {
+          if ((rounds[i].itemIds ?? []).includes(childId)) return i;
+        }
+        return Number.MAX_SAFE_INTEGER;
+      };
       const candidates = children
         .filter((c) => c.pipelineStage === 'building' && typeof c.mergeCommitOid === 'string' && c.mergeCommitOid)
-        .slice(0, 3)
-        .map((c) => c.id);
-      if (candidates.length > 0) {
+        .filter((c) => {
+          const t = c.ciCheckedAt ? Date.parse(c.ciCheckedAt) : 0;
+          return !(Number.isFinite(t) && t > 0 && nowMs - t < debounceMs);
+        })
+        .sort((a, b) => {
+          const ta = a.ciCheckedAt ? Date.parse(a.ciCheckedAt) : 0;
+          const tb = b.ciCheckedAt ? Date.parse(b.ciCheckedAt) : 0;
+          if (ta !== tb) return ta - tb;
+          const ra = roundIndexOf(a.id);
+          const rb = roundIndexOf(b.id);
+          if (ra !== rb) return ra - rb;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        })
+        .slice(0, 3);
+      const candidateIds = candidates.map((c) => c.id);
+      if (candidateIds.length > 0) {
+        let verified: Set<string> = new Set();
         try {
-          const verified = await verifyMergedItemsViaGit(project.targetRepoPath, candidates, ctx.initiativeTracker);
-          for (const id of verified) {
-            const child = ctx.initiativeTracker.get(id);
-            if (!child) continue;
-            try {
-              await ctx.initiativeTracker.update(id, {
-                pipelineStage: 'merged',
-                ifMatch: child.version,
-              });
-            } catch {
-              // OCC race or validator reject; leave as-is for next GET.
-            }
-          }
-          if (verified.size > 0) {
-            children = ctx.initiativeTracker
-              .list()
-              .filter((i) => i.parentProjectId === project.id);
-          }
+          verified = await verifyMergedItemsViaGit(project.targetRepoPath, candidateIds, ctx.initiativeTracker);
         } catch {
-          // git not available, no network, etc. — silent.
+          // git not available, no network, etc. — leave verified empty so we
+          // still update ciCheckedAt to back off; better than a hot loop.
+        }
+        let touched = false;
+        for (const cand of candidates) {
+          const child = ctx.initiativeTracker.get(cand.id);
+          if (!child) continue;
+          const isMerged = verified.has(cand.id);
+          try {
+            await ctx.initiativeTracker.update(cand.id, {
+              pipelineStage: isMerged ? 'merged' : 'regressed',
+              ciCheckedAt: new Date(nowMs).toISOString(),
+              ifMatch: child.version,
+            });
+            touched = true;
+            if (!isMerged) {
+              // On regression: clear future autoAdvanceAt on the child's round
+              // so the next round doesn't auto-fire while this one is broken.
+              const projAfter = ctx.initiativeTracker.get(project.id);
+              const rIdx = roundIndexOf(cand.id);
+              if (projAfter && rIdx < (projAfter.rounds ?? []).length) {
+                const newRounds = (projAfter.rounds ?? []).map((r, i) =>
+                  i > rIdx ? { ...r, autoAdvanceAt: undefined } : r
+                );
+                try {
+                  await ctx.initiativeTracker.update(project.id, {
+                    rounds: newRounds,
+                    ifMatch: projAfter.version,
+                  });
+                } catch {
+                  // OCC race; next GET will retry.
+                }
+              }
+            }
+          } catch {
+            // OCC race or validator reject; leave as-is for next GET.
+          }
+        }
+        if (touched) {
+          children = ctx.initiativeTracker
+            .list()
+            .filter((i) => i.parentProjectId === project.id);
         }
       }
     }
@@ -5843,16 +5919,24 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ project, children });
   });
 
-  // GET /projects/:id/next — return the next round eligible for work.
+  // GET /projects/:id/next — structured next-action payload.
   //
-  // Contract:
-  //   - 400 if id malformed
-  //   - 404 if project not found OR kind != 'project'
-  //   - 204 if all rounds are already complete (nothing to do)
-  //   - 200 with { roundIndex, name, itemIds, status, autoAdvanceAt? }
-  //     for the FIRST round whose status is not 'complete'. We do NOT
-  //     run preflight here — that's the runner's job at fire time. This
-  //     endpoint is a peek for the dashboard + skill UI.
+  // Spec § Phase 1.5 (line 268): returns `{ action, params, estimatedCost?,
+  // skillCommand? }` for the FIRST round whose status is not 'complete'.
+  // Ordering: roundIndex ASC, then pipelineStage ASC, then itemId ASC.
+  //
+  // Action verbs the spec enumerates (a non-exhaustive contract):
+  //   - 'await-user-approval' — first round needs `firstLaunchAckAt`
+  //   - 'ack-required'         — unacknowledgedAdvanceCount >= cap
+  //   - 'resolve-conflict'     — `awaitingReconciliation` non-empty
+  //   - 'accept-partial'       — round is partially-complete
+  //   - 'run-spec-converge'    — at least one item is `spec-drafted`
+  //   - 'run-drift-check'      — at least one item is `approved`, no fresh
+  //                              drift verdict
+  //   - 'start-round'          — all preconditions met, ready to fire
+  //
+  // The endpoint does NOT run the runner's preflight — that's a heavier
+  // check at fire time. The action is a hint for the dashboard + skill UI.
   router.get('/projects/:id/next', (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
@@ -5874,14 +5958,55 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const r = rounds[idx];
+
+    // Determine the action verb from project + round state.
+    type ActionVerb =
+      | 'await-user-approval'
+      | 'ack-required'
+      | 'resolve-conflict'
+      | 'accept-partial'
+      | 'run-spec-converge'
+      | 'run-drift-check'
+      | 'start-round';
+    let action: ActionVerb = 'start-round';
+    const childrenById = new Map(
+      ctx.initiativeTracker
+        .list()
+        .filter((i) => i.parentProjectId === project.id)
+        .map((c) => [c.id, c])
+    );
+    const itemsForRound = (r.itemIds ?? []).map((id) => childrenById.get(id)).filter(Boolean);
+
+    if ((project.awaitingReconciliation ?? []).length > 0) {
+      action = 'resolve-conflict';
+    } else if ((r.status ?? 'pending') === 'partially-complete') {
+      action = 'accept-partial';
+    } else if (idx === 0 && !project.firstLaunchAckAt) {
+      action = 'await-user-approval';
+    } else if ((project.unacknowledgedAdvanceCount ?? 0) >= 2) {
+      action = 'ack-required';
+    } else if (itemsForRound.some((c) => c?.pipelineStage === 'spec-drafted')) {
+      action = 'run-spec-converge';
+    } else if (
+      itemsForRound.some(
+        (c) => c?.pipelineStage === 'approved' && !r.lastDriftVerdict
+      )
+    ) {
+      action = 'run-drift-check';
+    }
+
     res.json({
-      projectId: project.id,
-      projectVersion: project.version,
-      roundIndex: idx,
-      name: r.name,
-      itemIds: r.itemIds,
-      status: r.status ?? 'pending',
-      autoAdvanceAt: r.autoAdvanceAt,
+      action,
+      params: {
+        projectId: project.id,
+        projectVersion: project.version,
+        roundIndex: idx,
+        name: r.name,
+        itemIds: r.itemIds,
+        status: r.status ?? 'pending',
+        autoAdvanceAt: r.autoAdvanceAt,
+      },
+      skillCommand: skillCommandForAction(action, project.id, idx),
     });
   });
 
@@ -6205,8 +6330,14 @@ export function createRoutes(ctx: RouteContext): Router {
   // Body: { roundIndex: number, specPath: string, referencedFiles: string[],
   //         timeoutMs?: number, modelId?: string }
   //
+  // Mutex-guarded per project (spec § Phase 1.5 line 279). Without it two
+  // concurrent calls would double-spend the drift-spend ledger and
+  // double-bill the LLM. A second concurrent call returns 409 with
+  // `{error: 'drift-check already in flight'}` so the caller can poll.
+  //
   // 400 on validation; 503 if no checker configured; 200 with verdict envelope
   // on success. We do NOT require If-Match: drift is a read-only signal.
+  const driftInFlight: Set<string> = new Set();
   router.post('/projects/:id/drift-check', async (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
@@ -6254,6 +6385,11 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: 'roundIndex out of range', rounds: rounds.length });
       return;
     }
+    if (driftInFlight.has(project.id)) {
+      res.status(409).json({ error: 'drift-check already in flight for this project' });
+      return;
+    }
+    driftInFlight.add(project.id);
     try {
       const verdict = await ctx.projectDriftChecker.run({
         projectId: project.id,
@@ -6267,6 +6403,8 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ verdict, projectId: project.id, roundIndex });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      driftInFlight.delete(project.id);
     }
   });
 
