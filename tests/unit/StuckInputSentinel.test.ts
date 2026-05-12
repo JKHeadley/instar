@@ -109,22 +109,31 @@ describe('StuckInputSentinel — isPaneActivelyWorking', () => {
     expect(sentinel.isPaneActivelyWorking(WORKING_PANE)).toBe(true);
   });
 
-  it('flags panes with a spinner glyph at the start of a line as working', () => {
-    const spinnerOnly = ['✶ Running Phase 1a → 1b gate checks…', '❯ hello'].join('\n');
-    expect(sentinel.isPaneActivelyWorking(spinnerOnly)).toBe(true);
+  it('flags panes with "ctrl+t to hide tasks" as working', () => {
+    const multiTask = ['❯ hello', '  ⏵⏵ bypass · ctrl+t to hide tasks'].join('\n');
+    expect(sentinel.isPaneActivelyWorking(multiTask)).toBe(true);
   });
 
   it('does NOT flag the idle pane as working', () => {
     expect(sentinel.isPaneActivelyWorking(STUCK_PANE_IDLE)).toBe(false);
   });
 
-  it('does NOT flag a stale "Churned for…" past-tense marker alone as working', () => {
-    // Past-tense churn alone, with no esc-to-interrupt, should NOT be considered
-    // working — the agent finished its turn. (Glyph still matters: ✻ does mean
-    // the agent line, but if the status line doesn't say "esc to interrupt"
-    // it's idle.) Verifying our current heuristic catches the glyph here.
-    const churned = ['✻ Brewed for 14m 11s', '────────', '❯ hello'].join('\n');
-    expect(sentinel.isPaneActivelyWorking(churned)).toBe(true);
+  it('does NOT flag a stale "Brewed for…" past-tense marker as working — live reproduction case', () => {
+    // Past-tense churn markers stick around in the pane after the agent finishes
+    // its turn. The footer activity hints ("esc to interrupt", "ctrl+t to hide
+    // tasks") are the precise tell for "actually working." Live repro: 2026-05-11
+    // echo-qalatra had a stale "✻ Brewed for 14m 11s" line above a stuck message;
+    // the sentinel MUST treat this as idle and proceed to recovery.
+    const stale = ['✻ Brewed for 14m 11s', '────────', '❯ hello', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n');
+    expect(sentinel.isPaneActivelyWorking(stale)).toBe(false);
+  });
+
+  it('does NOT flag a "✶ Running…" line in isolation as working when no footer hint is present', () => {
+    // Belt-and-suspenders: even if a present-tense spinner line is in the pane,
+    // we rely on the footer for the working signal. (If Claude Code is actually
+    // working, the footer will say "esc to interrupt".)
+    const presentTenseNoFooter = ['✶ Running Phase 1a checks', '❯ hello'].join('\n');
+    expect(sentinel.isPaneActivelyWorking(presentTenseNoFooter)).toBe(false);
   });
 });
 

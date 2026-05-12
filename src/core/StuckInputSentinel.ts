@@ -109,9 +109,6 @@ const ACTIVITY_INDICATORS: readonly string[] = [
   'tokens · esc',         // Token-counting + interrupt hint
 ];
 
-/** Spinner glyphs Claude Code uses at the start of an active-work line. */
-const SPINNER_GLYPHS: readonly string[] = ['✻', '✶', '✺', '✹', '✸', '✷', '✵', '✴', '✳', '✲'];
-
 export class StuckInputSentinel {
   private readonly sessionManager: SessionManager;
   private readonly tickMs: number;
@@ -298,27 +295,30 @@ export class StuckInputSentinel {
     return null;
   }
 
-  /** True if the pane currently shows a Claude Code "working" indicator —
-   *  spinner glyph at the start of a content line, or one of the
-   *  ACTIVITY_INDICATORS hints. The sentinel must never fire Enter against
-   *  an actively-working session.
+  /** True if the pane currently shows a Claude Code "working" indicator.
+   *
+   *  We deliberately use ONLY the footer activity hints (`esc to interrupt`,
+   *  `ctrl+t to hide tasks`, `tokens · esc`). Claude Code shows these on the
+   *  bottom status line ONLY when a turn is in progress, so they're a
+   *  precise tell. We do NOT key on spinner glyphs at line-start (✻, ✶, etc.)
+   *  because those persist as part of completed-turn markers like
+   *  `✻ Brewed for 14m 11s` and `✻ Churned for 1m 16s` — past-tense renders
+   *  that stay in the pane long after the turn finished and the agent went
+   *  idle. Live reproduction on echo's 2026-05-11 stuck sessions
+   *  (echo-qalatra, echo-exploring-slack-integration) showed both held a
+   *  stale `✻ Brewed`/`Churned` line while genuinely idle. Including the
+   *  glyph in the working-state check would silently exclude those sessions
+   *  from recovery — the most user-visible cases of the bug we're closing.
+   *
+   *  A false-positive "working" (sentinel skips a session that's actually
+   *  idle) leaves the user stuck. A false-negative "idle" (sentinel fires
+   *  Enter while the agent is mid-turn) interrupts work. Choosing the
+   *  precise tell on the right side: the footer hint is structurally only
+   *  present mid-turn, so this can't double-fire against an active session.
    *
    *  Public for unit tests. */
   isPaneActivelyWorking(pane: string): boolean {
     if (ACTIVITY_INDICATORS.some(ind => pane.includes(ind))) return true;
-    const lines = pane.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trimStart();
-      if (!trimmed) continue;
-      for (const glyph of SPINNER_GLYPHS) {
-        if (trimmed.startsWith(glyph + ' ') || trimmed.startsWith(glyph + '·')) {
-          // Spinner glyphs at the start of a Claude Code work line are
-          // followed by a space (e.g. "✻ Brewed for…", "✶ Running…"). A
-          // bullet '·' separator also occurs in some patterns.
-          return true;
-        }
-      }
-    }
     return false;
   }
 

@@ -83,10 +83,9 @@ GC: at end of each tick, drop records for sessions that were not present in `lis
 
 `isPaneActivelyWorking(pane: string): boolean`
 - `true` if pane includes any of `["esc to interrupt", "ctrl+t to hide tasks", "tokens · esc"]`
-- `true` if any line starts with a spinner glyph from the set `{✻, ✶, ✺, ✹, ✸, ✷, ✵, ✴, ✳, ✲}` followed by space or `·`
 - Otherwise: `false`
 
-The spinner-glyph branch is intentionally conservative: a stale past-tense `✻ Brewed for 14m 11s` line still in the visible pane will register as "working" and the sentinel will skip recovery. The trade-off is a false-negative (message remains stuck, user re-pings) rather than a false-positive Enter — acceptable because false-positive Enter against an idle prompt is a no-op anyway, so being conservative here costs nothing on the risk side.
+We deliberately **do not** key on line-start spinner glyphs (`✻ ✶ ✺` etc.). Past-tense markers like `✻ Brewed for 14m 11s` and `✻ Churned for 1m 16s` stick around as visible pane content long after the turn finished. Both of echo's 2026-05-11 stuck sessions held one of these stale lines while genuinely idle — keying on the glyph would silently exclude exactly the cases this sentinel exists to recover. The footer hints, by contrast, are structurally only rendered mid-turn by the Claude Code TUI — they're the precise tell for "actually working." A false-positive Enter against an idle prompt is a no-op against an empty input buffer, so being permissive on the "is idle" side is safe; being conservative on the "is working" side is what could cause an interrupt of in-flight work, and that's the exact failure mode the activity-hint check rules out structurally.
 
 ### Escalation
 
