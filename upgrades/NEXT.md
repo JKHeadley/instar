@@ -8,6 +8,36 @@
 
 ## What Changed
 
+### Project-scope Phase 1b PR 4 — auto-advance poller + multi-machine claim-ownership
+
+Fourth PR of project-scope Phase 1b. Ships three pieces:
+
+- **`MachineHeartbeat`** — per-machine liveness signal at
+  `.instar/machine-health/<machineId>.json` (git-synced). Written
+  every 30 minutes; consulted by the claim-ownership flow for the
+  48-hour staleness check. Machine ids with weird characters are
+  URL-encoded into the file name so a stray slash cannot escape
+  `.instar/machine-health/`.
+
+- **`ProjectAutoAdvancePoller`** — periodic scan (1-minute tick) for
+  project rounds whose `autoAdvanceAt` has elapsed. Server-side
+  filter: `kind:'project'`, `status:'active'`, owner machine matches
+  current, `unacknowledgedAdvanceCount < 2`. On fire, calls
+  `ProjectRoundRunner.preflight`; structural rejects (first-launch
+  ack missing, cap hit, project inactive, etc.) clear `autoAdvanceAt`
+  to prevent re-firing on every tick.
+
+- **`POST /projects/:id/claim-ownership`** — OCC-protected
+  multi-machine ownership transfer. Refuses with 409 when the current
+  owner has a fresh heartbeat unless `{force:true}` is passed.
+  Idempotent on already-owns. Response carries `previousOwner` for
+  audit.
+
+Plus a one-shot **post-restore reconciler** at server startup: any
+project round flagged `in-progress` is downgraded to `pending`. The
+previous owner may have crashed or migrated; no TaskFlow yet exists
+to verify whether a child is actually live.
+
 ### Project-scope Phase 1b PR 3 — round runner + halt/advance/ack endpoints
 
 Third PR of project-scope Phase 1b. Ships the single-chokepoint
@@ -64,6 +94,18 @@ permanently block subsequent acquires.
   autonomous round loop that walks through items one by one is the
   next piece I'm building.
 
+- **I can recover ownership when a peer machine goes offline**: if my
+  other machine has been silent for more than 48 hours, I can claim
+  back ownership of a project we'd been working on together. If my
+  peer is still online, I will refuse the claim unless you tell me to
+  force it.
+
+- **Time-based auto-advance is wired up**: when a round completes
+  cleanly, I will schedule the next round automatically. If you have
+  asked me to pause and have not acked, I will not auto-advance again
+  until you do — the two-rounds-ahead-without-ack brake stops me from
+  running off on my own.
+
 ## Summary of New Capabilities
 
 - `ProjectRoundRunner` class — single chokepoint for round-start.
@@ -84,3 +126,20 @@ permanently block subsequent acquires.
   `AgentServer({ projectRoundRunner })` so other future routes (drift
   check, run-round, claim-ownership) can route through the same
   runner instance.
+- `MachineHeartbeat` class — `start()` / `stop()` / `writeOnce()` /
+  `read(machineId)` / `isStale(machineId)` / `listAll()`. File-backed,
+  git-syncable, defense-in-depth on malformed reads.
+- `ProjectAutoAdvancePoller` class — `tick()` returns a structured
+  `{scanned, fired, rejected, cleared}` report. Caller-driven cadence;
+  server wires a 60-second interval.
+- `POST /projects/:id/claim-ownership` — body `{force?: boolean}`;
+  header `If-Match` (OCC). Returns 200 with
+  `{ownerMachineId, previousOwner, version}` on success; 409 on fresh
+  peer heartbeat or version mismatch.
+- `RouteContext.machineHeartbeat` — bundled `{api, config}` so the
+  claim-ownership route can compare against the local machine id
+  without an extra top-level ctx field.
+- Server startup runs a one-shot reconciler that downgrades any
+  `in-progress` round to `pending`. Best-effort; OCC races are
+  silently retried on subsequent reconciler passes (or via the
+  auto-advance poller's filter).

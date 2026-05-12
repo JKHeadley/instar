@@ -594,6 +594,14 @@ export interface RouteContext {
    *  /advance, /halt, /ack, /accept-partial. Null when initiativeTracker
    *  is also null. */
   projectRoundRunner: import('../core/ProjectRoundRunner.js').ProjectRoundRunner | null;
+  /** Machine heartbeat (Phase 1b PR 4). Bundled with `config.machineId`
+   *  so the claim-ownership route can compare against the current
+   *  machine without a separate top-level field. Null when running in
+   *  single-machine mode. */
+  machineHeartbeat: {
+    api: import('../core/MachineHeartbeat.js').MachineHeartbeat;
+    config: { machineId: string };
+  } | null;
   /** Threadline → Telegram bridge config — toggles + allow/deny list. Read by
    *  /threadline/telegram-bridge/config endpoints and by the bridge module
    *  to decide whether to mirror an inbound message into
@@ -6032,6 +6040,69 @@ export function createRoutes(ctx: RouteContext): Router {
         id: result.project.id,
         skippedItemIds: result.skippedItemIds,
         version: result.project.version,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /projects/:id/claim-ownership — multi-machine ownership transfer.
+  //
+  // Body: {} or { force?: boolean }
+  // Header: If-Match: <version> (OCC)
+  //
+  // Spec § P5: the claimer must (a) commit-and-push the claim before
+  // acting on it, (b) wait 60s for git-sync to converge, (c) re-read
+  // before any auto-action. This endpoint ONLY records the ownership
+  // change; the wait-and-converge happens at the caller level (the
+  // round runner, the auto-advance poller, the dashboard). Claim is
+  // refused (409) if the current owner's heartbeat is still fresh and
+  // `force: true` was not set.
+  router.post('/projects/:id/claim-ownership', async (req, res) => {
+    const project = lookupProject(req, res);
+    if (!project) return;
+    if (!ctx.initiativeTracker) return; // narrow for TS
+    if (!ctx.machineHeartbeat || !ctx.machineHeartbeat.config) {
+      res.status(503).json({ error: 'machine heartbeat not configured' });
+      return;
+    }
+    const ifMatch = parseIfMatch(req, res);
+    if (ifMatch === null) return;
+    if (ifMatch !== project.version) {
+      res.status(409).json({ error: 'version mismatch', currentVersion: project.version });
+      return;
+    }
+    const force = (req.body ?? {}).force === true;
+    const heartbeat = ctx.machineHeartbeat.api;
+    const currentOwner = project.ownerMachineId;
+    const claimer = ctx.machineHeartbeat.config.machineId;
+    if (currentOwner === claimer) {
+      // Already owned by claimer — idempotent success.
+      res.json({ id: project.id, ownerMachineId: claimer, version: project.version, alreadyOwned: true });
+      return;
+    }
+    if (currentOwner && !heartbeat.isStale(currentOwner) && !force) {
+      res.status(409).json({
+        error: 'current owner heartbeat is still fresh; pass {force:true} to claim anyway',
+        currentOwner,
+      });
+      return;
+    }
+    try {
+      const updated = await ctx.initiativeTracker.update(project.id, {
+        ownerMachineId: claimer,
+        ifMatch: project.version,
+      });
+      res.json({
+        id: updated.id,
+        ownerMachineId: updated.ownerMachineId,
+        previousOwner: currentOwner ?? null,
+        version: updated.version,
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'OccVersionMismatchError') {
