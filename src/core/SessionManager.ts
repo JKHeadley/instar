@@ -1992,43 +1992,47 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Verify an injection actually submitted by checking for a marker snippet
-   * still present at the ❯ prompt. On Claude Code v2.1.105+ fresh spawns, the
-   * Enter after bracketed-paste-end is occasionally eaten by a race with the
-   * paste-end sequence and the text sits unsubmitted forever. This guard
-   * sends one extra Enter if we detect the stuck state; single-shot, safe
-   * when the text did submit normally (no-op).
+   * Verify an injection actually submitted by polling for a marker snippet
+   * still present at the ❯ prompt. On Claude Code v2.1.105+, the Enter after
+   * bracketed-paste-end is occasionally eaten by a race with the paste-end
+   * sequence — and the recovery Enter can be eaten by the same race. Single-
+   * shot verification leaves the user stuck when recovery also misses.
    *
-   * Runs asynchronously — fires a background check after markerCheckMs and
-   * does not block the caller. Called from rawInject after Enter is sent.
+   * Polls at 500/1500/3500/6500ms from injection (markerCheckSchedule),
+   * stops as soon as the marker is no longer at ❯, and escalates the
+   * recovery action across attempts: Enter, Enter, C-m, Enter+sleep+Enter.
+   * Bounded — never more than 4 recovery actions. No-op when text submits
+   * normally. Reports a single Degradation entry on first recovery firing.
+   *
+   * Runs asynchronously via setTimeout. Does not block the caller.
    */
   private verifyInjection(tmuxSession: string, injectedText: string): void {
-    const markerCheckMs = 1500;
     // Extract a distinguishing first-40-chars marker from the injected text.
     // Strip leading whitespace/newlines so we match what's visible at the prompt.
     const marker = injectedText.replace(/^\s+/, '').slice(0, 40).trim();
     if (!marker || marker.length < 8) return; // too short to be a reliable marker
 
-    setTimeout(() => {
+    // Polling schedule in ms from injection. Each entry is the absolute
+    // time-from-injection at which that attempt fires. Stops on success
+    // (marker no longer at ❯) or after the last entry.
+    const markerCheckSchedule = [500, 1500, 3500, 6500];
+    let recoveryFiredOnce = false;
+
+    const runCheck = (attempt: number): void => {
       try {
         if (!this.tmuxSessionExists(tmuxSession)) return;
-        const pane = this.captureOutput(tmuxSession, 20) || '';
-        // If the marker is still at a ❯ prompt line, Enter was eaten.
-        // Check the pane has BOTH ❯ and the marker on the same line (or within 2 lines).
-        const lines = pane.split('\n');
-        let stuck = false;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (line.includes('❯') && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(marker.slice(0, 30))))) {
-            stuck = true;
-            break;
-          }
+        const pane = this.captureOutput(tmuxSession, 30) || '';
+        if (!this.isMarkerStuckAtPrompt(pane, marker)) {
+          // Submitted (or marker no longer at the input prompt) — stop polling.
+          return;
         }
-        if (stuck) {
-          console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" still at prompt. Resending Enter.`);
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'], {
-            encoding: 'utf-8', timeout: 5000,
-          });
+
+        // Still stuck. Fire escalating recovery action.
+        this.fireStuckInputRecovery(tmuxSession, attempt);
+
+        if (!recoveryFiredOnce) {
+          recoveryFiredOnce = true;
+          console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" still at prompt. Auto-recovering (attempt ${attempt + 1}/${markerCheckSchedule.length}).`);
           DegradationReporter.getInstance().report({
             feature: 'SessionManager.verifyInjection',
             primary: 'Bracketed paste + Enter submits injected message',
@@ -2037,11 +2041,67 @@ rm()  { "${shimRunner}" rm  "$@"; }
             impact: 'Recovered without user intervention',
           });
         }
+
+        // Schedule next check if we have attempts remaining.
+        const nextIdx = attempt + 1;
+        if (nextIdx < markerCheckSchedule.length) {
+          const delay = markerCheckSchedule[nextIdx] - markerCheckSchedule[attempt];
+          setTimeout(() => runCheck(nextIdx), delay);
+        }
       } catch (err) {
         // Best-effort — never throw from a background verification
-        console.error(`[SessionManager] verifyInjection error for "${tmuxSession}": ${err instanceof Error ? err.message : err}`);
+        console.error(`[SessionManager] verifyInjection error for "${tmuxSession}" attempt ${attempt}: ${err instanceof Error ? err.message : err}`);
       }
-    }, markerCheckMs);
+    };
+
+    setTimeout(() => runCheck(0), markerCheckSchedule[0]);
+  }
+
+  /**
+   * Detect whether a marker snippet of injected text is still sitting at a
+   * `❯` prompt line in the captured pane. Matches the marker on the same
+   * line as `❯` or on the immediately-following line (Claude Code wraps
+   * long input across two visible rows).
+   *
+   * Exposed as a method so the StuckInputSweeper and tests can reuse it.
+   */
+  private isMarkerStuckAtPrompt(pane: string, marker: string): boolean {
+    if (!marker || marker.length < 8) return false;
+    const lines = pane.split('\n');
+    const shortMarker = marker.slice(0, 30);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.includes('❯') && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Fire one recovery action for a stuck input. Escalates the action by
+   * attempt index — early attempts use plain Enter, later attempts use
+   * C-m (literal carriage return) or Enter+sleep+Enter to defeat tighter
+   * race windows. Bounded; called from verifyInjection's polling loop.
+   */
+  private fireStuckInputRecovery(tmuxSession: string, attempt: number): void {
+    const target = `=${tmuxSession}:`;
+    const tmuxPath = this.config.tmuxPath;
+    try {
+      if (attempt === 0 || attempt === 1) {
+        execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+      } else if (attempt === 2) {
+        // Escalate: literal carriage-return — bypasses any Enter-specific consumer.
+        execFileSync(tmuxPath, ['send-keys', '-t', target, 'C-m'], { encoding: 'utf-8', timeout: 5000 });
+      } else {
+        // Final attempt: Enter, brief sleep, Enter — covers sub-second consume races.
+        execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+        try { execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 }); } catch { /* @silent-fallback-ok — sleep is best-effort */ }
+        execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+      }
+    } catch (err) {
+      console.error(`[SessionManager] fireStuckInputRecovery error for "${tmuxSession}" attempt ${attempt}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   /**

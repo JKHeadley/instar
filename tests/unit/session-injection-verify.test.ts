@@ -45,13 +45,53 @@ describe('SessionManager — submission verification', () => {
     expect(fnBlock).toContain('❯');
   });
 
-  it('resends Enter at most once (no infinite loop)', () => {
+  it('resends Enter via bounded retries — no infinite loop', () => {
     const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 3000);
-    // Should have a single resend — not a while loop of unbounded tries
-    expect(fnBlock).toMatch(/send-keys.*Enter/);
-    // Explicit non-infinite-loop guard: either a boolean "alreadyRetried" or a single-shot if
+    const fnBlock = source.slice(fnStart, fnStart + 5000);
+    // Must recover via send-keys Enter (somewhere — could be inline or via fireStuckInputRecovery)
+    // Pull in the recovery helper too so we cover both inline and extracted layouts.
+    const recoveryHelperStart = source.indexOf('fireStuckInputRecovery');
+    const recoveryBlock = recoveryHelperStart > -1
+      ? source.slice(recoveryHelperStart, recoveryHelperStart + 2000)
+      : '';
+    expect(fnBlock + recoveryBlock).toMatch(/send-keys[\s\S]*?Enter|send-keys[\s\S]*?C-m/);
+    // No unbounded loop
     expect(fnBlock).not.toMatch(/while\s*\(\s*true\s*\)/);
+    // Must reference a bounded schedule or attempt counter
+    expect(fnBlock).toMatch(/markerCheckSchedule|attempt|MAX_ATTEMPTS|attempts/);
+  });
+
+  it('polls multiple times with backoff (not single-shot)', () => {
+    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
+    const fnBlock = source.slice(fnStart, fnStart + 5000);
+    // Must reference multiple poll intervals — the schedule should contain at least 3 distinct ms values
+    const scheduleMatch = fnBlock.match(/markerCheckSchedule\s*=\s*\[([^\]]+)\]/);
+    if (!scheduleMatch) {
+      throw new Error('Expected markerCheckSchedule array in verifyInjection');
+    }
+    const ms = scheduleMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite);
+    expect(ms.length).toBeGreaterThanOrEqual(3);
+    // Schedule must be strictly increasing (backoff)
+    for (let i = 1; i < ms.length; i++) expect(ms[i]).toBeGreaterThan(ms[i - 1]);
+  });
+
+  it('escalates recovery method across attempts (Enter → C-m → Enter+sleep+Enter)', () => {
+    // The recovery helper should use at least 2 distinct tmux key names so a
+    // single eaten-Enter pattern can't defeat every attempt.
+    const recoveryStart = source.search(/private\s+fireStuckInputRecovery\s*\(/);
+    if (recoveryStart < 0) {
+      throw new Error('Expected fireStuckInputRecovery helper');
+    }
+    const recoveryBlock = source.slice(recoveryStart, recoveryStart + 2000);
+    expect(recoveryBlock).toContain('Enter');
+    expect(recoveryBlock).toContain('C-m');
+  });
+
+  it('stops polling as soon as the marker has cleared the prompt', () => {
+    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
+    const fnBlock = source.slice(fnStart, fnStart + 5000);
+    // Must contain an early-return when the stuck check is false
+    expect(fnBlock).toMatch(/if\s*\(\s*!\s*this\.isMarkerStuckAtPrompt|isMarkerStuckAtPrompt[\s\S]{0,80}return/);
   });
 
   it('waits at least 1 second before checking submission (TUI render stabilization)', () => {
