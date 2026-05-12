@@ -166,6 +166,11 @@ export class AgentServer {
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
+    /** Multi-machine heartbeat + claim-ownership support (Phase 1b PR 4). */
+    machineHeartbeat?: {
+      api: import('../core/MachineHeartbeat.js').MachineHeartbeat;
+      config: { machineId: string };
+    };
     /** Threadline → Telegram bridge config — toggles + allow/deny list. */
     telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
     /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
@@ -440,6 +445,7 @@ export class AgentServer {
       stopGateDb: options.stopGateDb ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
       projectRoundRunner: options.projectRoundRunner ?? null,
+      machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,

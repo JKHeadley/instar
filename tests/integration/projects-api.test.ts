@@ -23,6 +23,7 @@ import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
+import { MachineHeartbeat } from '../../src/core/MachineHeartbeat.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
@@ -124,6 +125,15 @@ auto_advance: true
       stateDir: project.stateDir,
       machineId: 'test-machine',
     });
+    const heartbeatApi = new MachineHeartbeat({
+      stateDir: project.stateDir,
+      machineId: 'test-machine',
+      // Tests use a tiny staleness threshold so claim-ownership can be
+      // exercised in both states (fresh + stale) without faking timers.
+      staleThresholdMs: 50,
+    });
+    heartbeatApi.writeOnce(); // ensure THIS machine has a fresh record
+    const machineHeartbeat = { api: heartbeatApi, config: { machineId: 'test-machine' } };
     const mockSM = createMockSessionManager();
     server = new AgentServer({
       config: makeConfig(),
@@ -131,6 +141,7 @@ auto_advance: true
       state: project.state,
       initiativeTracker: tracker,
       projectRoundRunner,
+      machineHeartbeat,
     });
     app = server.getApp();
   });
@@ -535,5 +546,114 @@ goal: try escape
     expect(b.status).toBe(401);
     const c = await request(app).post('/projects/foo/accept-partial').send({ roundIndex: 0, reason: 'r', skippedBy: 'e' });
     expect(c.status).toBe(401);
+  });
+
+  // ── /projects/:id/claim-ownership (Phase 1b PR 4) ─────────────────
+
+  it('POST /projects/:id/claim-ownership — idempotent when claimer already owns', async () => {
+    await seedProject('claim-1');
+    // Claim from a clean slate (currentOwner is undefined) — succeeds.
+    const proj = tracker.get('claim-1')!;
+    const res = await request(app)
+      .post('/projects/claim-1/claim-ownership')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(proj.version))
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.ownerMachineId).toBe('test-machine');
+
+    // Claim again with the freshly bumped version — alreadyOwned.
+    const after = tracker.get('claim-1')!;
+    const res2 = await request(app)
+      .post('/projects/claim-1/claim-ownership')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(after.version))
+      .send({});
+    expect(res2.status).toBe(200);
+    expect(res2.body.alreadyOwned).toBe(true);
+  });
+
+  it('POST /projects/:id/claim-ownership — refuses when current owner heartbeat is fresh', async () => {
+    await seedProject('claim-2');
+    const proj = tracker.get('claim-2')!;
+    // Pretend a peer machine "m-peer" owns this project AND has a fresh
+    // heartbeat on disk.
+    fs.mkdirSync(path.join(project.stateDir, 'machine-health'), { recursive: true });
+    fs.writeFileSync(
+      path.join(project.stateDir, 'machine-health', 'm-peer.json'),
+      JSON.stringify({
+        machineId: 'm-peer',
+        hostname: 'peer-host',
+        lastHeartbeatAt: new Date().toISOString(),
+      })
+    );
+    await tracker.update('claim-2', { ownerMachineId: 'm-peer', ifMatch: proj.version });
+    const after = tracker.get('claim-2')!;
+    const res = await request(app)
+      .post('/projects/claim-2/claim-ownership')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(after.version))
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.currentOwner).toBe('m-peer');
+  });
+
+  it('POST /projects/:id/claim-ownership — succeeds when peer heartbeat is stale', async () => {
+    await seedProject('claim-3');
+    const proj = tracker.get('claim-3')!;
+    fs.mkdirSync(path.join(project.stateDir, 'machine-health'), { recursive: true });
+    // Stale: heartbeat is from 10 minutes ago, staleThresholdMs is 50ms in tests.
+    fs.writeFileSync(
+      path.join(project.stateDir, 'machine-health', 'm-peer.json'),
+      JSON.stringify({
+        machineId: 'm-peer',
+        hostname: 'peer-host',
+        lastHeartbeatAt: new Date(Date.now() - 600_000).toISOString(),
+      })
+    );
+    await tracker.update('claim-3', { ownerMachineId: 'm-peer', ifMatch: proj.version });
+    const after = tracker.get('claim-3')!;
+    const res = await request(app)
+      .post('/projects/claim-3/claim-ownership')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(after.version))
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.ownerMachineId).toBe('test-machine');
+    expect(res.body.previousOwner).toBe('m-peer');
+  });
+
+  it('POST /projects/:id/claim-ownership — force flag overrides fresh-heartbeat refusal', async () => {
+    await seedProject('claim-4');
+    const proj = tracker.get('claim-4')!;
+    fs.mkdirSync(path.join(project.stateDir, 'machine-health'), { recursive: true });
+    fs.writeFileSync(
+      path.join(project.stateDir, 'machine-health', 'm-peer.json'),
+      JSON.stringify({
+        machineId: 'm-peer',
+        hostname: 'peer-host',
+        lastHeartbeatAt: new Date().toISOString(),
+      })
+    );
+    await tracker.update('claim-4', { ownerMachineId: 'm-peer', ifMatch: proj.version });
+    const after = tracker.get('claim-4')!;
+    const res = await request(app)
+      .post('/projects/claim-4/claim-ownership')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(after.version))
+      .send({ force: true });
+    expect(res.status).toBe(200);
+    expect(res.body.ownerMachineId).toBe('test-machine');
+  });
+
+  it('POST /projects/:id/claim-ownership — 428 without If-Match, 401 without auth', async () => {
+    await seedProject('claim-5');
+    const noIfMatch = await request(app)
+      .post('/projects/claim-5/claim-ownership')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({});
+    expect(noIfMatch.status).toBe(428);
+    const noAuth = await request(app).post('/projects/claim-5/claim-ownership').send({});
+    expect(noAuth.status).toBe(401);
   });
 });
