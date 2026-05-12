@@ -73,7 +73,7 @@ Tests added:
 
 ## What to Tell Your User
 
-- **You can now drive any project end-to-end through `/project`.**
+- **You can now drive any project end-to-end through /project.**
   Twelve commands, one skill: register a project from a plan doc,
   read its state, advance a child item to its next stage, run a
   drift check, fire a round, halt the active round, record your
@@ -84,20 +84,20 @@ Tests added:
   improvise the curl invocations.
 
 - **The "what should I do next" answer is now actionable.**
-  Asking `/project next` returns a structured action — "approval
+  Asking /project next returns a structured action — "approval
   pending," "drift check needed," "round ready to start" — plus the
   exact follow-up command. I'll surface the suggested next step to
   you in plain English rather than dumping the JSON.
 
 - **Halted projects can come back.** If a round halted because of a
-  spec drift, a halted child, or a runtime failure, `/project resume`
+  spec drift, a halted child, or a runtime failure, /project resume
   re-schedules it for the poller and re-actives the project. Rounds
-  that hit the three-attempt failure cap need explicit `--force`
+  that hit the three-attempt failure cap need an explicit force flag
   before resuming, and the counter resets so the runner gets a fresh
   budget.
 
 - **Permanently shelving a project is a single command.**
-  `/project abandon` clears all pending auto-advance scheduling and
+  /project abandon clears all pending auto-advance scheduling and
   marks the project as abandoned. Children stay where they were —
   you don't lose any pipeline progress; you just stop the auto-loop.
 
