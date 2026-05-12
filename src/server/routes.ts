@@ -5931,12 +5931,12 @@ export function createRoutes(ctx: RouteContext): Router {
         project: { id: refreshed.id, version: refreshed.version },
       });
     } catch (err) {
-      const e = err as Error & { currentVersion?: number; name?: string };
-      if (e.name === 'OccVersionMismatchError') {
-        res.status(409).json({ error: 'version mismatch', currentVersion: e.currentVersion });
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -5957,7 +5957,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       res.json({ id: result.project.id, roundIndex: result.roundIndex, version: result.project.version });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -5989,12 +5989,12 @@ export function createRoutes(ctx: RouteContext): Router {
         version: updated.version,
       });
     } catch (err) {
-      const e = err as Error & { currentVersion?: number; name?: string };
-      if (e.name === 'OccVersionMismatchError') {
-        res.status(409).json({ error: 'version mismatch', currentVersion: e.currentVersion });
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -6034,12 +6034,12 @@ export function createRoutes(ctx: RouteContext): Router {
         version: result.project.version,
       });
     } catch (err) {
-      const e = err as Error & { currentVersion?: number; name?: string };
-      if (e.name === 'OccVersionMismatchError') {
-        res.status(409).json({ error: 'version mismatch', currentVersion: e.currentVersion });
+      if (err instanceof Error && err.name === 'OccVersionMismatchError') {
+        const cv = (err as Error & { currentVersion?: number }).currentVersion;
+        res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
