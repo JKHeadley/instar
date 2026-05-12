@@ -222,7 +222,20 @@ export class JobScheduler {
     this.jobs = loadJobs(this.config.jobsFile);
     this.running = true;
 
-    const enabledJobs = this.jobs.filter(j => j.enabled);
+    // Phase 1a: agentmd entries load + validate but are NOT dispatched.
+    // Filtering here (rather than at load) preserves the loader's invariant
+    // that agentmd jobs are visible to the CLI/Dashboard/probes for
+    // introspection; the scheduler simply does not schedule them yet.
+    // Phase 1b adds the dispatch path and removes this filter.
+    const enabledJobs = this.jobs.filter(j => j.enabled && j.execute.type !== 'agentmd');
+    const deferredAgentMd = this.jobs.filter(j => j.enabled && j.execute.type === 'agentmd');
+    if (deferredAgentMd.length > 0) {
+      console.log(
+        `[scheduler] ${deferredAgentMd.length} agentmd job(s) loaded but deferred — ` +
+        `Phase 1a does not dispatch agentmd entries; Phase 1b adds the dispatch path. ` +
+        `Deferred: ${deferredAgentMd.map(j => j.slug).join(', ')}`,
+      );
+    }
 
     // Machine-scoped filtering — skip jobs not targeted at this machine
     const scopedJobs = enabledJobs.filter(j => this.isJobScopedToThisMachine(j));
@@ -746,16 +759,38 @@ export class JobScheduler {
 
   private buildPrompt(job: JobDefinition): string {
     let base: string;
+    // execute.value is required for the legacy types ("skill" | "prompt" |
+    // "script") and the JobLoader validator guarantees it. The new
+    // "agentmd" type (Phase 1a) carries no value — its body lives in
+    // job.body. Phase 1b will add the corresponding case here; for now,
+    // an agentmd job reaching buildPrompt is a Phase 1b/1c bug, not a
+    // Phase 1a one, so we throw explicitly rather than silently fall
+    // through to undefined.
+    const execValue = job.execute.value;
     switch (job.execute.type) {
       case 'skill':
-        base = `/${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
+        base = `/${execValue}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
       case 'prompt':
-        base = job.execute.value;
+        base = execValue as string;
         break;
       case 'script':
-        base = `Run this script: ${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
+        base = `Run this script: ${execValue}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
+      case 'agentmd':
+        // Phase 1b will return job.body here. Phase 1a's loader populates
+        // body but the scheduler does not yet route agentmd entries to
+        // execution — this case is reachable only if someone wires it up
+        // out-of-order, which we treat as a programmer error.
+        throw new Error(
+          `JobScheduler.buildPrompt: agentmd execution type is not yet dispatched in this release ` +
+          `(Phase 1b). Job "${job.slug}" should not have been queued. ` +
+          `See docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md.`,
+        );
+      default: {
+        const _exhaustive: never = job.execute.type;
+        throw new Error(`Unknown execute.type: ${String(_exhaustive)}`);
+      }
     }
 
     // Inject topic awareness for jobs bound to a Telegram topic.

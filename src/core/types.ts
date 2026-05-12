@@ -121,6 +121,20 @@ export interface JobDefinition {
    *  Injected into working memory at session start and used by the
    *  EscalationResolutionReviewer to catch unnecessary human escalations. */
   commonBlockers?: Record<string, CommonBlocker>;
+  /** Origin marker — distinguishes instar-default jobs from user-authored.
+   *  Populated by the JobLoader from per-slug manifest entries. Legacy
+   *  jobs.json entries do NOT carry this field (left undefined). See
+   *  docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md §"Two namespaces". */
+  origin?: 'instar' | 'user';
+  /** Cached markdown body for execute.type === "agentmd" entries.
+   *  Populated once at load time so buildPrompt never opens a file. */
+  body?: string;
+  /** Parsed YAML frontmatter for execute.type === "agentmd" entries.
+   *  Closed-set whitelist of keys, validated via Zod preprocessors. */
+  frontmatter?: Record<string, unknown>;
+  /** Paired flag for toolAllowlist: "*" — see spec §5. Phase 1a stores
+   *  the value but does not act on it (scheduler dispatch lands in 1b). */
+  unrestrictedTools?: boolean;
 }
 
 /** A pre-confirmed resolution for a common blocker pattern. */
@@ -189,12 +203,25 @@ export type SupervisionTier = 'tier0' | 'tier1' | 'tier2';
 export type JobPriority = 'critical' | 'high' | 'medium' | 'low';
 
 export interface JobExecution {
-  /** Type of execution */
-  type: 'skill' | 'prompt' | 'script';
-  /** The skill name, prompt text, or script path */
-  value: string;
+  /** Type of execution.
+   *  - "skill" / "prompt" / "script": legacy inline forms.
+   *  - "agentmd": resolves to .instar/jobs/<origin>/<slug>.md whose body
+   *    is the prompt. The execution block carries no `value` — the body
+   *    lives in the markdown file and is cached on JobDefinition.body.
+   *    See docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md. */
+  type: 'skill' | 'prompt' | 'script' | 'agentmd';
+  /** The skill name, prompt text, or script path.
+   *  Required for legacy types; absent for "agentmd". */
+  value?: string;
   /** Additional arguments */
   args?: string;
+}
+
+/** Execute block for the new agentmd format. The markdown body and its
+ *  parsed frontmatter are loaded from disk into JobDefinition.body and
+ *  JobDefinition.frontmatter — they are NOT stored on the execute block. */
+export interface AgentMdExecute {
+  type: 'agentmd';
 }
 
 export interface JobState {
