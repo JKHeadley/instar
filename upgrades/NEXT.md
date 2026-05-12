@@ -329,3 +329,19 @@ permanently block subsequent acquires.
   idempotency key in `.instar/local/round-complete-sent.json` so
   duplicate sends are suppressed. `onPermanentFail` callback fires
   once when all retries are exhausted.
+
+## Evidence
+
+Not reproducible in dev — this release is a feature addition, not a regression fix.
+The words "crashed", "broken", and "resolve" in What Changed describe design properties
+of new primitives, not prior bugs that were observed and repaired:
+
+- "crashed runner" (lock primitive): stale-PID sweep so an interrupted runner doesn't
+  permanently hold the lock — a designed invariant of the new `ProjectRoundLock`, not
+  a fix for an observed crash.
+- "broken" (reconciler): `ciCheckedAt`-debounced ancestor check transitions a child to
+  'regressed' when its commit is not reachable from origin/main — a designed state
+  machine transition, not a regression repair.
+- "resolve-conflict" (GET /next action verbs): one of seven structured action strings
+  the endpoint returns; the word "resolve" is part of the verb name, not a claim that
+  a conflict was resolved as a bug fix.
