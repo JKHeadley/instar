@@ -150,3 +150,4 @@ Concur. The change is structurally clean and ready to ship.
 - New helper: `tests/unit/scheduler/agentmd-helpers.ts`.
 - Backwards-compat verification: existing `tests/unit/JobLoader.test.ts` continues to pass unchanged.
 - Logs (local): `node_modules/.bin/vitest run tests/unit/scheduler/JobLoader.agentmd.test.ts` → `Tests  68 passed (68)`.
+- Fixup verified: `node_modules/.bin/vitest run tests/unit/scheduler-queue-edge.test.ts tests/unit/scheduler/JobLoader.agentmd.test.ts tests/unit/JobLoader.test.ts` → `Tests 120 passed (120)`. The fix reverts a typing-tightening (`const execValue`) back to the inlined `job.execute.value` form expected by `scheduler-queue-edge.test.ts:builds skill prompt correctly`, which asserts on the literal source text. No behavioral change; the agentmd case + exhaustive default remain.

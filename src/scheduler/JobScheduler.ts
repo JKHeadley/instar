@@ -766,16 +766,15 @@ export class JobScheduler {
     // an agentmd job reaching buildPrompt is a Phase 1b/1c bug, not a
     // Phase 1a one, so we throw explicitly rather than silently fall
     // through to undefined.
-    const execValue = job.execute.value;
     switch (job.execute.type) {
       case 'skill':
-        base = `/${execValue}${job.execute.args ? ' ' + job.execute.args : ''}`;
+        base = `/${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
       case 'prompt':
-        base = execValue as string;
+        base = job.execute.value as string;
         break;
       case 'script':
-        base = `Run this script: ${execValue}${job.execute.args ? ' ' + job.execute.args : ''}`;
+        base = `Run this script: ${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
       case 'agentmd':
         // Phase 1b will return job.body here. Phase 1a's loader populates
