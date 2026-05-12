@@ -2063,9 +2063,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * line as `❯` or on the immediately-following line (Claude Code wraps
    * long input across two visible rows).
    *
-   * Exposed as a method so the StuckInputSweeper and tests can reuse it.
+   * Exposed as a method so StuckInputSentinel and tests can reuse it.
    */
-  private isMarkerStuckAtPrompt(pane: string, marker: string): boolean {
+  isMarkerStuckAtPrompt(pane: string, marker: string): boolean {
     if (!marker || marker.length < 8) return false;
     const lines = pane.split('\n');
     const shortMarker = marker.slice(0, 30);
@@ -2082,9 +2082,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Fire one recovery action for a stuck input. Escalates the action by
    * attempt index — early attempts use plain Enter, later attempts use
    * C-m (literal carriage return) or Enter+sleep+Enter to defeat tighter
-   * race windows. Bounded; called from verifyInjection's polling loop.
+   * race windows. Bounded; called from verifyInjection's polling loop and
+   * from the persistent StuckInputSentinel after a server restart.
    */
-  private fireStuckInputRecovery(tmuxSession: string, attempt: number): void {
+  fireStuckInputRecovery(tmuxSession: string, attempt: number): void {
     const target = `=${tmuxSession}:`;
     const tmuxPath = this.config.tmuxPath;
     try {
