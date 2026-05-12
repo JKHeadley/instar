@@ -222,14 +222,14 @@ describe('rawInject paste delay', () => {
 
     // The bracketed paste section should use 0.5s sleep
     const pasteSection = source.match(
-      /bracketed paste[\s\S]{0,500}sleep.*?(['"])(\d+\.?\d*)\1/
+      /[Bb]racketed[\- ]paste[\s\S]{0,1500}sleep.*?(['"])(\d+\.?\d*)\1/
     );
     expect(pasteSection).not.toBeNull();
     expect(pasteSection![2]).toBe('0.5');
 
     // Ensure the old 0.1 value is NOT present in the paste context
     const oldPasteDelay = source.match(
-      /bracketed paste[\s\S]{0,500}sleep.*?(['"])0\.1\1/
+      /[Bb]racketed[\- ]paste[\s\S]{0,1500}sleep.*?(['"])0\.1\1/
     );
     expect(oldPasteDelay).toBeNull();
   });
