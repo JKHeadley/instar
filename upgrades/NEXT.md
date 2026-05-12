@@ -8,20 +8,6 @@
 
 ## What Changed
 
-### Self-refresh — agents can now respawn themselves after installing tools
-
-New endpoint `POST /sessions/refresh` lets an agent trigger its own session respawn. The server saves the current Claude session UUID, kills the tmux session, and spawns a fresh one with `claude --resume <uuid>` — which attaches any MCP servers or skills installed mid-session while preserving full conversation state. The lifecycle is owned by the new `SessionRefresh` class in `src/core/SessionRefresh.ts`. The existing Telegram `/restart` command now delegates to the same orchestrator (behavior unchanged), consolidating kill+respawn logic in one place.
-
-Rate-limited to 5 refreshes per 10-minute rolling window per session to prevent infinite respawn loops. The route returns `202 Accepted` immediately because the requester's process is the one being killed; the kill+spawn fires ~500ms after the response flushes. Validation rejects bad session names, oversized prompts, and oversized reason strings.
-
-v1 scope is Telegram-bound sessions only. Non-Telegram-bound respawn returns `{ ok: false, code: 'not_telegram_bound' }` and is a v2 follow-up.
-
-API:
-- Request: `POST /sessions/refresh` with `{ sessionName: string, followUpPrompt?: string, reason?: string }`
-- 202: `{ ok: true, message: 'Refresh scheduled', sessionName }`
-- 400: invalid input
-- 503: no Telegram adapter wired (v1 limitation)
-
 ### Thread↔Topic Linkage — threadline replies now route back to the originating topic session
 
 When a topic-bound agent session sends a threadline message via `threadline_send`, it can now mark the send with the originating Telegram topic and a stated purpose. When the reply later arrives, instar routes it back to that topic's session (live-inject if running, queued-for-resume if dormant), creates a durable awaiting-state commitment that PromiseBeacon picks up automatically (giving the user free "still waiting on X" heartbeats), and posts a Telegram notification when the reply is the first one on a given thread.
@@ -42,14 +28,12 @@ All changes are additive. Existing threads created before this lands have no `or
 
 ## What to Tell Your User
 
-- **Self-refresh after installing tools**: "I can now refresh myself to pick up new tools right after installing them. If I add a new capability mid-conversation, I'll quietly restart and pick up where we left off — no need for you to send another message just to wake me up."
-- **Threadline replies route home**: Your agent can now hold a conversation with another agent on your behalf and pick up the work as soon as the reply lands. Before, when your agent sent a threadline message in a topic and the other agent later replied, the reply went to a separate worker session with no awareness of which topic kicked off the conversation. Now, when your agent sends and tags the message with the topic, the system remembers the link. When the reply arrives, it gets routed back to your topic session. If that session is awake, it sees the reply right away. If the session is paused, the reply is held until you message the topic again. You will get a Telegram notification on the first reply per thread; subsequent replies route silently to your topic session.
+Your agent can now hold a conversation with another agent on your behalf and pick up the work as soon as the reply lands. Before, when your agent sent a threadline message in a topic and the other agent later replied, the reply went to a separate worker session with no awareness of which topic kicked off the conversation. Now, when your agent sends and tags the message with the topic, the system remembers the link. When the reply arrives, it gets routed back to your topic session. If that session is awake, it sees the reply right away. If the session is paused, the reply is held until you message the topic again. You will get a Telegram notification on the first reply per thread; subsequent replies route silently to your topic session.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Agent-initiated session refresh | POST /sessions/refresh |
 | Topic-aware threadline send | Pass `originTopicId` and an optional `purpose` to `threadline_send` from a topic-bound session. |
 | Automatic await tracking | The send creates a one-time-action commitment; PromiseBeacon picks it up by existing auto-opt logic when a `topicId` is attached. |
 | Topic-routed inbound replies | Replies on linked threads route to the topic session via live-inject or resume-pending; falls through cleanly for unlinked threads. |

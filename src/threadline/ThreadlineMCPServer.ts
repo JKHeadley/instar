@@ -112,6 +112,10 @@ export interface SendMessageParams {
   message: string;
   waitForReply: boolean;
   timeoutSeconds: number;
+  /** Optional originating Telegram topic ID. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
+  originTopicId?: number;
+  /** Optional intent string. Stored locally on the commitment, never sent over the wire. */
+  purpose?: string;
 }
 
 export interface SendMessageResult {
@@ -514,6 +518,18 @@ export class ThreadlineMCPServer {
         timeoutSeconds: z.number().default(120).describe(
           'Max seconds to wait for reply (only with waitForReply)'
         ),
+        originTopicId: z.number().int().positive().optional().describe(
+          'Optional: Telegram topic ID this send originated from. When set, ' +
+          'the reply (when it arrives) is routed back to that topic session ' +
+          'and the user gets a notification if the reply is user-visible. ' +
+          'Per THREAD-TOPIC-LINKAGE-SPEC.md.'
+        ),
+        purpose: z.string().max(1024).optional().describe(
+          'Optional: short free-text intent for this send (e.g. "ask ai-guy ' +
+          'for 2025 Stripe net+gross volume CSVs"). Stored on the local ' +
+          'commitment record for context when the reply lands; NEVER sent ' +
+          'over the wire to the remote agent.'
+        ),
       },
       async (args) => {
         const authError = this.checkAuth('threadline:send');
@@ -536,6 +552,8 @@ export class ThreadlineMCPServer {
             message: args.message,
             waitForReply: args.waitForReply,
             timeoutSeconds: args.timeoutSeconds,
+            originTopicId: args.originTopicId,
+            purpose: args.purpose,
           });
 
           if (!result.success) {

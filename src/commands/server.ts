@@ -5596,6 +5596,43 @@ export async function startServer(options: StartOptions): Promise<void> {
       messageDelivery, // PR-4: live-session injection path
     );
 
+    // Topic linkage handler — Per THREAD-TOPIC-LINKAGE-SPEC.md.
+    // Ties threadline conversations to the originating Telegram topic so
+    // replies route back to the topic session instead of a sibling worker.
+    // commitmentTracker + telegram are constructed earlier in this file and
+    // are guaranteed in scope by this point; the handler is wired into the
+    // router immediately.
+    const { SalienceGate } = await import('../threadline/SalienceGate.js');
+    const { TopicLinkageHandler } = await import('../threadline/TopicLinkageHandler.js');
+    const salienceGate = new SalienceGate(); // fallback-only for v1; spec §5.4
+    let topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null = null;
+    if (commitmentTracker) {
+      topicLinkageHandler = new TopicLinkageHandler({
+        topicResumeMap: _topicResumeMap as import('../core/TopicResumeMap.js').TopicResumeMap,
+        threadResumeMap,
+        commitmentTracker,
+        salienceGate,
+        messageStore,
+        localAgent: config.projectName,
+        injectIntoSession: (sessionName: string, text: string) => {
+          try {
+            sessionManager.injectPasteNotification(sessionName, text);
+            return true;
+          } catch { return false; }
+        },
+        isSessionAlive: (sessionName: string) => {
+          try { return sessionManager.isSessionAlive(sessionName); } catch { return false; }
+        },
+        sendTelegramToTopic: telegram
+          ? (topicId: number, text: string) => telegram.sendToTopic(topicId, text)
+          : null,
+        getSessionForTopic: telegram
+          ? (topicId: number) => telegram.getSessionForTopic(topicId)
+          : undefined,
+      });
+      threadlineRouter.setTopicLinkageHandler(topicLinkageHandler);
+    }
+
     // Listener Session Manager — warm session for fast relay responses (Phase 2)
     const listenerManager = config.threadline?.relayEnabled
       ? new ListenerSessionManager(config.stateDir, config.authToken ?? '', config.threadline as Partial<import('../threadline/ListenerSessionManager.js').ListenerConfig>)
@@ -6330,7 +6367,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 

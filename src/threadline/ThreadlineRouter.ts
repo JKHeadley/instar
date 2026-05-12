@@ -178,6 +178,14 @@ export class ThreadlineRouter {
   /** Optional ledger-event sink (Integrated-Being v1). Signal-only. */
   private readonly onLedgerEvent: ((evt: ThreadlineLedgerEvent) => void) | null;
 
+  /**
+   * Optional topic-linkage handler (THREAD-TOPIC-LINKAGE-SPEC.md). When set,
+   * inbound replies on threads with an `originTopicId` are routed to the
+   * originating Telegram topic session instead of the standard thread-worker
+   * path. Wired via setter post-construction so existing callers don't break.
+   */
+  private topicLinkageHandler: import('./TopicLinkageHandler.js').TopicLinkageHandler | null = null;
+
   /** Track in-flight spawn requests to prevent concurrent spawns for the same thread */
   private readonly pendingSpawns = new Set<string>();
 
@@ -285,6 +293,17 @@ export class ThreadlineRouter {
    */
   getAffinitySnapshotForTests(): ReadonlyMap<string, ReceiverAffinityEntry> {
     return new Map(this.recentThreadByPeer);
+  }
+
+  /**
+   * Attach a TopicLinkageHandler post-construction. Optional — when unset,
+   * the router behaves identically to pre-spec behavior. Per
+   * THREAD-TOPIC-LINKAGE-SPEC.md.
+   */
+  setTopicLinkageHandler(
+    handler: import('./TopicLinkageHandler.js').TopicLinkageHandler | null,
+  ): void {
+    this.topicLinkageHandler = handler;
   }
 
   /** Fire a ledger event swallowing any exception (signal-only). */
@@ -400,6 +419,40 @@ export class ThreadlineRouter {
 
       // Check for existing resume entry
       const existingEntry = this.threadResumeMap.get(threadId);
+
+      // THREAD-TOPIC-LINKAGE-SPEC.md: when the thread carries an originTopicId
+      // (set on the outbound send by /threadline/relay-send), route the reply
+      // back to the originating Telegram topic session instead of the standard
+      // thread-worker path. The handler is responsible for salience
+      // classification, live-injection vs resume-pending, Telegram surface,
+      // and commitment lifecycle. Returns 'no-linkage' when the thread has no
+      // originTopicId (falls through to existing behavior).
+      if (this.topicLinkageHandler && existingEntry?.originTopicId !== undefined) {
+        try {
+          const outcome = await this.topicLinkageHandler.tryRouteReplyToTopic({
+            envelope,
+            threadEntry: {
+              remoteAgent: existingEntry.remoteAgent,
+              subject: existingEntry.subject,
+              originTopicId: existingEntry.originTopicId,
+              originSessionName: existingEntry.originSessionName,
+            },
+          });
+          if (outcome.kind === 'routed') {
+            return {
+              handled: true,
+              threadId,
+              injected: outcome.deliveryMode === 'live-inject',
+              resumed: outcome.deliveryMode === 'resume-pending',
+            };
+          }
+          // 'no-linkage' or 'topic-expired' → fall through to existing path.
+        } catch (err) {
+          console.warn(
+            `[ThreadlineRouter] TopicLinkageHandler threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling through to thread-worker path`,
+          );
+        }
+      }
 
       // PR-4: If we have a live-session delivery path AND the thread has a
       // resume entry pointing at a sessionName that is currently alive, try

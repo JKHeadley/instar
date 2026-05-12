@@ -127,6 +127,11 @@ export class AgentServer {
     subagentTracker?: import('../monitoring/SubagentTracker.js').SubagentTracker;
     instructionsVerifier?: import('../monitoring/InstructionsVerifier.js').InstructionsVerifier;
     threadlineRouter?: import('../threadline/ThreadlineRouter.js').ThreadlineRouter;
+    /** ThreadResumeMap — for topic-linkage outbound capture on /threadline/relay-send.
+     *  Per THREAD-TOPIC-LINKAGE-SPEC.md. */
+    threadResumeMap?: import('../threadline/ThreadResumeMap.js').ThreadResumeMap;
+    /** Topic-linkage handler that ties threadline sends to Telegram topic sessions. */
+    topicLinkageHandler?: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler;
     handshakeManager?: import('../threadline/HandshakeManager.js').HandshakeManager;
     threadlineRelayClient?: import('../threadline/client/ThreadlineClient.js').ThreadlineClient;
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
@@ -410,6 +415,8 @@ export class AgentServer {
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,
       threadlineRouter: options.threadlineRouter ?? null,
+      threadResumeMap: options.threadResumeMap ?? null,
+      topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,
       threadlineRelayClient: options.threadlineRelayClient ?? null,
       listenerManager: options.listenerManager ?? null,

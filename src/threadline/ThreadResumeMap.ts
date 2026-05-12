@@ -55,6 +55,20 @@ export interface ThreadResumeEntry {
   migratedTo?: string;
   /** Spawn mode: interactive (default) or pipe */
   spawnMode?: 'interactive' | 'pipe';
+  /**
+   * Thread↔Topic linkage (THREAD-TOPIC-LINKAGE-SPEC.md).
+   * If this thread was initiated by a topic-bound session, the Telegram topic
+   * that owns it. Set on outbound send; used by inbound dispatch to route the
+   * reply back to the originating topic session instead of a sibling worker.
+   */
+  originTopicId?: number;
+  /**
+   * Session name of the originating topic at send time. Fast-path cache so the
+   * inbound dispatcher doesn't have to query CommitmentTracker on every reply.
+   * The source of truth for "what topic owns this thread" is the commitment
+   * record with `verificationMethod: 'threadline-reply'`.
+   */
+  originSessionName?: string;
 }
 
 /** Serialized map format */

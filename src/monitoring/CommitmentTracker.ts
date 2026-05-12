@@ -71,9 +71,27 @@ export interface Commitment {
   expiresAt?: string;
 
   /** For one-time-action: verification method */
-  verificationMethod?: 'config-value' | 'file-exists' | 'manual';
+  verificationMethod?: 'config-value' | 'file-exists' | 'manual' | 'threadline-reply';
   /** For one-time-action with file-exists: the path to check */
   verificationPath?: string;
+
+  /**
+   * For verificationMethod === 'threadline-reply': the thread we're waiting on.
+   * Resolved externally by ThreadlineRouter when the awaited reply arrives —
+   * the periodic verify sweep is a no-op for this method.
+   * Per THREAD-TOPIC-LINKAGE-SPEC.md.
+   */
+  relatedThreadId?: string;
+  /** For verificationMethod === 'threadline-reply': the remote agent. */
+  relatedAgent?: string;
+  /**
+   * For verificationMethod === 'threadline-reply': ISO timestamp of the most
+   * recently delivered reply on this thread. Used by the salience gate's
+   * first-reply detection (a thread is "first contact" iff no `lastReplyAt`
+   * has been recorded yet). Distinct from `heartbeatCount`, which counts
+   * beacon emissions, not reply arrivals.
+   */
+  lastReplyAt?: string;
 
   // ── Self-healing tracking ─────────────────────────────
 
@@ -209,6 +227,14 @@ export class CommitmentTracker extends EventEmitter {
   private mutateQueues: Map<string, MutateQueueEntry[]> = new Map();
   private mutateRunning: Set<string> = new Set();
 
+  /**
+   * Bounded thread→commitment index for fast O(1) findByThreadId lookups.
+   * Keyed by relatedThreadId, value is the commitment id. Only includes
+   * threadline-reply commitments in non-terminal states. Rebuilt on load,
+   * maintained on every mutate.
+   */
+  private threadIdIndex: Map<string, string> = new Map();
+
   constructor(config: CommitmentTrackerConfig) {
     super();
     this.config = config;
@@ -217,6 +243,7 @@ export class CommitmentTracker extends EventEmitter {
     this.store = this.loadStore();
     this.nextId = this.computeNextId();
     this.backfillUnverifiableOneTimeActions();
+    this.rebuildThreadIdIndex();
   }
 
   /**
@@ -298,8 +325,10 @@ export class CommitmentTracker extends EventEmitter {
     configExpectedValue?: unknown;
     behavioralRule?: string;
     expiresAt?: string;
-    verificationMethod?: 'config-value' | 'file-exists' | 'manual';
+    verificationMethod?: 'config-value' | 'file-exists' | 'manual' | 'threadline-reply';
     verificationPath?: string;
+    relatedThreadId?: string;
+    relatedAgent?: string;
     // Promise Beacon (Phase 1) — all optional & additive.
     beaconEnabled?: boolean;
     cadenceMs?: number;
@@ -351,6 +380,8 @@ export class CommitmentTracker extends EventEmitter {
       expiresAt: input.expiresAt,
       verificationMethod: input.verificationMethod,
       verificationPath: input.verificationPath,
+      relatedThreadId: input.relatedThreadId,
+      relatedAgent: input.relatedAgent,
       correctionCount: 0,
       correctionHistory: [],
       escalated: false,
@@ -376,6 +407,8 @@ export class CommitmentTracker extends EventEmitter {
     if (input.type === 'behavioral') {
       this.writeBehavioralRules();
     }
+
+    this.refreshThreadIdIndex(commitment);
 
     console.log(`[CommitmentTracker] Recorded ${id}: "${input.userRequest}" (${input.type})`);
     this.emit('recorded', commitment);
@@ -411,6 +444,8 @@ export class CommitmentTracker extends EventEmitter {
       this.writeBehavioralRules();
     }
 
+    this.refreshThreadIdIndex(updated);
+
     console.log(`[CommitmentTracker] Withdrawn ${id}: ${reason}`);
     this.emit('withdrawn', updated);
     return true;
@@ -434,9 +469,102 @@ export class CommitmentTracker extends EventEmitter {
       resolvedAt: new Date().toISOString(),
       deliveryMessageId: deliveryMessageId ?? c.deliveryMessageId,
     }));
+    this.refreshThreadIdIndex(updated);
+
     console.log(`[CommitmentTracker] Delivered ${id}`);
     this.emit('delivered', updated);
     return updated;
+  }
+
+  /**
+   * Record that a reply arrived on a threadline-reply commitment. Updates
+   * `lastReplyAt` without transitioning status. Used by the salience gate's
+   * first-reply detection — `heartbeatCount` is incremented by PromiseBeacon
+   * for "still waiting" emissions, not by reply arrivals, so we need a
+   * separate signal here.
+   *
+   * No-op on missing commitment or wrong type. Goes through mutateSync so
+   * concurrent writes serialize cleanly.
+   */
+  markReplyArrived(id: string, replyAt?: string): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) return null;
+    if (existing.type !== 'one-time-action') return null;
+    if (existing.verificationMethod !== 'threadline-reply') return null;
+    return this.mutateSync(id, c => ({
+      ...c,
+      lastReplyAt: replyAt ?? new Date().toISOString(),
+    }));
+  }
+
+  /**
+   * Find the active threadline-reply commitment for a given threadId.
+   *
+   * Used by ThreadlineRouter when an inbound reply arrives: looks up the
+   * commitment so the router can transition it to `delivered` and pull the
+   * stated purpose / topicId. Skips terminal states (delivered/expired/
+   * withdrawn) so late replies don't reopen closed commitments. Returns
+   * null on miss.
+   *
+   * Uses a thread→commitment-id index maintained alongside the store so the
+   * lookup is O(1) plus one O(commitment) status check, bounded by active
+   * threadline-reply commitments (not lifetime commitment count). Per
+   * scalability review F1 — the lifetime store can grow unboundedly while
+   * the index stays bounded by active threads.
+   */
+  findByThreadId(threadId: string): Commitment | null {
+    if (!threadId) return null;
+    const idxId = this.threadIdIndex.get(threadId);
+    if (idxId) {
+      const c = this.store.commitments.find(x => x.id === idxId);
+      if (
+        c &&
+        c.type === 'one-time-action' &&
+        c.verificationMethod === 'threadline-reply' &&
+        c.status !== 'delivered' &&
+        c.status !== 'withdrawn' &&
+        c.status !== 'expired'
+      ) {
+        return c;
+      }
+      // Stale index entry — drop it so the next call doesn't re-fetch.
+      this.threadIdIndex.delete(threadId);
+    }
+    return null;
+  }
+
+  /**
+   * Maintain the threadId→commitmentId index. Called after any mutation that
+   * affects a threadline-reply commitment's state. Bounded by active count.
+   */
+  private refreshThreadIdIndex(commitment: Commitment): void {
+    if (
+      commitment.type !== 'one-time-action' ||
+      commitment.verificationMethod !== 'threadline-reply' ||
+      !commitment.relatedThreadId
+    ) {
+      return;
+    }
+    if (
+      commitment.status === 'delivered' ||
+      commitment.status === 'withdrawn' ||
+      commitment.status === 'expired'
+    ) {
+      this.threadIdIndex.delete(commitment.relatedThreadId);
+    } else {
+      this.threadIdIndex.set(commitment.relatedThreadId, commitment.id);
+    }
+  }
+
+  /**
+   * Build the threadId→commitmentId index from the persisted store. Called
+   * once at startup. Linear in store size, but only runs at load time.
+   */
+  private rebuildThreadIdIndex(): void {
+    this.threadIdIndex.clear();
+    for (const c of this.store.commitments) {
+      this.refreshThreadIdIndex(c);
+    }
   }
 
   /**
@@ -607,6 +735,18 @@ export class CommitmentTracker extends EventEmitter {
       commitment.status === 'expired' ||
       commitment.status === 'delivered'
     ) return null;
+
+    // Threadline-reply commitments are externally resolved by ThreadlineRouter
+    // when the awaited reply arrives. The periodic verify sweep is a no-op —
+    // we neither increment violations nor mark delivered. Per
+    // THREAD-TOPIC-LINKAGE-SPEC.md §4.1. The `expiresAt` handler still applies
+    // and will mark the commitment `expired` if no reply arrives within window.
+    if (
+      commitment.type === 'one-time-action' &&
+      commitment.verificationMethod === 'threadline-reply'
+    ) {
+      return { passed: false, detail: 'Awaiting threadline reply' };
+    }
 
     // One-time-actions with no automated verification path cannot keep
     // being "violated" on every sweep — that's how a single commitment
@@ -804,6 +944,12 @@ export class CommitmentTracker extends EventEmitter {
       case 'manual':
         // Manual commitments stay pending until explicitly resolved
         return { passed: false, detail: 'Awaiting manual verification' };
+
+      case 'threadline-reply':
+        // Externally resolved by ThreadlineRouter. verifyOne() short-circuits
+        // before reaching this switch (see verifyOne); included here as a
+        // belt-and-braces fallback so the `default` branch can't be hit.
+        return { passed: false, detail: 'Awaiting threadline reply' };
 
       default:
         return { passed: false, detail: `Unknown verification method: ${commitment.verificationMethod}` };

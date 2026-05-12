@@ -82,6 +82,9 @@ async function sendMessageViaHttp(
         message: params.message,
         waitForReply: params.waitForReply,
         timeoutSeconds: params.timeoutSeconds,
+        // THREAD-TOPIC-LINKAGE-SPEC.md — optional pass-through.
+        originTopicId: params.originTopicId,
+        purpose: params.purpose,
       }),
     });
 
@@ -130,6 +133,8 @@ async function sendMessageViaHttp(
         message: params.message,
         waitForReply: params.waitForReply,
         timeoutSeconds: params.timeoutSeconds,
+        originTopicId: params.originTopicId,
+        purpose: params.purpose,
       }),
     });
 

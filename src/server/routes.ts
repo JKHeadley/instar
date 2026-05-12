@@ -552,6 +552,12 @@ export interface RouteContext {
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
   threadlineRouter: ThreadlineRouter | null;
+  /** ThreadResumeMap — exposed on ctx so /threadline/relay-send can stamp
+   *  originTopicId on outbound sends. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
+  threadResumeMap: import('../threadline/ThreadResumeMap.js').ThreadResumeMap | null;
+  /** TopicLinkageHandler — drives outbound capture + inbound topic-routing.
+   *  Optional; null when threadline is disabled. */
+  topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null;
   handshakeManager: HandshakeManager | null;
   threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
@@ -11340,12 +11346,58 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/threadline/relay-send', async (req, res) => {
     const relayClient = ctx.threadlineRelayClient;
-    const { targetAgent, message, threadId, waitForReply, timeoutSeconds } = req.body;
+    const {
+      targetAgent,
+      message,
+      threadId,
+      waitForReply,
+      timeoutSeconds,
+      originTopicId,
+      purpose,
+    } = req.body;
 
     if (!targetAgent || !message) {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
     }
+
+    // THREAD-TOPIC-LINKAGE-SPEC.md: validate the optional originTopicId early.
+    // We accept either number or numeric string; ignore on type mismatch (the
+    // send still goes through, just without topic linkage).
+    let resolvedOriginTopicId: number | undefined;
+    if (originTopicId !== undefined && originTopicId !== null) {
+      const asNum = typeof originTopicId === 'number' ? originTopicId : Number(originTopicId);
+      if (Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0) {
+        resolvedOriginTopicId = asNum;
+      }
+    }
+    const resolvedPurpose = typeof purpose === 'string' && purpose.trim().length > 0
+      ? purpose.trim().slice(0, 1024)
+      : undefined;
+
+    /**
+     * Outbound origin capture (spec §5.2). Idempotent: handler returns the
+     * existing commitment when one already exists for this threadId, so 4
+     * call-sites below are safe.
+     */
+    const captureOrigin = async (effThreadId: string, remoteAgentDisplay: string): Promise<void> => {
+      if (!ctx.topicLinkageHandler) return;
+      if (!resolvedOriginTopicId) return;
+      try {
+        ctx.topicLinkageHandler.captureOriginOnSend({
+          threadId: effThreadId,
+          remoteAgent: remoteAgentDisplay,
+          remoteAgentDisplayName: remoteAgentDisplay,
+          originTopicId: resolvedOriginTopicId,
+          purpose: resolvedPurpose,
+          subject: 'Threadline conversation',
+        });
+      } catch (err) {
+        console.warn(
+          `[relay-send] captureOrigin failed for thread ${effThreadId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
 
     // Validate message size (64KB limit matching inbound)
     if (Buffer.byteLength(message, 'utf-8') > 64 * 1024) {
@@ -11629,6 +11681,7 @@ export function createRoutes(ctx: RouteContext): Router {
                       outcome,
                     }).catch(() => { /* swallow — bridge is relay-only */ });
                   }
+                  await captureOrigin(effectiveThreadId, localTarget.name);
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
@@ -11640,6 +11693,7 @@ export function createRoutes(ctx: RouteContext): Router {
                       deliveryOutcome: outcome,
                       threadline: tl,
                       reply,
+                      topicLinkageStamped: resolvedOriginTopicId !== undefined,
                     });
                   } else {
                     res.json({
@@ -11650,6 +11704,7 @@ export function createRoutes(ctx: RouteContext): Router {
                       deliveryPath: 'local',
                       deliveryOutcome: outcome,
                       threadline: tl,
+                      topicLinkageStamped: resolvedOriginTopicId !== undefined,
                     });
                   }
                   return;
@@ -11741,6 +11796,7 @@ export function createRoutes(ctx: RouteContext): Router {
         }).catch(() => { /* swallow — bridge is relay-only */ });
       }
 
+      await captureOrigin(effectiveRelayThreadId, targetAgent);
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
         res.json({
@@ -11750,6 +11806,7 @@ export function createRoutes(ctx: RouteContext): Router {
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
           reply,
+          topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       } else {
         res.json({
@@ -11758,6 +11815,7 @@ export function createRoutes(ctx: RouteContext): Router {
           threadId: effectiveRelayThreadId,
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
+          topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       }
     } catch (err) {
