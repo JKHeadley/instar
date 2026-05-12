@@ -28,9 +28,13 @@ function mountRoutes(tr: InitiativeTracker): { server: Server; port: number } {
   // Mirror of the production handlers (kept in sync with src/server/routes.ts).
   router.get('/initiatives', (req, res) => {
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
-    const items = status
+    const excludeKind = typeof req.query.excludeKind === 'string' ? req.query.excludeKind : undefined;
+    const excludeParented = req.query.excludeParented === 'true';
+    let items = status
       ? tr.list({ status: status as 'active' })
       : tr.list();
+    if (excludeKind) items = items.filter((i) => (i.kind ?? 'task') !== excludeKind);
+    if (excludeParented) items = items.filter((i) => !i.parentProjectId);
     res.json({ items, count: items.length });
   });
   router.get('/initiatives/digest', (_req, res) => res.json(tr.digest()));
@@ -215,5 +219,60 @@ describe('routes /initiatives — CRUD', () => {
     const archived = await req('GET', '/initiatives?status=archived');
     expect(active.json.items.map((i: { id: string }) => i.id)).toEqual(['demo']);
     expect(archived.json.items.map((i: { id: string }) => i.id)).toEqual(['demo2']);
+  });
+
+  // ── Phase 1b PR 5 — dashboard server-side filters ───────────────
+
+  it('GET ?excludeKind=project hides project-kind records', async () => {
+    // Create a task-kind initiative directly via the tracker so we
+    // don't have to extend the test's POST shape with `kind`.
+    await req('POST', '/initiatives', body);
+    await tracker.create({
+      id: 'a-project',
+      title: 'pr',
+      description: 'd',
+      phases: [{ id: 'p1', name: 'p1' }],
+      kind: 'project',
+    });
+    const filtered = await req('GET', '/initiatives?excludeKind=project');
+    const ids = (filtered.json.items as Array<{ id: string }>).map((i) => i.id);
+    expect(ids).toContain('demo');
+    expect(ids).not.toContain('a-project');
+  });
+
+  it('GET ?excludeParented=true hides children of any project', async () => {
+    await req('POST', '/initiatives', body); // no parent
+    await tracker.create({
+      id: 'child',
+      title: 'c',
+      description: 'd',
+      phases: [{ id: 'p1', name: 'p1' }],
+      parentProjectId: 'some-project',
+    });
+    const filtered = await req('GET', '/initiatives?excludeParented=true');
+    const ids = (filtered.json.items as Array<{ id: string }>).map((i) => i.id);
+    expect(ids).toContain('demo');
+    expect(ids).not.toContain('child');
+  });
+
+  it('combines excludeKind + excludeParented + status filters', async () => {
+    await req('POST', '/initiatives', body);
+    await tracker.create({
+      id: 'parented-task',
+      title: 'pt',
+      description: 'd',
+      phases: [{ id: 'p1', name: 'p1' }],
+      parentProjectId: 'p',
+    });
+    await tracker.create({
+      id: 'a-project',
+      title: 'pr',
+      description: 'd',
+      phases: [{ id: 'p1', name: 'p1' }],
+      kind: 'project',
+    });
+    const r = await req('GET', '/initiatives?status=active&excludeKind=project&excludeParented=true');
+    const ids = (r.json.items as Array<{ id: string }>).map((i) => i.id);
+    expect(ids).toEqual(['demo']);
   });
 });

@@ -8,6 +8,34 @@
 
 ## What Changed
 
+### Project-scope Phase 1b PR 5 — dashboard Projects tab + Initiatives filter
+
+Fifth PR of project-scope Phase 1b. Ships the dashboard view of the
+project surface and the small server-side filter the dashboard depends
+on:
+
+- **Projects tab** in the dashboard. Read-only card per active project
+  with title + id + version + drift status badge + per-round progress
+  bar + pipelineStage histogram. Halt + Ack buttons route through the
+  PR 3 endpoints; 409 responses silently re-render (no error toast).
+  15-second poll while the tab is active; cleared on deactivation.
+  XSS-safe — every rendered string goes through `textContent`, no
+  `innerHTML`.
+- **Initiatives tab filter** — by default the tab now hides
+  project-kind records (shown in their own Projects tab) and child
+  initiatives of any project (shown inside the parent's card). A
+  "Show projects + children" checkbox bypasses the filter for users
+  who want the full list. The filter is server-side: the records
+  never cross the wire when excluded.
+- **`GET /initiatives` filter params** — accepts `excludeKind=<kind>`
+  (drops records of that kind) and `excludeParented=true` (drops
+  records that are children of any project). Additive — existing
+  callers see no behavior change.
+
+The compaction-recovery hook's active-projects digest was already in
+the template (it shipped alongside session-start.sh in PR 1's Phase
+1.9 work), so no template change is needed here.
+
 ### Project-scope Phase 1b PR 4 — auto-advance poller + multi-machine claim-ownership
 
 Fourth PR of project-scope Phase 1b. Ships three pieces:
@@ -86,6 +114,15 @@ permanently block subsequent acquires.
 
 ## What to Tell Your User
 
+- **Projects have a dashboard tab now**: open the dashboard and you'll
+  see every active project I'm tracking with its round-by-round
+  progress, which items have merged vs which are still in flight, and
+  any drift warnings I've recorded. Halt and ack buttons are right
+  there if you want to stop me or tell me you've seen the digest. The
+  Initiatives tab no longer mixes project plumbing in by default —
+  flip the "Show projects + children" toggle if you want to see
+  everything together.
+
 - **You can now drive a project round through the HTTP layer**: I can
   advance a single item one stage with a real artifact check, halt the
   active round on demand, record acknowledgment when I've shown you a
@@ -143,3 +180,11 @@ permanently block subsequent acquires.
   `in-progress` round to `pending`. Best-effort; OCC races are
   silently retried on subsequent reconciler passes (or via the
   auto-advance poller's filter).
+- Dashboard `Projects` tab — read-only project cards with progress
+  bar + drift badge + halt/ack buttons. 15-second poll while active.
+- Dashboard `Initiatives` tab now defaults to hiding project-kind +
+  child records. "Show projects + children" checkbox bypasses.
+- `GET /initiatives` accepts new optional query params: `excludeKind`
+  (drops records where `kind ?? 'task'` matches) and
+  `excludeParented=true` (drops records with a `parentProjectId`).
+  Additive; existing clients see no behavior change.

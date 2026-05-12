@@ -5617,9 +5617,21 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
-    const items = status
+    // Phase 1b PR 5 — server-side filters added so the dashboard
+    // Initiatives tab can hide project-kind records (rendered in the
+    // separate Projects tab) and any record that's a child of a
+    // project (rendered inside its parent's card).
+    const excludeKind = typeof req.query.excludeKind === 'string' ? req.query.excludeKind : undefined;
+    const excludeParented = req.query.excludeParented === 'true';
+    let items = status
       ? ctx.initiativeTracker.list({ status: status as 'active' | 'completed' | 'archived' | 'abandoned' })
       : ctx.initiativeTracker.list();
+    if (excludeKind) {
+      items = items.filter((i) => (i.kind ?? 'task') !== excludeKind);
+    }
+    if (excludeParented) {
+      items = items.filter((i) => !i.parentProjectId);
+    }
     res.json({ items, count: items.length });
   });
 
