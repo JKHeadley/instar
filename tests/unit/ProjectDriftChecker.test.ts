@@ -753,3 +753,147 @@ describe('DRIFT_LIMITS contract', () => {
     expect(DRIFT_LIMITS.defaultTimeoutMs).toBe(30_000);
   });
 });
+
+// ── Cache + ledger integration (Phase 1b PR 2) ──────────────────────
+
+describe('ProjectDriftChecker with cache + ledger', () => {
+  let tmpRoot: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tmpRoot = makeRepo();
+    stateDir = makeRepo();
+  });
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(tmpRoot, { recursive: true, force: true, operation: 'tests/unit/ProjectDriftChecker.test.ts:cache-afterEach-tmpRoot' }); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ProjectDriftChecker.test.ts:cache-afterEach-stateDir' }); } catch { /* ignore */ }
+  });
+
+  it('cache hit on the second call avoids the LLM and returns the same verdict', async () => {
+    const { ProjectDriftCheckerCache } = await import('../../src/core/ProjectDriftCheckerCache.js');
+    const cache = new ProjectDriftCheckerCache({ stateDir, persist: false });
+    const stub = new StubProvider().enqueue(JSON.stringify({
+      verdict: 'minor-drift',
+      rationale: 'a tiny rename',
+      evidenceCitations: [],
+    }));
+    const c = new ProjectDriftChecker({ intelligence: stub, cache });
+
+    writeFile(tmpRoot, 'spec.md', '# spec');
+    writeFile(tmpRoot, 'a.ts', 'export const a = 1;');
+    const input = {
+      projectId: 'p',
+      roundIndex: 0,
+      targetRepoPath: tmpRoot,
+      specPath: 'spec.md',
+      referencedFiles: ['a.ts'],
+    };
+
+    const first = await c.run(input);
+    expect(first.verdict).toBe('minor-drift');
+    expect(stub.calls).toHaveLength(1);
+
+    const second = await c.run(input);
+    expect(second.verdict).toBe('minor-drift');
+    // The LLM was NOT called again — cache served it.
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it('content change forces a re-run when the cache is in use', async () => {
+    const { ProjectDriftCheckerCache } = await import('../../src/core/ProjectDriftCheckerCache.js');
+    const cache = new ProjectDriftCheckerCache({ stateDir, persist: false });
+    const stub = new StubProvider()
+      .enqueue(validResponse())
+      .enqueue(validResponse());
+    const c = new ProjectDriftChecker({ intelligence: stub, cache });
+
+    writeFile(tmpRoot, 'spec.md', '# spec');
+    writeFile(tmpRoot, 'a.ts', 'A');
+    const baseInput = {
+      projectId: 'p',
+      roundIndex: 0,
+      targetRepoPath: tmpRoot,
+      specPath: 'spec.md',
+      referencedFiles: ['a.ts'],
+    };
+    await c.run(baseInput);
+    expect(stub.calls).toHaveLength(1);
+
+    writeFile(tmpRoot, 'a.ts', 'A_CHANGED');
+    await c.run(baseInput);
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  it('returns over-budget without calling LLM when ledger cap is exceeded', async () => {
+    const { DriftSpendLedger } = await import('../../src/core/DriftSpendLedger.js');
+    const ledger = new DriftSpendLedger({ stateDir, dailyCapUsd: 0.005 });
+    const stub = new StubProvider().enqueue(validResponse());
+    const c = new ProjectDriftChecker({
+      intelligence: stub,
+      ledger,
+      estimatedCostPerCallUsd: 0.01,
+    });
+    writeFile(tmpRoot, 'spec.md', '# spec');
+    const v = await c.run({
+      projectId: 'p',
+      roundIndex: 0,
+      targetRepoPath: tmpRoot,
+      specPath: 'spec.md',
+      referencedFiles: [],
+    });
+    expect(v.verdict).toBe('manual-review-required');
+    if (v.verdict === 'manual-review-required') expect(v.reason).toBe('over-budget');
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('reserves and reconciles when ledger is present', async () => {
+    const { DriftSpendLedger } = await import('../../src/core/DriftSpendLedger.js');
+    const ledger = new DriftSpendLedger({ stateDir });
+    const stub = new StubProvider().enqueue(validResponse());
+    const c = new ProjectDriftChecker({
+      intelligence: stub,
+      ledger,
+      estimatedCostPerCallUsd: 0.02,
+    });
+    writeFile(tmpRoot, 'spec.md', '# spec');
+    expect(await ledger.spentToday()).toBe(0);
+    await c.run({
+      projectId: 'p',
+      roundIndex: 0,
+      targetRepoPath: tmpRoot,
+      specPath: 'spec.md',
+      referencedFiles: [],
+    });
+    // Reserve appended 0.02; reconcile capped at 0.02 (actual ≈ estimated).
+    expect(await ledger.spentToday()).toBeCloseTo(0.02, 6);
+  });
+
+  it('does NOT cache LLM-failure verdicts (schema-fail allowed to retry)', async () => {
+    const { ProjectDriftCheckerCache } = await import('../../src/core/ProjectDriftCheckerCache.js');
+    const cache = new ProjectDriftCheckerCache({ stateDir, persist: false });
+    const stub = new StubProvider()
+      .enqueue('not json')              // schema-fail
+      .enqueue(validResponse());        // success on retry
+    const c = new ProjectDriftChecker({ intelligence: stub, cache });
+    writeFile(tmpRoot, 'spec.md', '# spec');
+
+    const a = await c.run({
+      projectId: 'p',
+      roundIndex: 0,
+      targetRepoPath: tmpRoot,
+      specPath: 'spec.md',
+      referencedFiles: [],
+    });
+    expect(a.verdict).toBe('manual-review-required');
+
+    const b = await c.run({
+      projectId: 'p',
+      roundIndex: 0,
+      targetRepoPath: tmpRoot,
+      specPath: 'spec.md',
+      referencedFiles: [],
+    });
+    expect(b.verdict).toBe('no-drift');
+    expect(stub.calls).toHaveLength(2);
+  });
+});
