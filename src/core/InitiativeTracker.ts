@@ -37,6 +37,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { TaskFlowRegistry } from '../tasks/TaskFlowRegistry.js';
+import type { DriftVerdict } from './types.js';
 import type {
   TaskFlowPrincipal,
   TaskFlowRecord,
@@ -103,8 +104,12 @@ export interface InitiativeRound {
   haltReason?: string;
   /** Counter; round-runner caps this at 3. */
   resumeAttempts?: number;
-  /** Cached drift verdict from the most recent attempt. Typed in Phase 1b. */
-  lastDriftVerdict?: unknown;
+  /** Cached drift verdict from the most recent attempt. See DriftVerdict in types.ts. */
+  lastDriftVerdict?: DriftVerdict;
+  /** ISO timestamp the lastDriftVerdict was computed; round-runner uses this for the 24h freshness window. */
+  lastDriftVerdictAt?: string;
+  /** Hashes of referenced files at verdict time; round-runner re-runs drift if any changed. */
+  lastDriftReferencedFileHashes?: Record<string, string>;
 }
 
 export interface InitiativeConflictPatch {

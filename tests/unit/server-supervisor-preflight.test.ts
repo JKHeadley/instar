@@ -141,3 +141,26 @@ describe('slow retry window', () => {
     expect(supervisorSource).not.toContain('slowElapsed < 10_000');
   });
 });
+
+describe('git-terminal-prompt guard on tmux spawn', () => {
+  // When the supervisor spawns the server in a new tmux session, git
+  // operations performed at startup (auto-pull / git-sync) must NEVER fall
+  // through to an interactive terminal prompt — that hangs the bash command
+  // behind "Username for 'https://github.com':" and produces a runaway
+  // restart loop. The guard is `-e GIT_TERMINAL_PROMPT=0` on the tmux
+  // new-session invocation. Source-pattern test (matches the convention of
+  // the SHELL-env and slow-retry-window tests above) so we don't have to
+  // stub out the full spawn pipeline.
+  it('passes -e GIT_TERMINAL_PROMPT=0 to tmux new-session', () => {
+    const supervisorSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/lifeline/ServerSupervisor.ts'),
+      'utf-8'
+    );
+    expect(supervisorSource).toContain("'-e', 'GIT_TERMINAL_PROMPT=0'");
+    // The flag has to live in the new-session args array, not anywhere else.
+    const newSessionMatch = supervisorSource.match(
+      /'new-session', '-d',[^]+?GIT_TERMINAL_PROMPT=0[^]+?\], \{ stdio: 'ignore' \}/
+    );
+    expect(newSessionMatch).not.toBeNull();
+  });
+});

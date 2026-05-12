@@ -616,10 +616,18 @@ export class ServerSupervisor extends EventEmitter {
       const quotedCli = cliPath.replace(/'/g, "'\\''");
       const nodeCmd = `'${quotedNode}' '${quotedCli}' 'server' 'start' '--foreground' '--no-telegram' 2> >(tee '${crashLogPath}' >&2)`;
 
+      // GIT_TERMINAL_PROMPT=0 prevents git operations performed during startup
+      // (auto-pull / git-sync) from falling through to an interactive terminal
+      // prompt when GIT_ASKPASS fails. Without it, a missing/expired credential
+      // helper hangs the bash command behind "Username for 'https://github.com':",
+      // which fails the health check and produces a runaway restart loop. tmux
+      // `-e` is per-session and survives an existing tmux server (process.env
+      // alone does not propagate once tmux is already running).
       execFileSync(this.tmuxPath, [
         'new-session', '-d',
         '-s', this.serverSessionName,
         '-c', this.projectDir,
+        '-e', 'GIT_TERMINAL_PROMPT=0',
         `bash`, '-c', nodeCmd,
       ], { stdio: 'ignore' });
 

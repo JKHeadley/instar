@@ -457,7 +457,56 @@ export interface IntelligenceOptions {
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
   temperature?: number;
+  /** Per-call timeout in milliseconds; provider should honor or surface as throw. */
+  timeoutMs?: number;
 }
+
+// ── Drift Checker ───────────────────────────────────────────────────
+//
+// PROJECT-SCOPE-SPEC Phase 1.4. The drift checker emits a *signal* only —
+// authority for round-start lives in ProjectRoundRunner. Verdicts are
+// recorded on the round (lastDriftVerdict) and surfaced in the digest.
+
+/**
+ * A verified excerpt from a referenced file at the time of the drift check.
+ * The LLM proposes citations; the checker re-opens the file, confirms the
+ * byteRange is in bounds, and renders the slice itself — the LLM-claimed
+ * text is never displayed. Citations that fail verification are dropped.
+ */
+export interface VerifiedCitation {
+  /** Path relative to targetRepoPath. */
+  file: string;
+  /** [start, end] byte offsets into the file, validated server-side. */
+  byteRange: [number, number];
+  /** Verified slice (truncated to 240 chars for digest display). */
+  excerpt: string;
+}
+
+/**
+ * The verdict returned by ProjectDriftChecker.run().
+ * `manual-review-required` is the catch-all for any failure mode that
+ * means the verdict cannot be trusted — over-budget, deleted files,
+ * timeout, schema-fail, citation-verification-fail. Callers route it
+ * to user attention rather than treating it as a soft pass.
+ */
+export type DriftVerdict =
+  | { verdict: 'no-drift'; rationale: string; evidenceCitations: VerifiedCitation[] }
+  | { verdict: 'minor-drift'; rationale: string; evidenceCitations: VerifiedCitation[] }
+  | { verdict: 'premise-violated'; rationale: string; evidenceCitations: VerifiedCitation[] }
+  | {
+      verdict: 'manual-review-required';
+      reason:
+        | 'over-budget'
+        | 'deleted-files'
+        | 'empty-spec'
+        | 'missing-frontmatter'
+        | 'timeout'
+        | 'failed-citation-verification'
+        | 'schema-fail'
+        | 'no-provider'
+        | 'path-jail-fail';
+      rationale?: string;
+    };
 
 // ── Relationship Tracking ───────────────────────────────────────────
 
