@@ -166,6 +166,9 @@ export class AgentServer {
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
+    /** Project drift checker (Phase 1b connect-the-dots). Optional —
+     *  when omitted, POST /projects/:id/drift-check returns 503. */
+    projectDriftChecker?: import('../core/ProjectDriftChecker.js').ProjectDriftChecker;
     /** Multi-machine heartbeat + claim-ownership support (Phase 1b PR 4). */
     machineHeartbeat?: {
       api: import('../core/MachineHeartbeat.js').MachineHeartbeat;
@@ -445,6 +448,7 @@ export class AgentServer {
       stopGateDb: options.stopGateDb ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
       projectRoundRunner: options.projectRoundRunner ?? null,
+      projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,

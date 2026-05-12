@@ -8,6 +8,42 @@
 
 ## What Changed
 
+### Project-scope Phase 1b connect-the-dots — wire the primitives
+
+Wires the four primitives shipped during the Phase 1b autonomous burst
+to their consumers, closing the deferrals named in side-effects reviews
+of PRs #164, #166, #167, and #168.
+
+- **Auto-advance poller now actually launches rounds.** On a successful
+  preflight + bookkeeping move, the poller fires-and-forgets a
+  `ProjectRoundExecution.runRound()` call. A per-project `inFlight`
+  guard prevents a slow run from being relaunched on the next 60s
+  tick. Errors are captured in `result.executorErrors[]` — they never
+  throw out of `tick()`.
+- **`GET /projects/:id/next` returns the real next round.** Replaces
+  the 501 placeholder. Returns
+  `{ projectId, projectVersion, roundIndex, name, itemIds, status,
+  autoAdvanceAt? }` for the first round whose `status !== 'complete'`,
+  204 when all complete, 404 on non-project initiative. Read-only —
+  no OCC required.
+- **`GET /projects/:id` lazy reconciler.** For up to 3 children at
+  `pipelineStage = 'building'` with a populated `mergeCommitOid`, the
+  GET handler now verifies them against `origin/main` via git and
+  bumps the verified ones to `'merged'`. Errors are silenced; the
+  reconciler can be disabled with `?reconcile=false`.
+- **`POST /projects/:id/drift-check` route.** New HTTP wrapper around
+  `ProjectDriftChecker.run()`. Body:
+  `{ roundIndex, specPath, referencedFiles[], timeoutMs?, modelId? }`.
+  Returns 503 when no `IntelligenceProvider` is configured (no
+  checker wired), 200 with `{ verdict, projectId, roundIndex }` on
+  success. The shared provider auto-wires the checker at server
+  startup.
+
+Drift cache + spend-ledger wiring are intentionally deferred until the
+dashboard surfaces live verdicts and cost telemetry needs the cap. The
+reconciler's predicate is intentionally narrow (only `'building'` ×
+`mergeCommitOid`) to keep `GET /projects/:id` fast.
+
 ### Project-scope Phase 1b PR 7 — autonomous run loop
 
 Final PR of project-scope Phase 1b. Ships the autonomous run loop the

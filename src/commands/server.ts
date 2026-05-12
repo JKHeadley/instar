@@ -6350,11 +6350,30 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     machineHeartbeatApi.start();
     const machineHeartbeat = { api: machineHeartbeatApi, config: { machineId: machineIdForProjects } };
+    // Wire the run-round executor: fire-and-forget launch of
+    // ProjectRoundExecution.runRound() after a successful auto-advance.
+    // The executor itself acquires the lock + spawns + polls + cleans up.
+    // Errors are surfaced via the poller's result.executorErrors and
+    // logged to stderr; they don't take the server down.
+    const { runRound } = await import('../core/ProjectRoundExecution.js');
     const { ProjectAutoAdvancePoller } = await import('../core/ProjectAutoAdvancePoller.js');
     const projectAutoAdvancePoller = new ProjectAutoAdvancePoller({
       tracker: initiativeTracker,
       runner: projectRoundRunner,
       machineId: machineIdForProjects,
+      executor: async ({ projectId, roundIndex }) => {
+        const proj = initiativeTracker.get(projectId);
+        if (!proj || !proj.targetRepoPath) return;
+        await runRound(
+          {
+            tracker: initiativeTracker,
+            projectId,
+            roundIndex,
+            targetRepoPath: proj.targetRepoPath,
+          },
+          { stateDir: config.stateDir }
+        );
+      },
     });
     // Tick once a minute; .unref() so the timer never keeps the process alive.
     const projectAutoAdvanceTimer = setInterval(() => {
@@ -6389,6 +6408,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       console.error('[ProjectAutoAdvancePoller] post-restore reconciler error:', err);
     }
+
+    // Project drift checker — used by POST /projects/:id/drift-check.
+    // Reuses the shared IntelligenceProvider. Cache + ledger are optional
+    // and not wired here yet (the dashboard caller can pass per-call
+    // overrides); a follow-up can wire ProjectDriftCheckerCache + the
+    // DriftSpendLedger once spend telemetry is needed in prod.
+    const { ProjectDriftChecker } = await import('../core/ProjectDriftChecker.js');
+    const projectDriftChecker = new ProjectDriftChecker({
+      intelligence: sharedIntelligence,
+    });
 
     // TaskFlow registry — opt-in via config.taskFlow.enabled (default: off in v1).
     // Owns its own SQLite file under .instar/task-flows.db. The maintenance
@@ -6503,7 +6532,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, machineHeartbeat, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 

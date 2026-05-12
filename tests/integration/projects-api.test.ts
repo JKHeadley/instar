@@ -238,7 +238,7 @@ auto_advance: true
     expect(res.body.children.length).toBe(3);
   });
 
-  it('GET /projects/:id/next returns 501 placeholder', async () => {
+  it('GET /projects/:id/next returns the first pending round', async () => {
     await request(app)
       .post('/projects')
       .set('Authorization', `Bearer ${AUTH_TOKEN}`)
@@ -246,8 +246,46 @@ auto_advance: true
     const res = await request(app)
       .get('/projects/next-project/next')
       .set('Authorization', `Bearer ${AUTH_TOKEN}`);
-    expect(res.status).toBe(501);
-    expect(res.body.action).toBe('not-implemented');
+    expect(res.status).toBe(200);
+    expect(res.body.projectId).toBe('next-project');
+    expect(res.body.roundIndex).toBe(0);
+    expect(Array.isArray(res.body.itemIds)).toBe(true);
+    expect(res.body.itemIds.length).toBeGreaterThan(0);
+    expect(res.body.status).toBe('pending');
+  });
+
+  it('GET /projects/:id/next returns 204 when all rounds complete', async () => {
+    await request(app)
+      .post('/projects')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ planDocPath: goodPlan('all-done-project') });
+    const proj = tracker.get('all-done-project');
+    if (!proj) throw new Error('fixture project missing');
+    const rounds = (proj.rounds ?? []).map((r) => ({ ...r, status: 'complete' as const }));
+    await tracker.update(proj.id, { rounds, ifMatch: proj.version });
+    const res = await request(app)
+      .get('/projects/all-done-project/next')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(res.status).toBe(204);
+  });
+
+  it('GET /projects/:id/next returns 404 for non-project initiative', async () => {
+    const res = await request(app)
+      .get('/projects/no-such-project/next')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /projects/:id/drift-check returns 503 when no checker configured', async () => {
+    await request(app)
+      .post('/projects')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ planDocPath: goodPlan('drift-503-project') });
+    const res = await request(app)
+      .post('/projects/drift-503-project/drift-check')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ roundIndex: 0, specPath: 'docs/specs/a.md', referencedFiles: [] });
+    expect(res.status).toBe(503);
   });
 
   // ── Validate (no-persist) ─────────────────────────────────────────

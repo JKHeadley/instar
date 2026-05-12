@@ -46,7 +46,28 @@ export interface PollerTickResult {
   fired: string[]; // projectIds where auto-advance proceeded
   rejected: Array<{ projectId: string; code: string; reason: string }>;
   cleared: string[]; // projectIds where autoAdvanceAt was structurally cleared
+  /** projectIds where the optional executor was launched (fire-and-forget). */
+  executed: string[];
+  /** Errors raised by the executor (settled async; one entry per failed launch). */
+  executorErrors: Array<{ projectId: string; roundIndex: number; error: string }>;
 }
+
+/**
+ * Optional fire-and-forget executor invoked after a successful preflight
+ * + bookkeeping move. When set, the poller launches the round run
+ * asynchronously. The executor is responsible for its own lock acquisition
+ * (`ProjectRoundLock`) so two ticks that both pass preflight cannot
+ * spawn two concurrent runs for the same project.
+ *
+ * The promise is NOT awaited inside `tick()` — the poller's job is
+ * scanning, not blocking on multi-minute runs. Errors from the executor
+ * are caught and surfaced via `result.executorErrors` so the next tick
+ * has a record of what happened.
+ */
+export type ProjectRoundExecutor = (input: {
+  projectId: string;
+  roundIndex: number;
+}) => Promise<void>;
 
 export interface ProjectAutoAdvancePollerConfig {
   tracker: InitiativeTracker;
@@ -54,6 +75,12 @@ export interface ProjectAutoAdvancePollerConfig {
   /** Stable machine id (used for ownerMachineId comparison). */
   machineId: string;
   now?: () => Date;
+  /**
+   * Optional async executor that actually launches the round work. When
+   * omitted, the poller does bookkeeping only (PR-5-era behavior). When
+   * present, fire-and-forget invocation after `bookKeepFire`.
+   */
+  executor?: ProjectRoundExecutor;
 }
 
 /** Reject codes that mean "stop retrying" — clear autoAdvanceAt. */
@@ -73,17 +100,33 @@ export class ProjectAutoAdvancePoller {
   private runner: ProjectRoundRunner;
   private machineId: string;
   private now: () => Date;
+  private executor?: ProjectRoundExecutor;
+  /** Tracks in-flight executor invocations so a slow run doesn't get relaunched on the next tick. */
+  private inFlight: Set<string> = new Set();
 
   constructor(config: ProjectAutoAdvancePollerConfig) {
     this.tracker = config.tracker;
     this.runner = config.runner;
     this.machineId = config.machineId;
     this.now = config.now ?? (() => new Date());
+    this.executor = config.executor;
+  }
+
+  /** Test/diagnostic helper: how many executor launches are still settling. */
+  inFlightCount(): number {
+    return this.inFlight.size;
   }
 
   /** Run one pass over all eligible projects. */
   async tick(): Promise<PollerTickResult> {
-    const result: PollerTickResult = { scanned: 0, fired: [], rejected: [], cleared: [] };
+    const result: PollerTickResult = {
+      scanned: 0,
+      fired: [],
+      rejected: [],
+      cleared: [],
+      executed: [],
+      executorErrors: [],
+    };
 
     // Filter server-side: kind=project + status=active. (The tracker's
     // `list` already supports the kind filter.)
@@ -128,12 +171,38 @@ export class ProjectAutoAdvancePoller {
 
       // Step 5: bookkeeping move — increment unacked counter, clear
       // current round's autoAdvanceAt so we don't re-fire on the next
-      // tick. The actual round-run delegation happens in the autonomous
-      // loop (PR 5+).
+      // tick.
       await this.bookKeepFire(project, roundIdx);
       result.fired.push(project.id);
+
+      // Step 6: fire-and-forget executor launch (if configured).
+      // The executor (ProjectRoundExecution.runRound) acquires its own
+      // lock, so a duplicate-launch on a stuck tick would resolve to
+      // LOCK_HELD inside the runner. We additionally guard with
+      // `inFlight` so we don't even attempt while one is settling.
+      if (this.executor && !this.inFlight.has(project.id)) {
+        result.executed.push(project.id);
+        this.launchExecutor(project.id, roundIdx, result);
+      }
     }
     return result;
+  }
+
+  /** Fire-and-forget executor launch. Errors are captured into `result.executorErrors`. */
+  private launchExecutor(projectId: string, roundIndex: number, result: PollerTickResult): void {
+    if (!this.executor) return;
+    this.inFlight.add(projectId);
+    void this.executor({ projectId, roundIndex })
+      .catch((err: unknown) => {
+        result.executorErrors.push({
+          projectId,
+          roundIndex,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        this.inFlight.delete(projectId);
+      });
   }
 
   private async clearAutoAdvance(project: Initiative, roundIdx: number): Promise<void> {

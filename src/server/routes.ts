@@ -132,6 +132,8 @@ import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import type { ProjectMapper } from '../core/ProjectMapper.js';
+import { verifyMergedItemsViaGit } from '../core/ProjectRoundExecution.js';
+import type { ProjectDriftChecker } from '../core/ProjectDriftChecker.js';
 import type { ScopeVerifier } from '../core/ScopeVerifier.js';
 import type { HighRiskAction } from '../core/ScopeVerifier.js';
 import type { ContextHierarchy } from '../core/ContextHierarchy.js';
@@ -594,6 +596,10 @@ export interface RouteContext {
    *  /advance, /halt, /ack, /accept-partial. Null when initiativeTracker
    *  is also null. */
   projectRoundRunner: import('../core/ProjectRoundRunner.js').ProjectRoundRunner | null;
+  /** Project drift checker (Phase 1b connect-the-dots). Null when no
+   *  IntelligenceProvider is configured (then POST /projects/:id/drift-check
+   *  returns 503). */
+  projectDriftChecker: ProjectDriftChecker | null;
   /** Machine heartbeat (Phase 1b PR 4). Bundled with `config.machineId`
    *  so the claim-ownership route can compare against the current
    *  machine without a separate top-level field. Null when running in
@@ -5762,7 +5768,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ items, count: items.length });
   });
 
-  router.get('/projects/:id', (req, res) => {
+  router.get('/projects/:id', async (req, res) => {
     if (!ctx.initiativeTracker) {
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
@@ -5777,9 +5783,46 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     // Join children that point at this project via parentProjectId.
-    const children = ctx.initiativeTracker
+    let children = ctx.initiativeTracker
       .list()
       .filter((i) => i.parentProjectId === project.id);
+
+    // Lazy merged-state reconciler: revalidate up to 3 'building' children
+    // whose mergeCommitOid is set, in case the PR has landed on origin/main
+    // since we last looked. Skipped when `?reconcile=false` or no
+    // targetRepoPath. Errors are silenced (the child stays as-is).
+    const reconcileFlag = req.query.reconcile;
+    const wantReconcile = reconcileFlag !== 'false' && reconcileFlag !== '0';
+    if (wantReconcile && project.targetRepoPath) {
+      const candidates = children
+        .filter((c) => c.pipelineStage === 'building' && typeof c.mergeCommitOid === 'string' && c.mergeCommitOid)
+        .slice(0, 3)
+        .map((c) => c.id);
+      if (candidates.length > 0) {
+        try {
+          const verified = await verifyMergedItemsViaGit(project.targetRepoPath, candidates, ctx.initiativeTracker);
+          for (const id of verified) {
+            const child = ctx.initiativeTracker.get(id);
+            if (!child) continue;
+            try {
+              await ctx.initiativeTracker.update(id, {
+                pipelineStage: 'merged',
+                ifMatch: child.version,
+              });
+            } catch {
+              // OCC race or validator reject; leave as-is for next GET.
+            }
+          }
+          if (verified.size > 0) {
+            children = ctx.initiativeTracker
+              .list()
+              .filter((i) => i.parentProjectId === project.id);
+          }
+        } catch {
+          // git not available, no network, etc. — silent.
+        }
+      }
+    }
 
     // Optional field selector: `?fields=id,title,pipelineStage`. Used by
     // the dashboard projects selector (Phase 1.10). Always preserves `id`.
@@ -5800,15 +5843,45 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ project, children });
   });
 
+  // GET /projects/:id/next — return the next round eligible for work.
+  //
+  // Contract:
+  //   - 400 if id malformed
+  //   - 404 if project not found OR kind != 'project'
+  //   - 204 if all rounds are already complete (nothing to do)
+  //   - 200 with { roundIndex, name, itemIds, status, autoAdvanceAt? }
+  //     for the FIRST round whose status is not 'complete'. We do NOT
+  //     run preflight here — that's the runner's job at fire time. This
+  //     endpoint is a peek for the dashboard + skill UI.
   router.get('/projects/:id/next', (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
     if (!initiativeIdRe.test(req.params.id)) {
       res.status(400).json({ error: 'invalid project id' });
       return;
     }
-    // Next-action computation lands in Phase 1b's ProjectRoundRunner.
-    res.status(501).json({
-      action: 'not-implemented',
-      message: 'next-action computation lands in Phase 1b',
+    const project = ctx.initiativeTracker.get(req.params.id);
+    if (!project || (project.kind ?? 'task') !== 'project') {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    const rounds = project.rounds ?? [];
+    const idx = rounds.findIndex((r) => (r.status ?? 'pending') !== 'complete');
+    if (idx === -1) {
+      res.status(204).end();
+      return;
+    }
+    const r = rounds[idx];
+    res.json({
+      projectId: project.id,
+      projectVersion: project.version,
+      roundIndex: idx,
+      name: r.name,
+      itemIds: r.itemIds,
+      status: r.status ?? 'pending',
+      autoAdvanceAt: r.autoAdvanceAt,
     });
   });
 
@@ -6123,6 +6196,77 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /projects/:id/drift-check — run the drift checker for a given
+  // round and return the verdict. Wraps ProjectDriftChecker.run().
+  //
+  // Body: { roundIndex: number, specPath: string, referencedFiles: string[],
+  //         timeoutMs?: number, modelId?: string }
+  //
+  // 400 on validation; 503 if no checker configured; 200 with verdict envelope
+  // on success. We do NOT require If-Match: drift is a read-only signal.
+  router.post('/projects/:id/drift-check', async (req, res) => {
+    if (!ctx.initiativeTracker) {
+      res.status(503).json({ error: 'Initiative tracker not configured' });
+      return;
+    }
+    if (!ctx.projectDriftChecker) {
+      res.status(503).json({ error: 'ProjectDriftChecker not configured' });
+      return;
+    }
+    if (!initiativeIdRe.test(req.params.id)) {
+      res.status(400).json({ error: 'invalid project id' });
+      return;
+    }
+    const project = ctx.initiativeTracker.get(req.params.id);
+    if (!project || (project.kind ?? 'task') !== 'project') {
+      res.status(404).json({ error: 'project not found' });
+      return;
+    }
+    if (!project.targetRepoPath) {
+      res.status(400).json({ error: 'project has no targetRepoPath' });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      roundIndex?: unknown;
+      specPath?: unknown;
+      referencedFiles?: unknown;
+      timeoutMs?: unknown;
+      modelId?: unknown;
+    };
+    const roundIndex = typeof body.roundIndex === 'number' ? body.roundIndex : -1;
+    const specPath = typeof body.specPath === 'string' ? body.specPath : '';
+    const referencedFiles = Array.isArray(body.referencedFiles)
+      ? body.referencedFiles.filter((f): f is string => typeof f === 'string')
+      : [];
+    if (!Number.isInteger(roundIndex) || roundIndex < 0) {
+      res.status(400).json({ error: '"roundIndex" (non-negative integer) required' });
+      return;
+    }
+    if (!specPath.trim()) {
+      res.status(400).json({ error: '"specPath" (string) required' });
+      return;
+    }
+    const rounds = project.rounds ?? [];
+    if (roundIndex >= rounds.length) {
+      res.status(400).json({ error: 'roundIndex out of range', rounds: rounds.length });
+      return;
+    }
+    try {
+      const verdict = await ctx.projectDriftChecker.run({
+        projectId: project.id,
+        roundIndex,
+        targetRepoPath: project.targetRepoPath,
+        specPath,
+        referencedFiles,
+        timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+        modelId: typeof body.modelId === 'string' ? body.modelId : undefined,
+      });
+      res.json({ verdict, projectId: project.id, roundIndex });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
