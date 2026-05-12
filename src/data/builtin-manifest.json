@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-05-12T00:43:45.508Z",
-  "instarVersion": "0.28.89",
+  "generatedAt": "2026-05-12T02:19:14.706Z",
+  "instarVersion": "0.28.93",
   "entryCount": 188,
   "entries": {
     "hook:session-start": {
@@ -1424,7 +1424,7 @@
       "type": "subsystem",
       "domain": "sessions",
       "sourcePath": "src/core/SessionManager.ts",
-      "contentHash": "bf12e9af008f4076a752e4fc3d8271fa1f9bf01ab41dc499f6f733f49d9d3604",
+      "contentHash": "5ffc79e4260ad0f6d9c62a95457a66f71b11f01b1b985787350d660247979e83",
       "since": "2025-01-01"
     },
     "subsystem:auto-updater": {
@@ -1496,7 +1496,7 @@
       "type": "subsystem",
       "domain": "memory",
       "sourcePath": "src/memory/SemanticMemory.ts",
-      "contentHash": "7023eebaa1305f610987b45a44527e5fad0a111731a86bceeca127fa30be4f66",
+      "contentHash": "4924359b024fb9eef8fd578a7f69f41e41fa7cd83280b6819780337fe7c45919",
       "since": "2025-01-01"
     },
     "subsystem:multi-machine-coordinator": {

@@ -17,6 +17,29 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+
+/**
+ * Sanitize C0/C1 control bytes from text destined for tmux bracketed-paste.
+ * Prevents paste-exit injection: a body containing `\x1b[201~` (or its 8-bit
+ * `\x9b` equivalent) would otherwise close paste mode early and let
+ * subsequent bytes execute as keystrokes/slash-commands. Tabs, newlines, and
+ * carriage returns are preserved.
+ *
+ * Spec: docs/specs/tmux-bracketed-paste-unification.md §4.1.1
+ */
+export function sanitizeForPaste(text: string): { sanitized: string; removed: number } {
+  // C0 range (U+0000..U+001F) minus tab/LF/CR, plus DEL (U+007F) and C1
+  // range (U+0080..U+009F). Operates on the JS string (UTF-16 code units);
+  // U+0080..U+009F are already single code units after decoding.
+  const PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+  let removed = 0;
+  const sanitized = text.replace(PATTERN, () => {
+    removed += 1;
+    return '\u2026'; // U+2026 HORIZONTAL ELLIPSIS — non-flaggable placeholder
+  });
+  return { sanitized, removed };
+}
+
 /** Diagnostics for a single running session */
 export interface SessionDiagnostic {
   name: string;
@@ -1925,45 +1948,45 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        if (text.includes('\n')) {
-          // Multi-line: use bracketed paste mode.
-          // The terminal (and Claude Code's readline) treats everything between
-          // \e[200~ and \e[201~ as a single paste — newlines are literal, not Enter.
-          // This completely avoids load-buffer/paste-buffer and their TCC prompts.
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
-            encoding: 'utf-8', timeout: 5000,
-          });
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
-            encoding: 'utf-8', timeout: 10000,
-          });
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
-            encoding: 'utf-8', timeout: 5000,
-          });
-          // Delay to let the terminal fully process the bracketed paste.
-          // 100ms was too short — Claude Code needs time to parse the paste end
-          // sequence and buffer the content before Enter can submit it.
-          // 500ms is conservative but prevents the "[Pasted text #1]" stuck state.
-          execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 });
-          // Send Enter to submit
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
-            encoding: 'utf-8', timeout: 5000,
-          });
-        } else {
-          // Single-line: simple send-keys
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
-            encoding: 'utf-8', timeout: 10000,
-          });
-          // Send Enter separately
-          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
-            encoding: 'utf-8', timeout: 5000,
+        // Unified bracketed-paste path for ALL non-empty text (single and multi-line).
+        // Previously single-line injects skipped the paste markers and the settle
+        // delay, sending text + Enter back-to-back. Claude Code 2.1.x's TUI then
+        // auto-detected the fast character stream as a paste, queued it, and the
+        // immediately-following Enter was consumed as part of the buffered paste
+        // content rather than as a submit. The result: text visible at the ❯
+        // prompt but never submitted; sessions sat silent until manual Enter.
+        // Spec: docs/specs/tmux-bracketed-paste-unification.md
+        const { sanitized, removed } = sanitizeForPaste(text);
+        if (removed > 0) {
+          DegradationReporter.getInstance().report({
+            feature: 'SessionManager.rawInject',
+            primary: 'Inject sanitized text into tmux session',
+            fallback: 'Replaced control bytes with ellipsis',
+            reason: `Message contained ${removed} control byte(s) — replaced with ellipsis`,
+            impact: 'control-byte-sanitized',
           });
         }
-        // Verify Enter actually submitted — on fresh Claude Code TUIs (v2.1.105+)
-        // the Enter after bracketed-paste-end is occasionally eaten, leaving the
-        // text sitting in the input box unsubmitted. verifyInjection captures the
-        // pane after a short delay and sends one extra Enter if the marker text
-        // is still visible at the ❯ prompt.
-        this.verifyInjection(tmuxSession, text);
+        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
+          encoding: 'utf-8', timeout: 5000,
+        });
+        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', sanitized], {
+          encoding: 'utf-8', timeout: 10000,
+        });
+        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
+          encoding: 'utf-8', timeout: 5000,
+        });
+        // 500ms settle prevents Claude Code's TUI from eating the Enter while
+        // its paste-buffer is still flushing. The existing multi-line path has
+        // used this delay reliably for months; we're applying the same proven
+        // sequence to single-line injects to close the qalatra-class race.
+        execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 });
+        execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+          encoding: 'utf-8', timeout: 5000,
+        });
+        // Defense in depth: PR #159's multi-shot verifyInjection still runs as
+        // backstop. With the unification above, it should rarely (if ever) need
+        // to fire — but the safety net stays in place.
+        this.verifyInjection(tmuxSession, sanitized);
         return true;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);

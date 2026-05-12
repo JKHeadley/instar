@@ -1,0 +1,21 @@
+{
+  "sessionId": "echo-tmux-bracketed-paste-unification-0.28.93",
+  "timestamp": "2026-05-12T02:19:14Z",
+  "artifactPath": "upgrades/side-effects/0.28.93.md",
+  "artifactSha256": "c5fdbe621dd1780e8cc48281b7d36677d155f62c4425f2821097c3ad14219b4a",
+  "specPath": "docs/specs/tmux-bracketed-paste-unification.md",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/SessionManager-bracketed-paste.test.ts",
+    "tests/unit/paste-stuck-detection.test.ts",
+    "docs/specs/tmux-bracketed-paste-unification.md",
+    "docs/specs/reports/tmux-bracketed-paste-unification-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/0.28.93.md",
+    "package.json"
+  ],
+  "phase": "complete",
+  "secondPass": true,
+  "reviewerConcurred": true
+}
