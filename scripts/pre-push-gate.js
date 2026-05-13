@@ -230,8 +230,13 @@ if (!process.env.CI) {
     /\bnew\b/i,
   ];
 
-  const guidePath = versionedGuideExists ? versionedGuidePath : nextPath;
-  if (fs.existsSync(guidePath)) {
+  // When NEXT.md exists, it represents the *next* shipment being prepared in
+  // this push — prefer it over the (frozen) versioned guide, which describes
+  // the already-released version and isn't what this PR is changing. This is
+  // the post-release-cut + new-PR state: both files coexist, but only NEXT.md
+  // is in flight. Falls back to the versioned guide when no NEXT.md is staged.
+  const guidePath = nextExists ? nextPath : (versionedGuideExists ? versionedGuidePath : null);
+  if (guidePath && fs.existsSync(guidePath)) {
     const guideContent = fs.readFileSync(guidePath, 'utf-8');
     // Extract "## What Changed" section
     const whatChangedMatch = guideContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
@@ -241,7 +246,10 @@ if (!process.env.CI) {
 
     if (qualifies) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
-      const artifactName = versionedGuideExists ? `${version}.md` : null;
+      // If NEXT.md is the active guide, any fresh artifact (last 24h) counts —
+      // the versioned-filename requirement only applies when a versioned guide
+      // is being validated without an in-flight NEXT.md.
+      const artifactName = (!nextExists && versionedGuideExists) ? `${version}.md` : null;
       let artifactFound = false;
 
       if (fs.existsSync(sideEffectsDir)) {

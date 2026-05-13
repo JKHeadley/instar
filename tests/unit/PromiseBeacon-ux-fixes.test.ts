@@ -173,6 +173,48 @@ describe('PromiseBeacon — UX fixes', () => {
     expect(tracker.resume(c.id)).toBeNull();
   });
 
+  it('auto-pauses by default within ~5 fires when no threshold override is configured', async () => {
+    const tracker = baseTracker(dir);
+    const sent: Array<{ text: string }> = [];
+    const beacon = new PromiseBeacon({
+      stateDir: dir,
+      commitmentTracker: tracker,
+      llmQueue: new LlmQueue({ maxDailyCents: 100 }),
+      proxyCoordinator: new ProxyCoordinator(),
+      captureSessionOutput: () => 'identical output',
+      getSessionForTopic: () => 'sess-1',
+      isSessionAlive: () => true,
+      sendMessage: async (_topicId, text) => { sent.push({ text }); },
+      // intentionally no defaultAutoPauseAfterUnchanged — exercise the default.
+    });
+    beacon.start();
+
+    const c = tracker.record({
+      type: 'one-time-action',
+      userRequest: 'watch a quiet build',
+      agentResponse: 'will keep an eye on the build',
+      topicId: 99,
+      beaconEnabled: true,
+      cadenceMs: 60_000,
+      nextUpdateDueAt: '2099-01-01T00:00:00Z',
+    });
+
+    // Fire well past the default threshold; expect a pause before fire 7.
+    for (let i = 0; i < 10; i++) {
+      await beacon.fire(c.id);
+    }
+
+    const pauseIndex = sent.findIndex(m => /auto-paused/i.test(m.text));
+    expect(pauseIndex).toBeGreaterThan(0);
+    // Default is 4 unchanged cycles: with seed-fire counted, pause lands no
+    // later than the 6th sent message (seed + 4 unchanged + pause). The bound
+    // is intentionally loose so it doesn't go off-target on small refactors,
+    // but it MUST be tighter than the previous default of 12.
+    expect(pauseIndex).toBeLessThanOrEqual(6);
+
+    beacon.stop();
+  });
+
   it('a resumed beacon re-arms via the resumed event handler', async () => {
     const tracker = baseTracker(dir);
     const beacon = new PromiseBeacon({

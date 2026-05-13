@@ -106,9 +106,11 @@ export interface PromiseBeaconConfig {
   maxActiveBeacons?: number;
   /**
    * Default cycle count for auto-pause when a commitment doesn't specify
-   * `beaconAutoPauseAfterUnchanged`. At default 10-min cadence, 12 cycles
-   * ≈ 2 hours of silence before the beacon stops firing. Set to 0 to
-   * disable globally. Default 12.
+   * `beaconAutoPauseAfterUnchanged`. At default 10-min cadence, 4 cycles
+   * ≈ 40 minutes of silence before the beacon stops firing. After this
+   * threshold the user gets one final "auto-paused — reply 'keep watching'
+   * to resume" message and the timer stops. Set to 0 to disable globally.
+   * Default 4.
    */
   defaultAutoPauseAfterUnchanged?: number;
 }
@@ -222,7 +224,7 @@ export class PromiseBeacon extends EventEmitter {
     this.timerMult = config.__dev_timerMultiplier ?? 1.0;
     this.now = config.now ?? (() => Date.now());
     this.maxActiveBeacons = config.maxActiveBeacons ?? 20;
-    this.defaultAutoPauseAfterUnchanged = config.defaultAutoPauseAfterUnchanged ?? 12;
+    this.defaultAutoPauseAfterUnchanged = config.defaultAutoPauseAfterUnchanged ?? 4;
     this.stateDir = path.join(config.stateDir, 'state', 'promise-beacon');
     try { fs.mkdirSync(this.stateDir, { recursive: true }); } catch { /* ok */ }
   }
