@@ -12,6 +12,7 @@ PR #163 added an auto-pause for PromiseBeacon after N consecutive unchanged-snap
 ## Decision-point inventory
 
 - `PromiseBeaconConfig.defaultAutoPauseAfterUnchanged` (src/monitoring/PromiseBeacon.ts:113) — modify — default value goes from 12 → 4; docstring updated to match.
+- `scripts/pre-push-gate.js` side-effects-artifact check — modify — when `upgrades/NEXT.md` exists (a new PR is in flight), evaluate NEXT.md instead of the frozen released `<version>.md` and accept any fresh artifact from the last 24h. Restores the pre-release-cut behavior for the post-release-cut + new-PR state. Necessary to unblock the push of this same change; previous releases shipped descriptive-slug artifacts (e.g. `jobs-as-agentmd-phase-1a.md`) that the gate kept demanding be renamed to `<version>.md` after the fact.
 
 ---
 
@@ -61,7 +62,7 @@ The auto-pause path is a self-stop on a side-effect emitter, not a gate that can
 
 **Does this interact with existing checks, recovery paths, or infrastructure?**
 
-- **Shadowing:** None. The threshold gate runs at the same point in `fire()` and isn't reordered.
+- **Shadowing:** None for the threshold change. For the pre-push-gate fix: the upper NEXT.md content-validation block (lines 41–79) is unchanged and continues to validate the versioned guide when it exists. The side-effects sub-gate now evaluates NEXT.md (when present) instead. The two blocks don't shadow each other; they validate different invariants.
 - **Double-fire:** None. The auto-pause sends exactly one final message and clears the timer; lowering the threshold doesn't change that contract.
 - **Races:** None new. The existing per-id `mutate()` CAS queue serializes the paused-flag write; the resume event handler re-arms only after the cold record reflects `beaconPaused=false`.
 - **Feedback loops:** Resume → re-arm → may re-pause is the *intended* loop. Lowering the threshold makes each loop shorter (≈40 min instead of ~2–3 h). A user spamming "keep watching" against an unmoving snapshot cycles the loop faster but still terminates after each round.
