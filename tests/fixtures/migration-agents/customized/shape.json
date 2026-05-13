@@ -1,0 +1,11 @@
+{
+  "name": "customized",
+  "description": "Operator disabled two defaults; edited cron on two others. No body edits.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [
+    { "kind": "set-enabled", "slug": "health-check", "enabled": false },
+    { "kind": "set-enabled", "slug": "reflection-trigger", "enabled": false },
+    { "kind": "set-schedule", "slug": "insight-harvest", "schedule": "0 */2 * * *" },
+    { "kind": "set-schedule", "slug": "commitment-detection", "schedule": "0 9 * * *" }
+  ]
+}

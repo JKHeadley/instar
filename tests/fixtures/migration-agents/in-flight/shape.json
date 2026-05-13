@@ -1,0 +1,7 @@
+{
+  "name": "in-flight",
+  "description": "A run is mid-execution when migration begins. Migrator must detect via JobScheduler.activeRuns() and either defer or abort.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [],
+  "inFlightSlugs": ["health-check"]
+}

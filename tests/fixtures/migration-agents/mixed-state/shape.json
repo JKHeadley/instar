@@ -1,0 +1,19 @@
+{
+  "name": "mixed-state",
+  "description": "Both jobs.json AND a partial .instar/jobs/schedule/ exists (simulates an interrupted prior migration).",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [],
+  "preExistingSchedule": [
+    {
+      "slug": "health-check",
+      "origin": "instar",
+      "schedule": "*/5 * * * *",
+      "priority": "critical",
+      "expectedDurationMinutes": 1,
+      "model": "haiku",
+      "enabled": true,
+      "execute": { "type": "agentmd" },
+      "manifestVersion": 1
+    }
+  ]
+}

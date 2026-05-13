@@ -1,0 +1,77 @@
+{
+  "name": "user-jobs",
+  "description": "Five user-authored jobs alongside the standard defaults.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [
+    {
+      "kind": "add-job",
+      "entry": {
+        "slug": "user-job-alpha",
+        "name": "User Job Alpha",
+        "description": "User-authored",
+        "schedule": "*/10 * * * *",
+        "priority": "low",
+        "expectedDurationMinutes": 1,
+        "model": "haiku",
+        "enabled": true,
+        "execute": { "type": "prompt", "value": "User prompt alpha\n" }
+      }
+    },
+    {
+      "kind": "add-job",
+      "entry": {
+        "slug": "user-job-beta",
+        "name": "User Job Beta",
+        "description": "User-authored",
+        "schedule": "0 9 * * *",
+        "priority": "medium",
+        "expectedDurationMinutes": 2,
+        "model": "sonnet",
+        "enabled": true,
+        "execute": { "type": "prompt", "value": "User prompt beta\n" }
+      }
+    },
+    {
+      "kind": "add-job",
+      "entry": {
+        "slug": "user-job-gamma",
+        "name": "User Job Gamma",
+        "description": "User-authored",
+        "schedule": "0 12 * * *",
+        "priority": "medium",
+        "expectedDurationMinutes": 1,
+        "model": "haiku",
+        "enabled": false,
+        "execute": { "type": "prompt", "value": "User prompt gamma (disabled)\n" }
+      }
+    },
+    {
+      "kind": "add-job",
+      "entry": {
+        "slug": "user-job-delta",
+        "name": "User Job Delta",
+        "description": "User-authored",
+        "schedule": "0 18 * * *",
+        "priority": "high",
+        "expectedDurationMinutes": 5,
+        "model": "opus",
+        "enabled": true,
+        "execute": { "type": "prompt", "value": "User prompt delta\n" }
+      }
+    },
+    {
+      "kind": "add-job",
+      "entry": {
+        "slug": "user-job-epsilon",
+        "name": "User Job Epsilon",
+        "description": "User-authored",
+        "schedule": "30 4 * * *",
+        "priority": "low",
+        "expectedDurationMinutes": 1,
+        "model": "haiku",
+        "enabled": true,
+        "execute": { "type": "prompt", "value": "User prompt epsilon\n" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "pristine",
+  "description": "Fresh agent. jobs.json is exactly what getDefaultJobs() produces; no operator edits.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": []
+}
