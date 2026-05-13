@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 // ── Schema ────────────────────────────────────────────────────────────────
 
@@ -204,7 +205,7 @@ function resolveBundledPublicKey(): string | null {
   // In a fresh install this lands at `<install>/dist/keys/...` which is what
   // we want.
   try {
-    let dir = path.dirname(new URL(import.meta.url).pathname);
+    let dir = path.dirname(fileURLToPath(import.meta.url));
     for (let i = 0; i < 5; i++) {
       const candidate = path.join(dir, 'keys', 'instar-release-pub.pem');
       if (fs.existsSync(candidate)) return candidate;
