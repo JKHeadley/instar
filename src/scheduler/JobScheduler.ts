@@ -1614,6 +1614,18 @@ export class JobScheduler {
       // Two-flag guard: "*" + unrestrictedTools:true → full tools.
       // Otherwise clamp to [Read] and signal the clamp.
       if (job.unrestrictedTools === true) {
+        // Phase-1b-gap closure: an origin:instar job in a real-tamper lockTrust
+        // state cannot escape to full tools, regardless of what the manifest
+        // claims. The lock-file is the higher trust authority.
+        if (job.origin === 'instar' && JobScheduler.isLockUntrustedTamper(job.lockTrust)) {
+          return {
+            kind: 'lock-untrusted-clamped',
+            allowlist: ['Read'],
+            unrestrictedTools: false,
+            clampedAllowlist: true,
+            lockUntrustedClamp: true,
+          };
+        }
         return {
           kind: 'unrestricted',
           allowlist: '*',
@@ -1643,12 +1655,40 @@ export class JobScheduler {
     // Instar-origin without an explicit allowlist: documented temporary
     // behavior — spawn with full tools, emit a degradation event so the
     // gap is visible until Phase 1c lock-file defaults close it.
+    //
+    // Phase-1b-gap closure: refuse the implicit full-tools fallback when
+    // lockTrust signals a real tamper. The transitional
+    // `untrusted-no-lockfile` state preserves the documented temporary
+    // behavior so existing agents don't lose tool access when they apply
+    // the update before the build-pipeline signing ships.
+    if (job.origin === 'instar' && JobScheduler.isLockUntrustedTamper(job.lockTrust)) {
+      return {
+        kind: 'lock-untrusted-clamped',
+        allowlist: ['Read'],
+        unrestrictedTools: false,
+        clampedAllowlist: true,
+        lockUntrustedClamp: true,
+      };
+    }
+
     return {
       kind: 'instar-no-allowlist',
       allowlist: null,
       unrestrictedTools: false,
       clampedAllowlist: false,
     };
+  }
+
+  /** Classify a lockTrust value as a real-tamper signal. The transitional
+   *  `untrusted-no-lockfile` is intentionally NOT a tamper signal — until
+   *  Phase 1c-build ships, every instar agent carries this value on every
+   *  origin:instar entry; treating it as tamper would break the rollout. */
+  static isLockUntrustedTamper(lockTrust: JobDefinition['lockTrust']): boolean {
+    return (
+      lockTrust === 'untrusted-bad-signature' ||
+      lockTrust === 'untrusted-not-in-lockfile' ||
+      lockTrust === 'untrusted-hash-mismatch'
+    );
   }
 
   /**
@@ -1766,12 +1806,43 @@ export class JobScheduler {
         // @silent-fallback-ok — degradation reporting is best-effort
       }
     }
+
+    if (resolution.kind === 'lock-untrusted-clamped') {
+      // Real-tamper lockTrust state refused trust elevation. Surface to BOTH
+      // event stream (Dashboard) and degradation digest so operator sees it.
+      this.state.appendEvent({
+        type: 'job_lock_untrusted_clamped',
+        summary:
+          `Job "${job.slug}" claims origin:instar but its lock-file trust state is "${job.lockTrust}" — ` +
+          `tool elevation refused, clamped to [Read].`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: job.slug, lockTrust: job.lockTrust },
+      });
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'JobScheduler.allowlistResolution',
+          primary: 'Spawn the instar default with its requested tool authorization',
+          fallback: 'Clamp the spawn to ["Read"]',
+          reason: `Instar-origin agentmd job "${job.slug}" has lockTrust="${job.lockTrust}" (real-tamper state)`,
+          impact: 'Job runs Read-only until the lock-file mismatch is acknowledged or repaired',
+        });
+      } catch {
+        // @silent-fallback-ok — degradation reporting is best-effort
+      }
+    }
   }
 }
 
 /** Result of {@link JobScheduler.resolveAllowlist}. Pure-data; no state. */
 export interface AllowlistResolution {
-  kind: 'legacy' | 'array' | 'unrestricted' | 'clamped' | 'default-user' | 'instar-no-allowlist';
+  kind:
+    | 'legacy'
+    | 'array'
+    | 'unrestricted'
+    | 'clamped'
+    | 'default-user'
+    | 'instar-no-allowlist'
+    | 'lock-untrusted-clamped';
   /** What the resolver will pass to the spawn:
    *  - `string[]` → spawn receives `--allowedTools <comma-separated>`
    *  - `"*"` → spawn omits `--allowedTools` (full tools authorized)
@@ -1779,6 +1850,12 @@ export interface AllowlistResolution {
   allowlist: string[] | '*' | null;
   unrestrictedTools: boolean;
   clampedAllowlist: boolean;
+  /** True when an `origin:instar` agentmd job had its tool elevation refused
+   *  because lockTrust is in a real-tamper state (`bad-signature`,
+   *  `not-in-lockfile`, or `hash-mismatch`). The transitional
+   *  `untrusted-no-lockfile` state does NOT trigger this clamp — see
+   *  {@link JobScheduler.resolveAllowlist} for the rationale. */
+  lockUntrustedClamp?: boolean;
 }
 
 /** Phase 1b run-record observability payload. */

@@ -1,5 +1,18 @@
 # Upgrade Notes (Unreleased)
 
+### feat(scheduler): Phase-1b-gap closure — lockTrust gates tool elevation
+
+`JobScheduler.resolveAllowlist` now refuses tool elevation for `origin:instar` agentmd jobs whose `lockTrust` signals real tamper (`untrusted-bad-signature`, `untrusted-not-in-lockfile`, `untrusted-hash-mismatch`). When the gate fires, the resolution kind is `'lock-untrusted-clamped'`, the allowlist clamps to `['Read']`, and both a Dashboard event (`job_lock_untrusted_clamped`) and a degradation event surface.
+
+Two values intentionally do NOT trigger the clamp:
+
+- `'trusted'` — proceed normally.
+- `'untrusted-no-lockfile'` — the documented transitional state. Until Phase 1c-build signs lock-files at release time, every existing agent's `origin:instar` job carries this value on the first boot after applying the update. Clamping here would break working agents on the seamless-migration path, violating the Seamless Migration Guarantee invariants (see PR #180).
+
+A new pure classifier `JobScheduler.isLockUntrustedTamper` is exported for reuse by other gates (grounding audit, future Dashboard "degraded trust" indicators).
+
+Tests: 12 new cases in `tests/unit/scheduler/JobScheduler.tool-allowlist.test.ts`. Total file: 27 tests, all passing.
+
 ## What Changed
 
 This release adds the runtime consumer for the signed instar-default lock-file described in the INSTAR-JOBS-AS-AGENTMD spec §Trust Model. The lock-file at `.instar/jobs/instar.lock.json` is the structural trust authority for "is this slug a real instar default": a separate build-time pipeline (Phase 1c-build, follow-up PR) signs it at release time; the corresponding public key is bundled at `dist/keys/instar-release-pub.pem`. This PR ships the loader-side consumer (Ed25519 signature verification using `node:crypto`, hash-equality check on body and frontmatter, four-state load result, skip-until-ack on per-slug hash mismatch) and a new `JobDefinition.lockTrust` field that downstream consumers will use to refuse trust elevation when not `'trusted'`. The build pipeline and the Phase-1b-gap closure (allowlist resolver consuming `lockTrust`) are explicitly out of scope and will land in their own PRs.

@@ -145,6 +145,117 @@ describe('JobScheduler.resolveAllowlist (Phase 1b, pure)', () => {
   });
 });
 
+describe('JobScheduler.resolveAllowlist lockTrust gap-closure', () => {
+  // ─── Real-tamper lockTrust states clamp instar elevation ──────────────────
+
+  for (const lockTrust of ['untrusted-bad-signature', 'untrusted-not-in-lockfile', 'untrusted-hash-mismatch'] as const) {
+    it(`refuses "*" + unrestrictedTools elevation for origin:instar when lockTrust=${lockTrust}`, () => {
+      const job: JobDefinition = {
+        ...makeAgentMdJob({
+          slug: 'j', origin: 'instar',
+          frontmatter: { toolAllowlist: '*' },
+          unrestrictedTools: true,
+        }),
+        lockTrust,
+      };
+      const r = JobScheduler.resolveAllowlist(job);
+      expect(r.kind).toBe('lock-untrusted-clamped');
+      expect(r.allowlist).toEqual(['Read']);
+      expect(r.unrestrictedTools).toBe(false);
+      expect(r.clampedAllowlist).toBe(true);
+      expect(r.lockUntrustedClamp).toBe(true);
+    });
+
+    it(`refuses the implicit full-tools fallback for origin:instar no-allowlist when lockTrust=${lockTrust}`, () => {
+      const job: JobDefinition = {
+        ...makeAgentMdJob({ slug: 'j', origin: 'instar', frontmatter: {} }),
+        lockTrust,
+      };
+      const r = JobScheduler.resolveAllowlist(job);
+      expect(r.kind).toBe('lock-untrusted-clamped');
+      expect(r.allowlist).toEqual(['Read']);
+      expect(r.lockUntrustedClamp).toBe(true);
+    });
+  }
+
+  // ─── Trusted + transitional preserve elevation (seamless migration) ───────
+
+  it('allows "*" + unrestrictedTools elevation for origin:instar when lockTrust=trusted', () => {
+    const job: JobDefinition = {
+      ...makeAgentMdJob({
+        slug: 'j', origin: 'instar',
+        frontmatter: { toolAllowlist: '*' },
+        unrestrictedTools: true,
+      }),
+      lockTrust: 'trusted',
+    };
+    const r = JobScheduler.resolveAllowlist(job);
+    expect(r.kind).toBe('unrestricted');
+    expect(r.allowlist).toBe('*');
+    expect(r.unrestrictedTools).toBe(true);
+    expect(r.lockUntrustedClamp).toBeUndefined();
+  });
+
+  it('allows elevation when lockTrust=untrusted-no-lockfile (transitional, pre-Phase-1c-build)', () => {
+    // This is the "every existing agent right after applying the update" state.
+    // Clamping here would break working agents on the seamless-migration path.
+    const job: JobDefinition = {
+      ...makeAgentMdJob({
+        slug: 'j', origin: 'instar',
+        frontmatter: { toolAllowlist: '*' },
+        unrestrictedTools: true,
+      }),
+      lockTrust: 'untrusted-no-lockfile',
+    };
+    const r = JobScheduler.resolveAllowlist(job);
+    expect(r.kind).toBe('unrestricted');
+    expect(r.allowlist).toBe('*');
+    expect(r.lockUntrustedClamp).toBeUndefined();
+  });
+
+  it('preserves instar-no-allowlist behavior when lockTrust=untrusted-no-lockfile (transitional)', () => {
+    const job: JobDefinition = {
+      ...makeAgentMdJob({ slug: 'j', origin: 'instar', frontmatter: {} }),
+      lockTrust: 'untrusted-no-lockfile',
+    };
+    const r = JobScheduler.resolveAllowlist(job);
+    expect(r.kind).toBe('instar-no-allowlist');
+    expect(r.allowlist).toBeNull();
+  });
+
+  // ─── User-origin jobs unaffected by lockTrust gating ──────────────────────
+
+  it('does NOT clamp user-origin jobs based on lockTrust (gate is instar-scoped)', () => {
+    const job: JobDefinition = {
+      ...makeAgentMdJob({
+        slug: 'j', origin: 'user',
+        frontmatter: { toolAllowlist: '*' },
+        unrestrictedTools: true,
+      }),
+      // User jobs have no lockTrust by design; even if a stale value leaks
+      // through, the gate must not fire (this is a defense-in-depth assertion).
+      lockTrust: 'untrusted-bad-signature' as JobDefinition['lockTrust'],
+    };
+    const r = JobScheduler.resolveAllowlist(job);
+    expect(r.kind).toBe('unrestricted');
+    expect(r.allowlist).toBe('*');
+  });
+
+  // ─── isLockUntrustedTamper classifier ─────────────────────────────────────
+
+  it('isLockUntrustedTamper classifies the three real-tamper states as tamper', () => {
+    expect(JobScheduler.isLockUntrustedTamper('untrusted-bad-signature')).toBe(true);
+    expect(JobScheduler.isLockUntrustedTamper('untrusted-not-in-lockfile')).toBe(true);
+    expect(JobScheduler.isLockUntrustedTamper('untrusted-hash-mismatch')).toBe(true);
+  });
+
+  it('isLockUntrustedTamper classifies trusted, transitional, and undefined as NOT tamper', () => {
+    expect(JobScheduler.isLockUntrustedTamper('trusted')).toBe(false);
+    expect(JobScheduler.isLockUntrustedTamper('untrusted-no-lockfile')).toBe(false);
+    expect(JobScheduler.isLockUntrustedTamper(undefined)).toBe(false);
+  });
+});
+
 describe('JobScheduler agentmd spawn-time allowlist plumbing (Phase 1b, integration)', () => {
   let stateDir: string;
   let state: StateManager;
