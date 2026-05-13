@@ -24,6 +24,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -63,6 +64,34 @@ if (!fs.existsSync(reportPath)) {
 }
 
 const content = fs.readFileSync(specPath, 'utf-8');
+
+// ─── ELI16 overview check ────────────────────────────────────────────────
+// Convergence cannot be stamped onto a spec without a plain-English overview.
+const _fmHeadMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+const _eli16Result = checkEli16Overview(specPath, _fmHeadMatch ? _fmHeadMatch[1] : '');
+if (!_eli16Result.ok) {
+  if (_eli16Result.reason === 'missing') {
+    console.error(
+      `Spec ${specArg} has no ELI16 overview.\n` +
+      `Convergence cannot be stamped without a plain-English companion at:\n` +
+      `  • Sibling path: ${path.relative(ROOT, _eli16Result.siblingPath)}\n` +
+      `  • OR declared via spec frontmatter: eli16-overview: <relative-path>\n` +
+      `See skills/instar-dev/templates/eli16-overview.md for the expected shape.`,
+    );
+  } else if (_eli16Result.reason === 'declared-not-found') {
+    console.error(
+      `Spec ${specArg} declares an ELI16 overview at ${path.relative(ROOT, _eli16Result.declaredPath)},\n` +
+      `but that file does not exist.`,
+    );
+  } else if (_eli16Result.reason === 'too-short') {
+    console.error(
+      `Spec ${specArg}'s ELI16 overview at ${path.relative(ROOT, _eli16Result.declaredPath)} is too short ` +
+      `(${_eli16Result.charCount} chars, need ${_eli16Result.minChars}).\n` +
+      `A stub isn't an overview. See skills/instar-dev/templates/eli16-overview.md.`,
+    );
+  }
+  process.exit(1);
+}
 
 // Parse YAML frontmatter manually (no dependency).
 // Expect: /^---\n<body>\n---\n<rest>/

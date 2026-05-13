@@ -5,61 +5,40 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
-### feat(cli): Phase 3 — `instar job migrate` for jobs-as-agentmd
-
-New CLI subcommand `instar job migrate` converts a legacy `jobs.json` agent to the per-slug-manifest layout. Flags: `--default-action fork|rename|skip|fail` (default `fail`), `--report` (dry-run), `--abandon` (one-button rollback). Always writes a pre-migrate backup before any other change. Idempotent. Implements the Seamless Migration Guarantee suite's CLI-path coverage (PR #180 invariants 1, 2, 5, 9). 11 unit tests pass locally. Phase 4 will add the Dashboard confirm step and interactive prompts; Phase 5 will auto-run on update.
-
 ## What Changed
 
 ### F-1 — RemediationKeyVault (Tier-1 foundation for Self-Healing Remediator)
 
-- **Adds** `src/remediation/RemediationKeyVault.ts` — per-context, per-scope
-  HKDF-SHA256 leaf-key derivation with a 4-backend secret store (OS keychain,
-  hardware enclave stub, cloud KMS stub, env-passphrase + AES-256-GCM flatfile).
-- Per amendments A20, A23, A39, A42, A51, A54, A58, A62 of
-  `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md`.
-- **No runtime consumers yet.** F-2+ wires capability tokens, probe
-  authentication, in-flight lockfiles, the cross-process attempt ledger, and
-  the audit-token writer onto the leaf-key surface.
-- **Operational notes.** On macOS and Linux+libsecret hosts the vault uses the
-  OS keychain (entries under `ai.instar.remediation.*`). On headless or
-  containerized hosts, set `INSTAR_REMEDIATION_KEY_PASSPHRASE` and the vault
-  stores keys in an AES-256-GCM-encrypted flatfile at
-  `<stateDir>/remediation-keys.age` (`.age` is forward-compat naming; the inner
-  format is Node-native AES-GCM, NOT the `age` library).
-- **Known follow-ups.** A39's per-binary-path keychain ACL
-  (`SecAccessCreateWithOwnerAndACL`) is NOT applied in F-1 — entries use the OS
-  default ACL. F-2 layers the scoped ACL via a native binding. Hardware-enclave
-  and cloud-KMS backends are explicit stubs; F-2+ implements detection and
-  key-wrapping for TPM 2.0 / Secure Enclave / AWS-KMS / GCP-KMS / Azure-Key-Vault.
+- **Adds** `src/remediation/RemediationKeyVault.ts` — per-context, per-scope HKDF-SHA256 leaf-key derivation with a 4-backend secret store (OS keychain, hardware enclave stub, cloud KMS stub, env-passphrase + AES-256-GCM flatfile).
+- Per amendments A20, A23, A39, A42, A51, A54, A58, A62 of `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md`.
+- **No runtime consumers yet.** F-2+ wires capability tokens, probe authentication, in-flight lockfiles, the cross-process attempt ledger, and the audit-token writer onto the leaf-key surface.
+
+### feat(instar-dev): ELI16 overview required for every approved spec
+
+`/instar-dev`'s pre-commit gate and `/spec-converge`'s convergence-tag writer now both refuse to advance a spec that ships without a plain-English ELI16 overview. Topic 3079 on 2026-05-13 surfaced this directly: "I can't digest this without an ELI16 overview. That should be required for every spec."
+
+This release adds a deterministic structural gate. The overview lives at `docs/specs/<slug>.eli16.md` by default (or any path declared via the spec's `eli16-overview:` frontmatter field) and must be at least 800 characters of real content. Stubs are refused. Both gates share `scripts/eli16-overview-check.mjs` so the rule is uniform across convergence-time and commit-time enforcement.
+
+- New shared check module `scripts/eli16-overview-check.mjs` exposes `resolveEli16Path()` and `checkEli16Overview()` with `MIN_ELI16_CHARS = 800` floor.
+- `scripts/instar-dev-precommit.js` adds Step 7 after spec-tag verification: refuses commit if the referenced spec has no ELI16 companion or the companion is a stub.
+- `skills/spec-converge/scripts/write-convergence-tag.mjs` adds a pre-check before stamping `review-convergence`: refuses to mark a spec converged without an ELI16 companion.
+- New template at `skills/instar-dev/templates/eli16-overview.md`. Updated `skills/instar-dev/SKILL.md` Phase 0 and `skills/spec-converge/SKILL.md` Phase 5.
+- 11 new unit tests in `tests/unit/eli16-overview-check.test.ts` — all passing.
+
+Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## What to Tell Your User
 
-Nothing user-visible yet. F-1 is plumbing for the Self-Healing Remediator —
-later phases (F-2 through F-7) will surface user-facing capabilities (automatic
-detection and repair of broken instar features). If a user asks "what does this
-release do for me?" the honest answer is: "It lays the cryptographic foundation
-so future self-healing features can prove which probe ran, which capability
-detected a fault, and which agent attempted a repair — without those proofs
-being forgeable."
+**F-1 — Cryptographic foundation for self-healing.** Nothing user-visible yet. Operators running on headless Linux without libsecret should set `INSTAR_REMEDIATION_KEY_PASSPHRASE` in their environment before any F-2+ feature ships. macOS and Linux+libsecret have nothing to do.
 
-Operators running on headless Linux without libsecret should set
-`INSTAR_REMEDIATION_KEY_PASSPHRASE` in their environment before any F-2+ feature
-ships. macOS users and Linux users with libsecret installed have nothing to do.
+**ELI16-overview gate.** When your agent hands you a spec for approval, you'll now always get a plain-English overview alongside the dense technical document. The instar repo refuses to commit any code change whose driving spec lacks a readable companion file. The technical spec becomes the appendix; the overview is the entry point. No setup required; the new behavior takes effect on the next agent update.
 
 ## Summary of New Capabilities
 
-- **`RemediationKeyVault`** — programmatic API for deriving 32-byte HKDF-SHA256
-  leaf keys scoped to one of five contexts (`capability`, `probe`, `inflight`,
-  `ledger`, `audit`) and an opaque scope id. Same `(context, scopeId)` → same
-  key, deterministically; rotating the install nonce or a context master
-  invalidates the corresponding leaves.
-- **4-backend secret store** — OS keychain (macOS `security`, Linux
-  `secret-tool`) is preferred; hardware-enclave and cloud-KMS are stubbed for
-  Tier-1; env-passphrase + AES-256-GCM flatfile at
-  `<stateDir>/remediation-keys.age` is the fallback.
-- **Install nonce** — 256-bit random anchor stored under
-  `ai.instar.remediation.install-nonce`; auto-initialized on first boot,
-  fail-closed if missing on an existing install.
-- **No runtime wiring yet.** Module ships behind no callers — F-2 is the first
-  consumer.
+- **`RemediationKeyVault`** (F-1) — HKDF-SHA256 leaf keys scoped to one of five contexts (`capability`, `probe`, `inflight`, `ledger`, `audit`) and an opaque scope id.
+- **4-backend secret store** (F-1) — OS keychain preferred; hardware-enclave and cloud-KMS stubbed; env-passphrase + AES-256-GCM flatfile fallback.
+- **Install nonce** (F-1) — 256-bit random anchor stored under `ai.instar.remediation.install-nonce`; auto-initialized on first boot, fail-closed if missing.
+- **ELI16-overview gate** — Structural enforcement at both convergence-time and commit-time. Specs handed for approval always carry a plain-English companion.
+- **Shared check module** at `scripts/eli16-overview-check.mjs` — `resolveEli16Path()` and `checkEli16Overview()` with 800-char minimum-length floor.
+- **Template for ELI16 overviews** at `skills/instar-dev/templates/eli16-overview.md`.
+- **Forward-only enforcement** — only specs newly committed-against after this ships have to satisfy the gate.

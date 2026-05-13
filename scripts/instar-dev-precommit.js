@@ -28,6 +28,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { checkEli16Overview } from './eli16-overview-check.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -270,10 +271,68 @@ if (!approvedMatch) {
   );
 }
 
+// ─── Step 7: ELI16 overview verification ─────────────────────────────────
+// Every approved spec must ship with a plain-English ELI16 overview. The
+// overview is the entry point for any reader who has to make a real decision
+// against the spec — the dense technical spec is for reviewers, not deciders.
+
+const eli16Result = checkEli16Overview(specPath, specFm);
+if (!eli16Result.ok) {
+  if (eli16Result.reason === 'missing') {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Spec ${spec} has no ELI16 overview.`,
+        'Every approved spec must ship with a plain-English overview at:',
+        `  • Sibling path: ${path.relative(ROOT, eli16Result.siblingPath)}`,
+        '  • OR declared via spec frontmatter: eli16-overview: <relative-path>',
+        '',
+        'An ELI16 overview is a ~16-year-old-reading-level companion to the',
+        "technical spec — it leads with what the change actually is in plain",
+        "English, what already exists, what's new, and what the reader needs",
+        'to decide. The technical spec is the appendix, not the entry point.',
+        '',
+        'See skills/instar-dev/templates/eli16-overview.md for a template.',
+      ].join('\n'),
+    );
+  } else if (eli16Result.reason === 'declared-not-found') {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Spec ${spec} declares an ELI16 overview at ${path.relative(ROOT, eli16Result.declaredPath)} (frontmatter eli16-overview),`,
+        'but that file does not exist. Create it before committing.',
+      ].join('\n'),
+    );
+  } else if (eli16Result.reason === 'too-short') {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Spec ${spec}'s ELI16 overview at ${path.relative(ROOT, eli16Result.declaredPath)} is too short`,
+        `(${eli16Result.charCount} chars, need ${eli16Result.minChars}).`,
+        '',
+        "A stub isn't an overview — write a real one.",
+        'See skills/instar-dev/templates/eli16-overview.md for the expected shape.',
+      ].join('\n'),
+    );
+  }
+}
+
+// If the spec itself is staged, the ELI16 overview must ship with it.
+const eli16Rel = path.relative(ROOT, eli16Result.eli16Path).replace(/\\/g, '/');
+if (staged.includes(spec) && !staged.includes(eli16Rel)) {
+  blockCommit(
+    inScopeFiles,
+    [
+      `Spec ${spec} is staged but its ELI16 overview ${eli16Rel} is not.`,
+      'The overview must ship alongside the spec it accompanies.',
+    ].join('\n'),
+  );
+}
+
 // ─── Pass ────────────────────────────────────────────────────────────────
 
 console.error(
-  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved.`,
+  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved, ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars).`,
 );
 process.exit(0);
 
