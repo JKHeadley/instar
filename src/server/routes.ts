@@ -4390,6 +4390,107 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  /**
+   * GET /jobs/migration-status
+   * Phase 4 — surface the jobs-as-agentmd migration state so the Dashboard
+   * can render the "Confirm migration complete" / "Roll back" buttons.
+   *
+   * Returns:
+   *   - hasLegacyJobsJson: boolean (whether .instar/jobs.json exists)
+   *   - hasMigrationComplete: boolean
+   *   - hasMigrationAbandoned: boolean
+   *   - canConfirm: boolean (legacy + schedule/ exist, no marker)
+   *   - canAbandon: boolean (schedule/ exists, no completion marker)
+   *   - scheduleEntryCount: number
+   */
+  router.get('/jobs/migration-status', (_req, res) => {
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const jobsJson = path.join(stateDir, 'jobs.json');
+      const jobsRoot = path.join(stateDir, 'jobs');
+      const scheduleDir = path.join(jobsRoot, 'schedule');
+      const completed = path.join(jobsRoot, '.migration-complete.json');
+      const abandoned = path.join(jobsRoot, '.migration-abandoned.json');
+      const hasLegacyJobsJson = fs.existsSync(jobsJson);
+      const hasMigrationComplete = fs.existsSync(completed);
+      const hasMigrationAbandoned = fs.existsSync(abandoned);
+      let scheduleEntryCount = 0;
+      if (fs.existsSync(scheduleDir)) {
+        scheduleEntryCount = fs.readdirSync(scheduleDir).filter((f) => f.endsWith('.json')).length;
+      }
+      res.json({
+        hasLegacyJobsJson,
+        hasMigrationComplete,
+        hasMigrationAbandoned,
+        canConfirm: hasLegacyJobsJson && scheduleEntryCount > 0 && !hasMigrationComplete && !hasMigrationAbandoned,
+        canAbandon: scheduleEntryCount > 0 && !hasMigrationComplete && !hasMigrationAbandoned,
+        scheduleEntryCount,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/migration-confirm
+   * Phase 4 — operator confirms migration is complete. Writes
+   * .instar/jobs/.migration-complete.json which the release-cut gate
+   * consumes to allow jobs.json deletion.
+   *
+   * Idempotent — re-confirming is a no-op.
+   */
+  router.post('/jobs/migration-confirm', (_req, res) => {
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const jobsRoot = path.join(stateDir, 'jobs');
+      const completed = path.join(jobsRoot, '.migration-complete.json');
+      const abandoned = path.join(jobsRoot, '.migration-abandoned.json');
+      if (fs.existsSync(abandoned)) {
+        res.status(409).json({ error: 'Migration has been abandoned; cannot confirm. Run `instar job migrate` first.' });
+        return;
+      }
+      fs.mkdirSync(jobsRoot, { recursive: true });
+      fs.writeFileSync(
+        completed,
+        JSON.stringify({ confirmedAt: new Date().toISOString(), confirmedBy: 'dashboard' }, null, 2),
+        'utf-8',
+      );
+      res.json({ ok: true, marker: completed });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/migration-abandon
+   * Phase 4 — operator rolls back migration. Invokes
+   * `jobsMigrate({ abandon: true })` to remove `.instar/jobs/schedule/`,
+   * write `.migration-abandoned.json`, and leave `jobs.json` intact.
+   */
+  router.post('/jobs/migration-abandon', async (_req, res) => {
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const { jobsMigrate } = await import('../commands/jobMigrate.js');
+      const packageRoot = path.resolve(__dirname, '..', '..');
+      const outcome = jobsMigrate({ agentStateDir: stateDir, packageRoot, abandon: true });
+      res.json(outcome);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post('/jobs/:slug/trigger', async (req, res) => {
     if (!JOB_SLUG_RE.test(req.params.slug)) {
       res.status(400).json({ error: 'Invalid job slug' });

@@ -5,9 +5,15 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
-### feat(scheduler): Phase 6 — legacy `execute.type:"prompt"` deprecation warning
+### feat(server): Phase 4 — Dashboard migration endpoints for jobs-as-agentmd
 
-`JobLoader.loadJobs` now emits a single boot-time warning per slug when a legacy `jobs.json` entry has `execute.type: "prompt"` AND the same slug also appears as a shipped agentmd default AND `.instar/jobs/.migration-complete.json` is absent. This is the operator-facing nudge that legacy `prompt` entries for instar defaults will be removed two releases after Phase 4 Dashboard ships the "Confirm migration complete" action. The warning is silenced once the operator confirms migration via Dashboard. 4 unit tests pass locally.
+Three new HTTP endpoints surface the migration state so the Dashboard frontend can render confirm / abandon buttons:
+
+- `GET /jobs/migration-status` — returns `{ hasLegacyJobsJson, hasMigrationComplete, hasMigrationAbandoned, canConfirm, canAbandon, scheduleEntryCount }`.
+- `POST /jobs/migration-confirm` — writes `.instar/jobs/.migration-complete.json`. The release-cut gate consumes this marker to allow `jobs.json` deletion. Refuses when the abandonment marker is present (operator must re-run migrate first).
+- `POST /jobs/migration-abandon` — invokes `jobsMigrate({ abandon: true })` to roll back.
+
+This is the backend half of Phase 4. The Dashboard UI rewrite (Jobs tab, Issues card, drift digest, unfork action with backup, interactive three-choice prompt) lands as a follow-up multi-PR effort against these endpoints.
 
 ## What Changed
 
