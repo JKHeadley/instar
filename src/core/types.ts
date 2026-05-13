@@ -133,8 +133,18 @@ export interface JobDefinition {
    *  Closed-set whitelist of keys, validated via Zod preprocessors. */
   frontmatter?: Record<string, unknown>;
   /** Paired flag for toolAllowlist: "*" — see spec §5. Phase 1a stores
-   *  the value but does not act on it (scheduler dispatch lands in 1b). */
+   *  the value but does not act on it (scheduler dispatch lands in 1b).
+   *  Phase 1b enforces: `toolAllowlist === "*"` requires this to be `true`
+   *  or the allowlist is clamped to `["Read"]`. */
   unrestrictedTools?: boolean;
+  /** Monotonic counter for optimistic concurrency on save and
+   *  observability. Sourced from the per-slug manifest. Absent for
+   *  legacy jobs.json entries. */
+  manifestVersion?: number;
+  /** Absolute path that the agentmd body was resolved from. Populated
+   *  by the loader for `execute.type === "agentmd"` entries; absent for
+   *  legacy entries. Surfaced into the run-record. */
+  resolvedPath?: string;
 }
 
 /** A pre-confirmed resolution for a common blocker pattern. */

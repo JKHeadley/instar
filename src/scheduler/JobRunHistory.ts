@@ -66,6 +66,30 @@ export interface JobRun {
   handoffNotes?: string;
   /** Structured state snapshot for the next execution */
   stateSnapshot?: Record<string, unknown>;
+  // ── Phase 1b observability (jobs-as-agentmd spec §"Run-record observability") ──
+  /** Where the job came from. "legacy" = traditional jobs.json entry,
+   *  "instar" or "user" = per-slug manifest entry with the matching origin. */
+  origin?: 'instar' | 'user' | 'legacy';
+  /** Absolute path the agentmd body was resolved from; null for non-agentmd. */
+  resolvedPath?: string | null;
+  /** SHA-256 of the cached body. null for non-agentmd. */
+  bodyHash?: string | null;
+  /** SHA-256 of the canonicalized frontmatter object. null for non-agentmd. */
+  frontmatterHash?: string | null;
+  /** Monotonic counter from the per-slug manifest. null when absent. */
+  manifestVersion?: number | null;
+  /** Tool allowlist as resolved at spawn time. Array of names, or "*" when
+   *  the unrestricted-tools two-flag guard passed, or null when no
+   *  allowlist applies (legacy entries). */
+  toolAllowlist?: string[] | '*' | null;
+  /** Whether the manifest declared unrestricted tools. */
+  unrestrictedTools?: boolean;
+  /** Whether the resolver clamped the requested allowlist to [Read]
+   *  because the unrestricted-tools two-flag guard failed. */
+  clampedAllowlist?: boolean;
+  /** When the row exceeded the 2 KB cap, non-essential fields are
+   *  truncated and this flag is set. */
+  truncated?: boolean;
 }
 
 export interface JobRunStats {
@@ -83,6 +107,23 @@ export interface JobRunStats {
 
 /** Monotonic counter to ensure unique runIds even within the same millisecond */
 let runCounter = 0;
+
+/** Per-row size cap from spec §"Run-record observability". When a row's
+ *  serialized JSON exceeds this many bytes, non-essential fields are
+ *  truncated and a degradation event is reported. The essential set —
+ *  runId, slug, sessionId, trigger, startedAt, result, origin — is
+ *  always preserved so query results remain coherent. */
+const ROW_SIZE_CAP_BYTES = 2 * 1024;
+
+/** Fields that are dropped first when a row exceeds the size cap.
+ *  Ordered loosely by user-visibility: bulky outputs first, summaries last. */
+const TRUNCATABLE_FIELDS = [
+  'outputSummary',
+  'stateSnapshot',
+  'handoffNotes',
+  'reflection',
+  'error',
+] as const;
 
 export class JobRunHistory {
   private ledgerDir: string;
@@ -108,6 +149,15 @@ export class JobRunHistory {
     sessionId: string;
     trigger: string;
     model?: string;
+    // Phase 1b observability extensions (jobs-as-agentmd spec)
+    origin?: 'instar' | 'user' | 'legacy';
+    resolvedPath?: string | null;
+    bodyHash?: string | null;
+    frontmatterHash?: string | null;
+    manifestVersion?: number | null;
+    toolAllowlist?: string[] | '*' | null;
+    unrestrictedTools?: boolean;
+    clampedAllowlist?: boolean;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -119,6 +169,14 @@ export class JobRunHistory {
       result: 'pending',
       model: opts.model,
       machineId: this.machineId ?? undefined,
+      origin: opts.origin,
+      resolvedPath: opts.resolvedPath ?? null,
+      bodyHash: opts.bodyHash ?? null,
+      frontmatterHash: opts.frontmatterHash ?? null,
+      manifestVersion: opts.manifestVersion ?? null,
+      toolAllowlist: opts.toolAllowlist ?? null,
+      unrestrictedTools: opts.unrestrictedTools ?? false,
+      clampedAllowlist: opts.clampedAllowlist ?? false,
     };
     this.appendLine(run);
     return runId;
@@ -443,10 +501,48 @@ export class JobRunHistory {
 
   private appendLine(data: JobRun): void {
     try {
-      fs.appendFileSync(this.file, JSON.stringify(data) + '\n');
+      const capped = this.applyRowSizeCap(data);
+      fs.appendFileSync(this.file, JSON.stringify(capped) + '\n');
     } catch (error) {
       console.error(`[JobRunHistory] Failed to write:`, error);
     }
+  }
+
+  /**
+   * Enforce the 2 KB per-row cap from spec §"Run-record observability".
+   * If the serialized row exceeds the cap, non-essential fields are
+   * progressively dropped (longest first by TRUNCATABLE_FIELDS order) and
+   * a degradation event is reported. Essential fields are always preserved.
+   */
+  private applyRowSizeCap(row: JobRun): JobRun {
+    const initialSize = Buffer.byteLength(JSON.stringify(row), 'utf-8');
+    if (initialSize <= ROW_SIZE_CAP_BYTES) return row;
+
+    // Clone and truncate iteratively. Always preserve the essential set.
+    const truncated: JobRun = { ...row, truncated: true };
+    for (const field of TRUNCATABLE_FIELDS) {
+      if (truncated[field] === undefined) continue;
+      delete (truncated as unknown as Record<string, unknown>)[field];
+      if (Buffer.byteLength(JSON.stringify(truncated), 'utf-8') <= ROW_SIZE_CAP_BYTES) {
+        break;
+      }
+    }
+
+    const finalSize = Buffer.byteLength(JSON.stringify(truncated), 'utf-8');
+    try {
+      DegradationReporter.getInstance().report({
+        feature: 'JobRunHistory.appendLine',
+        primary: 'Write full run record with all fields',
+        fallback: `Truncate non-essential fields (dropped: ${TRUNCATABLE_FIELDS
+          .filter(f => row[f] !== undefined && truncated[f] === undefined)
+          .join(', ')})`,
+        reason: `Row size ${initialSize}B exceeded ${ROW_SIZE_CAP_BYTES}B cap for run ${row.runId} (slug=${row.slug})`,
+        impact: `Run record stored at ${finalSize}B with truncated:true flag set`,
+      });
+    } catch {
+      // @silent-fallback-ok — degradation reporting is best-effort
+    }
+    return truncated;
   }
 
   private readLines(): JobRun[] {

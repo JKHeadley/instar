@@ -12,7 +12,9 @@ import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 const execFileAsync = promisify(execFile);
 import path from 'node:path';
@@ -222,20 +224,12 @@ export class JobScheduler {
     this.jobs = loadJobs(this.config.jobsFile);
     this.running = true;
 
-    // Phase 1a: agentmd entries load + validate but are NOT dispatched.
-    // Filtering here (rather than at load) preserves the loader's invariant
-    // that agentmd jobs are visible to the CLI/Dashboard/probes for
-    // introspection; the scheduler simply does not schedule them yet.
-    // Phase 1b adds the dispatch path and removes this filter.
-    const enabledJobs = this.jobs.filter(j => j.enabled && j.execute.type !== 'agentmd');
-    const deferredAgentMd = this.jobs.filter(j => j.enabled && j.execute.type === 'agentmd');
-    if (deferredAgentMd.length > 0) {
-      console.log(
-        `[scheduler] ${deferredAgentMd.length} agentmd job(s) loaded but deferred — ` +
-        `Phase 1a does not dispatch agentmd entries; Phase 1b adds the dispatch path. ` +
-        `Deferred: ${deferredAgentMd.map(j => j.slug).join(', ')}`,
-      );
-    }
+    // Phase 1b: agentmd entries now flow through the dispatch path
+    // alongside legacy entries. The Phase 1a defensive filter on
+    // execute.type === 'agentmd' has been removed; buildPrompt's
+    // 'agentmd' case returns the cached body, and spawnJobSession
+    // threads the per-job tool allowlist into the spawn call.
+    const enabledJobs = this.jobs.filter(j => j.enabled);
 
     // Machine-scoped filtering — skip jobs not targeted at this machine
     const scopedJobs = enabledJobs.filter(j => this.isJobScopedToThisMachine(j));
@@ -641,6 +635,17 @@ export class JobScheduler {
     // Check for gate-written model escalation (e.g., git-sync severity)
     const model = this.resolveModelTier(job);
 
+    // Resolve per-job tool allowlist (spec §5). For non-agentmd entries this
+    // returns "legacy" — no flag is passed and the spawn runs with full tools
+    // unchanged from pre-spec behavior. For agentmd entries the result encodes
+    // (a) the allowlist actually passed to spawn, (b) whether unrestricted-tools
+    // was authorized, and (c) whether the resolver clamped to [Read] because
+    // the two-flag guard failed.
+    const allowlistResolution = JobScheduler.resolveAllowlist(job);
+    // Side-channel signals (Dashboard event for clamp; degradation event for
+    // both clamp and the instar-origin-without-allowlist Phase 1c gap).
+    this.emitAllowlistSignals(job, allowlistResolution);
+
     // Write active-job.json BEFORE spawning so the session-start and
     // compaction-recovery hooks can inject job-specific grounding context.
     this.state.set('active-job', {
@@ -667,6 +672,20 @@ export class JobScheduler {
       }
     }
 
+    // Allowlist flag for the spawn:
+    // - array → passed through to --allowedTools
+    // - "*" with unrestricted authority → omit flag (full tools)
+    // - clamped or "legacy" with no allowlist → omit flag (full tools by default)
+    // The spawn always receives at most one allowlist input — never a "*" string.
+    const spawnAllowedTools: string[] | undefined = Array.isArray(allowlistResolution.allowlist)
+      ? allowlistResolution.allowlist
+      : undefined;
+
+    // Compute observability fields once, used in both recordStart and the
+    // spawn-error path. Hashing the body/frontmatter is cheap (a few µs for
+    // typical body sizes) — see spec performance budget.
+    const observability = JobScheduler.computeRunObservability(job, allowlistResolution);
+
     this.sessionManager.spawnSession({
       name: sessionName,
       prompt,
@@ -674,13 +693,22 @@ export class JobScheduler {
       jobSlug: job.slug,
       triggeredBy: `scheduler:${reason}`,
       maxDurationMinutes: job.expectedDurationMinutes,
+      allowedTools: spawnAllowedTools,
     }).then(() => {
-      // Record in run history
+      // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
         slug: job.slug,
         sessionId: sessionName,
         trigger: reason,
         model: model ?? job.model,
+        origin: observability.origin,
+        resolvedPath: observability.resolvedPath,
+        bodyHash: observability.bodyHash,
+        frontmatterHash: observability.frontmatterHash,
+        manifestVersion: observability.manifestVersion,
+        toolAllowlist: observability.toolAllowlist,
+        unrestrictedTools: observability.unrestrictedTools,
+        clampedAllowlist: observability.clampedAllowlist,
       });
       this.activeRunIds.set(sessionName, runId);
 
@@ -761,11 +789,8 @@ export class JobScheduler {
     let base: string;
     // execute.value is required for the legacy types ("skill" | "prompt" |
     // "script") and the JobLoader validator guarantees it. The new
-    // "agentmd" type (Phase 1a) carries no value — its body lives in
-    // job.body. Phase 1b will add the corresponding case here; for now,
-    // an agentmd job reaching buildPrompt is a Phase 1b/1c bug, not a
-    // Phase 1a one, so we throw explicitly rather than silently fall
-    // through to undefined.
+    // "agentmd" type (Phase 1b) carries no value — its body lives in
+    // job.body, populated at load time by AgentMdJobLoader.
     switch (job.execute.type) {
       case 'skill':
         base = `/${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
@@ -777,15 +802,20 @@ export class JobScheduler {
         base = `Run this script: ${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
       case 'agentmd':
-        // Phase 1b will return job.body here. Phase 1a's loader populates
-        // body but the scheduler does not yet route agentmd entries to
-        // execution — this case is reachable only if someone wires it up
-        // out-of-order, which we treat as a programmer error.
-        throw new Error(
-          `JobScheduler.buildPrompt: agentmd execution type is not yet dispatched in this release ` +
-          `(Phase 1b). Job "${job.slug}" should not have been queued. ` +
-          `See docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md.`,
-        );
+        // Phase 1b dispatch: the cached markdown body IS the prompt. The
+        // loader (AgentMdJobLoader.loadAgentMdBody) guarantees `body` is
+        // populated for any agentmd JobDefinition that survives validation;
+        // if it is somehow missing here, surface that loud and refuse to
+        // spawn an empty prompt rather than fail silently.
+        if (typeof job.body !== 'string') {
+          throw new Error(
+            `JobScheduler.buildPrompt: agentmd job "${job.slug}" has no cached body. ` +
+            `This indicates a loader-hydration bug (see AgentMdJobLoader.isAgentMdJobHydrated). ` +
+            `See docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md.`,
+          );
+        }
+        base = job.body;
+        break;
       default: {
         const _exhaustive: never = job.execute.type;
         throw new Error(`Unknown execute.type: ${String(_exhaustive)}`);
@@ -1534,4 +1564,231 @@ export class JobScheduler {
       }
     }
   }
+
+  // ── Phase 1b: tool-allowlist resolution + run-record observability ─────
+  //
+  // The helpers below are static so they remain pure functions of the input
+  // JobDefinition — no scheduler state is read. This makes them trivial to
+  // exercise from unit tests without standing up a full scheduler.
+
+  /**
+   * Resolve a per-job tool allowlist per INSTAR-JOBS-AS-AGENTMD spec §5.
+   *
+   * Decision matrix:
+   *   | execute.type !== 'agentmd'                       → kind:'legacy', allowlist:null (full tools, back-compat)
+   *   | frontmatter.toolAllowlist = string[]             → kind:'array', allowlist:[...]
+   *   | frontmatter.toolAllowlist = "*" + unrestricted   → kind:'unrestricted', allowlist:"*", unrestrictedTools:true
+   *   | frontmatter.toolAllowlist = "*" + NOT authorized → kind:'clamped', allowlist:['Read'], clampedAllowlist:true (warning event emitted by caller)
+   *   | frontmatter.toolAllowlist missing + origin=user  → kind:'default-user', allowlist:['Read']
+   *   | frontmatter.toolAllowlist missing + origin=instar → kind:'instar-no-allowlist', allowlist:null (degradation event; Phase 1c lock-file will close)
+   *
+   * Returns a single object describing the resolution so callers can both
+   * (a) thread the right argument into the spawn call and (b) annotate the
+   * run record. Side-effects (degradation events) are NOT performed here —
+   * they happen in the caller, where the scheduler context is available.
+   */
+  static resolveAllowlist(job: JobDefinition): AllowlistResolution {
+    if (job.execute.type !== 'agentmd') {
+      return {
+        kind: 'legacy',
+        allowlist: null,
+        unrestrictedTools: false,
+        clampedAllowlist: false,
+      };
+    }
+
+    const fm = job.frontmatter ?? {};
+    const raw = fm.toolAllowlist;
+
+    if (Array.isArray(raw)) {
+      const list = raw.filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
+      return {
+        kind: 'array',
+        allowlist: list,
+        unrestrictedTools: false,
+        clampedAllowlist: false,
+      };
+    }
+
+    if (raw === '*') {
+      // Two-flag guard: "*" + unrestrictedTools:true → full tools.
+      // Otherwise clamp to [Read] and signal the clamp.
+      if (job.unrestrictedTools === true) {
+        return {
+          kind: 'unrestricted',
+          allowlist: '*',
+          unrestrictedTools: true,
+          clampedAllowlist: false,
+        };
+      }
+      return {
+        kind: 'clamped',
+        allowlist: ['Read'],
+        unrestrictedTools: false,
+        clampedAllowlist: true,
+      };
+    }
+
+    // toolAllowlist missing
+    if (job.origin === 'user') {
+      // User jobs without an explicit allowlist default to minimal Read-only.
+      return {
+        kind: 'default-user',
+        allowlist: ['Read'],
+        unrestrictedTools: false,
+        clampedAllowlist: false,
+      };
+    }
+
+    // Instar-origin without an explicit allowlist: documented temporary
+    // behavior — spawn with full tools, emit a degradation event so the
+    // gap is visible until Phase 1c lock-file defaults close it.
+    return {
+      kind: 'instar-no-allowlist',
+      allowlist: null,
+      unrestrictedTools: false,
+      clampedAllowlist: false,
+    };
+  }
+
+  /**
+   * Compute Phase 1b run-record observability fields for a job. Pure
+   * function: hashing is deterministic over body + canonicalized
+   * frontmatter; non-agentmd entries carry nulls.
+   */
+  static computeRunObservability(
+    job: JobDefinition,
+    resolution: AllowlistResolution,
+  ): RunObservability {
+    const isAgentMd = job.execute.type === 'agentmd';
+
+    let origin: 'instar' | 'user' | 'legacy';
+    if (job.execute.type !== 'agentmd') {
+      origin = 'legacy';
+    } else if (job.origin === 'instar') {
+      origin = 'instar';
+    } else {
+      origin = 'user';
+    }
+
+    const bodyHash = isAgentMd && typeof job.body === 'string'
+      ? `sha256:${crypto.createHash('sha256').update(job.body).digest('hex')}`
+      : null;
+
+    const frontmatterHash = isAgentMd
+      ? `sha256:${crypto
+          .createHash('sha256')
+          .update(JobScheduler.canonicalize(job.frontmatter ?? {}))
+          .digest('hex')}`
+      : null;
+
+    return {
+      origin,
+      resolvedPath: isAgentMd ? (job.resolvedPath ?? null) : null,
+      bodyHash,
+      frontmatterHash,
+      manifestVersion: isAgentMd && typeof job.manifestVersion === 'number'
+        ? job.manifestVersion
+        : null,
+      toolAllowlist: resolution.allowlist,
+      unrestrictedTools: resolution.unrestrictedTools,
+      clampedAllowlist: resolution.clampedAllowlist,
+    };
+  }
+
+  /**
+   * Canonical JSON encoding for hash stability. Sorts object keys at every
+   * depth so the same logical frontmatter always produces the same hash,
+   * regardless of insertion order. Arrays preserve order. Primitive nulls
+   * and undefined are encoded the same way `JSON.stringify` does.
+   */
+  static canonicalize(value: unknown): string {
+    if (value === null || typeof value !== 'object') {
+      return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+      return '[' + value.map(v => JobScheduler.canonicalize(v)).join(',') + ']';
+    }
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    const parts = keys.map(k => {
+      return JSON.stringify(k) + ':' + JobScheduler.canonicalize((value as Record<string, unknown>)[k]);
+    });
+    return '{' + parts.join(',') + '}';
+  }
+
+  /**
+   * Emit Phase 1b side-channel signals for an allowlist resolution.
+   * Side effects (Dashboard event + degradation event) are gathered here
+   * so spawnJobSession can call once at spawn time. Pure function on the
+   * scheduler's `state.appendEvent` and the global DegradationReporter.
+   *
+   * The clamped-allowlist warning is a Dashboard-visible event AND a
+   * DegradationReporter event — both surface to the user via different
+   * channels (event stream vs degradation digest).
+   *
+   * The instar-no-allowlist path is a DegradationReporter event only:
+   * Phase 1c's lock-file defaults will close this gap; until then the
+   * temporary "full tools" behavior is documented and observable.
+   */
+  private emitAllowlistSignals(job: JobDefinition, resolution: AllowlistResolution): void {
+    if (resolution.clampedAllowlist) {
+      this.state.appendEvent({
+        type: 'job_allowlist_clamped',
+        summary:
+          `Job "${job.slug}" requested toolAllowlist:"*" without unrestrictedTools:true — ` +
+          `clamped to [Read]. Set unrestrictedTools:true in the manifest to authorize full tools.`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: job.slug, origin: job.origin },
+      });
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'JobScheduler.allowlistResolution',
+          primary: 'Spawn with the requested allowlist (toolAllowlist:"*")',
+          fallback: 'Clamp the spawn to ["Read"]',
+          reason: `Job "${job.slug}" requested toolAllowlist:"*" without manifest.unrestrictedTools:true`,
+          impact: 'Job will run with Read-only tools until the manifest sets unrestrictedTools:true',
+        });
+      } catch {
+        // @silent-fallback-ok — degradation reporting is best-effort
+      }
+    }
+
+    if (resolution.kind === 'instar-no-allowlist') {
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'JobScheduler.allowlistResolution',
+          primary: 'Look up a structural per-slug default allowlist (Phase 1c lock-file)',
+          fallback: 'Spawn with full tools (no --allowedTools flag)',
+          reason: `Instar-origin agentmd job "${job.slug}" has no toolAllowlist frontmatter; Phase 1c lock-file defaults are not yet shipped`,
+          impact: 'Job runs with full tools until Phase 1c lock-file defaults land',
+        });
+      } catch {
+        // @silent-fallback-ok — degradation reporting is best-effort
+      }
+    }
+  }
+}
+
+/** Result of {@link JobScheduler.resolveAllowlist}. Pure-data; no state. */
+export interface AllowlistResolution {
+  kind: 'legacy' | 'array' | 'unrestricted' | 'clamped' | 'default-user' | 'instar-no-allowlist';
+  /** What the resolver will pass to the spawn:
+   *  - `string[]` → spawn receives `--allowedTools <comma-separated>`
+   *  - `"*"` → spawn omits `--allowedTools` (full tools authorized)
+   *  - `null` → spawn omits `--allowedTools` (legacy or instar-no-allowlist fallback) */
+  allowlist: string[] | '*' | null;
+  unrestrictedTools: boolean;
+  clampedAllowlist: boolean;
+}
+
+/** Phase 1b run-record observability payload. */
+export interface RunObservability {
+  origin: 'instar' | 'user' | 'legacy';
+  resolvedPath: string | null;
+  bodyHash: string | null;
+  frontmatterHash: string | null;
+  manifestVersion: number | null;
+  toolAllowlist: string[] | '*' | null;
+  unrestrictedTools: boolean;
+  clampedAllowlist: boolean;
 }

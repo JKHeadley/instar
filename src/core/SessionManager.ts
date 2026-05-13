@@ -654,6 +654,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     topicId?: number | 'platform';
     worktreeMode?: 'dev' | 'read-only' | 'doc-fix' | 'platform';
     worktreeSlug?: string;
+    /** Optional Claude Code per-session tool allowlist
+     *  (mapped to `--allowedTools <comma-separated>`).
+     *  When omitted, the spawn runs with full tools (back-compat).
+     *  When an empty array, no `--allowedTools` flag is emitted —
+     *  callers must explicitly pass at least one tool name to scope. */
+    allowedTools?: string[];
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -710,7 +716,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // when given as separate arguments after the session options.
     // Use -e CLAUDECODE= to unset the CLAUDECODE env var in spawned sessions,
     // preventing nested Claude Code detection when instar runs inside Claude Code.
+    //
+    // Per-job tool allowlist (INSTAR-JOBS-AS-AGENTMD spec §5): when the
+    // caller provides a non-empty `allowedTools` array, scope the spawned
+    // session to that set via `--allowedTools <comma-separated>`. Omitting
+    // the flag preserves the legacy "full tools" behavior — back-compat
+    // for every non-agentmd code path.
     const claudeArgs = ['--dangerously-skip-permissions'];
+    if (options.allowedTools && options.allowedTools.length > 0) {
+      claudeArgs.push('--allowedTools', options.allowedTools.join(','));
+    }
     if (options.model) {
       claudeArgs.push('--model', options.model);
     }

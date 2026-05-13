@@ -104,6 +104,7 @@ export interface PerSlugManifest {
   machines?: string[];
   gate?: string;
   unrestrictedTools?: boolean;
+  manifestVersion?: number;
 }
 
 // ── Load-problems surface ──────────────────────────────────────────────────
@@ -383,6 +384,13 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Optional unrestrictedTools
   if (j.unrestrictedTools !== undefined && typeof j.unrestrictedTools !== 'boolean') {
     throw new Error(`${prefix}: "unrestrictedTools" must be a boolean if provided`);
+  }
+
+  // Optional manifestVersion (monotonic counter — spec §3)
+  if (j.manifestVersion !== undefined) {
+    if (typeof j.manifestVersion !== 'number' || !Number.isFinite(j.manifestVersion) || !Number.isInteger(j.manifestVersion) || j.manifestVersion < 0) {
+      throw new Error(`${prefix}: "manifestVersion" must be a non-negative integer if provided`);
+    }
   }
 
   // Optional tags
@@ -711,7 +719,7 @@ function loadAgentMdBody(
   // spec §"Open Questions Resolved" — manifest is authority for cron; frontmatter
   // is authority for behavior (name/description). For Phase 1a we surface
   // both so the scheduler-dispatch step in Phase 1b can lookup the right field.
-  const job = manifestToJobDefinition(manifest, frontmatter, body);
+  const job = manifestToJobDefinition(manifest, frontmatter, body, resolved);
   return { job, problem: null };
 }
 
@@ -894,6 +902,7 @@ function manifestToJobDefinition(
   manifest: PerSlugManifest,
   frontmatter?: Record<string, unknown>,
   body?: string,
+  resolvedPath?: string,
 ): JobDefinition {
   // Manifest is authority for cron + slug; frontmatter is authority for
   // name/description per spec §"Open Questions Resolved" Q6.
@@ -921,11 +930,13 @@ function manifestToJobDefinition(
     machines: manifest.machines,
     gate: manifest.gate,
     unrestrictedTools: manifest.unrestrictedTools,
+    manifestVersion: manifest.manifestVersion,
   };
 
   if (manifest.execute.type === 'agentmd') {
     if (body !== undefined) job.body = body;
     if (frontmatter !== undefined) job.frontmatter = frontmatter;
+    if (resolvedPath !== undefined) job.resolvedPath = resolvedPath;
   }
 
   return job;
