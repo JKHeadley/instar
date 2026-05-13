@@ -167,6 +167,13 @@ export class SessionManager extends EventEmitter {
    *  Key = session ID. Prevents infinite retry loops — one retry per session. */
   private pasteRetried = new Set<string>();
 
+  /**
+   * Sessions that have been logged once for "over age limit but actively
+   * working." Tracked to avoid log spam — the deferred-kill warning fires
+   * once per session, not every tick.
+   */
+  private overAgeButActiveLogged = new Set<string>();
+
   /** Cached count of running sessions, updated asynchronously by the monitor tick.
    *  Used by the health endpoint to avoid synchronous tmux polling. */
   private _cachedRunningCount = 0;
@@ -466,38 +473,71 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Enforce session timeout (prevents zombie/stuck sessions)
         // Uses explicit maxDurationMinutes if set, otherwise falls back to
         // DEFAULT_MAX_DURATION_MINUTES as an absolute safety net.
+        //
+        // Activity-aware kill gate: a session that is over the age limit but
+        // demonstrably WORKING (terminal not at idle prompt, OR active
+        // non-baseline child processes) is deferred for kill. Wall-clock age
+        // alone is not sufficient — long-running autonomous flows (spec
+        // convergence + multi-phase builds, /loop tasks, multi-hour driving
+        // through several PRs to merge) routinely exceed 240m while producing
+        // tool calls every few seconds. The previous unconditional age-based
+        // kill reaped these sessions mid-build, taking their background agents
+        // with them. The idle-detection block below (the existing infrastructure)
+        // catches sessions that are genuinely stuck.
         if (session.startedAt) {
           const maxMinutes = session.maxDurationMinutes || this.effectiveMaxDurationMinutes;
           const elapsed = (Date.now() - new Date(session.startedAt).getTime()) / 60000;
           const buffer = Math.min(maxMinutes * 0.2, 60); // 20% buffer, max 60 min
           const limit = maxMinutes + buffer;
           if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
-            // Check for unanswered injection before timeout kill
-            const pendingInjection = this.pendingInjections.get(session.tmuxSession);
-            if (pendingInjection) {
-              console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
-              this.pendingInjections.delete(session.tmuxSession);
-              this.emit('injectionDropped', {
-                topicId: pendingInjection.topicId,
-                sessionName: session.tmuxSession,
-                text: pendingInjection.text,
-                injectedAt: pendingInjection.injectedAt,
-              });
+            // Activity check — defer kill if the session is doing real work.
+            const ageGateOutput = this.captureOutput(session.tmuxSession, 5);
+            const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
+            const ageGateHasProcs = this.hasActiveProcesses(session.tmuxSession);
+            const ageGateTrulyIdle = ageGateIsIdle && !ageGateHasProcs;
+
+            if (!ageGateTrulyIdle) {
+              // Over age limit but actively working. Log once per session to
+              // avoid log spam, defer the kill. The idle-detection block below
+              // will catch the session once it genuinely stops working.
+              if (!this.overAgeButActiveLogged.has(session.id)) {
+                this.overAgeButActiveLogged.add(session.id);
+                console.warn(
+                  `[SessionManager] Session "${session.name}" is past the age limit (${Math.round(elapsed)}m > ${maxMinutes}m) ` +
+                  `but is actively working (procs=${ageGateHasProcs}, idleAtPrompt=${!!ageGateIsIdle}). Deferring kill; ` +
+                  `the idle-detection block will catch it once it stops producing work.`
+                );
+              }
+              // Fall through to the rest of the loop — do NOT skip idle detection,
+              // because if the session DOES go idle, we still want it killed.
+            } else {
+              // Check for unanswered injection before timeout kill
+              const pendingInjection = this.pendingInjections.get(session.tmuxSession);
+              if (pendingInjection) {
+                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                this.pendingInjections.delete(session.tmuxSession);
+                this.emit('injectionDropped', {
+                  topicId: pendingInjection.topicId,
+                  sessionName: session.tmuxSession,
+                  text: pendingInjection.text,
+                  injectedAt: pendingInjection.injectedAt,
+                });
+              }
+              console.warn(`[SessionManager] Session "${session.name}" exceeded timeout (${Math.round(elapsed)}m > ${maxMinutes}m) and is idle. Killing.`);
+              // Emit beforeSessionKill BEFORE destroying the tmux session so
+              // listeners (e.g. TopicResumeMap) can discover the Claude UUID.
+              this.emit('beforeSessionKill', session);
+              try {
+                await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
+              } catch {
+                // @silent-fallback-ok — tmux kill, session may be dead
+              }
+              session.status = 'killed';
+              session.endedAt = new Date().toISOString();
+              this.state.saveSession(session);
+              this.emit('sessionComplete', session);
+              continue;
             }
-            console.warn(`[SessionManager] Session "${session.name}" exceeded timeout (${Math.round(elapsed)}m > ${maxMinutes}m). Killing.`);
-            // Emit beforeSessionKill BEFORE destroying the tmux session so
-            // listeners (e.g. TopicResumeMap) can discover the Claude UUID.
-            this.emit('beforeSessionKill', session);
-            try {
-              await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
-            } catch {
-              // @silent-fallback-ok — tmux kill, session may be dead
-            }
-            session.status = 'killed';
-            session.endedAt = new Date().toISOString();
-            this.state.saveSession(session);
-            this.emit('sessionComplete', session);
-            continue;
           }
         }
 
