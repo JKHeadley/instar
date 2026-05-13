@@ -28,6 +28,7 @@ import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/Tel
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { AnthropicIntelligenceProvider } from '../core/AnthropicIntelligenceProvider.js';
+import { selectIntelligenceProvider } from '../core/selectIntelligenceProvider.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import { DispatchManager } from '../core/DispatchManager.js';
@@ -2048,48 +2049,35 @@ export async function startServer(options: StartOptions): Promise<void> {
     _projectDir = config.sessions.projectDir;
 
     // Shared intelligence provider — lightweight LLM for internal classification tasks.
-    // Priority: Claude CLI subscription (zero extra cost, default) → Anthropic API (explicit opt-in)
-    // Components that need LLM intelligence (Sentinel, TelegramAdapter, etc.) share this.
-    //
-    // Rationale: Instar must not depend on an API key. The subscription path is the default so
-    // every agent gets LLM-gated features out of the box. Users who prefer direct API access can
-    // set `intelligenceProvider: "anthropic-api"` in config.json.
-    let sharedIntelligence: IntelligenceProvider | undefined;
-    const explicitIntelligenceProvider =
-      (config as unknown as { intelligenceProvider?: string }).intelligenceProvider;
-    let intelligenceSource = 'none';
-
-    if (explicitIntelligenceProvider === 'anthropic-api') {
-      try {
-        const apiProvider = AnthropicIntelligenceProvider.fromEnv();
-        if (apiProvider) {
-          sharedIntelligence = apiProvider;
-          intelligenceSource = 'Anthropic API (explicit opt-in)';
-        } else {
-          console.log(pc.yellow('  intelligenceProvider: "anthropic-api" set but ANTHROPIC_API_KEY not found — falling back to Claude CLI'));
-        }
-      } catch { /* no API key available */ }
+    // Subscription-by-default: API mode requires BOTH `intelligenceProvider: "anthropic-api"`
+    // AND `intelligenceProviderConfirmed: true`. The selection logic lives in a separate
+    // pure function so the safety rules are unit-testable.
+    const apiOpts = config as unknown as {
+      intelligenceProvider?: string;
+      intelligenceProviderConfirmed?: boolean;
+    };
+    const selection = selectIntelligenceProvider({
+      intelligenceProvider: apiOpts.intelligenceProvider,
+      intelligenceProviderConfirmed: apiOpts.intelligenceProviderConfirmed,
+      anthropicApiKey: process.env['ANTHROPIC_API_KEY'],
+      claudePath: config.sessions.claudePath,
+      buildClaude: (claudePath) => new ClaudeCliIntelligenceProvider(claudePath),
+      buildAnthropic: (apiKey) => new AnthropicIntelligenceProvider(apiKey),
+    });
+    const sharedIntelligence: IntelligenceProvider | undefined = selection.provider ?? undefined;
+    for (const w of selection.warnings) console.log(pc.yellow(`  ${w}`));
+    if (selection.apiModeActive) {
+      console.log(pc.yellow('  ┌─────────────────────────────────────────────────────────────────────┐'));
+      console.log(pc.yellow('  │ BILLING: Anthropic API mode is ACTIVE — per-call charges apply      │'));
+      console.log(pc.yellow('  │ To switch back to subscription, unset intelligenceProvider in config│'));
+      console.log(pc.yellow('  └─────────────────────────────────────────────────────────────────────┘'));
     }
-
-    if (!sharedIntelligence) {
-      try {
-        sharedIntelligence = new ClaudeCliIntelligenceProvider(config.sessions.claudePath);
-        intelligenceSource = 'Claude CLI subscription';
-      } catch { /* CLI not available */ }
-    }
-
-    if (!sharedIntelligence && explicitIntelligenceProvider !== 'anthropic-api') {
-      // Last resort: if user has API key but didn't explicitly opt in, use it rather than
-      // leaving the agent flying blind. We prefer subscription, but degrading to heuristics
-      // is worse than using whatever LLM is available.
-      try {
-        const apiProvider = AnthropicIntelligenceProvider.fromEnv();
-        if (apiProvider) {
-          sharedIntelligence = apiProvider;
-          intelligenceSource = 'Anthropic API (CLI unavailable — last resort)';
-        }
-      } catch { /* no API key available */ }
-    }
+    const intelligenceSourceLabel: Record<typeof selection.source, string> = {
+      'anthropic-api-confirmed': 'Anthropic API (explicit opt-in, confirmed)',
+      'claude-cli': 'Claude CLI subscription',
+      'none': 'none',
+    };
+    const intelligenceSource = intelligenceSourceLabel[selection.source];
 
     _sharedIntelligence = sharedIntelligence ?? null;
     if (sharedIntelligence) {

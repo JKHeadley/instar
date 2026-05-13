@@ -11,6 +11,18 @@ The binding gate the INSTAR-JOBS-AS-AGENTMD spec §Seamless Migration Guarantee 
 
 ## What Changed
 
+### fix(security): API safety guard — subscription-by-default enforcement
+
+`src/commands/server.ts` had one silent-fallback path that could engage billed Anthropic API mode without explicit user consent: if the Claude CLI was unavailable and `ANTHROPIC_API_KEY` happened to be set in the environment, instar would silently use the API "as a last resort." That trade-off ("degrading to heuristics is worse than using whatever LLM is available") encoded a values choice the principal rejects. Removed.
+
+Selection logic moves to a new pure function `src/core/selectIntelligenceProvider.ts`. API mode now requires BOTH `intelligenceProvider: "anthropic-api"` AND `intelligenceProviderConfirmed: true` in config.json. Server startup with API mode active prints a visible yellow boxed billing banner. An `ANTHROPIC_API_KEY` in env without the two-flag opt-in is surfaced as a warning and explicitly ignored.
+
+- New `src/core/selectIntelligenceProvider.ts` — pure selection function; 14 unit tests in `tests/unit/selectIntelligenceProvider.test.ts` exhaustively cover the selection table.
+- `src/commands/server.ts` replaces the inline 70-line selection block (formerly lines 2050–2114) with a `selectIntelligenceProvider()` call plus warning/banner rendering.
+- Spec: `docs/specs/API-SAFETY-GUARD-SPEC.md` + ELI16 companion at `API-SAFETY-GUARD-SPEC.eli16.md`. Side-effects review: `upgrades/side-effects/api-safety-guard.md`.
+
+Driven by Telegram topic 9003 on 2026-05-13: "By default Instar should only run on subscription."
+
 ### F-1 — RemediationKeyVault (Tier-1 foundation for Self-Healing Remediator)
 
 - **Adds** `src/remediation/RemediationKeyVault.ts` — per-context, per-scope HKDF-SHA256 leaf-key derivation with a 4-backend secret store (OS keychain, hardware enclave stub, cloud KMS stub, env-passphrase + AES-256-GCM flatfile).
@@ -33,6 +45,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## What to Tell Your User
 
+**Stronger API-billing safety.** Instar will no longer silently switch from your Claude subscription to the metered Anthropic API just because your CLI broke and you happen to have an API key in your environment. The default has always been subscription-only; this fix removes the one path that could quietly bill you. If you actually want API mode, you now need to set two flags in config (`intelligenceProvider: "anthropic-api"` AND `intelligenceProviderConfirmed: true`), and every server startup in API mode prints a yellow boxed banner so it's impossible to miss. No setup needed for the subscription path — that is the default and it stays the default.
+
 **F-1 — Cryptographic foundation for self-healing.** Nothing user-visible yet. Operators running on headless Linux without libsecret should set `INSTAR_REMEDIATION_KEY_PASSPHRASE` in their environment before any F-2+ feature ships. macOS and Linux+libsecret have nothing to do.
 
 **ELI16-overview gate.** When your agent hands you a spec for approval, you'll now always get a plain-English overview alongside the dense technical document. The instar repo refuses to commit any code change whose driving spec lacks a readable companion file. The technical spec becomes the appendix; the overview is the entry point. No setup required; the new behavior takes effect on the next agent update.
@@ -46,3 +60,4 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **Shared check module** at `scripts/eli16-overview-check.mjs` — `resolveEli16Path()` and `checkEli16Overview()` with 800-char minimum-length floor.
 - **Template for ELI16 overviews** at `skills/instar-dev/templates/eli16-overview.md`.
 - **Forward-only enforcement** — only specs newly committed-against after this ships have to satisfy the gate.
+- **`selectIntelligenceProvider()`** — single chokepoint enforcing subscription-by-default for the shared LLM provider; refuses silent API fallback; requires two explicit flags for API opt-in; prints a billing banner when API mode is active.
