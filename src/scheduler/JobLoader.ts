@@ -107,7 +107,63 @@ export function loadJobs(jobsFile: string): JobDefinition[] {
   // Grounding-by-default audit — warn about jobs missing grounding config
   auditGrounding(merged);
 
+  // Phase 6 deprecation audit — warn about legacy execute.type: 'prompt'
+  // entries for slugs that have a shipped agentmd default. These are
+  // structurally inert (the agentmd entry shadows them) but their presence
+  // means the operator hasn't confirmed migration. Two-release removal
+  // cycle per INSTAR-JOBS-AS-AGENTMD spec §Rollout step 6.
+  auditLegacyPromptDeprecation(legacyJobs, agentMdResult.jobs, jobsRootDir);
+
   return merged;
+}
+
+/**
+ * Phase 6 — deprecation audit for legacy `execute.type: 'prompt'` entries
+ * whose slug also appears as a shipped agentmd default. Emits a single
+ * deprecation warning per boot per affected slug.
+ *
+ * The warning fires only when:
+ *   - the slug is present in BOTH legacy jobs.json AND the per-slug
+ *     manifest (shadowed); AND
+ *   - the legacy entry's execute.type is 'prompt'; AND
+ *   - `.migration-complete.json` is NOT present (operator hasn't
+ *     confirmed migration yet).
+ *
+ * When `.migration-complete.json` is present, the legacy entries are about
+ * to be removed by the release-cut gate, so the deprecation warning would
+ * be noise.
+ *
+ * Spec: docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md §Rollout step 6.
+ */
+function auditLegacyPromptDeprecation(
+  legacy: JobDefinition[],
+  agentMd: JobDefinition[],
+  jobsRootDir: string,
+): void {
+  if (legacy.length === 0 || agentMd.length === 0) return;
+  const completedMarker = path.join(jobsRootDir, '.migration-complete.json');
+  if (fs.existsSync(completedMarker)) return;
+
+  const shippedAgentMdSlugs = new Set(
+    agentMd.filter((j) => j.origin === 'instar').map((j) => j.slug),
+  );
+  const deprecated: string[] = [];
+  for (const j of legacy) {
+    if (j.execute?.type !== 'prompt') continue;
+    if (!shippedAgentMdSlugs.has(j.slug)) continue;
+    deprecated.push(j.slug);
+  }
+
+  if (deprecated.length === 0) return;
+
+  console.warn(
+    `[JobLoader] DEPRECATION: ${deprecated.length} legacy jobs.json ` +
+    `entry(ies) with execute.type:"prompt" shadow agentmd defaults: ` +
+    `${deprecated.join(', ')}. These will be removed two releases after ` +
+    `Dashboard ships the "Confirm migration complete" action. ` +
+    `Run \`instar job migrate\` (or wait for the next update's auto-run) ` +
+    `then confirm completion via Dashboard to suppress this warning.`,
+  );
 }
 
 /**

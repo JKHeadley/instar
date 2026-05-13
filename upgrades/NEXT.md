@@ -5,9 +5,9 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
-### feat(updates): Phase 5 — auto-migrate legacy jobs.json on update
+### feat(scheduler): Phase 6 — legacy `execute.type:"prompt"` deprecation warning
 
-`PostUpdateMigrator` now auto-runs `instar job migrate --default-action=fork` once per update when an agent has a legacy `jobs.json` AND has not yet completed-or-abandoned migration. Skip-rules: jobs.json absent → silent no-op; `.migration-complete.json` present → log + skip; `.migration-abandoned.json` present → log + skip. Fork policy preserves operator-edited bodies verbatim under `.instar/jobs/user/` — nothing is silently dropped. Auto-runner does NOT write `.migration-complete.json` (only the operator-confirmed Dashboard action does that — release-cut gate continues to block jobs.json deletion until operator confirms). 5 unit tests in `tests/unit/PostUpdateMigrator-autoMigrate.test.ts`. Closes the Phase 5 commitment from the INSTAR-JOBS-AS-AGENTMD spec rollout.
+`JobLoader.loadJobs` now emits a single boot-time warning per slug when a legacy `jobs.json` entry has `execute.type: "prompt"` AND the same slug also appears as a shipped agentmd default AND `.instar/jobs/.migration-complete.json` is absent. This is the operator-facing nudge that legacy `prompt` entries for instar defaults will be removed two releases after Phase 4 Dashboard ships the "Confirm migration complete" action. The warning is silenced once the operator confirms migration via Dashboard. 4 unit tests pass locally.
 
 ## What Changed
 
