@@ -41,6 +41,22 @@ Driven by Telegram topic 9003 on 2026-05-13: "By default Instar should only run 
 - Per amendments A20, A23, A39, A42, A51, A54, A58, A62 of `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md`.
 - **No runtime consumers yet.** F-2+ wires capability tokens, probe authentication, in-flight lockfiles, the cross-process attempt ledger, and the audit-token writer onto the leaf-key surface.
 
+### feat(monitoring): F-3 — DegradationReporter normalization shim (Self-Healing Remediator v2 foundation)
+
+Adds the F-3 milestone of the Self-Healing Remediator v2 foundation (per `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` §A5, §A33, §A50). `DegradationReporter` gains a back-compat shim that converts legacy `DegradationEvent` quintuples into a new `NormalizedDegradationEvent` (`{subsystem, errorCode, provenance, reason: {redacted, full}, timestamp, monotonicTs}`) using the F-2 `Redactor` and `ErrorCodeExtractor`. All ~103 legacy `.report(...)` emit sites continue to work unchanged; they normalize to `provenance: 'free-text'` and (per §A6) cannot match any runbook prefilter — they will route to `no-matching-runbook` once F-8 ships the Remediator dispatcher.
+
+New surface on the reporter:
+- `reportStructured(event)` — go-forward emit API for callers that already have a NormalizedDegradationEvent.
+- `setRemediator(remediator)` — registration hook for the F-8 dispatcher (no consumer wired in this PR).
+- `_normalize(legacy)` — pure transform exposed for testability.
+- `_setRestartPending(true|false)` — supervisor-controlled flag that re-routes events to a durable JSONL queue at `<stateDir>/remediation/degradations-queue.jsonl` (1000 entries / 5 MiB cap, drop-and-counter on overflow per §A5).
+
+New `scripts/lint-degradation-emit-sites.js` — warning-only catalogue of legacy vs structured emit sites. Exits 0 always; F-8 may upgrade to blocking once a deprecation timeline is agreed.
+
+9 new unit tests appended to `tests/unit/degradation-reporter.test.ts` covering normalization, structured-emit provenance preservation, Remediator routing, backward compat, RestartPending enqueue/replay, queue-cap drop-counter, secret redaction, and errorCode extraction.
+
+Side-effects review: `upgrades/side-effects/f3-degradation-reporter-shim.md`.
+
 ### feat(monitoring): F-2 — Redactor + ErrorCodeExtractor (Self-Healing Remediator v2 foundation)
 
 Adds two foundation modules from the Self-Healing Remediator v2 spec (§A1 manifest, F-2): `src/monitoring/Redactor.ts` and `src/monitoring/ErrorCodeExtractor.ts`. The Redactor centralizes content sanitization (home-directory paths, bearer tokens, Telegram bot tokens, emails, UUIDs, long hex strings, IPv4/IPv6, and ≥6-digit numeric IDs). The ErrorCodeExtractor enforces the §A6 errorCode-provenance contract: returns `{code, provenance}` where provenance is `native-binding | probe-id | subsystem-explicit | free-text`, following a priority ladder. A static `isAllowedForRunbookMatch` predicate gives the runbook registry validator a single call to refuse matchers that would consume free-text-provenance events — the §A6 structural defense against attacker-shaped error-text. Neither module has any consumer in this PR; F-3 (DegradationReporter migration) and the W-* runbook wrappers wire them up in follow-up PRs. 46 new unit tests across `tests/unit/Redactor.test.ts` (25) and `tests/unit/ErrorCodeExtractor.test.ts` (21).
@@ -97,6 +113,11 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **Template for ELI16 overviews** at `skills/instar-dev/templates/eli16-overview.md`.
 - **Forward-only enforcement** — only specs newly committed-against after this ships have to satisfy the gate.
 - **`selectIntelligenceProvider()`** — single chokepoint enforcing subscription-by-default for the shared LLM provider; refuses silent API fallback; requires two explicit flags for API opt-in; prints a billing banner when API mode is active.
+- **NormalizedDegradationEvent contract** (F-3) — `{subsystem, errorCode, provenance, reason: {redacted, full}, timestamp, monotonicTs}` — the go-forward event shape; F-3 ships the additive type plus the legacy → normalized shim.
+- **`DegradationReporter.reportStructured(event)`** (F-3) — go-forward emit API for callers that already produced a NormalizedDegradationEvent.
+- **`DegradationReporter.setRemediator(remediator)`** (F-3) — registration hook for the F-8 dispatcher; no consumer wired in this PR.
+- **Durable RestartPending queue** (F-3) — `<stateDir>/remediation/degradations-queue.jsonl`, 1000 entries / 5 MiB cap, drop-and-counter on overflow (per spec §A5).
+- **`scripts/lint-degradation-emit-sites.js`** (F-3) — warning-only catalogue of legacy vs structured emit sites; exits 0 always.
 - **Centralized content redaction** (F-2) — `new Redactor().redact(text)` / `.redactFields(obj, fields)` — wired into DegradationReporter in F-3.
 - **Structured errorCode extraction with provenance** (F-2) — `ErrorCodeExtractor.extract({ nativeError, probeEmission, subsystemExplicit, freeText, verifyProbeSignature })`.
 - **Runbook-match provenance gate** (F-2) — `ErrorCodeExtractor.isAllowedForRunbookMatch(extracted)` — refuses free-text-provenance matchers.

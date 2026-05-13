@@ -32,6 +32,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { detectJargon } from '../core/JargonDetector.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
+import { Redactor } from './Redactor.js';
+import { ErrorCodeExtractor, type ErrorProvenance } from './ErrorCodeExtractor.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export interface DegradationEvent {
   /** Which feature degraded */
@@ -50,6 +53,53 @@ export interface DegradationEvent {
   reported: boolean;
   /** Whether this was sent as a Telegram alert */
   alerted: boolean;
+}
+
+/**
+ * Normalized degradation event — the go-forward shape per
+ * SELF-HEALING-REMEDIATOR-V2-SPEC.md §A33. Replaces the legacy
+ * `{feature, primary, fallback, reason, impact}` quintuple with a
+ * structured form usable by the Remediator dispatcher (F-8) and the
+ * runbook registry's `eventPrefilter.errorCode` matcher (§A6).
+ *
+ * F-3 ships this contract as additive; emit-site migration is incremental.
+ * Legacy `.report(...)` flows through `_normalize()` and arrives at the
+ * Remediator as `provenance: 'free-text'`, which §A6 forbids from matching
+ * any runbook prefilter. Legacy events therefore route to
+ * `no-matching-runbook` and feed NovelFailureReviewer's clustering pipeline.
+ */
+export interface NormalizedDegradationEvent {
+  /** The subsystem that degraded — equivalent of the legacy `feature` field. */
+  subsystem: string;
+  /** Canonical error code extracted via ErrorCodeExtractor. */
+  errorCode: string;
+  /** Where the errorCode came from — gates runbook matching per §A6. */
+  provenance: ErrorProvenance;
+  /** Redacted + full reason payload. `full` stays internal; `redacted` is the only outbound form. */
+  reason: {
+    redacted: string;
+    /** Full unredacted text — never crosses persistence/alert/LLM-prompt boundaries. */
+    full: string;
+  };
+  /** ISO timestamp of detection. */
+  timestamp: string;
+  /** Monotonic timestamp (Number from `performance.now()` or equivalent) for cross-event ordering. */
+  monotonicTs: number;
+  /**
+   * Optional legacy-event reference. Populated when a normalized event was
+   * produced from a legacy `.report(...)` call so downstream consumers
+   * (alert path, audit log) can recover the original quintuple.
+   */
+  legacy?: DegradationEvent;
+}
+
+/**
+ * Remediator dispatch surface — F-8 implements this. F-3 only exposes the
+ * hook (`setRemediator`) so the dispatcher can subscribe; no consumer is
+ * wired in this PR.
+ */
+export interface RemediatorLike {
+  dispatch(event: NormalizedDegradationEvent): Promise<void>;
 }
 
 type TelegramSender = (topicId: number, text: string) => Promise<unknown>;
@@ -81,6 +131,31 @@ type FeedbackSubmitter = (item: {
 // How long before the same feature can trigger another Telegram alert (ms)
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
+/**
+ * Monotonic timestamp source. Prefers `performance.now()` (high-resolution,
+ * monotonic across process lifetime). Falls back to `Date.now()` on
+ * environments that don't expose it. Returns a Number, not a bigint, so
+ * the value JSON-serializes cleanly into the durable queue.
+ */
+function monotonicNow(): number {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now();
+    }
+  } catch { /* environments without performance API */ }
+  return Date.now();
+}
+
+// Durable RestartPending queue caps (per §A5). When `_setRestartPending(true)`
+// is asserted (e.g., by the lifeline supervisor staging a restart), incoming
+// events are appended to a JSONL queue instead of dispatched immediately.
+// Drop-and-counter on overflow — older events stay on disk, new events past
+// the cap increment a counter and are discarded so the queue can't grow
+// unbounded during a long restart-pending window.
+const RESTART_QUEUE_MAX_ENTRIES = 1000;
+const RESTART_QUEUE_MAX_BYTES = 5 * 1024 * 1024; // 5 MiB
+const RESTART_QUEUE_REL_PATH = path.join('remediation', 'degradations-queue.jsonl');
+
 export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
 
@@ -98,6 +173,28 @@ export class DegradationReporter {
 
   // Dedup: track last alert time per feature to avoid spamming Telegram
   private lastAlertTime: Map<string, number> = new Map();
+
+  // F-3 additions ─────────────────────────────────────────────
+  // The Remediator dispatch hook (F-8 wires the consumer). When set, the
+  // legacy `.report(...)` and the new `.reportStructured(...)` both route
+  // their normalized events to `remediator.dispatch()` instead of the
+  // legacy alert path. When unset, the legacy alert path runs unchanged
+  // (backward compat — F-3 ships a shim only, no emit-site migration).
+  private remediator: RemediatorLike | null = null;
+
+  // Centralized redactor for the `reason.full → reason.redacted` step.
+  // Lazily instantiated so tests that don't exercise normalization don't pay
+  // the (cheap) construction cost.
+  private redactor: Redactor | null = null;
+
+  // RestartPending — when true, events queue to disk instead of dispatching.
+  // Flipped by the lifeline supervisor (or test harness) via _setRestartPending.
+  private restartPending = false;
+
+  // Overflow counter — incremented when the queue cap is hit so we know
+  // how many events were dropped during a restart-pending window. Persisted
+  // alongside the queue file as a sidecar JSON.
+  private queueDropCount = 0;
 
   private constructor() {}
 
@@ -167,6 +264,12 @@ export class DegradationReporter {
    *
    * This is the primary API. Call this whenever a fallback activates.
    * If downstream systems aren't ready yet, the event is queued.
+   *
+   * Per spec §A33 (F-3), legacy `.report(...)` callers continue to work
+   * unchanged. Internally the event is normalized via `_normalize()` and
+   * either dispatched to the registered Remediator (if `setRemediator()`
+   * has been called) or sent through the legacy alert path (backward
+   * compat). RestartPending re-routes everything to the durable queue.
    */
   report(event: Omit<DegradationEvent, 'timestamp' | 'reported' | 'alerted'>): void {
     const full: DegradationEvent = {
@@ -187,8 +290,170 @@ export class DegradationReporter {
     this.events.push(full);
     this.persistToDisk(full);
 
-    // Try to report immediately if downstream is connected
+    // F-3 path: produce a NormalizedDegradationEvent and either dispatch
+    // it to the Remediator (if set) or queue it (if RestartPending).
+    const normalized = this._normalize(full);
+
+    if (this.restartPending) {
+      this.enqueueRestartPending(normalized);
+      return;
+    }
+
+    if (this.remediator) {
+      // Fire-and-forget — dispatch errors land in console.error but never
+      // crash the caller. The legacy `.report(...)` API is sync-shaped.
+      this.remediator.dispatch(normalized).catch((err) => {
+        console.error(
+          `[DEGRADATION] Remediator dispatch failed for ${full.feature}: ${err instanceof Error ? err.message : err}`
+        );
+      });
+      return;
+    }
+
+    // No Remediator wired — legacy alert path runs unchanged.
     this.reportEvent(full);
+  }
+
+  /**
+   * Report a structured degradation event (F-3 / §A33 go-forward API).
+   *
+   * Callers that have already produced a NormalizedDegradationEvent (e.g.,
+   * via the ErrorCodeExtractor with a verified probe emission) skip the
+   * legacy normalization step. The caller's provenance is preserved verbatim
+   * — F-3 does NOT downgrade structured callers to `free-text`.
+   *
+   * Behaviour:
+   * - Always logged with `[DEGRADATION-NORMALIZED]` prefix for grep-ability.
+   * - If RestartPending → queue to disk.
+   * - Else if Remediator wired → dispatch.
+   * - Else → no consumer (event is recorded but not alerted). Structured
+   *   callers must wire the Remediator (F-8) for it to route anywhere; this
+   *   is intentional, since structured callers bypass the legacy alert path.
+   */
+  reportStructured(event: NormalizedDegradationEvent): void {
+    const stamped: NormalizedDegradationEvent = {
+      ...event,
+      // Preserve caller-provided timestamp/monotonicTs if present; fill if not.
+      timestamp: event.timestamp || new Date().toISOString(),
+      monotonicTs: typeof event.monotonicTs === 'number'
+        ? event.monotonicTs
+        : monotonicNow(),
+    };
+
+    console.warn(
+      `[DEGRADATION-NORMALIZED] ${stamped.subsystem}: ${stamped.errorCode} (provenance=${stamped.provenance})`
+    );
+
+    if (this.restartPending) {
+      this.enqueueRestartPending(stamped);
+      return;
+    }
+
+    if (this.remediator) {
+      this.remediator.dispatch(stamped).catch((err) => {
+        console.error(
+          `[DEGRADATION] Remediator dispatch failed for ${stamped.subsystem}: ${err instanceof Error ? err.message : err}`
+        );
+      });
+    }
+  }
+
+  /**
+   * Register the Remediator dispatcher (F-8 wires the consumer). When set,
+   * incoming events route to `remediator.dispatch()` instead of the legacy
+   * alert path. Passing `null` clears the hook.
+   *
+   * F-3 only exposes the hook surface — there is no consumer in this PR.
+   */
+  setRemediator(remediator: RemediatorLike | null): void {
+    this.remediator = remediator;
+  }
+
+  /**
+   * Internal: convert a legacy `DegradationEvent` into the normalized form.
+   * Public for testability — F-8 / downstream consumers should never call
+   * this directly. Exposed as `_normalize` (leading underscore) per the
+   * project's "private-ish" convention.
+   *
+   * Mapping (per §A33):
+   *   feature   → subsystem
+   *   reason    → reason.full (and .redacted, via Redactor)
+   *   errorCode → extracted via ErrorCodeExtractor from free text → 'LEGACY_DEGRADATION' fallback
+   *   provenance → always 'free-text' (legacy callers are unstructured by definition)
+   *
+   * §A6 forbids matchers against `free-text` provenance — legacy events
+   * therefore route to `no-matching-runbook` once F-8 ships.
+   */
+  _normalize(legacy: DegradationEvent): NormalizedDegradationEvent {
+    const redactor = this.getRedactor();
+    const { text: redacted } = redactor.redact(legacy.reason);
+
+    // Attempt errorCode extraction from the legacy reason. Per §A33 the
+    // canonical fallback is the literal 'LEGACY_DEGRADATION' sentinel so
+    // downstream observability can count legacy emit-sites distinctly.
+    const extracted = ErrorCodeExtractor.extract({ freeText: legacy.reason });
+    const errorCode = extracted.code === 'UNKNOWN_ERROR'
+      ? 'LEGACY_DEGRADATION'
+      : extracted.code;
+
+    return {
+      subsystem: legacy.feature,
+      errorCode,
+      provenance: 'free-text',
+      reason: { redacted, full: legacy.reason },
+      timestamp: legacy.timestamp,
+      monotonicTs: monotonicNow(),
+      legacy,
+    };
+  }
+
+  /**
+   * Flip the RestartPending flag. When true, incoming events queue to disk
+   * (`<stateDir>/remediation/degradations-queue.jsonl`) instead of being
+   * dispatched. When flipped back to false, the queue replays through the
+   * normal dispatch path.
+   *
+   * Caller contract (per §A5): the lifeline supervisor asserts this flag
+   * during a staged restart window; flips it off once the restart has
+   * completed (or aborted). F-3 exposes the hook; F-8 wires the supervisor.
+   */
+  _setRestartPending(pending: boolean): void {
+    const prev = this.restartPending;
+    this.restartPending = pending;
+    if (prev && !pending) {
+      // Edge transition true→false: replay queued events.
+      this.replayRestartPendingQueue();
+    }
+  }
+
+  /**
+   * Read the durable RestartPending queue file. Public for testability /
+   * external observability. Returns an empty array if no queue file exists.
+   */
+  _readRestartPendingQueue(): NormalizedDegradationEvent[] {
+    const queuePath = this.restartQueuePath();
+    if (!queuePath || !fs.existsSync(queuePath)) return [];
+    try {
+      const raw = fs.readFileSync(queuePath, 'utf-8');
+      return raw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          try { return JSON.parse(line) as NormalizedDegradationEvent; }
+          catch { return null; }
+        })
+        .filter((x): x is NormalizedDegradationEvent => x !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * How many events were dropped during a RestartPending window because the
+   * queue hit its cap. Persists across the queue's lifetime.
+   */
+  _getQueueDropCount(): number {
+    return this.queueDropCount;
   }
 
   /**
@@ -418,6 +683,124 @@ export class DegradationReporter {
         this.reportEvent(event);
       }
     }
+  }
+
+  /** Lazily construct the shared Redactor used by `_normalize`. */
+  private getRedactor(): Redactor {
+    if (!this.redactor) this.redactor = new Redactor();
+    return this.redactor;
+  }
+
+  /**
+   * Absolute path to the RestartPending queue JSONL file. Returns null if
+   * no stateDir is configured — in that case events are dropped (and counted
+   * via `queueDropCount`) since there's nowhere durable to persist them.
+   */
+  private restartQueuePath(): string | null {
+    if (!this.stateDir) return null;
+    return path.join(this.stateDir, RESTART_QUEUE_REL_PATH);
+  }
+
+  /**
+   * Append a normalized event to the durable RestartPending queue. Enforces
+   * the §A5 cap (1000 entries / 5 MiB) via drop-and-counter.
+   */
+  private enqueueRestartPending(event: NormalizedDegradationEvent): void {
+    const queuePath = this.restartQueuePath();
+    if (!queuePath) {
+      // No stateDir → no durable surface → count as dropped so callers can
+      // observe the loss via _getQueueDropCount.
+      this.queueDropCount += 1;
+      return;
+    }
+
+    try {
+      const dir = path.dirname(queuePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // Check current size + entry count for the cap.
+      let entryCount = 0;
+      let byteSize = 0;
+      try {
+        const stat = fs.statSync(queuePath);
+        byteSize = stat.size;
+        const raw = fs.readFileSync(queuePath, 'utf-8');
+        entryCount = raw.split('\n').filter(Boolean).length;
+      } catch { /* first write */ }
+
+      const line = JSON.stringify(event) + '\n';
+      if (entryCount >= RESTART_QUEUE_MAX_ENTRIES || byteSize + line.length > RESTART_QUEUE_MAX_BYTES) {
+        this.queueDropCount += 1;
+        // Sidecar drop-count file so it survives across processes.
+        try {
+          fs.writeFileSync(
+            queuePath + '.drops.json',
+            JSON.stringify({ dropped: this.queueDropCount, ts: new Date().toISOString() }, null, 2)
+          );
+        } catch { /* best-effort */ }
+        return;
+      }
+
+      fs.appendFileSync(queuePath, line);
+    } catch (err) {
+      // Disk failure inside the durable queue is itself a degradation. Log it
+      // and bump the drop counter — the legacy alert path is unavailable
+      // during RestartPending so there's nothing else to do.
+      console.error(
+        `[DEGRADATION] RestartPending enqueue failed: ${err instanceof Error ? err.message : err}`
+      );
+      this.queueDropCount += 1;
+    }
+  }
+
+  /**
+   * Replay the durable queue once `_setRestartPending(false)` fires. Each
+   * event is dispatched (or sent through the legacy alert path) in the order
+   * it was enqueued; the queue file is then removed on success.
+   *
+   * Replay is best-effort — if dispatch throws, the queue file is kept on
+   * disk so the next replay attempt can retry. Per §A30 the higher-layer
+   * Remediator dispatcher owns the 5s wall-time cap and coalescing; F-3
+   * does not impose its own.
+   */
+  private replayRestartPendingQueue(): void {
+    const queuePath = this.restartQueuePath();
+    if (!queuePath || !fs.existsSync(queuePath)) return;
+
+    const queued = this._readRestartPendingQueue();
+    if (queued.length === 0) {
+      // Empty / unreadable — clean up the file.
+      try {
+        SafeFsExecutor.safeUnlinkSync(queuePath, {
+          operation: 'DegradationReporter.replayRestartPendingQueue: empty queue cleanup',
+        });
+      } catch { /* ignore */ }
+      return;
+    }
+
+    for (const event of queued) {
+      if (this.remediator) {
+        // Fire-and-forget; replay does not wait for individual dispatches.
+        this.remediator.dispatch(event).catch((err) => {
+          console.error(
+            `[DEGRADATION] Replay dispatch failed for ${event.subsystem}: ${err instanceof Error ? err.message : err}`
+          );
+        });
+      } else if (event.legacy) {
+        // Fall back to the legacy alert path for legacy-shaped queued events.
+        this.reportEvent(event.legacy);
+      }
+    }
+
+    // Truncate the queue file. We don't delete the drop-count sidecar — it
+    // records cumulative drops across restart windows.
+    try {
+      SafeFsExecutor.safeUnlinkSync(queuePath, {
+        operation: 'DegradationReporter.replayRestartPendingQueue: drain queue after replay',
+      });
+    } catch { /* ignore */ }
   }
 
   private persistToDisk(event: DegradationEvent): void {
