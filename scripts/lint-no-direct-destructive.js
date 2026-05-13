@@ -80,6 +80,11 @@ const ALLOWLIST = new Set([
   // Bootstrap script for the builtin-manifest — runs as part of `npm run
   // build` before tsc emits dist/.
   'scripts/generate-builtin-manifest.cjs',
+  // Phase 1c-build signer — runs as part of `npm run build`, after tsc but
+  // before publish. Uses fs.unlinkSync to remove a stale dist/jobs/instar.lock.json
+  // when no signing key is available (prevents shipping a malformed empty-signature
+  // lock-file). Build-time only, never runs in production on an agent's machine.
+  'scripts/sign-instar-lockfile.mjs',
   // Transitional: paired with the messaging adapter contract gate — these
   // two files trigger the pre-push contract test requirement when modified.
   // Their fs.unlinkSync calls are local hardlink-recreation cleanup (not

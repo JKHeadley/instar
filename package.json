@@ -16,7 +16,7 @@
   },
   "scripts": {
     "generate:manifest": "node scripts/generate-builtin-manifest.cjs",
-    "build": "node scripts/generate-builtin-manifest.cjs && tsc",
+    "build": "node scripts/generate-builtin-manifest.cjs && tsc && node scripts/sign-instar-lockfile.mjs",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:push": "vitest run --config vitest.push.config.ts",

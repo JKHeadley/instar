@@ -48,3 +48,7 @@ data/registry.db
 .mcpregistry_*
 demo.tape
 house-consciousness-framework/
+
+
+# Phase 1c-build — private signing key for instar-default lock-file (NEVER commit)
+.instar-release-keys/

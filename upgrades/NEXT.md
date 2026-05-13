@@ -1,5 +1,18 @@
 # Upgrade Notes (Unreleased)
 
+### feat(build): Phase 1c-build — release-time signing of the instar-default lock-file
+
+Two new build-pipeline scripts wire up release-time signing of `.instar/jobs/instar.lock.json`, the structural trust authority consumed by Phase 1c-runtime (#179):
+
+- `scripts/sign-instar-lockfile.mjs` walks `src/scaffold/templates/jobs/instar/*.md`, parses YAML frontmatter + body, hashes both via the same canonicalization the runtime verifier applies (CRLF→LF, ZWSP/ZWNJ/ZWJ/BOM strip, trimEnd + single trailing newline), and emits a signed lock-file at `dist/jobs/instar.lock.json`. The public key is copied to `dist/keys/instar-release-pub.pem` for bundling. Runs after `tsc` in the `build` script.
+- `scripts/generate-instar-release-key.mjs` generates an Ed25519 keypair. Private key lands at `.instar-release-keys/private.pem` (gitignored, mode 0600); public at `src/scaffold/keys/instar-release-pub.pem` (committed). Use `--force` to rotate.
+
+Key resolution order: `INSTAR_RELEASE_PRIVATE_KEY_PEM` env (raw PEM, for GHA secret) → `INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH` env → `.instar-release-keys/private.pem` (local dev fallback). If no key is found, the signer SKIPS lock-file generation (no stale file written) and exits 0. Builds and releases keep working in this mode; existing agents stay on `lockTrust=untrusted-no-lockfile` (the documented transitional state preserved by the Phase-1b-gap carve-out).
+
+Tests: 4 roundtrip cases in `tests/unit/scheduler/sign-instar-lockfile.test.ts` proving the signer and runtime verifier agree on canonicalization, hash format, signature format, and the no-key-available skip path.
+
+To enable production signing: add `INSTAR_RELEASE_PRIVATE_KEY_PEM` to GitHub Actions Secrets. The release workflow's `npm run build` will then sign every published release.
+
 ### feat(scheduler): Phase-1b-gap closure — lockTrust gates tool elevation
 
 `JobScheduler.resolveAllowlist` now refuses tool elevation for `origin:instar` agentmd jobs whose `lockTrust` signals real tamper (`untrusted-bad-signature`, `untrusted-not-in-lockfile`, `untrusted-hash-mismatch`). When the gate fires, the resolution kind is `'lock-untrusted-clamped'`, the allowlist clamps to `['Read']`, and both a Dashboard event (`job_lock_untrusted_clamped`) and a degradation event surface.
