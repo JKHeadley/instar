@@ -24,6 +24,13 @@ import type {
   JobPriority,
   ModelTier,
 } from '../core/types.js';
+import {
+  readLockFile,
+  hashBody,
+  hashFrontmatter,
+  type LockFileLoadResult,
+  type LockFileEntry,
+} from './AgentMdLockFile.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -123,6 +130,7 @@ export interface LoadProblem {
     | 'slug-invalid'
     | 'case-fold-collision'
     | 'shadowed-by-schedule'
+    | 'lock-mismatch'
     | 'unknown';
   slug?: string;
   origin?: Origin;
@@ -234,7 +242,27 @@ export function loadAgentMdJobs(
   // same-origin collision skips both.
   const survivors = resolveCaseFoldCollisions(validManifests, problems);
 
-  // Step 3: for each surviving entry, if agentmd then load + parse the .md.
+  // Step 3a: read the lock-file ONCE. Result is passed to every agentmd
+  // body loader so per-entry hash-checks can run without reopening it.
+  const lockResult = readLockFile(jobsRootDir);
+  if (lockResult.state === 'malformed') {
+    problems.push({
+      kind: 'lock-mismatch',
+      path: path.join(jobsRootDir, 'instar.lock.json'),
+      message: `Lock-file is malformed: ${lockResult.reason}. All origin:instar entries will load with untrusted-bad-signature.`,
+    });
+  } else if (lockResult.state === 'present-untrusted') {
+    problems.push({
+      kind: 'lock-mismatch',
+      path: path.join(jobsRootDir, 'instar.lock.json'),
+      message: `Lock-file signature could not be verified: ${lockResult.reason}. All origin:instar entries will load with untrusted-bad-signature.`,
+    });
+  }
+
+  // Step 3b: for each surviving entry, if agentmd then load + parse the .md
+  // and apply the lock-file trust check. Skip-until-ack on hash mismatch:
+  // the entry is NOT added to jobs[]; the problem surfaces in the Dashboard
+  // Issues card.
   const jobs: JobDefinition[] = [];
   for (const { manifest } of survivors) {
     if (manifest.execute.type === 'agentmd') {
@@ -243,7 +271,21 @@ export function loadAgentMdJobs(
         problems.push(loaded.problem);
         continue;
       }
-      jobs.push(loaded.job!);
+      const job = loaded.job!;
+      if (manifest.origin === 'instar') {
+        const trustCheck = applyLockFileTrust(job, lockResult);
+        if (trustCheck.problem) {
+          problems.push(trustCheck.problem);
+          // Skip-until-ack: hash mismatch is the one case we EXCLUDE the
+          // entry. Other untrusted states (no lock-file, bad signature, not
+          // in lock-file) still load the job — just with lockTrust set so
+          // downstream consumers (allowlist resolver, grounding audit) can
+          // refuse trust elevation.
+          if (trustCheck.skipEntry) continue;
+        }
+        job.lockTrust = trustCheck.trust;
+      }
+      jobs.push(job);
     } else {
       // Non-agentmd manifest entries: produce a JobDefinition without body.
       const job = manifestToJobDefinition(manifest);
@@ -252,6 +294,68 @@ export function loadAgentMdJobs(
   }
 
   return { jobs, problems };
+}
+
+/**
+ * Apply the lock-file trust check to an agentmd job. Returns the resolved
+ * trust state plus an optional problem (surfaces in the Dashboard Issues
+ * card) plus a `skipEntry` flag: true for hash-mismatch ("skip-until-ack"),
+ * false for the other untrusted states (entry still loads, just with
+ * lockTrust marking it untrusted).
+ */
+function applyLockFileTrust(
+  job: JobDefinition,
+  lockResult: LockFileLoadResult,
+): {
+  trust: NonNullable<JobDefinition['lockTrust']>;
+  problem: LoadProblem | null;
+  skipEntry: boolean;
+} {
+  if (lockResult.state === 'absent') {
+    return { trust: 'untrusted-no-lockfile', problem: null, skipEntry: false };
+  }
+  if (lockResult.state === 'malformed' || lockResult.state === 'present-untrusted') {
+    return { trust: 'untrusted-bad-signature', problem: null, skipEntry: false };
+  }
+  // state === 'present-trusted'
+  const entry = lockResult.bySlug.get(job.slug);
+  if (!entry) {
+    return {
+      trust: 'untrusted-not-in-lockfile',
+      problem: {
+        kind: 'lock-mismatch',
+        path: job.resolvedPath ?? job.slug,
+        message:
+          `Slug "${job.slug}" claims origin:instar but is not present in the signed lock-file. ` +
+          `The runtime refuses to elevate trust. If this is a legitimately new instar default, ` +
+          `cut a new release with the slug included.`,
+      },
+      skipEntry: false,
+    };
+  }
+
+  const actualBodyHash = job.body !== undefined ? hashBody(job.body) : 'sha256:<no-body>';
+  const actualFrontmatterHash = job.frontmatter
+    ? hashFrontmatter(job.frontmatter)
+    : 'sha256:<no-frontmatter>';
+
+  if (actualBodyHash !== entry.bodyHash || actualFrontmatterHash !== entry.frontmatterHash) {
+    return {
+      trust: 'untrusted-hash-mismatch',
+      problem: {
+        kind: 'lock-mismatch',
+        path: job.resolvedPath ?? job.slug,
+        message:
+          `Slug "${job.slug}" body or frontmatter hash does not match the signed lock-file. ` +
+          `Expected body=${entry.bodyHash}, actual=${actualBodyHash}. ` +
+          `Expected frontmatter=${entry.frontmatterHash}, actual=${actualFrontmatterHash}. ` +
+          `Skip-until-ack: the job will NOT fire. Dashboard offers "Show diff" / "Reset to shipped default" / "Acknowledge and run anyway."`,
+      },
+      skipEntry: true,
+    };
+  }
+
+  return { trust: 'trusted', problem: null, skipEntry: false };
 }
 
 // Re-export the bounded-concurrency helper for downstream callers. Phase 1b's

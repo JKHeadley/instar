@@ -145,6 +145,30 @@ export interface JobDefinition {
    *  by the loader for `execute.type === "agentmd"` entries; absent for
    *  legacy entries. Surfaced into the run-record. */
   resolvedPath?: string;
+  /** Lock-file trust outcome for instar-origin agentmd entries. Set by the
+   *  Phase 1c loader after the lock-file consumer hash-checks `body` +
+   *  `frontmatter` against the signed lock-file. Possible values:
+   *
+   *  - 'trusted' — origin:instar AND lock-file present AND signature OK AND
+   *    body/frontmatter hash matches the locked entry. Full trust elevation
+   *    applies: grounding-audit exemption, allowlist default lookup, etc.
+   *  - 'untrusted-no-lockfile' — origin:instar but no lock-file shipped yet
+   *    (pre-Phase-1c-build state). Treat as user-origin for trust decisions.
+   *  - 'untrusted-bad-signature' — lock-file is present but its signature
+   *    failed Ed25519 verification. Degraded mode; alert the operator.
+   *  - 'untrusted-not-in-lockfile' — origin:instar but the slug is not in
+   *    the locked default set. This is the "forged default" attack — the
+   *    runtime refuses to elevate trust.
+   *  - 'untrusted-hash-mismatch' — slug IS in the lock-file but the
+   *    on-disk body/frontmatter hash does not match. Skip-until-ack.
+   *
+   *  Absent for legacy entries and for origin:user entries. */
+  lockTrust?:
+    | 'trusted'
+    | 'untrusted-no-lockfile'
+    | 'untrusted-bad-signature'
+    | 'untrusted-not-in-lockfile'
+    | 'untrusted-hash-mismatch';
 }
 
 /** A pre-confirmed resolution for a common blocker pattern. */
