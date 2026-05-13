@@ -446,6 +446,57 @@ Operator marks acceptance by writing `.instar/jobs/.migration-complete.json` (th
 
 ---
 
+## Seamless Migration Guarantee
+
+This section is **binding**. PostUpdateMigrator and `instar jobs migrate` MUST satisfy every invariant below for an existing agent to be considered upgradeable. The release-cut gate refuses to advance to Phase 4 or later until `tests/integration/migration-guarantee.test.ts` passes against every fixture in `tests/fixtures/migration-agents/`. The pre-commit gate refuses to delete either the test or any fixture under that path.
+
+Existing agents do not lose jobs, lose schedule, lose custom edits, or end up half-migrated. Period.
+
+### Invariants
+
+Each invariant is a separately-named test in the guarantee suite. Failure of any one is a release-blocker.
+
+1. **Zero job loss.** For every entry present in `jobs.json` at start-of-migration, an executable equivalent exists at end-of-migration — either an `origin: instar` manifest resolving to the bundled body, or an `origin: user` manifest resolving to the preserved body. Verified by enumerating pre-migration slugs and asserting each is `present` in the post-migration resolver's `listJobs()` output. Slug renames performed by the operator via interactive prompt are tracked in a `migration-report.json` mapping; the invariant accepts an entry-pair as equivalent if either the slug matches or the rename map links them.
+2. **Zero schedule drift.** For every migrated entry, the resolved cron, `enabled` state, priority, model-tier, and tool allowlist match pre-migration semantics. Asserted by computing a stable canonical hash of each entry's schedule-and-policy fields pre- and post-migration; the two hashes MUST match (modulo the documented `prompt → agentmd` execute-type swap for body-matched instar slugs).
+3. **Byte-identical prompts for body-matched instar defaults.** `buildPrompt(job)` post-migration produces output byte-identical to pre-migration for every default whose pre-migration body matched the lock-file under normalized SHA-256. Forked entries are exempt from this invariant (by design they preserve their pre-migration body verbatim under `user/`).
+4. **User-namespace untouched.** No file under `.instar/jobs/user/` is created, modified, or removed by PostUpdateMigrator except via the explicit fork path. Verified by mtime + content snapshot before/after migrator runs against the `customized/`, `body-edited/`, and `user-jobs/` fixtures.
+5. **One-button rollback.** `instar jobs migrate --abandon` and the Dashboard "Roll back migration" button each restore `jobs.json` from `jobs.json.pre-migrate-<ts>`, remove `.instar/jobs/schedule/`, and write `.migration-abandoned.json` with the rollback timestamp. After rollback, the next scheduler boot loads the pre-migration job set with zero residual side effects.
+6. **In-flight protection.** A job whose run is in-flight at the moment migration begins MUST complete on its pre-migration body and policy. The migrator detects in-flight runs via `JobScheduler.activeRuns()` and either defers the swap for that slug until the run finishes, or aborts the entire migration with rollback. The migrator MUST NOT swap an executing job's body or policy under it.
+7. **Transactional safety on interrupt.** SIGKILL at every boundary of the migration sequence (pre-flight, staged write, atomic flip, lock-file rotate, manifest reconcile, jobs.json removal) leaves the agent in a state that the next boot recovers automatically — either fully migrated, fully not-migrated, or in a clearly-marked "migration in progress" state with a documented recovery path. There is no `jobs.json` deleted + `schedule/` empty intermediate state.
+8. **Migration telemetry.** Every migrator run emits exactly one `migration.completed` or `migration.aborted` event to `.instar/ledger/job-runs.jsonl` with start/end timestamps, per-entry outcomes (`migrated | forked | renamed | skipped | failed | deferred-in-flight`), backup file path, lock-file `instarVersion`, and trigger (`post-update | cli | dashboard`). Telemetry write is the LAST action of a successful migration. Presence of a `migration.completed` row with matching `instarVersion` is the canonical signal that migration finished for this update.
+9. **Fail-closed on any failure.** If invariants 1–7 cannot be proven at runtime (manifest write fails, lock-file signature invalid, in-flight detection ambiguous, fixture I/O error, anything), the migrator MUST abort, restore `jobs.json` from backup if any partial state was written, write `.migration-abandoned.json` with the failure reason, emit a `migration.aborted` telemetry row, and surface a Dashboard banner. The agent continues running on the pre-migration job set. There is no degraded-half-migrated state.
+
+### Fixture coverage
+
+`tests/fixtures/migration-agents/` MUST contain at minimum:
+
+| Fixture | Shape |
+|---------|-------|
+| `pristine/` | Fresh agent, `jobs.json` exactly as `getDefaultJobs()` produces. |
+| `customized/` | Two defaults disabled, two have edited cron expressions, no body edits. |
+| `body-edited/` | Two defaults have body edits beyond the 75% Levenshtein near-miss threshold (forces fork-to-user path). |
+| `user-jobs/` | Five user-authored jobs alongside defaults. |
+| `retired-defaults/` | `jobs.json` contains slugs that no longer exist in the current release. |
+| `mixed-state/` | Both `jobs.json` AND a partial `.instar/jobs/schedule/` (simulating a prior interrupted migration). |
+| `multi-machine-drift/` | Two snapshots of the same agent with divergent `jobs.json` content; the test asserts merge resolution does not drop entries. |
+| `in-flight/` | A run is mid-execution (simulated via `activeRuns()` stub) when the migrator starts. |
+
+Each fixture runs both code paths — `instar jobs migrate` (operator-initiated) AND `PostUpdateMigrator` (auto path). Each path is asserted against every applicable invariant.
+
+### Gate wiring
+
+- **Release-cut gate.** Refuses to publish any release whose target Phase is ≥ 4 unless the guarantee suite passed in the same CI run. Tracked via a `migration-guarantee-passed` artifact in CI output that the release script reads before signing the release.
+- **Pre-commit gate.** Refuses any commit that deletes `tests/integration/migration-guarantee.test.ts` or removes a fixture directory from `tests/fixtures/migration-agents/`. Adding new fixtures is unrestricted.
+- **PostUpdateMigrator runtime gate.** Before performing any destructive write (atomic flip, jobs.json removal), the migrator re-verifies invariants 1, 2, 4, and 6 against the staged state. Failure aborts to fail-closed (invariant 9).
+
+### Phase ordering interaction
+
+Phase 2 (default job conversion) ships in the same release as the guarantee suite stub — fixtures present, tests written, but the migrator path is not yet enabled for end users. Phase 3 (migration script) ships when the suite passes for `pristine`, `customized`, `user-jobs`, `retired-defaults`, and `in-flight`. Phase 5 (auto-migrate-on-update) cannot ship until ALL fixtures pass under BOTH paths.
+
+Migration is the path every existing agent walks exactly once. It cannot regress quietly. The guarantee suite is the structural enforcement of that.
+
+---
+
 ## Performance Budgets
 
 | Metric | Budget |
@@ -674,6 +725,7 @@ Editor: frontmatter form + body textarea + schedule field. Save → md-first/man
 24. **Unfork backup.** Unfork → backup file present in `.unfork-backups/`. Restore action recovers it. Retention pruning works at 30 days / last-10.
 25. **Drift digest supersession.** Two updates without operator review → one composite digest in queue, not two.
 26. **Mixed-state gate.** Commit deleting `jobs.json` without completion/abandonment marker → refused. With completion marker → allowed. With abandonment marker → allowed.
+27. **Seamless migration guarantee suite.** `tests/integration/migration-guarantee.test.ts` runs every fixture in `tests/fixtures/migration-agents/` against every invariant in §Seamless Migration Guarantee, under both code paths (CLI + PostUpdateMigrator). All invariants pass for every fixture before Phase 5 ships.
 
 Per the "Verify against real APIs before shipping" memory, tests #11 (real session for allowlist), #13 (real ops-gate for CLI bypass), #14 (real signature verification), and #23 (real npm pack) use real systems, not mocks.
 
@@ -684,10 +736,10 @@ Per the "Verify against real APIs before shipping" memory, tests #11 (real sessi
 Hard reorder from earlier drafts: Phase 4 (Dashboard) ships **before** Phase 5 (auto-migrate-on-update). Until Dashboard ships, migration is operator-initiated only.
 
 1. **Phase 1 — Loader + scheduler + lock-file infrastructure.** Add `agentmd` support to JobLoader + JobScheduler. Add release-time lock-file generation in instar's build pipeline (key generation, signing, bundling public key). Add hardened YAML parsing + Zod preprocessor schemas. No defaults moved yet. Hand-authored entries usable.
-2. **Phase 2 — Default job conversion + asset packaging.** Each shipped default authored at `src/scaffold/templates/jobs/instar/<slug>.md`. `package.json#files` updated; build pipeline copies templates into `dist/scaffold/templates/`; npm-pack smoke test gates the release. `installBuiltinJobs()` (new) reads from `dist/` and writes into `.instar/jobs/instar/` on init and on update. Drift classifier runs in build pipeline, populating `significantChanges` in lock-file.
-3. **Phase 3 — Migration script.** `instar jobs migrate` ships. Operator-initiated only. Idempotent. `--default-action` flag for non-interactive use. `--abandon` rollback path. `PostUpdateMigrator` writes "migration available" attention notice but does NOT auto-run.
-4. **Phase 4 — Dashboard.** Jobs tab rewrite. Issues card with sort/filter/dismiss. Drift digest. Unfork action with backup. Override flow with ELI16 copy. CLI ops-gate parity. File Viewer never-editable list extended.
-5. **Phase 5 — Default migration on update.** `PostUpdateMigrator` auto-runs migration for pre-spec agents on update. Backup written. Dashboard banner.
+2. **Phase 2 — Default job conversion + asset packaging.** Each shipped default authored at `src/scaffold/templates/jobs/instar/<slug>.md`. `package.json#files` updated; build pipeline copies templates into `dist/scaffold/templates/`; npm-pack smoke test gates the release. `installBuiltinJobs()` (new) reads from `dist/` and writes into `.instar/jobs/instar/` on init and on update. Drift classifier runs in build pipeline, populating `significantChanges` in lock-file. **Seamless Migration Guarantee fixtures + test stub land in this PR** so subsequent phases inherit the gate.
+3. **Phase 3 — Migration script.** `instar jobs migrate` ships. Operator-initiated only. Idempotent. `--default-action` flag for non-interactive use. `--abandon` rollback path. `PostUpdateMigrator` writes "migration available" attention notice but does NOT auto-run. Phase 3 ships when the guarantee suite passes for `pristine`, `customized`, `user-jobs`, `retired-defaults`, and `in-flight` fixtures under the CLI path.
+4. **Phase 4 — Dashboard.** Jobs tab rewrite. Issues card with sort/filter/dismiss. Drift digest. Unfork action with backup. Override flow with ELI16 copy. CLI ops-gate parity. File Viewer never-editable list extended. Phase 4 ships when the guarantee suite passes for every CLI-path fixture (the release-cut gate enforces this).
+5. **Phase 5 — Default migration on update.** `PostUpdateMigrator` auto-runs migration for pre-spec agents on update. Backup written. Dashboard banner. Phase 5 ships when the guarantee suite passes for every fixture under BOTH paths (CLI + PostUpdateMigrator). This is the seamless-upgrade promise: existing agents go from `jobs.json`-only to fully-migrated state across a single `instar update apply`, with zero job loss, zero schedule drift, zero user-namespace edits, and a one-button rollback always available.
 6. **Phase 6 — Deprecation.** `execute.type: "prompt"` for instar default jobs deprecated; removed two releases later. User-authored inline prompts remain supported indefinitely.
 
 Each phase ships in its own PR with side-effects review + release notes in the same commit.
@@ -703,7 +755,7 @@ No new block/allow/route gates. Existing gates extended:
 - **PostUpdateMigrator preserve-list gate** (existing heuristic) — replaced by structural "user namespace never enumerated" guarantee + pre-flight `lstat`.
 - **Dashboard write authorization** — bearer auth extended to job-edit endpoints. Allowlist widening routes through ops gate.
 - **File Viewer never-editable list** — `.instar/jobs/instar/` added.
-- **Pre-commit / release-cut gate** — refuses to delete `jobs.json` without explicit completion or abandonment marker; never blocks routine auto-commits.
+- **Pre-commit / release-cut gate** — refuses to delete `jobs.json` without explicit completion or abandonment marker; never blocks routine auto-commits. Additionally refuses to advance past Phase 3 (Phase ≥ 4 release) unless the Seamless Migration Guarantee suite passed in the same CI run, and refuses any commit that deletes the guarantee test or any fixture under `tests/fixtures/migration-agents/`.
 
 ---
 
@@ -744,3 +796,4 @@ A reasonable instar developer reading this spec should be able to:
 8. Roll back the migration via `instar jobs migrate --abandon` without losing user data.
 9. Recover a unforked job from `.unfork-backups/` within 30 days.
 10. Resolve a multi-machine same-job sync conflict via the Issues card without dropping to the command line.
+11. Name every invariant of the Seamless Migration Guarantee and point at the fixture and test that proves it.
