@@ -5,6 +5,10 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### feat(cli): Phase 3 — `instar job migrate` for jobs-as-agentmd
+
+New CLI subcommand `instar job migrate` converts a legacy `jobs.json` agent to the per-slug-manifest layout. Flags: `--default-action fork|rename|skip|fail` (default `fail`), `--report` (dry-run), `--abandon` (one-button rollback). Always writes a pre-migrate backup before any other change. Idempotent. Implements the Seamless Migration Guarantee suite's CLI-path coverage (PR #180 invariants 1, 2, 5, 9). 11 unit tests pass locally. Phase 4 will add the Dashboard confirm step and interactive prompts; Phase 5 will auto-run on update.
+
 ## What Changed
 
 ### F-1 — RemediationKeyVault (Tier-1 foundation for Self-Healing Remediator)
