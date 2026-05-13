@@ -29,6 +29,12 @@ Driven by Telegram topic 9003 on 2026-05-13: "By default Instar should only run 
 - Per amendments A20, A23, A39, A42, A51, A54, A58, A62 of `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md`.
 - **No runtime consumers yet.** F-2+ wires capability tokens, probe authentication, in-flight lockfiles, the cross-process attempt ledger, and the audit-token writer onto the leaf-key surface.
 
+### feat(monitoring): F-2 — Redactor + ErrorCodeExtractor (Self-Healing Remediator v2 foundation)
+
+Adds two foundation modules from the Self-Healing Remediator v2 spec (§A1 manifest, F-2): `src/monitoring/Redactor.ts` and `src/monitoring/ErrorCodeExtractor.ts`. The Redactor centralizes content sanitization (home-directory paths, bearer tokens, Telegram bot tokens, emails, UUIDs, long hex strings, IPv4/IPv6, and ≥6-digit numeric IDs). The ErrorCodeExtractor enforces the §A6 errorCode-provenance contract: returns `{code, provenance}` where provenance is `native-binding | probe-id | subsystem-explicit | free-text`, following a priority ladder. A static `isAllowedForRunbookMatch` predicate gives the runbook registry validator a single call to refuse matchers that would consume free-text-provenance events — the §A6 structural defense against attacker-shaped error-text. Neither module has any consumer in this PR; F-3 (DegradationReporter migration) and the W-* runbook wrappers wire them up in follow-up PRs. 46 new unit tests across `tests/unit/Redactor.test.ts` (25) and `tests/unit/ErrorCodeExtractor.test.ts` (21).
+
+Side-effects review: `upgrades/side-effects/f2-redactor-errorcode-extractor.md`.
+
 ### feat(instar-dev): ELI16 overview required for every approved spec
 
 `/instar-dev`'s pre-commit gate and `/spec-converge`'s convergence-tag writer now both refuse to advance a spec that ships without a plain-English ELI16 overview. Topic 3079 on 2026-05-13 surfaced this directly: "I can't digest this without an ELI16 overview. That should be required for every spec."
@@ -47,6 +53,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 **Stronger API-billing safety.** Instar will no longer silently switch from your Claude subscription to the metered Anthropic API just because your CLI broke and you happen to have an API key in your environment. The default has always been subscription-only; this fix removes the one path that could quietly bill you. If you actually want API mode, you now need to set two flags in config (`intelligenceProvider: "anthropic-api"` AND `intelligenceProviderConfirmed: true`), and every server startup in API mode prints a yellow boxed banner so it's impossible to miss. No setup needed for the subscription path — that is the default and it stays the default.
 
+**F-2 — Redaction + errorCode normalization.** The self-healing system is getting a safety layer underneath it. Every error report now gets stamped with where the error name came from — a trusted system field, a verified probe, an explicit subsystem call, or just parsed text. Only the trusted sources can trigger automated repair. The same release adds a single place that scrubs personal paths, tokens, emails, and IDs out of every error report before it leaves the agent.
+
 **F-1 — Cryptographic foundation for self-healing.** Nothing user-visible yet. Operators running on headless Linux without libsecret should set `INSTAR_REMEDIATION_KEY_PASSPHRASE` in their environment before any F-2+ feature ships. macOS and Linux+libsecret have nothing to do.
 
 **ELI16-overview gate.** When your agent hands you a spec for approval, you'll now always get a plain-English overview alongside the dense technical document. The instar repo refuses to commit any code change whose driving spec lacks a readable companion file. The technical spec becomes the appendix; the overview is the entry point. No setup required; the new behavior takes effect on the next agent update.
@@ -61,3 +69,6 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **Template for ELI16 overviews** at `skills/instar-dev/templates/eli16-overview.md`.
 - **Forward-only enforcement** — only specs newly committed-against after this ships have to satisfy the gate.
 - **`selectIntelligenceProvider()`** — single chokepoint enforcing subscription-by-default for the shared LLM provider; refuses silent API fallback; requires two explicit flags for API opt-in; prints a billing banner when API mode is active.
+- **Centralized content redaction** (F-2) — `new Redactor().redact(text)` / `.redactFields(obj, fields)` — wired into DegradationReporter in F-3.
+- **Structured errorCode extraction with provenance** (F-2) — `ErrorCodeExtractor.extract({ nativeError, probeEmission, subsystemExplicit, freeText, verifyProbeSignature })`.
+- **Runbook-match provenance gate** (F-2) — `ErrorCodeExtractor.isAllowedForRunbookMatch(extracted)` — refuses free-text-provenance matchers.
