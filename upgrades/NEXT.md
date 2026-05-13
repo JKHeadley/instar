@@ -23,6 +23,32 @@ This is the backend half of Phase 4. The Dashboard UI rewrite (Jobs tab, Issues 
 
 ## What Changed
 
+### feat(remediation): F-8 — Remediator orchestrator skeleton (Tier-1 subset)
+
+Ships the Tier-1 subset of F-8 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A2, §A4, §A6, §A21, §A36, §A57). New module `src/remediation/Remediator.ts` exposes the orchestrator class plus public types `ApprovedRunbook`, `RemediationContext`, `ExecutionResult`, `VerifyOutcome`, `BlastRadius`, `Reversibility`, `DispatchOutcome`.
+
+`Remediator.registerRunbook()` enforces two registry-load-time gates:
+- §A6: refuses any prefilter that includes `provenance: 'free-text'` (structured sources only).
+- §A36: refuses `essential: true` unless `blastRadius === 'machine'`.
+
+`Remediator.dispatch()` composes the F-1..F-4 primitives:
+- Match candidate runbooks via `eventPrefilter` (errorCode + provenance) + `match()`; pick highest priority.
+- Compute `tupleHash = sha256(runbookId + signatureHash)`, check existing in-flight locks (§A2 covered-by-inline detection).
+- Acquire `MachineLock` (HMAC-signed via F-1 leaf key for the `inflight` context).
+- Declare intent via `IntentJournal` BEFORE running the surface.
+- Build a `RemediationContext` carrying `attemptId, runbookId, lockHandle, auditToken (F-1 audit-context leaf), abortSignal, expiresAt, monotonicDeadline`.
+- Race `surfaceCallable + verify` against an `AbortController` timer (§A4 deadline enforcement); on timeout returns `aborted-deadline` and releases the lock.
+- §A21 strict verify typing: probe error or verify-THROW maps to `verify-inconclusive`, never `verify-failed`.
+- Audit-append via F-4 `AuditWriter` at every state transition.
+
+Tier-2 carve-outs (deferred per A57): trust elevation source, probe authentication (A40/A52), surface-side capability-token HMAC enforcement (A3/A23/A42), supervisor handshake (A15), signed-manifest registry validation (A56/A66), child-process SIGTERM/SIGKILL escalation (W-1's concern).
+
+No production consumer in this PR — the dispatcher is constructible but not yet wired into `DegradationReporter.setRemediator()`. W-1 (NativeModuleHealer wrapper) is the first caller.
+
+12 new unit tests in `tests/unit/Remediator.test.ts` cover: register-valid, register-rejects-free-text (§A6), register-rejects-essential-on-non-machine (§A36), no-matching-runbook + audit entry, full success-path with lock+intent+verify+release, covered-by-inline (§A2) for pre-existing same-tuple lock, aborted-deadline (§A4) on hanging surface, verify-NEVER-called on surfaceCallable failure, verify-inconclusive distinct from verify-failed (§A21), verify-THROW → verify-inconclusive, audit entries land in `audit-projection-<machineId>.jsonl`, forged-token entries route to `audit-rejected.jsonl`.
+
+Side-effects review: `upgrades/side-effects/f8-remediator-skeleton.md`.
+
 ### fix(security): API safety guard — subscription-by-default enforcement
 
 `src/commands/server.ts` had one silent-fallback path that could engage billed Anthropic API mode without explicit user consent: if the Claude CLI was unavailable and `ANTHROPIC_API_KEY` happened to be set in the environment, instar would silently use the API "as a last resort." That trade-off ("degrading to heuristics is worse than using whatever LLM is available") encoded a values choice the principal rejects. Removed.
@@ -99,6 +125,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 **F-4 — Coordination + audit primitives.** This release adds plumbing for a self-healing system that is not yet active. Nothing changes about how the agent behaves today.
 
+**F-8 — Self-healing orchestrator skeleton.** The piece that decides which repair runs when, makes sure only one repair runs against the same problem at a time, and forcibly stops a repair that takes too long. Wired into the existing audit log, intent journal, and lock primitives from earlier foundation work. Still no user-facing change yet — there are no actual repair playbooks plugged in. The first real playbook (rebuilding the SQLite native module after a Node upgrade) arrives in the next foundation PR. The skeleton fails fast at startup if a playbook is mis-configured (e.g., declared "essential" but only affecting a single process), so misbehaving playbooks can't sneak past review.
+
 **F-1 — Cryptographic foundation for self-healing.** Nothing user-visible yet. Operators running on headless Linux without libsecret should set `INSTAR_REMEDIATION_KEY_PASSPHRASE` in their environment before any F-2+ feature ships. macOS and Linux+libsecret have nothing to do.
 
 **ELI16-overview gate.** When your agent hands you a spec for approval, you'll now always get a plain-English overview alongside the dense technical document. The instar repo refuses to commit any code change whose driving spec lacks a readable companion file. The technical spec becomes the appendix; the overview is the entry point. No setup required; the new behavior takes effect on the next agent update.
@@ -124,3 +152,9 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **In-flight tuple lock** (F-4) — Prevents two heal paths from racing on the same problem.
 - **Intent journal** (F-4) — Durable log of "what an attempt declared it was about to do."
 - **Audit-writer + projection** (F-4) — Verified-append audit log + read view consumed by later remediation modules.
+- **`Remediator` class** (F-8 Tier-1) — Orchestrator skeleton that matches normalized degradation events to registered runbooks, acquires a per-tuple in-flight lock, declares intent, runs the surface callable with deadline enforcement, races verify, and audit-logs every state transition.
+- **`ApprovedRunbook` contract** (F-8) — Public type with `eventPrefilter`, `match`, `preconditions`, `surfaceCallable`, `verify`, `blastRadius`, `reversibility`, `expectedRuntimeMs`, optional `essential`. Registry-load-time validators refuse free-text-provenance prefilters (§A6) and `essential` on non-machine blast radius (§A36).
+- **`RemediationContext`** (F-8) — Capability-token-shaped context handed to surfaces: `attemptId`, `runbookId`, `lockHandle`, `auditToken` (from F-1 audit-context leaf), `abortSignal`, `expiresAt`, `monotonicDeadline`. Surface-side HMAC enforcement is Tier-2.
+- **§A4 deadline enforcement** (F-8) — `AbortController` race against `expectedRuntimeMs`; surfaces that hang are aborted, lock is released, outcome is `aborted-deadline`.
+- **§A21 verify taxonomy** (F-8) — `verified-healthy | verify-failed | verify-inconclusive`. Verify-THROW and surface-throw map to `verify-inconclusive` and `verify-failed` respectively; only a clean structured failure increments churn.
+- **§A2 covered-by-inline** (F-8) — Pre-existing in-flight lock with same tuple short-circuits dispatch with the existing attemptId.
