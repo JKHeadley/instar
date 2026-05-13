@@ -12,10 +12,11 @@
     "src/core/UpdateChecker.ts",
     "src/core/UpgradeGuideProcessor.ts",
     "src/data/builtin-manifest.json",
-    "src/threadline/ThreadlineBootstrap.ts"
+    "src/threadline/ThreadlineBootstrap.ts",
+    "src/scheduler/AgentMdLockFile.ts"
   ],
   "artifactPath": "upgrades/side-effects/url-pathname-path-encoding-fix.md",
-  "artifactSha256": "376026f342a8af6ef94f7c9a3d514cab75223dee78e7675ff85ba0a683577eee",
+  "artifactSha256": "68ef361079a1807871b82b2ca922f7f86b27332705937275ce7c939204599f5d",
   "specPath": "docs/specs/URL-PATHNAME-PATH-ENCODING-FIX-SPEC.md",
   "createdAt": "2026-04-28T08:30:00Z"
 }

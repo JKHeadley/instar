@@ -20,6 +20,7 @@ Systematic replacement of `new URL(import.meta.url).pathname` with `__dirname` (
 - `src/core/UpgradeGuideProcessor.ts` (1)
 - `src/threadline/ThreadlineBootstrap.ts` (1)
 - `src/lifeline/ServerSupervisor.ts` (1)
+- `src/scheduler/AgentMdLockFile.ts` (1) — introduced post-fix in Phase 1c; caught by pre-push gate in CI and fixed here
 
 **Files changed (tests):** 5 test files with unquoted `execSync` paths or test expectation updates.
 
@@ -42,4 +43,4 @@ This is a pure bug fix with no behavioral, architectural, or security implicatio
 
 - Typecheck: `tsc --noEmit` — 0 errors.
 - Full test suite: 740 files passed, 0 failed, 17171 individual tests passed.
-- Zero instances of `new URL(import.meta.url).pathname` remain in `src/`.
+- Zero instances of `new URL(import.meta.url).pathname` remain in `src/` after this follow-up fix.
