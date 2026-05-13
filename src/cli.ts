@@ -21,6 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { initProject } from './commands/init.js';
 import { SafeFsExecutor } from './core/SafeFsExecutor.js';
@@ -1480,6 +1481,33 @@ jobCmd
   .action(async (slug: string, _opts: { dir?: string }) => {
     const { jobContinuity } = await import('./commands/job.js');
     await jobContinuity(slug);
+  });
+
+jobCmd
+  .command('migrate')
+  .description('Migrate legacy jobs.json entries to agentmd markdown templates')
+  .option('--default-action <action>', 'How to handle near-miss defaults: fork|rename|skip|fail (default: fail)', 'fail')
+  .option('--report', 'Print a dry-run JSON plan; do not write')
+  .option('--abandon', 'Roll back: remove .instar/jobs/schedule/ and write abandonment marker')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts: { defaultAction?: string; report?: boolean; abandon?: boolean; dir?: string }) => {
+    const projectDir = opts.dir ?? process.cwd();
+    const agentStateDir = path.join(projectDir, '.instar');
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const { jobsMigrate } = await import('./commands/jobMigrate.js');
+    const allowed = ['fork', 'rename', 'skip', 'fail'];
+    const defaultAction = opts.defaultAction && allowed.includes(opts.defaultAction)
+      ? opts.defaultAction as 'fork' | 'rename' | 'skip' | 'fail'
+      : 'fail';
+    const result = jobsMigrate({
+      agentStateDir,
+      packageRoot,
+      defaultAction,
+      report: opts.report,
+      abandon: opts.abandon,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    if (result.status === 'aborted') process.exit(1);
   });
 
 // ── Lifeline ──────────────────────────────────────────────────────
