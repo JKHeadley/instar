@@ -28,6 +28,7 @@ import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
+import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import {
   ELIGIBILITY_SCHEMA_SQL,
   ELIGIBILITY_SCHEMA_SQL_SHA256,
@@ -87,6 +88,7 @@ export class PostUpdateMigrator {
     this.migrateBackupManifest(result);
     this.migrateGitignore(result);
     this.migrateBuiltinSkills(result);
+    this.migrateBuiltinJobs(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -262,6 +264,43 @@ export class PostUpdateMigrator {
       result.skipped.push('built-in skills: checked (non-destructive)');
     } catch (err) {
       result.errors.push(`built-in skills: ${err}`);
+    }
+  }
+
+  /**
+   * Phase 2 — install/refresh built-in agentmd jobs. Copies the shipped
+   * markdown templates into `.instar/jobs/instar/` and writes their
+   * per-slug manifests. Honors operator-disabled state (preserves
+   * `enabled: false` + `disabledAtBodyHash` across updates). Retires
+   * jobs that are no longer shipped.
+   *
+   * The `.instar/jobs/user/` namespace is structurally untouched (Seamless
+   * Migration Guarantee invariant 4).
+   */
+  private migrateBuiltinJobs(result: MigrationResult): void {
+    try {
+      // The package root is two levels up from this compiled module (dist/core/),
+      // which puts us at the installed npm package root in production or the
+      // repo root in dev.
+      const packageRoot = path.resolve(__dirname, '..', '..');
+      const report = installBuiltinJobs({
+        agentStateDir: this.config.stateDir,
+        packageRoot,
+        port: this.config.port,
+      });
+      if (report.installed.length > 0) {
+        result.upgraded.push(`built-in agentmd jobs: ${report.installed.length} installed/refreshed`);
+      } else if (report.errors.length === 0) {
+        result.skipped.push('built-in agentmd jobs: nothing to install');
+      }
+      for (const slug of report.retired) {
+        result.upgraded.push(`built-in agentmd jobs: retired "${slug}"`);
+      }
+      for (const e of report.errors) {
+        result.errors.push(`built-in agentmd jobs${e.slug ? ` [${e.slug}]` : ''}: ${e.reason}`);
+      }
+    } catch (err) {
+      result.errors.push(`built-in agentmd jobs: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

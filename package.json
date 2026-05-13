@@ -77,7 +77,8 @@
     ".claude/skills/secret-setup",
     ".claude/skills/autonomous",
     ".claude/skills/build",
-    ".claude/hooks"
+    ".claude/hooks",
+    "src/scaffold"
   ],
   "license": "MIT",
   "engines": {

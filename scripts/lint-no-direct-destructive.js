@@ -85,6 +85,10 @@ const ALLOWLIST = new Set([
   // when no signing key is available (prevents shipping a malformed empty-signature
   // lock-file). Build-time only, never runs in production on an agent's machine.
   'scripts/sign-instar-lockfile.mjs',
+  // Phase 2 generator — converts getDefaultJobs() to markdown templates.
+  // Build-time only; prunes stale templates with fs.rmSync. Never runs on
+  // an agent's machine.
+  'scripts/regen-default-job-templates.mjs',
   // Transitional: paired with the messaging adapter contract gate — these
   // two files trigger the pre-push contract test requirement when modified.
   // Their fs.unlinkSync calls are local hardlink-recreation cleanup (not

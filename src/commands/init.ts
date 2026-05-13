@@ -57,6 +57,7 @@ import {
 } from '../scaffold/templates.js';
 import type { InstarConfig } from '../core/types.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -359,6 +360,18 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   fs.mkdirSync(skillsDir, { recursive: true });
   installBuiltinSkills(skillsDir, port);
   console.log(`  ${pc.green('✓')} Created .claude/skills/ (with built-in evolution skills)`);
+
+  // Phase 2 — install built-in agentmd jobs (markdown templates + manifests).
+  // Legacy jobs.json continues to seed below; the loader handles overlap.
+  try {
+    const packageRoot = path.resolve(__dirname, '..', '..');
+    const installReport = installBuiltinJobs({ agentStateDir: stateDir, packageRoot, port });
+    if (installReport.installed.length > 0) {
+      console.log(`  ${pc.green('✓')} Installed ${installReport.installed.length} agentmd default job(s)`);
+    }
+  } catch (err) {
+    console.log(`  ${pc.yellow('!')} Built-in agentmd jobs install skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Write CLAUDE.md (standalone version for fresh projects)
   const claudeMd = generateClaudeMd(projectName, identity.name, port, false);
@@ -2719,7 +2732,7 @@ function installAutonomousSkill(skillsDir: string): void {
   }
 }
 
-function getDefaultJobs(port: number): object[] {
+export function getDefaultJobs(port: number): object[] {
   return [
     {
       slug: 'health-check',
