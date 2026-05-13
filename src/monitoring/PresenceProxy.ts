@@ -162,10 +162,19 @@ interface PresenceState {
   llmCallCount: number;
   lastLlmCallAt: number;
   conversationHistory: Array<{
-    role: 'user' | 'proxy';
+    role: 'user' | 'proxy' | 'ack';
     text: string;
     timestamp: number;
   }>;
+  /**
+   * Text of the most recent brief ack sent by the agent in response to the
+   * current user message (e.g., "Got it, looking into this"). Recorded by
+   * recordAgentMessage when isBriefAck(text) is true. Used by fireTier1 to
+   * detect the "agent has only acked so far" case and emit a fixed
+   * placeholder instead of an LLM summary that just paraphrases the ack.
+   */
+  lastAckText: string | null;
+  lastAckAt: number | null;
 }
 
 // ─── Tmux Output Sanitizer ──────────────────────────────────────────────────
@@ -454,6 +463,44 @@ export function extractDeltaSinceBaseline(
   return { delta: current, anchored: false, hasNewActivity: current.trim().length > 0 };
 }
 
+/**
+ * Returns true when the post-message terminal delta contains nothing
+ * substantive beyond the agent's own brief ack text.
+ *
+ * Used by Tier 1 to skip the LLM call in the common case where the agent
+ * has only acked the user at the 20-second mark. The LLM otherwise just
+ * paraphrases the ack into a generic "Agent acknowledged and is looking
+ * into it" summary, which adds no information.
+ *
+ * Heuristic:
+ *   - Compute the post-message delta from baseline → current.
+ *   - If the delta is short (<= 350 chars trimmed) — which it is when the
+ *     only new content is a brief ack typed into the prompt — treat it as
+ *     ack-only. We don't require the ack text to literally appear in the
+ *     terminal because the pane may have wrapped / formatted it differently.
+ *   - If the delta is longer, fall through to the LLM path so genuine
+ *     substantive activity still gets summarized.
+ *
+ * Bias: false-positive (treating real early progress as ack-only) costs
+ * one fixed-string Tier 1 message; false-negative (treating an ack-only
+ * delta as substantive) costs the original generic-LLM-summary regression.
+ * 350 chars is generous toward the ack-only path because that's the bug
+ * being fixed.
+ */
+export function isPostMessageDeltaAckOnly(
+  current: string | null,
+  baseline: string | null,
+  ackText: string | null,
+): boolean {
+  if (!ackText || ackText.trim().length === 0) return false;
+  const { delta, anchored, hasNewActivity } = extractDeltaSinceBaseline(current, baseline);
+  // If the anchor scrolled off, fall through to the LLM — we can't reason
+  // about scope reliably in that case.
+  if (!anchored) return false;
+  if (!hasNewActivity) return false;
+  return delta.trim().length <= 350;
+}
+
 // ─── Long-Running Process Whitelist ─────────────────────────────────────────
 
 const LONG_RUNNING_PATTERNS = [
@@ -661,13 +708,22 @@ export class PresenceProxy {
           // Record on the conversation history so subsequent prompts know
           // an ack was sent, but leave timers running.
           state.conversationHistory.push({
-            role: 'proxy', // not strictly proxy, but treat ack like a non-cancelling proxy message
+            // Distinct from 'proxy' (a real PresenceProxy-authored message)
+            // and from 'user' — the agent's own brief ack is its own bucket
+            // so isConversation / Tier 1 ack-only-delta checks don't confuse
+            // an ack with a real proxy reply.
+            role: 'ack',
             text: event.text,
             timestamp: Date.now(),
           });
           if (state.conversationHistory.length > this.maxConversationHistory) {
             state.conversationHistory = state.conversationHistory.slice(-this.maxConversationHistory);
           }
+          // Track for Tier 1 ack-only-delta guard: if Tier 1 fires before the
+          // agent does anything beyond the ack, we emit a fixed placeholder
+          // rather than asking the LLM to paraphrase the ack.
+          state.lastAckText = event.text;
+          state.lastAckAt = Date.now();
         }
         return;
       }
@@ -756,6 +812,8 @@ export class PresenceProxy {
       llmCallCount: 0,
       lastLlmCallAt: 0,
       conversationHistory: existingState?.conversationHistory ?? [],
+      lastAckText: null,
+      lastAckAt: null,
     };
 
     // If proxy was already active (conversation mode), add user message to history
@@ -908,6 +966,18 @@ export class PresenceProxy {
 
     if (!snapshot || snapshot.trim().length < 10) {
       message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
+    } else if (
+      !isConversation
+      && state.lastAckText
+      && state.lastAckAt !== null
+      && state.lastAckAt >= state.userMessageAt
+      && isPostMessageDeltaAckOnly(snapshot, state.userMessageBaselineSnapshot, state.lastAckText)
+    ) {
+      // Agent has only acked since the user's message arrived. Asking the LLM
+      // to summarize would just paraphrase the ack ("Echo acknowledged..."),
+      // which reads as generic and adds no information. Emit a fixed
+      // placeholder; Tier 2 will pick up substantive activity at 2 minutes.
+      message = `${this.prefix} ${this.config.agentName} is on this — I'll check back at the 2-minute mark with a progress update.`;
     } else {
       try {
         const prompt = isConversation
@@ -1413,7 +1483,10 @@ Write a brief, friendly 1-2 sentence status update describing what the agent app
     // Build conversation history for context
     const historyLines = state.conversationHistory
       .slice(-10) // Last 10 exchanges
-      .map(m => `${m.role === 'user' ? 'User' : 'Proxy'}: ${m.text.replace(/^🔭\s*/, '').slice(0, 200)}`)
+      .map(m => {
+        const speaker = m.role === 'user' ? 'User' : m.role === 'ack' ? 'Agent (ack)' : 'Proxy';
+        return `${speaker}: ${m.text.replace(/^🔭\s*/, '').slice(0, 200)}`;
+      })
       .join('\n');
 
     const block = this.buildScopedSnapshotBlock(state, snapshot, 3000);
@@ -1706,6 +1779,10 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
             cancelled: false,
             lastLlmCallAt: data.lastLlmCallAt || 0,
             conversationHistory: [],
+            // Not persisted — best-effort; on restart we forget the ack and
+            // let the LLM produce a Tier 1 summary like before.
+            lastAckText: null,
+            lastAckAt: null,
           };
           this.states.set(topicId, state);
 

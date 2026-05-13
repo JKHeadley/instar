@@ -4783,16 +4783,22 @@ export async function startServer(options: StartOptions): Promise<void> {
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {
       try {
-        const { PresenceProxy } = await import('../monitoring/PresenceProxy.js');
+        const { PresenceProxy, isBriefAck } = await import('../monitoring/PresenceProxy.js');
         const { execSync: shellExecSync } = await import('child_process');
 
         const messagesLogPath = path.join(config.stateDir, 'telegram-messages.jsonl');
         const slackMessagesLogPath = path.join(config.stateDir, 'slack-messages.jsonl');
 
-        // Shared helper: check a messages log file for agent responses after a timestamp.
-        // System/proxy-message filtering is delegated to isSystemOrProxyMessage so all
-        // three callsites (this one, PresenceProxy.isSystemMessage, and the compaction
-        // recoverFn) stay in sync.
+        // Shared helper: check a messages log file for SUBSTANTIVE agent
+        // responses after a timestamp. Filters out system/proxy messages via
+        // isSystemOrProxyMessage AND brief acks via isBriefAck — both kinds
+        // of messages are non-cancelling from PresenceProxy's perspective.
+        //
+        // The brief-ack filter is what closes the gap from PR #128: that PR
+        // taught the event path (recordAgentMessage) to ignore acks, but the
+        // log-reading race guard at PresenceProxy.fireTier didn't share the
+        // same classifier. The result was Tier 2 silently cancelling because
+        // the ack was on disk. Same isBriefAck export feeds both paths now.
         const checkLogForAgentResponse = (logPath: string, topicId: number, sinceIso: string): boolean => {
           try {
             const content = fs.readFileSync(logPath, 'utf-8');
@@ -4805,7 +4811,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const matchesTopic = msg.topicId === topicId
                   || (topicId < 0 && msg.channelId && slackChannelToSyntheticId(String(msg.channelId)) === topicId);
                 if (matchesTopic && !msg.fromUser && msg.timestamp > sinceIso) {
-                  if (!isSystemOrProxyMessage(msg.text)) return true;
+                  // Non-cancelling agent message kinds: system/proxy
+                  // chrome, and brief acks ("On it"). Both leave tier
+                  // timers running.
+                  const isNonCancelling = isSystemOrProxyMessage(msg.text)
+                    || isBriefAck(msg.text);
+                  if (isNonCancelling) continue;
+                  return true;
                 }
               } catch { /* skip malformed lines */ }
             }
