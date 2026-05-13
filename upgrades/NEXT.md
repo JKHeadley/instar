@@ -36,7 +36,7 @@ Existing `tests/unit/JobLoader.test.ts` (the pre-spec test suite) continues to p
 
 ## What to Tell Your User
 
-Instar is preparing to move job prompts out of one big `jobs.json` blob and into individual markdown files (one file per job). This update lays the groundwork: the loader now understands the new format, and the new validation rules are all in place. Nothing changes for you yet — your existing jobs keep running exactly as before, and you can ignore this change entirely if you want. The actual cut-over (where jobs start firing from their `.md` files) happens in the next few releases. If you ever see a warning in your logs about an `agentmd` job being "deferred — Phase 1b adds the dispatch path," that's expected for now.
+Instar is preparing to move job prompts out of one big jobs.json blob and into individual markdown files (one file per job). This update lays the groundwork: the loader now understands the new format, and the new validation rules are all in place. Nothing changes for you yet — your existing jobs keep running exactly as before, and you can ignore this change entirely if you want. The actual cut-over (where jobs start firing from their .md files) happens in the next few releases. If you ever see a warning in your logs about an agentmd job being "deferred — Phase 1b adds the dispatch path," that's expected for now.
 
 ## Summary of New Capabilities
 
