@@ -1,0 +1,21 @@
+{
+  "name": "retired-defaults",
+  "description": "jobs.json contains slugs that the current release no longer ships as defaults.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [
+    {
+      "kind": "add-job",
+      "entry": {
+        "slug": "ancient-retired-default",
+        "name": "Ancient Retired Default",
+        "description": "This was a default in an old release",
+        "schedule": "0 6 * * *",
+        "priority": "low",
+        "expectedDurationMinutes": 1,
+        "model": "haiku",
+        "enabled": true,
+        "execute": { "type": "prompt", "value": "Ancient prompt that no longer ships\n" }
+      }
+    }
+  ]
+}

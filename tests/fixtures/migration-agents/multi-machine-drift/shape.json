@@ -1,0 +1,25 @@
+{
+  "name": "multi-machine-drift",
+  "description": "Two divergent snapshots of the same agent's jobs.json. Merge resolution must drop nothing.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [],
+  "alternateSnapshot": {
+    "transformations": [
+      { "kind": "set-schedule", "slug": "health-check", "schedule": "*/3 * * * *" },
+      {
+        "kind": "add-job",
+        "entry": {
+          "slug": "machine-b-only-job",
+          "name": "Machine B Only",
+          "description": "Authored on machine B but not yet synced to machine A",
+          "schedule": "0 7 * * *",
+          "priority": "low",
+          "expectedDurationMinutes": 1,
+          "model": "haiku",
+          "enabled": true,
+          "execute": { "type": "prompt", "value": "Machine B prompt\n" }
+        }
+      }
+    ]
+  }
+}

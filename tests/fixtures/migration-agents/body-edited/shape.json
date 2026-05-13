@@ -1,0 +1,9 @@
+{
+  "name": "body-edited",
+  "description": "Two defaults have body edits beyond near-miss threshold. Migrate must fork to user with --default-action=fork.",
+  "baseJobsSource": "getDefaultJobs",
+  "transformations": [
+    { "kind": "set-body", "slug": "health-check", "body": "TOTALLY REWRITTEN HEALTH CHECK\\n\\nCheck only ping endpoint and skip everything else.\\n" },
+    { "kind": "set-body", "slug": "reflection-trigger", "body": "MY VERSION: reflect only on the last 60 minutes, ignore the full pipeline.\\n" }
+  ]
+}

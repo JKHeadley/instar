@@ -5,6 +5,10 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### test(scheduler): Seamless Migration Guarantee suite + 8 fixtures
+
+The binding gate the INSTAR-JOBS-AS-AGENTMD spec §Seamless Migration Guarantee promises lands here: `tests/integration/migration-guarantee.test.ts` iterates 8 fixtures (`pristine`, `customized`, `body-edited`, `user-jobs`, `retired-defaults`, `mixed-state`, `multi-machine-drift`, `in-flight`) and asserts invariants 1, 2, 4, 5, 7, 9 + idempotency + dry-run on every shape under the CLI migration path. 50 test cases, all green. Fixtures live under `tests/fixtures/migration-agents/<shape>/shape.json` as declarative transformations on top of `getDefaultJobs()` output. New pre-commit gate `scripts/protect-migration-guarantee.js` refuses commits that delete the test file or any fixture's `shape.json`. Phase 5 auto-migrate (#193), Phase 6 deprecation (#194), and Phase 4 endpoints (#195) are held as drafts until this lands, per the spec's gate-wiring requirement.
+
 ## What Changed
 
 ### F-1 — RemediationKeyVault (Tier-1 foundation for Self-Healing Remediator)

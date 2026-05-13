@@ -71,6 +71,9 @@ const ALLOWLIST = new Set([
   // Pre-commit hook gate — runs before TS is compiled. Read-only `git diff
   // --cached` only; cannot depend on the TS funnel.
   'scripts/instar-dev-precommit.js',
+  // Seamless Migration Guarantee fixture-protection gate — runs before
+  // TS is compiled. Read-only `git diff --cached --name-status` only.
+  'scripts/protect-migration-guarantee.js',
   // Worktree-related git hooks — run before TS is compiled.
   'scripts/worktree-precommit-gate.js',
   'scripts/worktree-commit-msg-hook.js',
