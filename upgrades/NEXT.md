@@ -47,6 +47,20 @@ Adds two foundation modules from the Self-Healing Remediator v2 spec (§A1 manif
 
 Side-effects review: `upgrades/side-effects/f2-redactor-errorcode-extractor.md`.
 
+
+### feat(remediation): F-4 — MachineLock + IntentJournal + audit infrastructure
+
+Foundation Tier-1 building blocks for the Self-Healing Remediator v2 (§R1 + A2/A24/A29/A42/A43/A46/A63). Four new modules under `src/remediation/`:
+
+- `MachineLock.ts` — HMAC-protected in-flight lock with heartbeat sequence-number envelope, SIGKILL-grace stale-reclamation, and in-memory cache that re-stats every read (A46).
+- `IntentJournal.ts` — Append-only intent-declaration log at `<stateDir>/remediation/intent-journal-<machineId>.jsonl`. Writes are O_APPEND + `fsync`.
+- `audit/AuditWriter.ts` — Verified-append audit log. Forged-token entries route to `audit-rejected.jsonl` (A12); timestamp-regression entries also routed to rejected (A42). In-memory tail of last 1,000 entries (A29).
+- `audit/AuditProjection.ts` — Read view exposing `Map<runbookId, AuditEntry[]>` for the churn detector and SystemReviewer clustering.
+
+No surface wires into these primitives yet. The Remediator dispatcher (F-8), runbooks (W-*), and the primary-aggregator lease (A47 Tier-3) consume them in subsequent PRs.
+
+Tests: 13 new cases across `tests/unit/MachineLock.test.ts`, `tests/unit/IntentJournal.test.ts`, `tests/unit/AuditWriter.test.ts`. Side-effects review: `upgrades/side-effects/f4-machine-locks-intent-journal-audit.md`.
+
 ### feat(instar-dev): ELI16 overview required for every approved spec
 
 `/instar-dev`'s pre-commit gate and `/spec-converge`'s convergence-tag writer now both refuse to advance a spec that ships without a plain-English ELI16 overview. Topic 3079 on 2026-05-13 surfaced this directly: "I can't digest this without an ELI16 overview. That should be required for every spec."
@@ -67,6 +81,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 **F-2 — Redaction + errorCode normalization.** The self-healing system is getting a safety layer underneath it. Every error report now gets stamped with where the error name came from — a trusted system field, a verified probe, an explicit subsystem call, or just parsed text. Only the trusted sources can trigger automated repair. The same release adds a single place that scrubs personal paths, tokens, emails, and IDs out of every error report before it leaves the agent.
 
+**F-4 — Coordination + audit primitives.** This release adds plumbing for a self-healing system that is not yet active. Nothing changes about how the agent behaves today.
+
 **F-1 — Cryptographic foundation for self-healing.** Nothing user-visible yet. Operators running on headless Linux without libsecret should set `INSTAR_REMEDIATION_KEY_PASSPHRASE` in their environment before any F-2+ feature ships. macOS and Linux+libsecret have nothing to do.
 
 **ELI16-overview gate.** When your agent hands you a spec for approval, you'll now always get a plain-English overview alongside the dense technical document. The instar repo refuses to commit any code change whose driving spec lacks a readable companion file. The technical spec becomes the appendix; the overview is the entry point. No setup required; the new behavior takes effect on the next agent update.
@@ -84,3 +100,6 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **Centralized content redaction** (F-2) — `new Redactor().redact(text)` / `.redactFields(obj, fields)` — wired into DegradationReporter in F-3.
 - **Structured errorCode extraction with provenance** (F-2) — `ErrorCodeExtractor.extract({ nativeError, probeEmission, subsystemExplicit, freeText, verifyProbeSignature })`.
 - **Runbook-match provenance gate** (F-2) — `ErrorCodeExtractor.isAllowedForRunbookMatch(extracted)` — refuses free-text-provenance matchers.
+- **In-flight tuple lock** (F-4) — Prevents two heal paths from racing on the same problem.
+- **Intent journal** (F-4) — Durable log of "what an attempt declared it was about to do."
+- **Audit-writer + projection** (F-4) — Verified-append audit log + read view consumed by later remediation modules.
