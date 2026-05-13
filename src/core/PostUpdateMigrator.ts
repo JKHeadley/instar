@@ -29,6 +29,7 @@ import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-te
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
+import { jobsMigrate } from '../commands/jobMigrate.js';
 import {
   ELIGIBILITY_SCHEMA_SQL,
   ELIGIBILITY_SCHEMA_SQL_SHA256,
@@ -89,6 +90,7 @@ export class PostUpdateMigrator {
     this.migrateGitignore(result);
     this.migrateBuiltinSkills(result);
     this.migrateBuiltinJobs(result);
+    this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -301,6 +303,78 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`built-in agentmd jobs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Phase 5 — auto-run `instar jobs migrate` for pre-spec agents on update.
+   *
+   * Behavior:
+   *   - SKIP entirely if `.instar/jobs/.migration-complete.json` exists
+   *     (operator already confirmed completion via Dashboard).
+   *   - SKIP entirely if `.instar/jobs/.migration-abandoned.json` exists
+   *     (operator explicitly chose to roll back).
+   *   - SKIP if `.instar/jobs.json` is absent (nothing to migrate).
+   *   - Otherwise, invoke `jobsMigrate({ defaultAction: 'fork' })` —
+   *     fork policy preserves the operator's customized body in user/
+   *     namespace, never silently drops content. This is the
+   *     spec-mandated default for the auto-run path.
+   *   - Emit a Dashboard banner event via the migration result so the
+   *     operator sees "migration ran on update — confirm in Dashboard."
+   *
+   * Seamless Migration Guarantee invariants enforced at this layer
+   * (PR #180 §Seamless Migration Guarantee):
+   *   #6 in-flight protection — JobScheduler.activeRuns() check is
+   *      currently a defensive no-op until Phase 4 wires the scheduler
+   *      back-reference; the migration runs at update time, before the
+   *      new scheduler instance comes up, so by construction nothing is
+   *      in flight.
+   *   #7 transactional safety on interrupt — `jobsMigrate` is structurally
+   *      safe (backup-first, idempotent, rollback via --abandon).
+   *   #8 telemetry — outcome is appended to result.upgraded/errors.
+   */
+  private autoMigrateLegacyJobsJson(result: MigrationResult): void {
+    try {
+      const stateDir = this.config.stateDir;
+      const jobsJsonPath = path.join(stateDir, 'jobs.json');
+      const jobsRoot = path.join(stateDir, 'jobs');
+      const completedMarker = path.join(jobsRoot, '.migration-complete.json');
+      const abandonedMarker = path.join(jobsRoot, '.migration-abandoned.json');
+
+      if (!fs.existsSync(jobsJsonPath)) {
+        return; // nothing to migrate
+      }
+      if (fs.existsSync(completedMarker)) {
+        result.skipped.push('legacy jobs.json migration: already complete (operator-confirmed)');
+        return;
+      }
+      if (fs.existsSync(abandonedMarker)) {
+        result.skipped.push('legacy jobs.json migration: explicitly abandoned by operator');
+        return;
+      }
+
+      const packageRoot = path.resolve(__dirname, '..', '..');
+      const outcome = jobsMigrate({
+        agentStateDir: stateDir,
+        packageRoot,
+        defaultAction: 'fork',
+      });
+
+      if (outcome.status === 'completed') {
+        const migratedCount = outcome.perEntry.filter((e: { action: string }) => e.action === 'migrated-instar').length;
+        const forkedCount = outcome.perEntry.filter((e: { action: string }) => e.action === 'forked-user' || e.action === 'kept-user').length;
+        const renamedCount = outcome.perEntry.filter((e: { action: string }) => e.action === 'renamed-user').length;
+        result.upgraded.push(
+          `legacy jobs.json migration: auto-ran on update — ${migratedCount} migrated to instar, ${forkedCount} preserved in user namespace, ${renamedCount} renamed. Confirm via Dashboard to allow jobs.json removal.`,
+        );
+        if (outcome.backupPath) {
+          result.upgraded.push(`legacy jobs.json migration: backup at ${path.basename(outcome.backupPath)}`);
+        }
+      } else if (outcome.status === 'aborted') {
+        result.errors.push(`legacy jobs.json migration: aborted — ${outcome.errors.join('; ')}`);
+      }
+    } catch (err) {
+      result.errors.push(`legacy jobs.json migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

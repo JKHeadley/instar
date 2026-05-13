@@ -5,9 +5,9 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
-### test(scheduler): Seamless Migration Guarantee suite + 8 fixtures
+### feat(updates): Phase 5 — auto-migrate legacy jobs.json on update
 
-The binding gate the INSTAR-JOBS-AS-AGENTMD spec §Seamless Migration Guarantee promises lands here: `tests/integration/migration-guarantee.test.ts` iterates 8 fixtures (`pristine`, `customized`, `body-edited`, `user-jobs`, `retired-defaults`, `mixed-state`, `multi-machine-drift`, `in-flight`) and asserts invariants 1, 2, 4, 5, 7, 9 + idempotency + dry-run on every shape under the CLI migration path. 50 test cases, all green. Fixtures live under `tests/fixtures/migration-agents/<shape>/shape.json` as declarative transformations on top of `getDefaultJobs()` output. New pre-commit gate `scripts/protect-migration-guarantee.js` refuses commits that delete the test file or any fixture's `shape.json`. Phase 5 auto-migrate (#193), Phase 6 deprecation (#194), and Phase 4 endpoints (#195) are held as drafts until this lands, per the spec's gate-wiring requirement.
+`PostUpdateMigrator` now auto-runs `instar job migrate --default-action=fork` once per update when an agent has a legacy `jobs.json` AND has not yet completed-or-abandoned migration. Skip-rules: jobs.json absent → silent no-op; `.migration-complete.json` present → log + skip; `.migration-abandoned.json` present → log + skip. Fork policy preserves operator-edited bodies verbatim under `.instar/jobs/user/` — nothing is silently dropped. Auto-runner does NOT write `.migration-complete.json` (only the operator-confirmed Dashboard action does that — release-cut gate continues to block jobs.json deletion until operator confirms). 5 unit tests in `tests/unit/PostUpdateMigrator-autoMigrate.test.ts`. Closes the Phase 5 commitment from the INSTAR-JOBS-AS-AGENTMD spec rollout.
 
 ## What Changed
 
