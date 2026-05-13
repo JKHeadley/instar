@@ -144,6 +144,8 @@ review-completed-at: "<ISO timestamp>"
 review-report: "docs/specs/reports/<slug>-convergence.md"
 ```
 
+**Structural prerequisite — ELI16 overview.** Before the convergence tag is written, `skills/spec-converge/scripts/write-convergence-tag.mjs` verifies the spec ships with a plain-English ELI16 companion at `docs/specs/<slug>.eli16.md` (or the path declared via `eli16-overview:` frontmatter). The companion must be at least 800 characters. If the overview is missing or stub-length, convergence is refused — no tag is written. The dense technical spec is for reviewers; the ELI16 overview is the entry point for any reader who has to make a real decision. See `skills/instar-dev/templates/eli16-overview.md` for the expected shape.
+
 The `approved: true` tag is NOT written by this skill. That's the user's step.
 
 ### Phase 6 — User handoff

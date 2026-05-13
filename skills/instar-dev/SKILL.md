@@ -40,9 +40,12 @@ Before any other phase runs, the instar-dev agent verifies the change is driven 
 - The change must be rooted in a spec file under `docs/specs/<slug>.md`.
 - That spec must have been run through `/spec-converge` to convergence (writes `review-convergence: <timestamp>` into the spec's frontmatter).
 - The user must have reviewed the convergence report and applied `approved: true` to the spec's frontmatter.
-- The spec path is passed to `write-trace.mjs` via `--spec` so the pre-commit hook can verify both tags.
+- The spec must ship with a plain-English **ELI16 overview** companion at `docs/specs/<slug>.eli16.md` (or another path declared via the spec's `eli16-overview:` frontmatter field). The overview must be at least 800 characters of real content — stubs are refused. See `skills/instar-dev/templates/eli16-overview.md` for the expected shape.
+- The spec path is passed to `write-trace.mjs` via `--spec` so the pre-commit hook can verify all three structural requirements (convergence tag, approval tag, ELI16 companion).
 
-If the spec is missing, not converged, or not approved, the pre-commit hook refuses the commit. No override inside the skill — the only exceptions are the foundational bootstrap commits that install `/instar-dev` and `/spec-converge` themselves.
+If the spec is missing, not converged, not approved, or lacks an ELI16 overview, the pre-commit hook refuses the commit. No override inside the skill — the only exceptions are the foundational bootstrap commits that install `/instar-dev` and `/spec-converge` themselves.
+
+The ELI16 overview is the entry point for any reader who has to make a real decision against the spec — the dense technical spec is for reviewers, not deciders. It leads with what the change actually is in plain English, what already exists, what's new, the safeguards in plain terms, and what the reader actually needs to decide.
 
 ### Phase 1 — Principle check
 
