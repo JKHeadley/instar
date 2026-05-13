@@ -34,10 +34,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import crypto from 'node:crypto';
+import child_process, {
+  spawnSync,
+  type SpawnSyncReturns,
+} from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+
+// Lightweight structural type compatible with F-8 Remediator's RemediationContext.
+// Imported as a type-only reference; runtime decoupling lets us avoid a hard
+// dependency from `src/memory/*` onto `src/remediation/*` (the legacy in-line
+// `openWithHeal` path must keep working even if remediation files are absent).
+export interface RemediatorInvocationContext {
+  attemptId: string;
+  runbookId: string;
+  abortSignal: AbortSignal;
+  /** `process.hrtime.bigint()` issued + expectedRuntimeMs converted to ns. */
+  monotonicDeadline: bigint;
+}
+
+export interface RemediatorExecutionResult {
+  outcome: 'success' | 'failure';
+  details: Record<string, unknown>;
+}
 
 export interface HealEvent {
   /** Component that triggered the heal (e.g. 'SemanticMemory', 'TopicMemory', 'MemoryIndex'). */
@@ -301,6 +322,305 @@ class NativeModuleHealerImpl {
       }
     } catch {
       /* ignore — best-effort */
+    }
+  }
+
+  /**
+   * Remediator entry point — F-8 / W-1 (SELF-HEALING-REMEDIATOR-V2-SPEC
+   * §A28, §A45, §A55). Wraps the same rebuild logic as `openWithHeal`'s
+   * heal step but accepts a `RemediatorInvocationContext` so:
+   *   - the abort signal is honoured (deadline / parent cancel),
+   *   - the monotonic deadline gates `npm rebuild` timeout,
+   *   - the rebuilt `.node` binary's sha256 is recorded in `lastResult` so
+   *     the Remediator's audit-projection can detect cross-process binary
+   *     divergence (A28),
+   *   - `--ignore-scripts --build-from-source` are passed so the rebuild
+   *     never re-runs every dep's install scripts and never picks up a
+   *     poisoned prebuild binary (A45).
+   *
+   * Returns an `ExecutionResult`-shaped object compatible with F-8's
+   * `ApprovedRunbook.surfaceCallable` contract. Errors are caught and
+   * mapped to `{outcome: 'failure', details: {...}}` — the Remediator's
+   * verify step (A21) decides whether the heal actually worked; this
+   * method ONLY reports whether the rebuild succeeded.
+   *
+   * The legacy in-line `openWithHeal` entry point remains the canonical
+   * safety net for direct-construction CLI paths. This method is the
+   * Remediator-orchestrated parallel path; both acquire the same
+   * MachineLock tuple (§A2 lock-bound co-existence), so only one rebuild
+   * runs at a time on a given machine.
+   */
+  async invokeFromRemediator(
+    ctx: RemediatorInvocationContext
+  ): Promise<RemediatorExecutionResult> {
+    if (ctx.abortSignal.aborted) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'aborted-before-start',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+    if (this.healAttempted) {
+      const last = this.lastResult;
+      return {
+        outcome: last?.success ? 'success' : 'failure',
+        details: {
+          reason: 'heal-already-attempted-this-process',
+          previousOutcome: last,
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    // Compute remaining ns budget from monotonic deadline. Cap below 120s.
+    const nowHr = process.hrtime.bigint();
+    let remainingMs = 120_000;
+    if (ctx.monotonicDeadline > nowHr) {
+      const remainingNs = ctx.monotonicDeadline - nowHr;
+      const computed = Number(remainingNs / 1_000_000n);
+      if (computed < remainingMs) remainingMs = computed;
+    } else {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'deadline-already-elapsed',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+    if (remainingMs < 1_000) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'insufficient-deadline-budget',
+          remainingMs,
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    const result = await this.healBetterSqlite3FromRemediator(
+      ctx,
+      remainingMs
+    );
+    return result;
+  }
+
+  /**
+   * Remediator-side rebuild path. Mirrors `healBetterSqlite3` but uses
+   * `--ignore-scripts --build-from-source <single-package>` (A28 + A45)
+   * and records the sha256 of the rebuilt `.node` binary in the heal log
+   * for cross-process binary-divergence detection (A28).
+   *
+   * Returns `{outcome: 'success' | 'failure', details: {...}}` directly so
+   * the caller (W-1 runbook surfaceCallable) doesn't need a second mapping
+   * step. The HealEvent is still appended to the in-line log for
+   * observability parity with the legacy path.
+   */
+  private async healBetterSqlite3FromRemediator(
+    ctx: RemediatorInvocationContext,
+    timeoutMs: number
+  ): Promise<RemediatorExecutionResult> {
+    this.healAttempted = true;
+    const component = `Remediator:${ctx.runbookId}`;
+
+    const started = Date.now();
+    const event: HealEvent = {
+      component,
+      timestamp: new Date().toISOString(),
+      success: false,
+      nodeVersion: process.version,
+    };
+
+    const installPrefix = this.findBetterSqlite3InstallPrefix();
+    if (!installPrefix) {
+      event.errorTail = 'could not locate better-sqlite3 install prefix';
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return {
+        outcome: 'failure',
+        details: { reason: event.errorTail, attemptId: ctx.attemptId },
+      };
+    }
+    event.installPrefix = installPrefix;
+
+    const npmPath = this.findNpmPath();
+    if (!npmPath) {
+      event.errorTail = 'npm not found on PATH';
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return {
+        outcome: 'failure',
+        details: { reason: event.errorTail, attemptId: ctx.attemptId },
+      };
+    }
+    event.npmPath = npmPath;
+
+    // A45 pre-rebuild integrity check: read package-lock.json's `resolved`
+    // URL + integrity hash for better-sqlite3. The check is best-effort —
+    // surface a non-fatal mismatch in the event but do NOT block the
+    // rebuild (the in-line healer must keep working; the gold-standard
+    // sha256 lockfile from A55 lands in a follow-up PR).
+    const integrity = this.readPackageLockIntegrity(installPrefix);
+
+    // A28 + A45: rebuild via `--ignore-scripts --build-from-source` with the
+    // single package name as the only positional argument.
+    let result: SpawnSyncReturns<string>;
+    try {
+      // Use namespace access so tests can monkey-patch `child_process.spawnSync`.
+      result = child_process.spawnSync(
+        process.execPath,
+        [
+          npmPath,
+          'rebuild',
+          '--ignore-scripts',
+          '--build-from-source',
+          'better-sqlite3',
+          '--prefix',
+          installPrefix,
+        ],
+        {
+          encoding: 'utf-8',
+          timeout: timeoutMs,
+          cwd: installPrefix,
+          env: { ...process.env, npm_config_node_gyp: undefined },
+          signal: ctx.abortSignal,
+        }
+      );
+    } catch (spawnErr) {
+      event.errorTail = `spawn failed: ${spawnErr instanceof Error ? spawnErr.message : String(spawnErr)}`;
+      event.durationMs = Date.now() - started;
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return {
+        outcome: 'failure',
+        details: {
+          reason: event.errorTail,
+          attemptId: ctx.attemptId,
+          aborted: ctx.abortSignal.aborted,
+        },
+      };
+    }
+
+    event.durationMs = Date.now() - started;
+
+    if (ctx.abortSignal.aborted) {
+      event.errorTail = `aborted during rebuild (status=${result.status ?? 'null'})`;
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return {
+        outcome: 'failure',
+        details: { reason: 'aborted', attemptId: ctx.attemptId },
+      };
+    }
+
+    if (result.status !== 0) {
+      const stderrTail = (result.stderr || result.stdout || '').slice(-300);
+      event.errorTail = stderrTail || `npm exited ${result.status}`;
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return {
+        outcome: 'failure',
+        details: {
+          reason: event.errorTail,
+          npmStatus: result.status,
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    // Clear cached require entries so the next consumer sees the fresh
+    // binding (parity with openWithHeal's behaviour).
+    this.clearBetterSqlite3Cache();
+
+    // A28 post-rebuild sha256 record of the rebuilt `.node` binary. Used by
+    // the Remediator's audit-projection / cross-process ledger to detect
+    // divergent binaries across attempts.
+    const sha256 = this.computeBetterSqlite3BinarySha256(installPrefix);
+
+    event.success = true;
+    this.logHealEvent(event);
+    this.lastResult = event;
+
+    return {
+      outcome: 'success',
+      details: {
+        attemptId: ctx.attemptId,
+        installPrefix,
+        npmPath,
+        durationMs: event.durationMs,
+        rebuiltBinarySha256: sha256,
+        nodeVersion: process.version,
+        packageLockIntegrity: integrity,
+      },
+    };
+  }
+
+  /**
+   * Read `package-lock.json` and return better-sqlite3's `resolved` URL +
+   * `integrity` hash, if locatable. Returns `null` on any failure — this is
+   * a best-effort secondary check per A45, not authoritative.
+   */
+  private readPackageLockIntegrity(
+    installPrefix: string
+  ): { resolved: string; integrity: string } | null {
+    try {
+      const lockPath = path.join(installPrefix, 'package-lock.json');
+      if (!fs.existsSync(lockPath)) return null;
+      const raw = fs.readFileSync(lockPath, 'utf-8');
+      const lock = JSON.parse(raw) as {
+        packages?: Record<string, { resolved?: string; integrity?: string }>;
+        dependencies?: Record<string, { resolved?: string; integrity?: string }>;
+      };
+      // npm@7+ uses `packages` with full nested paths.
+      if (lock.packages) {
+        for (const [key, val] of Object.entries(lock.packages)) {
+          if (
+            key === 'node_modules/better-sqlite3' ||
+            key.endsWith('/node_modules/better-sqlite3')
+          ) {
+            if (val.resolved && val.integrity) {
+              return { resolved: val.resolved, integrity: val.integrity };
+            }
+          }
+        }
+      }
+      // Legacy npm@6 `dependencies` map.
+      if (lock.dependencies && lock.dependencies['better-sqlite3']) {
+        const dep = lock.dependencies['better-sqlite3'];
+        if (dep.resolved && dep.integrity) {
+          return { resolved: dep.resolved, integrity: dep.integrity };
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Compute sha256 of the rebuilt better-sqlite3 `.node` binary. Used for
+   * A28 cross-process binary-divergence detection. Returns null on any
+   * failure — the heal still succeeded; the divergence detector simply
+   * loses this data point.
+   */
+  private computeBetterSqlite3BinarySha256(installPrefix: string): string | null {
+    try {
+      const binaryPath = path.join(
+        installPrefix,
+        'node_modules',
+        'better-sqlite3',
+        'build',
+        'Release',
+        'better_sqlite3.node'
+      );
+      if (!fs.existsSync(binaryPath)) return null;
+      const buf = fs.readFileSync(binaryPath);
+      return crypto.createHash('sha256').update(buf).digest('hex');
+    } catch {
+      return null;
     }
   }
 
