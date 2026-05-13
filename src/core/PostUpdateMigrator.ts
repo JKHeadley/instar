@@ -30,6 +30,7 @@ import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js
 import { installBuiltinSkills } from '../commands/init.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
+import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
 import {
   ELIGIBILITY_SCHEMA_SQL,
   ELIGIBILITY_SCHEMA_SQL_SHA256,
@@ -353,6 +354,20 @@ export class PostUpdateMigrator {
         return;
       }
 
+      // Snapshot pre-migration state so the runtime invariant gate has
+      // ground truth to compare against. Per spec §Gate wiring:
+      // "Before performing any destructive write, the migrator re-verifies
+      //  invariants 1, 2, 4, and 6 against the staged state. Failure aborts
+      //  to fail-closed (invariant 9)."
+      let preMigrationJobs: any[] = [];
+      try {
+        preMigrationJobs = JSON.parse(fs.readFileSync(jobsJsonPath, 'utf-8'));
+        if (!Array.isArray(preMigrationJobs)) preMigrationJobs = [];
+      } catch {
+        preMigrationJobs = [];
+      }
+      const preMigrationUserSnapshot = snapshotUserNamespace(stateDir);
+
       const packageRoot = path.resolve(__dirname, '..', '..');
       const outcome = jobsMigrate({
         agentStateDir: stateDir,
@@ -361,11 +376,34 @@ export class PostUpdateMigrator {
       });
 
       if (outcome.status === 'completed') {
+        // Runtime invariant gate. Spec §Seamless Migration Guarantee #1, #2, #4.
+        // Invariant 6 (in-flight) is structurally satisfied at update-apply
+        // time because no jobs run mid-update.
+        const verification = verifyMigrationInvariants({
+          agentStateDir: stateDir,
+          preMigrationJobs,
+          preMigrationUserSnapshot,
+        });
+
+        if (!verification.ok) {
+          // Fail-closed (invariant 9): roll back via abandon.
+          try {
+            jobsMigrate({ agentStateDir: stateDir, packageRoot, abandon: true });
+          } catch (rollbackErr) {
+            result.errors.push(
+              `legacy jobs.json migration: invariant verification failed AND rollback errored — ` +
+                `${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+            );
+          }
+          result.errors.push(`legacy jobs.json migration: ${verification.summary} — rolled back to pre-migration state`);
+          return;
+        }
+
         const migratedCount = outcome.perEntry.filter((e: { action: string }) => e.action === 'migrated-instar').length;
         const forkedCount = outcome.perEntry.filter((e: { action: string }) => e.action === 'forked-user' || e.action === 'kept-user').length;
         const renamedCount = outcome.perEntry.filter((e: { action: string }) => e.action === 'renamed-user').length;
         result.upgraded.push(
-          `legacy jobs.json migration: auto-ran on update — ${migratedCount} migrated to instar, ${forkedCount} preserved in user namespace, ${renamedCount} renamed. Confirm via Dashboard to allow jobs.json removal.`,
+          `legacy jobs.json migration: auto-ran on update — ${migratedCount} migrated to instar, ${forkedCount} preserved in user namespace, ${renamedCount} renamed. Invariants verified. Confirm via Dashboard to allow jobs.json removal.`,
         );
         if (outcome.backupPath) {
           result.upgraded.push(`legacy jobs.json migration: backup at ${path.basename(outcome.backupPath)}`);

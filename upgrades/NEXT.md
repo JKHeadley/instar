@@ -5,6 +5,12 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### feat(scheduler): runtime invariant gate for legacy-jobs.json auto-migration
+
+`PostUpdateMigrator.autoMigrateLegacyJobsJson` now re-verifies Seamless Migration Guarantee invariants 1, 2, 4 against the staged state AFTER `jobsMigrate` completes but BEFORE the auto-migration is considered final. Per spec §Gate wiring. Any verification failure triggers a fail-closed rollback via `jobsMigrate({ abandon: true })` (invariant 9). The migrator surfaces the failure to the update report so the operator sees what fired.
+
+New module `src/scheduler/MigrationInvariants.ts` exports `snapshotUserNamespace()`, `verifyMigrationInvariants()`, and `canonicalScheduleHash()`. 14 unit tests cover every invariant pass/fail/skip path. Invariant 6 (in-flight protection) is structurally satisfied at update-apply time (no jobs run mid-update) and is deliberately NOT wired here — that needs `JobScheduler.activeRuns()` on the agentmd path, follow-up work.
+
 ### feat(server): Phase 4 — Dashboard migration endpoints for jobs-as-agentmd
 
 Three new HTTP endpoints surface the migration state so the Dashboard frontend can render confirm / abandon buttons:
