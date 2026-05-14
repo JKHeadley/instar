@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "sessionId": "de7b0a6b-d846-4019-aefc-01a29b09f687",
+  "timestamp": "2026-05-14T05:32:38.716Z",
+  "artifactPath": "upgrades/side-effects/a47-primary-aggregator-lease.md",
+  "artifactSha256": "4bc7c50d630be2bea5a3b72b44fa60fc935d466edb22934b193cab93b8f25578",
+  "specPath": "docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md",
+  "coveredFiles": [
+    "src/remediation/PrimaryAggregatorLease.ts",
+    "tests/unit/PrimaryAggregatorLease.test.ts",
+    "upgrades/NEXT.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
