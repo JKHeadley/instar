@@ -11,6 +11,9 @@ New integration test pins the existing `authMiddleware` gate on the four Phase 4
 ### feat(scheduler): disabledAtBodyHash drift-detection helpers
 
 New `src/scheduler/DisabledBodyDrift.ts` ships `bodyDriftedSinceDisable()`, `listDriftedDisabledSlugs()`, `stampDisabledAtBodyHash()`, `clearDisabledAtBodyHash()`. Surfaces "instar default has changed since you disabled it" indicators per INSTAR-JOBS-AS-AGENTMD spec §Dashboard UX. Reuses the same `hashBody()` from `AgentMdLockFile.ts` so disable-time hash semantics match lock-file body-hash semantics exactly. Pure helpers — Dashboard UI rewrite is the future consumer. 15 unit tests pass.
+### feat(release): drift classifier — batched Haiku call populates significantChanges
+
+New `scripts/classify-default-drift.mjs` is the release-time drift classifier per INSTAR-JOBS-AS-AGENTMD spec §Drift Classifier. Walks the templates, runs `git show` to diff against the previous release, calls Anthropic Haiku ONCE with all diffs in a single prompt, parses the strict-output regex, and writes `significantChanges: [...]` into `dist/jobs/instar.lock.json`. Injection-resistance per spec: classifier sees diffs only, never full body content; output is sort-order only, never suppression. When `ANTHROPIC_API_KEY` is absent (every build today), the script skips the LLM call and writes an empty array — release builds never fail because of classifier issues. 5 unit tests pass. To enable production classification: add `ANTHROPIC_API_KEY` to GHA Secrets.
 
 ### feat(scheduler): agentmd two-rename atomic save helper
 

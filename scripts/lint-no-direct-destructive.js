@@ -80,6 +80,11 @@ const ALLOWLIST = new Set([
   // Pre-command shim that wraps git invocations from outside the safe
   // executor — bootstraps the safety check, can't be inside the funnel.
   'scripts/destructive-command-shim.js',
+  // Phase 2 release-time drift classifier — runs `git show` and
+  // `git describe` (read-only) to diff current templates against the
+  // previous release. Build-time only; never executes on an agent's
+  // machine. Per INSTAR-JOBS-AS-AGENTMD spec §Drift Classifier.
+  'scripts/classify-default-drift.mjs',
   // Bootstrap script for the builtin-manifest — runs as part of `npm run
   // build` before tsc emits dist/.
   'scripts/generate-builtin-manifest.cjs',
