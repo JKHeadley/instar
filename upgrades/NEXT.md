@@ -5,6 +5,10 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### test(server): bearer-token auth verification on jobs endpoints
+
+New integration test pins the existing `authMiddleware` gate on the four Phase 4 jobs endpoints (`/jobs/migration-status`, `/jobs/migration-confirm`, `/jobs/migration-abandon`, `/jobs/reconcile`). 15 cases cover unauthenticated, wrong-token, off-by-one near-miss, malformed header, non-Bearer scheme, and authenticated paths. Asserts INSTAR-JOBS-AS-AGENTMD spec §Decision Points "Dashboard write authorization — bearer auth extended to job-edit endpoints." Auth was already in place via global middleware; this test pins the property so a future refactor cannot weaken it silently.
+
 ### feat(scheduler): agentmd two-rename atomic save helper
 
 New `src/scheduler/AgentMdAtomicSave.ts` ships the canonical "md-first, manifest-last" two-rename commit sequence per INSTAR-JOBS-AS-AGENTMD spec §Design Principle 2. SIGKILL between rename A (body) and rename B (manifest) leaves a consistent strictly-progressed state. The helper returns structured failure info for each stage so a Phase 4 Dashboard UI consumer can drive recovery. Companion `listStagedNewFiles()` + `discardStagedFile()` are sized for the future reconcile() boot lifecycle. 8 unit tests pass. No caller wired yet — Phase 4 Dashboard UI rewrite is the consumer.
