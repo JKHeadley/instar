@@ -4484,6 +4484,29 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     console.log(pc.green('  Compaction auto-resume wired (PreCompact hook event)'));
 
+    // Pre-compaction memory flush — write durable facts before compaction
+    // collapses working memory. Off by default; enable via config.preCompactionFlush.
+    // See docs/specs/OPENCLAW-IMPORT-PRE-COMPACTION-FLUSH-SPEC.md.
+    const preCompactFlushCfg = (config as unknown as {
+      preCompactionFlush?: Partial<import('../core/PreCompactionFlush.js').PreCompactionFlushConfig>;
+    }).preCompactionFlush;
+    if (preCompactFlushCfg?.enabled) {
+      const { PreCompactionFlush, DEFAULT_PRE_COMPACTION_FLUSH_CONFIG } = await import('../core/PreCompactionFlush.js');
+      const flush = new PreCompactionFlush(
+        {
+          intelligence: sharedIntelligence ?? null,
+          projectDir: config.projectDir,
+        },
+        { ...DEFAULT_PRE_COMPACTION_FLUSH_CONFIG, ...preCompactFlushCfg },
+      );
+      hookEventReceiver.on('PreCompact', (payload) => {
+        flush.handle(payload as Parameters<typeof flush.handle>[0]).catch(() => {
+          /* handle() owns its audit; never throws. */
+        });
+      });
+      console.log(pc.green('  Pre-compaction memory flush enabled'));
+    }
+
     // Trigger 2: Watchdog 'compaction-idle' polling — report to sentinel.
     if (watchdog) {
       watchdog.on('compaction-idle', (sessionName: string) => {
