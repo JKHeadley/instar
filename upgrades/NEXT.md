@@ -5,6 +5,10 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### feat(scheduler): agentmd two-rename atomic save helper
+
+New `src/scheduler/AgentMdAtomicSave.ts` ships the canonical "md-first, manifest-last" two-rename commit sequence per INSTAR-JOBS-AS-AGENTMD spec §Design Principle 2. SIGKILL between rename A (body) and rename B (manifest) leaves a consistent strictly-progressed state. The helper returns structured failure info for each stage so a Phase 4 Dashboard UI consumer can drive recovery. Companion `listStagedNewFiles()` + `discardStagedFile()` are sized for the future reconcile() boot lifecycle. 8 unit tests pass. No caller wired yet — Phase 4 Dashboard UI rewrite is the consumer.
+
 ### fix(server): File Viewer extends never-editable to .instar/jobs/instar/
 
 The Dashboard file editor's never-editable list now includes `.instar/jobs/instar/`. Per INSTAR-JOBS-AS-AGENTMD spec §Decision Points: that namespace is owned by the update process and any direct edit would (a) be overwritten on next update and (b) break the body-hash verification. Operators who want to customize a shipped default use the override flow (fork to `.instar/jobs/user/`). The CLAUDE.md doc string emitted by PostUpdateMigrator is updated to list the new entry alongside `.claude/hooks/`, `.claude/scripts/`, `node_modules/`. One new e2e test case in `tests/e2e/file-viewer-e2e.test.ts`.
