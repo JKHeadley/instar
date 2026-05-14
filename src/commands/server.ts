@@ -3383,6 +3383,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // Pre-prompt memory recall (OpenClaw import T2.2). Bounded synchronous
+    // recall pass that runs before UserPromptSubmit injects context. Default
+    // off; opt in via config.promptBuildRecall.enabled.
+    const promptRecallCfg = (config as unknown as {
+      promptBuildRecall?: Partial<import('../core/PromptBuildRecall.js').PromptBuildRecallConfig>;
+    }).promptBuildRecall;
+    if (promptRecallCfg?.enabled && semanticMemory) {
+      const { PromptBuildRecall, DEFAULT_PROMPT_BUILD_RECALL_CONFIG } = await import('../core/PromptBuildRecall.js');
+      const recall = new PromptBuildRecall(
+        { semanticMemory },
+        { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, ...promptRecallCfg },
+      );
+      (globalThis as Record<string, unknown>).__instarPromptBuildRecall = recall;
+      console.log(pc.green('  Pre-prompt memory recall enabled'));
+    }
+
     // WorkingMemoryAssembler is initialized after activitySentinel (see below)
     // so it can wire episodicMemory from the sentinel.
     let workingMemory: WorkingMemoryAssembler | undefined;
