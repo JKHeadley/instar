@@ -8,6 +8,9 @@ note (`upgrades/<version>.md`) at release-cut time.
 ### feat(scheduler): agentmd two-rename atomic save helper
 
 New `src/scheduler/AgentMdAtomicSave.ts` ships the canonical "md-first, manifest-last" two-rename commit sequence per INSTAR-JOBS-AS-AGENTMD spec §Design Principle 2. SIGKILL between rename A (body) and rename B (manifest) leaves a consistent strictly-progressed state. The helper returns structured failure info for each stage so a Phase 4 Dashboard UI consumer can drive recovery. Companion `listStagedNewFiles()` + `discardStagedFile()` are sized for the future reconcile() boot lifecycle. 8 unit tests pass. No caller wired yet — Phase 4 Dashboard UI rewrite is the consumer.
+### feat(scheduler): reconcile() boot lifecycle + GET /jobs/reconcile endpoint
+
+New `src/scheduler/AgentMdReconcile.ts` exports `reconcileAgentMdTree()` — boot-time consistency check that surfaces five finding kinds per INSTAR-JOBS-AS-AGENTMD spec §Runtime: orphan manifests, shadow .md files, missing-from-jobs.json entries, staged .new files (from interrupted atomic saves), and case-collisions. New `GET /jobs/reconcile` HTTP endpoint returns the structured report for Dashboard Issues-card consumption. 10 unit tests. Pure function — no auto-remediation; the operator decides what to do via Dashboard actions.
 
 ### fix(server): File Viewer extends never-editable to .instar/jobs/instar/
 

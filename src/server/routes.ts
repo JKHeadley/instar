@@ -4403,6 +4403,31 @@ export function createRoutes(ctx: RouteContext): Router {
    *   - canAbandon: boolean (schedule/ exists, no completion marker)
    *   - scheduleEntryCount: number
    */
+  /**
+   * GET /jobs/reconcile
+   *
+   * Boot-time consistency check for the agentmd job tree. Surfaces
+   * orphan manifests, shadow .md files, missing-from-jobs.json entries,
+   * staged .new files from interrupted saves, and case-collisions per
+   * INSTAR-JOBS-AS-AGENTMD spec §Runtime "Load lifecycle (boot)".
+   *
+   * Dashboard Issues-card consumes the returned `findings` array.
+   */
+  router.get('/jobs/reconcile', async (_req, res) => {
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const { reconcileAgentMdTree } = await import('../scheduler/AgentMdReconcile.js');
+      const report = reconcileAgentMdTree({ stateDir });
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/jobs/migration-status', (_req, res) => {
     try {
       const stateDir = ctx.config.stateDir;
