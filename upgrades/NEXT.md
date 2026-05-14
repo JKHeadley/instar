@@ -8,6 +8,9 @@ note (`upgrades/<version>.md`) at release-cut time.
 ### fix(server): File Viewer extends never-editable to .instar/jobs/instar/
 
 The Dashboard file editor's never-editable list now includes `.instar/jobs/instar/`. Per INSTAR-JOBS-AS-AGENTMD spec §Decision Points: that namespace is owned by the update process and any direct edit would (a) be overwritten on next update and (b) break the body-hash verification. Operators who want to customize a shipped default use the override flow (fork to `.instar/jobs/user/`). The CLAUDE.md doc string emitted by PostUpdateMigrator is updated to list the new entry alongside `.claude/hooks/`, `.claude/scripts/`, `node_modules/`. One new e2e test case in `tests/e2e/file-viewer-e2e.test.ts`.
+### feat(scheduler): migration telemetry to job-runs.jsonl (Seamless Migration Guarantee invariant 8)
+
+New `src/scheduler/MigrationLedger.ts` writes a single `migration.completed` or `migration.aborted` event per migrator run to `.instar/ledger/job-runs.jsonl`. `PostUpdateMigrator.autoMigrateLegacyJobsJson` emits the event on every terminal path (success, jobsMigrate abort, thrown exception). The event records per-entry outcomes (normalized to `migrated | forked | renamed | skipped | failed | deferred-in-flight`), backup path, instarVersion, and trigger. `findCompletedFor(stateDir, version)` is the canonical signal for "did migration finish for this release" — usable by the release-cut gate when it ships. Co-locates with the existing JobRun ledger via a `kind` discriminator field; non-migration consumers ignore the new rows. 8 unit tests pass.
 
 ### test(release): npm-pack smoke test for shipped templates + bundled public key
 
