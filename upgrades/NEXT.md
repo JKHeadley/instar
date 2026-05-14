@@ -8,6 +8,9 @@ note (`upgrades/<version>.md`) at release-cut time.
 ### test(server): bearer-token auth verification on jobs endpoints
 
 New integration test pins the existing `authMiddleware` gate on the four Phase 4 jobs endpoints (`/jobs/migration-status`, `/jobs/migration-confirm`, `/jobs/migration-abandon`, `/jobs/reconcile`). 15 cases cover unauthenticated, wrong-token, off-by-one near-miss, malformed header, non-Bearer scheme, and authenticated paths. Asserts INSTAR-JOBS-AS-AGENTMD spec §Decision Points "Dashboard write authorization — bearer auth extended to job-edit endpoints." Auth was already in place via global middleware; this test pins the property so a future refactor cannot weaken it silently.
+### feat(scheduler): disabledAtBodyHash drift-detection helpers
+
+New `src/scheduler/DisabledBodyDrift.ts` ships `bodyDriftedSinceDisable()`, `listDriftedDisabledSlugs()`, `stampDisabledAtBodyHash()`, `clearDisabledAtBodyHash()`. Surfaces "instar default has changed since you disabled it" indicators per INSTAR-JOBS-AS-AGENTMD spec §Dashboard UX. Reuses the same `hashBody()` from `AgentMdLockFile.ts` so disable-time hash semantics match lock-file body-hash semantics exactly. Pure helpers — Dashboard UI rewrite is the future consumer. 15 unit tests pass.
 
 ### feat(scheduler): agentmd two-rename atomic save helper
 
