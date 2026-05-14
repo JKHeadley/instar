@@ -1423,6 +1423,28 @@ export function createRoutes(ctx: RouteContext): Router {
   // Compaction-resume trigger #3 — called by .instar/hooks/instar/compaction-recovery.sh
   // immediately after a compaction event, independent of HookEventReceiver and Watchdog.
   // This is the most reliable path: the hook only runs when compaction actually happened.
+  // Pre-prompt memory recall (OpenClaw import T2.2). Invoked by a Claude Code
+  // UserPromptSubmit hook to inject bounded memory context before each reply.
+  // Synchronous from the caller's perspective; bounded by recallTimeoutMs in
+  // PromptBuildRecallConfig.
+  router.post('/internal/prompt-recall', async (req, res) => {
+    const userMessage = (req.body?.userMessage ?? '').toString();
+    const sessionId = req.body?.sessionId ? String(req.body.sessionId) : undefined;
+    if (!userMessage) {
+      res.status(400).json({ error: 'userMessage required' });
+      return;
+    }
+    const recall = (globalThis as Record<string, unknown>).__instarPromptBuildRecall as
+      | { recall: (opts: { userMessage: string; sessionId?: string }) => { contextText: string; source: string; elapsedMs: number; resultsCount: number; cacheKey: string } }
+      | undefined;
+    if (!recall) {
+      res.json({ contextText: '', source: 'no-recall', elapsedMs: 0, resultsCount: 0, cacheKey: '' });
+      return;
+    }
+    const result = recall.recall({ userMessage, sessionId });
+    res.json(result);
+  });
+
   router.post('/internal/compaction-resume', async (req, res) => {
     const sessionName = (req.body?.sessionName || req.body?.tmuxSession || '').toString();
     if (!sessionName) {
