@@ -2735,12 +2735,40 @@
           </select>
         </div>
         <div style="font-size:11px;color:var(--text-dim);padding:0 12px 8px;line-height:1.4">Monitor and control your scheduled tasks</div>
+
+        <!-- Migration banner (jobs-as-agentmd Phase 4) -->
+        <div id="jobsMigrationBanner" style="display:none;margin:8px 12px;padding:10px 12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;font-size:12px">
+          <div id="jobsMigrationBannerBody"></div>
+          <div id="jobsMigrationBannerActions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"></div>
+        </div>
+
+        <!-- Issues card (jobs-as-agentmd Phase 4) -->
+        <div id="jobsIssuesCard" style="display:none;margin:8px 12px;padding:10px 12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;font-size:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <strong style="font-size:12px">Issues <span id="jobsIssuesCount" style="color:var(--text-dim);font-weight:400"></span></strong>
+            <div style="display:flex;gap:6px;align-items:center">
+              <select id="jobsIssuesFilter" onchange="renderIssuesCard()" style="font-size:11px;padding:2px 4px">
+                <option value="">All kinds</option>
+                <option value="orphan-manifest">Orphan manifest</option>
+                <option value="shadow-md">Shadow body</option>
+                <option value="missing-from-jobs-json">Missing migration</option>
+                <option value="staged-new">Staged save</option>
+                <option value="case-collision">Case collision</option>
+              </select>
+              <button onclick="loadIssuesCard()" style="font-size:11px;padding:2px 6px">↻</button>
+            </div>
+          </div>
+          <div id="jobsIssuesList"></div>
+        </div>
+
         <div id="jobsSummary" class="jobs-summary"></div>
         <div class="jobs-filter-bar" id="jobsFilterBar">
           <button class="jobs-filter-chip active" data-filter="all" onclick="setJobFilter('all')">All</button>
           <button class="jobs-filter-chip" data-filter="running" onclick="setJobFilter('running')">Running</button>
           <button class="jobs-filter-chip" data-filter="failing" onclick="setJobFilter('failing')">Failing</button>
           <button class="jobs-filter-chip" data-filter="disabled" onclick="setJobFilter('disabled')">Disabled</button>
+          <button class="jobs-filter-chip" data-filter="instar" onclick="setJobFilter('instar')">Instar defaults</button>
+          <button class="jobs-filter-chip" data-filter="user" onclick="setJobFilter('user')">Your jobs</button>
         </div>
         <div class="jobs-list" id="jobsList">
           <div style="padding:20px;color:var(--text-dim);text-align:center">Loading jobs...</div>
@@ -5916,6 +5944,250 @@
         document.getElementById('jobsList').innerHTML =
           '<div style="padding:20px;color:var(--red);text-align:center">Failed to load jobs</div>';
       }
+      // Phase 4: refresh ancillary surfaces alongside the jobs list.
+      loadJobsMigrationBanner();
+      loadIssuesCard();
+    }
+
+    // ─── Migration banner (jobs-as-agentmd Phase 4) ──────────────────
+    //
+    // Reads GET /jobs/migration-status. Surfaces three operator actions
+    // when applicable: confirm migration complete, roll back, or "your
+    // migration auto-ran on the last update."
+    let migrationStatus = null;
+    async function loadJobsMigrationBanner() {
+      try {
+        const data = await apiFetch('/jobs/migration-status');
+        migrationStatus = data;
+        renderJobsMigrationBanner();
+      } catch {
+        // best-effort — banner is non-load-bearing
+        document.getElementById('jobsMigrationBanner').style.display = 'none';
+      }
+    }
+
+    function renderJobsMigrationBanner() {
+      const banner = document.getElementById('jobsMigrationBanner');
+      const bodyEl = document.getElementById('jobsMigrationBannerBody');
+      const actionsEl = document.getElementById('jobsMigrationBannerActions');
+      if (!migrationStatus) { banner.style.display = 'none'; return; }
+
+      const { hasLegacyJobsJson, hasMigrationComplete, hasMigrationAbandoned, canConfirm, canAbandon, scheduleEntryCount } = migrationStatus;
+
+      if (hasMigrationComplete) {
+        bodyEl.innerHTML = '<strong>✓ Migration confirmed.</strong> Your jobs are running from the new per-slug layout. The legacy <code>jobs.json</code> can be cleaned up on the next release.';
+        actionsEl.innerHTML = '';
+        banner.style.display = 'block';
+        return;
+      }
+      if (hasMigrationAbandoned) {
+        bodyEl.innerHTML = '<strong>Migration abandoned.</strong> Running on the legacy <code>jobs.json</code>. Run <code>instar job migrate</code> to retry.';
+        actionsEl.innerHTML = '';
+        banner.style.display = 'block';
+        return;
+      }
+      if (canConfirm) {
+        bodyEl.innerHTML = `<strong>Migration ready to confirm.</strong> ${scheduleEntryCount} per-slug entries are in place. Confirming locks the new layout in for release-cut.`;
+        actionsEl.innerHTML =
+          '<button onclick="confirmMigration()" style="padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Confirm migration complete</button>' +
+          '<button onclick="abandonMigration()" style="padding:4px 10px;background:transparent;border:1px solid var(--border);border-radius:4px;cursor:pointer">Roll back</button>';
+        banner.style.display = 'block';
+        return;
+      }
+      if (hasLegacyJobsJson && canAbandon) {
+        bodyEl.innerHTML = '<strong>Migration partially complete.</strong> Some jobs are on the new layout; review the Issues card below.';
+        actionsEl.innerHTML =
+          '<button onclick="abandonMigration()" style="padding:4px 10px;background:transparent;border:1px solid var(--border);border-radius:4px;cursor:pointer">Roll back</button>';
+        banner.style.display = 'block';
+        return;
+      }
+      banner.style.display = 'none';
+    }
+
+    async function confirmMigration() {
+      if (!confirm('Confirm migration complete? This signals the release-cut gate that your legacy jobs.json can be removed in a future release.')) return;
+      try {
+        await apiFetch('/jobs/migration-confirm', { method: 'POST' });
+        showToast('Migration confirmed.');
+        loadJobs();
+      } catch (e) {
+        showToast('Failed: ' + (e && e.message ? e.message : 'unknown'));
+      }
+    }
+
+    async function abandonMigration() {
+      if (!confirm('Roll back the migration? This removes the new per-slug entries and leaves your legacy jobs.json intact. You can re-run instar job migrate later.')) return;
+      try {
+        await apiFetch('/jobs/migration-abandon', { method: 'POST' });
+        showToast('Migration rolled back.');
+        loadJobs();
+      } catch (e) {
+        showToast('Failed: ' + (e && e.message ? e.message : 'unknown'));
+      }
+    }
+
+    // ─── Issues card (jobs-as-agentmd Phase 4) ───────────────────────
+    //
+    // Consumes GET /jobs/reconcile. Surfaces orphan/shadow/missing/
+    // staged-new/case-collision findings with per-class filter chips
+    // and per-item dismiss (auto-undismiss on recurrence at next reload).
+    let issuesData = null;
+    const dismissedIssueKeys = new Set();
+    async function loadIssuesCard() {
+      try {
+        const data = await apiFetch('/jobs/reconcile');
+        issuesData = data;
+        renderIssuesCard();
+      } catch {
+        document.getElementById('jobsIssuesCard').style.display = 'none';
+      }
+    }
+
+    function renderIssuesCard() {
+      const card = document.getElementById('jobsIssuesCard');
+      const list = document.getElementById('jobsIssuesList');
+      const count = document.getElementById('jobsIssuesCount');
+      const filterEl = document.getElementById('jobsIssuesFilter');
+
+      if (!issuesData || !Array.isArray(issuesData.findings) || issuesData.findings.length === 0) {
+        card.style.display = 'none';
+        return;
+      }
+
+      const filter = filterEl.value;
+      const filtered = issuesData.findings.filter(f => (!filter || f.kind === filter) && !dismissedIssueKeys.has(issueKey(f)));
+
+      if (filtered.length === 0) {
+        card.style.display = 'none';
+        return;
+      }
+      card.style.display = 'block';
+      count.textContent = '(' + filtered.length + ')';
+
+      // Sort by severity (error > warning > info), then by slug.
+      const sevOrder = { error: 0, warning: 1, info: 2 };
+      filtered.sort((a, b) => (sevOrder[a.severity] - sevOrder[b.severity]) || ((a.slug || '').localeCompare(b.slug || '')));
+
+      list.innerHTML = filtered.map(f => {
+        const sevColor = f.severity === 'error' ? 'var(--red)' : f.severity === 'warning' ? 'var(--yellow)' : 'var(--text-dim)';
+        const slugDisplay = f.slug ? '<code>' + esc(f.slug) + '</code> ' : '';
+        const key = issueKey(f);
+        return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">'
+          + '<div style="flex:1">'
+          + '<span style="color:' + sevColor + ';font-weight:600;margin-right:6px">' + esc(f.kind) + '</span>'
+          + slugDisplay
+          + '<span style="color:var(--text-dim);font-size:11px">' + esc(f.summary || '') + '</span>'
+          + '</div>'
+          + '<button onclick="dismissIssue(\'' + esc(key) + '\')" title="Dismiss until next reload" style="font-size:11px;padding:2px 6px;background:transparent;border:1px solid var(--border);border-radius:4px;cursor:pointer">×</button>'
+          + '</div>';
+      }).join('');
+    }
+
+    function issueKey(f) {
+      return (f.kind || '') + '|' + (f.slug || '') + '|' + (f.filePath || '');
+    }
+
+    function dismissIssue(key) {
+      dismissedIssueKeys.add(key);
+      renderIssuesCard();
+    }
+
+    // ─── Override / Unfork / Save (jobs-as-agentmd Phase 4) ──────────
+    async function overrideJob(slug) {
+      if (!confirm('Make your own copy of this job. After this, you control it — instar won\'t update it automatically. You can switch back to the default later.')) return;
+      try {
+        await apiFetch('/jobs/' + encodeURIComponent(slug) + '/override', { method: 'POST' });
+        showToast('Override created. Your copy is now editable in the User namespace.');
+        loadJobs();
+      } catch (e) {
+        showToast('Failed: ' + (e && e.message ? e.message : 'unknown'));
+      }
+    }
+
+    async function unforkJob(slug) {
+      if (!confirm('Switch back to the instar default. Your version is saved locally for 30 days in case you change your mind. After that it\'s deleted.')) return;
+      try {
+        const r = await apiFetch('/jobs/' + encodeURIComponent(slug) + '/unfork', { method: 'POST' });
+        showToast('Unforked. Backup saved.');
+        loadJobs();
+      } catch (e) {
+        showToast('Failed: ' + (e && e.message ? e.message : 'unknown'));
+      }
+    }
+
+    async function toggleJobEnabled(slug, currentlyEnabled) {
+      const endpoint = currentlyEnabled ? '/disable' : '/enable';
+      try {
+        await apiFetch('/jobs/' + encodeURIComponent(slug) + endpoint, { method: 'POST' });
+        loadJobs();
+      } catch (e) {
+        showToast('Failed: ' + (e && e.message ? e.message : 'unknown'));
+      }
+    }
+
+    // ─── Editor modal ────────────────────────────────────────────────
+    let editorOpenSlug = null;
+    let editorManifestVersion = null;
+    function openJobEditor(slug) {
+      const job = jobsData.find(j => j.slug === slug);
+      if (!job) return;
+      if (job.origin === 'instar') {
+        if (!confirm('This is an instar default. Editing it requires forking to your User namespace first. Override now?')) return;
+        overrideJob(slug).then(() => setTimeout(() => openJobEditor(slug), 600));
+        return;
+      }
+      editorOpenSlug = slug;
+      editorManifestVersion = job.manifestVersion || 0;
+      document.getElementById('jobEditorSlug').textContent = slug;
+      document.getElementById('jobEditorName').value = job.name || '';
+      document.getElementById('jobEditorDescription').value = job.description || '';
+      document.getElementById('jobEditorSchedule').value = job.schedule || '';
+      document.getElementById('jobEditorPriority').value = job.priority || 'low';
+      document.getElementById('jobEditorBody').value = job.body || '';
+      document.getElementById('jobEditorOcc').textContent = 'manifestVersion: ' + editorManifestVersion;
+      document.getElementById('jobEditorModal').style.display = 'flex';
+    }
+
+    function closeJobEditor() {
+      editorOpenSlug = null;
+      editorManifestVersion = null;
+      document.getElementById('jobEditorModal').style.display = 'none';
+    }
+
+    async function saveJobEditor() {
+      if (!editorOpenSlug) return;
+      const slug = editorOpenSlug;
+      const body = document.getElementById('jobEditorBody').value;
+      const manifest = {
+        slug,
+        origin: 'user',
+        name: document.getElementById('jobEditorName').value,
+        description: document.getElementById('jobEditorDescription').value,
+        schedule: document.getElementById('jobEditorSchedule').value,
+        priority: document.getElementById('jobEditorPriority').value,
+        execute: { type: 'agentmd' },
+        manifestVersion: editorManifestVersion,
+      };
+      try {
+        const r = await apiFetch('/jobs/' + encodeURIComponent(slug) + '/save', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mdBody: body, manifest, manifestVersion: editorManifestVersion }),
+        });
+        showToast('Saved. New version: ' + r.manifestVersion);
+        closeJobEditor();
+        loadJobs();
+      } catch (e) {
+        const msg = e && e.message ? e.message : 'unknown';
+        if (msg.indexOf('409') >= 0 || msg.indexOf('stale') >= 0) {
+          if (confirm('Someone else saved this job since you opened the editor. Reload and lose your changes?')) {
+            closeJobEditor();
+            loadJobs();
+          }
+        } else {
+          showToast('Save failed: ' + msg);
+        }
+      }
     }
 
     function renderJobsSummary() {
@@ -5952,6 +6224,8 @@
           return (s.consecutiveFailures || 0) > 0;
         }
         if (jobFilter === 'disabled') return !j.enabled;
+        if (jobFilter === 'instar') return j.origin === 'instar';
+        if (jobFilter === 'user') return j.origin === 'user';
         return true;
       });
 
@@ -6002,6 +6276,25 @@
         const priorityBadge = (j.priority === 'critical' || j.priority === 'high')
           ? '<span class="priority-badge ' + esc(j.priority) + '">' + esc(j.priority) + '</span>' : '';
 
+        // Namespace badge: instar default vs user-authored vs legacy.
+        // Per INSTAR-JOBS-AS-AGENTMD spec §Dashboard UX "namespace badge".
+        let nsBadge = '';
+        if (j.origin === 'instar') {
+          nsBadge = '<span class="model-badge" title="Shipped by instar" style="background:rgba(120,180,255,0.18)">instar</span>';
+        } else if (j.origin === 'user') {
+          nsBadge = '<span class="model-badge" title="Your job" style="background:rgba(150,220,150,0.18)">user</span>';
+          if (j.hasUserFork) {
+            nsBadge += '<span class="model-badge" title="Forked from an instar default" style="background:rgba(200,180,100,0.18)">fork</span>';
+          }
+        }
+
+        // Lock-trust indicator: warn when an instar default is in a
+        // tamper state. Per §Trust Model.
+        let trustWarn = '';
+        if (j.lockTrust && j.lockTrust !== 'trusted' && j.lockTrust !== 'untrusted-no-lockfile') {
+          trustWarn = '<span class="model-badge" title="' + esc(j.lockTrust) + '" style="background:rgba(220,100,100,0.28);color:#fff">!</span>';
+        }
+
         return '<div class="job-item' + isActive + '" onclick="selectJob(\'' + esc(j.slug) + '\')">'
           + '<div class="job-item-top">'
           + '<span class="job-status-dot ' + dotClass + '"></span>'
@@ -6013,6 +6306,8 @@
           + '<span>' + esc(schedule) + '</span>'
           + '<span class="model-badge">' + esc(j.model || '—') + '</span>'
           + priorityBadge
+          + nsBadge
+          + trustWarn
           + '</div>'
           + '<div class="job-item-status">'
           + '<span>' + esc(lastResult) + '</span> &middot; <span>' + esc(lastTime) + '</span>'
@@ -6081,6 +6376,19 @@
       }
       configHtml += '</div></div>';
 
+      // Phase 4 action buttons: Edit (user-origin only), Override (instar-origin),
+      // Unfork (user-origin with hasUserFork shadowing an instar slug).
+      let phase4Actions = '';
+      if (job.origin === 'instar' && !job.hasUserFork) {
+        phase4Actions += '<button onclick="overrideJob(\'' + esc(job.slug) + '\')" style="margin-right:6px" title="Make your own editable copy">Override</button>';
+      }
+      if (job.origin === 'user') {
+        phase4Actions += '<button onclick="openJobEditor(\'' + esc(job.slug) + '\')" style="margin-right:6px">Edit</button>';
+        if (job.hasUserFork) {
+          phase4Actions += '<button onclick="unforkJob(\'' + esc(job.slug) + '\')" style="margin-right:6px" title="Switch back to the instar default (saves a backup of your version)">Unfork</button>';
+        }
+      }
+
       detail.innerHTML = '<div class="job-detail-header">'
         + '<div>'
         + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px">&larr;</button>'
@@ -6088,6 +6396,7 @@
         + '<div class="job-desc">' + esc(job.description || '') + '</div>'
         + '</div>'
         + '<div class="job-detail-actions">'
+        + phase4Actions
         + '<button class="job-run-btn" id="jobRunBtn" onclick="runJob(\'' + esc(job.slug) + '\')"'
         + (isRunning ? ' disabled' : '') + '>'
         + (isRunning ? 'Running...' : 'Run Now') + '</button>'
@@ -8000,5 +8309,51 @@
     }
 
   </script>
+
+  <!-- Job editor modal (jobs-as-agentmd Phase 4) -->
+  <div id="jobEditorModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center">
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;width:min(720px,92vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <strong>Edit job</strong>
+          <span id="jobEditorSlug" style="color:var(--text-dim);margin-left:8px;font-family:monospace;font-size:12px"></span>
+        </div>
+        <button onclick="closeJobEditor()" style="background:transparent;border:none;font-size:18px;cursor:pointer">×</button>
+      </div>
+      <div style="padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          Name
+          <input id="jobEditorName" type="text" style="padding:6px 8px" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          Description
+          <input id="jobEditorDescription" type="text" style="padding:6px 8px" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          Schedule (cron)
+          <input id="jobEditorSchedule" type="text" placeholder="*/5 * * * *" style="padding:6px 8px;font-family:monospace" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          Priority
+          <select id="jobEditorPriority" style="padding:6px 8px">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
+          Prompt body
+          <textarea id="jobEditorBody" rows="12" style="padding:8px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+        </label>
+        <div id="jobEditorOcc" style="font-size:11px;color:var(--text-dim)"></div>
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+        <button onclick="closeJobEditor()" style="padding:6px 14px">Cancel</button>
+        <button onclick="saveJobEditor()" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">Save</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

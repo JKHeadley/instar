@@ -4235,7 +4235,26 @@ export function createRoutes(ctx: RouteContext): Router {
       const mergedState = jobState
         ? { ...jobState, nextScheduled: jobState.nextScheduled ?? liveNext }
         : liveNext ? { slug: job.slug, lastRun: null, lastResult: null, nextScheduled: liveNext, consecutiveFailures: 0 } : null;
-      return { ...job, state: mergedState, runsOnThisMachine: ctx.scheduler!.isJobLocal(job.slug) };
+      // Phase 4 Dashboard surface: include the runtime-resolved fields the
+      // Jobs tab needs in a single round-trip (per INSTAR-JOBS-AS-AGENTMD
+      // spec §Dashboard UX — "no N+1 round-trips").
+      //
+      // - origin: 'instar' | 'user' | undefined — drives the namespace badge
+      // - manifestVersion: optimistic-concurrency token for the editor
+      // - bodyHash / resolvedPath: for the run-history "hash diff" link
+      // - lockTrust: surfaces tamper-state in the row UI
+      // - hasUserFork: convenience flag — does .instar/jobs/user/<slug>.md
+      //   shadow a same-slug instar default? (Override-flow indicator)
+      const stateDir = ctx.config.stateDir;
+      const userMdPath = stateDir ? path.join(stateDir, 'jobs', 'user', `${job.slug}.md`) : null;
+      const hasUserFork = userMdPath ? fs.existsSync(userMdPath) : false;
+
+      return {
+        ...job,
+        state: mergedState,
+        runsOnThisMachine: ctx.scheduler!.isJobLocal(job.slug),
+        hasUserFork,
+      };
     });
 
     res.json({ jobs, queue: ctx.scheduler.getQueue() });
@@ -4511,6 +4530,309 @@ export function createRoutes(ctx: RouteContext): Router {
       const packageRoot = path.resolve(__dirname, '..', '..');
       const outcome = jobsMigrate({ agentStateDir: stateDir, packageRoot, abandon: true });
       res.json(outcome);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/:slug/save
+   * Phase 4 — atomic save of body + manifest. Spec §Design Principle 2
+   * (md-first, manifest-last two-rename commit).
+   *
+   * Body: { mdBody: string, manifest: object, manifestVersion?: number }
+   * Returns: { ok: true, manifestVersion } or 409 conflict (stale token)
+   * or 4xx/5xx on error.
+   */
+  router.post('/jobs/:slug/save', async (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const slug = req.params.slug;
+      const body = req.body as { mdBody?: unknown; manifest?: unknown; manifestVersion?: unknown };
+      if (typeof body?.mdBody !== 'string' || !body.manifest || typeof body.manifest !== 'object') {
+        res.status(400).json({ error: 'request body must include {mdBody: string, manifest: object}' });
+        return;
+      }
+
+      const userMd = path.join(stateDir, 'jobs', 'user', `${slug}.md`);
+      const instarMd = path.join(stateDir, 'jobs', 'instar', `${slug}.md`);
+      // Dashboard editor edits the user/ copy. Instar defaults are
+      // never-editable (Phase 4 File Viewer extension). Saving an
+      // instar-default's body MUST happen via the Override action (which
+      // forks to user/) — this endpoint refuses if the target would land
+      // in instar/.
+      const manifest = body.manifest as Record<string, unknown>;
+      const origin = typeof manifest.origin === 'string' ? manifest.origin : 'user';
+      if (origin === 'instar') {
+        res.status(403).json({ error: 'Cannot save into instar namespace — use Override to fork to user namespace first' });
+        return;
+      }
+      const targetMd = userMd;
+      void instarMd;
+
+      // Optimistic-concurrency: if the request carries manifestVersion,
+      // it must match what's on disk.
+      const manifestPath = path.join(stateDir, 'jobs', 'schedule', `${slug}.json`);
+      if (typeof body.manifestVersion === 'number' && fs.existsSync(manifestPath)) {
+        try {
+          const onDisk = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          if (typeof onDisk.manifestVersion === 'number' && onDisk.manifestVersion !== body.manifestVersion) {
+            res.status(409).json({
+              error: 'manifestVersion stale; another save has occurred',
+              onDiskVersion: onDisk.manifestVersion,
+              submittedVersion: body.manifestVersion,
+            });
+            return;
+          }
+        } catch {
+          // Manifest unreadable — surface but continue (atomic save will
+          // overwrite it).
+        }
+      }
+
+      // Bump manifestVersion before write.
+      const nextVersion = (typeof manifest.manifestVersion === 'number' ? manifest.manifestVersion : 0) + 1;
+      const finalManifest = { ...manifest, slug, manifestVersion: nextVersion };
+
+      const { atomicSaveAgentMdJob } = await import('../scheduler/AgentMdAtomicSave.js');
+      const result = atomicSaveAgentMdJob({
+        mdPath: targetMd,
+        manifestPath,
+        mdBody: body.mdBody,
+        manifest: finalManifest,
+      });
+      if (!result.ok) {
+        res.status(500).json({ error: `atomic save failed at stage ${result.stage}: ${result.reason}`, partial: result.partial });
+        return;
+      }
+
+      res.json({ ok: true, manifestVersion: nextVersion });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/:slug/disable
+   * Phase 4 — captures disabledAtBodyHash + flips enabled to false.
+   * Spec §Dashboard UX "enabled toggle (records disabledAtBodyHash)".
+   */
+  router.post('/jobs/:slug/disable', async (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const { stampDisabledAtBodyHash } = await import('../scheduler/DisabledBodyDrift.js');
+      const hash = stampDisabledAtBodyHash(stateDir, req.params.slug);
+      if (hash === null) {
+        res.status(404).json({ error: `slug "${req.params.slug}" has no manifest or no body file` });
+        return;
+      }
+      res.json({ ok: true, disabledAtBodyHash: hash });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/:slug/enable
+   * Phase 4 — clears disabledAtBodyHash + flips enabled to true.
+   */
+  router.post('/jobs/:slug/enable', async (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const { clearDisabledAtBodyHash } = await import('../scheduler/DisabledBodyDrift.js');
+      clearDisabledAtBodyHash(stateDir, req.params.slug);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/:slug/override
+   * Phase 4 — fork instar default to user namespace. Spec §Operator
+   * Experience §Override / Unfork.
+   *
+   * Copies .instar/jobs/instar/<slug>.md to .instar/jobs/user/<slug>.md,
+   * rewrites the per-slug manifest's origin from "instar" to "user",
+   * bumps manifestVersion. Idempotent — if user/<slug>.md already exists,
+   * returns the existing path without overwriting.
+   */
+  router.post('/jobs/:slug/override', async (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const slug = req.params.slug;
+      const instarMd = path.join(stateDir, 'jobs', 'instar', `${slug}.md`);
+      const userMd = path.join(stateDir, 'jobs', 'user', `${slug}.md`);
+      const manifestPath = path.join(stateDir, 'jobs', 'schedule', `${slug}.json`);
+
+      if (!fs.existsSync(instarMd)) {
+        res.status(404).json({ error: `no instar-namespace body at ${instarMd} — cannot override a non-default slug` });
+        return;
+      }
+
+      // Idempotent: if user/<slug>.md already exists, do nothing.
+      if (!fs.existsSync(userMd)) {
+        fs.mkdirSync(path.dirname(userMd), { recursive: true });
+        fs.copyFileSync(instarMd, userMd);
+      }
+
+      // Update manifest: origin=user, bump manifestVersion.
+      let manifest: Record<string, unknown> = { slug };
+      if (fs.existsSync(manifestPath)) {
+        try {
+          manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        } catch {
+          // ignore; we'll overwrite with a minimal manifest
+        }
+      }
+      const nextVersion = (typeof manifest.manifestVersion === 'number' ? manifest.manifestVersion : 0) + 1;
+      manifest.origin = 'user';
+      manifest.manifestVersion = nextVersion;
+      manifest.forkedAt = new Date().toISOString();
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+
+      res.json({ ok: true, userMd, manifestVersion: nextVersion });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * POST /jobs/:slug/unfork
+   * Phase 4 — switch a user-forked default back to its instar version,
+   * but ARCHIVE the user copy first. Spec §Operator Experience §Unfork.
+   *
+   * Writes .instar/jobs/user/.unfork-backups/<slug>-<iso8601>.md.
+   * Removes .instar/jobs/user/<slug>.md.
+   * Updates manifest origin to "instar".
+   *
+   * Retention: 30 days OR last 10 backups per slug, whichever more generous.
+   * Pruning runs opportunistically here (cheap O(slug backups)).
+   */
+  router.post('/jobs/:slug/unfork', async (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const slug = req.params.slug;
+      const userMd = path.join(stateDir, 'jobs', 'user', `${slug}.md`);
+      const instarMd = path.join(stateDir, 'jobs', 'instar', `${slug}.md`);
+      const manifestPath = path.join(stateDir, 'jobs', 'schedule', `${slug}.json`);
+      const backupsDir = path.join(stateDir, 'jobs', 'user', '.unfork-backups');
+
+      if (!fs.existsSync(userMd)) {
+        res.status(404).json({ error: `no user-namespace fork at ${userMd}` });
+        return;
+      }
+      if (!fs.existsSync(instarMd)) {
+        res.status(409).json({ error: `cannot unfork — no instar-namespace default at ${instarMd}; the default may have been retired` });
+        return;
+      }
+
+      // Backup the user copy first.
+      fs.mkdirSync(backupsDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      // Cap slug to 80 chars for Windows MAX_PATH safety per spec.
+      const safeSlug = slug.length > 80 ? slug.slice(0, 80) : slug;
+      const backupPath = path.join(backupsDir, `${safeSlug}-${ts}.md`);
+      fs.copyFileSync(userMd, backupPath);
+
+      // Remove the user copy.
+      const { SafeFsExecutor } = await import('../core/SafeFsExecutor.js');
+      SafeFsExecutor.safeUnlinkSync(userMd, { operation: 'unfork — remove user-namespace fork' });
+
+      // Update manifest: origin=instar, bump manifestVersion.
+      let manifest: Record<string, unknown> = { slug };
+      if (fs.existsSync(manifestPath)) {
+        try {
+          manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        } catch {
+          // ignore; we'll overwrite
+        }
+      }
+      const nextVersion = (typeof manifest.manifestVersion === 'number' ? manifest.manifestVersion : 0) + 1;
+      manifest.origin = 'instar';
+      manifest.manifestVersion = nextVersion;
+      manifest.unforkedAt = new Date().toISOString();
+      delete manifest.forkedAt;
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+
+      // Opportunistic prune: 30 days OR last 10 backups per slug.
+      pruneUnforkBackups(backupsDir, safeSlug);
+
+      res.json({ ok: true, backupPath, manifestVersion: nextVersion });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * GET /jobs/:slug/unfork-backups
+   * Phase 4 — list available unfork backups for a slug, newest first.
+   * Dashboard "Restore unforked copy" action consumes this.
+   */
+  router.get('/jobs/:slug/unfork-backups', (req, res) => {
+    if (!JOB_SLUG_RE.test(req.params.slug)) {
+      res.status(400).json({ error: 'Invalid job slug' });
+      return;
+    }
+    try {
+      const stateDir = ctx.config.stateDir;
+      if (!stateDir) {
+        res.status(503).json({ error: 'state dir not configured' });
+        return;
+      }
+      const slug = req.params.slug;
+      const safeSlug = slug.length > 80 ? slug.slice(0, 80) : slug;
+      const backupsDir = path.join(stateDir, 'jobs', 'user', '.unfork-backups');
+      if (!fs.existsSync(backupsDir)) {
+        res.json({ backups: [] });
+        return;
+      }
+      const files = fs.readdirSync(backupsDir)
+        .filter((f) => f.startsWith(`${safeSlug}-`) && f.endsWith('.md'))
+        .map((f) => ({ filename: f, mtime: fs.statSync(path.join(backupsDir, f)).mtime }))
+        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+      res.json({ backups: files });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -14858,4 +15180,40 @@ export function formatUptime(ms: number): string {
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
   return `${seconds}s`;
+}
+
+/**
+ * Prune unfork backups for a slug per spec retention rule:
+ * 30 days OR last 10 per slug, whichever more generous.
+ *
+ * "Whichever more generous" means: keep a backup IF it's within 30 days
+ * OR it's among the last 10. Only delete a backup if BOTH conditions
+ * fail (older than 30 days AND not in the top-10 newest).
+ */
+function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
+  try {
+    if (!fs.existsSync(backupsDir)) return;
+    const entries = fs.readdirSync(backupsDir)
+      .filter((f) => f.startsWith(`${safeSlug}-`) && f.endsWith('.md'))
+      .map((f) => ({ path: path.join(backupsDir, f), mtimeMs: fs.statSync(path.join(backupsDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - thirtyDaysMs;
+    const top10 = new Set(entries.slice(0, 10).map((e) => e.path));
+    for (const e of entries) {
+      if (e.mtimeMs >= cutoff) continue; // within 30 days — keep
+      if (top10.has(e.path)) continue;   // top-10 newest — keep
+      try {
+        // SafeFsExecutor would be imported, but this helper file does
+        // not have access. Import inline.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { SafeFsExecutor } = require('../core/SafeFsExecutor.js');
+        SafeFsExecutor.safeUnlinkSync(e.path, { operation: 'pruneUnforkBackups: 30-day + last-10 retention' });
+      } catch {
+        // best-effort prune; missed deletions are not load-bearing
+      }
+    }
+  } catch {
+    // best-effort
+  }
 }
