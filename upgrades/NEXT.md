@@ -5,6 +5,22 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### feat(remediation): C-1 — CI workflow for proposal-derived runbook PRs
+
+Ships the pre-merge gate from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A22, §A32, §A41, §A50). PRs that touch `src/remediation/runbooks/` and modify a proposal-derived runbook (one carrying a `__proposalDerivedFrom = '<proposalId>'` const) must satisfy ONE of: (1) a GPG/sigstore-signed HEAD commit by a key registered in `.github/keyrings/runbook-approvers.gpg`, OR (2) a signed Telegram-countersignature block in the PR body verified against the pinned principal pubkey at `.github/keyrings/telegram-principal-pub.pem`.
+
+New files:
+- `.github/workflows/runbook-pr-gate.yml` — workflow modelled on `.github/workflows/worktree-trailer-sig-check.yml`. Filters on the gate-relevant paths so unrelated PRs incur no CI cost.
+- `scripts/verify-runbook-pr-signature.js` — pure-Node verifier (no deps beyond `node:crypto`). Exports `verifyRunbookPrSignature`, `findProposalDerivedRunbooks`, `parseTelegramApprovalBlock`, `verifyTelegramSignature`, `loadApproverFingerprints`. The Telegram canonical-form is `key=value\n` joined in fixed declaration order (proposalId, runbookId, action, userId, messageId, signedAt) — the proposal-emit side (Tier-3 S-1..S-3) MUST use the same canonicalization.
+- `.github/keyrings/runbook-approvers.gpg` — empty placeholder; populated per-deployment with ASCII-armored approver pubkeys (workflow imports them into an ephemeral GNUPGHOME). For offline tests a sidecar `fingerprint: <40-hex>` format is accepted.
+- `.github/keyrings/telegram-principal-pub.pem` — empty placeholder; populated per-deployment with the user's Telegram-session Ed25519 PEM pubkey.
+
+8 unit tests in `tests/unit/verify-runbook-pr-signature.test.ts` cover the seven required scenarios from the spec (no-runbook-changes, non-proposal-derived, valid Telegram sig, invalid sig, replayed messageId, GPG by approver, GPG by non-approver) plus a parser-edge-case.
+
+Scope: PRs touching no runbook sources OR touching only non-proposal-derived runbooks pass through with zero work. Empty keyring files fail-closed on the GPG path AND on the Telegram path (so the gate stays safe in default-deployment posture). W-1's existing `node-abi-mismatch` runbook is instar-dev-authored, not proposal-derived, and passes through cleanly.
+
+Side-effects review: `upgrades/side-effects/c1-runbook-pr-gate.md`.
+
 ### feat(scheduler): runtime invariant gate for legacy-jobs.json auto-migration
 
 `PostUpdateMigrator.autoMigrateLegacyJobsJson` now re-verifies Seamless Migration Guarantee invariants 1, 2, 4 against the staged state AFTER `jobsMigrate` completes but BEFORE the auto-migration is considered final. Per spec §Gate wiring. Any verification failure triggers a fail-closed rollback via `jobsMigrate({ abandon: true })` (invariant 9). The migrator surfaces the failure to the update report so the operator sees what fired.

@@ -1,0 +1,96 @@
+# runbook-pr-gate — C-1 pre-merge gate for proposal-derived runbook PRs.
+#
+# Implements SELF-HEALING-REMEDIATOR-V2-SPEC.md
+#   §A22 (different-principal verification — GPG/sigstore OR Telegram)
+#   §A41 (Telegram countersignature payload binding + user_id principal)
+#   §A32 (proposal-PR identity)
+#   §A50 (workflow template ref: this file extends the pattern in
+#         `.github/workflows/worktree-trailer-sig-check.yml`).
+#
+# Trust posture:
+#   - PRs touching no runbook source files PASS THROUGH (no work).
+#   - PRs touching non-proposal-derived runbooks PASS THROUGH.
+#   - PRs touching proposal-derived runbooks must satisfy EITHER:
+#       (1) GPG/sigstore-signed HEAD commit by a key registered in
+#           `.github/keyrings/runbook-approvers.gpg`, OR
+#       (2) A signed Telegram-countersignature block in the PR body,
+#           verified against `.github/keyrings/telegram-principal-pub.pem`.
+#
+# Changes to this file are trust-root-sensitive (same posture as
+# worktree-trailer-sig-check.yml); the repository ruleset should require
+# the standard trust-root review.
+
+name: runbook-pr-gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/remediation/runbooks/**'
+      - '.github/workflows/runbook-pr-gate.yml'
+      - 'scripts/verify-runbook-pr-signature.js'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Compute changed files (base..head)
+        id: changed
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/changed-files.txt
+          echo "wrote $(wc -l < /tmp/changed-files.txt) changed paths"
+          cat /tmp/changed-files.txt
+
+      - name: Resolve HEAD commit GPG status
+        id: gpg
+        run: |
+          set -euo pipefail
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          GOODSIG="false"
+          FPR=""
+          AUTHOR_EMAIL=$(git log -1 --format='%ae' "$HEAD_SHA")
+          # %G? gives one of G/B/U/X/Y/R/E/N; G = good signature.
+          GSIG=$(git log -1 --format='%G?' "$HEAD_SHA" || echo "N")
+          if [ "$GSIG" = "G" ]; then
+            GOODSIG="true"
+            FPR=$(git log -1 --format='%GF' "$HEAD_SHA" || echo "")
+          fi
+          # If a curated keyring exists with armored blocks, import it so
+          # git can resolve the signature against trusted keys.
+          KEYRING=".github/keyrings/runbook-approvers.gpg"
+          if [ -f "$KEYRING" ] && grep -q "BEGIN PGP PUBLIC KEY BLOCK" "$KEYRING"; then
+            export GNUPGHOME=$(mktemp -d)
+            gpg --import "$KEYRING" || true
+            # Re-resolve with the imported keyring in scope.
+            GSIG=$(git log -1 --format='%G?' "$HEAD_SHA" || echo "N")
+            if [ "$GSIG" = "G" ]; then
+              GOODSIG="true"
+              FPR=$(git log -1 --format='%GF' "$HEAD_SHA" || echo "")
+            fi
+          fi
+          printf '{"sha":"%s","authorEmail":"%s","gpgGoodsig":%s,"gpgFingerprint":"%s"}\n' \
+            "$HEAD_SHA" "$AUTHOR_EMAIL" "$GOODSIG" "$FPR" > /tmp/head-commit-info.json
+          cat /tmp/head-commit-info.json
+
+      - name: Verify runbook PR signature
+        env:
+          CHANGED_FILES_PATH: /tmp/changed-files.txt
+          HEAD_COMMIT_INFO_PATH: /tmp/head-commit-info.json
+        run: node scripts/verify-runbook-pr-signature.js
