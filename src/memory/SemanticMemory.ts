@@ -60,6 +60,45 @@ import { NativeModuleHealer } from './NativeModuleHealer.js';
 type Database = import('better-sqlite3').Database;
 
 /**
+ * Structural shape of the RemediationContext that W-4's `invokeFromRemediator`
+ * accepts. Mirrored here (rather than imported from `src/remediation/`) to keep
+ * `src/memory/*` independent of the remediation tree — installs with a partial
+ * CLI surface that omit the remediation module continue to work, and the
+ * existing in-line corruption-recovery path inside `open()` stays intact.
+ *
+ * SELF-HEALING-REMEDIATOR-V2-SPEC §A3 (capability token), §A4 (abort signal),
+ * §A57 (Tier-2 W-4 wrapper).
+ */
+export interface SemanticMemoryRemediatorContext {
+  attemptId: string;
+  runbookId: string;
+  auditToken: Buffer;
+  abortSignal: AbortSignal;
+  expiresAt: number;
+  monotonicDeadline: bigint;
+  hmac?: Buffer;
+  // lockHandle is intentionally `unknown` — surfaces never inspect it.
+  lockHandle: unknown;
+}
+
+/**
+ * Result returned by `SemanticMemory.invokeFromRemediator` — mirrors
+ * `RemediatorExecutionResult` in the remediation tree without importing it.
+ */
+export interface SemanticMemoryRemediatorResult {
+  outcome: 'success' | 'failure';
+  details: Record<string, unknown>;
+}
+
+/**
+ * Optional capability-leaf vault for §A3 HMAC verification. Same structural
+ * shape as `CapabilityLeafKeyVault` in `src/remediation/RemediationContext.ts`.
+ */
+export interface SemanticMemoryCapabilityLeafKeyVault {
+  deriveLeafKey(context: 'capability', scopeId: string): Buffer;
+}
+
+/**
  * Strip FTS5 special syntax characters from a query.
  * Prevents query manipulation via AND, OR, NOT, NEAR, *, column filters.
  */
@@ -72,6 +111,351 @@ function sanitizeFts5Query(query: string): string {
 }
 
 export class SemanticMemory {
+  /**
+   * W-4 / §A57 — process-wide registry of active SemanticMemory instances.
+   * The `db-corruption` runbook surfaceCallable resolves a target instance
+   * by `dbPath` (preferred) or, failing that, by the registered "active"
+   * instance set explicitly via `setActiveInstance()`. Construction does
+   * NOT auto-register — callers (server bootstrap, CLI subcommands) opt in
+   * explicitly so partial CLI surfaces aren't accidentally targeted by a
+   * Remediator dispatch.
+   */
+  private static readonly _instancesByPath = new Map<string, SemanticMemory>();
+  private static _activeInstance: SemanticMemory | null = null;
+  private static _remediatorKeyVault: SemanticMemoryCapabilityLeafKeyVault | null =
+    null;
+
+  /**
+   * Register this instance as a candidate target for Remediator dispatch.
+   * Keyed by config.dbPath. Multiple registrations of the same path replace
+   * the prior entry — the most recent `open()` site owns the path.
+   */
+  static registerInstance(instance: SemanticMemory): void {
+    SemanticMemory._instancesByPath.set(instance.config.dbPath, instance);
+  }
+
+  /** Remove an instance from the registry (mirror of registerInstance). */
+  static unregisterInstance(instance: SemanticMemory): void {
+    if (
+      SemanticMemory._instancesByPath.get(instance.config.dbPath) === instance
+    ) {
+      SemanticMemory._instancesByPath.delete(instance.config.dbPath);
+    }
+    if (SemanticMemory._activeInstance === instance) {
+      SemanticMemory._activeInstance = null;
+    }
+  }
+
+  /**
+   * Mark an instance as the "active" target for Remediator dispatch when
+   * the ctx does not specify a dbPath. Server bootstrap calls this with
+   * the primary memory store.
+   */
+  static setActiveInstance(instance: SemanticMemory | null): void {
+    SemanticMemory._activeInstance = instance;
+  }
+
+  /**
+   * Optionally wire a capability-leaf key vault so `invokeFromRemediator`
+   * can verify ctx HMAC per §A3. Test helpers and partial CLI surfaces
+   * may leave this unset, in which case ctx HMAC is not verified (the
+   * surface still acts on the call — matches W-1 behaviour where the
+   * keyVault is also optional).
+   */
+  static setRemediatorKeyVault(
+    keyVault: SemanticMemoryCapabilityLeafKeyVault | null,
+  ): void {
+    SemanticMemory._remediatorKeyVault = keyVault;
+  }
+
+  /** Reset all class-level state. Test-only. */
+  static resetForTesting(): void {
+    SemanticMemory._instancesByPath.clear();
+    SemanticMemory._activeInstance = null;
+    SemanticMemory._remediatorKeyVault = null;
+  }
+
+  /**
+   * Public read of the active Remediator-target instance. Used by the W-4
+   * runbook's verify() to inspect db.mode + integrity post-recovery.
+   */
+  static getActiveInstanceForRemediator(): SemanticMemory | null {
+    return SemanticMemory._activeInstance;
+  }
+
+  /**
+   * §A3 — verify the HMAC on a Remediator-supplied ctx. Mirrors the
+   * canonical body layout in `src/remediation/RemediationContext.ts`. We
+   * inline rather than import to keep `src/memory/*` independent of the
+   * remediation tree. Returns `true` only when the keyVault is wired AND
+   * the HMAC verifies; an unwired keyVault returns `true` (call is
+   * permitted) but the audit tail records `hmac-unverified` so it's clear
+   * the call came in without §A3 enforcement.
+   */
+  private static verifyCtxHmac(
+    ctx: SemanticMemoryRemediatorContext,
+    keyVault: SemanticMemoryCapabilityLeafKeyVault,
+  ): boolean {
+    if (!Buffer.isBuffer(ctx.hmac) || ctx.hmac.length === 0) return false;
+    if (typeof ctx.runbookId !== 'string' || ctx.runbookId.length === 0) {
+      return false;
+    }
+    let leaf: Buffer;
+    try {
+      leaf = keyVault.deriveLeafKey('capability', ctx.runbookId);
+    } catch {
+      return false;
+    }
+    const HMAC_TAG = Buffer.from('instar-f8-ctx-v1\x00', 'utf-8');
+    const writeStr = (s: string): Buffer => {
+      const body = Buffer.from(s, 'utf-8');
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(body.length, 0);
+      return Buffer.concat([len, body]);
+    };
+    const expiresAtBuf = Buffer.alloc(8);
+    expiresAtBuf.writeBigUInt64BE(
+      BigInt(Math.max(0, Math.floor(ctx.expiresAt))),
+      0,
+    );
+    const monoBuf = Buffer.alloc(8);
+    const mono =
+      typeof ctx.monotonicDeadline === 'bigint' && ctx.monotonicDeadline >= 0n
+        ? ctx.monotonicDeadline
+        : 0n;
+    monoBuf.writeBigUInt64BE(mono, 0);
+    const body = Buffer.concat([
+      HMAC_TAG,
+      writeStr(ctx.attemptId),
+      writeStr(ctx.runbookId),
+      expiresAtBuf,
+      monoBuf,
+    ]);
+    const expected = crypto.createHmac('sha256', leaf).update(body).digest();
+    if (expected.length !== ctx.hmac.length) return false;
+    try {
+      return crypto.timingSafeEqual(expected, ctx.hmac);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * W-4 surface entry point — the Remediator-orchestrated parallel path
+   * to the in-line corruption-recovery logic inside `open()`. The legacy
+   * in-line entry point remains the canonical safety net for direct-
+   * construction paths; this static method is what the `db-corruption`
+   * runbook surfaceCallable invokes.
+   *
+   * SELF-HEALING-REMEDIATOR-V2-SPEC §A3 (HMAC), §A4 (abort), §A9
+   * (durability assertion done by runbook.verify), §A34 (surface entry
+   * point is real and live — this method wraps the actually-implemented
+   * quarantine + JSONL-rebuild path on lines 178-243 of this file).
+   */
+  static async invokeFromRemediator(
+    ctx: SemanticMemoryRemediatorContext,
+    overrides?: {
+      instance?: SemanticMemory;
+      keyVault?: SemanticMemoryCapabilityLeafKeyVault | null;
+    },
+  ): Promise<SemanticMemoryRemediatorResult> {
+    // §A3: verify HMAC if a keyVault is wired AND ctx claims an HMAC.
+    const keyVault =
+      overrides?.keyVault === undefined
+        ? SemanticMemory._remediatorKeyVault
+        : overrides.keyVault;
+    let hmacVerified: 'verified' | 'unverified-no-vault' | 'rejected' =
+      'unverified-no-vault';
+    if (keyVault) {
+      if (ctx.hmac === undefined) {
+        hmacVerified = 'unverified-no-vault';
+      } else if (SemanticMemory.verifyCtxHmac(ctx, keyVault)) {
+        hmacVerified = 'verified';
+      } else {
+        console.warn(
+          `[SemanticMemory] remediation.surface.invalid-context ` +
+            `runbookId=${ctx.runbookId} attemptId=${ctx.attemptId} — ` +
+            `refusing orchestrated path (in-line path still applies on next open())`,
+        );
+        return {
+          outcome: 'failure',
+          details: {
+            reason: 'invalid-context',
+            attemptId: ctx.attemptId,
+          },
+        };
+      }
+    }
+
+    if (ctx.abortSignal.aborted) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'aborted-before-start',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    const instance =
+      overrides?.instance ?? SemanticMemory._activeInstance ?? null;
+    if (!instance) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'no-active-instance',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    return instance._invokeFromRemediatorInternal(ctx, hmacVerified);
+  }
+
+  /**
+   * Instance-scoped corruption-recovery driver. Closes the current handle
+   * (if any), reopens via `open()` — which runs integrity_check, probe-
+   * read, and auto-quarantine + JSONL rebuild on detection. Returns a
+   * structured result the runbook surfaceCallable hands back.
+   */
+  private async _invokeFromRemediatorInternal(
+    ctx: SemanticMemoryRemediatorContext,
+    hmacVerified: 'verified' | 'unverified-no-vault' | 'rejected',
+  ): Promise<SemanticMemoryRemediatorResult> {
+    const started = Date.now();
+    const dbPath = this.config.dbPath;
+    try {
+      // Close any existing handle so the re-open path runs integrity_check
+      // on the on-disk file from a clean state.
+      try {
+        this.close();
+      } catch {
+        // @silent-fallback-ok — close() may throw if the handle is already
+        // mid-corrupt; we proceed to re-open which is the recovery path.
+      }
+
+      if (ctx.abortSignal.aborted) {
+        return {
+          outcome: 'failure',
+          details: {
+            reason: 'aborted-after-close',
+            attemptId: ctx.attemptId,
+            dbPath,
+          },
+        };
+      }
+
+      // The reopen path is the actual recovery — see `open()` lines 178-243.
+      // It detects corruption via integrity_check + probe-read, quarantines
+      // the corrupt file, and auto-rebuilds from JSONL. The `_lastRecoveryRebuilt`
+      // flag is set true by `open()` exactly when the rebuild path ran.
+      await this.open();
+      const rebuildRan = this._lastRecoveryRebuilt;
+
+      // Post-open assertion: integrity_check must now pass. This is the
+      // surface-side liveness check; the runbook.verify() does the §A9
+      // durability assertion on top of this.
+      let integrityOk = false;
+      let integrityValue: string = 'unknown';
+      try {
+        const db = this.db;
+        if (db) {
+          const result = db.pragma('integrity_check') as Array<{
+            integrity_check: string;
+          }>;
+          integrityValue = result[0]?.integrity_check ?? 'unknown';
+          integrityOk = integrityValue === 'ok';
+        }
+      } catch (err) {
+        return {
+          outcome: 'failure',
+          details: {
+            reason: 'post-recover-integrity-check-threw',
+            attemptId: ctx.attemptId,
+            dbPath,
+            error: err instanceof Error ? err.message : String(err),
+            elapsedMs: Date.now() - started,
+            hmacVerified,
+          },
+        };
+      }
+
+      if (!integrityOk) {
+        return {
+          outcome: 'failure',
+          details: {
+            reason: 'post-recover-integrity-check-not-ok',
+            attemptId: ctx.attemptId,
+            dbPath,
+            integrityValue,
+            elapsedMs: Date.now() - started,
+            hmacVerified,
+          },
+        };
+      }
+
+      return {
+        outcome: 'success',
+        details: {
+          attemptId: ctx.attemptId,
+          dbPath,
+          rebuiltFromJsonl: rebuildRan,
+          integrityValue,
+          elapsedMs: Date.now() - started,
+          hmacVerified,
+        },
+      };
+    } catch (err) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'recover-threw',
+          attemptId: ctx.attemptId,
+          dbPath,
+          error: err instanceof Error ? err.message : String(err),
+          elapsedMs: Date.now() - started,
+          hmacVerified,
+        },
+      };
+    }
+  }
+
+  /**
+   * §A9 durability assertion helper. Returns the persistence mode of the
+   * underlying db file. For better-sqlite3 instances opened against a real
+   * filesystem path this is `'durable'`; opened against `:memory:` it is
+   * `'in-memory'`. The `db-corruption` runbook's verify() asserts
+   * `mode === 'durable'` per §A9 — falling back to in-memory is "live but
+   * lossy" and triggers a `DURABILITY_DEGRADED` event.
+   */
+  getDurabilityMode(): 'durable' | 'in-memory' | 'closed' {
+    if (!this.db) return 'closed';
+    if (this.config.dbPath === ':memory:') return 'in-memory';
+    return 'durable';
+  }
+
+  /** Internal — accessor for the configured dbPath. Used by the W-4 runbook. */
+  getDbPath(): string {
+    return this.config.dbPath;
+  }
+
+  /**
+   * §A9 durability assertion helper for the W-4 runbook's verify() step.
+   * Returns the raw `integrity_check` string ('ok' on success). Throws if
+   * the db is closed or pragma throws — the caller maps the throw to
+   * `verify-inconclusive` per §A21.
+   */
+  runIntegrityCheckForRemediator(): string {
+    const db = this.db;
+    if (!db) {
+      throw new Error('SemanticMemory.db is closed');
+    }
+    const result = db.pragma('integrity_check') as Array<{
+      integrity_check: string;
+    }>;
+    return result[0]?.integrity_check ?? 'unknown';
+  }
+
   private db: Database | null = null;
   private readonly config: SemanticMemoryConfig;
   private embeddingProvider: EmbeddingProvider | null = null;
@@ -80,6 +464,10 @@ export class SemanticMemory {
   private jsonlPath: string;
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
+  /** §A57 W-4 — set true when the most recent `open()` ran the JSONL rebuild
+   *  path (i.e., a corruption event was observed + recovered). The runbook's
+   *  surfaceCallable reads this to record whether recovery actually fired. */
+  private _lastRecoveryRebuilt = false;
   /** When true, `remember()` skips its own JSONL append (the wrapping
    *  `rememberWithEvidence` will emit a consolidated action instead). */
   private _suppressRememberJournal = false;
@@ -147,6 +535,10 @@ export class SemanticMemory {
 
   async open(): Promise<void> {
     if (this.db) return;
+
+    // W-4 — reset the per-open recovery flag so a fresh open() that doesn't
+    // trip corruption recovery reports `rebuiltFromJsonl: false`.
+    this._lastRecoveryRebuilt = false;
 
     // Ensure parent directory exists
     const dbDir = path.dirname(this.config.dbPath);
@@ -240,6 +632,9 @@ export class SemanticMemory {
         console.warn('[SemanticMemory] No JSONL log found for rebuild — starting fresh');
       }
       this._needsRebuild = false;
+      // W-4 — flag the recovery so the Remediator-orchestrated path can
+      // distinguish "open() completed normally" from "open() ran recovery".
+      this._lastRecoveryRebuilt = true;
     }
   }
 
