@@ -13,6 +13,10 @@ The Dashboard file editor's never-editable list now includes `.instar/jobs/insta
 
 New integration test asserts the published tarball contains ≥14 prompt-type default templates, the source-tree and dist/-copied release public keys, and either a real signed lock-file or a clean absence (no malformed placeholders). Closes the INSTAR-JOBS-AS-AGENTMD spec §Security Model threat row "Build pipeline: source-tree templates not packaged."
 
+### test(scheduler): frontmatter interpolation breakout test
+
+New unit test asserts that `JobScheduler.buildPrompt()` for agentmd jobs does NOT interpolate any frontmatter field into the prompt. Six cases cover shell injection, template injection, prompt injection, null-byte/control characters, body-verbatim presence, and slug regex defense-in-depth. Per INSTAR-JOBS-AS-AGENTMD spec §Security Model "Frontmatter-field interpolation breakout" threat row. The structural defense already exists in code; this test pins it so a future refactor cannot introduce interpolation silently.
+
 ### feat(scheduler): runtime invariant gate for legacy-jobs.json auto-migration
 
 `PostUpdateMigrator.autoMigrateLegacyJobsJson` now re-verifies Seamless Migration Guarantee invariants 1, 2, 4 against the staged state AFTER `jobsMigrate` completes but BEFORE the auto-migration is considered final. Per spec §Gate wiring. Any verification failure triggers a fail-closed rollback via `jobsMigrate({ abandon: true })` (invariant 9). The migrator surfaces the failure to the update report so the operator sees what fired.
