@@ -23,6 +23,18 @@ This is the backend half of Phase 4. The Dashboard UI rewrite (Jobs tab, Issues 
 
 ## What Changed
 
+### feat(remediation): F-5 — TrustElevationSource + AutonomyProfileLevel wiring (Tier-2 foundation)
+
+First Tier-2 foundation module from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (Trust elevation policy section + amendments A11, A22, A25, A41, A53, A57, A59). Three new modules under `src/remediation/`:
+
+- `src/remediation/TrustElevationSource.ts` — authoritative gate for runbook lifecycle transitions. Implements the asymmetric trust-elevation table: pessimistic-quarantine always-allowed (`live→quarantined` succeeds at any profile), `collaborative` trust minimum for upward transitions, 48h fresh-trace + 1-week dry-run history for `registered→live`, two-distinct-kind-channel rule for essential `quarantined→live` (A53), and source-only refusal for `proposal→registered`, `live→deprecated`, `deprecated→removed`. Exposes `canTransition(runbookId, transition, context)` returning `{allowed, reason}` and `requireSecondChannel({runbookId, essential})` for A53 enforcement. Re-exports the canonical `AutonomyProfileLevel` from `src/core/types.ts` so the remediator side has a single import path for trust policy.
+- `src/remediation/channels/TelegramApprovalChannel.ts` — F-5 stub `TrustedApprovalChannel`. Exposes the shape the real A41 Telegram-countersignature verification will plug into; deterministic seeded-map for test fixtures. Channel `kind: 'telegram'`.
+- `src/remediation/channels/CliApprovalChannel.ts` — F-5 stub `TrustedApprovalChannel` for the `instar doctor confirm-unquarantine` signed-CLI second-factor path (A53 option 1). Channel `kind: 'cli'`. The kind-distinct pair `(telegram, cli)` is the minimal A53-compliant essential-runbook configuration.
+
+No consumers in this PR. The dispatcher (F-8 Tier-2 wiring) and the un-quarantine endpoint (`POST /remediation/unquarantine/:runbookId` per A25) consume F-5 in follow-up work. 25 unit tests in `tests/unit/TrustElevationSource.test.ts` cover every row of the trust-elevation table plus the stub-channel verification fixtures.
+
+Side-effects review: `upgrades/side-effects/f5-trust-elevation-source.md`.
+
 ### feat(remediation): W-1 — node-abi-mismatch runbook + NativeModuleHealer.invokeFromRemediator (FINAL Tier-1 PR)
 
 Ships the first dispatchable runbook for the F-8 Remediator and the matching surface entry-point per `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A6, §A9, §A21, §A28, §A36, §A45, §A55, §A57). After this PR, Tier-1 is complete and the Remediator is dispatchable end-to-end via test fixtures.
@@ -136,6 +148,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## What to Tell Your User
 
+**F-5 — Trust gate for the self-healing system (still off by default).** The self-healing system now has the policy module that decides which "lifecycle moves" a runbook is allowed to make. A runbook is a small repair playbook (like W-1's "rebuild SQLite when Node was upgraded"). Each runbook starts as a draft, gets promoted to live after at least a week of dry-run, can be quarantined if it misbehaves, and stays quarantined until a human un-quarantines it. This release adds the policy module that enforces those moves: the agent will refuse to promote a runbook to live unless your trust profile is at least "collaborative" AND the runbook has a fresh-and-multi-week dry-run record. Un-quarantining an essential runbook (one that could change machine-level state) requires TWO independent approval channels — for example one approval over Telegram AND one signed locally via `instar doctor`. Same compromise can't forge both. The opposite direction — pulling a misbehaving runbook OUT of live and into quarantine — is always allowed, no approval required, because the safer move never needs more trust. Still nothing user-visible yet; no real repair runbook is plugged into live mode, and the dispatcher that actually consults this policy ships in follow-up work.
+
 **Stronger API-billing safety.** Instar will no longer silently switch from your Claude subscription to the metered Anthropic API just because your CLI broke and you happen to have an API key in your environment. The default has always been subscription-only; this fix removes the one path that could quietly bill you. If you actually want API mode, you now need to set two flags in config (`intelligenceProvider: "anthropic-api"` AND `intelligenceProviderConfirmed: true`), and every server startup in API mode prints a yellow boxed banner so it's impossible to miss. No setup needed for the subscription path — that is the default and it stays the default.
 
 **F-2 — Redaction + errorCode normalization.** The self-healing system is getting a safety layer underneath it. Every error report now gets stamped with where the error name came from — a trusted system field, a verified probe, an explicit subsystem call, or just parsed text. Only the trusted sources can trigger automated repair. The same release adds a single place that scrubs personal paths, tokens, emails, and IDs out of every error report before it leaves the agent.
@@ -152,6 +166,11 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## Summary of New Capabilities
 
+- **`TrustElevationSource`** (F-5) — Authoritative policy module for runbook lifecycle transitions. Encodes the asymmetric trust-elevation table from the v2 spec: `live→quarantined` always-allowed (pessimistic), upward transitions require `collaborative` trust + the spec's freshness / history / approval-channel conditions, `proposal→registered` / `live→deprecated` / `deprecated→removed` are source-change-only (always refused programmatically).
+- **`TrustedApprovalChannel` interface** (F-5) — Abstract approval-channel contract from A59. `verifyApproval({proposalId?, runbookId?, action, messageId?})` returns `{approved, principalUserId?, reason?}`. Concrete implementations carry a `kind` discriminator so A53's "different-kind second channel" rule for essential un-quarantines can be enforced at the source layer.
+- **`TelegramApprovalChannel` stub** (F-5) — `kind: 'telegram'`. Stub for A41 Telegram-countersignature flow; the real cryptographic-binding-payload verification (proposalId + user_id principal + replay watermark) ships in a follow-up that wires into the existing Telegram relay pipeline.
+- **`CliApprovalChannel` stub** (F-5) — `kind: 'cli'`. Stub for A53 option-1 signed-CLI second-factor path (`instar doctor confirm-unquarantine`); the real local-doctor-key signing ships in a follow-up.
+- **`AutonomyProfileLevel` re-export** (F-5) — `src/remediation/TrustElevationSource.ts` re-exports the canonical type from `src/core/types.ts` so remediator-side trust policy has a single import path.
 - **`RemediationKeyVault`** (F-1) — HKDF-SHA256 leaf keys scoped to one of five contexts (`capability`, `probe`, `inflight`, `ledger`, `audit`) and an opaque scope id.
 - **4-backend secret store** (F-1) — OS keychain preferred; hardware-enclave and cloud-KMS stubbed; env-passphrase + AES-256-GCM flatfile fallback.
 - **Install nonce** (F-1) — 256-bit random anchor stored under `ai.instar.remediation.install-nonce`; auto-initialized on first boot, fail-closed if missing.
