@@ -5,6 +5,18 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### feat(dashboard): Phase 4 — Jobs tab rewrite with override/unfork, editor, issues card, migration banner
+
+The Dashboard Jobs tab now surfaces the spec's full operator experience: a migration banner with Confirm-complete and Roll-back buttons; an Issues card aggregating reconcile findings (orphan-manifest, shadow-md, missing-from-jobs-json, staged-new, case-collision) with severity-sorted display, per-class filter, and per-item dismiss; namespace badges (instar / user / fork) on every row; a lock-trust warning indicator when an instar default is in a tamper state; Override and Unfork actions on the row detail panel with ELI16 confirmation copy; an Edit modal with frontmatter form, body textarea, and `manifestVersion` OCC token (409 → "reload and lose your changes?" modal on stale-save).
+
+New backend endpoints: `POST /jobs/:slug/save` (atomic two-rename commit via `AgentMdAtomicSave`), `POST /jobs/:slug/disable` (stamps `disabledAtBodyHash`), `POST /jobs/:slug/enable`, `POST /jobs/:slug/override` (fork instar → user namespace, idempotent), `POST /jobs/:slug/unfork` (archive user copy to `.unfork-backups/<slug>-<ts>.md`, restore instar default), `GET /jobs/:slug/unfork-backups`. `GET /jobs` now returns `hasUserFork` so the UI renders fork badges in one round-trip per spec §Dashboard UX "no N+1 round-trips."
+
+Unfork-backups retention: 30 days OR last 10 per slug, whichever more generous. Pruning runs opportunistically inside `/unfork`.
+
+Tests: 5 integration cases pass; lint + type-check + build pass.
+
+What is NOT in this PR: drift digest visual surface (depends on classifier being populated in CI with `ANTHROPIC_API_KEY`), unrestricted-tools four-screen confirmation UI, CLI parity for override/unfork. Each is a focused follow-up.
+
 ### test(server): bearer-token auth verification on jobs endpoints
 
 New integration test pins the existing `authMiddleware` gate on the four Phase 4 jobs endpoints (`/jobs/migration-status`, `/jobs/migration-confirm`, `/jobs/migration-abandon`, `/jobs/reconcile`). 15 cases cover unauthenticated, wrong-token, off-by-one near-miss, malformed header, non-Bearer scheme, and authenticated paths. Asserts INSTAR-JOBS-AS-AGENTMD spec §Decision Points "Dashboard write authorization — bearer auth extended to job-edit endpoints." Auth was already in place via global middleware; this test pins the property so a future refactor cannot weaken it silently.
