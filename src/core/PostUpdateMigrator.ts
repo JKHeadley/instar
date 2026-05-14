@@ -43,6 +43,11 @@ import {
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import {
+  MigratorStepEngine,
+  type MigratorStep,
+  type RunPendingStepsResult,
+} from './MigratorStepEngine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,9 +70,54 @@ export interface MigratorConfig {
 
 export class PostUpdateMigrator {
   private config: MigratorConfig;
+  /**
+   * F-7 atomic-step engine. Lazily constructed on first access via
+   * `getStepEngine()` so existing callers that never touch atomic steps
+   * pay zero cost. See `src/core/MigratorStepEngine.ts` for the primitive
+   * docs; see `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` §A35/§A50
+   * for the spec.
+   */
+  private stepEngine: MigratorStepEngine | undefined;
 
   constructor(config: MigratorConfig) {
     this.config = config;
+  }
+
+  /**
+   * F-7 atomic-step primitive: register a step that will run once on
+   * the release boundary where `step.version <= toVersion`. Idempotent
+   * across runs — the engine records every step's outcome in
+   * `<stateDir>/migrator-steps-completed.json` keyed by
+   * `<version>:<step-name>`.
+   *
+   * Steps are atomic and self-contained: a failure in one step does not
+   * roll back prior steps and does not block subsequent steps.
+   *
+   * See `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` §A35 + §A50.
+   */
+  registerStep(step: MigratorStep): void {
+    this.getStepEngine().registerStep(step);
+  }
+
+  /**
+   * F-7 atomic-step primitive: execute every pending step. Pending =
+   * step.version <= toVersion AND no ledger entry recorded yet.
+   *
+   * Steps run in registration order. Failures are recorded (never
+   * thrown) and do not stop subsequent steps.
+   */
+  async runPendingSteps(
+    fromVersion: string,
+    toVersion: string,
+  ): Promise<RunPendingStepsResult> {
+    return this.getStepEngine().runPendingSteps(fromVersion, toVersion);
+  }
+
+  private getStepEngine(): MigratorStepEngine {
+    if (!this.stepEngine) {
+      this.stepEngine = new MigratorStepEngine(this.config.stateDir);
+    }
+    return this.stepEngine;
   }
 
   /**

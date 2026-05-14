@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "slug": "f7-post-update-migrator-atomic-step",
+  "coveredFiles": [
+    "src/core/BackupManager.ts",
+    "src/core/GitStateManager.ts",
+    "src/core/MigratorStepEngine.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/AnnouncementManager.test.ts",
+    "tests/unit/PostUpdateMigrator-a35-remediationPaths.test.ts",
+    "tests/unit/PostUpdateMigrator-atomicStep.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/f7-post-update-migrator-atomic-step.md"
+  ],
+  "artifactPath": "upgrades/side-effects/f7-post-update-migrator-atomic-step.md",
+  "artifactSha256": "d96218a0149d421687e3178f8c000a08f57e1ad88fa9515c0a337a68bc921538",
+  "specPath": "docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md",
+  "createdAt": "2026-05-13T17:55:00Z"
+}

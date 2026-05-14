@@ -35,6 +35,28 @@ This is the backend half of Phase 4. The Dashboard UI rewrite (Jobs tab, Issues 
 
 ## What Changed
 
+### feat(core): F-7 — PostUpdateMigrator atomic-step + announceOnce primitives (Tier-2)
+
+Ships F-7 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§R1 Upgrade invariants + §A35 backup/sync wiring + §A50 hook-shape corrections + §A57 Tier-2). Two new primitives plus the A35 const-literal hook-shape changes.
+
+New module `src/core/MigratorStepEngine.ts`:
+
+- **`MigratorStepEngine`** — register named, idempotent atomic steps with a semver `version: string`. `runPendingSteps(fromVersion, toVersion)` executes every step whose `version <= toVersion` and isn't yet recorded. Ledger at `<stateDir>/migrator-steps-completed.json` keyed by `<version>:<step-name>`. Failed steps record `outcome: 'failed'` and do NOT roll back prior steps or block subsequent steps — each step is atomic and self-contained per spec. Atomic temp-file → fsync → rename writes.
+- **`AnnouncementManager`** — `announceOnce(announcementId, message, channel)` returns `true` if announced now, `false` if already shown. Ledger at `<stateDir>/announcements-shown.json` keyed by announcementId. Ledger is recorded BEFORE the sink fires so a flaky sink cannot cause duplicate emission. Default sink writes to stderr; callers can pass a Telegram/dashboard sink.
+
+Extension on `src/core/PostUpdateMigrator.ts`: new `registerStep(step)` + async `runPendingSteps(from, to)` methods delegate to a lazy `MigratorStepEngine`. The existing `MigratorConfig` constructor + all 15 existing `migrate*` methods + `migrate()` orchestrator are unchanged — F-7 is strictly additive.
+
+A35 hook-shape changes:
+
+- `src/core/GitStateManager.ts` — `DEFAULT_GITIGNORE` const literal now contains the five remediation runtime path globs (`remediation/system-reviewer-state-*.json`, `remediation/inbox-*.jsonl`, `remediation/audit-projection-*.jsonl`, `remediation/cross-process-attempts-*.jsonl`, `remediation/llm-raw-*.jsonl`). Exported `REMEDIATION_GITIGNORE_ENTRIES` as the canonical list. Fresh `instar git init` writes these out; existing `.gitignore` files are unchanged (the F-7 atomic step is responsible for patching them post-update).
+- `src/core/BackupManager.ts` — new exported const `REMEDIATION_EXCLUDED_PATH_PREFIXES` (the five remediation path prefixes). New optional 5th constructor arg `isRemediationEnabled?: () => boolean` parallels the existing `isIntegratedBeingEnabled` gate. When the gate returns true, the prefixes drop any user-added `includeFiles` entry whose path starts with a remediation prefix from the resolved include list. When false/absent (the default for every existing caller), behavior is identical to pre-F-7. No new plugin/register API per §A50.
+
+18 new tests across `tests/unit/PostUpdateMigrator-atomicStep.test.ts` (8), `tests/unit/AnnouncementManager.test.ts` (5), `tests/unit/PostUpdateMigrator-a35-remediationPaths.test.ts` (5). Covers: step runs once and records completion; subsequent runs skip; failed step records failure and doesn't block other steps; future-version step skipped without ledger entry; state persists across instances; semver compare; announceOnce true-then-false; independent ids; persistence; sink-throw does not cause re-emission; input validation; remediation entries in `DEFAULT_GITIGNORE`; exclusion-prefix gate ON/OFF/absent. All 76 pre-existing `PostUpdateMigrator-*` tests and 47 `BackupManager*` tests pass unchanged.
+
+No production wiring yet. Tier-2 surfaces (W-2..W-4, S-1..S-3) will register their own steps via `migrator.registerStep(...)` and surface migration outcomes via `announcer.announceOnce(...)`.
+
+Side-effects review: `upgrades/side-effects/f7-post-update-migrator-atomic-step.md`.
+
 ### feat(remediation): F-5 — TrustElevationSource + AutonomyProfileLevel wiring (Tier-2 foundation)
 
 First Tier-2 foundation module from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (Trust elevation policy section + amendments A11, A22, A25, A41, A53, A57, A59). Three new modules under `src/remediation/`:
@@ -195,6 +217,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 **ELI16-overview gate.** When your agent hands you a spec for approval, you'll now always get a plain-English overview alongside the dense technical document. The instar repo refuses to commit any code change whose driving spec lacks a readable companion file. The technical spec becomes the appendix; the overview is the entry point. No setup required; the new behavior takes effect on the next agent update.
 
+**F-7 — Smarter upgrade migrations.** Instar can now run small, named "atomic steps" on each update — like "add this new entry to the agent's ignore list" or "back up this newly-introduced state file." Each step is recorded once it runs, so the next update doesn't redo it. If one step fails, it just records the failure and keeps going with the others; nothing rolls back. The same release adds a new "say this once" notice primitive so the agent can surface a migration result to you exactly once and never again, even after restarts. Nothing visible today — Tier-2 work is the first consumer. The same release also pre-loads ignore-list entries for the self-healing system's per-machine scratch files so they never get accidentally synced across your machines.
+
 ## Summary of New Capabilities
 
 - **`TrustElevationSource`** (F-5) — Authoritative policy module for runbook lifecycle transitions. Encodes the asymmetric trust-elevation table from the v2 spec: `live→quarantined` always-allowed (pessimistic), upward transitions require `collaborative` trust + the spec's freshness / history / approval-channel conditions, `proposal→registered` / `live→deprecated` / `deprecated→removed` are source-change-only (always refused programmatically).
@@ -231,3 +255,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **`NativeModuleHealer.invokeFromRemediator(ctx)`** (W-1) — Parallel entry point alongside the unchanged `openWithHeal` CLI safety net. Rebuilds via `npm rebuild --ignore-scripts --build-from-source better-sqlite3` (§A28 + §A45 — never bare `npm rebuild`, never picks up a poisoned prebuild binary). Records sha256 of the rebuilt `.node` binary for cross-process binary-divergence detection.
 - **Public types `RemediatorInvocationContext` / `RemediatorExecutionResult`** (W-1) — Structurally compatible with F-8's `RemediationContext` / `ExecutionResult` so the runbook's `surfaceCallable` typechecks without a hard import dependency from `src/memory/*` onto `src/remediation/*`.
 - **§A21-conformant verify probe** (W-1) — Opens an in-memory better-sqlite3 handle and runs `integrity_check`. `ok` → `verified-healthy`; non-`ok` row → `verify-failed`; constructor or pragma throw → `verify-inconclusive` (probe error, never failed).
+- **`MigratorStepEngine`** (F-7) — Atomic-step primitive: register named, idempotent migration steps versioned by semver. `runPendingSteps(from, to)` executes pending steps once per version with a `<stateDir>/migrator-steps-completed.json` ledger keyed by `<version>:<step-name>`. Failed steps record outcome `failed` but do not block subsequent steps.
+- **`PostUpdateMigrator.registerStep` / `.runPendingSteps`** (F-7) — Additive methods on the existing class; existing 15 `migrate*` methods + `migrate()` orchestrator unchanged. Tier-2 surfaces register their own steps via this API.
+- **`AnnouncementManager.announceOnce(id, message, channel)`** (F-7) — Show-once primitive backed by `<stateDir>/announcements-shown.json`. Returns true on first call, false on subsequent. Ledger written before sink fires, so a flaky sink cannot cause duplicate emission.
+- **`REMEDIATION_GITIGNORE_ENTRIES`** (F-7/A35) — Five remediation runtime path globs embedded into `GitStateManager.DEFAULT_GITIGNORE` const literal and exported as the source-of-truth list for the F-7 gitignore atomic step.
+- **`REMEDIATION_EXCLUDED_PATH_PREFIXES` + `isRemediationEnabled` gate** (F-7/A35) — `BackupManager` exclusion list with feature-flag gating that parallels the existing `isIntegratedBeingEnabled` pattern. Gate ON drops any user-added `includeFiles` entry that begins with a remediation prefix; gate OFF/absent preserves them for back-compat.

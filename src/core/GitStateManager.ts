@@ -29,7 +29,24 @@ const BLOCKED_REMOTE_SCHEMES = [
   /^ftp:\/\//,
 ];
 
-const DEFAULT_GITIGNORE = `# Runtime state -- NOT tracked
+// F-7 / A35 — Remediation runtime paths are per-machine and MUST NOT
+// be tracked in the cross-machine state repo. They contain
+// agent-internal scratch data (cluster cursor state, audit projections,
+// inbox queues, raw LLM responses, cross-process attempt ledgers) that
+// would otherwise pollute git history and create cross-machine race
+// conditions. See docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md §A14 +
+// §A35 + §A50 for the per-path rationale. The globs match the file
+// naming conventions used by the Remediator family (system-reviewer-
+// state, inbox, audit-projection, cross-process-attempts, llm-raw).
+const REMEDIATION_GITIGNORE_BLOCK = `# Remediation runtime (F-7/A35) -- per-machine, NEVER synced
+remediation/system-reviewer-state-*.json
+remediation/inbox-*.jsonl
+remediation/audit-projection-*.jsonl
+remediation/cross-process-attempts-*.jsonl
+remediation/llm-raw-*.jsonl
+`;
+
+export const DEFAULT_GITIGNORE = `# Runtime state -- NOT tracked
 state/
 logs/
 *.tmp
@@ -44,6 +61,7 @@ memory.db-wal
 memory.db-shm
 backups/
 
+${REMEDIATION_GITIGNORE_BLOCK}
 # Tracked state:
 # AGENT.md, USER.md, MEMORY.md
 # jobs.json
@@ -51,6 +69,20 @@ backups/
 # hooks/ (generated but version-trackable)
 # evolution/ (proposals, learnings, gaps)
 `;
+
+/**
+ * F-7 / A35 — exported for the F-7 atomic step that patches the user's
+ * `.instar/.gitignore` post-update. Tests assert presence of these
+ * entries. The list is the source of truth for the gitignore-extension
+ * atomic step.
+ */
+export const REMEDIATION_GITIGNORE_ENTRIES: readonly string[] = Object.freeze([
+  'remediation/system-reviewer-state-*.json',
+  'remediation/inbox-*.jsonl',
+  'remediation/audit-projection-*.jsonl',
+  'remediation/cross-process-attempts-*.jsonl',
+  'remediation/llm-raw-*.jsonl',
+]);
 
 const DEFAULT_CONFIG: GitStateConfig = {
   enabled: false,

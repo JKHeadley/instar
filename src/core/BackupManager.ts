@@ -31,6 +31,31 @@ const BLOCKED_PATH_PREFIXES = new Set([
   '.instar/secrets/',
 ]);
 
+/**
+ * F-7 / A35 — Remediation runtime-state path prefixes that must NEVER
+ * be included in a backup snapshot. These files are per-machine
+ * scratch state (SystemReviewer cluster cursors, inbox queues, audit
+ * projections, cross-process attempt ledgers, raw LLM responses). They
+ * are gated by `config.remediation.enabled` — when remediation is off
+ * the prefixes are inactive; when remediation is on the prefixes
+ * actively exclude any user-added `includeFiles` entry whose path
+ * starts with one of them.
+ *
+ * Same shape as the `shared-state.jsonl*` feature-flag gate used today
+ * for Integrated-Being v1 (see resolveIncludedFiles()). Documented in
+ * `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` §A14 + §A35 + §A50.
+ *
+ * Exported for the F-7 atomic step that registers these exclusions on
+ * the user's `config.backup.excludePaths` post-update.
+ */
+export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.freeze([
+  '.instar/remediation/system-reviewer-state-',
+  '.instar/remediation/inbox-',
+  '.instar/remediation/audit-projection-',
+  '.instar/remediation/cross-process-attempts-',
+  '.instar/remediation/llm-raw-',
+]);
+
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: true,
   maxSnapshots: 20,
@@ -79,6 +104,14 @@ export class BackupManager {
   /** Optional resolver — called at snapshot time to check if Integrated-Being
    *  is enabled. When false, shared-state.jsonl* is excluded. See spec §Config knob. */
   private readonly isIntegratedBeingEnabled?: () => boolean;
+  /**
+   * F-7 / A35 — Optional resolver: when `true`, the
+   * `REMEDIATION_EXCLUDED_PATH_PREFIXES` are applied to drop any
+   * `includeFiles` entry whose path begins with one of those prefixes.
+   * When `false` or absent, the prefixes are inactive. Same shape as
+   * `isIntegratedBeingEnabled`. See spec §A35 + §A50.
+   */
+  private readonly isRemediationEnabled?: () => boolean;
   private lastAutoSnapshot: number = 0;
 
   constructor(
@@ -86,6 +119,7 @@ export class BackupManager {
     config?: Partial<BackupConfig>,
     isSessionActive?: () => boolean,
     isIntegratedBeingEnabled?: () => boolean,
+    isRemediationEnabled?: () => boolean,
   ) {
     this.stateDir = path.resolve(stateDir);
     this.backupsDir = path.resolve(stateDir, 'backups');
@@ -104,6 +138,7 @@ export class BackupManager {
     };
     this.isSessionActive = isSessionActive;
     this.isIntegratedBeingEnabled = isIntegratedBeingEnabled;
+    this.isRemediationEnabled = isRemediationEnabled;
   }
 
   /**
@@ -115,9 +150,30 @@ export class BackupManager {
     const sharedStateGateOff = this.isIntegratedBeingEnabled
       ? !this.isIntegratedBeingEnabled()
       : false;
+    // F-7 / A35: when remediation is ENABLED, the per-machine
+    // remediation runtime paths get actively excluded. When remediation
+    // is off, the exclusion is a no-op (no such files exist anyway).
+    const remediationExclusionActive = this.isRemediationEnabled
+      ? this.isRemediationEnabled()
+      : false;
     for (const entry of this.config.includeFiles) {
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
+      // F-7 / A35 gate: drop remediation runtime paths from any
+      // user-added includeFiles entry. Same prefix-string shape as
+      // BLOCKED_PATH_PREFIXES — caller is expected to normalize paths
+      // before passing them in.
+      if (remediationExclusionActive) {
+        const normalized = path.normalize(entry);
+        let blocked = false;
+        for (const prefix of REMEDIATION_EXCLUDED_PATH_PREFIXES) {
+          if (normalized.startsWith(prefix)) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+      }
       if (entry.includes('*')) {
         for (const real of expandGlob(this.stateDir, entry)) expanded.push(real);
       } else {
