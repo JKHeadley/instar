@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "sessionId": "a748b978-97df-4298-8ba8-91938fc9effc",
+  "timestamp": "2026-05-14T02:41:46.603Z",
+  "artifactPath": "upgrades/side-effects/f8-rest-enforcement.md",
+  "artifactSha256": "f1340f07b3b098f8b678840422b765382c5ba6607e8ddfc459786b60de62e3e5",
+  "specPath": "docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md",
+  "coveredFiles": [
+    "src/memory/NativeModuleHealer.ts",
+    "src/monitoring/DegradationReporter.ts",
+    "src/monitoring/probes/LifelineProbe.ts",
+    "src/monitoring/probes/__shared.ts",
+    "src/remediation/RemediationContext.ts",
+    "src/remediation/Remediator.ts",
+    "tests/unit/NativeModuleHealer-context-enforcement.test.ts",
+    "tests/unit/RemediationContext.test.ts",
+    "tests/unit/Remediator-enforcement.test.ts",
+    "upgrades/NEXT.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

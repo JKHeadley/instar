@@ -91,6 +91,21 @@ export interface NormalizedDegradationEvent {
    * (alert path, audit log) can recover the original quintuple.
    */
   legacy?: DegradationEvent;
+  /**
+   * §A40 / §A52 probe-source binding. Optional; set by probe emit-sites
+   * migrated to F-8-rest Tier-2 enforcement.
+   */
+  source?: {
+    probeSignature?: {
+      probeId: string;
+      subsystem: string;
+      outcome: string;
+      reason: string;
+      monotonicTs: number;
+      /** HMAC over the canonical envelope body. */
+      signature: Buffer;
+    };
+  };
 }
 
 /**

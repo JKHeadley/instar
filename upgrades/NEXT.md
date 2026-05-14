@@ -58,6 +58,38 @@ This is the backend half of Phase 4. The Dashboard UI rewrite (Jobs tab, Issues 
 
 ## What Changed
 
+### feat(remediation): F-8 rest — capability-token + probe-source + trust-elevation enforcement (Tier-2)
+
+Completes F-8 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A3, §A23, §A40, §A42, §A52, §A57 Tier-2 carve-outs). The Tier-1 Remediator skeleton from PR #201 deferred enforcement; this PR wires it.
+
+New module `src/remediation/RemediationContext.ts` — exports `signRemediationContext(ctx, keyVault)` and `verifyRemediationContext(ctx, keyVault)`. The signed body covers `{attemptId, runbookId, expiresAt, monotonicDeadline}` via HMAC-SHA256 against the per-runbook capability leaf (F-1 `keyVault.deriveLeafKey('capability', runbookId)`). Verification uses `crypto.timingSafeEqual` so the surface side has no timing channel on the comparison. Forging a ctx for runbook A using a legitimately issued ctx for runbook B fails because the verify recomputes the leaf from `ctx.runbookId`.
+
+Extension on `src/remediation/Remediator.ts`:
+- `RemediatorOptions` adds `trustSource?`, `serverSupervisor?`, `probeSourceRegistry?` — all optional, so existing Tier-1 tests continue to work unchanged.
+- `Remediator` now `implements RegisteredRemediator`: `getCapabilityLeafKey()`, `onRestartComplete()`, plus a new `requestPlannedRestart()` that signs the payload with the capability leaf and hands to `supervisor.handleRestartRequested()` (F-6 wire path).
+- Constructor calls `supervisor.registerRemediator(this)` when wired so the handshake file is written before any restart-requested can fire.
+- New `canTransition(runbookId, transition, context)` method consults `trustSource.canTransition()` when wired; falls back to `{allowed: true, reason: 'no-trust-source-wired'}` when unset (Tier-1 backward compat).
+- `dispatch()` signs the issued `RemediationContext` via `signRemediationContext()` so surfaces can verify §A3 capability.
+- `dispatch()` now enforces §A40 + §A52 for `provenance: 'probe-id'` events when a `probeSourceRegistry` is wired: unsigned envelope → audit projection records `probe-event-unsigned`; bad signature → `probe-signature-invalid`; out-of-scope subsystem → `probe-subsystem-out-of-scope`. None of these dispatch a runbook.
+- New exports: `ProbeSourceRegistry` interface, `ProbeSignatureEnvelope` type, `canonicalProbeEnvelopeBody()` helper, `DefaultProbeSourceRegistry` impl backed by keyVault.
+
+Extension on `src/memory/NativeModuleHealer.ts`:
+- `invokeFromRemediator(ctx, keyVault?)` — new optional second arg. When wired AND `ctx.hmac` is present, verifies the capability HMAC at entry. Invalid → falls back to in-line legacy heal path (via existing `healBetterSqlite3()`) with `remediation.surface.invalid-context` warning and `details.invalidContext: true` on the result. When `keyVault` is unwired (existing W-1 callers), the legacy behavior is unchanged.
+- `RemediatorInvocationContext` extended with optional `hmac` + `expiresAt` fields (structurally compatible with the Remediator's `RemediationContext`).
+- New optional `InvocationContextKeyVault` type for the structural dep — `src/memory/*` still doesn't import `src/remediation/*` at runtime.
+
+Extension on `src/monitoring/DegradationReporter.ts`:
+- `NormalizedDegradationEvent` adds optional `source.probeSignature` carrying the §A40 envelope. Additive; legacy emit-sites + non-probe provenances leave the field unset.
+
+New module `src/monitoring/probes/__shared.ts` — exports `ProbeVerifyScope` type, `readVerifyScope()` helper, and `subsystemInScope()` predicate for the §A52 scope-binding contract.
+
+Extension on `src/monitoring/probes/LifelineProbe.ts`:
+- Exports `__verifyScope = ['lifeline'] as const satisfies ProbeVerifyScope`. F-8-rest smoke-test migration; full fleet migration is Tier-3 work.
+
+21 new tests across `tests/unit/RemediationContext.test.ts` (7), `tests/unit/Remediator-enforcement.test.ts` (10), `tests/unit/NativeModuleHealer-context-enforcement.test.ts` (4). All 57 pre-existing Tier-2 / W-1 / Tier-1 tests pass unchanged.
+
+Side-effects review: `upgrades/side-effects/f8-rest-enforcement.md`.
+
 ### feat(core): F-7 — PostUpdateMigrator atomic-step + announceOnce primitives (Tier-2)
 
 Ships F-7 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§R1 Upgrade invariants + §A35 backup/sync wiring + §A50 hook-shape corrections + §A57 Tier-2). Two new primitives plus the A35 const-literal hook-shape changes.
@@ -224,6 +256,9 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## What to Tell Your User
 
+**F-8 rest — Self-healing orchestrator now enforces its security guards (still off by default).** The self-healing skeleton from earlier work now actually CHECKS the signatures it was contractually supposed to check. Three guards turned on: (1) when the orchestrator hands a repair surface a context object, that object is cryptographically signed so the surface can refuse to act on a forged hand-off; (2) error reports claiming to come from a specific probe must now carry that probe's signature AND the error's subsystem must lie inside the probe's declared coverage list; (3) trust-elevation moves like "promote runbook from registered to live" now ask the F-5 policy module for permission before changing state. Still nothing user-visible because no live runbook is plugged into the running pipeline yet — that wiring lands in W-2..W-4.
+
+
 **F-5 — Trust gate for the self-healing system (still off by default).** The self-healing system now has the policy module that decides which "lifecycle moves" a runbook is allowed to make. A runbook is a small repair playbook (like W-1's "rebuild SQLite when Node was upgraded"). Each runbook starts as a draft, gets promoted to live after at least a week of dry-run, can be quarantined if it misbehaves, and stays quarantined until a human un-quarantines it. This release adds the policy module that enforces those moves: the agent will refuse to promote a runbook to live unless your trust profile is at least "collaborative" AND the runbook has a fresh-and-multi-week dry-run record. Un-quarantining an essential runbook (one that could change machine-level state) requires TWO independent approval channels — for example one approval over Telegram AND one signed locally via `instar doctor`. Same compromise can't forge both. The opposite direction — pulling a misbehaving runbook OUT of live and into quarantine — is always allowed, no approval required, because the safer move never needs more trust. Still nothing user-visible yet; no real repair runbook is plugged into live mode, and the dispatcher that actually consults this policy ships in follow-up work.
 
 **Stronger API-billing safety.** Instar will no longer silently switch from your Claude subscription to the metered Anthropic API just because your CLI broke and you happen to have an API key in your environment. The default has always been subscription-only; this fix removes the one path that could quietly bill you. If you actually want API mode, you now need to set two flags in config (`intelligenceProvider: "anthropic-api"` AND `intelligenceProviderConfirmed: true`), and every server startup in API mode prints a yellow boxed banner so it's impossible to miss. No setup needed for the subscription path — that is the default and it stays the default.
@@ -243,6 +278,18 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 **F-7 — Smarter upgrade migrations.** Instar can now run small, named "atomic steps" on each update — like "add this new entry to the agent's ignore list" or "back up this newly-introduced state file." Each step is recorded once it runs, so the next update doesn't redo it. If one step fails, it just records the failure and keeps going with the others; nothing rolls back. The same release adds a new "say this once" notice primitive so the agent can surface a migration result to you exactly once and never again, even after restarts. Nothing visible today — Tier-2 work is the first consumer. The same release also pre-loads ignore-list entries for the self-healing system's per-machine scratch files so they never get accidentally synced across your machines.
 
 ## Summary of New Capabilities
+
+- **`signRemediationContext()` / `verifyRemediationContext()`** (F-8 rest) — HMAC-SHA256 over `{attemptId, runbookId, expiresAt, monotonicDeadline}` using the per-runbook capability leaf. `crypto.timingSafeEqual` on verify; rejects missing-hmac / wrong-runbookId / forged / length-mismatch cases.
+- **`RemediationContext.hmac` field** (F-8 rest) — Added to the public type. Optional on the interface for structural compatibility; production dispatch always populates it.
+- **Probe-source binding enforcement** (F-8 rest / §A40 / §A52) — `Remediator.dispatch()` rejects `provenance: 'probe-id'` events that are unsigned / forged / out-of-declared-scope when a `ProbeSourceRegistry` is wired. Reasons (`probe-event-unsigned`, `probe-signature-invalid`, `probe-subsystem-out-of-scope`) land in the audit projection.
+- **`ProbeSourceRegistry` interface** (F-8 rest) — `{getScope(probeId), verify(probeId, body, signature)}`. `DefaultProbeSourceRegistry` impl wires the F-1 `keyVault.deriveLeafKey('probe', probeId)` for verify + an inline scope map.
+- **`canonicalProbeEnvelopeBody()`** (F-8 rest) — Deterministic length-prefixed byte serialization the probe (signer) and Remediator (verifier) both use as HMAC input.
+- **`__verifyScope` probe export** (F-8 rest / §A52) — Per-probe const-literal scope declaration. F-8-rest migrates `LifelineProbe` as the smoke-test; full fleet migration is Tier-3.
+- **`Remediator.canTransition()`** (F-8 rest) — Wires the F-5 `TrustElevationSource.canTransition()` through the orchestrator. Falls back to `{allowed: true, reason: 'no-trust-source-wired'}` for Tier-1 compatibility.
+- **`Remediator.requestPlannedRestart()`** (F-8 rest) — Signs the F-6 `RestartRequestedPayload` with the capability leaf for `runbookId` and hands to `supervisor.handleRestartRequested()`.
+- **`Remediator` implements `RegisteredRemediator`** (F-8 rest) — `getCapabilityLeafKey()` + `onRestartComplete()` close the F-6 handshake loop.
+- **`NativeModuleHealer.invokeFromRemediator(ctx, keyVault?)` §A3 enforcement** (F-8 rest) — Optional second arg. When wired, verifies the ctx HMAC at entry; invalid → falls back to in-line legacy heal + emits `remediation.surface.invalid-context` warning.
+
 
 - **`TrustElevationSource`** (F-5) — Authoritative policy module for runbook lifecycle transitions. Encodes the asymmetric trust-elevation table from the v2 spec: `live→quarantined` always-allowed (pessimistic), upward transitions require `collaborative` trust + the spec's freshness / history / approval-channel conditions, `proposal→registered` / `live→deprecated` / `deprecated→removed` are source-change-only (always refused programmatically).
 - **`TrustedApprovalChannel` interface** (F-5) — Abstract approval-channel contract from A59. `verifyApproval({proposalId?, runbookId?, action, messageId?})` returns `{approved, principalUserId?, reason?}`. Concrete implementations carry a `kind` discriminator so A53's "different-kind second channel" rule for essential un-quarantines can be enforced at the source layer.

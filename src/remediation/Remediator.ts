@@ -53,6 +53,19 @@ import type {
   AuditOutcome,
   AuditEntry,
 } from './audit/AuditWriter.js';
+import type {
+  TrustElevationSource,
+  RunbookTransition,
+  CanTransitionContext,
+} from './TrustElevationSource.js';
+import type {
+  ServerSupervisor,
+  RegisteredRemediator,
+  RestartRequestedPayload,
+  RestartRequestedReply,
+} from '../lifeline/ServerSupervisor.js';
+import { signRemediationContext } from './RemediationContext.js';
+import { subsystemInScope } from '../monitoring/probes/__shared.js';
 
 // ── Public types ─────────────────────────────────────────────────────────
 
@@ -69,6 +82,17 @@ export interface RemediationContext {
   expiresAt: number;
   /** `process.hrtime.bigint()` at issuance + expectedRuntimeMs converted to ns. */
   monotonicDeadline: bigint;
+  /**
+   * §A3 capability-token HMAC over {attemptId, runbookId, expiresAt,
+   * monotonicDeadline}, signed with the per-runbook capability leaf. The
+   * surface MUST verify this via `verifyRemediationContext(ctx, keyVault)`
+   * before treating the call as Remediator-authorized.
+   *
+   * Optional on the type so unit tests that only need the structural shape
+   * (e.g. `RemediatorInvocationContext` in NativeModuleHealer) compile
+   * without re-deriving signatures. Production paths always set it.
+   */
+  hmac?: Buffer;
 }
 
 export interface ExecutionResult {
@@ -127,16 +151,192 @@ export interface RemediatorOptions {
    */
   lockSigner?: (payload: Buffer) => Buffer;
   lockVerifier?: (payload: Buffer, signature: Buffer) => boolean;
+  /**
+   * F-5 trust-elevation source (Tier-2). When present, lifecycle-transition
+   * methods (e.g. promote/un-quarantine) consult it before mutating runbook
+   * state. Optional so existing Tier-1 tests + the Tier-1 dispatch path
+   * continue to work without wiring the source.
+   */
+  trustSource?: TrustElevationSource;
+  /**
+   * F-6 supervisor handshake (Tier-2). When present, the Remediator
+   * registers itself with the supervisor at construction and uses it to
+   * issue planned restarts via `requestPlannedRestart()` below.
+   */
+  serverSupervisor?: ServerSupervisor;
+  /**
+   * §A52 probe-source registry. Maps `probeId` → declared verify-scope
+   * (the list of subsystems the probe is allowed to report on) + the per-
+   * probe leaf-key verifier. Events whose provenance is `'probe-id'`
+   * MUST carry a signed envelope referencing a registered probe; events
+   * referencing an unregistered probe are routed to `audit-rejected.jsonl`.
+   *
+   * Tier-3 wires the full fleet; F-8-rest accepts the registry shape so
+   * one example probe (LifelineProbe) can flow end-to-end.
+   */
+  probeSourceRegistry?: ProbeSourceRegistry;
+}
+
+/**
+ * §A40 + §A52 — per-probe authentication + scope binding. Probes that
+ * emit `provenance: 'probe-id'` events MUST sign the envelope using their
+ * `probe`-context leaf key. The Remediator verifies the signature, then
+ * enforces that `event.subsystem ∈ scope` (the probe's declared
+ * `__verifyScope`).
+ */
+export interface ProbeSourceRegistry {
+  /**
+   * Returns the declared verify-scope for the given probeId. An empty
+   * scope means the probe has not been migrated to A52 enforcement
+   * (Tier-3 fleet work) — its events will be routed to audit-rejected
+   * on signed-probe-id flow.
+   */
+  getScope(probeId: string): ReadonlyArray<string>;
+  /**
+   * Verifies the signature on a probe-signed envelope. `probeId` selects
+   * the leaf key (derived from the `probe`-context). `body` is the
+   * canonical envelope bytes — see `canonicalProbeEnvelopeBody()` below.
+   *
+   * Returns `false` (never throws) for any verification failure: unknown
+   * probe, length mismatch, HMAC mismatch.
+   */
+  verify(probeId: string, body: Buffer, signature: Buffer): boolean;
+}
+
+/**
+ * §A40 probe-envelope signed payload. The probe emits this on the
+ * `NormalizedDegradationEvent`'s `source.probeSignature` field (additive —
+ * unset for legacy emit-sites and for non-probe provenances).
+ */
+export interface ProbeSignatureEnvelope {
+  probeId: string;
+  subsystem: string;
+  outcome: string;
+  reason: string;
+  /** Monotonic timestamp (Number from performance.now()) at probe-side issuance. */
+  monotonicTs: number;
+  /** HMAC over `canonicalProbeEnvelopeBody(envelope)` using the probe leaf key. */
+  signature: Buffer;
 }
 
 // ── Implementation ───────────────────────────────────────────────────────
 
-export class Remediator {
+export class Remediator implements RegisteredRemediator {
   private readonly opts: RemediatorOptions;
   private readonly runbooks = new Map<string, ApprovedRunbook>();
+  /** Pending restart requestIds → resolver fns awaiting `onRestartComplete`. */
+  private pendingRestartResolvers = new Map<string, (req: { requestId: string }) => void>();
+  private lastRestartRequestRunbookId: string | null = null;
 
   constructor(opts: RemediatorOptions) {
     this.opts = opts;
+    // F-6: register with supervisor at construction so the handshake file is
+    // written before any restart-requested can fire. Idempotent — calling
+    // registerRemediator twice with the same instance is a no-op.
+    if (this.opts.serverSupervisor) {
+      try {
+        this.opts.serverSupervisor.registerRemediator(this);
+      } catch (err) {
+        // Supervisor registration is best-effort. A failure here means the
+        // A15 alert-only fallback kicks in (Remediator-side fail-safe).
+        console.error(
+          `[Remediator] supervisor.registerRemediator failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  // ── F-6: RegisteredRemediator interface ────────────────────────────────
+
+  /**
+   * Per-runbook capability leaf key used to sign `restart-requested`
+   * payloads. The supervisor verifies via the SAME leaf because both sides
+   * share the F-1 keyVault.
+   */
+  getCapabilityLeafKey(): Buffer {
+    const lastRunbookId = this.lastRestartRequestRunbookId;
+    return this.opts.keyVault.deriveLeafKey(
+      'capability',
+      lastRunbookId ?? '',
+    );
+  }
+
+  /**
+   * Supervisor → Remediator callback. Fires once per accepted
+   * `restart-requested` after the server recovers. Resolves any pending
+   * `requestPlannedRestart()` waiter.
+   */
+  onRestartComplete(req: { requestId: string }): void {
+    const resolver = this.pendingRestartResolvers.get(req.requestId);
+    if (resolver) {
+      this.pendingRestartResolvers.delete(req.requestId);
+      try {
+        resolver(req);
+      } catch (err) {
+        console.error(
+          `[Remediator] onRestartComplete resolver threw: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Issue a planned restart through the F-6 handshake. Signs the payload
+   * with the capability leaf for `runbookId`, hands to the supervisor.
+   * Returns the supervisor's reply.
+   */
+  async requestPlannedRestart(args: {
+    runbookId: string;
+    attemptId: string;
+    blastRadius: BlastRadius;
+  }): Promise<RestartRequestedReply | { accepted: false; reason: 'no-supervisor' }> {
+    if (!this.opts.serverSupervisor) {
+      return { accepted: false, reason: 'no-supervisor' };
+    }
+    const supervisor = this.opts.serverSupervisor;
+    this.lastRestartRequestRunbookId = args.runbookId;
+
+    const requestId = crypto.randomUUID();
+    const handshakeVersion =
+      typeof (supervisor as { getHandshakeProtocolVersion?: () => number })
+        .getHandshakeProtocolVersion === 'function'
+        ? (supervisor as { getHandshakeProtocolVersion: () => number })
+            .getHandshakeProtocolVersion()
+        : 1;
+    const leaf = this.opts.keyVault.deriveLeafKey('capability', args.runbookId);
+    const payloadBase: Omit<RestartRequestedPayload, 'hmac'> = {
+      requestId,
+      runbookId: args.runbookId,
+      attemptId: args.attemptId,
+      blastRadius: args.blastRadius,
+      requestedAt: Date.now(),
+      monotonicTs: process.hrtime.bigint(),
+      handshakeVersion,
+    };
+    const { canonicalRestartRequestedBody } = await import(
+      '../lifeline/ServerSupervisor.js'
+    );
+    const body = canonicalRestartRequestedBody(payloadBase as RestartRequestedPayload);
+    const hmac = crypto.createHmac('sha256', leaf).update(body).digest();
+    const payload: RestartRequestedPayload = { ...payloadBase, hmac };
+
+    return supervisor.handleRestartRequested(payload);
+  }
+
+  /**
+   * Consult the trust-elevation source for a lifecycle transition. When
+   * `trustSource` is unset, the Remediator falls back to `{allowed: true,
+   * reason: 'no-trust-source-wired'}` — Tier-1 behavior.
+   */
+  async canTransition(
+    runbookId: string,
+    transition: RunbookTransition,
+    context: CanTransitionContext = {},
+  ): Promise<{ allowed: boolean; reason: string }> {
+    if (!this.opts.trustSource) {
+      return { allowed: true, reason: 'no-trust-source-wired' };
+    }
+    return this.opts.trustSource.canTransition(runbookId, transition, context);
   }
 
   /**
@@ -179,6 +379,50 @@ export class Remediator {
    * acquisition error, audit write error not classified as token-rejected).
    */
   async dispatch(event: NormalizedDegradationEvent): Promise<DispatchOutcome> {
+    // §A40 + §A52 — probe-source binding. When the event claims `provenance:
+    // 'probe-id'` AND a probe registry is wired, the event MUST carry a
+    // signed envelope and the declared scope MUST contain `event.subsystem`.
+    // Unsigned / out-of-scope events route to audit-rejected.jsonl per A52.
+    if (
+      event.provenance === 'probe-id' &&
+      this.opts.probeSourceRegistry
+    ) {
+      const registry = this.opts.probeSourceRegistry;
+      const sig = event.source?.probeSignature;
+      if (!sig || !sig.probeId || !Buffer.isBuffer(sig.signature)) {
+        await this.auditAppendNoAttempt(
+          'no-matching-runbook',
+          event,
+          /* runbookId */ undefined,
+          /* coveredByAttemptId */ undefined,
+          'probe-event-unsigned',
+        );
+        return { outcome: 'no-matching-runbook' };
+      }
+      const body = canonicalProbeEnvelopeBody(sig);
+      if (!registry.verify(sig.probeId, body, sig.signature)) {
+        await this.auditAppendNoAttempt(
+          'no-matching-runbook',
+          event,
+          /* runbookId */ undefined,
+          /* coveredByAttemptId */ undefined,
+          'probe-signature-invalid',
+        );
+        return { outcome: 'no-matching-runbook' };
+      }
+      const scope = registry.getScope(sig.probeId);
+      if (!subsystemInScope(scope, event.subsystem)) {
+        await this.auditAppendNoAttempt(
+          'no-matching-runbook',
+          event,
+          /* runbookId */ undefined,
+          /* coveredByAttemptId */ undefined,
+          'probe-subsystem-out-of-scope',
+        );
+        return { outcome: 'no-matching-runbook' };
+      }
+    }
+
     const matched = this.matchRunbook(event);
     if (!matched) {
       await this.auditAppendNoAttempt(
@@ -239,14 +483,30 @@ export class Remediator {
     const issuedHrtime = process.hrtime.bigint();
     const expectedRuntimeNs = BigInt(matched.expectedRuntimeMs) * 1_000_000n;
     const auditToken = this.opts.keyVault.deriveLeafKey('audit', null);
+    const expiresAt = issuedAt + matched.expectedRuntimeMs;
+    const monotonicDeadline = issuedHrtime + expectedRuntimeNs;
+    // §A3 — sign the capability token so the surface can verify Remediator
+    // authority. Surfaces that don't verify (legacy paths) keep working;
+    // surfaces that do verify (NativeModuleHealer.invokeFromRemediator) get
+    // the timing-safe check at entry.
+    const hmac = signRemediationContext(
+      {
+        attemptId,
+        runbookId: matched.id,
+        expiresAt,
+        monotonicDeadline,
+      },
+      this.opts.keyVault,
+    );
     const ctx: RemediationContext = {
       attemptId,
       runbookId: matched.id,
       lockHandle,
       auditToken,
       abortSignal: abortController.signal,
-      expiresAt: issuedAt + matched.expectedRuntimeMs,
-      monotonicDeadline: issuedHrtime + expectedRuntimeNs,
+      expiresAt,
+      monotonicDeadline,
+      hmac,
     };
 
     await this.auditAppend(
@@ -460,7 +720,8 @@ export class Remediator {
     outcome: AuditOutcome,
     event: NormalizedDegradationEvent,
     runbookId?: string,
-    coveredByAttemptId?: string
+    coveredByAttemptId?: string,
+    redactedReasonOverride?: string,
   ): Promise<void> {
     const auditToken = this.opts.keyVault.deriveLeafKey('audit', null);
     const entry: AuditEntry = {
@@ -469,12 +730,87 @@ export class Remediator {
       outcome,
       runbookId,
       subsystem: event.subsystem,
-      reason: { redacted: event.reason.redacted },
+      reason: {
+        redacted: redactedReasonOverride ?? event.reason.redacted,
+      },
       timestamp: Date.now(),
       monotonicTs: process.hrtime.bigint(),
       auditToken,
     };
     await this.opts.auditWriter.append(entry);
+  }
+}
+
+/**
+ * §A40 canonical probe envelope serialization. Both the probe (signer) and
+ * the Remediator (verifier) MUST agree on this byte layout exactly.
+ *
+ *   tag | probeId* | subsystem* | outcome* | reason* | monotonicTs(u64be)
+ *
+ *   * = uint32be length prefix followed by utf-8 body.
+ */
+export function canonicalProbeEnvelopeBody(
+  env: Pick<
+    ProbeSignatureEnvelope,
+    'probeId' | 'subsystem' | 'outcome' | 'reason' | 'monotonicTs'
+  >,
+): Buffer {
+  const tag = Buffer.from('instar-f8-probe-v1\x00', 'utf-8');
+  const writeStr = (s: string): Buffer => {
+    const body = Buffer.from(s, 'utf-8');
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length, 0);
+    return Buffer.concat([len, body]);
+  };
+  const monoBuf = Buffer.alloc(8);
+  monoBuf.writeBigUInt64BE(
+    BigInt(Math.max(0, Math.floor(env.monotonicTs))),
+    0,
+  );
+  return Buffer.concat([
+    tag,
+    writeStr(env.probeId),
+    writeStr(env.subsystem),
+    writeStr(env.outcome),
+    writeStr(env.reason),
+    monoBuf,
+  ]);
+}
+
+/**
+ * §A52 default `ProbeSourceRegistry` impl backed by a keyVault + a
+ * `probeId → __verifyScope` map. Production callers wire one of these at
+ * Remediator construction; tests can pass an inline stub.
+ */
+export class DefaultProbeSourceRegistry implements ProbeSourceRegistry {
+  private readonly scopes: Map<string, ReadonlyArray<string>>;
+
+  constructor(
+    private readonly keyVault: Pick<RemediationKeyVault, 'deriveLeafKey'>,
+    scopes: Record<string, ReadonlyArray<string>>,
+  ) {
+    this.scopes = new Map(Object.entries(scopes));
+  }
+
+  getScope(probeId: string): ReadonlyArray<string> {
+    return this.scopes.get(probeId) ?? Object.freeze([]);
+  }
+
+  verify(probeId: string, body: Buffer, signature: Buffer): boolean {
+    if (!this.scopes.has(probeId)) return false;
+    let leaf: Buffer;
+    try {
+      leaf = this.keyVault.deriveLeafKey('probe', probeId);
+    } catch {
+      return false;
+    }
+    const expected = crypto.createHmac('sha256', leaf).update(body).digest();
+    if (expected.length !== signature.length) return false;
+    try {
+      return crypto.timingSafeEqual(expected, signature);
+    } catch {
+      return false;
+    }
   }
 }
 

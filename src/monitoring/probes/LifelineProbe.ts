@@ -7,6 +7,15 @@
 
 import fs from 'node:fs';
 import type { Probe, ProbeResult } from '../SystemReviewer.js';
+import type { ProbeVerifyScope } from './__shared.js';
+
+/**
+ * §A52 verify-scope export — F-8-rest enforces that any probe-id event this
+ * module emits MUST carry `subsystem ∈ __verifyScope`. The Remediator reads
+ * this at dispatch time and refuses out-of-scope events. LifelineProbe is the
+ * F-8-rest smoke-test migration; full fleet migration is Tier-3 work.
+ */
+export const __verifyScope = ['lifeline'] as const satisfies ProbeVerifyScope;
 
 export interface LifelineProbeDeps {
   /**

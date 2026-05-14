@@ -53,6 +53,19 @@ export interface RemediatorInvocationContext {
   abortSignal: AbortSignal;
   /** `process.hrtime.bigint()` issued + expectedRuntimeMs converted to ns. */
   monotonicDeadline: bigint;
+  /** §A3 capability-token HMAC — present on Tier-2 dispatched ctxs. */
+  hmac?: Buffer;
+  /** Wall-clock expiry, mirrors RemediationContext.expiresAt. */
+  expiresAt?: number;
+}
+
+/**
+ * Optional keyVault dependency for `invokeFromRemediator` §A3 / §A23
+ * verification. Structural so `src/memory/*` doesn't pull in
+ * `src/remediation/*` at module load.
+ */
+export interface InvocationContextKeyVault {
+  deriveLeafKey(context: 'capability', scopeId: string): Buffer;
 }
 
 export interface RemediatorExecutionResult {
@@ -101,6 +114,107 @@ class NativeModuleHealerImpl {
     this.healAttempted = false;
     this.lastResult = null;
     this.stateDir = null;
+  }
+
+  /**
+   * §A3 verify the HMAC on a RemediatorInvocationContext. Mirrors the
+   * canonical body layout in `src/remediation/RemediationContext.ts`. We
+   * inline rather than import to avoid the `src/memory/*` → `src/remediation/*`
+   * dependency that would break the legacy `openWithHeal` path on installs
+   * without the remediation tree (e.g., partial CLI surfaces).
+   */
+  private verifyContextHmac(
+    ctx: RemediatorInvocationContext,
+    keyVault: InvocationContextKeyVault,
+  ): boolean {
+    if (!ctx.hmac || !Buffer.isBuffer(ctx.hmac) || ctx.hmac.length === 0) {
+      return false;
+    }
+    if (!ctx.runbookId) return false;
+    let leaf: Buffer;
+    try {
+      leaf = keyVault.deriveLeafKey('capability', ctx.runbookId);
+    } catch {
+      // @silent-fallback-ok — §A3 verification is fail-closed by design.
+      // KeyVault derivation failure means we cannot verify the ctx; the
+      // surface MUST refuse to act on Remediator-claimed authority. The
+      // caller routes this to the in-line legacy heal path with a warning.
+      return false;
+    }
+
+    const HMAC_TAG = Buffer.from('instar-f8-ctx-v1\x00', 'utf-8');
+    const writeStr = (s: string): Buffer => {
+      const body = Buffer.from(s, 'utf-8');
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(body.length, 0);
+      return Buffer.concat([len, body]);
+    };
+    const expiresAtBuf = Buffer.alloc(8);
+    expiresAtBuf.writeBigUInt64BE(
+      BigInt(Math.max(0, Math.floor(ctx.expiresAt ?? 0))),
+      0,
+    );
+    const monoBuf = Buffer.alloc(8);
+    const mono = ctx.monotonicDeadline >= 0n ? ctx.monotonicDeadline : 0n;
+    monoBuf.writeBigUInt64BE(mono, 0);
+    const body = Buffer.concat([
+      HMAC_TAG,
+      writeStr(ctx.attemptId),
+      writeStr(ctx.runbookId),
+      expiresAtBuf,
+      monoBuf,
+    ]);
+    const expected = crypto.createHmac('sha256', leaf).update(body).digest();
+    if (expected.length !== ctx.hmac.length) return false;
+    try {
+      return crypto.timingSafeEqual(expected, ctx.hmac);
+    } catch {
+      // @silent-fallback-ok — timingSafeEqual throws only on length mismatch
+      // or non-Buffer inputs. We already length-checked above; this catch is
+      // defensive and fails-closed per §A3.
+      return false;
+    }
+  }
+
+  /**
+   * Fall-back path when the surface-side HMAC verification rejects a ctx.
+   * Runs the legacy in-line `openWithHeal` heal step (no opener — we just
+   * want the rebuild + retry behavior). Returns an `ExecutionResult`-shaped
+   * object so the caller's contract is preserved.
+   */
+  private async fallbackToInlineHeal(
+    ctx: RemediatorInvocationContext,
+  ): Promise<RemediatorExecutionResult> {
+    if (ctx.abortSignal.aborted) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'aborted-before-fallback',
+          attemptId: ctx.attemptId,
+          invalidContext: true,
+        },
+      };
+    }
+    const succeeded = await this.healBetterSqlite3(`InvalidCtx:${ctx.runbookId}`);
+    if (ctx.abortSignal.aborted) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'aborted-during-fallback',
+          attemptId: ctx.attemptId,
+          invalidContext: true,
+        },
+      };
+    }
+    return {
+      outcome: succeeded ? 'success' : 'failure',
+      details: {
+        attemptId: ctx.attemptId,
+        invalidContext: true,
+        fallbackPath: 'in-line-openWithHeal-heal-step',
+        previousOutcome: this.lastResult,
+      },
+    };
   }
 
   /** Detect NODE_MODULE_VERSION errors. Tolerant of message wording variants. */
@@ -351,8 +465,25 @@ class NativeModuleHealerImpl {
    * runs at a time on a given machine.
    */
   async invokeFromRemediator(
-    ctx: RemediatorInvocationContext
+    ctx: RemediatorInvocationContext,
+    keyVault?: InvocationContextKeyVault
   ): Promise<RemediatorExecutionResult> {
+    // §A3 / §A23 — surface-side capability-token verification. When a
+    // keyVault is wired AND the ctx claims an HMAC, verify it. Invalid →
+    // fall back to the in-line legacy path + emit a warning so the audit
+    // tail records the rejection.
+    if (keyVault && ctx.hmac !== undefined) {
+      const ok = this.verifyContextHmac(ctx, keyVault);
+      if (!ok) {
+        console.warn(
+          `[NativeModuleHealer] remediation.surface.invalid-context ` +
+            `runbookId=${ctx.runbookId} attemptId=${ctx.attemptId} — ` +
+            `falling back to in-line openWithHeal path`,
+        );
+        return this.fallbackToInlineHeal(ctx);
+      }
+    }
+
     if (ctx.abortSignal.aborted) {
       return {
         outcome: 'failure',
