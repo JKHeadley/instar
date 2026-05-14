@@ -1498,7 +1498,7 @@ The user has been talking to you (possibly for days). A generic greeting like "H
 - **Generate a file link**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/link?path=.claude/CLAUDE.md"\`
 - **Download a file**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/download?path=.claude/CLAUDE.md" -O\`
 - **Default config**: Browsing and editing enabled for the entire project directory (\`./\`) by default.
-- **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\` are always read-only regardless of config.
+- **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\`, \`.instar/jobs/instar/\` are always read-only regardless of config.
 `;
       // Insert after Dashboard section
       const dashboardIdx = content.indexOf('**Dashboard**');

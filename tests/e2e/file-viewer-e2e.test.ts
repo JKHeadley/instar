@@ -732,6 +732,14 @@ describe('E2E: Dashboard File Viewer', () => {
       expect(res.body.error).toContain('never editable');
     });
 
+    it('rejects editablePaths targeting .instar/jobs/instar/ (jobs-as-agentmd update-managed namespace)', async () => {
+      const res = await request(baseUrl, 'PATCH', '/api/files/config', {
+        editablePaths: ['.instar/jobs/instar/'],
+      }, { 'x-instar-request': '1' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('never editable');
+    });
+
     it('rejects non-array allowedPaths', async () => {
       const res = await request(baseUrl, 'PATCH', '/api/files/config', {
         allowedPaths: 'not-an-array',

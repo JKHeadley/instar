@@ -5,6 +5,10 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### fix(server): File Viewer extends never-editable to .instar/jobs/instar/
+
+The Dashboard file editor's never-editable list now includes `.instar/jobs/instar/`. Per INSTAR-JOBS-AS-AGENTMD spec §Decision Points: that namespace is owned by the update process and any direct edit would (a) be overwritten on next update and (b) break the body-hash verification. Operators who want to customize a shipped default use the override flow (fork to `.instar/jobs/user/`). The CLAUDE.md doc string emitted by PostUpdateMigrator is updated to list the new entry alongside `.claude/hooks/`, `.claude/scripts/`, `node_modules/`. One new e2e test case in `tests/e2e/file-viewer-e2e.test.ts`.
+
 ### test(release): npm-pack smoke test for shipped templates + bundled public key
 
 New integration test asserts the published tarball contains ≥14 prompt-type default templates, the source-tree and dist/-copied release public keys, and either a real signed lock-file or a clean absence (no malformed placeholders). Closes the INSTAR-JOBS-AS-AGENTMD spec §Security Model threat row "Build pipeline: source-tree templates not packaged."
