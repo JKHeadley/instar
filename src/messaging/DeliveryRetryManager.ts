@@ -19,6 +19,7 @@ import type {
 } from './types.js';
 import type { MessageStore } from './MessageStore.js';
 import type { MessageDelivery } from './MessageDelivery.js';
+import type { RemediationContext, ExecutionResult } from '../remediation/Remediator.js';
 
 /** Layer 3 ACK timeout by message type (in minutes). null = no timeout (fire-and-forget) */
 const ACK_TIMEOUT: Record<MessageType, number | null> = {
@@ -64,6 +65,20 @@ export class DeliveryRetryManager {
   /** Track retry state: messageId → { attempts, firstAttemptAt } */
   private readonly retryState = new Map<string, { attempts: number; firstAttemptAt: number; lastAttemptAt: number }>();
 
+  /**
+   * §A34 R3 surface-alignment: in-flight latch for `tick()` /
+   * `runRecoveryCycle()` to guarantee idempotence against the running timer.
+   * When the timer-driven `tick()` is mid-cycle and the Remediator-driven
+   * `runRecoveryCycle()` (or another `tick()`) arrives, the second caller
+   * returns early instead of double-processing the inbox.
+   *
+   * This is a single-process latch (not a cross-process lock) — the
+   * Remediator's MachineLock handles cross-process exclusion at the dispatch
+   * layer. Inside one process, two timer callbacks (or timer + Remediator
+   * call) racing the same inbox is prevented here.
+   */
+  private cycleInFlight = false;
+
   constructor(store: MessageStore, delivery: MessageDelivery, config: DeliveryRetryManagerConfig) {
     this.store = store;
     this.delivery = delivery;
@@ -84,6 +99,11 @@ export class DeliveryRetryManager {
     }
     this.watchdogTargets.clear();
     this.retryState.clear();
+    // Reset the in-flight latch on stop. If a cycle is genuinely mid-flight
+    // when stop() is called, the latch clears on the cycle's own finally
+    // block anyway — this is belt-and-suspenders for the case where the
+    // manager is recycled mid-test.
+    this.cycleInFlight = false;
   }
 
   /** Register a message for post-injection watchdog monitoring */
@@ -92,7 +112,93 @@ export class DeliveryRetryManager {
   }
 
   /** Main tick — runs every 15 seconds */
-  async tick(): Promise<{ retried: number; expired: number; escalated: number }> {
+  async tick(): Promise<{ retried: number; expired: number; escalated: number; skipped?: boolean }> {
+    // §A34 R3: idempotence against the running timer. If another `tick()` or
+    // `runRecoveryCycle()` is mid-cycle, return early with a structured skip
+    // marker — the in-flight cycle will sweep the queue, no work is lost.
+    if (this.cycleInFlight) {
+      return { retried: 0, expired: 0, escalated: 0, skipped: true };
+    }
+    this.cycleInFlight = true;
+    try {
+      return await this.doCycle();
+    } finally {
+      this.cycleInFlight = false;
+    }
+  }
+
+  /**
+   * §A34 R3 — Remediator-orchestrated recovery cycle.
+   *
+   * Distinct entry-point from the timer-driven `tick()` but shares the same
+   * internal lock (`cycleInFlight`). If `tick()` is mid-flight when the
+   * Remediator dispatches, this returns early with `skipped: true` rather
+   * than racing the same inbox.
+   *
+   * Behaviorally equivalent to `tick()` once it enters `doCycle()`; the
+   * distinction exists so the audit trail can distinguish timer-driven from
+   * Remediator-driven recoveries.
+   *
+   * Idempotence proof: both entry-points share `cycleInFlight`; whichever
+   * arrives second short-circuits. The first caller's `doCycle()` sweeps
+   * every queued / undelivered / expired message in the inbox, so the
+   * second caller would have done identical work on the same items.
+   */
+  async runRecoveryCycle(): Promise<{ retried: number; expired: number; escalated: number; skipped?: boolean }> {
+    if (this.cycleInFlight) {
+      return { retried: 0, expired: 0, escalated: 0, skipped: true };
+    }
+    this.cycleInFlight = true;
+    try {
+      return await this.doCycle();
+    } finally {
+      this.cycleInFlight = false;
+    }
+  }
+
+  /**
+   * §A34 R3 — Remediator surface entry point.
+   *
+   * Mirrors the `invokeFromRemediator(ctx)` convention from W-1's
+   * `NativeModuleHealer`. Wraps `runRecoveryCycle()` and translates the
+   * structured result into a `ExecutionResult` so the runbook's
+   * `surfaceCallable` can forward it. The Tier-1 skeleton in
+   * `src/remediation/Remediator.ts` runs `verify(ctx)` after a `success`
+   * outcome — the runbook's verify probe asserts inbox-drain durability
+   * (§A9), independent of this surface call's return value.
+   *
+   * The `ctx.abortSignal` is informational — Layer 2 / TTL / watchdog
+   * operations are short, atomic, and durable. We don't pre-empt mid-cycle.
+   * If the deadline trips, the Remediator's `aborted-deadline` branch
+   * supersedes anything we return.
+   */
+  async invokeFromRemediator(_ctx: RemediationContext): Promise<ExecutionResult> {
+    try {
+      const result = await this.runRecoveryCycle();
+      return {
+        outcome: 'success',
+        details: {
+          retried: result.retried,
+          expired: result.expired,
+          escalated: result.escalated,
+          skipped: result.skipped ?? false,
+        },
+      };
+    } catch (err) {
+      return {
+        outcome: 'failure',
+        details: {
+          error: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  }
+
+  /**
+   * Inner cycle body extracted so `tick()` and `runRecoveryCycle()` share
+   * one implementation under one in-flight latch.
+   */
+  private async doCycle(): Promise<{ retried: number; expired: number; escalated: number }> {
     let retried = 0;
     let expired = 0;
     let escalated = 0;

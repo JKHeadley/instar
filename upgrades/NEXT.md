@@ -5,6 +5,10 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### feat(remediation): W-3 — messaging-delivery-failed runbook + DeliveryRetryManager.runRecoveryCycle
+
+New Tier-2 wrapper PR. `DeliveryRetryManager` gains two additive public methods per SELF-HEALING-REMEDIATOR-V2-SPEC §A34 R3 surface-alignment: `runRecoveryCycle()` (idempotent against the running 15s timer via a shared in-flight latch) and `invokeFromRemediator(ctx)` (Remediator surface entry-point returning ExecutionResult). The legacy timer-driven `tick()` is unchanged — same behavior, same return shape, plus an optional `skipped:true` marker when the latch short-circuits a concurrent caller. New `src/remediation/runbooks/messaging-delivery-failed.ts` runbook fires on `DELIVERY_FAILURE | TELEGRAM_429 | TELEGRAM_500` with structured provenance (§A6 — no free-text); priority 80; blastRadius `process`; essential `false` (messaging downtime is recoverable via the standard timer cadence, §A36 forbids essential=true on non-machine radius). Verify is a durable assertion per §A9 — queries the on-disk inbox and asserts ALL queued/undelivered messages have drained, not just one. 27 new tests (16 runbook + 11 manager) cover idempotence-against-timer (both directions), latch reset after cycle, durable-vs-live verify, end-to-end dispatch on TELEGRAM_429, and verify-failed audit trail when messages remain stuck.
+
 ### test(server): bearer-token auth verification on jobs endpoints
 
 New integration test pins the existing `authMiddleware` gate on the four Phase 4 jobs endpoints (`/jobs/migration-status`, `/jobs/migration-confirm`, `/jobs/migration-abandon`, `/jobs/reconcile`). 15 cases cover unauthenticated, wrong-token, off-by-one near-miss, malformed header, non-Bearer scheme, and authenticated paths. Asserts INSTAR-JOBS-AS-AGENTMD spec §Decision Points "Dashboard write authorization — bearer auth extended to job-edit endpoints." Auth was already in place via global middleware; this test pins the property so a future refactor cannot weaken it silently.
