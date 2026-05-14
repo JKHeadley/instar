@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PreCompactionFlush, DEFAULT_PRE_COMPACTION_FLUSH_CONFIG } from '../../src/core/PreCompactionFlush.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
 function makeTempProjectDir(): string {
@@ -52,8 +53,8 @@ describe('PreCompactionFlush', () => {
   });
 
   afterEach(() => {
-    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch { /* */ }
-    try { fs.rmSync(claudeProjectsRoot, { recursive: true, force: true }); } catch { /* */ }
+    try { SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PreCompactionFlush.test.ts:afterEach' }); } catch { /* */ }
+    try { SafeFsExecutor.safeRmSync(claudeProjectsRoot, { recursive: true, force: true, operation: 'tests/unit/PreCompactionFlush.test.ts:afterEach' }); } catch { /* */ }
   });
 
   describe('gate / skip outcomes', () => {
