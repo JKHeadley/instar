@@ -15,6 +15,9 @@ New `src/scheduler/AgentMdAtomicSave.ts` ships the canonical "md-first, manifest
 ### feat(scheduler): reconcile() boot lifecycle + GET /jobs/reconcile endpoint
 
 New `src/scheduler/AgentMdReconcile.ts` exports `reconcileAgentMdTree()` — boot-time consistency check that surfaces five finding kinds per INSTAR-JOBS-AS-AGENTMD spec §Runtime: orphan manifests, shadow .md files, missing-from-jobs.json entries, staged .new files (from interrupted atomic saves), and case-collisions. New `GET /jobs/reconcile` HTTP endpoint returns the structured report for Dashboard Issues-card consumption. 10 unit tests. Pure function — no auto-remediation; the operator decides what to do via Dashboard actions.
+### test(scheduler): 200-job loader cold/warm boot perf benchmark
+
+New integration test asserts INSTAR-JOBS-AS-AGENTMD spec §Performance Budgets at 200 jobs: cold-boot <1500ms, warm-boot <500ms. Fixture generated deterministically at test-setup time (no fixture files committed to the repo). Measured times logged to stdout for CI runner debuggability. Currently observed: cold ~15ms, warm ~16ms — orders of magnitude under budget; spec's ceilings give substantial headroom for slower CI hardware.
 
 ### fix(server): File Viewer extends never-editable to .instar/jobs/instar/
 
