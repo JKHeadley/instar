@@ -46,6 +46,59 @@ export interface SupervisorEvents {
   updateApplied: [targetVersion: string];
 }
 
+// ── F-6: Remediator ↔ ServerSupervisor handshake ─────────────────────
+//
+// Per v2 spec §A15 (partial-upgrade window) + v3 §3 (state-file taxonomy:
+// `.instar/state/supervisor-handshake.json` and `restart-requested.json`
+// extended with HMAC). The Remediator signs a `restart-requested` request
+// with the capability-context leaf key from F-1 RemediationKeyVault; the
+// supervisor verifies the HMAC before honouring the request and notifies
+// the Remediator once the restart cycle completes (so the attempt state
+// machine can advance to verify-phase).
+
+/**
+ * The signed payload a Remediator sends to the supervisor to request a
+ * planned restart. The HMAC covers the canonical serialization of
+ * `{requestId, runbookId, attemptId, blastRadius, requestedAt, monotonicTs,
+ * handshakeVersion}` using the Remediator's per-call capability leaf key
+ * (RemediationKeyVault.deriveLeafKey('capability', runbookId)).
+ */
+export interface RestartRequestedPayload {
+  requestId: string;
+  runbookId: string;
+  attemptId: string;
+  blastRadius: 'process' | 'machine' | 'fleet';
+  /** Wall-clock ms (Date.now()). Used for staleness rejection. */
+  requestedAt: number;
+  /** `process.hrtime.bigint()` at request issuance. Informational. */
+  monotonicTs: bigint;
+  /** Handshake protocol version the Remediator is speaking. */
+  handshakeVersion: number;
+  /** HMAC-SHA256 over canonical payload using the Remediator's capability leaf. */
+  hmac: Buffer;
+}
+
+/** Reply the supervisor returns from `handleRestartRequested`. */
+export interface RestartRequestedReply {
+  requestId: string;
+  accepted: boolean;
+  /** Machine-readable reason code, e.g. `'accepted'`, `'invalid-hmac'`,
+   *  `'stale'`, `'blast-radius-out-of-scope'`, `'handshake-version-mismatch'`. */
+  reason: string;
+  /** Supervisor's handshake protocol version (informational). */
+  supervisorHandshakeVersion: number;
+  /** Supervisor's build id (informational; A15 lag check). */
+  supervisorBuildId: string;
+}
+
+/** The Remediator instance interface the supervisor calls back into. */
+export interface RegisteredRemediator {
+  /** Called by supervisor after a planned restart completes. */
+  onRestartComplete: (req: { requestId: string }) => void;
+  /** Returns the leaf key the Remediator used to sign restart-requested. */
+  getCapabilityLeafKey: () => Buffer;
+}
+
 export class ServerSupervisor extends EventEmitter {
   private projectDir: string;
   private projectName: string;
@@ -98,6 +151,17 @@ export class ServerSupervisor extends EventEmitter {
   private sleepWakeDetector: SleepWakeDetector | null = null; // Detects short sleeps that gap-based detection misses
   private wakeTransitionUntil = 0; // Timestamp until which we're in a wake transition (lenient health checks)
   private readonly wakeTransitionMs = 60_000; // 60 seconds of lenient health checking after wake
+
+  // ── F-6 handshake state ────────────────────────────────────────────
+  /** Current handshake protocol version. Bump on any wire-format change. */
+  static readonly HANDSHAKE_PROTOCOL_VERSION = 1;
+  /** Max staleness of a restart-requested payload before it's rejected. */
+  static readonly RESTART_REQUEST_MAX_AGE_MS = 5 * 60_000;
+  private registeredRemediator: RegisteredRemediator | null = null;
+  /** Pending restart requests awaiting completion notification, keyed by requestId. */
+  private pendingRemediatorRequests = new Map<string, { requestId: string; runbookId: string; attemptId: string; }>();
+  /** Build id surfaced via handshake. Tests inject; production reads package.json. */
+  private supervisorBuildId: string = process.env.INSTAR_SUPERVISOR_BUILD_ID || 'unknown';
 
   constructor(options: {
     projectDir: string;
@@ -747,6 +811,10 @@ export class ServerSupervisor extends EventEmitter {
           this.consecutiveFailures = 0;
           this.consecutiveBindFailures = 0;
 
+          // F-6: notify any pending Remediator restart-requested entries
+          // that the planned restart has completed. Idempotent.
+          this.notifyPendingRemediatorRequestsOnHealthy();
+
           // If circuit breaker was tripped and we recovered, reset it
           if (this.circuitBroken) {
             console.log('[Supervisor] Server recovered after circuit breaker — resetting');
@@ -1000,6 +1068,227 @@ export class ServerSupervisor extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  // ── F-6: Remediator handshake ───────────────────────────────────
+  //
+  // Per v2 spec §A15 + v3 §3. The Remediator registers itself, providing
+  // a `getCapabilityLeafKey()` callback so the supervisor can verify
+  // HMACs on `restart-requested` requests, and a `onRestartComplete`
+  // callback so the supervisor can notify the Remediator when a planned
+  // restart cycle finishes (advancing the attempt to verify-phase).
+  //
+  // Registration also writes `.instar/state/supervisor-handshake.json`
+  // so a freshly-spawned Remediator can detect the supervisor's
+  // handshake protocol version + build id without an in-process handle.
+  // The A15 partial-upgrade rule lives Remediator-side: a Remediator
+  // whose handshakeVersion is NEWER than the supervisor's must refuse to
+  // issue `restart-requested` and fall back to alert-only.
+
+  /**
+   * Register a Remediator instance for the handshake. Idempotent; calling
+   * twice with the same instance is a no-op. Calling with a different
+   * instance replaces the previous registration (last-writer-wins is
+   * fine because there is only ever one Remediator per process).
+   */
+  registerRemediator(remediator: RegisteredRemediator): void {
+    this.registeredRemediator = remediator;
+    this.writeSupervisorHandshakeFile();
+  }
+
+  /** Current handshake protocol version (instance accessor). */
+  getHandshakeProtocolVersion(): number {
+    return ServerSupervisor.HANDSHAKE_PROTOCOL_VERSION;
+  }
+
+  /** Build id used for the A15 partial-upgrade lag check. */
+  getSupervisorBuildId(): string {
+    return this.supervisorBuildId;
+  }
+
+  /** Tests inject; production callers should not need to set this. */
+  setSupervisorBuildId(buildId: string): void {
+    this.supervisorBuildId = buildId;
+    if (this.registeredRemediator) this.writeSupervisorHandshakeFile();
+  }
+
+  /**
+   * Receive a restart-requested from a Remediator. Verifies, in order:
+   *   1. A Remediator is registered.
+   *   2. Required fields are present and well-typed.
+   *   3. `handshakeVersion` matches the supervisor's (A15 rule).
+   *   4. `requestedAt` is within RESTART_REQUEST_MAX_AGE_MS of now.
+   *   5. `blastRadius` is in {process, machine}. Tier-2 refuses 'fleet'.
+   *   6. The HMAC verifies against the canonical payload using the
+   *      Remediator's capability leaf key.
+   *
+   * On accept, the request is tracked under `pendingRemediatorRequests`
+   * and a planned graceful restart is initiated. The Remediator's
+   * `onRestartComplete` callback fires once the supervisor sees the
+   * restart cycle finish (next healthy tick after a serverRestarting).
+   */
+  async handleRestartRequested(payload: RestartRequestedPayload): Promise<RestartRequestedReply> {
+    const supervisorBuildId = this.supervisorBuildId;
+    const supervisorHandshakeVersion = ServerSupervisor.HANDSHAKE_PROTOCOL_VERSION;
+    const requestId = (payload && typeof payload.requestId === 'string') ? payload.requestId : '';
+
+    const reject = (reason: string): RestartRequestedReply => ({
+      requestId,
+      accepted: false,
+      reason,
+      supervisorHandshakeVersion,
+      supervisorBuildId,
+    });
+
+    if (!this.registeredRemediator) {
+      return reject('no-remediator-registered');
+    }
+
+    if (!payload || typeof payload !== 'object') {
+      return reject('malformed-payload');
+    }
+    if (
+      typeof payload.requestId !== 'string' || !payload.requestId ||
+      typeof payload.runbookId !== 'string' || !payload.runbookId ||
+      typeof payload.attemptId !== 'string' || !payload.attemptId ||
+      typeof payload.blastRadius !== 'string' ||
+      typeof payload.requestedAt !== 'number' || !Number.isFinite(payload.requestedAt) ||
+      typeof payload.monotonicTs !== 'bigint' ||
+      typeof payload.handshakeVersion !== 'number' || !Number.isInteger(payload.handshakeVersion) ||
+      !Buffer.isBuffer(payload.hmac)
+    ) {
+      return reject('malformed-payload');
+    }
+
+    // A15: handshake-version mismatch. We accept ONLY exact equality.
+    // A Remediator running a newer handshake than the supervisor must
+    // fall back to alert-only (rejection is informative, not negotiation).
+    if (payload.handshakeVersion !== supervisorHandshakeVersion) {
+      return reject(
+        `handshake-version-mismatch: remediator=${payload.handshakeVersion} supervisor=${supervisorHandshakeVersion} ` +
+        `(A15 partial-upgrade rule — Remediator must fall back to alert-only)`,
+      );
+    }
+
+    // Staleness check — requestedAt must be within the window. Future
+    // timestamps are also rejected to bound clock-skew abuse.
+    const ageMs = Date.now() - payload.requestedAt;
+    if (ageMs > ServerSupervisor.RESTART_REQUEST_MAX_AGE_MS || ageMs < -ServerSupervisor.RESTART_REQUEST_MAX_AGE_MS) {
+      return reject(`stale: ageMs=${ageMs}`);
+    }
+
+    // Blast radius — Tier-2 supervisor handles process + machine restarts.
+    // 'fleet' is reserved for a future coordination-protocol surface and
+    // is refused by Tier-2 unconditionally.
+    if (payload.blastRadius !== 'process' && payload.blastRadius !== 'machine') {
+      return reject(`blast-radius-out-of-scope: ${payload.blastRadius}`);
+    }
+
+    // HMAC verification — use the Remediator's capability leaf key.
+    // Canonical payload format MUST be deterministic; see
+    // canonicalRestartRequestedBody() below.
+    let expected: Buffer;
+    try {
+      const key = this.registeredRemediator.getCapabilityLeafKey();
+      if (!Buffer.isBuffer(key) || key.length === 0) {
+        return reject('invalid-leaf-key');
+      }
+      const body = canonicalRestartRequestedBody(payload);
+      expected = crypto.createHmac('sha256', key).update(body).digest();
+    } catch (err) {
+      return reject(`hmac-compute-failed: ${(err as Error).message}`);
+    }
+
+    if (
+      expected.length !== payload.hmac.length ||
+      !crypto.timingSafeEqual(expected, payload.hmac)
+    ) {
+      return reject('invalid-hmac');
+    }
+
+    // Accepted. Track the pending request for completion notification,
+    // then initiate the planned restart. The graceful-restart path
+    // already emits `serverRestarting` and pre-sets maintenance wait via
+    // performGracefulRestart(); we wire the completion callback through
+    // the next healthy tick (see notifyPendingRemediatorRequestsOnHealthy).
+    this.pendingRemediatorRequests.set(payload.requestId, {
+      requestId: payload.requestId,
+      runbookId: payload.runbookId,
+      attemptId: payload.attemptId,
+    });
+
+    // Fire-and-forget restart; the request is already tracked and the
+    // completion callback fires on the next healthy tick.
+    this.maintenanceWaitStartedAt = Date.now();
+    void this.performGracefulRestart(`remediator:${payload.runbookId}:${payload.attemptId}`);
+
+    return {
+      requestId: payload.requestId,
+      accepted: true,
+      reason: 'accepted',
+      supervisorHandshakeVersion,
+      supervisorBuildId,
+    };
+  }
+
+  /**
+   * Notify any pending Remediator restart-requested entries that the
+   * server is healthy again. Called from the health-check loop after a
+   * serverRestarting → healthy transition. Safe to call repeatedly; each
+   * entry is removed after its callback fires so subsequent ticks are
+   * no-ops.
+   */
+  private notifyPendingRemediatorRequestsOnHealthy(): void {
+    if (this.pendingRemediatorRequests.size === 0) return;
+    if (!this.registeredRemediator) {
+      // Lost the registration mid-flight; drop the pending entries so we
+      // don't leak memory. The Remediator will time out attempt-side.
+      this.pendingRemediatorRequests.clear();
+      return;
+    }
+    for (const [, entry] of this.pendingRemediatorRequests) {
+      try {
+        this.registeredRemediator.onRestartComplete({ requestId: entry.requestId });
+      } catch (err) {
+        console.error(`[Supervisor] Remediator onRestartComplete threw: ${(err as Error).message}`);
+      }
+    }
+    this.pendingRemediatorRequests.clear();
+  }
+
+  /**
+   * Write the supervisor-handshake state file so a freshly-spawned
+   * Remediator (post-restart, post-crash, cross-process) can read the
+   * supervisor's protocol version + build id without an in-process
+   * handle. Best-effort; failure is logged and ignored — the
+   * Remediator's A15 fallback then trips, which is the correct fail-safe
+   * shape.
+   */
+  private writeSupervisorHandshakeFile(): void {
+    if (!this.stateDir) return;
+    try {
+      const stateSubdir = path.join(this.stateDir, 'state');
+      fs.mkdirSync(stateSubdir, { recursive: true });
+      const filePath = path.join(stateSubdir, 'supervisor-handshake.json');
+      const body = {
+        version: ServerSupervisor.HANDSHAKE_PROTOCOL_VERSION,
+        supervisorBuildId: this.supervisorBuildId,
+        writtenAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(filePath, JSON.stringify(body, null, 2));
+    } catch (err) {
+      console.error(`[Supervisor] Failed to write supervisor-handshake.json: ${(err as Error).message}`);
+    }
+  }
+
+  /** Test helper — surface pending-request count for assertions. */
+  getPendingRemediatorRequestCount(): number {
+    return this.pendingRemediatorRequests.size;
+  }
+
+  /** Test helper — simulate a healthy tick driving completion notifications. */
+  triggerHealthyTickForTests(): void {
+    this.notifyPendingRemediatorRequestsOnHealthy();
   }
 
   // ── Unhealthy handling ──────────────────────────────────────────
@@ -1422,4 +1711,66 @@ export function findBetterSqlite3Copies(nodeModulesRoot: string): BetterSqlite3C
     console.warn(`[Supervisor] findBetterSqlite3Copies: hit MAX_COPIES=${MAX_COPIES} cap under ${nodeModulesRoot} — additional copies will not be checked. If this is a real install layout (not pathological), raise the cap.`);
   }
   return found;
+}
+
+// ── F-6 handshake helpers ───────────────────────────────────────────
+
+/**
+ * Canonical, deterministic serialization of a restart-requested payload
+ * EXCLUDING the `hmac` field, used as the HMAC input on both sides of
+ * the handshake. Field order is fixed and lengths are length-prefixed
+ * so a malicious crafter cannot shift bytes across field boundaries.
+ *
+ * Format (network byte order, big-endian):
+ *   "instar-f6-restart-v1\0"          // 21-byte version tag
+ *   uint32 version                    // 4 bytes — handshakeVersion
+ *   uint8  blastRadiusTag             // 1 = process, 2 = machine, 3 = fleet
+ *   uint64 requestedAt (BE)           // wall-clock ms
+ *   uint64 monotonicTs (BE)           // hrtime ns
+ *   uint32 requestIdLen + requestId   // utf-8
+ *   uint32 runbookIdLen + runbookId   // utf-8
+ *   uint32 attemptIdLen + attemptId   // utf-8
+ *
+ * The tag byte for `blastRadius` ensures unknown future values cannot
+ * be silently re-cast to a known value at canonicalization time.
+ */
+export function canonicalRestartRequestedBody(payload: RestartRequestedPayload): Buffer {
+  const tag = Buffer.from('instar-f6-restart-v1\x00', 'utf-8');
+
+  const versionBuf = Buffer.alloc(4);
+  versionBuf.writeUInt32BE(payload.handshakeVersion >>> 0, 0);
+
+  let blastTag = 0;
+  if (payload.blastRadius === 'process') blastTag = 1;
+  else if (payload.blastRadius === 'machine') blastTag = 2;
+  else if (payload.blastRadius === 'fleet') blastTag = 3;
+  // Unknown values become 0 → HMAC mismatch on legitimate side, which is
+  // the intended fail-closed shape.
+  const blastBuf = Buffer.from([blastTag]);
+
+  const requestedAtBuf = Buffer.alloc(8);
+  requestedAtBuf.writeBigUInt64BE(BigInt(Math.max(0, Math.floor(payload.requestedAt))), 0);
+
+  const monoBuf = Buffer.alloc(8);
+  // monotonicTs is `bigint`; clamp non-negative for unsigned write.
+  const mono = payload.monotonicTs >= 0n ? payload.monotonicTs : 0n;
+  monoBuf.writeBigUInt64BE(mono, 0);
+
+  const writeStr = (s: string): Buffer => {
+    const body = Buffer.from(s, 'utf-8');
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length, 0);
+    return Buffer.concat([len, body]);
+  };
+
+  return Buffer.concat([
+    tag,
+    versionBuf,
+    blastBuf,
+    requestedAtBuf,
+    monoBuf,
+    writeStr(payload.requestId),
+    writeStr(payload.runbookId),
+    writeStr(payload.attemptId),
+  ]);
 }

@@ -51,6 +51,25 @@ No consumers in this PR. The dispatcher (F-8 Tier-2 wiring) and the un-quarantin
 
 Side-effects review: `upgrades/side-effects/f5-trust-elevation-source.md`.
 
+### feat(remediation): F-6 — ServerSupervisor ↔ Remediator handshake (Tier-2)
+
+Extends `src/lifeline/ServerSupervisor.ts` with the HMAC-signed Remediator handshake described in `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A15 partial-upgrade rule, carried-forward §Supervisor coordination) and `docs/specs/SELF-HEALING-REMEDIATOR-V3-CONSOLIDATED-SPEC.md` (§3 state-file taxonomy, §9 Tier-2 sequencing). After this PR ages ≥ 7 days on main (A15 lag rule), wrapper PRs W-2..W-4 can begin to merge.
+
+New public surface on `ServerSupervisor`:
+
+- Static `HANDSHAKE_PROTOCOL_VERSION = 1`.
+- Types: `RestartRequestedPayload`, `RestartRequestedReply`, `RegisteredRemediator`.
+- `registerRemediator(remediator)` — writes `<stateDir>/state/supervisor-handshake.json` (`{version, supervisorBuildId, writtenAt}`) so cross-process Remediators can detect the supervisor's protocol version without an in-process handle.
+- `handleRestartRequested(payload)` — verifies in order: registration → required-field shape → handshake-version equality (A15) → 5-minute staleness window → blastRadius allowlist (`process | machine` only; `fleet` is refused for Tier-2) → HMAC via `crypto.timingSafeEqual` against the Remediator's capability-context leaf key (F-1 RemediationKeyVault). On accept, tracks the request and initiates the existing `performGracefulRestart` cycle.
+- Pending-request notification fires `remediator.onRestartComplete({requestId})` on the next healthy tick after a serverRestarting → healthy transition (idempotent).
+- Exported helper `canonicalRestartRequestedBody(payload)` — deterministic length-prefixed byte serialization that both sides use as HMAC input. Co-located in the supervisor file so the wire format has one canonical owner.
+
+The existing `private preflightSelfHeal()` is unchanged in behavior (W-2 will wrap it). The existing `restart-requested.json` file path is unchanged in this PR — the in-process handshake is the Tier-2 canonical surface; HMAC migration for the file shape is deferred to a follow-up alongside the AutoUpdater path.
+
+9 new unit tests in `tests/unit/ServerSupervisor-handshake.test.ts`: accept on valid HMAC; reject forged HMAC; reject stale request (> 5 min); reject `blastRadius: 'fleet'`; reject handshake-version mismatch with the A15 message; `onRestartComplete` fires once after the healthy tick (and only once on subsequent ticks); reject when no Remediator registered; `supervisor-handshake.json` written on registration; reject malformed payload. Existing supervisor preflight + serverDown-rate-limit tests unaffected.
+
+Side-effects review: `upgrades/side-effects/f6-supervisor-handshake.md`.
+
 ### feat(remediation): W-1 — node-abi-mismatch runbook + NativeModuleHealer.invokeFromRemediator (FINAL Tier-1 PR)
 
 Ships the first dispatchable runbook for the F-8 Remediator and the matching surface entry-point per `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A6, §A9, §A21, §A28, §A36, §A45, §A55, §A57). After this PR, Tier-1 is complete and the Remediator is dispatchable end-to-end via test fixtures.
