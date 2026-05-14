@@ -62,6 +62,19 @@ This is the backend half of Phase 4. The Dashboard UI rewrite (Jobs tab, Issues 
 
 ## What Changed
 
+### feat(memory): Pre-compaction memory flush (OpenClaw import T1.1)
+
+Adds an opt-in pre-compaction memory flush that saves durable facts to `.instar/memory/` files before Claude Code compacts the session context. The user-visible win: fewer "didn't I just tell you that?" moments after long conversations.
+
+When Claude Code emits its `PreCompact` hook, instar reads the last 30 KB of the session transcript, calls the shared intelligence provider (subscription path, zero per-call cost on the default config) with a fact-extraction prompt, and writes up to 5 durable facts to per-fact files under `<projectDir>/.instar/memory/learning_precompact_*.md`. An audit entry goes to `<projectDir>/.instar/audit/pre-compaction-flush.jsonl` for every fire — success, skip, or error. Default `enabled: false`; opt in via `preCompactionFlush.enabled: true` in `.instar/config.json` after reviewing the audit log shape.
+
+- New `src/core/PreCompactionFlush.ts` — single class for the full flush lifecycle.
+- New 16-test unit suite at `tests/unit/PreCompactionFlush.test.ts` covering all 9 outcomes plus parsing variants, slug coercion, and audit shape.
+- Wired into `src/commands/server.ts` as a second listener on the existing PreCompact event (the CompactionSentinel listener is unchanged).
+- Spec: `docs/specs/OPENCLAW-IMPORT-PRE-COMPACTION-FLUSH-SPEC.md` + ELI16 companion + side-effects review at `upgrades/side-effects/openclaw-import-pre-compaction-flush.md`.
+
+Driven by Telegram topic 9003 on 2026-05-13 (OpenClaw imports Round 2, T1.1).
+
 ### feat(remediation): F-8 rest — capability-token + probe-source + trust-elevation enforcement (Tier-2)
 
 Completes F-8 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A3, §A23, §A40, §A42, §A52, §A57 Tier-2 carve-outs). The Tier-1 Remediator skeleton from PR #201 deferred enforcement; this PR wires it.
@@ -260,6 +273,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## What to Tell Your User
 
+**Pre-compaction memory flush (opt-in).** When your agent has a long conversation with you, sometimes the Claude Code context compaction in the middle smooths out specific facts you mentioned earlier — and the agent ends up "forgetting" what you told it. This release adds a fix: right before compaction, instar quickly looks at the recent conversation, asks the LLM "what here is worth remembering durably?", and writes the answers to memory files. Compaction proceeds normally; the new memory files survive. Result: fewer "didn't I just tell you that?" moments after a multi-hour session. The feature ships off by default — flip `preCompactionFlush.enabled: true` in `.instar/config.json` after watching the audit log at `.instar/audit/pre-compaction-flush.jsonl` for a couple of sessions to confirm the behavior matches expectations. The flush runs on your subscription path; no extra charges.
+
 **F-8 rest — Self-healing orchestrator now enforces its security guards (still off by default).** The self-healing skeleton from earlier work now actually CHECKS the signatures it was contractually supposed to check. Three guards turned on: (1) when the orchestrator hands a repair surface a context object, that object is cryptographically signed so the surface can refuse to act on a forged hand-off; (2) error reports claiming to come from a specific probe must now carry that probe's signature AND the error's subsystem must lie inside the probe's declared coverage list; (3) trust-elevation moves like "promote runbook from registered to live" now ask the F-5 policy module for permission before changing state. Still nothing user-visible because no live runbook is plugged into the running pipeline yet — that wiring lands in W-2..W-4.
 
 
@@ -282,6 +297,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 **F-7 — Smarter upgrade migrations.** Instar can now run small, named "atomic steps" on each update — like "add this new entry to the agent's ignore list" or "back up this newly-introduced state file." Each step is recorded once it runs, so the next update doesn't redo it. If one step fails, it just records the failure and keeps going with the others; nothing rolls back. The same release adds a new "say this once" notice primitive so the agent can surface a migration result to you exactly once and never again, even after restarts. Nothing visible today — Tier-2 work is the first consumer. The same release also pre-loads ignore-list entries for the self-healing system's per-machine scratch files so they never get accidentally synced across your machines.
 
 ## Summary of New Capabilities
+
+- **`PreCompactionFlush`** (T1.1) — opt-in pre-compaction memory flush; reads transcript tail, calls shared intelligence for fact extraction, writes per-fact files to `.instar/memory/learning_precompact_*.md`, audit-logs every fire. Default `enabled: false`; flip in config to opt in. Hard caps: 5 facts/flush, 500 chars/fact body, 30 KB transcript budget.
 
 - **`signRemediationContext()` / `verifyRemediationContext()`** (F-8 rest) — HMAC-SHA256 over `{attemptId, runbookId, expiresAt, monotonicDeadline}` using the per-runbook capability leaf. `crypto.timingSafeEqual` on verify; rejects missing-hmac / wrong-runbookId / forged / length-mismatch cases.
 - **`RemediationContext.hmac` field** (F-8 rest) — Added to the public type. Optional on the interface for structural compatibility; production dispatch always populates it.
