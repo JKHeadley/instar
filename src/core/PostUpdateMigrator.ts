@@ -31,6 +31,8 @@ import { installBuiltinSkills } from '../commands/init.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
+import { appendMigrationEvent, normalizePerEntryAction, type MigrationEvent } from '../scheduler/MigrationLedger.js';
+import { randomUUID } from 'node:crypto';
 import {
   ELIGIBILITY_SCHEMA_SQL,
   ELIGIBILITY_SCHEMA_SQL_SHA256,
@@ -385,6 +387,8 @@ export class PostUpdateMigrator {
    *   #8 telemetry — outcome is appended to result.upgraded/errors.
    */
   private autoMigrateLegacyJobsJson(result: MigrationResult): void {
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
     try {
       const stateDir = this.config.stateDir;
       const jobsJsonPath = path.join(stateDir, 'jobs.json');
@@ -419,6 +423,7 @@ export class PostUpdateMigrator {
       const preMigrationUserSnapshot = snapshotUserNamespace(stateDir);
 
       const packageRoot = path.resolve(__dirname, '..', '..');
+      const instarVersion = this.readBundledInstarVersion(packageRoot);
       const outcome = jobsMigrate({
         agentStateDir: stateDir,
         packageRoot,
@@ -458,11 +463,71 @@ export class PostUpdateMigrator {
         if (outcome.backupPath) {
           result.upgraded.push(`legacy jobs.json migration: backup at ${path.basename(outcome.backupPath)}`);
         }
+        // Spec invariant 8: telemetry write is the LAST action of a
+        // successful migration. Append the migration.completed event.
+        this.appendMigrationTelemetry({
+          kind: 'migration.completed',
+          runId,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          trigger: 'post-update',
+          perEntry: outcome.perEntry.map((e) => ({
+            slug: e.slug,
+            action: normalizePerEntryAction(e.action),
+            reason: e.reason,
+          })),
+          backupPath: outcome.backupPath,
+          instarVersion,
+        });
       } else if (outcome.status === 'aborted') {
         result.errors.push(`legacy jobs.json migration: aborted — ${outcome.errors.join('; ')}`);
+        this.appendMigrationTelemetry({
+          kind: 'migration.aborted',
+          runId,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          trigger: 'post-update',
+          perEntry: outcome.perEntry.map((e) => ({
+            slug: e.slug,
+            action: normalizePerEntryAction(e.action),
+            reason: e.reason,
+          })),
+          abortReason: outcome.errors.join('; '),
+          instarVersion,
+        });
       }
     } catch (err) {
       result.errors.push(`legacy jobs.json migration: ${err instanceof Error ? err.message : String(err)}`);
+      this.appendMigrationTelemetry({
+        kind: 'migration.aborted',
+        runId,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        trigger: 'post-update',
+        perEntry: [],
+        abortReason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Read the installed package's version, for the migration event's
+   *  `instarVersion` field. Best-effort — returns undefined on failure. */
+  private readBundledInstarVersion(packageRoot: string): string | undefined {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf-8'));
+      return typeof pkg.version === 'string' ? pkg.version : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Best-effort telemetry write. Missing telemetry is degradation, not a
+   *  release-blocker, so failures are swallowed. */
+  private appendMigrationTelemetry(event: MigrationEvent): void {
+    try {
+      appendMigrationEvent(this.config.stateDir, event);
+    } catch {
+      // @silent-fallback-ok — telemetry is non-load-bearing
     }
   }
 
