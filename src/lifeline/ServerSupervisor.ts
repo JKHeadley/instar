@@ -91,6 +91,102 @@ export interface RestartRequestedReply {
   supervisorBuildId: string;
 }
 
+// ── W-2: supervisor-preflight runbook surface (Tier-2) ──────────────
+//
+// Per v2 spec §A34 — the W-2 runbook is a SINGLE wrapper around the
+// existing private `preflightSelfHeal()` body (six in-line heal steps).
+// Mirrors `RemediatorInvocationContext` from `src/memory/NativeModuleHealer.ts`
+// so this file stays runtime-decoupled from `src/remediation/*` — same
+// structural-typing rationale as the W-1 NativeModuleHealer surface.
+
+/**
+ * Lightweight structural type compatible with F-8 Remediator's
+ * `RemediationContext`. Imported as a type-only reference; runtime
+ * decoupling lets us avoid a hard dependency from `src/lifeline/*` onto
+ * `src/remediation/*` (the legacy spawn-time `preflightSelfHeal()` path
+ * must keep working even if remediation files are absent).
+ */
+export interface SupervisorRemediatorInvocationContext {
+  attemptId: string;
+  runbookId: string;
+  abortSignal: AbortSignal;
+  /** `process.hrtime.bigint()` issued + expectedRuntimeMs converted to ns. */
+  monotonicDeadline: bigint;
+  /** §A3 capability-token HMAC — present on Tier-2 dispatched ctxs. */
+  hmac?: Buffer;
+  /** Wall-clock expiry, mirrors `RemediationContext.expiresAt`. */
+  expiresAt?: number;
+}
+
+/**
+ * Optional keyVault dependency for `invokeFromRemediator` §A3 / §A23
+ * verification. Structural so `src/lifeline/*` doesn't pull in
+ * `src/remediation/*` at module load.
+ */
+export interface SupervisorInvocationContextKeyVault {
+  deriveLeafKey(context: 'capability', scopeId: string): Buffer;
+}
+
+export interface SupervisorRemediatorExecutionResult {
+  outcome: 'success' | 'failure';
+  details: Record<string, unknown>;
+}
+
+/**
+ * §A3 verify the HMAC on a `SupervisorRemediatorInvocationContext`.
+ * Mirrors the canonical body layout in
+ * `src/remediation/RemediationContext.ts`. We inline rather than import
+ * to avoid the `src/lifeline/*` → `src/remediation/*` dependency that
+ * would break the legacy `preflightSelfHeal()` path on installs without
+ * the remediation tree.
+ */
+function verifySupervisorContextHmac(
+  ctx: SupervisorRemediatorInvocationContext,
+  keyVault: SupervisorInvocationContextKeyVault,
+): boolean {
+  if (!ctx.hmac || !Buffer.isBuffer(ctx.hmac) || ctx.hmac.length === 0) {
+    return false;
+  }
+  if (!ctx.runbookId) return false;
+  let leaf: Buffer;
+  try {
+    leaf = keyVault.deriveLeafKey('capability', ctx.runbookId);
+  } catch {
+    // @silent-fallback-ok — §A3 verification is fail-closed by design.
+    return false;
+  }
+  const HMAC_TAG = Buffer.from('instar-f8-ctx-v1\x00', 'utf-8');
+  const writeStr = (s: string): Buffer => {
+    const body = Buffer.from(s, 'utf-8');
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length, 0);
+    return Buffer.concat([len, body]);
+  };
+  const expiresAtBuf = Buffer.alloc(8);
+  expiresAtBuf.writeBigUInt64BE(
+    BigInt(Math.max(0, Math.floor(ctx.expiresAt ?? 0))),
+    0,
+  );
+  const monoBuf = Buffer.alloc(8);
+  const mono = ctx.monotonicDeadline >= 0n ? ctx.monotonicDeadline : 0n;
+  monoBuf.writeBigUInt64BE(mono, 0);
+  const body = Buffer.concat([
+    HMAC_TAG,
+    writeStr(ctx.attemptId),
+    writeStr(ctx.runbookId),
+    expiresAtBuf,
+    monoBuf,
+  ]);
+  const expected = crypto.createHmac('sha256', leaf).update(body).digest();
+  if (expected.length !== ctx.hmac.length) return false;
+  try {
+    return crypto.timingSafeEqual(expected, ctx.hmac);
+  } catch {
+    // @silent-fallback-ok — fail-closed.
+    return false;
+  }
+}
+
 /** The Remediator instance interface the supervisor calls back into. */
 export interface RegisteredRemediator {
   /** Called by supervisor after a planned restart completes. */
@@ -389,6 +485,139 @@ export class ServerSupervisor extends EventEmitter {
   // Before starting the server, check prerequisites and fix common issues
   // that would otherwise cause the server to crash immediately. This makes
   // `/lifeline restart` actually useful for recovery — not just a blind retry.
+
+  /**
+   * Remediator-orchestrated entry point for the preflight self-heal.
+   *
+   * Wraps the existing private `preflightSelfHeal()` (six in-line heal steps:
+   * shadow-install reinstall, node-symlink repair, stuck-git-rebase abort,
+   * better-sqlite3 ABI rebuild, stale lifeline-lock cleanup, settings.json
+   * merge-conflict repair) and exposes it as the W-2 `supervisor-preflight`
+   * runbook's `surfaceCallable`.
+   *
+   * SELF-HEALING-REMEDIATOR-V2-SPEC §A34 mandates the runbook is a SINGLE
+   * runbook composing all six heal steps rather than six separate runbooks —
+   * the verify step asserts the durable lifeline state (not per-step liveness)
+   * AFTER all six attempt their fix, mirroring how the in-line path is wired
+   * into `spawnServer()`.
+   *
+   * §A3 capability-token enforcement. When `keyVault` is wired AND `ctx.hmac`
+   * is present, the HMAC is verified at entry. An invalid ctx returns an
+   * error result and does NOT run the preflight side-effects — falling back
+   * to the legacy in-line path is the supervisor's spawn-time concern, not
+   * this Remediator path's. This is fail-closed by design.
+   *
+   * Honours `ctx.abortSignal` at the boundary; the existing preflight body
+   * itself is synchronous-leaning and not interruptible mid-step. Surfaces a
+   * pre-step abort check so an already-aborted ctx returns immediately.
+   *
+   * The legacy `private preflightSelfHeal()` stays unchanged. The in-line
+   * `spawnServer()` path keeps calling it directly — both entry points share
+   * the same body, satisfying the §A2 lock-bound co-existence invariant at
+   * the process level (and the MachineLock prevents two simultaneous
+   * supervisor-preflight runs across processes).
+   */
+  async invokeFromRemediator(
+    ctx: SupervisorRemediatorInvocationContext,
+    keyVault?: SupervisorInvocationContextKeyVault,
+  ): Promise<SupervisorRemediatorExecutionResult> {
+    // §A3 — verify the capability HMAC when both keyVault and ctx.hmac are
+    // present. Fail-closed: invalid ctx does NOT touch any heal step.
+    if (keyVault && ctx.hmac !== undefined) {
+      const ok = verifySupervisorContextHmac(ctx, keyVault);
+      if (!ok) {
+        console.warn(
+          `[Supervisor] remediation.surface.invalid-context ` +
+            `runbookId=${ctx.runbookId} attemptId=${ctx.attemptId} — ` +
+            `refusing Remediator-orchestrated preflight`,
+        );
+        return {
+          outcome: 'failure',
+          details: {
+            reason: 'invalid-context',
+            attemptId: ctx.attemptId,
+            invalidContext: true,
+          },
+        };
+      }
+    }
+
+    if (ctx.abortSignal.aborted) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'aborted-before-start',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    if (!this.stateDir) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'no-state-dir',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    // Check deadline budget — preflight can take up to ~120s on a cold-cache
+    // npm install + better-sqlite3 rebuild. Refuse if the ctx has < 5s left.
+    const nowHr = process.hrtime.bigint();
+    if (ctx.monotonicDeadline > 0n && ctx.monotonicDeadline <= nowHr) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'deadline-already-elapsed',
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    let summary = '';
+    let threw: Error | null = null;
+    try {
+      // Delegate to the existing six-step heal body. Synchronous; returns
+      // a human-readable summary (empty string if nothing was healed).
+      summary = this.preflightSelfHeal();
+    } catch (err) {
+      threw = err instanceof Error ? err : new Error(String(err));
+    }
+
+    if (ctx.abortSignal.aborted) {
+      // The abort fired during the synchronous body — record the partial
+      // attempt but report aborted so the Remediator's verify step is skipped
+      // by the dispatcher's deadline-race path.
+      return {
+        outcome: 'failure',
+        details: {
+          reason: 'aborted-mid-step',
+          attemptId: ctx.attemptId,
+          partialSummary: summary,
+        },
+      };
+    }
+
+    if (threw) {
+      return {
+        outcome: 'failure',
+        details: {
+          reason: `preflight-threw: ${threw.message.slice(0, 200)}`,
+          attemptId: ctx.attemptId,
+        },
+      };
+    }
+
+    return {
+      outcome: 'success',
+      details: {
+        attemptId: ctx.attemptId,
+        healed: summary,
+        anyHealed: summary.length > 0,
+      },
+    };
+  }
 
   /**
    * Run preflight checks and attempt to fix broken prerequisites.

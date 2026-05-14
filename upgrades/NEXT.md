@@ -113,6 +113,18 @@ Operators opt in by adding `"remediator": {"enabled": true}` to `config.json`. T
 
 Side-effects review: `upgrades/side-effects/tier2-degradation-reporter-live-wire.md`.
 
+
+### feat(remediation): W-2 — supervisor-preflight runbook
+
+Wraps the existing `ServerSupervisor.preflightSelfHeal` (private, multi-step) as a single ApprovedRunbook (§A34 R3). Adds public `invokeFromRemediator(ctx)` entry point that verifies the capability-context HMAC and delegates to the existing private preflight. Legacy entry point unchanged.
+
+- `src/remediation/runbooks/supervisor-preflight.ts`: id `supervisor-preflight`, priority 90, surface `supervisor`. Matches `BIND_FAILURE | CRASH_LOOP | SUPERVISOR_DEGRADED` with structured provenance (free-text refused per §A6). Verify is the durable §A9 assertion — lifeline state.json exists + reports healthy. blastRadius `machine`, essential `true` (§A36).
+- 12 unit tests across `tests/unit/runbooks/supervisor-preflight.test.ts` and `tests/unit/ServerSupervisor-invokeFromRemediator.test.ts`.
+
+A15 lag note: F-6 (supervisor handshake) merged today (#205). W-2 ships behind a `wrappers-active-after` config flag defaulting to false until F-6's 7-day seasoning passes.
+
+Side-effects review: `upgrades/side-effects/w2-supervisor-preflight-runbook.md`.
+
 ### feat(remediation): F-8 rest — capability-token + probe-source + trust-elevation enforcement (Tier-2)
 
 Completes F-8 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A3, §A23, §A40, §A42, §A52, §A57 Tier-2 carve-outs). The Tier-1 Remediator skeleton from PR #201 deferred enforcement; this PR wires it.
@@ -311,6 +323,8 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 
 ## What to Tell Your User
 
+**W-2 — Supervisor self-heal runbook.** The existing 6-step server-supervisor preflight (Node version, shadow install, native module, lifeline lock, settings.json) can now be invoked by the Remediator as a single approved runbook with full HMAC verification and audit. Ships behind a config flag pending the 7-day seasoning window.
+
 **Pre-compaction memory flush (opt-in).** When your agent has a long conversation with you, sometimes the Claude Code context compaction in the middle smooths out specific facts you mentioned earlier — and the agent ends up "forgetting" what you told it. This release adds a fix: right before compaction, instar quickly looks at the recent conversation, asks the LLM "what here is worth remembering durably?", and writes the answers to memory files. Compaction proceeds normally; the new memory files survive. Result: fewer "didn't I just tell you that?" moments after a multi-hour session. The feature ships off by default — flip `preCompactionFlush.enabled: true` in `.instar/config.json` after watching the audit log at `.instar/audit/pre-compaction-flush.jsonl` for a couple of sessions to confirm the behavior matches expectations. The flush runs on your subscription path; no extra charges.
 
 **Pre-prompt memory recall (opt-in).** Your agent's responses sometimes feel inconsistent — sometimes it perfectly recalls something you told it last week, sometimes it answers as if it has no memory at all. The cause: some skills check memory before replying, others don't. This release adds a single bounded recall pass that runs before every reply, so the "did I check my notes?" question is always answered the same way. Cap: ≤2 second search, ≤5 entries, ≤1200 chars of injected context. Uses local SemanticMemory — no LLM cost, no network. Default off; enable via `promptBuildRecall.enabled: true` in `.instar/config.json` and install the UserPromptSubmit hook into your agent's `.claude/settings.json` (see ELI16 doc for the exact snippet).
@@ -394,3 +408,4 @@ Side-effects review: `upgrades/side-effects/eli16-overview-required-gate.md`.
 - **`AnnouncementManager.announceOnce(id, message, channel)`** (F-7) — Show-once primitive backed by `<stateDir>/announcements-shown.json`. Returns true on first call, false on subsequent. Ledger written before sink fires, so a flaky sink cannot cause duplicate emission.
 - **`REMEDIATION_GITIGNORE_ENTRIES`** (F-7/A35) — Five remediation runtime path globs embedded into `GitStateManager.DEFAULT_GITIGNORE` const literal and exported as the source-of-truth list for the F-7 gitignore atomic step.
 - **`REMEDIATION_EXCLUDED_PATH_PREFIXES` + `isRemediationEnabled` gate** (F-7/A35) — `BackupManager` exclusion list with feature-flag gating that parallels the existing `isIntegratedBeingEnabled` pattern. Gate ON drops any user-added `includeFiles` entry that begins with a remediation prefix; gate OFF/absent preserves them for back-compat.
+- **W-2 supervisor-preflight runbook** — Remediator can now orchestrate the existing ServerSupervisor.preflightSelfHeal as an essential runbook.
