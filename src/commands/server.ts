@@ -6596,6 +6596,53 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // Tier-2 live-mode wire-up (SELF-HEALING-REMEDIATOR-V2-SPEC §A57).
+    //
+    // When `config.remediator.enabled === true`, construct the full F-1..F-8
+    // dispatch graph and register it with the DegradationReporter via the
+    // F-3 `setRemediator()` hook. Default is OFF — the legacy alert path
+    // + in-line healers (NativeModuleHealer.openWithHeal, supervisor
+    // preflightSelfHeal) remain the safety net regardless of Remediator
+    // state. See upgrades/side-effects/tier2-degradation-reporter-live-wire.md.
+    {
+      const remediatorEnabled = (config as { remediator?: { enabled?: boolean } })
+        .remediator?.enabled === true;
+      if (remediatorEnabled) {
+        try {
+          const { bootstrapRemediator } = await import(
+            '../remediation/RemediatorBootstrap.js'
+          );
+          const machineIdForRemediator =
+            coordinator.identity?.machineId ?? os.hostname();
+          const bootstrapResult = await bootstrapRemediator({
+            stateDir: config.stateDir,
+            machineId: machineIdForRemediator,
+            autonomyProfile: config.autonomyProfile,
+          });
+          if (bootstrapResult.disabled) {
+            console.log(
+              pc.yellow(
+                `  Remediator live-mode requested but disabled: ${bootstrapResult.reason} — legacy alert path active.`,
+              ),
+            );
+          } else {
+            degradationReporter.setRemediator(bootstrapResult.remediator);
+            console.log(
+              pc.green(
+                `  Remediator live-mode active (runbooks: ${bootstrapResult.registeredRunbookIds.join(', ') || 'none'}).`,
+              ),
+            );
+          }
+        } catch (err) {
+          console.error(
+            pc.red(
+              `  Remediator bootstrap failed: ${err instanceof Error ? err.message : String(err)}. Legacy alert path active.`,
+            ),
+          );
+        }
+      }
+    }
+
     // Periodic housekeeping — calls orphaned cleanup methods every 6 hours.
     // These methods exist on their respective classes but were never scheduled.
     const HOUSEKEEPING_INTERVAL_MS = 6 * 60 * 60 * 1000;

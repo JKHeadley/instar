@@ -114,7 +114,14 @@ export interface NormalizedDegradationEvent {
  * wired in this PR.
  */
 export interface RemediatorLike {
-  dispatch(event: NormalizedDegradationEvent): Promise<void>;
+  /**
+   * The dispatcher's return type is intentionally `Promise<unknown>` (not
+   * `Promise<void>`): the F-8 Remediator implementation returns a structured
+   * `DispatchOutcome`, but the reporter never inspects the result — the
+   * audit log is the canonical record of the dispatched attempt. Widening
+   * here keeps the reporter's import surface free of F-8's type tree.
+   */
+  dispatch(event: NormalizedDegradationEvent): Promise<unknown>;
 }
 
 type TelegramSender = (topicId: number, text: string) => Promise<unknown>;

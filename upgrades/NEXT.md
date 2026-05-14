@@ -91,6 +91,28 @@ Spec: `docs/specs/OPENCLAW-IMPORT-BEFORE-PROMPT-BUILD-SPEC.md` + ELI16 companion
 
 Driven by Telegram topic 9003 on 2026-05-13 (OpenClaw imports Round 2, T2.2).
 
+### feat(remediation): Tier-2 live-mode flip — DegradationReporter wired to Remediator (§A57)
+
+This is the **Tier-2 live-mode** milestone PR per `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` §A57 ("Tier 2 unlocks live mode (silence on verified success per outcome matrix)"). The F-3 `setRemediator()` hook that has shipped unused since the foundation phase finally has a consumer.
+
+New module `src/remediation/RemediatorBootstrap.ts` exposes a single async entry point `bootstrapRemediator({ stateDir, machineId, ... })` that constructs the full Tier-2 dispatch graph and registers the runbooks present on main:
+
+- F-1 `RemediationKeyVault` via the 4-backend probe (returns `{disabled, reason: 'no-secret-backend'}` if no backend is configured — operator continues with the legacy alert path).
+- F-4 `MachineLock`, `IntentJournal`, `AuditWriter` (with an audit-token verifier wired against the vault's audit-context leaf).
+- F-5 `TrustElevationSource` with both `TelegramApprovalChannel` and `CliApprovalChannel` so A53's different-kind second-channel rule is structurally satisfiable; primary channel is configurable.
+- F-8 `Remediator` with all the above injected.
+- Registers `nodeAbiMismatchRunbook` (W-1) and `messagingDeliveryFailedRunbook` (W-3) — the wrapper PRs that are on main today. Logs and skips W-2 supervisor-preflight and W-4 db-corruption — those wrappers haven't merged yet; bootstrap will pick them up when they land.
+
+`src/commands/server.ts` calls the bootstrap after `degradationReporter.connectDownstream()` IFF `config.remediator?.enabled === true`. **Default is FALSE** — even with all wiring in place, the Remediator stays observe-only until each operator explicitly flips the flag. The in-line healers (`NativeModuleHealer.openWithHeal`, supervisor `preflightSelfHeal`, `DeliveryRetryManager.tick()`) remain the safety net regardless of Remediator state, exactly as before.
+
+One-line type widening on `src/monitoring/DegradationReporter.ts`: `RemediatorLike.dispatch` returns `Promise<unknown>` instead of `Promise<void>` so the real F-8 `Remediator.dispatch()` (which returns `Promise<DispatchOutcome>`) typechecks at the integration point. Runtime semantics unchanged — the reporter never inspected the dispatch result; the audit log is the canonical record.
+
+16 new tests: `tests/unit/RemediatorBootstrap.test.ts` (12 — disabled cases, full wiring, runbook registration assertions, A6/A36 validation propagation, internal helpers); `tests/integration/remediator-live-mode.test.ts` (4 — matching event → verified-healthy audit entry; non-matching → no-matching-runbook; legacy alert path preserved when flag false; W-1 prefilter structural assertion).
+
+Operators opt in by adding `"remediator": {"enabled": true}` to `config.json`. The rollout is staged by design: each operator chooses when to flip the flag.
+
+Side-effects review: `upgrades/side-effects/tier2-degradation-reporter-live-wire.md`.
+
 ### feat(remediation): F-8 rest — capability-token + probe-source + trust-elevation enforcement (Tier-2)
 
 Completes F-8 from `docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md` (§A3, §A23, §A40, §A42, §A52, §A57 Tier-2 carve-outs). The Tier-1 Remediator skeleton from PR #201 deferred enforcement; this PR wires it.
