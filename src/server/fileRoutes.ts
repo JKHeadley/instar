@@ -188,6 +188,13 @@ const NEVER_EDITABLE_PREFIXES = [
   '.claude/hooks/',
   '.claude/scripts/',
   'node_modules/',
+  // INSTAR-JOBS-AS-AGENTMD spec §Decision Points: the .instar/jobs/instar/
+  // namespace is owned by the update process; the Dashboard editor MUST NOT
+  // permit edits here. Operators who want to customize a shipped default
+  // must Fork it (writes to .instar/jobs/user/ via the override flow);
+  // direct edits to instar/ would be overwritten on next update and risk
+  // breaking the signed lock-file's body-hash verification.
+  '.instar/jobs/instar/',
 ];
 
 function isNeverEditable(relativePath: string): boolean {
