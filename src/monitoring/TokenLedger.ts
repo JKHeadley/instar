@@ -124,6 +124,14 @@ export interface ProjectRow {
   sessionCount: number;
 }
 
+export interface AttributionKeyRow {
+  attributionKey: string;
+  totalTokens: number;
+  eventCount: number;
+  firstTs: number;
+  lastTs: number;
+}
+
 export interface OrphanRow {
   sessionId: string;
   projectPath: string | null;
@@ -675,6 +683,37 @@ export class TokenLedger {
       totalTokens: Number(r.totalTokens) || 0,
       eventCount: Number(r.eventCount) || 0,
       sessionCount: Number(r.sessionCount) || 0,
+    }));
+  }
+
+  /**
+   * Aggregate by attribution key (Phase 3 of burn-detection-and-self-heal
+   * spec). Returns one row per key with totals, event count, and the time
+   * window the key has been seen across the requested period.
+   */
+  byAttributionKey({ sinceMs, limit = 100 }: { sinceMs?: number; limit?: number } = {}): AttributionKeyRow[] {
+    const since = sinceMs ?? 0;
+    const rows = this.db
+      .prepare(
+        `SELECT
+           attribution_key AS attributionKey,
+           SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) AS totalTokens,
+           COUNT(*) AS eventCount,
+           MIN(ts) AS firstTs,
+           MAX(ts) AS lastTs
+         FROM token_events
+         WHERE ts >= ?
+         GROUP BY attribution_key
+         ORDER BY totalTokens DESC
+         LIMIT ?`
+      )
+      .all(since, limit) as AttributionKeyRow[];
+    return rows.map(r => ({
+      attributionKey: r.attributionKey,
+      totalTokens: Number(r.totalTokens) || 0,
+      eventCount: Number(r.eventCount) || 0,
+      firstTs: Number(r.firstTs) || 0,
+      lastTs: Number(r.lastTs) || 0,
     }));
   }
 
