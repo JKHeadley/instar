@@ -107,11 +107,15 @@ Pure scope-tightening of a pre-existing push-time gate to consume a pre-existing
 
 ## Second-pass review
 
-**Reviewer:** _to be filled by reviewer subagent_
+**Reviewer:** general-purpose subagent (Echo's review subagent)
+**Independent read of the artifact: concur**
 
-**Independent read of the artifact:** _concur | concern_
+The validator-based check is structurally clean: both `pre-push-gate.js` and `check-upgrade-guide.js` import `validateGuideContent` from the same module and feed it `fs.readFileSync(activeGuide, 'utf-8')` — identical input shape, so push-time cannot over-reject relative to publish-time. The validator's REQUIRED_SECTIONS / template-placeholder rules subsume the removed local checks one-for-one; the only other consumer of the old "[Feature name]" / "[Capability]" / section-presence patterns in the gate source was this test file itself, and `tests/unit/upgrade-guide-finalization.test.ts` exercises those strings against the template (unrelated to the gate). Symlink-vs-copy analysis is correct: `lint-no-direct-destructive.js` resolves `ROOT` via `path.resolve(fileURLToPath(import.meta.url), '..', '..')` and Node's ESM loader collapses symlinks before module resolution, so a symlinked copy would scan the production worktree; `fs.copyFileSync` produces a sibling at `scratch/scripts/...` and ROOT correctly resolves to the scratch dir. `SafeFsExecutor.safeRmSync` is called with the correct `{recursive, force, operation}` shape (operation is the required label); scratch lives under `os.tmpdir()` so SourceTreeGuard won't intervene. Integration with the unmodified "Side-effects review artifact" step (gate §5) is consistent — both checks accumulate into the same `errors[]` and fire together. Signal-vs-authority: the validator remains the deterministic authority over a constrained domain (release-notes well-formedness, which falls under the "structural validators at the boundary" carve-out in `docs/signal-vs-authority.md`); the gate is a pure consumer surfacing existing decisions earlier in the workflow.
 
-_Reviewer notes here_
+Minor non-blocking notes (none block the ship):
+- `execSync` is imported at line 16 of the test file but no longer used (it was replaced by `spawnSync` on line 33). Dead import; cleanup-only.
+- The integration test for the third malformed case ("Fix the misbehavior...") triggers BOTH the missing-Evidence error AND the missing-side-effects-artifact error simultaneously; the assertion on "has no \"## Evidence\" section" still passes because both errors are appended to stdout, but if a future regression flipped the order or the artifact check moved earlier and short-circuited, the assertion might survive without exercising the validator path. Consider an additional fixture that has the side-effects artifact present but the Evidence section missing, to lock in the validator path independently.
+- The "ACCEPTS a well-formed NEXT.md" test uses "A small improvement" which doesn't trigger any FIX_PATTERNS — but the test still creates a `test-artifact.md` defensively. Comment in the test claims the gate requires the artifact for "add/new/feature/fix words", but "improvement" matches none of those. The artifact creation is unnecessary belt-and-suspenders, not load-bearing. Not a bug.
 
 ---
 
