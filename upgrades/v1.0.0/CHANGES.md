@@ -54,6 +54,25 @@ All TypeScript interfaces and the conformance-test framework for the provider ab
 
 ---
 
+### 2026-05-15 — Phase 3a complete
+
+First concrete provider adapter (`anthropic-headless`) landed at `src/providers/adapters/anthropic-headless/`. Implements the Phase 2 substrate by delegating to Anthropic's `claude -p` and existing Instar infrastructure. No changes to existing source — purely additive.
+
+- **Adapter package** (skeleton + 28 primitive implementations + 5 stubs): README, `index.ts` exposing `createAnthropicHeadlessAdapter` factory, `capabilities.ts` declaring the full universal set + Anthropic-favorable asymmetric sub-flags (PublicUsageApi, PreCompactHook, SubagentLifecycleHooks), `config.ts` with env-var defaults, `errors.ts` mapping exec/API errors to canonical hierarchy, `stubs.ts` for primitives without active consumers.
+- **Real implementations** for the active-consumer primitives: OneShotCompletion (claude -p with env-scrubbing and OAuth/API-key credential routing), AgenticSessionHeadless (tmux + claude -p with full env injection), HardKill / InputInjection / Interrupt (tmux operations), TimeoutBound / IdleBound (in-memory policy with external watchdog enforcement), AuthCredentialInjection (validate + probe via Messages API), CredentialStorageProvider (file-backed at ~/.instar/anthropic-credentials.json with 0600), ContextScopeControl (--setting-sources mapping), CompactionLifecycle (polls /tmp/claude-session-<id>/compacting marker), StopGateInterceptor (handler registry), SessionId (handle↔Claude-UUID bridge), LiveOutputStream (tmux capture-pane snapshot + tail with ANSI stripping), ProcessLifecycle (tmux list-panes), ConversationLogReader / Tailer (parses ~/.claude/projects/.../jsonl into CanonicalEvents), UsageMeterProvider (Anthropic OAuth /api/oauth/usage), HookEventReceiver (EventEmitter-backed dispatcher; HTTP receiver in monitoring/ feeds via dispatchHookEvent), SubagentLifecycleObserver (filters hook events), SessionResumeIndex (scans ~/.claude/projects), ProviderScaffolder (creates `.agent/anthropic/`), McpToolRegistry (writes `~/.claude.json`), ConversationLogProvider (composes reader+tailer), all 6 CAPABILITY primitives (buildSpec for portable spec construction).
+- **Stubs** for primitives without active consumers (throw UnsupportedCapabilityError with clear "not yet implemented" messages): StructuredOneShot, AgenticSessionInteractive, WarmSessionInbox, AgenticSessionRpc, InteractivePromptObserver, IntelligenceCallQueue. The adapter still declares these capabilities so the registry can find it; the throw makes any premature use loud rather than silent.
+- **Smoke test** (`_smoketest.ts`, gated by `INSTAR_REAL_API=1`): real `claude -p` invocation through OneShotCompletion returned "4" for "What is 2+2?" in 5 seconds. End-to-end wiring verified against actual Anthropic infrastructure.
+- **TypeScript verification**: `npx tsc --noEmit -p .` passes across the entire `src/providers/` tree (Phase 2 substrate + adapter) with zero errors.
+
+### Phase 3a design notes
+
+- The adapter is purely additive in Phase 3a — application code still uses `ClaudeCliIntelligenceProvider` and `SessionManager` directly. The refactor that wires the adapter into the application layer (replacing direct usage with `registry.resolve()`) is queued behind Phase 3b so that the routing policy has both adapters to choose from when it lands.
+- SessionHandles issued by the adapter are formatted `anthropic-headless/<tmuxName>`. The `tmuxSessionFromHandle` helper extracts the tmux session name for control operations. Validates the prefix to prevent cross-adapter handle leakage.
+- HookEventReceiver in this adapter is the canonical-event end of the path; the HTTP receiver in `src/monitoring/HookEventReceiver.ts` is the wire-protocol end. They wire together via the module-level `dispatchHookEvent` export. The full wiring is a Phase 3 follow-up.
+- CredentialStorageProvider defaults to file-backed at `~/.instar/anthropic-credentials.json` (0600 permissions). A Keychain-backed wrapper is deferred — the abstraction supports it via `getBackend`/`setBackend` but only the file backend is wired in Phase 3a.
+
+---
+
 ## What's next
 
-Phase 3a — `anthropic-headless` adapter (port current `claude -p` behavior onto the new substrate). Phase 3b — `anthropic-interactive-pool` adapter (interactive-pool substrate). Phase 3c — behavior-parity test suite between 3a and 3b.
+Phase 3b — `anthropic-interactive-pool` adapter (long-lived `claude` REPL pool via tmux, drawing from Max subscription). Phase 3c — behavior-parity test suite proving 3a and 3b are functionally equivalent. Application-layer refactor (replacing direct ClaudeCliIntelligenceProvider/SessionManager usage with `registry.resolve()`) lands after 3b so the routing policy has both adapters available.
