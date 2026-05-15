@@ -5,6 +5,46 @@ note (`upgrades/<version>.md`) at release-cut time.
 
 ---
 
+### fix(monitoring): PromptGate token-burn — cache NO_PROMPT verdicts to stop idle-session re-classification loop
+
+**What this fixes (plain English).** Every instar agent quietly watches its
+own terminal output to detect when Claude Code is stuck at an interactive
+prompt that only the user can answer. Part of that watcher uses Haiku to make
+a final judgment call on output the simple regex filters can't classify. The
+watcher was meant to make at most one of those Haiku calls per session every
+5 minutes — but the rate-limit only kicked in *after* a real prompt was found.
+For idle sessions sitting at the same "❯" output forever, the watcher kept
+re-asking Haiku "is this session stuck?" every 5 seconds, got "no" every
+time, and never updated the rate-limit. Across all agents on a single
+machine, that was ~108,000 Haiku calls and ~3 billion tokens per day — more
+than the rest of the machine's spend combined.
+
+**What changes.** `InputDetector` now caches each NO_PROMPT verdict by a
+SHA-256 fingerprint of the exact 20-line context the LLM saw. Same context
+recurs → cache hit → no LLM call. Different context → cache miss → LLM is
+consulted normally. Per-session cap of 32 fingerprints (FIFO eviction); cache
+is cleared whenever input is sent to the session or the session is cleaned
+up. Positive prompt detections are not cached (real prompts always get
+fresh evaluation).
+
+**Why this is safe.** Pure memoization in front of an existing LLM
+authority — no new blocking surface, no new decision logic, no persistent
+state. Worst-case failure mode is a wrong Haiku verdict on a specific
+output snapshot being remembered for up to 32 subsequent outputs (mitigated
+by FIFO eviction and `onInputSent` clearing). The cache is in-memory only,
+disappears on restart, and the rollback is a two-file revert with no
+migration cost. Side-effects review:
+`upgrades/side-effects/prompt-gate-no-prompt-cache.md`. Signal-vs-authority
+compliance: the LLM remains the authority; the cache only records its
+previous output to avoid asking the same question twice. 7 new regression
+tests pin the behavior (`tests/unit/PromptGate.test.ts`).
+
+**Evidence.** Measurement before fix on 2026-05-15: 108,782 LLM calls /
+3.03 billion tokens in 24h from the `InputDetector.llmDetect` path,
+representing 73% of the machine's entire 24h token spend. Expected after
+fix: one LLM call per distinct output snapshot per session, with idle
+sessions producing one classification at most.
+
 ### feat(remediation): A47 — PrimaryAggregatorLease + failover (Tier-3 coordination scaffold)
 
 New `src/remediation/PrimaryAggregatorLease.ts` implements the cross-machine primary-aggregator lease specified in SELF-HEALING-REMEDIATOR-V2-SPEC §A47 with the §A60 fencing-token hardening. Lease file at `.instar/remediation/primary-lease.json` carries `{leaderId, fencingToken (128-bit per A60), leaseExpiresAt, acquiredAt, hmac}` with the HMAC computed over a canonical-ordered body using the `audit-v1` leaf key from `RemediationKeyVault` (§A20). Default TTL 15 min, recommended renew cadence 5 min (§A47). Tiebreak on empty/expired state is deterministic by `sha256(machineId)` lex-min — the candidate with the lowest hash wins, so two simultaneous claims always converge to a single leader without coordination. Multi-write detection: if the on-disk fencing token diverges from the one this instance last issued, an entry is appended to `audit-anomaly.jsonl` and the instance fail-closes — `tryAcquire` and `renew` refuse until operator reset (per §A47 split-brain handling). Leader transitions emit `remediation.primary-aggregator.changed` on the lease's EventEmitter so consumers can drive role-switch. Forged lease files (HMAC mismatch) are treated as absent so the next `tryAcquire` re-establishes a signed lease without trusting the tamper. 14 unit tests cover empty-state acquire, held-by-other refusal, expired-lease takeover, renew extension, stolen-lease split-brain, fencing-token verify (positive + stale + wrong-length), deterministic tiebreak, forged-HMAC rejection, failover event, malformed-JSON handling, and split-brain reset. Coordination scaffold only — wiring into `NovelFailureReviewer` for actual cross-machine clustering ownership ships in a follow-up Tier-3 PR.

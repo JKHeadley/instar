@@ -431,3 +431,237 @@ describe('InputDetector.pruneRejected', () => {
     expect((detector as any).rejectedFingerprints.size).toBe(0);
   });
 });
+
+// ── NO_PROMPT cache (token-burn regression) ────────────────────────
+//
+// Regression for the 3B-tokens/day bleed observed 2026-05-15: idle sessions
+// were re-asking Haiku "is this output stuck?" on every monitor tick (~5s)
+// forever, because the existing 5-minute rate limit (llmRelayTimestamps) is
+// only updated on a successful prompt emit. NO_PROMPT classifications never
+// touched the gate, so a session sitting idle with the same output would
+// burn ~720 LLM calls/hour forever. Fix: cache NO_PROMPT verdicts per session
+// keyed on a fingerprint of the LLM-context; identical contexts short-circuit.
+
+describe('InputDetector.noPromptCache', () => {
+  /**
+   * Build a stubbed IntelligenceProvider that records every call and lets the
+   * test control the response.
+   */
+  function makeIntelligence(response: string) {
+    let calls = 0;
+    return {
+      evaluate: async (_prompt: string): Promise<string> => {
+        calls += 1;
+        return response;
+      },
+      get calls() { return calls; },
+    };
+  }
+
+  /**
+   * Drive enough captures through the detector to satisfy debounce
+   * (stableCount >= 2 — needs 3 identical captures) and fully flush the
+   * async LLM detection promise. Returns after the LLM call has resolved.
+   */
+  async function fireLlmDetect(detector: InputDetector, session: string, output: string): Promise<void> {
+    detector.onCapture(session, output);
+    detector.onCapture(session, output);
+    detector.onCapture(session, output);
+    // Flush a few microtask/macrotask turns to let the awaited LLM evaluate
+    // promise settle and the .finally() cleanup run.
+    for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+  }
+
+  /**
+   * Drive a no-LLM-flush capture cycle — used after the first fireLlmDetect()
+   * to test the cache path. Identical output across these captures should hit
+   * the NO_PROMPT cache before the LLM call gate.
+   */
+  async function pumpCached(detector: InputDetector, session: string, output: string, n = 1): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      detector.onCapture(session, output);
+      await new Promise(r => setImmediate(r));
+    }
+  }
+
+  // Idle session: same NO_PROMPT context shown over and over should produce
+  // exactly one LLM call total — first one classifies, all later ones hit cache.
+  it('skips LLM re-classification for identical NO_PROMPT context', async () => {
+    const intel = makeIntelligence('NO_PROMPT');
+    const detector = makeDetector({ intelligence: intel as any });
+
+    const output = 'Some session output\n❯ \n';
+
+    // First two captures = debounce, llmDetect fires async on the 2nd
+    await fireLlmDetect(detector, 's1', output);
+    expect(intel.calls).toBe(1);
+
+    // 50 more identical captures — fingerprint matches the cached NO_PROMPT
+    // verdict, so the LLM is not consulted again.
+    await pumpCached(detector, 's1', output, 50);
+
+    expect(intel.calls).toBe(1);
+  });
+
+  // Different context → new LLM call (cache is keyed on context, not session)
+  it('still calls LLM when context fingerprint changes', async () => {
+    const intel = makeIntelligence('NO_PROMPT');
+    const detector = makeDetector({ intelligence: intel as any });
+
+    const outputA = 'Idle prompt A\n❯ \n';
+    const outputB = 'Idle prompt B with different tail\n❯ \n';
+
+    await fireLlmDetect(detector, 's1', outputA);
+    expect(intel.calls).toBe(1);
+
+    // Different output produces a different fingerprint — cache miss, LLM called
+    await fireLlmDetect(detector, 's1', outputB);
+    expect(intel.calls).toBe(2);
+  });
+
+  // Cache is per-session: outputs cached on session A should not block LLM on session B
+  it('is per-session', async () => {
+    const intel = makeIntelligence('NO_PROMPT');
+    const detector = makeDetector({ intelligence: intel as any });
+    const output = 'Identical output\n❯ \n';
+
+    await fireLlmDetect(detector, 'sessionA', output);
+    expect(intel.calls).toBe(1);
+
+    await fireLlmDetect(detector, 'sessionB', output);
+    // sessionB has its own empty cache, so this output IS re-classified
+    expect(intel.calls).toBe(2);
+  });
+
+  // onInputSent clears the cache — after the user answers a prompt, post-input
+  // output should be re-classified rather than blindly trusting the prior verdict.
+  it('clears cache on onInputSent', async () => {
+    const intel = makeIntelligence('NO_PROMPT');
+    const detector = makeDetector({ intelligence: intel as any });
+    const output = 'Cleared-cache test output\n❯ \n';
+
+    await fireLlmDetect(detector, 's1', output);
+    expect(intel.calls).toBe(1);
+
+    detector.onInputSent('s1');
+
+    // Same context after onInputSent — cache was cleared, so LLM is consulted again
+    await fireLlmDetect(detector, 's1', output);
+    expect(intel.calls).toBe(2);
+  });
+
+  // cleanup also drops the cache (covers session-ended path)
+  it('clears cache on cleanup', async () => {
+    const intel = makeIntelligence('NO_PROMPT');
+    const detector = makeDetector({ intelligence: intel as any });
+    const output = 'Cleanup test\n❯ \n';
+
+    await fireLlmDetect(detector, 's1', output);
+    expect((detector as any).noPromptCache.has('s1')).toBe(true);
+
+    detector.cleanup('s1');
+    expect((detector as any).noPromptCache.has('s1')).toBe(false);
+  });
+
+  // Cache size is bounded — must not grow unbounded for a flapping session
+  it('caps per-session cache at NO_PROMPT_CACHE_MAX entries', async () => {
+    const intel = makeIntelligence('NO_PROMPT');
+    const detector = makeDetector({ intelligence: intel as any });
+
+    // Drive 50 distinct outputs through the same session; each gets classified
+    // and cached. Cache should grow but not exceed the cap.
+    for (let i = 0; i < 50; i++) {
+      await fireLlmDetect(detector, 's1', `Distinct output ${i}\n❯ \n`);
+    }
+
+    const cap = (InputDetector as any).NO_PROMPT_CACHE_MAX as number;
+    const entry = (detector as any).noPromptCache.get('s1');
+    expect(entry.order.length).toBeLessThanOrEqual(cap);
+    expect(entry.set.size).toBeLessThanOrEqual(cap);
+    expect(entry.order.length).toBe(entry.set.size); // No drift between order/set
+  });
+
+  // Only the strict NO_PROMPT signal gets cached. A permissive "NO..."
+  // prefix response (e.g. "No idea, can't tell") is treated as a non-detect
+  // for THIS call but not memoized — otherwise a transient confused LLM
+  // answer would lock in for up to 32 cycles.
+  it('does not cache permissive non-strict NO responses', async () => {
+    const intel = makeIntelligence('No idea, the output is ambiguous');
+    const detector = makeDetector({ intelligence: intel as any });
+
+    const output = 'Ambiguous output\n❯ \n';
+    await fireLlmDetect(detector, 's1', output);
+    expect(intel.calls).toBe(1);
+
+    // Same output again — cache should be empty because the response was
+    // not the strict NO_PROMPT signal. LLM gets re-asked.
+    const entry = (detector as any).noPromptCache.get('s1');
+    expect(entry === undefined || entry.set.size === 0).toBe(true);
+  });
+
+  // In-flight clear-race: if onInputSent runs while llmDetect is mid-call,
+  // the late NO_PROMPT verdict must NOT repopulate the just-cleared cache.
+  // This protects post-input output from being shadowed by a stale verdict.
+  it('drops mid-flight NO_PROMPT write when cache generation bumps', async () => {
+    let resolveLlm: (v: string) => void = () => {};
+    const evaluate = async (_p: string) => new Promise<string>(r => {
+      resolveLlm = r;
+    });
+    const intel = { evaluate, calls: 0 };
+    // Wrap to count
+    const counter = {
+      evaluate: async (p: string): Promise<string> => {
+        intel.calls += 1;
+        return evaluate(p);
+      },
+    };
+    const detector = makeDetector({ intelligence: counter as any });
+    const output = 'Mid-flight race output\n❯ \n';
+
+    // Kick the LLM call — it hangs on `resolveLlm`
+    detector.onCapture('s1', output);
+    detector.onCapture('s1', output);
+    detector.onCapture('s1', output);
+    await new Promise(r => setImmediate(r));
+    expect(intel.calls).toBe(1);
+
+    // Session receives input — cache clear + generation bump should drop
+    // the in-flight verdict
+    detector.onInputSent('s1');
+
+    // Now resolve the LLM with NO_PROMPT
+    resolveLlm('NO_PROMPT');
+    for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+
+    // Cache should still be empty — the late verdict was dropped because
+    // its generation no longer matches.
+    const entry = (detector as any).noPromptCache.get('s1');
+    expect(entry === undefined || entry.set.size === 0).toBe(true);
+  });
+
+  // Defensive: ensure the cache miss path still works when the LLM returns a
+  // genuine prompt (positive result). The fingerprint is NOT cached on emit —
+  // only on NO_PROMPT — so a real prompt is detected normally on first sight.
+  it('does not cache positive LLM detections', async () => {
+    const intel = makeIntelligence(JSON.stringify({
+      type: 'permission',
+      summary: 'Real prompt detected',
+      options: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+    }));
+    const detector = makeDetector({ intelligence: intel as any });
+    let emitted: DetectedPrompt | null = null;
+    detector.on('prompt', (p: DetectedPrompt) => { emitted = p; });
+
+    const output = 'Real prompt scenario\n❯ \n';
+    await fireLlmDetect(detector, 's1', output);
+
+    expect(intel.calls).toBe(1);
+    expect(emitted).not.toBeNull();
+
+    // The positive verdict produced an emit, not a cache entry. If the same
+    // context recurs after the 5-minute relay cooldown expires, llmDetect
+    // would re-classify. This test only asserts no cache leakage.
+    const entry = (detector as any).noPromptCache.get('s1');
+    expect(entry === undefined || entry.set.size === 0).toBe(true);
+  });
+});
