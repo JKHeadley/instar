@@ -1,0 +1,100 @@
+# State-Detector Registry — Rule 3 Coverage Tracker
+
+**Status:** Active, living document
+**Purpose:** Track every place Instar reads state from an external system, with Rule 3 compliance status. The source of truth for "where coverage is" and "what's left."
+
+---
+
+## How this document works
+
+Every place Instar reads state from something it doesn't control — Claude Code's terminal output, conversation logs, hook payloads, OS process state, third-party APIs, future provider adapters — is one row in this registry. Each row tracks:
+
+- **Location:** file path + brief description of the check
+- **Upstream:** what system / surface is being read
+- **Criticality:** how bad is a wrong answer (silent corruption vs. minor degradation)
+- **Frequency:** per-prompt / per-hour / per-session / startup-only
+- **Stability:** how often does the upstream actually change shape
+- **Canary status:** has a Rule 3.2 canary been built for this check?
+- **Self-heal:** does the canary self-heal on drift, or only detect?
+- **E2E test:** is there a real-upstream test gating merges to this code?
+- **Notes:** action items, follow-ups, design tradeoffs
+
+The registry is updated:
+- **On every new state-detection PR** — adding a row is part of the PR's required scope, alongside the canary and e2e test.
+- **On every Rule 3 retrofit** — when an existing entry's status changes (canary added, self-heal added, etc.), the row is updated in the same PR.
+- **On every audit sweep** — periodic scans of the codebase looking for state-detection patterns that aren't in the registry. New entries created from sweep findings.
+
+The point: coverage grows over time and is visible. A glance at this file tells the next contributor what's covered and what's not. Justin's framing 2026-05-15: "keep awareness of what hasn't been updated yet, so coverage grows over time rather than the rule being applied only to new code."
+
+---
+
+## Compliance status legend
+
+- ✅ **Compliant** — canary present, self-heals on drift, e2e test against real upstream gated by `INSTAR_REAL_API=1`.
+- 🟡 **Partial** — some Rule 3 pieces in place (e.g., canary detects but doesn't self-heal, or unit-test only with no real-upstream e2e).
+- ❌ **Missing** — no Rule 3 infrastructure. Has a unit test (maybe) but no canary, no self-heal, no e2e against real upstream.
+- 🔵 **Exempt** — read-only / fixed-cost / stable-upstream — Rule 3 documentation present but canary not required. Justified per-row in Notes.
+
+---
+
+## Registry
+
+### Provider substrate (`src/providers/`)
+
+| Location | Upstream | Criticality | Frequency | Stability | Canary | Self-heal | E2E | Status | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| `adapters/anthropic-interactive-pool/promptRunner.ts` — empty-prompt completion detector | Claude Code TUI prompt glyph | Critical (silent corruption) | per-prompt | Unstable | ✅ at startup | ✅ re-derives from canary output | 🟡 smoke runs canary at pool start, no scheduled recurrence yet | 🟡 Partial | Schedule recurring canary; add Haiku fallback; persist signature across restarts. Tracked as next-batch follow-up in pool spawn comment. |
+| `adapters/anthropic-headless/observability/conversationLogReader.ts` — parses `~/.claude/projects/.../jsonl` | Claude conversation log format | High (degraded triage / resume) | per-session-end | Semi-stable (Anthropic changes schema occasionally) | ❌ | ❌ | ❌ | ❌ Missing | Audit follow-up: build canary that writes a known event via hook, reads back through this primitive, verifies schema interpretation. |
+| `adapters/anthropic-headless/observability/conversationLogTailer.ts` — real-time tail of same JSONL | Claude conversation log format | High (stall detection) | per-second polling | Semi-stable | ❌ | ❌ | ❌ | ❌ Missing | Same canary as Reader can verify Tailer's incremental parsing too. |
+| `adapters/anthropic-headless/observability/hookEventReceiver.ts` — parses Claude Code hook event payloads | Claude Code hook event schema | Critical (subagent lifecycle, compaction signal) | per-event | Unstable (Anthropic adds hook types) | ❌ | ❌ | ❌ | ❌ Missing | Highest-leverage retrofit candidate after empty-prompt. Canary should spawn a session that fires each known event type and verify each is parsed correctly. |
+| `adapters/anthropic-headless/observability/usageMeterProvider.ts` — Anthropic OAuth `/api/oauth/usage` | Anthropic OAuth API response schema | High (cost-routing input) | per-poll (5-60min) | Semi-stable (read-only API) | ❌ | ❌ | ❌ | ❌ Missing | Read-only API endpoint, lower drift risk than UI parsing. Canary: fetch and assert returned-shape fields present. |
+| `adapters/anthropic-headless/observability/sessionId.ts` — Claude session UUID from JSONL filename | Claude session ID format | High (resume continuity) | per-session-start | Stable | ❌ | ❌ | ❌ | ❌ Missing | UUID format stable; canary could verify match against a freshly-spawned session's filename. |
+| `adapters/anthropic-headless/observability/subagentLifecycleObserver.ts` — filters hook events for SubagentStart/Stop | Claude hook event types | High (autonomous-loop accuracy) | per-event | Unstable (depends on hook event canary above) | ❌ | ❌ | ❌ | ❌ Missing | Verified transitively by hookEventReceiver canary when that lands. |
+| `adapters/anthropic-headless/observability/processLifecycle.ts` — tmux `list-panes` output for PID/RSS | tmux output format | Medium (process health) | per-check | Stable | ❌ | ❌ | ❌ | ❌ Missing | OS-level — slow drift. Canary required but cadence weekly, not hourly. |
+| `adapters/anthropic-headless/observability/liveOutputStream.ts` — tmux `capture-pane` output | tmux capture-pane format | Medium (output observability) | per-call | Stable | ❌ | ❌ | ❌ | ❌ Missing | Same family as ProcessLifecycle — OS-level, low drift. |
+| `adapters/anthropic-interactive-pool/pool.ts` — `waitForReady` static idle-marker detector | Claude Code TUI status bar strings | Medium (pool boot signal) | per-spawn | Unstable | ❌ | ❌ | ❌ | ❌ Missing | Same drift class as the empty-prompt detector. Should consume the same canary-derived signature once that infrastructure exists more generically. |
+| `adapters/anthropic-interactive-pool/promptRunner.ts` — extractResponse marker grammar (`❯`, `⏺`, `✻`) | Claude Code TUI response framing | Critical (response-text extraction) | per-prompt | Unstable | ❌ | ❌ | ❌ | ❌ Missing | The OTHER side of the empty-prompt detector. Same drift risk; should derive markers from the canary's known input/output too. |
+
+### Application layer (`src/core/`, `src/monitoring/`, `src/threadline/`)
+
+| Location | Upstream | Criticality | Frequency | Stability | Canary | Self-heal | E2E | Status | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| `monitoring/QuotaCollector.ts` — Anthropic OAuth `/api/oauth/usage` | Anthropic OAuth API response | High (autonomous-loop pacing) | per-poll | Semi-stable | ❌ | ❌ | ❌ | ❌ Missing | Same upstream as the substrate's UsageMeterProvider — one canary should cover both. Reconcile after substrate refactor. |
+| `monitoring/StallTriageNurse.ts` — heuristic terminal-output classification + LLM diagnose | Claude Code TUI output + hook events | High (autonomous recovery) | per-stalled-session | Unstable | ❌ | ❌ | 🟡 has integration tests against real APIs but no Rule-3 canary | ❌ Missing | Now routes through IntelligenceProvider after Rule 2 fix; the heuristic pre-filter still parses tmux output and is exactly the kind of pattern a canary must guard. |
+| `core/SessionManager.ts` — tmux session liveness via `tmux has-session`, scrollback-cap heuristic | tmux exit codes + capture-pane | High (session health) | per-second polling | Stable | ❌ | ❌ | ❌ | ❌ Missing | OS-level, slow drift. Weekly canary cadence appropriate. |
+| `messaging/TelegramAdapter.ts` — Telegram Bot API response parsing | Telegram Bot API response schema | High (relay correctness) | per-poll | Semi-stable | ❌ | ❌ | 🟡 covered by integration tests, no Rule-3 canary | ❌ Missing | Third-party API — Telegram does change schemas occasionally. Canary: fetch a known channel's info and assert response shape. |
+| `core/InputClassifier.ts` — message intent classification via LLM | (no external state parse) | n/a | per-message | n/a | n/a | n/a | n/a | 🔵 Exempt | LLM-based, no deterministic parse of upstream state. |
+
+### OS / filesystem
+
+| Location | Upstream | Criticality | Frequency | Stability | Canary | Self-heal | E2E | Status | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| (catch-all for `~/.claude/projects/` directory existence checks) | filesystem | Low | per-check | Very stable | n/a | n/a | n/a | 🔵 Exempt | Filesystem semantics don't drift. Direct file-existence checks don't need canaries. |
+| (catch-all for `ps` / `tmux list-sessions` exit codes) | OS process tools | Low | per-check | Very stable | n/a | n/a | n/a | 🔵 Exempt | Same — OS tools have stable command-line contracts. |
+
+---
+
+## Audit sweep procedure
+
+Periodically (after each Phase milestone, before each release cut):
+
+1. Grep the codebase for patterns suggesting external-state parsing:
+   - `/[A-Z].*Reader\b/`, `Tailer`, `Observer`, `Receiver` class names
+   - `capture-pane`, `tmux .*-p`, `execFile.*tmux`
+   - `fetch(.*\.anthropic\.com|api\.openai\.com|slack\.com|telegram\.org)`
+   - `match(.*\/.*\/g?)` followed by a return / branch
+   - `JSON.parse(.*response.*body)`
+
+2. For each hit, check if a registry entry exists in this doc.
+
+3. If missing, add a row marked ❌. Open an action item to retrofit a canary.
+
+4. If present, verify the status flags still match reality (especially after refactors).
+
+5. Report sweep deltas in the next CHANGES.md entry.
+
+---
+
+## Phase-4 (Codex) inheritance
+
+When the Codex adapter lands, it inherits the entire structure of this registry — every observability primitive in `adapters/openai-codex/observability/*.ts` gets a row at adapter-creation time. The PR adding Codex MUST include the registry entries (and the canaries) in the same commits. No new adapter ships without populating its rows here.
