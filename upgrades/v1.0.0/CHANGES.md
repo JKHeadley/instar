@@ -116,6 +116,27 @@ Behavior-parity test harness for paired adapters + pool-only stress tests landed
 
 ---
 
+### 2026-05-15 — Rule 2 violation cleanup (pre-Phase-4 hardening)
+
+After the path constraints were locked (Rule 1 + Rule 2), a read-only sweep of all Anthropic-touching code surfaced three direct-API violations. All three are removed in this batch; the v1.0.0 substrate now has no raw `api.anthropic.com` calls on routine inference paths.
+
+- **`AnthropicIntelligenceProvider` deleted.** The class made direct fetch calls to the Messages API as an alternate IntelligenceProvider implementation, opt-in via `intelligenceProvider: "anthropic-api"` in config. The class is removed entirely; the `"anthropic-api"` config field is no longer honored (stale configs get a one-time warning at startup pointing at `specs/provider-portability/04-anthropic-path-constraints.md`). All shared intelligence wiring in `server.ts` now defaults to `ClaudeCliIntelligenceProvider` unconditionally. Touches: `src/core/AnthropicIntelligenceProvider.ts` (deleted), `src/index.ts`, `src/commands/server.ts`, `src/commands/reflect.ts`, plus surface labels in `FeatureRegistry.ts`, `FeatureDefinitions.ts`, `SurfacingTemplates.ts`, `CapabilityRegistryGenerator.ts`, `models.ts`, `ClaudeCliIntelligenceProvider.ts`.
+- **`CoherenceReviewer.callApi()` direct-API branch removed.** The base reviewer class previously fell back to its own `fetch(ANTHROPIC_API_URL)` path when no IntelligenceProvider was injected. That fallback is gone; `callApi()` now routes exclusively through `this.intelligence` and throws a descriptive error pointing at the spec doc if the provider is missing. The 12 reviewer subclass constructors still take an unused `apiKey` parameter — a follow-up task is queued to remove that mechanical scar.
+- **`StallTriageNurse.callAnthropicApi()` deleted.** The most cost-impactful violation: stall triage runs continuously over autonomous sessions, and each triage call hit the unsubscribed API path at full rates when the IntelligenceProvider was missing or `useIntelligenceProvider` was false. The method is gone; `diagnose()` routes exclusively through `this.intelligence`. The `apiKey`, `apiTimeoutMs`, and `useIntelligenceProvider` config fields are removed from `StallTriageConfig` (existing configs with these fields will see them silently ignored — `apiKey` was always env-fallback-only, the other two are now unconditional). Process-tree and heuristic fallbacks inside `diagnose()` are preserved as the substrate's degradation strategy.
+
+### Verification
+
+- `npx tsc --noEmit` clean across the full source tree after each violation fix.
+- Stricter grep (`fetch.*anthropic\.com`, `fetch(ANTHROPIC_API`, `messages.create(`, `new Anthropic(`) against `src/` excluding `src/providers/` and the legitimate `QuotaCollector` OAuth exception: zero matches.
+- The remaining `api.anthropic.com` string hits are documentation comments (in `CoherenceReviewer.ts`'s replacement docstring and `CapabilityRegistryGenerator.ts`'s tool-platform descriptor), not active code paths.
+- `QuotaCollector` continues to hit `api.anthropic.com/api/oauth/usage` — the read-only, fixed-cost exception permitted by Rule 2.
+
+### Follow-up queued
+
+The 12 reviewer subclasses still take an unused `apiKey` parameter through their constructors; the parameter is now dead weight. A mechanical pass to remove the parameter from the base class and every subclass constructor is queued (task #8 in this session's task list).
+
+---
+
 ## What's next
 
 Per `specs/provider-portability/README.md` the remaining phase sequence is:
