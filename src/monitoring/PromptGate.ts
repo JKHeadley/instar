@@ -217,6 +217,29 @@ export class InputDetector extends EventEmitter {
   /** Track pending LLM detection calls to prevent overlap */
   private pendingLlmDetection = new Set<string>();
 
+  /**
+   * NO_PROMPT classification cache: session → bounded set of recent context
+   * fingerprints already classified by the LLM as not a blocking prompt.
+   *
+   * Without this, an idle session showing the same terminal output across every
+   * monitor tick re-asks the LLM "is this stuck?" every 5 seconds forever,
+   * because the existing rate limit (lastLlmRelay) is only updated on a
+   * successful emit. The cache short-circuits that loop: once we've classified
+   * a given context as NO_PROMPT, we don't re-classify the identical context.
+   * Cache is cleared in onInputSent() and cleanup().
+   */
+  private noPromptCache = new Map<string, { set: Set<string>; order: string[] }>();
+  private static readonly NO_PROMPT_CACHE_MAX = 32;
+
+  /**
+   * Per-session cache generation counter. Incremented whenever the cache is
+   * cleared for a session (onInputSent, cleanup). An in-flight llmDetect call
+   * captures the generation at start; if it changes before the call's
+   * recordNoPrompt write, the write is dropped — we don't want a stale
+   * pre-input verdict to repopulate the cache after a clear.
+   */
+  private cacheGeneration = new Map<string, number>();
+
   constructor(private config: InputDetectorConfig) {
     super();
   }
@@ -347,6 +370,19 @@ export class InputDetector extends EventEmitter {
     // Sanitize: take last 20 lines, strip any remaining ANSI
     const context = lines.slice(-20).join('\n').slice(0, 3000);
 
+    // Skip LLM call if we have already classified this exact context as
+    // NO_PROMPT for this session. Idle sessions show the same output across
+    // many ticks; without this cache they would re-burn ~720 LLM calls/hour
+    // each asking the same question and getting the same answer.
+    const contextFingerprint = createHash('sha256').update(context).digest('hex');
+    const cached = this.noPromptCache.get(sessionName);
+    if (cached && cached.set.has(contextFingerprint)) return;
+
+    // Capture cache generation at call start. If onInputSent or cleanup runs
+    // for this session before our verdict comes back, the generation will
+    // increment and recordNoPrompt below will drop the (now-stale) write.
+    const callGeneration = this.cacheGeneration.get(sessionName) ?? 0;
+
     const prompt = `You are analyzing terminal output from a Claude Code AI agent session. Your job is to determine if the session is BLOCKED at a system-level interactive prompt that prevents the agent from continuing.
 
 Terminal output (last 20 lines):
@@ -391,7 +427,15 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
       });
 
       const trimmed = response.trim();
-      if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) return;
+      if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) {
+        // Cache only on the strict NO_PROMPT signal. The permissive
+        // startsWith('NO') branch covers transient responses like "No idea"
+        // that we don't want to memoize across the next 32 cycles.
+        if (trimmed === 'NO_PROMPT') {
+          this.recordNoPrompt(sessionName, contextFingerprint, callGeneration);
+        }
+        return;
+      }
 
       // Parse JSON response
       let parsed: { type: PromptType; summary: string; options?: Array<{ key: string; label: string }> };
@@ -436,6 +480,9 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
     this.stableCount.delete(sessionName);
     this.lastOutput.delete(sessionName);
     this.lastEmissionTime.delete(sessionName); // Clear cooldown so new prompts can fire
+    this.noPromptCache.delete(sessionName); // Cleared so post-input output gets re-classified
+    // Bump generation so any mid-flight llmDetect drops its NO_PROMPT write.
+    this.cacheGeneration.set(sessionName, (this.cacheGeneration.get(sessionName) ?? 0) + 1);
   }
 
   /**
@@ -456,6 +503,42 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
     this.lastEmissionTime.delete(sessionName);
     this.llmRelayTimestamps.delete(sessionName);
     this.pendingLlmDetection.delete(sessionName);
+    this.noPromptCache.delete(sessionName);
+    // Bump generation so any in-flight llmDetect for this session drops
+    // its NO_PROMPT write. The generation entry itself is left in place —
+    // it is tiny and a future llmDetect on the same session name (e.g. a
+    // session restart that reuses the name) will pick up from here.
+    this.cacheGeneration.set(sessionName, (this.cacheGeneration.get(sessionName) ?? 0) + 1);
+  }
+
+  /**
+   * Record a NO_PROMPT classification for the given session and context
+   * fingerprint, evicting the oldest entry if the per-session cache exceeds
+   * NO_PROMPT_CACHE_MAX. FIFO is sufficient — these are pure memoizations of
+   * an LLM verdict on a specific terminal-output snapshot.
+   *
+   * Drops the write if the cache generation has advanced since llmDetect
+   * started — that means onInputSent or cleanup fired during the LLM call,
+   * and our verdict was computed against output the session has now moved
+   * past. Without this guard, the post-input cache could get repopulated
+   * with a stale pre-input verdict.
+   */
+  private recordNoPrompt(sessionName: string, fingerprint: string, callGeneration: number): void {
+    const currentGen = this.cacheGeneration.get(sessionName) ?? 0;
+    if (currentGen !== callGeneration) return;
+
+    let entry = this.noPromptCache.get(sessionName);
+    if (!entry) {
+      entry = { set: new Set(), order: [] };
+      this.noPromptCache.set(sessionName, entry);
+    }
+    if (entry.set.has(fingerprint)) return;
+    entry.set.add(fingerprint);
+    entry.order.push(fingerprint);
+    while (entry.order.length > InputDetector.NO_PROMPT_CACHE_MAX) {
+      const evicted = entry.order.shift();
+      if (evicted) entry.set.delete(evicted);
+    }
   }
 
   /**
