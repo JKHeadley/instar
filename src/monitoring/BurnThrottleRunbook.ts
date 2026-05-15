@@ -47,6 +47,7 @@ export type RunbookOutcomeKind =
   | 'alert-only-unknown'
   | 'alert-only-config-disabled'
   | 'alert-only-self-attribution'
+  | 'alert-only-snoozed'
   | 'throttle-installed'
   | 'throttle-failed';
 
@@ -73,6 +74,13 @@ export interface BurnThrottleRunbookDeps {
   alertTopicId?: number;
   /** Injectable clock for tests. */
   now?: () => number;
+  /**
+   * Phase 5 — snooze check. If provided, the runbook calls isSnoozed(key)
+   * before throttling. A snoozed key skips auto-throttle (the user tapped
+   * "Snooze 24h" on a previous alert). The alert still fires so the user
+   * knows the burn is recurring while snoozed.
+   */
+  isSnoozed?: (attributionKey: string) => boolean;
 }
 
 /** Identity tag the runbook uses when installing throttles. */
@@ -84,6 +92,7 @@ export class BurnThrottleRunbook {
   private readonly sendTelegram: TelegramAlertSender | undefined;
   private readonly alertTopicId: number;
   private readonly now: () => number;
+  private readonly isSnoozed: (key: string) => boolean;
 
   constructor(deps: BurnThrottleRunbookDeps) {
     this.gate = deps.gate;
@@ -91,6 +100,7 @@ export class BurnThrottleRunbook {
     this.sendTelegram = deps.sendTelegram;
     this.alertTopicId = deps.alertTopicId ?? 8615;
     this.now = deps.now ?? (() => Date.now());
+    this.isSnoozed = deps.isSnoozed ?? (() => false);
   }
 
   /**
@@ -144,7 +154,21 @@ export class BurnThrottleRunbook {
       };
     }
 
-    // 3. Unknown attribution + caller has not opted in to auto-throttle on unknown.
+    // 3. Snoozed key (Phase 5): user already said "this is fine, leave it
+    //    alone for 24h." We still alert because the burn is recurring — the
+    //    user should know — but we don't throttle.
+    if (this.isSnoozed(attributionKey)) {
+      this.fireTelegram(`${alertText}\n\nThis key is currently snoozed; I will not slow it down. The snooze auto-expires at the configured time.`);
+      return {
+        kind: 'alert-only-snoozed',
+        attributionKey,
+        decidedAt,
+        trigger,
+        reason: 'Attribution key is currently snoozed; alert sent but no throttle installed.',
+      };
+    }
+
+    // 4. Unknown attribution + caller has not opted in to auto-throttle on unknown.
     if (isUnknownKey(attributionKey) && !this.config.autoThrottleOnUnknown) {
       this.fireTelegram(alertText);
       return {
@@ -156,7 +180,7 @@ export class BurnThrottleRunbook {
       };
     }
 
-    // 4. Install throttle, send alert.
+    // 5. Install throttle, send alert.
     const token = this.gate.computeCapabilityToken({
       attributionKey,
       durationMs: this.config.throttleDurationMs,
