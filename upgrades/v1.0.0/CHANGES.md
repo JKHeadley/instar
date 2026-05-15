@@ -118,10 +118,10 @@ Behavior-parity test harness for paired adapters + pool-only stress tests landed
 
 ## What's next
 
-Application-layer refactor. With 3a (Agent SDK credit path), 3b (subscription path), and 3c (behavior-parity proven) all landed, the routing policy can finally be wired:
+Per `specs/provider-portability/README.md` the remaining phase sequence is:
 
-1. Implement the cost-aware routing policy: drain Agent SDK credit first (queried via UsageMeterProvider's `agentSdkCredit` field), fall back to interactive pool below a configurable safety margin (default: when credit drops below 10% of the monthly $200).
-2. Replace direct `ClaudeCliIntelligenceProvider` / `SessionManager` usage in `src/core/` and consumers with `registry.resolve()` calls. The IntelligenceProvider interface in `src/core/types.ts` becomes a thin wrapper over `OneShotCompletion` resolved through the registry.
-3. Migration smoke test on a few local agents before v1.0.0 cut: snapshot state → migrate → snapshot → diff for unexpected losses → verify jobs + Telegram + threadline still work.
-
-After that lands, v1.0.0 is cut and Phase 4+ (Codex adapter, then Gemini, then OSS-framework evaluation for local models) begins.
+- **Phase 4 — OpenAI Codex adapter.** First non-Anthropic adapter. Implements the same primitive surface as 3a/3b using `codex exec`, app-server JSON-RPC, and the Codex hook system. Smoke + parity test against 3a once landed.
+- **Phase 5 — Cost-aware routing policy.** Concrete `RoutingPolicy` implementation: drain Agent SDK credit first (UsageMeterProvider's `agentSdkCredit` field), fall back to interactive pool below a configurable safety margin, route capability-asymmetric work to whichever adapter claims the capability. This is also where the application-layer refactor lands: replace direct `ClaudeCliIntelligenceProvider` / `SessionManager` callsites with `registry.resolve()`, re-express `IntelligenceProvider` in `src/core/types.ts` as a thin wrapper over `OneShotCompletion`.
+- **Phase 6 — Open-source / local adapter.** Evaluate Aider / Open-Interpreter / Continue.dev as the substrate for self-hosted models rather than building an Ollama adapter from scratch.
+- **Phase 7 — Migration design + local agent testing.** Migration script (`.claude/` → `.agent/anthropic/`, `claudeSessionId` → `providerSessionId`, `CLAUDE.md` → `AGENT.md` alias). Tested on multiple local agents before release: snapshot → migrate → snapshot → diff for unexpected losses → verify jobs + Telegram + threadline still work.
+- **Phase 8 — v1.0.0 release.** Cut once Phase 7 testing is clean across the test-agent set.
