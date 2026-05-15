@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateGuideContent } from './upgrade-guide-validator.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -21,13 +22,14 @@ const nextPath = path.join(ROOT, 'upgrades', 'NEXT.md');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
 const version = pkg.version;
 
+// Section list kept here only for the "no upgrade guide found" error
+// message. The full per-section validation now flows through
+// validateGuideContent (which has its own canonical REQUIRED_SECTIONS).
 const REQUIRED_SECTIONS = [
   '## What Changed',
   '## What to Tell Your User',
   '## Summary of New Capabilities',
 ];
-
-const MIN_LENGTH = 200;
 
 let errors = [];
 let warnings = [];
@@ -38,39 +40,28 @@ const versionedGuidePath = path.join(upgradesDir, `${version}.md`);
 const versionedGuideExists = fs.existsSync(versionedGuidePath);
 const nextExists = fs.existsSync(nextPath);
 
-if (versionedGuideExists) {
-  // Already finalized — validate the versioned guide instead
-  const content = fs.readFileSync(versionedGuidePath, 'utf-8');
-  for (const section of REQUIRED_SECTIONS) {
-    if (!content.includes(section)) {
-      errors.push(`${version}.md missing "${section}" section`);
-    }
-  }
-  if (content.length < MIN_LENGTH) {
-    errors.push(`${version}.md is too short (${content.length} chars, need ${MIN_LENGTH}+)`);
-  }
-} else if (nextExists) {
-  const content = fs.readFileSync(nextPath, 'utf-8');
+// Pick the active guide for this push. NEXT.md wins if present (in-flight
+// release notes); fall back to the versioned guide once NEXT.md has been
+// renamed during a publish.
+const activeGuidePath = nextExists
+  ? nextPath
+  : (versionedGuideExists ? versionedGuidePath : null);
+const activeGuideLabel = nextExists
+  ? 'NEXT.md'
+  : (versionedGuideExists ? `${version}.md` : null);
 
-  for (const section of REQUIRED_SECTIONS) {
-    if (!content.includes(section)) {
-      errors.push(`NEXT.md missing "${section}" section`);
-    }
-  }
+if (activeGuidePath && activeGuideLabel) {
+  const content = fs.readFileSync(activeGuidePath, 'utf-8');
 
-  if (content.length < MIN_LENGTH) {
-    errors.push(`NEXT.md is too short (${content.length} chars, need ${MIN_LENGTH}+)`);
-  }
-
-  // Check for unfilled template placeholders
-  if (content.includes('<!-- Describe what changed')) {
-    errors.push(`NEXT.md "What Changed" still has template placeholder`);
-  }
-  if (content.includes('[Feature name]') || content.includes('[Brief, friendly description')) {
-    errors.push(`NEXT.md "What to Tell Your User" still has template placeholder`);
-  }
-  if (content.includes('[Capability]') && content.includes('[Endpoint, command')) {
-    errors.push(`NEXT.md "Summary of New Capabilities" still has template placeholder`);
+  // Run the shared validator (same checks as check-upgrade-guide.js at publish
+  // time). This catches the publish-blocker bugs that previously slipped past
+  // pre-push: inline code / fenced blocks / camelCase config keys in "What to
+  // Tell Your User", and missing "## Evidence" when "What Changed" claims a fix.
+  // Before this gate, those defects only surfaced as silently-dropped publish
+  // runs on main — agents never received the merged code.
+  const validatorIssues = validateGuideContent(content);
+  for (const issue of validatorIssues) {
+    errors.push(`${activeGuideLabel}: ${issue}`);
   }
 } else {
   errors.push(
