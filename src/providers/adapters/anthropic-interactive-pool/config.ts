@@ -34,6 +34,15 @@ export interface InteractivePoolConfig {
   paneWidth: number;
   /** Tmux pane height (rows). */
   paneHeight: number;
+  /**
+   * Interval in milliseconds between scheduled empty-prompt canary
+   * checks. Default 1 hour. Setting to 0 disables the scheduled
+   * recurrence (canary still runs at startup). The recurring canary
+   * picks a ready pool session, allocates it, runs a known round-trip,
+   * and self-heals or surfaces failure per Rule 3 of the path
+   * constraints.
+   */
+  canaryIntervalMs: number;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): InteractivePoolConfig {
@@ -51,5 +60,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Interactive
     maxPromptWaitSeconds: 120,
     paneWidth: 200,
     paneHeight: 50,
+    canaryIntervalMs: parseInt(env['INTERACTIVE_POOL_CANARY_INTERVAL_MS'] || '3600000', 10),
   };
 }

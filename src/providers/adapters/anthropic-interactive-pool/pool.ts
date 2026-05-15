@@ -82,6 +82,10 @@ export class InteractivePool extends EventEmitter {
   private readonly pendingRetryTimers = new Set<NodeJS.Timeout>();
   /** Has the startup empty-prompt canary already run in this process lifetime? */
   private canaryHasRunInCurrentLifetime = false;
+  /** Interval handle for the scheduled recurring canary. Cleared on shutdown. */
+  private scheduledCanaryTimer: NodeJS.Timeout | null = null;
+  /** Lock to prevent overlapping scheduled-canary runs if the previous one is slow. */
+  private scheduledCanaryInFlight = false;
   private shuttingDown = false;
 
   constructor(private readonly config: InteractivePoolConfig) {
@@ -94,6 +98,72 @@ export class InteractivePool extends EventEmitter {
       promises.push(this.spawnOne());
     }
     await Promise.all(promises);
+    // Schedule recurring canary if enabled (default hourly).
+    if (this.config.canaryIntervalMs > 0) {
+      this.scheduleRecurringCanary();
+    }
+  }
+
+  /**
+   * Schedule the recurring empty-prompt canary. Each tick allocates a
+   * ready session, runs the canary, releases. Self-healing and
+   * degradation surfacing reuse the same paths as the startup canary.
+   * Re-entrancy is guarded by `scheduledCanaryInFlight` — if the
+   * previous tick is still running when the next interval fires
+   * (shouldn't happen at default 1h cadence but possible under
+   * misconfiguration), the new tick is skipped.
+   */
+  private scheduleRecurringCanary(): void {
+    if (this.shuttingDown) return;
+    this.scheduledCanaryTimer = setInterval(async () => {
+      if (this.shuttingDown || this.scheduledCanaryInFlight) return;
+      this.scheduledCanaryInFlight = true;
+      try {
+        await this.runScheduledCanary();
+      } catch (err) {
+        console.error('[interactive-pool] scheduled canary tick failed:', err);
+      } finally {
+        this.scheduledCanaryInFlight = false;
+      }
+    }, this.config.canaryIntervalMs);
+    // Allow process to exit even if interval is still scheduled.
+    this.scheduledCanaryTimer.unref?.();
+  }
+
+  /**
+   * Run one canary cycle on a borrowed pool session. Handles result
+   * surfacing identically to the startup canary path in spawnOne.
+   */
+  private async runScheduledCanary(): Promise<void> {
+    if (this.shuttingDown) return;
+    let session: PoolSession;
+    try {
+      session = await this.allocate();
+    } catch {
+      // Pool fully busy or shutting down — skip this tick; next one will try again.
+      return;
+    }
+    try {
+      const { runEmptyPromptCanary } = await import('./canary/emptyPromptCanary.js');
+      const result = await runEmptyPromptCanary(this, session, this.config);
+      if (result.status === 'fail') {
+        const { DegradationReporter } = await import('../../../monitoring/DegradationReporter.js');
+        DegradationReporter.getInstance().report({
+          feature: 'anthropic-interactive-pool.empty-prompt-canary',
+          primary: 'Recurring empty-prompt canary verifies detector still reads Claude Code correctly',
+          fallback: 'Pool continues serving with current signature; consumers may receive corrupted responses',
+          reason: result.message,
+          impact:
+            'Subscription-path pool may return truncated or corrupted responses — '
+            + 'manual intervention required to determine if Claude Code UI evolution requires code update.',
+        });
+      } else if (result.status === 'self-healed') {
+        console.log(`[interactive-pool] scheduled canary self-healed: ${result.message}`);
+      }
+      // pass: silent (success path is quietly correct per Rule 3.2).
+    } finally {
+      await this.release(session);
+    }
   }
 
   private async spawnOne(): Promise<void> {
@@ -401,6 +471,10 @@ export class InteractivePool extends EventEmitter {
   /** Shutdown the pool. */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    if (this.scheduledCanaryTimer !== null) {
+      clearInterval(this.scheduledCanaryTimer);
+      this.scheduledCanaryTimer = null;
+    }
     for (const w of this.waiters) {
       clearTimeout(w.timer);
       w.reject(new UnexpectedError('Pool shutting down', ANTHROPIC_INTERACTIVE_POOL_ID));
