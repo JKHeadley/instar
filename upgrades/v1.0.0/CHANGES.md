@@ -180,6 +180,23 @@ Built out the operational infrastructure for Rule 3 (state-detection robustness)
 
 ---
 
+### 2026-05-15 — Rule 3 finish-up: per-detector rationale, two more canaries, commit-time gate
+
+Scope-coherence review against the locked Rule 3 spec surfaced three pieces of drift between the spec and what had actually shipped. All four pieces (rationale doc + two canaries + commit-time gate) now landed.
+
+- **Per-detector rationale appendix** (`specs/provider-portability/07-detector-rationale.md`). Required by Rule 3.1: every state-check carries a one-paragraph rationale covering criticality, frequency, stability, fallback, and verdict (deterministic vs. LLM vs. canary-gated). Eleven seed rationales — one per substrate detector and one per application-layer state-check. Rule 3.1 RATIONALE doc-comment template defined; the commit-time check (below) grep-enforces it.
+- **Pool decay canary** (`src/providers/adapters/anthropic-interactive-pool/canary/poolDecayCanary.ts`). Verifies the silent-decay fix from the audit Tier 1 batch can't regress: instantiates a pool with a deliberately broken tmux binary, asserts the pool emits `degraded` → retries with backoff → emits `degraded_persistent` after exhaustion. Internal-contract canary (not drift-detection), so it lives forever as a regression guard. 2 unit tests.
+- **Capability-honesty canary** (`src/providers/canary/capabilityHonestyCanary.ts`). Verifies the STUB_MARKER Bug-D fix from the audit Tier 1 batch can't regress: pulls both Anthropic adapters' `createStubPrimitive` factories, asserts each result is detected as a stub through `isStubPrimitive`, asserts a real-shape primitive is NOT flagged, asserts the canonical `Symbol.for('@instar/providers/stub')` identity matches across both adapters. Catches "future stub-factory refactor forgets the marker" — the regression that would silently re-grant adapters the ability to lie about capabilities. 2 unit tests.
+- **Commit-time Rule 3 coverage gate** (`scripts/check-rule3-coverage.cjs`, `.husky/pre-commit`). Pre-commit script scans the staged diff for state-detection patterns (`fetch()` to Anthropic / OpenAI / Slack / Telegram, tmux `capture-pane` / `send-keys`, `JSON.parse(...stdout)`, `class *Reader/*Tailer/*Observer/*Receiver/*Parser` in `src/`) and **blocks the commit** unless each touched file has either a Rule 3.1 RATIONALE comment + a canary file staged alongside, OR a registry entry in `06-state-detector-registry.md`, OR an explicit `RULE 3: EXEMPT — <reason>` marker. Structural enforcement of the "keep awareness of what hasn't been updated yet" directive — new state-detection code can't land without registering. Signal-only, not authority: false positives are remediated with the EXEMPT marker, false negatives are the trade-off accepted against silent-corruption bugs. 8 unit tests cover pass/block paths, exempt marker, rationale-only / canary-only blocks, *Reader class trigger, test-file exclusion.
+- **Registry updates** (`specs/provider-portability/06-state-detector-registry.md`). Two new rows for the canaries that landed (pool decay handler, STUB_MARKER reader), both ✅ Compliant. Audit-sweep procedure section restructured into per-commit (automated) and per-milestone (manual) layers.
+
+### Verification
+
+- `npx vitest run` — all 12 new tests pass alongside the existing 31 from the prior Rule 3 batch.
+- Pre-commit hook fires on every commit in this batch; the gate flagged nothing (canary files and rationale comments already in place).
+
+---
+
 ## What's next
 
 Per `specs/provider-portability/README.md` the remaining phase sequence is:

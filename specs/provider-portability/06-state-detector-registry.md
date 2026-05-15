@@ -54,6 +54,8 @@ The point: coverage grows over time and is visible. A glance at this file tells 
 | `adapters/anthropic-headless/observability/liveOutputStream.ts` — tmux `capture-pane` output | tmux capture-pane format | Medium (output observability) | per-call | Stable | ❌ | ❌ | ❌ | ❌ Missing | Same family as ProcessLifecycle — OS-level, low drift. |
 | `adapters/anthropic-interactive-pool/pool.ts` — `waitForReady` static idle-marker detector | Claude Code TUI status bar strings | Medium (pool boot signal) | per-spawn | Unstable | ❌ | ❌ | ❌ | ❌ Missing | Same drift class as the empty-prompt detector. Should consume the same canary-derived signature once that infrastructure exists more generically. |
 | `adapters/anthropic-interactive-pool/promptRunner.ts` — extractResponse marker grammar (`❯`, `⏺`, `✻`) | Claude Code TUI response framing | Critical (response-text extraction) | per-prompt | Unstable | ❌ | ❌ | ❌ | ❌ Missing | The OTHER side of the empty-prompt detector. Same drift risk; should derive markers from the canary's known input/output too. |
+| `adapters/anthropic-interactive-pool/pool.ts` — degraded/replacement decay handler (spawn-failure recovery path) | Internal contract: own emitter API + retry policy | Critical (silent pool drain on spawn failures) | per-replacement-failure | Stable (own code) | ✅ startup canary (`canary/poolDecayCanary.ts`) | ✅ deterministic — exercises the failure path with a known-bad binary and verifies events + retry math | ✅ unit-test gates the canary itself | ✅ Compliant | Verifies the decay/heal event contract and exponential-backoff retry policy stay intact across refactors. Internal contract, so canary lives forever as a regression guard rather than a drift detector. |
+| `src/providers/markers.ts` — STUB_MARKER capability-honesty Symbol + `isStubPrimitive` reader | Internal contract: stub-vs-real adapter declaration | Critical (lying-adapter prevention; missed marker = parity test silently passes mocked stubs) | parity-test runs (transitive) | Very stable (Symbol.for identity) | ✅ startup canary (`canary/capabilityHonestyCanary.ts`) | ✅ deterministic — re-derives Symbol identity, fails loud if either adapter's `createStubPrimitive` forgets the marker | ✅ unit-test gates the canary itself | ✅ Compliant | Real risk is a future stub-factory refactor forgetting to attach the marker. Canary catches that regression at startup, before parity tests would silently lie. |
 
 ### Application layer (`src/core/`, `src/monitoring/`, `src/threadline/`)
 
@@ -76,10 +78,23 @@ The point: coverage grows over time and is visible. A glance at this file tells 
 
 ## Audit sweep procedure
 
-Periodically (after each Phase milestone, before each release cut):
+Two layers — automated per-commit, manual per-milestone.
 
-1. Grep the codebase for patterns suggesting external-state parsing:
-   - `/[A-Z].*Reader\b/`, `Tailer`, `Observer`, `Receiver` class names
+### Per-commit (automated)
+
+`scripts/check-rule3-coverage.cjs` runs from the husky pre-commit hook. It scans the staged diff for the same state-detection patterns the manual sweep would grep for, and **blocks the commit** unless each touched file has either:
+- a `RULE 3.1 RATIONALE` doc-comment + a canary file staged alongside, OR
+- an entry in this registry (path-matched), OR
+- an explicit `RULE 3: EXEMPT — <reason>` marker comment.
+
+This is the structural enforcement Justin asked for: "keep awareness of what hasn't been updated yet, so coverage grows over time." New state-detection code can't land without registering — false positives are remediated with the EXEMPT marker, false negatives are the trade-off we accept against silent-corruption bugs.
+
+### Per-milestone (manual)
+
+After each Phase milestone, before each release cut:
+
+1. Grep the codebase for the same patterns the commit-time check uses, plus broader heuristics:
+   - `/[A-Z].*Reader\b/`, `Tailer`, `Observer`, `Receiver`, `Parser` class names
    - `capture-pane`, `tmux .*-p`, `execFile.*tmux`
    - `fetch(.*\.anthropic\.com|api\.openai\.com|slack\.com|telegram\.org)`
    - `match(.*\/.*\/g?)` followed by a return / branch
@@ -92,6 +107,8 @@ Periodically (after each Phase milestone, before each release cut):
 4. If present, verify the status flags still match reality (especially after refactors).
 
 5. Report sweep deltas in the next CHANGES.md entry.
+
+The manual sweep is a safety net for patterns the commit-time check misses (regex won't catch every shape of state-detection code), and a recalibration pass for status flags that may have drifted from reality through refactors.
 
 ---
 
