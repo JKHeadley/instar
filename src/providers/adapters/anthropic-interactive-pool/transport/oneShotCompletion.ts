@@ -31,11 +31,13 @@ class InteractivePoolOneShotCompletion implements OneShotCompletion {
     options?: OneShotCompletionOptions,
   ): Promise<OneShotCompletionResult> {
     const session = await this.pool.allocate();
+    let healthy = false;
     try {
       const result = await runPrompt(this.pool, session, prompt, this.config, {
         signal: options?.signal,
         maxWaitSeconds: options?.timeoutMs ? Math.ceil(options.timeoutMs / 1000) : undefined,
       });
+      healthy = true;
       return {
         text: result.text,
         usage: null,
@@ -49,7 +51,20 @@ class InteractivePoolOneShotCompletion implements OneShotCompletion {
         },
       };
     } finally {
-      await this.pool.release(session);
+      if (healthy) {
+        await this.pool.release(session);
+      } else {
+        // runPrompt threw (timeout, abort, exec failure). The underlying
+        // REPL may be wedged — partial prompt in the input buffer, still
+        // streaming a response from a failed send-keys, residual idle
+        // markers in the captured pane. Releasing it back to ready risks
+        // a poisoned session being handed to the next caller, who would
+        // receive whatever stale content was sitting in the pane as if it
+        // were their response. Retire instead: the session is killed,
+        // the pool's retry-with-backoff path schedules a replacement, and
+        // the next allocate gets a clean session.
+        await this.pool.retire(session);
+      }
     }
   }
 }
