@@ -329,6 +329,30 @@ describe('TokenLedger.scanAll bounded behavior', () => {
     ledger.close();
   });
 
+  it('routes better-sqlite3 open through NativeModuleHealer (NODE_MODULE_VERSION self-heal)', async () => {
+    // Regression for the 2-day silent ledger outage on 2026-05-15: when
+    // better-sqlite3's prebuilt binding is compiled against the wrong
+    // Node ABI, TokenLedger init threw and the ledger came up null
+    // forever. Now the constructor wraps `new Database()` in
+    // NativeModuleHealer.openWithHealSync — which rebuilds + retries
+    // once before surfacing the error. This test pins that the
+    // ledger ACTUALLY uses the healer (so a future refactor can't
+    // silently regress to a bare `new Database`).
+    const { NativeModuleHealer } = await import('../../src/memory/NativeModuleHealer.js');
+    const { vi } = await import('vitest');
+    const spy = vi.spyOn(NativeModuleHealer, 'openWithHealSync');
+    try {
+      const ledger = new TokenLedger({
+        dbPath: ':memory:',
+        claudeProjectsDir: projectsDir,
+      });
+      expect(spy).toHaveBeenCalledWith('TokenLedger', expect.any(Function));
+      ledger.close();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('scanAllAsync yields control between batches and completes', async () => {
     const projDir = path.join(projectsDir, '-async-yield');
     fs.mkdirSync(projDir, { recursive: true });

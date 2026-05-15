@@ -17,6 +17,7 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 
 /**
  * Compute a small content fingerprint for a JSONL file. Used to detect
@@ -194,7 +195,19 @@ export class TokenLedger {
     if (opts.dbPath !== ':memory:') {
       fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
     }
-    this.db = new Database(opts.dbPath);
+    // Open the SQLite handle through the native-module healer. On the
+    // first NODE_MODULE_VERSION error from better-sqlite3 (Node was
+    // upgraded after instar installed), the healer runs
+    // `npm rebuild better-sqlite3` synchronously and retries the open
+    // once. Without this, an ABI mismatch would surface here as
+    // "token ledger unavailable" forever, and the /tokens/* endpoints
+    // would silently return errors on every agent until the user
+    // manually rebuilt. Heal events are persisted to
+    // <stateDir>/native-module-heals.jsonl for observability.
+    this.db = NativeModuleHealer.openWithHealSync(
+      'TokenLedger',
+      () => new Database(opts.dbPath),
+    );
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) {

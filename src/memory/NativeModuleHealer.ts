@@ -278,11 +278,60 @@ class NativeModuleHealerImpl {
   }
 
   /**
+   * Sync variant of openWithHeal. Use when the caller cannot be async
+   * (e.g. a class constructor). The internal rebuild path is already
+   * synchronous (spawnSync + fs.appendFileSync), so this is the same
+   * safety as openWithHeal — it just removes the async surface for
+   * sync-only call sites like TokenLedger's constructor.
+   *
+   * The opener must be sync. If you have an async opener, use
+   * openWithHeal instead.
+   */
+  openWithHealSync<T>(component: string, opener: () => T): T {
+    try {
+      return opener();
+    } catch (err) {
+      if (!this.isNodeModuleVersionError(err)) throw err;
+
+      if (this.healAttempted) {
+        const last = this.lastResult;
+        const hint = last && !last.success
+          ? ` (heal previously attempted and failed: ${last.errorTail ?? 'unknown'})`
+          : ' (heal previously attempted)';
+        const wrapped = err instanceof Error ? err : new Error(String(err));
+        wrapped.message = `${wrapped.message}${hint}`;
+        throw wrapped;
+      }
+
+      const healed = this.healBetterSqlite3Sync(component);
+      if (!healed) {
+        const wrapped = err instanceof Error ? err : new Error(String(err));
+        wrapped.message = `${wrapped.message} (in-line heal failed — see ${HEAL_LOG_FILENAME})`;
+        throw wrapped;
+      }
+
+      this.clearBetterSqlite3Cache();
+      return opener();
+    }
+  }
+
+  /**
    * Run `npm rebuild better-sqlite3 --prefix <install_prefix>` synchronously.
    * Returns true if the rebuild succeeded, false otherwise. Always logs
-   * a HealEvent.
+   * a HealEvent. Async wrapper over healBetterSqlite3Sync so existing
+   * `await` call sites are unchanged.
    */
   async healBetterSqlite3(component: string): Promise<boolean> {
+    return this.healBetterSqlite3Sync(component);
+  }
+
+  /**
+   * Synchronous implementation of the better-sqlite3 rebuild. The
+   * internals (spawnSync, fs.appendFileSync) were already synchronous;
+   * this just exposes that fact through a sync surface for callers
+   * like openWithHealSync that cannot use `await`.
+   */
+  healBetterSqlite3Sync(component: string): boolean {
     if (this.healAttempted) return false;
     this.healAttempted = true;
 

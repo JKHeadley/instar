@@ -208,4 +208,99 @@ describe('NativeModuleHealer', () => {
       healSpy.mockRestore();
     });
   });
+
+  describe('openWithHealSync', () => {
+    it('passes through when opener succeeds on first try', () => {
+      const opener = vi.fn(() => 'opened');
+      const result = NativeModuleHealer.openWithHealSync('TestComponent', opener);
+      expect(result).toBe('opened');
+      expect(opener).toHaveBeenCalledTimes(1);
+    });
+
+    it('rethrows non-NODE_MODULE_VERSION errors without attempting heal', () => {
+      const opener = () => {
+        throw new Error('SQLITE_BUSY');
+      };
+      expect(() => NativeModuleHealer.openWithHealSync('TestComponent', opener)).toThrow(
+        'SQLITE_BUSY',
+      );
+    });
+
+    it('attempts heal on NODE_MODULE_VERSION error and rethrows on failed rebuild', () => {
+      const healSpy = vi
+        .spyOn(NativeModuleHealer, 'healBetterSqlite3Sync')
+        .mockImplementation((_c: string): boolean => {
+          (NativeModuleHealer as any).healAttempted = true;
+          (NativeModuleHealer as any).lastResult = {
+            component: 'TestComponent',
+            timestamp: new Date().toISOString(),
+            success: false,
+            nodeVersion: process.version,
+            errorTail: 'simulated failure',
+          };
+          return false;
+        });
+
+      const opener = () => {
+        throw new Error('NODE_MODULE_VERSION mismatch');
+      };
+
+      expect(() => NativeModuleHealer.openWithHealSync('TestComponent', opener)).toThrow(
+        /in-line heal failed/,
+      );
+
+      healSpy.mockRestore();
+    });
+
+    it('retries opener once after successful heal', () => {
+      const healSpy = vi
+        .spyOn(NativeModuleHealer, 'healBetterSqlite3Sync')
+        .mockImplementation((_c: string): boolean => {
+          (NativeModuleHealer as any).healAttempted = true;
+          (NativeModuleHealer as any).lastResult = {
+            component: 'TestComponent',
+            timestamp: new Date().toISOString(),
+            success: true,
+            nodeVersion: process.version,
+          };
+          return true;
+        });
+
+      let tries = 0;
+      const opener = () => {
+        tries += 1;
+        if (tries === 1) throw new Error('NODE_MODULE_VERSION mismatch');
+        return 'second-try-ok';
+      };
+
+      const result = NativeModuleHealer.openWithHealSync('TestComponent', opener);
+      expect(result).toBe('second-try-ok');
+      expect(tries).toBe(2);
+
+      healSpy.mockRestore();
+    });
+
+    it('does not retry more than once per process when heal already attempted', () => {
+      // Simulate a previous heal that already happened (and failed)
+      (NativeModuleHealer as any).healAttempted = true;
+      (NativeModuleHealer as any).lastResult = {
+        component: 'EarlierComponent',
+        timestamp: new Date().toISOString(),
+        success: false,
+        nodeVersion: process.version,
+        errorTail: 'earlier failure',
+      };
+
+      const opener = vi.fn(() => {
+        throw new Error('NODE_MODULE_VERSION mismatch');
+      });
+
+      expect(() => NativeModuleHealer.openWithHealSync('TestComponent', opener)).toThrow(
+        /heal previously attempted and failed/,
+      );
+
+      // Opener was tried exactly once — the prior heal attempt blocks the retry
+      expect(opener).toHaveBeenCalledTimes(1);
+    });
+  });
 });

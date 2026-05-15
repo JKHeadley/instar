@@ -50,6 +50,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
+import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 
 export class AgentServer {
   private app: Express;
@@ -347,6 +348,13 @@ export class AgentServer {
       if (options.config.stateDir) {
         const serverDataDir = path.join(options.config.stateDir, 'server-data');
         fs.mkdirSync(serverDataDir, { recursive: true });
+        // Configure the native-module healer so any rebuild events land in
+        // the agent's state directory rather than the system tmp fallback.
+        // TokenLedger constructor uses NativeModuleHealer.openWithHealSync
+        // for its better-sqlite3 open call — without this stateDir wiring,
+        // a NODE_MODULE_VERSION mismatch would still get healed but its
+        // observability log would be hard to find.
+        NativeModuleHealer.configure({ stateDir: options.config.stateDir });
         const dbPath = path.join(serverDataDir, 'token-ledger.db');
         const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
         // Bound the first-boot scan: with deep history (eg one local agent
