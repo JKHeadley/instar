@@ -2,13 +2,13 @@
 
 **Status:** Active, locked 2026-05-15 by Justin
 **Branch:** `spec/provider-portability`
-**Applies to:** Every Instar module that reads state from an external system to make a decision. Drives state-detector design in Phase 3+, the audit Tier 2 work, every future adapter, every future feature that parses Anthropic / OpenAI / Gemini / OS / FS state.
+**Applies to:** Every Instar module that reads state from an external system to make a decision. **This rule is upstream-agnostic** — it applies equally to Claude Code, OpenAI Codex, Google Gemini, Ollama / LM Studio, any OS-level state (`ps`, `tmux`, filesystem), any third-party API (Telegram, Slack, GitHub, Cloudflare), and any future provider or service Instar comes to depend on. Drives state-detector design in Phase 3+, the audit Tier 2 work, every future adapter, every future feature that parses external state. Every adapter ships with its own canary set sized for the upstream's stability characteristics.
 
 ---
 
 ## ELI16 — what this document says
 
-Instar reads state from a bunch of external systems to decide things — "is Claude done generating?" "what's our quota balance?" "did a subagent start?" "is the user mid-edit?" The systems we read from change all the time without telling us. When our state-detection code doesn't keep up, it silently returns wrong answers, and the next layer of code acts on those wrong answers as if they were true. Worst class of bug: silent data corruption that looks like success.
+Instar reads state from a bunch of external systems to decide things — "is Claude done generating?" "what's our quota balance?" "did a subagent start?" "is the user mid-edit?" "did the Codex thread crash?" "is Telegram rate-limiting us?" The systems we read from change all the time without telling us. **This is true for every external system Instar depends on**, not just Claude Code — OpenAI Codex, Gemini, Telegram, Slack, OS process state, the filesystem, future providers we haven't integrated yet. Every one of them will evolve out from under us at some point. When our state-detection code doesn't keep up, it silently returns wrong answers, and the next layer of code acts on those wrong answers as if they were true. Worst class of bug: silent data corruption that looks like success.
 
 The previous response to this class of bug was to fix each instance when it surfaced. The new response is structural: any state-detection code we ship from now on follows three rules. The system is allowed to detect that it's broken AND to fix itself before bothering anyone, and only when self-fixing fails does it surface to a human — and even then, only to echo (the developer agent), not to every Instar agent in the fleet.
 
@@ -71,6 +71,20 @@ The Phase 3 substrate audit surfaced three bugs of this class in a single compon
 All three are the same pattern: deterministic check + upstream evolution + no canary + insufficient e2e = silent failure. The pattern has recurred in Instar before this project and will recur again. The structural response is what this document specifies.
 
 Cat-and-mouse with evolving upstream is unavoidable. The framework needs to evolve along with the upstream — fast enough that drift is detected and healed before users notice, quiet enough that healing doesn't generate alert fatigue, robust enough that the failure mode of last resort is graceful degradation rather than silent corruption.
+
+---
+
+## Upstream-agnostic — every external dependency
+
+Rule 3 is not a Claude-Code-specific rule. The same three sub-rules apply to:
+
+- **OpenAI Codex** (Phase 4) — its `codex exec` output format, its app-server JSON-RPC schema, its hook payloads, its session UUID format. All of these can drift; all need canaries.
+- **Google Gemini, Ollama / LM Studio, OSS frameworks** (Phase 6) — every adapter for a new provider ships with its own canary set.
+- **Telegram, Slack, GitHub, Cloudflare** — webhook payload shapes, rate-limit response formats, API schemas. Canary cadence is per-upstream based on how often the system actually changes.
+- **OS-level state** (`tmux`, `ps`, filesystem) — slower-evolving but not immune. Canaries here run weekly or at major-version-upgrade time, not hourly.
+- **Future providers we haven't integrated yet** — the rule applies before they ship, not retroactively. New-adapter PRs include the canary infrastructure as a gate.
+
+The framework needs to be generic enough that a new adapter doesn't reinvent canary infrastructure — there's a substrate-level pattern (`src/providers/canary/` or equivalent) that each adapter extends with its own upstream-specific checks.
 
 ---
 
