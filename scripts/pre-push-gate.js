@@ -294,6 +294,27 @@ try {
   warnings.push(`lint-no-direct-destructive failed to run: ${err.message}`);
 }
 
+// ── Direct-LLM-HTTP containment lint (full repo) ──────────────────────
+//
+// Phase 1 of docs/specs/token-burn-detection-and-self-heal.md: every LLM
+// HTTP call must go through src/core/{Anthropic,ClaudeCli}IntelligenceProvider
+// so the burn-detection system can attribute spend. New raw-HTTP-to-LLM
+// references outside that chokepoint fail the push.
+
+try {
+  const { spawnSync } = await import('node:child_process');
+  const result = spawnSync(
+    process.execPath,
+    [path.join(ROOT, 'scripts/lint-no-direct-llm-http.js')],
+    { cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'] },
+  );
+  if (result.status !== 0) {
+    errors.push('lint-no-direct-llm-http: violations detected (see output above)');
+  }
+} catch (err) {
+  warnings.push(`lint-no-direct-llm-http failed to run: ${err.message}`);
+}
+
 // ── 6. URL.pathname filesystem guard ──────────────────────────────────
 // new URL(..., import.meta.url).pathname preserves %20-encoded spaces,
 // breaking filesystem operations. Use __dirname (via fileURLToPath) instead.

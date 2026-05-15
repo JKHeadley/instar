@@ -520,6 +520,16 @@ export interface IntelligenceOptions {
   temperature?: number;
   /** Per-call timeout in milliseconds; provider should honor or surface as throw. */
   timeoutMs?: number;
+  /**
+   * Attribution context for the burn-detection-and-self-heal system (Phase 1
+   * of docs/specs/token-burn-detection-and-self-heal.md). Optional; missing
+   * attribution lands under the `unknown::*` fallback keys so existing
+   * callers keep working unchanged. New callers should set it.
+   */
+  attribution?: {
+    /** Stable source-side component label, e.g. "InputDetector", "MessagingToneGate". */
+    component: string;
+  };
 }
 
 // ── Drift Checker ───────────────────────────────────────────────────

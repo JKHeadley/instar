@@ -54,11 +54,16 @@ const SCHEMA = [
      output_tokens         INTEGER NOT NULL DEFAULT 0,
      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
      cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
-     service_tier          TEXT
+     service_tier          TEXT,
+     attribution_key       TEXT NOT NULL DEFAULT 'unknown::pre-attribution'
    )`,
   `CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_token_events_ts ON token_events(ts)`,
   `CREATE INDEX IF NOT EXISTS idx_token_events_project ON token_events(project_path)`,
+  // Attribution-key index (Phase 1 of burn-detection-and-self-heal spec): the
+  // BurnDetector polls per-key rates every 60s; this index keeps that polling
+  // cheap on agents with millions of historical events.
+  `CREATE INDEX IF NOT EXISTS idx_token_events_key_ts ON token_events(attribution_key, ts)`,
   `CREATE TABLE IF NOT EXISTS file_offsets (
      file_path TEXT PRIMARY KEY,
      offset    INTEGER NOT NULL DEFAULT 0,
@@ -69,6 +74,9 @@ const SCHEMA = [
    )`,
   // Migration for installs that pre-date head_hash (idempotent).
   `ALTER TABLE file_offsets ADD COLUMN head_hash TEXT`,
+  // Migration for installs that pre-date attribution_key (idempotent — duplicate-column
+  // errors are swallowed in init below).
+  `ALTER TABLE token_events ADD COLUMN attribution_key TEXT NOT NULL DEFAULT 'unknown::pre-attribution'`,
 ];
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -230,11 +238,11 @@ export class TokenLedger {
         INSERT OR IGNORE INTO token_events
           (request_id, uuid, session_id, project_path, ts, model,
            input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-           service_tier)
+           service_tier, attribution_key)
         VALUES
           (@requestId, @uuid, @sessionId, @projectPath, @ts, @model,
            @inputTokens, @outputTokens, @cacheCreationTokens, @cacheReadTokens,
-           @serviceTier)
+           @serviceTier, @attributionKey)
       `),
       getOffset: this.db.prepare(
         `SELECT offset, inode, size, head_hash FROM file_offsets WHERE file_path = ?`
@@ -287,6 +295,61 @@ export class TokenLedger {
         cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
         cacheReadTokens: usage.cache_read_input_tokens ?? 0,
         serviceTier: usage.service_tier ?? null,
+        // JSONL-source events do not carry attribution; Phase 2 will run an
+        // AttributionResolver on the read side that maps these to a known
+        // component when possible. Until then they sit under the default key.
+        attributionKey: 'unknown::pre-attribution',
+      });
+      return { inserted: result.changes > 0, reason: result.changes > 0 ? undefined : 'duplicate' };
+    } catch {
+      return { inserted: false, reason: 'insert-error' };
+    }
+  }
+
+  /**
+   * Record a token event from a direct-API provider (Phase 1 of the
+   * burn-detection-and-self-heal spec). The Claude CLI path already writes
+   * JSONL that the ledger ingests; direct-API providers (e.g. the
+   * AnthropicIntelligenceProvider) have no JSONL trail and must call this
+   * method explicitly when an LLM call completes.
+   *
+   * Attribution-key shape (per spec): `<componentName>::<promptFingerprint>`.
+   * The caller is the chokepoint that knows both pieces. Events with an
+   * empty/missing attribution_key fall back to 'unknown::direct-api'.
+   *
+   * Idempotent on request_id (INSERT OR IGNORE).
+   */
+  recordEvent(event: {
+    requestId: string;
+    sessionId: string;
+    projectPath?: string | null;
+    ts: number;
+    model?: string | null;
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens?: number;
+    cacheReadTokens?: number;
+    serviceTier?: string | null;
+    attributionKey?: string;
+  }): IngestLineResult {
+    if (!event.requestId) return { inserted: false, reason: 'no-request-id' };
+    if (!event.sessionId) return { inserted: false, reason: 'no-session-id' };
+    try {
+      const result = this.stmts.insertEvent.run({
+        requestId: event.requestId,
+        uuid: null,
+        sessionId: event.sessionId,
+        projectPath: event.projectPath ?? null,
+        ts: event.ts,
+        model: event.model ?? null,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheCreationTokens: event.cacheCreationTokens ?? 0,
+        cacheReadTokens: event.cacheReadTokens ?? 0,
+        serviceTier: event.serviceTier ?? null,
+        attributionKey: event.attributionKey && event.attributionKey.length > 0
+          ? event.attributionKey
+          : 'unknown::direct-api',
       });
       return { inserted: result.changes > 0, reason: result.changes > 0 ? undefined : 'duplicate' };
     } catch {
