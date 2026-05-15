@@ -43,8 +43,33 @@ export interface PoolEvents {
   'session:released': PoolSession;
   'session:retired': PoolSession;
   'session:died': PoolSession;
+  /**
+   * Emitted when an attempt to spawn (or re-spawn) a pool session fails.
+   * `attempt` is 0 for the original spawn attempt, 1+ for retry attempts.
+   * The pool will schedule a retry with exponential backoff up to
+   * `MAX_REPLACEMENT_ATTEMPTS` total; after that, `pool:degraded_persistent`
+   * fires once and no more retries are scheduled.
+   */
+  'pool:degraded': { error: Error; attempt: number };
+  /**
+   * Emitted exactly once when a replacement-retry sequence succeeds. The
+   * pool is back at steady-state size.
+   */
+  'pool:healed': { afterAttempts: number };
+  /**
+   * Emitted exactly once when all retries have been exhausted without
+   * success. The pool is below steady-state size and will stay there
+   * until something external triggers another replacement (next retire,
+   * manual intervention).
+   */
+  'pool:degraded_persistent': { totalAttempts: number };
   'pool:shutdown': void;
 }
+
+/** Maximum number of retry attempts after the initial replacement spawn fails. */
+const MAX_REPLACEMENT_ATTEMPTS = 5;
+/** Maximum backoff between retries (ms). */
+const MAX_REPLACEMENT_BACKOFF_MS = 30_000;
 
 export class InteractivePool extends EventEmitter {
   private readonly sessions = new Map<string, PoolSession>();
@@ -53,6 +78,8 @@ export class InteractivePool extends EventEmitter {
     reject: (e: Error) => void;
     timer: NodeJS.Timeout;
   }> = [];
+  /** Pending retry timers for replacement spawns. Cleared on shutdown. */
+  private readonly pendingRetryTimers = new Set<NodeJS.Timeout>();
   private shuttingDown = false;
 
   constructor(private readonly config: InteractivePoolConfig) {
@@ -273,11 +300,46 @@ export class InteractivePool extends EventEmitter {
     this.emit('session:retired', s);
     this.sessions.delete(s.id);
     if (!this.shuttingDown) {
-      // Replace
-      this.spawnOne().catch((err) => {
-        console.error('[interactive-pool] failed to replace retired session:', err);
-      });
+      // Replace, with retry-on-failure and observable degradation events.
+      // Previous behavior was `.catch(console.error)` — spawn failures were
+      // swallowed and the pool decayed silently. Now spawn failures emit
+      // `pool:degraded`, schedule an exponential-backoff retry up to
+      // MAX_REPLACEMENT_ATTEMPTS, and emit `pool:healed` on recovery or
+      // `pool:degraded_persistent` after final exhaustion.
+      this.replaceRetired();
     }
+  }
+
+  private replaceRetired(): void {
+    if (this.shuttingDown) return;
+    this.spawnOne().catch((err) => {
+      this.emit('pool:degraded', { error: err as Error, attempt: 0 });
+      this.scheduleRetryReplacement(1);
+    });
+  }
+
+  private scheduleRetryReplacement(attempt: number): void {
+    if (this.shuttingDown) return;
+    if (attempt > MAX_REPLACEMENT_ATTEMPTS) {
+      this.emit('pool:degraded_persistent', { totalAttempts: attempt - 1 });
+      return;
+    }
+    const backoffMs = Math.min(
+      MAX_REPLACEMENT_BACKOFF_MS,
+      1_000 * Math.pow(2, attempt - 1),
+    );
+    const timer = setTimeout(async () => {
+      this.pendingRetryTimers.delete(timer);
+      if (this.shuttingDown) return;
+      try {
+        await this.spawnOne();
+        this.emit('pool:healed', { afterAttempts: attempt });
+      } catch (err) {
+        this.emit('pool:degraded', { error: err as Error, attempt });
+        this.scheduleRetryReplacement(attempt + 1);
+      }
+    }, backoffMs);
+    this.pendingRetryTimers.add(timer);
   }
 
   /** Force-kill a session without graceful retirement. */
@@ -293,6 +355,8 @@ export class InteractivePool extends EventEmitter {
       w.reject(new UnexpectedError('Pool shutting down', ANTHROPIC_INTERACTIVE_POOL_ID));
     }
     this.waiters.length = 0;
+    for (const t of this.pendingRetryTimers) clearTimeout(t);
+    this.pendingRetryTimers.clear();
     const sessions = Array.from(this.sessions.values());
     await Promise.all(sessions.map((s) => this.retire(s)));
     this.emit('pool:shutdown');
