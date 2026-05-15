@@ -72,16 +72,18 @@ describe('LlmRateGate (Phase 1 no-op)', () => {
     gate.reset();
   });
 
-  it('shouldFire returns true for any key (Phase 1 is observation-only)', () => {
+  it('shouldFire returns true for any key when no throttle is installed', () => {
     expect(gate.shouldFire('InputDetector::abcd1234')).toBe(true);
     expect(gate.shouldFire('unknown::xyz')).toBe(true);
   });
 
-  it('decide() returns phase-1-noop reason for any key', () => {
+  it('decide() returns no-throttle-installed reason for any key with no throttle', () => {
     const d = gate.decide('InputDetector::abcd1234');
     expect(d.allowed).toBe(true);
-    expect(d.reason).toBe('phase-1-noop');
-    expect(d.decidedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/); // ISO timestamp
+    // Phase 4 upgrade: gate is now stateful. With no throttle installed, the
+    // reason is 'no-throttle-installed' (was 'phase-1-noop' in Phase 1).
+    expect(d.reason).toBe('no-throttle-installed');
+    expect(d.decidedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it('burn-throttle-runbook prefix is exempt (self-reinforcing-loop guard)', () => {
