@@ -6,8 +6,6 @@
  * the file. Direct analog of `claude -p` for the headless Anthropic adapter.
  */
 
-import { execFile, type ExecFileException } from 'node:child_process';
-import { promisify } from 'node:util';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -22,8 +20,7 @@ import { AbortError } from '../../../errors.js';
 import type { OpenAiCodexConfig } from '../config.js';
 import { OPENAI_CODEX_ID, mapExecError } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
-
-const execFileAsync = promisify(execFile);
+import { spawnCodexAndWait } from './codexSpawn.js';
 
 class OpenAiCodexOneShotCompletion implements OneShotCompletion {
   readonly capability = CapabilityFlag.OneShotCompletion;
@@ -40,10 +37,15 @@ class OpenAiCodexOneShotCompletion implements OneShotCompletion {
 
     const outFile = path.join(tmpdir(), `codex-oneshot-${randomBytes(8).toString('hex')}.txt`);
 
+    // NOTE: Codex CLI 0.130.0 + ChatGPT-account auth hangs silently with
+    // `--ephemeral`; without it the call completes in ~5s. Probed
+    // empirically 2026-05-15. The trade-off is that each one-shot call
+    // leaves a session rollout under ~/.codex/sessions/. Cleanup is a
+    // Phase 5 follow-up (we can prune sessions older than N days, or
+    // re-introduce --ephemeral when Codex fixes the underlying bug).
     const args = [
       'exec',
       '--skip-git-repo-check',
-      '--ephemeral',
       '-s',
       sandbox,
       '-m',
@@ -75,12 +77,17 @@ class OpenAiCodexOneShotCompletion implements OneShotCompletion {
     }
 
     try {
-      await execFileAsync(this.config.codexPath, args, {
-        timeout: timeoutMs,
-        maxBuffer: 4 * 1024 * 1024,
+      const result = await spawnCodexAndWait(this.config.codexPath, args, {
+        timeoutMs,
         env: childEnv,
         signal: abortSignal,
       });
+      if (result.exitCode !== 0) {
+        throw mapExecError(
+          new Error(`Codex exited ${result.exitCode}`) as Error & { code?: number },
+          result.stderr,
+        );
+      }
       const text = await fs.readFile(outFile, 'utf-8').catch(() => '');
       return {
         text: text.trim(),
@@ -88,7 +95,7 @@ class OpenAiCodexOneShotCompletion implements OneShotCompletion {
         providerSpecific: { [OPENAI_CODEX_ID]: { model, sandbox } },
       };
     } catch (err) {
-      const error = err as ExecFileException;
+      const error = err as Error & { name: string };
       if (error.name === 'AbortError' || abortSignal?.aborted) {
         throw new AbortError('Aborted during execution', OPENAI_CODEX_ID, err);
       }

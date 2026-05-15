@@ -11,8 +11,6 @@
  * options.maxRetries times (default 1, matching the Anthropic adapter).
  */
 
-import { execFile, type ExecFileException } from 'node:child_process';
-import { promisify } from 'node:util';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,8 +26,7 @@ import { AbortError, UnexpectedError } from '../../../errors.js';
 import type { OpenAiCodexConfig } from '../config.js';
 import { OPENAI_CODEX_ID, mapExecError } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
-
-const execFileAsync = promisify(execFile);
+import { spawnCodexAndWait } from './codexSpawn.js';
 
 class OpenAiCodexStructuredOneShot implements StructuredOneShot {
   readonly capability = CapabilityFlag.StructuredOneShot;
@@ -64,10 +61,11 @@ class OpenAiCodexStructuredOneShot implements StructuredOneShot {
     let lastError = '';
     let lastRaw = '';
 
+    // See oneShotCompletion.ts for why --ephemeral is omitted (Codex CLI
+    // 0.130.0 hang under ChatGPT-account auth).
     const baseArgs = [
       'exec',
       '--skip-git-repo-check',
-      '--ephemeral',
       '-s',
       sandbox,
       '-m',
@@ -90,18 +88,19 @@ class OpenAiCodexStructuredOneShot implements StructuredOneShot {
         }
 
         try {
-          await execFileAsync(
+          const result = await spawnCodexAndWait(
             this.config.codexPath,
             [...baseArgs, promptForAttempt],
-            {
-              timeout: timeoutMs,
-              maxBuffer: 4 * 1024 * 1024,
-              env: childEnv,
-              signal: options?.signal,
-            },
+            { timeoutMs, env: childEnv, signal: options?.signal },
           );
+          if (result.exitCode !== 0) {
+            throw mapExecError(
+              new Error(`Codex exited ${result.exitCode}`) as Error & { code?: number },
+              result.stderr,
+            );
+          }
         } catch (err) {
-          const error = err as ExecFileException;
+          const error = err as Error & { name: string };
           if (error.name === 'AbortError' || options?.signal?.aborted) {
             throw new AbortError('Aborted during execution', OPENAI_CODEX_ID, err);
           }

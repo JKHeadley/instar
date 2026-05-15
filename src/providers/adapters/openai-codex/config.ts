@@ -63,6 +63,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OpenAiCodex
   return {
     codexPath: env['CODEX_PATH'] || '/Users/justin/.asdf/installs/nodejs/22.18.0/bin/codex',
     tmuxPath: env['TMUX_PATH'] || '/opt/homebrew/bin/tmux',
+    // Default to undefined so resolveCliModelFlag picks the 'balanced' tier
+    // (gpt-5.3-codex) — works on ChatGPT subscription auth. Codex CLI's own
+    // default (gpt-5.2-codex) is API-only after the 2026-04-14 retirement.
     defaultModel: env['CODEX_DEFAULT_MODEL'],
     defaultSandboxMode: 'read-only',
     defaultProfile: env['CODEX_DEFAULT_PROFILE'],

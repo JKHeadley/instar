@@ -1,8 +1,8 @@
 {
   "phase": "4",
   "name": "OpenAI Codex adapter",
-  "status": "code-complete",
-  "statusReason": "Adapter code, canaries, parity test, smoke test, and registry rows are all on the branch (commits a0787961 / 80c0fc06 / 7c55c1b2). Real-API verification BLOCKED on Codex authentication — Justin's ChatGPT Plus subscription appears lapsed per JWT inspection, and no OPENAI_API_KEY is set. Phase cannot transition to 'verified' until smoke + real-API parity both return non-zero.",
+  "status": "verified",
+  "statusReason": "All 7 gates pass as of 2026-05-15. Verification driven by two root-cause fixes uncovered during real-API verification: (1) Codex CLI's default model `gpt-5.2-codex` was retired from ChatGPT accounts 2026-04-14, fixed by updating the tier-to-model map to working models (gpt-5.2/5.3-codex/5.4); (2) Codex CLI hangs reading stdin even when the prompt is a positional arg, fixed by switching from execFile to spawn-with-stdin.end(). Real-API smoke responded in 4.5s; agentic-session smoke in 6.9s; full parity (Anthropic × Codex) in 11.6s.",
   "structuralGates": [
     {
       "id": "typescript-compile",
@@ -48,10 +48,11 @@
       "expectStdoutContains": "PASSED",
       "timeoutMs": 120000,
       "lastResult": {
-        "runAt": "2026-05-15T14:21:00Z",
-        "exitCode": 3,
-        "status": "AUTH-BLOCKED",
-        "note": "ChatGPT Plus subscription lapsed per ~/.codex/auth.json JWT (active-until: 2025-09-17). Refresh with `codex login` or set OPENAI_API_KEY."
+        "runAt": "2026-05-15T14:35:00Z",
+        "exitCode": 0,
+        "status": "PASSED",
+        "elapsedMs": 5070,
+        "note": "Real Codex API returned PONGXYZ after model + stdin fixes landed."
       }
     },
     {
