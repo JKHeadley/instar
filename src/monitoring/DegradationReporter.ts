@@ -513,7 +513,8 @@ export class DegradationReporter {
     // Strip parenthetical caveats — the user doesn't need "(no search, no summary updates)"
     fallback = fallback.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
 
-    return `${impact}. Using ${fallback} in the meantime — everything else is working fine.`;
+    const fallbackPhrase = /^using\s/i.test(fallback) ? fallback : `Using ${fallback}`;
+    return `${impact}. ${fallbackPhrase} in the meantime — everything else is working fine.`;
   }
 
   /**
@@ -549,6 +550,45 @@ export class DegradationReporter {
       }
     }
     return flipped;
+  }
+
+  /**
+   * Remove all degradation events for a given feature, both in-memory and on
+   * disk. Returns the number of events cleared.
+   *
+   * Use this when positive proof of recovery makes existing events stale —
+   * for example, a successful Telegram send to the lifeline topic proves the
+   * lifeline is reachable, so any `Telegram.Lifeline` degradation events can
+   * be discarded rather than left to expire on their own.
+   *
+   * Disk persistence is best-effort (same policy as `persistToDisk`): a write
+   * failure is swallowed so the caller is never interrupted by storage errors.
+   */
+  clearByFeature(feature: string): number {
+    const before = this.events.length;
+    this.events = this.events.filter(e => e.feature !== feature);
+    const cleared = before - this.events.length;
+
+    if (cleared > 0) {
+      this.lastAlertTime.delete(feature);
+
+      try {
+        if (this.stateDir) {
+          const filePath = path.join(this.stateDir, 'degradations.json');
+          if (fs.existsSync(filePath)) {
+            const existing = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DegradationEvent[];
+            const filtered = existing.filter(e => e.feature !== feature);
+            if (filtered.length !== existing.length) {
+              fs.writeFileSync(filePath, JSON.stringify(filtered, null, 2));
+            }
+          }
+        }
+      } catch { /* best-effort */ }
+
+      console.log(`[DEGRADATION] Cleared ${cleared} event(s) for feature: ${feature}`);
+    }
+
+    return cleared;
   }
 
   /**
