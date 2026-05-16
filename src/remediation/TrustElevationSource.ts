@@ -247,7 +247,8 @@ export class TrustElevationSource {
 
   /**
    * Public gate for non-runbook signal-suppression authorities (e.g.
-   * NovelFailureReviewer proposal dismissal per §A26). Returns true iff the
+   * NovelFailureReviewer proposal dismissal per §A26 + the Dashboard
+   * Proposals routes per §A13/§A57 Tier-3 S-2). Returns true iff the
    * configured profile is `collaborative` or higher. Callers attach their
    * own audit-trail; this method is policy-only.
    */

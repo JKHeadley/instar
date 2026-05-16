@@ -41,6 +41,8 @@ import { createFileRoutes } from './fileRoutes.js';
 import { mountWhatsAppWebhooks } from '../messaging/backends/WhatsAppWebhookRoutes.js';
 import { createMachineRoutes } from './machineRoutes.js';
 import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes.js';
+import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
+import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
@@ -499,6 +501,28 @@ export class AgentServer {
         projectDir: options.config.projectDir,
       });
       this.app.use(worktreeRoutes);
+    }
+
+    // Remediation Proposals routes (Tier-3 S-2 of self-healing remediator v2).
+    // Mounted unconditionally — proposal files only exist once S-1 (the
+    // NovelFailureReviewer) has emitted them, and the list endpoint returns
+    // [] gracefully when no proposals-<machineId>/ directory is present.
+    // Trust source uses the agent's configured `autonomyProfile`; no
+    // approval channels are wired here since dismiss only consults
+    // `hasCollaborativeTrust()` per §A26.
+    try {
+      const profile = (options.config as { autonomyProfile?: import('../core/types.js').AutonomyProfileLevel }).autonomyProfile ?? 'supervised';
+      const trustSource = new TrustElevationSource({ profile, channels: [] });
+      registerRemediationProposalsRoutes({
+        app: this.app,
+        stateDir: options.config.stateDir,
+        trustSource,
+      });
+    } catch (err) {
+      // Non-fatal: a wiring error must not prevent the rest of the server
+      // from starting (matches the burn-detection-system convention).
+      // eslint-disable-next-line no-console
+      console.warn('[agent-server] failed to register remediation-proposals routes:', err);
     }
 
     // Error handler (must be last)
