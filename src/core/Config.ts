@@ -583,6 +583,12 @@ export function loadConfig(projectDir?: string): InstarConfig {
   const sessions: SessionManagerConfig = {
     tmuxPath,
     claudePath,
+    // Expose every detected framework binary so spawnInteractiveSession
+    // can route a session to any framework without re-running detection.
+    frameworkBinaryPaths: {
+      ...(claudePathDetected ? { 'claude-code': claudePathDetected } : {}),
+      ...(codexPathDetected ? { 'codex-cli': codexPathDetected } : {}),
+    },
     projectDir: resolvedProjectDir,
     maxSessions: fileConfig.sessions?.maxSessions ?? DEFAULT_MAX_SESSIONS,
     protectedSessions: fileConfig.sessions?.protectedSessions || [`${projectName}-server`],

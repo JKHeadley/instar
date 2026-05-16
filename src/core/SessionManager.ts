@@ -45,6 +45,8 @@ import type { InputDetector } from '../monitoring/PromptGate.js';
 
 const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
+import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { buildInteractiveLaunch } from './frameworkSessionLaunch.js';
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
@@ -924,6 +926,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
   captureOutput(tmuxSession: string, lines: number = 100): string | null {
     try {
       // Note: use `=session:` (trailing colon) for pane-level tmux commands
+      // RULE 3: EXEMPT — primitive output capture, not state detection. The
+      // raw bytes returned here are consumed by callers (sentinels, watchdog)
+      // that own the actual state-detection patterns and their canary/registry
+      // coverage. This method is the transport layer.
       return execFileSync(
         this.config.tmuxPath,
         ['capture-pane', '-t', `=${tmuxSession}:`, '-p', '-S', `-${lines}`],
@@ -1223,7 +1229,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string }): Promise<string> {
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string; framework?: IntelligenceFramework }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
@@ -1260,22 +1266,41 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Generate session ID before tmux spawn so we can pass it as env var
     const interactiveSessionId = this.generateId();
 
-    // Spawn Claude in tmux — no bash -c shell intermediary.
+    // Resolve which framework this session runs under (per-call override
+    // wins; otherwise default to claude-code). Pick the right binary
+    // path; fall back to the legacy claudePath when the framework-binary
+    // map isn't populated.
+    const framework: IntelligenceFramework = options?.framework ?? 'claude-code';
+    const binaryPath =
+      this.config.frameworkBinaryPaths?.[framework]
+      ?? this.config.claudePath;
+    if (!binaryPath) {
+      throw new Error(`No binary path available for framework "${framework}"`);
+    }
+    const launchSpec = buildInteractiveLaunch(framework, {
+      binaryPath,
+      ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+    });
+
+    // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
-    // This avoids shell injection risks and handles claudePath with spaces.
+    // This avoids shell injection risks and handles binary paths with spaces.
     try {
       const tmuxArgs = [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', this.config.projectDir,
         '-x', '200', '-y', '50',
-        '-e', 'CLAUDECODE=', // Prevent nested Claude Code detection
         '-e', `INSTAR_SESSION_ID=${interactiveSessionId}`, // Expose instar session ID to hook events
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_FRAMEWORK=${framework}`,
+        // Framework-specific env additions/clears (e.g., CLAUDECODE=)
+        ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
         // OAuth tokens (sk-ant-oat01-...) go in CLAUDE_CODE_OAUTH_TOKEN to enable
         // interactive mode auth via subscription. API keys (sk-ant-api03-...) go in
-        // ANTHROPIC_API_KEY for direct API billing.
+        // ANTHROPIC_API_KEY for direct API billing. Codex reads its own
+        // OPENAI_API_KEY but harmless to pass these — Codex ignores them.
         ...((this.config.anthropicApiKey ?? '').startsWith('sk-ant-oat')
           ? ['-e', `CLAUDE_CODE_OAUTH_TOKEN=${this.config.anthropicApiKey}`, '-e', 'ANTHROPIC_API_KEY=']
           : ['-e', `ANTHROPIC_API_KEY=${this.config.anthropicApiKey ?? ''}`, '-e', 'CLAUDE_CODE_OAUTH_TOKEN=']),
@@ -1297,11 +1322,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxArgs.push('-e', `INSTAR_SLACK_CHANNEL=${options.slackChannelId}`);
       }
 
-      tmuxArgs.push(this.config.claudePath, '--dangerously-skip-permissions');
+      tmuxArgs.push(...launchSpec.argv);
 
       if (options?.resumeSessionId) {
-        tmuxArgs.push('--resume', options.resumeSessionId);
-        console.log(`[SessionManager] Resuming session: ${options.resumeSessionId}`);
+        console.log(`[SessionManager] Resuming session: ${options.resumeSessionId} (framework: ${framework})`);
+      } else {
+        console.log(`[SessionManager] Spawning interactive session "${tmuxSession}" (framework: ${framework})`);
       }
 
       execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });

@@ -305,6 +305,19 @@ let _fixDeps: FixCommandDeps | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+/** Per-topic framework override (claude-code | codex-cli). Populated from
+ *  `config.topicFrameworks` at server boot; consulted by spawnSessionForTopic
+ *  and respawnSessionForTopic when threading framework into spawnInteractiveSession. */
+let _topicFrameworks: Record<string, 'claude-code' | 'codex-cli'> = {};
+/** Default framework for sessions when no per-topic override is set. */
+let _defaultFramework: 'claude-code' | 'codex-cli' = 'claude-code';
+
+function resolveTopicFramework(topicId: number | undefined): 'claude-code' | 'codex-cli' {
+  if (topicId !== undefined && _topicFrameworks[String(topicId)]) {
+    return _topicFrameworks[String(topicId)]!;
+  }
+  return _defaultFramework;
+}
 let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
@@ -520,7 +533,8 @@ async function spawnSessionForTopic(
     console.log(`[spawnSessionForTopic] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
   }
 
-  const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, { telegramTopicId: topicId, resumeSessionId });
+  const framework = resolveTopicFramework(topicId);
+  const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, { telegramTopicId: topicId, resumeSessionId, framework });
 
   // Clear the resume entry after successful spawn to prevent stale reuse
   if (resumeSessionId) {
@@ -2043,6 +2057,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { buildIntelligenceProvider, frameworkFromEnv } = await import('../core/intelligenceProviderFactory.js');
       const framework = frameworkFromEnv() ?? 'claude-code';
       resolvedFramework = framework;
+      _defaultFramework = framework;
+      _topicFrameworks = (config as { topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'> }).topicFrameworks ?? {};
       const built = buildIntelligenceProvider({
         framework,
         binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,

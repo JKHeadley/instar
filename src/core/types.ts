@@ -70,8 +70,19 @@ export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 export interface SessionManagerConfig {
   /** Path to tmux binary */
   tmuxPath: string;
-  /** Path to claude CLI binary */
+  /** Path to the framework CLI binary for the agent's primary framework.
+   *  Misnamed for v0.x compat — actually holds whichever framework binary
+   *  was selected (claude OR codex OR …). New code should consult
+   *  `frameworkBinaryPaths` for per-framework lookups.
+   *  @deprecated naming — value semantics correct; prefer `frameworkBinaryPaths`. */
   claudePath: string;
+  /**
+   * Per-framework binary path map. Populated from detection at load
+   * time so spawnInteractiveSession can dispatch to any framework
+   * without re-running detection. Missing keys mean that framework
+   * isn't installed.
+   */
+  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string };
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */
@@ -1464,6 +1475,15 @@ export interface InstarConfig {
   host?: string;
   /** Session manager config */
   sessions: SessionManagerConfig;
+  /**
+   * Per-topic framework override. Maps a Telegram topic ID (as string,
+   * since JSON object keys are strings) to the framework that should
+   * run sessions spawned for that topic. When unset, sessions inherit
+   * the agent-level `sessions.framework` (or default `claude-code`).
+   * Lets you flip a single topic to Codex without changing the whole
+   * agent's framework.
+   */
+  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'>;
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
   /** Registered users */
