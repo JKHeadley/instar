@@ -29,6 +29,7 @@ import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview } from './eli16-overview-check.mjs';
+import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -329,10 +330,39 @@ if (staged.includes(spec) && !staged.includes(eli16Rel)) {
   );
 }
 
+// ─── Step 8: proposal-derived runbook gate (S-3) ─────────────────────────
+// Per SELF-HEALING-REMEDIATOR-V2-SPEC §A11/§A22/§A32, runbook source files
+// emitted by the SystemReviewer proposal pipeline must:
+//   1. Reference a proposal that actually exists in
+//      .instar/remediation/proposals-*/<id>.json on this checkout, AND
+//   2. Carry a __producingAgentId const matching the proposal's
+//      producingAgentId field.
+// The CI gate (C-1) re-verifies at PR-merge time with full fleet visibility.
+// This commit-time gate catches author mistakes before the PR is pushed.
+
+const promotionGateResult = verifyProposalDerivedRunbooks({
+  repoRoot: ROOT,
+  files: staged,
+});
+if (!promotionGateResult.ok) {
+  blockCommit(
+    inScopeFiles,
+    [
+      'Proposal-derived runbook gate refused this commit:',
+      `  ${promotionGateResult.reason}`,
+      '',
+      'See SELF-HEALING-REMEDIATOR-V2-SPEC.md §A11, §A22, §A32 for the rationale.',
+      'The proposal pipeline (Tier-3 S-1) must emit __proposalDerivedFrom +',
+      '__producingAgentId together, and the matching proposal JSON must be',
+      'present at .instar/remediation/proposals-<machineId>/<id>.json.',
+    ].join('\n'),
+  );
+}
+
 // ─── Pass ────────────────────────────────────────────────────────────────
 
 console.error(
-  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved, ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars).`,
+  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved, ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
 );
 process.exit(0);
 
