@@ -2027,6 +2027,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const staleApiProvider =
       (config as unknown as { intelligenceProvider?: string }).intelligenceProvider === 'anthropic-api';
     let intelligenceSource = 'none';
+    let resolvedFramework: import('../core/intelligenceProviderFactory.js').IntelligenceFramework = 'claude-code';
 
     if (staleApiProvider) {
       console.log(pc.yellow(
@@ -2041,6 +2042,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     try {
       const { buildIntelligenceProvider, frameworkFromEnv } = await import('../core/intelligenceProviderFactory.js');
       const framework = frameworkFromEnv() ?? 'claude-code';
+      resolvedFramework = framework;
       const built = buildIntelligenceProvider({
         framework,
         binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
@@ -3611,7 +3613,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
         },
         {
-          config: config.monitoring.triage,
+          config: { ...config.monitoring.triage, framework: resolvedFramework },
           state,
           intelligence: sharedIntelligence,
         },

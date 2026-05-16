@@ -2,7 +2,17 @@
  * StallTriageNurse Types — Shared type definitions for LLM-powered session recovery.
  */
 
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
+
 export interface StallTriageConfig {
+  /**
+   * Framework whose activity-signal patterns (tool-call regex, spinner
+   * glyphs, "esc to interrupt" wording) are used by the heuristic
+   * diagnose layer and the LLM prompt. Defaults to 'claude-code' for
+   * backwards-compat — preserves v0.x behavior when unset.
+   */
+  framework?: IntelligenceFramework;
+
   /** Enable the triage nurse */
   enabled: boolean;
   /** Model to use for diagnosis (default: 'claude-sonnet-4-6') */

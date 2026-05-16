@@ -133,6 +133,69 @@ describe('StallTriageNurse', () => {
     });
   });
 
+  // ─── 1b. Framework-aware heuristics (Tier 2.B) ─────────────
+
+  describe('framework-aware heuristicDiagnose', () => {
+    /** Build a TriageContext suitable for heuristicDiagnose calls. */
+    function ctx(tmuxOutput: string, waitMinutes = 0): TriageContext {
+      return {
+        sessionName: 'echo-test',
+        topicId: 1,
+        tmuxOutput,
+        sessionStatus: 'alive',
+        recentMessages: [],
+        pendingMessage: 'hi',
+        waitMinutes,
+      };
+    }
+
+    it('claude-code: shell prompt + Claude activity → no restart (Claude still alive)', () => {
+      const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG, framework: 'claude-code' } });
+      // Bare shell prompt is visible at end, but Claude is still rendering tool output.
+      const output = 'Read(/etc/hosts)\nsome output\n$ ';
+      expect(nurse.heuristicDiagnose(ctx(output))).toBeNull();
+    });
+
+    it('claude-code: shell prompt without Claude activity → restart', () => {
+      const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG, framework: 'claude-code' } });
+      const output = 'logged out\n$ ';
+      const result = nurse.heuristicDiagnose(ctx(output));
+      expect(result?.action).toBe('restart');
+      expect(result?.summary).toContain('Claude Code');
+    });
+
+    it('codex-cli: shell prompt + Codex activity → no restart (Codex still alive)', () => {
+      const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG, framework: 'codex-cli' } });
+      // Codex is rendering shell tool output, then a bare prompt.
+      const output = 'exec(npm test)\nrunning tests...\n$ ';
+      expect(nurse.heuristicDiagnose(ctx(output))).toBeNull();
+    });
+
+    it('codex-cli: shell prompt + Claude tool tokens → STILL restarts (Codex signal does not match Claude tokens)', () => {
+      const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG, framework: 'codex-cli' } });
+      // Output happens to contain "Read(" which Claude would treat as activity,
+      // but the Codex signal correctly ignores it — bare prompt means restart.
+      const output = 'previously: Read(/foo)\n$ ';
+      const result = nurse.heuristicDiagnose(ctx(output));
+      expect(result?.action).toBe('restart');
+      expect(result?.summary).toContain('Codex CLI');
+    });
+
+    it('codex-cli: Ctrl+C-to-cancel hint visible for 3+ min → interrupt', () => {
+      const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG, framework: 'codex-cli' } });
+      const output = 'streaming response\npress Ctrl+C to cancel';
+      const result = nurse.heuristicDiagnose(ctx(output, 4));
+      expect(result?.action).toBe('interrupt');
+    });
+
+    it('claude-code: "esc to interrupt" hint visible for 3+ min → interrupt (default framework)', () => {
+      const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG } });
+      const output = 'doing things\npress esc to interrupt';
+      const result = nurse.heuristicDiagnose(ctx(output, 5));
+      expect(result?.action).toBe('interrupt');
+    });
+  });
+
   // ─── 2. isInCooldown ────────────────────────────────────────
 
   describe('isInCooldown', () => {

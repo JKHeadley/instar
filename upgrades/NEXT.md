@@ -8,6 +8,8 @@
 
 ## What Changed
 
+Tier 2.B (StallTriageNurse framework awareness) landed: the stall-detection sentinel's heuristic pre-filter no longer hardcodes Claude Code's tool-call regex and spinner glyphs. New `src/monitoring/frameworkActivitySignals.ts` exposes per-framework activity signatures (`toolCallOrSpinner`, `escapeToInterrupt`, `runningIndicator`, plus a prompt-signatures line injected into the LLM system prompt). The nurse reads `config.framework` from `StallTriageConfig` (defaulting to claude-code for backwards-compat), and `server.ts` threads the resolved `INSTAR_FRAMEWORK` value into the construction site. Previously the shell-prompt restart heuristic would false-fire on a healthy Codex pane (no Claude tokens → "framework wrapper has exited"); now it correctly recognizes Codex tool tokens. 22 new tests (16 signal-module + 6 framework-aware heuristics).
+
 CoherenceReviewer subclasses and CoherenceGate dropped the unused `apiKey` constructor parameter — dead since the Rule 2 path-constraint lockdown removed the direct-Anthropic-API fallback. Reviewer LLM calls already route exclusively through the IntelligenceProvider; the key was being stored but never read.
 
 CoherenceGate now requires an IntelligenceProvider. When none is wired, the response review pipeline is disabled with a warning instead of attempting a raw API fallback.
