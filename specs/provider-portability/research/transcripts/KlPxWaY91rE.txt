@@ -1,0 +1,2138 @@
+ 
+Anthropic just launched Claude design.
+ 
+Anthropic just launched Claude design.
+And what did the world do? It reacted
+ 
+And what did the world do? It reacted
+with stocks, right? Figma's stock
+ 
+with stocks, right? Figma's stock
+crashed, but even though the coverage is
+ 
+crashed, but even though the coverage is
+about Figma, it's the least interesting
+ 
+about Figma, it's the least interesting
+thing about this launch. The real story
+ 
+thing about this launch. The real story
+is that Claude design is the third piece
+ 
+is that Claude design is the third piece
+in a coordinated Anthropic stack that's
+ 
+in a coordinated Anthropic stack that's
+quietly retiring the entire mock-up to
+ 
+quietly retiring the entire mock-up to
+production handoff. In the next few
+ 
+production handoff. In the next few
+minutes, I'm going to walk you through
+ 
+minutes, I'm going to walk you through
+eight things you can actually make with
+ 
+eight things you can actually make with
+Claude design, show you how it fits with
+ 
+Claude design, show you how it fits with
+Claude code and co-work, and explain why
+ 
+Claude code and co-work, and explain why
+Google is already fighting back with
+ 
+Google is already fighting back with
+changes just to stitch. So, this isn't a
+ 
+changes just to stitch. So, this isn't a
+Figma funeral. It's something much
+ 
+Figma funeral. It's something much
+bigger. The mock-up, the thing that
+ 
+bigger. The mock-up, the thing that
+product teams have been making for 20
+ 
+product teams have been making for 20
+years or more to communicate what
+ 
+years or more to communicate what
+they're going to build, that is about to
+ 
+they're going to build, that is about to
+go extinct. And most of your team's
+ 
+go extinct. And most of your team's
+structure is built around a cost that
+ 
+structure is built around a cost that
+has effectively been deleted by LLMs.
+ 
+has effectively been deleted by LLMs.
+So, let's get into what I mean, and
+ 
+So, let's get into what I mean, and
+let's go through it in five specific
+ 
+let's go through it in five specific
+pieces. One, I want to talk about the
+ 
+pieces. One, I want to talk about the
+eight things you can make with Claude
+ 
+eight things you can make with Claude
+design that used to require different
+ 
+design that used to require different
+tools. It's not just those eight. I want
+ 
+tools. It's not just those eight. I want
+to give you of the range that Claude
+ 
+to give you of the range that Claude
+design offers. Two, how does Claude code
+ 
+design offers. Two, how does Claude code
+and co-work and design fit together into
+ 
+and co-work and design fit together into
+a coordinated pattern you need to pay
+ 
+a coordinated pattern you need to pay
+attention to? Three, why is Claude
+ 
+attention to? Three, why is Claude
+design the piece that was missing, and
+ 
+design the piece that was missing, and
+how does Google Stitch fit into this?
+ 
+how does Google Stitch fit into this?
+Four, what changes role by role? For
+ 
+Four, what changes role by role? For
+PMs, for designers, for engineers, for
+ 
+PMs, for designers, for engineers, for
+founders. And five, what does this mean
+ 
+founders. And five, what does this mean
+for your team's structure? Let's start
+ 
+for your team's structure? Let's start
+with those eight things. First thing you
+ 
+with those eight things. First thing you
+can make, pitch decks with live embedded
+ 
+can make, pitch decks with live embedded
+AI. Paste your one-pager into Claude
+ 
+AI. Paste your one-pager into Claude
+design, prompt for a 12-slide Series A
+ 
+design, prompt for a 12-slide Series A
+deck with a working chatbot embedded on
+ 
+deck with a working chatbot embedded on
+slide seven, the slide where you're
+ 
+slide seven, the slide where you're
+demoing the product. Claude can generate
+ 
+demoing the product. Claude can generate
+that whole deck, apply your actual
+ 
+that whole deck, apply your actual
+design system, and the chatbot on slide
+ 
+design system, and the chatbot on slide
+seven is a working chatbot that a VC
+ 
+seven is a working chatbot that a VC
+could use in the meeting. Not a
+ 
+could use in the meeting. Not a
+screenshot, not a recording, a live demo
+ 
+screenshot, not a recording, a live demo
+inside the deck. This replaces the whole
+ 
+inside the deck. This replaces the whole
+pitch deck plus demo motion that so many
+ 
+pitch deck plus demo motion that so many
+startup teams have used over the years.
+ 
+startup teams have used over the years.
+I don't want to say here that you're
+ 
+I don't want to say here that you're
+going to get a a seed round if you just
+ 
+going to get a a seed round if you just
+stick a chatbot into a screen. That is
+ 
+stick a chatbot into a screen. That is
+not the point. The point is that Claude
+ 
+not the point. The point is that Claude
+Design is collapsing the cost of
+ 
+Design is collapsing the cost of
+presentation and allowing you as a
+ 
+presentation and allowing you as a
+founder to work more on your idea and
+ 
+founder to work more on your idea and
+sharpening that and less on the
+ 
+sharpening that and less on the
+ergonomics of the presentation itself.
+ 
+ergonomics of the presentation itself.
+That's what matters. Second use case,
+ 
+That's what matters. Second use case,
+animated product explainer videos
+ 
+animated product explainer videos
+rendered in code and that matters
+ 
+rendered in code and that matters
+because it means you can tweak the color
+ 
+because it means you can tweak the color
+palette, toggle the captions, or retime
+ 
+palette, toggle the captions, or retime
+the whole video after it's generated
+ 
+the whole video after it's generated
+without starting over. It's the kind of
+ 
+without starting over. It's the kind of
+45-second animated explainer you'd pay a
+ 
+45-second animated explainer you'd pay a
+motion graphics contractor for a couple
+ 
+motion graphics contractor for a couple
+weeks to come up with, but it takes 5
+ 
+weeks to come up with, but it takes 5
+minutes. And because it's code, you can
+ 
+minutes. And because it's code, you can
+regenerate it in a different style at
+ 
+regenerate it in a different style at
+any time. It replaces effectively After
+ 
+any time. It replaces effectively After
+Effects, it replaces that contractor
+ 
+Effects, it replaces that contractor
+work, and you can even use 3D components
+ 
+work, and you can even use 3D components
+with it. Product configurators, data
+ 
+with it. Product configurators, data
+globes, orbit-controlled viewers with
+ 
+globes, orbit-controlled viewers with
+live customization sliders, those kinds
+ 
+live customization sliders, those kinds
+of three-dimensional effects rendered in
+ 
+of three-dimensional effects rendered in
+code that make it possible to have a
+ 
+code that make it possible to have a
+really flashy demo. That kind of thing
+ 
+really flashy demo. That kind of thing
+used to take 3 weeks of WebGL
+ 
+used to take 3 weeks of WebGL
+engineering and it just comes out
+ 
+engineering and it just comes out
+working with everything already wired
+ 
+working with everything already wired
+up. If you've ever wanted an interactive
+ 
+up. If you've ever wanted an interactive
+3D mockup of a physical product in a
+ 
+3D mockup of a physical product in a
+pitch deck or a landing page, this is
+ 
+pitch deck or a landing page, this is
+the first tool where you can get that
+ 
+the first tool where you can get that
+done without writing any WebGL code
+ 
+done without writing any WebGL code
+yourself. Four, design systems extracted
+ 
+yourself. Four, design systems extracted
+from your existing code base. You point
+ 
+from your existing code base. You point
+Claude Design at your repo or you upload
+ 
+Claude Design at your repo or you upload
+your CSS or your Tailwind config or even
+ 
+your CSS or your Tailwind config or even
+a Figma export, and just a few minutes
+ 
+a Figma export, and just a few minutes
+later you'll have a design system file.
+ 
+later you'll have a design system file.
+You'll have type scale, component
+ 
+You'll have type scale, component
+patterns, all surfaced from code Claude
+ 
+patterns, all surfaced from code Claude
+has never seen before. Applied
+ 
+has never seen before. Applied
+automatically to every subsequent
+ 
+automatically to every subsequent
+project you generate in that workspace.
+ 
+project you generate in that workspace.
+That used to be a multi-week design ops
+ 
+That used to be a multi-week design ops
+consulting engagement. To be honest with
+ 
+consulting engagement. To be honest with
+you, I've talked about the fact that
+ 
+you, I've talked about the fact that
+this isn't perfect. I said in a separate
+ 
+this isn't perfect. I said in a separate
+video that when I tried this, I had some
+ 
+video that when I tried this, I had some
+issues with Claude Design proactively
+ 
+issues with Claude Design proactively
+changing my logo when I didn't ask it
+ 
+changing my logo when I didn't ask it
+to. But those headaches aside, I want
+ 
+to. But those headaches aside, I want
+you to see the big idea. It is now
+ 
+you to see the big idea. It is now
+possible to take what would have been a
+ 
+possible to take what would have been a
+multi-week effort for a designer to
+ 
+multi-week effort for a designer to
+create a design system from an existing
+ 
+create a design system from an existing
+massive code files and do it like that.
+ 
+massive code files and do it like that.
+And yeah, there will be some issues. You
+ 
+And yeah, there will be some issues. You
+have to revisit it. You have to revise a
+ 
+have to revisit it. You have to revise a
+little bit. We have some token
+ 
+little bit. We have some token
+constraints for using this right now
+ 
+constraints for using this right now
+that I'm sure will get easier and as
+ 
+that I'm sure will get easier and as
+Anthropic figures out the compute
+ 
+Anthropic figures out the compute
+picture. But the big picture is clear.
+ 
+picture. But the big picture is clear.
+This is a huge breakthrough in terms of
+ 
+This is a huge breakthrough in terms of
+ease of designing design systems for
+ 
+ease of designing design systems for
+many teams. Five, web capture and
+ 
+many teams. Five, web capture and
+reskin. Grab any competitor's landing
+ 
+reskin. Grab any competitor's landing
+page through Claude Design's web capture
+ 
+page through Claude Design's web capture
+tool. Claude reads the page, the
+ 
+tool. Claude reads the page, the
+structure, the content, the flow, and
+ 
+structure, the content, the flow, and
+then re-renders it in your own design
+ 
+then re-renders it in your own design
+patterns. It takes a few minutes and
+ 
+patterns. It takes a few minutes and
+you'll have a branded reference
+ 
+you'll have a branded reference
+prototype based on the best competitive
+ 
+prototype based on the best competitive
+example in your space. It can replace a
+ 
+example in your space. It can replace a
+designer building an inspiration board
+ 
+designer building an inspiration board
+plus rebuilding the page from scratch.
+ 
+plus rebuilding the page from scratch.
+And before you jump in and say, "You're
+ 
+And before you jump in and say, "You're
+saying that this replaces designers."
+ 
+saying that this replaces designers."
+I'm not. What I'm saying is that this
+ 
+I'm not. What I'm saying is that this
+tool accelerates huge portions of the
+ 
+tool accelerates huge portions of the
+design function so designers can focus
+ 
+design function so designers can focus
+on the heart of design, which is
+ 
+on the heart of design, which is
+situating a product within a particular
+ 
+situating a product within a particular
+context in a way that makes sense for a
+ 
+context in a way that makes sense for a
+user. Six, interactive dashboards and
+ 
+user. Six, interactive dashboards and
+data views. You can build a live,
+ 
+data views. You can build a live,
+manipulatable analytics view as a
+ 
+manipulatable analytics view as a
+shareable URL. And instead of exporting
+ 
+shareable URL. And instead of exporting
+screenshots from Tableau and pasting
+ 
+screenshots from Tableau and pasting
+them into a Google Doc and sharing them
+ 
+them into a Google Doc and sharing them
+around in a spreadsheet or whatever you
+ 
+around in a spreadsheet or whatever you
+do, you can just build once and the
+ 
+do, you can just build once and the
+chart will just automatically update.
+ 
+chart will just automatically update.
+It's a use case for board memos, for
+ 
+It's a use case for board memos, for
+investor updates, for internal reviews.
+ 
+investor updates, for internal reviews.
+It replaces the screenshot from your BI
+ 
+It replaces the screenshot from your BI
+tool approach that so many teams use.
+ 
+tool approach that so many teams use.
+Seven, internal admin tools. You can
+ 
+Seven, internal admin tools. You can
+ship those so quickly because you can
+ 
+ship those so quickly because you can
+have like moderation queues, ops
+ 
+have like moderation queues, ops
+dashboards, admin panels. And every
+ 
+dashboards, admin panels. And every
+company that I know of has a backlog of
+ 
+company that I know of has a backlog of
+those kinds of internal tools in a
+ 
+those kinds of internal tools in a
+half-finished state because
+ 
+half-finished state because
+customer-facing work always takes
+ 
+customer-facing work always takes
+priority. Claude Design is explicitly
+ 
+priority. Claude Design is explicitly
+built to knock out that kind of work
+ 
+built to knock out that kind of work
+quickly. That backlog either ships or it
+ 
+quickly. That backlog either ships or it
+gets replaced by something that's
+ 
+gets replaced by something that's
+actually usable that Claude design puts
+ 
+actually usable that Claude design puts
+together very quickly and wires up to
+ 
+together very quickly and wires up to
+your connectors so it actually stays
+ 
+your connectors so it actually stays
+live. Eight, mobile app prototypes with
+ 
+live. Eight, mobile app prototypes with
+real estate transitions. Not static
+ 
+real estate transitions. Not static
+screens, actual transitions between
+ 
+screens, actual transitions between
+screens. Every state drawn by default,
+ 
+screens. Every state drawn by default,
+empty, error, low volume data, high
+ 
+empty, error, low volume data, high
+volume, etc. When the prototype's ready,
+ 
+volume, etc. When the prototype's ready,
+all you have to do is hand it to Claude
+ 
+all you have to do is hand it to Claude
+code as a bundle to get it coded. So,
+ 
+code as a bundle to get it coded. So,
+those are eight examples I picked to
+ 
+those are eight examples I picked to
+show you what's possible. You can have
+ 
+show you what's possible. You can have
+pitch decks with live elements,
+ 
+pitch decks with live elements,
+explainer videos, 3D components, design
+ 
+explainer videos, 3D components, design
+systems from a code base, web captures,
+ 
+systems from a code base, web captures,
+dashboards, admin tools, the list goes
+ 
+dashboards, admin tools, the list goes
+on. Every one of those used to require
+ 
+on. Every one of those used to require
+either its own specialized tool or its
+ 
+either its own specialized tool or its
+own specialist. And the thing you
+ 
+own specialist. And the thing you
+produced was always a rough
+ 
+produced was always a rough
+approximation of what you would ship.
+ 
+approximation of what you would ship.
+Claude design produces each one as code
+ 
+Claude design produces each one as code
+that runs in the medium it will live in.
+ 
+that runs in the medium it will live in.
+That's the death of the mock-up. But the
+ 
+That's the death of the mock-up. But the
+eight use cases, as much as they
+ 
+eight use cases, as much as they
+illustrate the range of this tool, I
+ 
+illustrate the range of this tool, I
+don't think they're the real story. The
+ 
+don't think they're the real story. The
+real story is that Claude design is the
+ 
+real story is that Claude design is the
+third release in a coordinated Anthropic
+ 
+third release in a coordinated Anthropic
+stack. And to see the pattern, we need
+ 
+stack. And to see the pattern, we need
+to look at code and co-work first. How
+ 
+to look at code and co-work first. How
+do those three products fit together?
+ 
+do those three products fit together?
+All three of them work the same way. You
+ 
+All three of them work the same way. You
+describe what you want in plain
+ 
+describe what you want in plain
+language, Claude produces a working
+ 
+language, Claude produces a working
+artifact. You refine it through
+ 
+artifact. You refine it through
+conversation, and when it's ready, it
+ 
+conversation, and when it's ready, it
+hands off to the next product in the
+ 
+hands off to the next product in the
+stack. What changes across the three is
+ 
+stack. What changes across the three is
+the kind of artifact you get. How you
+ 
+the kind of artifact you get. How you
+get that actually doesn't change. Now,
+ 
+get that actually doesn't change. Now,
+Claude code came first mid-2025. You
+ 
+Claude code came first mid-2025. You
+describe what you want built, Claude
+ 
+describe what you want built, Claude
+writes the code it iterates against your
+ 
+writes the code it iterates against your
+tests, it ships pull requests. The code
+ 
+tests, it ships pull requests. The code
+it produces is the code that ships.
+ 
+it produces is the code that ships.
+There's no intermediate mom. Engineers
+ 
+There's no intermediate mom. Engineers
+who've used code seriously did not treat
+ 
+who've used code seriously did not treat
+that tool as a faster auto complete.
+ 
+that tool as a faster auto complete.
+They actually restructured their whole
+ 
+They actually restructured their whole
+workflow around it, especially as it
+ 
+workflow around it, especially as it
+gained agent capabilities after December
+ 
+gained agent capabilities after December
+of last year. Co-work came next in
+ 
+of last year. Co-work came next in
+January, same move applied to knowledge
+ 
+January, same move applied to knowledge
+work. You describe an outcome, Claude
+ 
+work. You describe an outcome, Claude
+reads your files, runs multi-step tasks,
+ 
+reads your files, runs multi-step tasks,
+and produces an actual artifact. A board
+ 
+and produces an actual artifact. A board
+deck built from six months of meeting
+ 
+deck built from six months of meeting
+notes, a competitive analysis drawn from
+ 
+notes, a competitive analysis drawn from
+50 different articles, a research
+ 
+50 different articles, a research
+directory reorganized from lots of chaos
+ 
+directory reorganized from lots of chaos
+in your file system. Same pattern as
+ 
+in your file system. Same pattern as
+code, it's just applied to documents and
+ 
+code, it's just applied to documents and
+analyses instead of software. Claude
+ 
+analyses instead of software. Claude
+Design extends the same pattern to
+ 
+Design extends the same pattern to
+visual artifacts, prototypes, decks,
+ 
+visual artifacts, prototypes, decks,
+animations, 3D, etc. All the things I
+ 
+animations, 3D, etc. All the things I
+just walked through. The mechanics are
+ 
+just walked through. The mechanics are
+identical to code and co-work. What's
+ 
+identical to code and co-work. What's
+new is that visual work, the part most
+ 
+new is that visual work, the part most
+product teams spend the most time on
+ 
+product teams spend the most time on
+early in a project, just became
+ 
+early in a project, just became
+something anybody can produce in a few
+ 
+something anybody can produce in a few
+minutes. And the important part is this,
+ 
+minutes. And the important part is this,
+for the last 20 years, prototyping has
+ 
+for the last 20 years, prototyping has
+been a discrete phase between spec and
+ 
+been a discrete phase between spec and
+build. It's been owned by a specialist,
+ 
+build. It's been owned by a specialist,
+usually a designer, producing an
+ 
+usually a designer, producing an
+artifact that was thrown away afterward.
+ 
+artifact that was thrown away afterward.
+The prototype existed to figure out what
+ 
+The prototype existed to figure out what
+to build. Then you build something
+ 
+to build. Then you build something
+separate in a different medium with
+ 
+separate in a different medium with
+translation losses at every step. The
+ 
+translation losses at every step. The
+whole model existed because prototyping
+ 
+whole model existed because prototyping
+was expensive and code was even more
+ 
+was expensive and code was even more
+expensive. A realistic interactive
+ 
+expensive. A realistic interactive
+mock-up could take a designer days,
+ 
+mock-up could take a designer days,
+which meant designers had to ration what
+ 
+which meant designers had to ration what
+got prototyped. One, prototyping took a
+ 
+got prototyped. One, prototyping took a
+long time, and two, the prototype was
+ 
+long time, and two, the prototype was
+separate from what you shipped. Both of
+ 
+separate from what you shipped. Both of
+those facts just changed. Claude Code
+ 
+those facts just changed. Claude Code
+made engineering output the prototype.
+ 
+made engineering output the prototype.
+Co-work made knowledge work output the
+ 
+Co-work made knowledge work output the
+prototype. Claude Design makes visual
+ 
+prototype. Claude Design makes visual
+output the prototype. The prototype is
+ 
+output the prototype. The prototype is
+no longer an approximation of the thing,
+ 
+no longer an approximation of the thing,
+it is actually the thing or one handoff
+ 
+it is actually the thing or one handoff
+away from it. The only separation
+ 
+away from it. The only separation
+between prototype and production code
+ 
+between prototype and production code
+now is whether you decide to launch it.
+ 
+now is whether you decide to launch it.
+That's the pattern, three products, one
+ 
+That's the pattern, three products, one
+new motion. Now, let me tell you why
+ 
+new motion. Now, let me tell you why
+design specifically is the piece that
+ 
+design specifically is the piece that
+makes this strategy legible and readable
+ 
+makes this strategy legible and readable
+so we can see where we're going. So,
+ 
+so we can see where we're going. So,
+before design, Anthropic had a specific
+ 
+before design, Anthropic had a specific
+gap in their stack. Chat handled
+ 
+gap in their stack. Chat handled
+thinking, co-work handled knowledge work
+ 
+thinking, co-work handled knowledge work
+execution, code handled software
+ 
+execution, code handled software
+execution, whether it was prototype or
+ 
+execution, whether it was prototype or
+production code, but most product work
+ 
+production code, but most product work
+begins with a visual artifact, a sketch,
+ 
+begins with a visual artifact, a sketch,
+a mock-up, a deck, a rough prototype
+ 
+a mock-up, a deck, a rough prototype
+screen. Visual artifacts are how we
+ 
+screen. Visual artifacts are how we
+communicate ideas to each other. PMs use
+ 
+communicate ideas to each other. PMs use
+them to communicate features, designers
+ 
+them to communicate features, designers
+use them to show direction, founders use
+ 
+use them to show direction, founders use
+them to pitch products that don't exist
+ 
+them to pitch products that don't exist
+yet. Before design, Anthropic just
+ 
+yet. Before design, Anthropic just
+wasn't in that workflow. But there's a
+ 
+wasn't in that workflow. But there's a
+deeper reason design works the way it
+ 
+deeper reason design works the way it
+does, and it comes down to something Sam
+ 
+does, and it comes down to something Sam
+Henry Gold pointed out in a post right
+ 
+Henry Gold pointed out in a post right
+after the launch. Figma spent a decade
+ 
+after the launch. Figma spent a decade
+building sophisticated design
+ 
+building sophisticated design
+primitives, components, variables,
+ 
+primitives, components, variables,
+modes, props, beautiful abstractions for
+ 
+modes, props, beautiful abstractions for
+pixel-level design work. But those
+ 
+pixel-level design work. But those
+primitives were Figma proprietary. They
+ 
+primitives were Figma proprietary. They
+weren't in the training data for the
+ 
+weren't in the training data for the
+models that are now doing most of the
+ 
+models that are now doing most of the
+design generation. LLMs were trained on
+ 
+design generation. LLMs were trained on
+code, not Figma files. So when the
+ 
+code, not Figma files. So when the
+frontier models got very good at design,
+ 
+frontier models got very good at design,
+they got good at the medium they're
+ 
+they got good at the medium they're
+actually learning from. At code, at
+ 
+actually learning from. At code, at
+HTML, at CSS, at SVG, etc. Code became
+ 
+HTML, at CSS, at SVG, etc. Code became
+the de facto source of truth for
+ 
+the de facto source of truth for
+AI-assisted design because code is what
+ 
+AI-assisted design because code is what
+AI knows. Claude design leans into this
+ 
+AI knows. Claude design leans into this
+completely. The output isn't a pixel
+ 
+completely. The output isn't a pixel
+approximation of a UI that some engineer
+ 
+approximation of a UI that some engineer
+has to rebuild. It is the UI already
+ 
+has to rebuild. It is the UI already
+written in the medium it will run in.
+ 
+written in the medium it will run in.
+That's why the handoff to Claude code
+ 
+That's why the handoff to Claude code
+works so cleanly. There is no
+ 
+works so cleanly. There is no
+translation layer. The design artifact
+ 
+translation layer. The design artifact
+is already in the production format.
+ 
+is already in the production format.
+Claude design is not primarily a Figma
+ 
+Claude design is not primarily a Figma
+competitor. Figma's going to keep its
+ 
+competitor. Figma's going to keep its
+position for production-grade design
+ 
+position for production-grade design
+work for a while. Design systems at
+ 
+work for a while. Design systems at
+scale, component library maintenance,
+ 
+scale, component library maintenance,
+the craft work in the middle of the
+ 
+the craft work in the middle of the
+product life cycle, Figma has built out
+ 
+product life cycle, Figma has built out
+that middle in the way that's really
+ 
+that middle in the way that's really
+sticky. Claude design competes at the
+ 
+sticky. Claude design competes at the
+beginning, with quick exploration, with
+ 
+beginning, with quick exploration, with
+early prototyping, and it connects
+ 
+early prototyping, and it connects
+directly to the end through Claude code,
+ 
+directly to the end through Claude code,
+skipping the middle where Figma is the
+ 
+skipping the middle where Figma is the
+strongest. And that's the tell. Mike
+ 
+strongest. And that's the tell. Mike
+Krieger, Anthropic's chief product
+ 
+Krieger, Anthropic's chief product
+officer, stepped down from Figma's board
+ 
+officer, stepped down from Figma's board
+just a few days before design shipped.
+ 
+just a few days before design shipped.
+And so my suspicion is, even though
+ 
+And so my suspicion is, even though
+Figma looks somewhat sticky in reality
+ 
+Figma looks somewhat sticky in reality
+right now, and the market is probably
+ 
+right now, and the market is probably
+overreacting to Figma's supposed demise,
+ 
+overreacting to Figma's supposed demise,
+there is a vision on Anthropic's side to
+ 
+there is a vision on Anthropic's side to
+delete a large part of the design middle
+ 
+delete a large part of the design middle
+because fundamentally it's inefficient.
+ 
+because fundamentally it's inefficient.
+Fundamentally, you're building
+ 
+Fundamentally, you're building
+abstractions on top of code when you
+ 
+abstractions on top of code when you
+should just be designing in code. That
+ 
+should just be designing in code. That
+is the vision for Claude design. It may
+ 
+is the vision for Claude design. It may
+not be all the way there today. I view
+ 
+not be all the way there today. I view
+it more as an early sketch prototyping
+ 
+it more as an early sketch prototyping
+tool. I think it works for simpler
+ 
+tool. I think it works for simpler
+products. If it's more complex, it's
+ 
+products. If it's more complex, it's
+going to have some challenges,
+ 
+going to have some challenges,
+especially with current token budget
+ 
+especially with current token budget
+limits. But, that's where they're going.
+ 
+limits. But, that's where they're going.
+And, you know, they ship so fast. Give
+ 
+And, you know, they ship so fast. Give
+them 6 months and we're going to see
+ 
+them 6 months and we're going to see
+more and more and more of the middle of
+ 
+more and more and more of the middle of
+that design process that Figma has
+ 
+that design process that Figma has
+traditionally owned hollowed out by a
+ 
+traditionally owned hollowed out by a
+stronger and stronger Claude design
+ 
+stronger and stronger Claude design
+tool. Google, the makers of Google
+ 
+tool. Google, the makers of Google
+Stitch, are not sleeping on this launch.
+ 
+Stitch, are not sleeping on this launch.
+Google Stitch introduced something
+ 
+Google Stitch introduced something
+called design.markdown almost as soon as
+ 
+called design.markdown almost as soon as
+this launch happened. It's a plain text
+ 
+this launch happened. It's a plain text
+markdown file that describes your design
+ 
+markdown file that describes your design
+tokens, your type scale, your component
+ 
+tokens, your type scale, your component
+rules, and AI can read it before every
+ 
+rules, and AI can read it before every
+generation. So, just days after Claude
+ 
+generation. So, just days after Claude
+design's launch, Google open-sourced
+ 
+design's launch, Google open-sourced
+that specification, so any tool can now
+ 
+that specification, so any tool can now
+read and write it. That means color
+ 
+read and write it. That means color
+intent, accessibility validation, all of
+ 
+intent, accessibility validation, all of
+it can be built into that format and
+ 
+it can be built into that format and
+shared openly. It's a different bet than
+ 
+shared openly. It's a different bet than
+Anthropic's in that Google is wagering
+ 
+Anthropic's in that Google is wagering
+on open source and standardization, but
+ 
+on open source and standardization, but
+it's a similar competitive strategy in
+ 
+it's a similar competitive strategy in
+that Google Stitch knows that it needs
+ 
+that Google Stitch knows that it needs
+to compete on being shareable and
+ 
+to compete on being shareable and
+hand-offable because Claude design
+ 
+hand-offable because Claude design
+emphasized that so much in the way the
+ 
+emphasized that so much in the way the
+product was configured. You just go
+ 
+product was configured. You just go
+straight to Claude code. So, that's
+ 
+straight to Claude code. So, that's
+really Google's answer here, and it's a
+ 
+really Google's answer here, and it's a
+very Google answer, right? You expose a
+ 
+very Google answer, right? You expose a
+spec, you let it become ubiquitous, you
+ 
+spec, you let it become ubiquitous, you
+compete on the Gemini quality inside the
+ 
+compete on the Gemini quality inside the
+model. Anthropic is wagering on their
+ 
+model. Anthropic is wagering on their
+harness. They're wagering on
+ 
+harness. They're wagering on
+integration. So far, that's paid off for
+ 
+integration. So far, that's paid off for
+them. You can extract your design system
+ 
+them. You can extract your design system
+from your code base automatically, you
+ 
+from your code base automatically, you
+can apply it across every artifact type
+ 
+can apply it across every artifact type
+inside the Anthropic stack, and you hand
+ 
+inside the Anthropic stack, and you hand
+it off to Claude code. Google Stitch is
+ 
+it off to Claude code. Google Stitch is
+is much narrower than that. It does web
+ 
+is much narrower than that. It does web
+and mobile UIs. It does not do decks, it
+ 
+and mobile UIs. It does not do decks, it
+doesn't do animations, it doesn't do 3D,
+ 
+doesn't do animations, it doesn't do 3D,
+but it is a classic free tool from
+ 
+but it is a classic free tool from
+Google that shows the power of Gemini in
+ 
+Google that shows the power of Gemini in
+design. It's one of the rare instances,
+ 
+design. It's one of the rare instances,
+actually, where we see Gemini in
+ 
+actually, where we see Gemini in
+harness. That's been one of the bigger
+ 
+harness. That's been one of the bigger
+problems with Gemini over the last few
+ 
+problems with Gemini over the last few
+months as OpenAI and Anthropic have
+ 
+months as OpenAI and Anthropic have
+leaned into putting a harness on their
+ 
+leaned into putting a harness on their
+models, Google has not. And Google is
+ 
+models, Google has not. And Google is
+reportedly in the middle of a big push
+ 
+reportedly in the middle of a big push
+to change that, but for now, tools like
+ 
+to change that, but for now, tools like
+Stitch are few and far between, and most
+ 
+Stitch are few and far between, and most
+of how you interact with Gemini is
+ 
+of how you interact with Gemini is
+through a chat-like interface in most
+ 
+through a chat-like interface in most
+cases. With the exception of a few
+ 
+cases. With the exception of a few
+things like Stitch, like NotebookLM and
+ 
+things like Stitch, like NotebookLM and
+such. That's a really interesting
+ 
+such. That's a really interesting
+distinction, and I suspect Google is
+ 
+distinction, and I suspect Google is
+going to start to close that in the next
+ 
+going to start to close that in the next
+few months. But for now, Stitch is
+ 
+few months. But for now, Stitch is
+probably the closest competitor to
+ 
+probably the closest competitor to
+Claude design, and they're evolving in
+ 
+Claude design, and they're evolving in
+such a way that suggests that they
+ 
+such a way that suggests that they
+suspect Claude design will eat their
+ 
+suspect Claude design will eat their
+lunch if they're not careful. So, both
+ 
+lunch if they're not careful. So, both
+companies agree on the underlying shift
+ 
+companies agree on the underlying shift
+here, right? If we step back, code and
+ 
+here, right? If we step back, code and
+markdown are the medium AI works in, not
+ 
+markdown are the medium AI works in, not
+Figma files. They just disagree on where
+ 
+Figma files. They just disagree on where
+that mode is. Google thinks the mode is
+ 
+that mode is. Google thinks the mode is
+convenience, Anthropic thinks the mode
+ 
+convenience, Anthropic thinks the mode
+is the stack. Google wants it to be
+ 
+is the stack. Google wants it to be
+free, easy to use. Anthropic thinks the
+ 
+free, easy to use. Anthropic thinks the
+mode is serious work for prosumers
+ 
+mode is serious work for prosumers
+integrated into the stack, which brings
+ 
+integrated into the stack, which brings
+us to what this means for the people
+ 
+us to what this means for the people
+doing the work. What changes role by
+ 
+doing the work. What changes role by
+role? I'm going to cover four roles
+ 
+role? I'm going to cover four roles
+here: PMs, designers, engineers, and
+ 
+here: PMs, designers, engineers, and
+founders. The shift shows up differently
+ 
+founders. The shift shows up differently
+for each, but the underlying change is
+ 
+for each, but the underlying change is
+similar. The distance between having an
+ 
+similar. The distance between having an
+idea and having something you can show
+ 
+idea and having something you can show
+has dropped to minutes now. And the
+ 
+has dropped to minutes now. And the
+thing you show is the shift artifact.
+ 
+thing you show is the shift artifact.
+It's not or or maybe one step away from
+ 
+It's not or or maybe one step away from
+it. And that's different, right? That's
+ 
+it. And that's different, right? That's
+new. PMs first. The PRD stops being the
+ 
+new. PMs first. The PRD stops being the
+default artifact. Prototyping a feature
+ 
+default artifact. Prototyping a feature
+tells people what you want way more
+ 
+tells people what you want way more
+clearly than a doc, and prototyping
+ 
+clearly than a doc, and prototyping
+costs almost nothing now. The PMs
+ 
+costs almost nothing now. The PMs
+getting the most out of design prototype
+ 
+getting the most out of design prototype
+first and use that to drive discussion.
+ 
+first and use that to drive discussion.
+Engineers scope against it, designers
+ 
+Engineers scope against it, designers
+critique it. Ultimately, it's what
+ 
+critique it. Ultimately, it's what
+shapes how you decide what to build. So,
+ 
+shapes how you decide what to build. So,
+you can now paste your user stories,
+ 
+you can now paste your user stories,
+your acceptance criteria into design,
+ 
+your acceptance criteria into design,
+you prompt for a flow that satisfies
+ 
+you prompt for a flow that satisfies
+them, and you end up just putting the
+ 
+them, and you end up just putting the
+prototype into Jira, and it's just done.
+ 
+prototype into Jira, and it's just done.
+The PRD stops being the default
+ 
+The PRD stops being the default
+artifact. Prototyping a feature tells
+ 
+artifact. Prototyping a feature tells
+people what you want better than reading
+ 
+people what you want better than reading
+a doc does, and prototyping just costs a
+ 
+a doc does, and prototyping just costs a
+couple of minutes. The PMs getting the
+ 
+couple of minutes. The PMs getting the
+most out of design produce a working
+ 
+most out of design produce a working
+prototype first, then use it as the
+ 
+prototype first, then use it as the
+thing everyone discusses. Engineers
+ 
+thing everyone discusses. Engineers
+scope against it, designers critique it,
+ 
+scope against it, designers critique it,
+leadership decides whether to build it.
+ 
+leadership decides whether to build it.
+The concrete workflow looks something
+ 
+The concrete workflow looks something
+like this. You paste your user stories
+ 
+like this. You paste your user stories
+and acceptance criteria into design. You
+ 
+and acceptance criteria into design. You
+prompt for a flow that satisfies them.
+ 
+prompt for a flow that satisfies them.
+You generate all of the states, empty
+ 
+You generate all of the states, empty
+error states, loading states by default.
+ 
+error states, loading states by default.
+You put the prototype in the Jira ticket
+ 
+You put the prototype in the Jira ticket
+instead of just a raw spec doc, although
+ 
+instead of just a raw spec doc, although
+I would include that, too. And then
+ 
+I would include that, too. And then
+you're done. And if the feature involves
+ 
+you're done. And if the feature involves
+AI behavior, you embed real model calls
+ 
+AI behavior, you embed real model calls
+right in the prototype to show how it
+ 
+right in the prototype to show how it
+works. It ends up being a fully working
+ 
+works. It ends up being a fully working
+prototype in code that you can actually
+ 
+prototype in code that you can actually
+use to drive real agentic work. And by
+ 
+use to drive real agentic work. And by
+the way, if you're wondering, is this
+ 
+the way, if you're wondering, is this
+agent readable? Yes, that code
+ 
+agent readable? Yes, that code
+complements the spec and allows an
+ 
+complements the spec and allows an
+agent-driven development pattern to be
+ 
+agent-driven development pattern to be
+more precise. Let's tackle designers
+ 
+more precise. Let's tackle designers
+next. First and foremost, the rationing
+ 
+next. First and foremost, the rationing
+of designer attention is over. Designers
+ 
+of designer attention is over. Designers
+used to have to choose, do I prototype
+ 
+used to have to choose, do I prototype
+in multiple directions? Do I explore? Do
+ 
+in multiple directions? Do I explore? Do
+I commit? Those tradeoffs don't matter
+ 
+I commit? Those tradeoffs don't matter
+anymore because 10 directions in an hour
+ 
+anymore because 10 directions in an hour
+is very routine. So, the craft moves
+ 
+is very routine. So, the craft moves
+upstream. You spend less time making
+ 
+upstream. You spend less time making
+mockups and more time deciding which
+ 
+mockups and more time deciding which
+directions are good and why. Jenny Wen
+ 
+directions are good and why. Jenny Wen
+runs design at Anthropic. She came from
+ 
+runs design at Anthropic. She came from
+Figma, where she led FigJam and Slides.
+ 
+Figma, where she led FigJam and Slides.
+Her public framing of this shift inside
+ 
+Her public framing of this shift inside
+her team, mocking and prototyping used
+ 
+her team, mocking and prototyping used
+to take 2/3 of her day. Now it's closer
+ 
+to take 2/3 of her day. Now it's closer
+to a third across her team. The rest of
+ 
+to a third across her team. The rest of
+her time moved into pairing directly
+ 
+her time moved into pairing directly
+with engineers and in code. So,
+ 
+with engineers and in code. So,
+professional designers that I've talked
+ 
+professional designers that I've talked
+to describe this as getting hours of
+ 
+to describe this as getting hours of
+their day back, not as getting replaced.
+ 
+their day back, not as getting replaced.
+And I think that's a really important
+ 
+And I think that's a really important
+distinction because I've seen a lot of
+ 
+distinction because I've seen a lot of
+breathless headlines about designers
+ 
+breathless headlines about designers
+specifically with this launch, and I
+ 
+specifically with this launch, and I
+don't think it's fair or accurate to
+ 
+don't think it's fair or accurate to
+describe this launch as replacing
+ 
+describe this launch as replacing
+designers. I want to be very clear about
+ 
+designers. I want to be very clear about
+that. Instead, I think this challenges
+ 
+that. Instead, I think this challenges
+designers to do what they can do best,
+ 
+designers to do what they can do best,
+which is to situate a product in a
+ 
+which is to situate a product in a
+context in a way that makes it
+ 
+context in a way that makes it
+profoundly useful to customers. That's
+ 
+profoundly useful to customers. That's
+what you need to be doing, and this tool
+ 
+what you need to be doing, and this tool
+just lets you accelerate that and spend
+ 
+just lets you accelerate that and spend
+more of your time there. Let's tackle
+ 
+more of your time there. Let's tackle
+engineers next. Here, the handoff
+ 
+engineers next. Here, the handoff
+changes. Instead of just starting from a
+ 
+changes. Instead of just starting from a
+spec document, you start from a working
+ 
+spec document, you start from a working
+prototype packaged with a Claude code
+ 
+prototype packaged with a Claude code
+handoff bundle written up in HTML, CSS,
+ 
+handoff bundle written up in HTML, CSS,
+etc. The conceptual design work has
+ 
+etc. The conceptual design work has
+jumped into prototyping by the time you
+ 
+jumped into prototyping by the time you
+see it, and your job changes, too.
+ 
+see it, and your job changes, too.
+You're no longer translating docs for
+ 
+You're no longer translating docs for
+agents. Instead, you're actually making
+ 
+agents. Instead, you're actually making
+sure your production pipeline of agents
+ 
+sure your production pipeline of agents
+is ready to ingest this prototype code
+ 
+is ready to ingest this prototype code
+along with a spec and actually generate
+ 
+along with a spec and actually generate
+usable, full-scale production code. And
+ 
+usable, full-scale production code. And
+that's a whole new role. One thing I
+ 
+that's a whole new role. One thing I
+want to call out specifically for
+ 
+want to call out specifically for
+engineers, you have to be able to handle
+ 
+engineers, you have to be able to handle
+scale and the edge cases that don't show
+ 
+scale and the edge cases that don't show
+up in the prototype. Earlier this year,
+ 
+up in the prototype. Earlier this year,
+a Jane Street designer wrote publicly
+ 
+a Jane Street designer wrote publicly
+about running this exact loop
+ 
+about running this exact loop
+end-to-end. He builds the prototype
+ 
+end-to-end. He builds the prototype
+features directly in the codebase. He
+ 
+features directly in the codebase. He
+lives with them for days. He uses the
+ 
+lives with them for days. He uses the
+working artifact as the proposal.
+ 
+working artifact as the proposal.
+Instead of a Figma file describing the
+ 
+Instead of a Figma file describing the
+proposal, he just goes straight to code.
+ 
+proposal, he just goes straight to code.
+Reviewers see the actual experience, not
+ 
+Reviewers see the actual experience, not
+a drawing of it. If you want to scale
+ 
+a drawing of it. If you want to scale
+this flow, what it looks like across
+ 
+this flow, what it looks like across
+product design and engineering together
+ 
+product design and engineering together
+is handling scale by thinking more
+ 
+is handling scale by thinking more
+deeply about what edge cases emerge when
+ 
+deeply about what edge cases emerge when
+you actually roll out to 100,000 or a
+ 
+you actually roll out to 100,000 or a
+million people. You didn't have as much
+ 
+million people. You didn't have as much
+time for that before, and now you do.
+ 
+time for that before, and now you do.
+Earlier this year, a Jane Street
+ 
+Earlier this year, a Jane Street
+designer wrote publicly about running
+ 
+designer wrote publicly about running
+this loop, where he builds prototype
+ 
+this loop, where he builds prototype
+features directly in a codebase and
+ 
+features directly in a codebase and
+lives with them for days and has a
+ 
+lives with them for days and has a
+chance to expose those edge cases. Now,
+ 
+chance to expose those edge cases. Now,
+he wrote about it from a designer
+ 
+he wrote about it from a designer
+perspective, but my observation working
+ 
+perspective, but my observation working
+with teams these days is this is
+ 
+with teams these days is this is
+everybody's job. Basically, when you
+ 
+everybody's job. Basically, when you
+simplify and move to code, you free up
+ 
+simplify and move to code, you free up
+people's mental bandwidth to focus on
+ 
+people's mental bandwidth to focus on
+quality and edge cases in a way that was
+ 
+quality and edge cases in a way that was
+difficult before. And that's really
+ 
+difficult before. And that's really
+important for producing software that
+ 
+important for producing software that
+actually differentiates in the
+ 
+actually differentiates in the
+marketplace because we all know there's
+ 
+marketplace because we all know there's
+a lot of vibe coded slop out there.
+ 
+a lot of vibe coded slop out there.
+Okay, let's tackle founders now. The
+ 
+Okay, let's tackle founders now. The
+biggest shift for founders is that they
+ 
+biggest shift for founders is that they
+can now simplify the prototyping loop.
+ 
+can now simplify the prototyping loop.
+You can demo the product you're
+ 
+You can demo the product you're
+describing instead of just showing flat
+ 
+describing instead of just showing flat
+screenshots. It simplifies how complex
+ 
+screenshots. It simplifies how complex
+it is to get there. And for AI native
+ 
+it is to get there. And for AI native
+founders specifically, design does let
+ 
+founders specifically, design does let
+you embed real model calls in the
+ 
+you embed real model calls in the
+prototype. And that's a big deal cuz you
+ 
+prototype. And that's a big deal cuz you
+can actually get your whole workflow
+ 
+can actually get your whole workflow
+working and you don't have to give VCs a
+ 
+working and you don't have to give VCs a
+flat experience. Fundraising
+ 
+flat experience. Fundraising
+conversations change when you're
+ 
+conversations change when you're
+pitching what is actually there, not
+ 
+pitching what is actually there, not
+just what is promised. It makes it
+ 
+just what is promised. It makes it
+easier to convey. Now, it doesn't
+ 
+easier to convey. Now, it doesn't
+guarantee funding. We all know that. But
+ 
+guarantee funding. We all know that. But
+at least it helps you convey your vision
+ 
+at least it helps you convey your vision
+more clearly. Now, if we zoom out, this
+ 
+more clearly. Now, if we zoom out, this
+isn't just about the design process and
+ 
+isn't just about the design process and
+I hope you've seen that cuz I've covered
+ 
+I hope you've seen that cuz I've covered
+multiple roles here. It's really about
+ 
+multiple roles here. It's really about
+the org chart. What does this mean for
+ 
+the org chart. What does this mean for
+your team? So, two pizza teams became
+ 
+your team? So, two pizza teams became
+the Amazon standard and often spread
+ 
+the Amazon standard and often spread
+across the industry because coordination
+ 
+across the industry because coordination
+overhead was real and reducing that was
+ 
+overhead was real and reducing that was
+important. So, design, product
+ 
+important. So, design, product
+engineering, and QA had enough
+ 
+engineering, and QA had enough
+specialized work that splitting them
+ 
+specialized work that splitting them
+into roles was more efficient than
+ 
+into roles was more efficient than
+training generalists and you needed a
+ 
+training generalists and you needed a
+certain number of roles and that's how
+ 
+certain number of roles and that's how
+you got two pizza teams. And that
+ 
+you got two pizza teams. And that
+coordination tax was lower than the cost
+ 
+coordination tax was lower than the cost
+of building and that math held for 20
+ 
+of building and that math held for 20
+years. But the math is changing now.
+ 
+years. But the math is changing now.
+When every role can prototype, the walls
+ 
+When every role can prototype, the walls
+between roles start to shift, right? PMs
+ 
+between roles start to shift, right? PMs
+can produce designs, designers can ship
+ 
+can produce designs, designers can ship
+code, engineers can write specs, and
+ 
+code, engineers can write specs, and
+also design. The coordination tax is
+ 
+also design. The coordination tax is
+dropping because there are fewer
+ 
+dropping because there are fewer
+hand-offs involved. Atlassian CTO Rajeev
+ 
+hand-offs involved. Atlassian CTO Rajeev
+Rajan told the Pragmatic Summit in
+ 
+Rajan told the Pragmatic Summit in
+February that some of his teams are
+ 
+February that some of his teams are
+writing zero lines of code. His phrase
+ 
+writing zero lines of code. His phrase
+is, "It's all agents or orchestration of
+ 
+is, "It's all agents or orchestration of
+agents." Those teams produce two to five
+ 
+agents." Those teams produce two to five
+times more output than under the
+ 
+times more output than under the
+previous development model. At the same
+ 
+previous development model. At the same
+event, a head of engineering at a
+ 
+event, a head of engineering at a
+200-year-old agricultural company said
+ 
+200-year-old agricultural company said
+two pizza teams at his companies are
+ 
+two pizza teams at his companies are
+turning into one pizza teams. And
+ 
+turning into one pizza teams. And
+engineering leaders I talked to confirm
+ 
+engineering leaders I talked to confirm
+this trend. Claude Design effectively
+ 
+this trend. Claude Design effectively
+accelerates this idea of small
+ 
+accelerates this idea of small
+specialist teams by adding that third
+ 
+specialist teams by adding that third
+specialist function design into the same
+ 
+specialist function design into the same
+pattern that Claude and co-workers
+ 
+pattern that Claude and co-workers
+already enabled. And so you have even
+ 
+already enabled. And so you have even
+more capabilities for your superstars,
+ 
+more capabilities for your superstars,
+your crack team, your special forces,
+ 
+your crack team, your special forces,
+whatever you want to call it, so that
+ 
+whatever you want to call it, so that
+they're able to do more with a smaller
+ 
+they're able to do more with a smaller
+team. And that tells us a lot about the
+ 
+team. And that tells us a lot about the
+future of teams and the future of work.
+ 
+future of teams and the future of work.
+Your team gets smaller and faster
+ 
+Your team gets smaller and faster
+because every person can run more of the
+ 
+because every person can run more of the
+process themselves as long as you are
+ 
+process themselves as long as you are
+willing to rebuild your workflow around
+ 
+willing to rebuild your workflow around
+AI, which is often the bigger obstacle.
+ 
+AI, which is often the bigger obstacle.
+Now, before you run off and redesign
+ 
+Now, before you run off and redesign
+your whole workflow, a few things to
+ 
+your whole workflow, a few things to
+know going in. First, this is a max tier
+ 
+know going in. First, this is a max tier
+tool. The pro plan burns through weekly
+ 
+tool. The pro plan burns through weekly
+limits fast. If you're going to use this
+ 
+limits fast. If you're going to use this
+seriously, budget for the hundred or two
+ 
+seriously, budget for the hundred or two
+hundred dollar plan. This is not a
+ 
+hundred dollar plan. This is not a
+novelty you play with on the free tier.
+ 
+novelty you play with on the free tier.
+Second, Claude Design is SVG first.
+ 
+Second, Claude Design is SVG first.
+There's no native image generator. It's
+ 
+There's no native image generator. It's
+a layout and structure tool. If you need
+ 
+a layout and structure tool. If you need
+real photography for marketing
+ 
+real photography for marketing
+collateral, you're still handing that
+ 
+collateral, you're still handing that
+off to Canva or something similar for
+ 
+off to Canva or something similar for
+the final compositing. Third, Figma is
+ 
+the final compositing. Third, Figma is
+not dead. Production-grade design
+ 
+not dead. Production-grade design
+systems at scale, component library
+ 
+systems at scale, component library
+maintenance, the deep craft work in the
+ 
+maintenance, the deep craft work in the
+middle of the product life cycle, Figma
+ 
+middle of the product life cycle, Figma
+still owns that. Claude Design raises
+ 
+still owns that. Claude Design raises
+the floor dramatically for
+ 
+the floor dramatically for
+non-designers. And it gives pros more
+ 
+non-designers. And it gives pros more
+room to explore. But the production
+ 
+room to explore. But the production
+middle stays where it is for now. And
+ 
+middle stays where it is for now. And
+here's something that doesn't change no
+ 
+here's something that doesn't change no
+matter how good the tools get, brand
+ 
+matter how good the tools get, brand
+strategy, positioning, the taste
+ 
+strategy, positioning, the taste
+judgments that make your product
+ 
+judgments that make your product
+distinctive. All of that stays with you.
+ 
+distinctive. All of that stays with you.
+Claude Design will give you 10
+ 
+Claude Design will give you 10
+directions in an hour. Deciding which
+ 
+directions in an hour. Deciding which
+direction is right for your company,
+ 
+direction is right for your company,
+that is still your job. The execution
+ 
+that is still your job. The execution
+work compresses, the judgment work
+ 
+work compresses, the judgment work
+expands. Treat this as a replacement for
+ 
+expands. Treat this as a replacement for
+judgment, and you'll just ship bad work
+ 
+judgment, and you'll just ship bad work
+faster. Treat it as leverage for
+ 
+faster. Treat it as leverage for
+judgment you already have, and you'll
+ 
+judgment you already have, and you'll
+ship better. The warts are real. They
+ 
+ship better. The warts are real. They
+don't matter. The question isn't whether
+ 
+don't matter. The question isn't whether
+Claude design is a Figma killer. The
+ 
+Claude design is a Figma killer. The
+question is how much of your team was
+ 
+question is how much of your team was
+built around a cost that just
+ 
+built around a cost that just
+disappeared. Ultimately, a PM who can
+ 
+disappeared. Ultimately, a PM who can
+prototype doesn't need to be in the
+ 
+prototype doesn't need to be in the
+queue for a centralized designer, right?
+ 
+queue for a centralized designer, right?
+A designer who can ship code doesn't
+ 
+A designer who can ship code doesn't
+need to be in the queue for an engineer
+ 
+need to be in the queue for an engineer
+if it's a small app.
+ 
+if it's a small app.
+&gt;&gt; [gasps]
+ 
+&gt;&gt; [gasps]
+&gt;&gt; Your team gets smaller and faster
+ 
+&gt;&gt; Your team gets smaller and faster
+because every person can run more of the
+ 
+because every person can run more of the
+process themselves, as long as you are
+ 
+process themselves, as long as you are
+willing to rebuild your workflow around
+ 
+willing to rebuild your workflow around
+AI, which is often the bigger obstacle.

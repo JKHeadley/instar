@@ -1,0 +1,1952 @@
+ 
+Everybody is sleeping on the Claude
+ 
+Everybody is sleeping on the Claude
+extension for Chrome and we shouldn't be
+ 
+extension for Chrome and we shouldn't be
+because it basically takes an LLM and it
+ 
+because it basically takes an LLM and it
+puts it inside the most popular browser
+ 
+puts it inside the most popular browser
+on the planet where we all spend a lot
+ 
+on the planet where we all spend a lot
+of our days and it says, "Hey, do you
+ 
+of our days and it says, "Hey, do you
+want a free agent that can do useful
+ 
+want a free agent that can do useful
+work on the internet?" And it turns out
+ 
+work on the internet?" And it turns out
+if you can define something you do
+ 
+if you can define something you do
+repeatedly, if you can define a piece of
+ 
+repeatedly, if you can define a piece of
+work you don't want to touch, you can
+ 
+work you don't want to touch, you can
+give it to Claude on the internet and
+ 
+give it to Claude on the internet and
+make Claude go do it. And that saves
+ 
+make Claude go do it. And that saves
+people, yes, real people, dozens of
+ 
+people, yes, real people, dozens of
+hours a week. Because it turns out that
+ 
+hours a week. Because it turns out that
+a lot of us do a lot of stuff on the
+ 
+a lot of us do a lot of stuff on the
+internet that just is suffering and
+ 
+internet that just is suffering and
+toil, right? Like we just sit there and
+ 
+toil, right? Like we just sit there and
+we're like, "Oh man, I have to go and
+ 
+we're like, "Oh man, I have to go and
+check these three different websites and
+ 
+check these three different websites and
+pull all the numbers for the weekly
+ 
+pull all the numbers for the weekly
+report." Or, "Man, I don't want to talk
+ 
+report." Or, "Man, I don't want to talk
+to T-Mobile today and talk with their
+ 
+to T-Mobile today and talk with their
+customer service agent and make them
+ 
+customer service agent and make them
+give me a discount." Or, "Man, I really
+ 
+give me a discount." Or, "Man, I really
+don't want to sit there and figure out
+ 
+don't want to sit there and figure out
+how I move my 15 meetings this week and
+ 
+how I move my 15 meetings this week and
+get them blocked into something that is
+ 
+get them blocked into something that is
+more manageable." Well, that's what
+ 
+more manageable." Well, that's what
+Claude browser is for. So, in this
+ 
+Claude browser is for. So, in this
+video, I'm going to dive into what it
+ 
+video, I'm going to dive into what it
+is. I'm going to give you specific
+ 
+is. I'm going to give you specific
+examples that build on each other so you
+ 
+examples that build on each other so you
+can see how you can get to fairly
+ 
+can see how you can get to fairly
+sophisticated behaviors and I'm going to
+ 
+sophisticated behaviors and I'm going to
+talk about something that I don't see
+ 
+talk about something that I don't see
+talked about enough, which is the
+ 
+talked about enough, which is the
+difference between using Claude
+ 
+difference between using Claude
+extension in the browser, using Claude
+ 
+extension in the browser, using Claude
+in Claude code in the terminal to
+ 
+in Claude code in the terminal to
+navigate in Chrome, which you can also
+ 
+navigate in Chrome, which you can also
+do, or using Cocode, which is a app that
+ 
+do, or using Cocode, which is a app that
+Claude has launched to do agent actions
+ 
+Claude has launched to do agent actions
+on your computer, and using that to
+ 
+on your computer, and using that to
+navigate Chrome. So, there's like lots
+ 
+navigate Chrome. So, there's like lots
+of different ways to navigate Chrome, it
+ 
+of different ways to navigate Chrome, it
+can be confusing. We're going to lay out
+ 
+can be confusing. We're going to lay out
+the differences. We're going to focus
+ 
+the differences. We're going to focus
+mostly on the browser extension because
+ 
+mostly on the browser extension because
+most of us are in Chrome. Chrome is not
+ 
+most of us are in Chrome. Chrome is not
+something you have to install
+ 
+something you have to install
+separately, it just kind of comes with
+ 
+separately, it just kind of comes with
+most computers. We're going to talk
+ 
+most computers. We're going to talk
+about why it matters. We're going to get
+ 
+about why it matters. We're going to get
+super practical. Let's start with one of
+ 
+super practical. Let's start with one of
+our favorites, letting AI fight your
+ 
+our favorites, letting AI fight your
+customer service battles for you. Carl
+ 
+customer service battles for you. Carl
+Valoti is a product manager and Claude
+ 
+Valoti is a product manager and Claude
+code instructor and this year he posted
+ 
+code instructor and this year he posted
+a thread that talked about a billing
+ 
+a thread that talked about a billing
+dispute with AT&T. The reason this
+ 
+dispute with AT&T. The reason this
+little post about AT&T went viral is
+ 
+little post about AT&T went viral is
+that Carl did not go and sit there for
+ 
+that Carl did not go and sit there for
+45 minutes on hold on the phone. He did
+ 
+45 minutes on hold on the phone. He did
+not go into the chatbot himself.
+ 
+not go into the chatbot himself.
+Instead, he launched Claude Code with a
+ 
+Instead, he launched Claude Code with a
+Chrome extension, opened up AT&T's live
+ 
+Chrome extension, opened up AT&T's live
+chat, and told Claude what he wanted, a
+ 
+chat, and told Claude what he wanted, a
+refund from a recent outage. Claude ran
+ 
+refund from a recent outage. Claude ran
+the conversation. It read the agent's
+ 
+the conversation. It read the agent's
+responses. It typed in contextual
+ 
+responses. It typed in contextual
+replies. It pushed back when the initial
+ 
+replies. It pushed back when the initial
+offer was low. It escalated politely
+ 
+offer was low. It escalated politely
+when the agent stalled. And eventually,
+ 
+when the agent stalled. And eventually,
+Claude negotiated its way to a $100
+ 
+Claude negotiated its way to a $100
+credit. Now, I know what you're
+ 
+credit. Now, I know what you're
+thinking. You're thinking this is Claude
+ 
+thinking. You're thinking this is Claude
+Code. It's not the same thing. You have
+ 
+Code. It's not the same thing. You have
+to type into a terminal to get Claude
+ 
+to type into a terminal to get Claude
+use a browser. No. The point is Claude
+ 
+use a browser. No. The point is Claude
+in the browser works. You can use Claude
+ 
+in the browser works. You can use Claude
+from the terminal if you want, if you're
+ 
+from the terminal if you want, if you're
+comfortable with that. You can also use
+ 
+comfortable with that. You can also use
+it directly from the nice extension
+ 
+it directly from the nice extension
+sidebar and get exactly the same result.
+ 
+sidebar and get exactly the same result.
+That's why there's a nice extension
+ 
+That's why there's a nice extension
+sidebar. The underlying mechanics are
+ 
+sidebar. The underlying mechanics are
+exactly the same. Claude has to read the
+ 
+exactly the same. Claude has to read the
+text on the active page, type into an
+ 
+text on the active page, type into an
+input field, click a button, maybe it
+ 
+input field, click a button, maybe it
+has to navigate. All of that back and
+ 
+has to navigate. All of that back and
+forth happens automatically when you
+ 
+forth happens automatically when you
+give Claude a task. Now, to be honest,
+ 
+give Claude a task. Now, to be honest,
+Carl and I have both noticed that this
+ 
+Carl and I have both noticed that this
+is not fast. Claude is not super quick
+ 
+is not fast. Claude is not super quick
+at getting this stuff done, and so this
+ 
+at getting this stuff done, and so this
+is something where it will take longer
+ 
+is something where it will take longer
+than it would take a human to do, but
+ 
+than it would take a human to do, but
+the benefit is really clear. You, the
+ 
+the benefit is really clear. You, the
+human, don't have to do it. And so, if
+ 
+human, don't have to do it. And so, if
+it's something where you want some
+ 
+it's something where you want some
+upside, you want some value, maybe you
+ 
+upside, you want some value, maybe you
+want a credit back on your phone bill,
+ 
+want a credit back on your phone bill,
+and it's worth sitting around and
+ 
+and it's worth sitting around and
+letting the agent work on it. It's a
+ 
+letting the agent work on it. It's a
+really simple use case. It could put
+ 
+really simple use case. It could put
+money back in your pocket, and you don't
+ 
+money back in your pocket, and you don't
+have to do anything. And as I said, like
+ 
+have to do anything. And as I said, like
+Carl used Claude Code, but the same
+ 
+Carl used Claude Code, but the same
+principle works right in the browser if
+ 
+principle works right in the browser if
+you open up a sidebar. Ultimately, the
+ 
+you open up a sidebar. Ultimately, the
+larger pattern here is that if you have
+ 
+larger pattern here is that if you have
+a chat window in your browser, that chat
+ 
+a chat window in your browser, that chat
+window is something that you can operate
+ 
+window is something that you can operate
+with Claude. It's not just AT&T, it's
+ 
+with Claude. It's not just AT&T, it's
+Verizon. It's any kind of utility
+ 
+Verizon. It's any kind of utility
+company. It's a chatbot with Amazon.
+ 
+company. It's a chatbot with Amazon.
+Anything where you can type into the
+ 
+Anything where you can type into the
+screen, Claude can now do a typing for
+ 
+screen, Claude can now do a typing for
+you. And it's as simple as a browser
+ 
+you. And it's as simple as a browser
+extension. Now, one of the things I
+ 
+extension. Now, one of the things I
+emphasize is that agents need to be
+ 
+emphasize is that agents need to be
+proactive to work well. And Claude
+ 
+proactive to work well. And Claude
+builds that in in their Chrome extension
+ 
+builds that in in their Chrome extension
+from the get-go. This is a capability
+ 
+from the get-go. This is a capability
+that ultimately turns a single clever
+ 
+that ultimately turns a single clever
+trick into useful repetitive work. And
+ 
+trick into useful repetitive work. And
+if you're wondering, how does Claude
+ 
+if you're wondering, how does Claude
+know what to do repetitively or what
+ 
+know what to do repetitively or what
+kind of repetitive work would I do, let
+ 
+kind of repetitive work would I do, let
+me give you an example to make it come
+ 
+me give you an example to make it come
+alive. Let's say that your job is to
+ 
+alive. Let's say that your job is to
+pull analytics. When you want to make
+ 
+pull analytics. When you want to make
+Claude do this, you don't type a bunch
+ 
+Claude do this, you don't type a bunch
+of text to say, "Claude, go do this."
+ 
+of text to say, "Claude, go do this."
+Instead, you click the record icon in
+ 
+Instead, you click the record icon in
+the extension panel, you perform the
+ 
+the extension panel, you perform the
+task you want Claude to learn, like
+ 
+task you want Claude to learn, like
+pulling analytics from a dashboard,
+ 
+pulling analytics from a dashboard,
+checking a competitor's pricing page,
+ 
+checking a competitor's pricing page,
+extracting data from a CRM, whatever it
+ 
+extracting data from a CRM, whatever it
+is. Anything that is in the browser that
+ 
+is. Anything that is in the browser that
+you can do, Claude will see. Then you
+ 
+you can do, Claude will see. Then you
+stop the recording. You save that entire
+ 
+stop the recording. You save that entire
+workflow as a shortcut in the Claude
+ 
+workflow as a shortcut in the Claude
+extension. Now, you can schedule that
+ 
+extension. Now, you can schedule that
+shortcut. You can schedule it to run
+ 
+shortcut. You can schedule it to run
+daily, you can schedule it to run
+ 
+daily, you can schedule it to run
+weekly, you can schedule it to run
+ 
+weekly, you can schedule it to run
+monthly or annually. You just click the
+ 
+monthly or annually. You just click the
+clock icon, you set the cadence, and
+ 
+clock icon, you set the cadence, and
+Claude runs the task on autopilot. It
+ 
+Claude runs the task on autopilot. It
+doesn't need you. It doesn't need a
+ 
+doesn't need you. It doesn't need a
+reminder. It just executes as long as
+ 
+reminder. It just executes as long as
+the computer's up and the browser's
+ 
+the computer's up and the browser's
+active. And yes, this really works. You
+ 
+active. And yes, this really works. You
+can set up a recurring shortcut to pull
+ 
+can set up a recurring shortcut to pull
+up LinkedIn invitations and look at
+ 
+up LinkedIn invitations and look at
+who's trying to connect with you. A
+ 
+who's trying to connect with you. A
+recurring shortcut to check your
+ 
+recurring shortcut to check your
+favorite YouTube videos, maybe like this
+ 
+favorite YouTube videos, maybe like this
+one, and get them all listed in links
+ 
+one, and get them all listed in links
+that you can grab whenever you want
+ 
+that you can grab whenever you want
+them. You can set up a recurring
+ 
+them. You can set up a recurring
+shortcut to look at your emails and
+ 
+shortcut to look at your emails and
+extract only the ones you care about.
+ 
+extract only the ones you care about.
+You can set up a recurring shortcut to
+ 
+You can set up a recurring shortcut to
+look for all of the new restaurants in
+ 
+look for all of the new restaurants in
+your local neighborhood and make a list
+ 
+your local neighborhood and make a list
+of them that you can go to on a Friday.
+ 
+of them that you can go to on a Friday.
+Some of this stuff is actually personal
+ 
+Some of this stuff is actually personal
+and some of it is professional, and it
+ 
+and some of it is professional, and it
+doesn't matter. The point is, if you can
+ 
+doesn't matter. The point is, if you can
+do it on the web and you have to do it
+ 
+do it on the web and you have to do it
+more than once, you can make a Claude
+ 
+more than once, you can make a Claude
+shortcut to do it. And how many things
+ 
+shortcut to do it. And how many things
+do we have to do on a schedule,
+ 
+do we have to do on a schedule,
+especially at work? It's like, "Make
+ 
+especially at work? It's like, "Make
+sure you run this report every Monday.
+ 
+sure you run this report every Monday.
+Make sure you answer this client and do
+ 
+Make sure you answer this client and do
+so on a bi-weekly basis. Make sure that
+ 
+so on a bi-weekly basis. Make sure that
+you understand how we Make sure that you
+ 
+you understand how we Make sure that you
+summarize these three threads and put
+ 
+summarize these three threads and put
+them into a clear note for the VP by
+ 
+them into a clear note for the VP by
+this Friday afternoon." All of this
+ 
+this Friday afternoon." All of this
+stuff is recurring and we know we have
+ 
+stuff is recurring and we know we have
+to do it. When I was a marketing
+ 
+to do it. When I was a marketing
+analyst, I had to do weekly reports for
+ 
+analyst, I had to do weekly reports for
+my bosses and I would have killed for
+ 
+my bosses and I would have killed for
+this because so much of it was basically
+ 
+this because so much of it was basically
+going around the web and pulling this
+ 
+going around the web and pulling this
+from this logged-in state in Marketo and
+ 
+from this logged-in state in Marketo and
+pulling this from this logged-in state
+ 
+pulling this from this logged-in state
+in Instagram and this and that and the
+ 
+in Instagram and this and that and the
+other thing. It's so nice to just have a
+ 
+other thing. It's so nice to just have a
+workflow that you can record and run and
+ 
+workflow that you can record and run and
+then it gets the data. Basically, if you
+ 
+then it gets the data. Basically, if you
+can record something and get Claude to
+ 
+can record something and get Claude to
+do it for you, the world becomes your
+ 
+do it for you, the world becomes your
+oyster. Let's jump to another one that's
+ 
+oyster. Let's jump to another one that's
+going to be real popular, inbox triage.
+ 
+going to be real popular, inbox triage.
+So, this is one that's popular because
+ 
+So, this is one that's popular because
+so few people like doing email. In fact,
+ 
+so few people like doing email. In fact,
+if you look at the most popular use case
+ 
+if you look at the most popular use case
+for Open Claude, it's just doing email.
+ 
+for Open Claude, it's just doing email.
+But, you don't have to go and use Open
+ 
+But, you don't have to go and use Open
+Claude for that. You can open up Gmail
+ 
+Claude for that. You can open up Gmail
+in your browser and Claude, as an
+ 
+in your browser and Claude, as an
+extension in the browser, as a little
+ 
+extension in the browser, as a little
+side panel, recognizes that you're
+ 
+side panel, recognizes that you're
+there. It pops up the Gmail icon and it
+ 
+there. It pops up the Gmail icon and it
+says, "Hey, what would you like to do?"
+ 
+says, "Hey, what would you like to do?"
+You can have Claude scan your inbox,
+ 
+You can have Claude scan your inbox,
+identify marketing emails, identify
+ 
+identify marketing emails, identify
+newsletters, pull up important messages.
+ 
+newsletters, pull up important messages.
+One of the things I want to call out
+ 
+One of the things I want to call out
+here, the reason this is the third use
+ 
+here, the reason this is the third use
+case and not just, "Hey, you can also do
+ 
+case and not just, "Hey, you can also do
+this," is that Anthropic recognizes that
+ 
+this," is that Anthropic recognizes that
+email's really popular. And Anthropic
+ 
+email's really popular. And Anthropic
+has done work to make sure that Claude
+ 
+has done work to make sure that Claude
+plays nicely with the most popular email
+ 
+plays nicely with the most popular email
+service in the world, which is Gmail.
+ 
+service in the world, which is Gmail.
+And so, support documentation confirms
+ 
+And so, support documentation confirms
+that Claude has built-in knowledge of
+ 
+that Claude has built-in knowledge of
+how to navigate popular platforms like
+ 
+how to navigate popular platforms like
+Gmail. And so, you don't have to give it
+ 
+Gmail. And so, you don't have to give it
+step-by-step instructions. In other
+ 
+step-by-step instructions. In other
+words, Anthropic is taking these popular
+ 
+words, Anthropic is taking these popular
+places where we spend most of our day on
+ 
+places where we spend most of our day on
+the web, and it's making sure Claude
+ 
+the web, and it's making sure Claude
+knows and recognizes how to use them
+ 
+knows and recognizes how to use them
+from the get-go without specific
+ 
+from the get-go without specific
+instructions from you, and that is a big
+ 
+instructions from you, and that is a big
+deal. But, you don't have to just take
+ 
+deal. But, you don't have to just take
+my word for it. TechRadar's Eric
+ 
+my word for it. TechRadar's Eric
+Schwartz also tested this in his
+ 
+Schwartz also tested this in his
+hands-on review of the Claude extension.
+ 
+hands-on review of the Claude extension.
+He tested both the email side and the
+ 
+He tested both the email side and the
+calendar management side, and he really
+ 
+calendar management side, and he really
+got it to do meaningful work. Claude
+ 
+got it to do meaningful work. Claude
+scanned his Google Calendar, it proposed
+ 
+scanned his Google Calendar, it proposed
+open time slots, it drafted an email to
+ 
+open time slots, it drafted an email to
+guests for an event, and he could get
+ 
+guests for an event, and he could get
+Claude to organize roughly 900 loose
+ 
+Claude to organize roughly 900 loose
+documents in Google Drive because, oh
+ 
+documents in Google Drive because, oh
+that's right, Claude also recognizes
+ 
+that's right, Claude also recognizes
+Google Drive. Claude was able to create
+ 
+Google Drive. Claude was able to create
+a logical folder structure for him, it
+ 
+a logical folder structure for him, it
+was able to sort documents into
+ 
+was able to sort documents into
+subfolders, it was able to flag
+ 
+subfolders, it was able to flag
+duplicates. So, Claude was able to
+ 
+duplicates. So, Claude was able to
+basically work within the Google
+ 
+basically work within the Google
+ecosystem for email, for calendar, for
+ 
+ecosystem for email, for calendar, for
+docs, for drive, and put it together in
+ 
+docs, for drive, and put it together in
+a way that allowed Eric to do useful
+ 
+a way that allowed Eric to do useful
+work at scale. Now, one thing I want to
+ 
+work at scale. Now, one thing I want to
+caution about here is doing automated
+ 
+caution about here is doing automated
+email replies. Emails are high value,
+ 
+email replies. Emails are high value,
+especially emails to important
+ 
+especially emails to important
+stakeholders. What I would not do at
+ 
+stakeholders. What I would not do at
+this stage is tell Claude, "Please find
+ 
+this stage is tell Claude, "Please find
+the important emails in my inbox and
+ 
+the important emails in my inbox and
+auto draft replies." To me, that runs
+ 
+auto draft replies." To me, that runs
+the risk that Claude will send the wrong
+ 
+the risk that Claude will send the wrong
+message to the wrong person,
+ 
+message to the wrong person,
+accidentally hit send instead of saving
+ 
+accidentally hit send instead of saving
+draft. Basically, use this for inbox
+ 
+draft. Basically, use this for inbox
+cleanup, use it for Google Drive
+ 
+cleanup, use it for Google Drive
+cleanup, use it for calendaring, that
+ 
+cleanup, use it for calendaring, that
+all works well. Be cautious about the
+ 
+all works well. Be cautious about the
+send function and the draft function
+ 
+send function and the draft function
+until you are sure that you are not
+ 
+until you are sure that you are not
+going to risk sending to a stakeholder
+ 
+going to risk sending to a stakeholder
+without you putting eyes on it. But, of
+ 
+without you putting eyes on it. But, of
+course, sometimes we have work that
+ 
+course, sometimes we have work that
+needs doing over multiple tabs. We have
+ 
+needs doing over multiple tabs. We have
+to put together multiple recipes into a
+ 
+to put together multiple recipes into a
+single dinner for tonight, or we have to
+ 
+single dinner for tonight, or we have to
+look at multiple competitor websites and
+ 
+look at multiple competitor websites and
+grab pricing from all of them. Instead
+ 
+grab pricing from all of them. Instead
+of having Claude do that work in an
+ 
+of having Claude do that work in an
+extension side by side, you can save
+ 
+extension side by side, you can save
+time by having all of the sites pulled
+ 
+time by having all of the sites pulled
+up and having Claude tackle them in a
+ 
+up and having Claude tackle them in a
+group. And there are two big ways to do
+ 
+group. And there are two big ways to do
+this. You could either do this with the
+ 
+this. You could either do this with the
+Claude extension in Chrome, which is
+ 
+Claude extension in Chrome, which is
+most of what we're talking about today.
+ 
+most of what we're talking about today.
+It's worth noting that you can do this
+ 
+It's worth noting that you can do this
+from co-work as well, because co-work
+ 
+from co-work as well, because co-work
+can navigate to a Chrome group tab just
+ 
+can navigate to a Chrome group tab just
+like the Claude extension. If you're
+ 
+like the Claude extension. If you're
+thinking there's a pattern here and
+ 
+thinking there's a pattern here and
+Anthropic is giving us lots of ways to
+ 
+Anthropic is giving us lots of ways to
+do the same thing, you would be right.
+ 
+do the same thing, you would be right.
+Anthropic wants you to work where you're
+ 
+Anthropic wants you to work where you're
+comfortable and wants to give you basic
+ 
+comfortable and wants to give you basic
+tools that you can use to do a lot of
+ 
+tools that you can use to do a lot of
+useful work. And the mechanics are
+ 
+useful work. And the mechanics are
+pretty simple. Claude can retrieve data
+ 
+pretty simple. Claude can retrieve data
+from all of the tabs in the group that
+ 
+from all of the tabs in the group that
+it has permission to see, and that's
+ 
+it has permission to see, and that's
+designated by a clear group tab in
+ 
+designated by a clear group tab in
+Chrome. Chrome launch group tabs
+ 
+Chrome. Chrome launch group tabs
+already. All you're doing is saying in
+ 
+already. All you're doing is saying in
+this group tab, Claude is active, and so
+ 
+this group tab, Claude is active, and so
+anything inside that group tab, Claude
+ 
+anything inside that group tab, Claude
+can see and Claude can't see anything
+ 
+can see and Claude can't see anything
+outside that group tab. So, just drag
+ 
+outside that group tab. So, just drag
+tabs into Claude's designated tab group,
+ 
+tabs into Claude's designated tab group,
+it views and interacts with all of them
+ 
+it views and interacts with all of them
+at once. You don't need to switch
+ 
+at once. You don't need to switch
+between tabs, you don't need to switch
+ 
+between tabs, you don't need to switch
+so that Claude can see things. Claude
+ 
+so that Claude can see things. Claude
+can automatically read across all those
+ 
+can automatically read across all those
+group tabs in Chrome, synthesize the
+ 
+group tabs in Chrome, synthesize the
+content, and produce a structured
+ 
+content, and produce a structured
+output. For example, if you have a
+ 
+output. For example, if you have a
+potato recipe and a chicken recipe up,
+ 
+potato recipe and a chicken recipe up,
+it can put together a potato and chicken
+ 
+it can put together a potato and chicken
+dinner recipe. It can put together a
+ 
+dinner recipe. It can put together a
+meal plan for a roast potato and chicken
+ 
+meal plan for a roast potato and chicken
+dinner and give you a complete
+ 
+dinner and give you a complete
+ingredients list and a complete plan for
+ 
+ingredients list and a complete plan for
+cooking and having fun with board game
+ 
+cooking and having fun with board game
+night. The nice thing is you can combine
+ 
+night. The nice thing is you can combine
+this with some of the other stuff. And
+ 
+this with some of the other stuff. And
+so, if you have, say, a competitor
+ 
+so, if you have, say, a competitor
+pricing thing you need to run, instead
+ 
+pricing thing you need to run, instead
+of showing Claude how to do that by open
+ 
+of showing Claude how to do that by open
+the tab one at a time, you can have all
+ 
+the tab one at a time, you can have all
+three tabs up at once in the group. You
+ 
+three tabs up at once in the group. You
+can show Claude what you want to do on
+ 
+can show Claude what you want to do on
+each tab, and tab can run that workflow
+ 
+each tab, and tab can run that workflow
+pulling data from those tabs
+ 
+pulling data from those tabs
+simultaneously. I'm picking these
+ 
+simultaneously. I'm picking these
+examples because they give you a sense
+ 
+examples because they give you a sense
+of the elemental building blocks of this
+ 
+of the elemental building blocks of this
+tool, and they help you to be able to do
+ 
+tool, and they help you to be able to do
+useful work. Now, let's say you want to
+ 
+useful work. Now, let's say you want to
+go a step further. You want to get to a
+ 
+go a step further. You want to get to a
+full Excel file instead of just getting
+ 
+full Excel file instead of just getting
+to information that you can print in a
+ 
+to information that you can print in a
+chat window. That's super easy, but in
+ 
+chat window. That's super easy, but in
+this case you're going to have to use
+ 
+this case you're going to have to use
+the coworker approach to working with
+ 
+the coworker approach to working with
+tabs. So, remember I said there's two
+ 
+tabs. So, remember I said there's two
+ways to do this. You can do this in
+ 
+ways to do this. You can do this in
+Claude, the extension, or you can do it
+ 
+Claude, the extension, or you can do it
+in coworker, which is the desktop
+ 
+in coworker, which is the desktop
+application where you can do agentic
+ 
+application where you can do agentic
+work from Anthropic. Well, in coworker,
+ 
+work from Anthropic. Well, in coworker,
+all you have to do is say work with this
+ 
+all you have to do is say work with this
+group of tabs, which I just described,
+ 
+group of tabs, which I just described,
+and then you say in addition, once you
+ 
+and then you say in addition, once you
+pull the data out, like all the
+ 
+pull the data out, like all the
+competitor pricing information, please
+ 
+competitor pricing information, please
+make it into an Excel file with this
+ 
+make it into an Excel file with this
+format, and it will. And so, this gives
+ 
+format, and it will. And so, this gives
+you the ability to do real meaningful
+ 
+you the ability to do real meaningful
+work that involves extracting data from
+ 
+work that involves extracting data from
+the internet, pulling it from multiple
+ 
+the internet, pulling it from multiple
+tabs, putting it into a structured
+ 
+tabs, putting it into a structured
+output, getting a specific document or
+ 
+output, getting a specific document or
+spreadsheet or PowerPoint presentation
+ 
+spreadsheet or PowerPoint presentation
+out at the end. Basically, stringing
+ 
+out at the end. Basically, stringing
+together these seemingly simple things,
+ 
+together these seemingly simple things,
+like looking at multiple tabs, becomes a
+ 
+like looking at multiple tabs, becomes a
+way to get a lot of useful work done
+ 
+way to get a lot of useful work done
+from your agent while you do other
+ 
+from your agent while you do other
+stuff. Now, this one is specifically for
+ 
+stuff. Now, this one is specifically for
+developers, but I think it's a really,
+ 
+developers, but I think it's a really,
+really big deal. Now, this is for anyone
+ 
+really big deal. Now, this is for anyone
+who's ever run up across a bug on their
+ 
+who's ever run up across a bug on their
+sites that they want to fix. One of the
+ 
+sites that they want to fix. One of the
+nice things about essentially giving
+ 
+nice things about essentially giving
+Claude eyes inside the Chrome browser is
+ 
+Claude eyes inside the Chrome browser is
+that you have eyes on the most popular
+ 
+that you have eyes on the most popular
+browser on the planet, which renders so
+ 
+browser on the planet, which renders so
+much of the internet that we all see and
+ 
+much of the internet that we all see and
+consume every day. And so, if you're
+ 
+consume every day. And so, if you're
+building something you want the rest of
+ 
+building something you want the rest of
+the internet to see, and you want to
+ 
+the internet to see, and you want to
+test it, you obviously have to test it
+ 
+test it, you obviously have to test it
+in Chrome, and now Claude can see it
+ 
+in Chrome, and now Claude can see it
+directly, and oh by the way, if you are
+ 
+directly, and oh by the way, if you are
+building with Claude code, it gets even
+ 
+building with Claude code, it gets even
+easier because yes, you can have Claude
+ 
+easier because yes, you can have Claude
+test your website on a schedule and look
+ 
+test your website on a schedule and look
+for bugs. That's something you can set
+ 
+for bugs. That's something you can set
+up as a recording in Claude's extension
+ 
+up as a recording in Claude's extension
+to do. And so, if you're building
+ 
+to do. And so, if you're building
+something for the web, you can actually
+ 
+something for the web, you can actually
+give Claude the eyes to see that, either
+ 
+give Claude the eyes to see that, either
+through the Claude code terminal if
+ 
+through the Claude code terminal if
+you're someone who's a little bit more
+ 
+you're someone who's a little bit more
+technically inclined, or you can do some
+ 
+technically inclined, or you can do some
+version of this through the extension as
+ 
+version of this through the extension as
+well. Because remember, you still have
+ 
+well. Because remember, you still have
+the ability to record workflows, you
+ 
+the ability to record workflows, you
+have the ability to schedule things in
+ 
+have the ability to schedule things in
+tabs, etc. And so, what you can do is
+ 
+tabs, etc. And so, what you can do is
+you can go to a website you're trying to
+ 
+you can go to a website you're trying to
+work on, and you can record a specific
+ 
+work on, and you can record a specific
+flow using the extension. Like, you can
+ 
+flow using the extension. Like, you can
+do a test checkout, and you can say,
+ 
+do a test checkout, and you can say,
+"Put run this test checkout every
+ 
+"Put run this test checkout every
+Thursday, or every day, or every morning
+ 
+Thursday, or every day, or every morning
+at 9:00, or whatever it is." And
+ 
+at 9:00, or whatever it is." And
+Claude's, the extension, will run that,
+ 
+Claude's, the extension, will run that,
+and it will be a very easy way to test
+ 
+and it will be a very easy way to test
+if your product is still up and running.
+ 
+if your product is still up and running.
+Developers have faster ways to do that,
+ 
+Developers have faster ways to do that,
+right? I'm saying if you're a
+ 
+right? I'm saying if you're a
+non-developer, this is a super easy way
+ 
+non-developer, this is a super easy way
+to do it. If you're a developer and
+ 
+to do it. If you're a developer and
+you're in Claude code already, you can
+ 
+you're in Claude code already, you can
+just use Claude code to navigate and hit
+ 
+just use Claude code to navigate and hit
+the browser, and actually immediately
+ 
+the browser, and actually immediately
+test aspects of your product. And yes,
+ 
+test aspects of your product. And yes,
+that includes these periodic, what
+ 
+that includes these periodic, what
+developers call smoke tests, where
+ 
+developers call smoke tests, where
+you're testing if the checkout works.
+ 
+you're testing if the checkout works.
+Basically, includes lots of ways to
+ 
+Basically, includes lots of ways to
+debug. And as funny as this sounds,
+ 
+debug. And as funny as this sounds,
+like, it sounds like I'm just saying you
+ 
+like, it sounds like I'm just saying you
+can do really basic debugging, and if
+ 
+can do really basic debugging, and if
+your site works, why do you care? But,
+ 
+your site works, why do you care? But,
+you can actually do much more
+ 
+you can actually do much more
+sophisticated things if you're willing
+ 
+sophisticated things if you're willing
+to go to the terminal, which, again,
+ 
+to go to the terminal, which, again,
+don't be scared of the terminal, it's
+ 
+don't be scared of the terminal, it's
+not going to bite you. For example, you
+ 
+not going to bite you. For example, you
+can take a Figma mock, you can have
+ 
+can take a Figma mock, you can have
+Claude build it, you can have Claude
+ 
+Claude build it, you can have Claude
+verify the accuracy of what Claude built
+ 
+verify the accuracy of what Claude built
+in the browser while looking at the
+ 
+in the browser while looking at the
+Figma mock, and then you can have Claude
+ 
+Figma mock, and then you can have Claude
+debug it live. Essentially, if you give
+ 
+debug it live. Essentially, if you give
+Claude eyeballs, and you enable Claude
+ 
+Claude eyeballs, and you enable Claude
+to build, Claude can build something it
+ 
+to build, Claude can build something it
+can see and check. And so, the
+ 
+can see and check. And so, the
+experience is like watching code that
+ 
+experience is like watching code that
+you care about for customers being
+ 
+you care about for customers being
+written for you in your terminal, while
+ 
+written for you in your terminal, while
+Chrome autonomously opens tabs and
+ 
+Chrome autonomously opens tabs and
+clicks through your UI, and reads
+ 
+clicks through your UI, and reads
+console output and bugs, and reports
+ 
+console output and bugs, and reports
+back to the Claude code in the terminal,
+ 
+back to the Claude code in the terminal,
+and the agent works in the terminal to
+ 
+and the agent works in the terminal to
+correct it. So, one agent is writing the
+ 
+correct it. So, one agent is writing the
+code, another version of Claude is
+ 
+code, another version of Claude is
+testing in the browser, the human is
+ 
+testing in the browser, the human is
+just watching, and this whole loop used
+ 
+just watching, and this whole loop used
+to require me, as a product manager,
+ 
+to require me, as a product manager,
+sitting with a developer, sitting with a
+ 
+sitting with a developer, sitting with a
+QA engineer, sitting and understanding
+ 
+QA engineer, sitting and understanding
+how this works in a staging environment.
+ 
+how this works in a staging environment.
+Now, this just runs on local in a loop
+ 
+Now, this just runs on local in a loop
+until it's done. Now, I understand that
+ 
+until it's done. Now, I understand that
+we have larger tasks we need to do in
+ 
+we have larger tasks we need to do in
+staging environments and enterprise
+ 
+staging environments and enterprise
+software is not always this simple, but
+ 
+software is not always this simple, but
+these basics matter because if you're
+ 
+these basics matter because if you're
+trying to build something that is
+ 
+trying to build something that is
+useful, you always start with the idea
+ 
+useful, you always start with the idea
+of what does the customer see? And
+ 
+of what does the customer see? And
+that's true whether you're in an
+ 
+that's true whether you're in an
+enterprise or a small medium business.
+ 
+enterprise or a small medium business.
+And the ability to get to that very
+ 
+And the ability to get to that very
+quickly to see if it matches the mock,
+ 
+quickly to see if it matches the mock,
+to see if you have the ability to render
+ 
+to see if you have the ability to render
+a component correctly, to see if the
+ 
+a component correctly, to see if the
+input field works. Those are things that
+ 
+input field works. Those are things that
+we have spent an inordinate amount of
+ 
+we have spent an inordinate amount of
+time validating for anyone who works in
+ 
+time validating for anyone who works in
+software. Like catching bugs is a
+ 
+software. Like catching bugs is a
+painful exercise. Giving Claude eyes
+ 
+painful exercise. Giving Claude eyes
+gives Claude the ability to build with
+ 
+gives Claude the ability to build with
+much fewer errors than otherwise. Now,
+ 
+much fewer errors than otherwise. Now,
+you might think this is just a pump up
+ 
+you might think this is just a pump up
+post for the Claude extension, blah blah
+ 
+post for the Claude extension, blah blah
+blah. I'm going to be honest about some
+ 
+blah. I'm going to be honest about some
+of the limitations to it. I'm going to
+ 
+of the limitations to it. I'm going to
+use a specific example. I validated
+ 
+use a specific example. I validated
+this, but this is also something that
+ 
+this, but this is also something that
+Neuroni called out in January. And it's
+ 
+Neuroni called out in January. And it's
+something I expect to get fixed as
+ 
+something I expect to get fixed as
+models get better, but it is a
+ 
+models get better, but it is a
+limitation of the Claude extension
+ 
+limitation of the Claude extension
+today. If you give Claude a data-heavy
+ 
+today. If you give Claude a data-heavy
+task, Claude has limitations in Chrome
+ 
+task, Claude has limitations in Chrome
+on how much data is actually going to
+ 
+on how much data is actually going to
+manage. And so, the Neuroni example is
+ 
+manage. And so, the Neuroni example is
+LinkedIn contacts. If you want to record
+ 
+LinkedIn contacts. If you want to record
+a weekly workflow where Claude will scan
+ 
+a weekly workflow where Claude will scan
+LinkedIn pages, will review content
+ 
+LinkedIn pages, will review content
+across posts, will interpret contacts,
+ 
+across posts, will interpret contacts,
+will provide summaries, that all
+ 
+will provide summaries, that all
+technically works. But what Neuroni
+ 
+technically works. But what Neuroni
+found is if you expand that watch list
+ 
+found is if you expand that watch list
+beyond a few people posting, coverage
+ 
+beyond a few people posting, coverage
+can get spotty. Expected posts sometimes
+ 
+can get spotty. Expected posts sometimes
+don't surface. One summary might focus
+ 
+don't surface. One summary might focus
+on a tangential update that might not be
+ 
+on a tangential update that might not be
+super relevant. Essentially, when you
+ 
+super relevant. Essentially, when you
+start to expand the scope of the task in
+ 
+start to expand the scope of the task in
+a single workflow, right now Claude in
+ 
+a single workflow, right now Claude in
+Chrome does not do a perfect job of
+ 
+Chrome does not do a perfect job of
+recognizing salience, of recognizing
+ 
+recognizing salience, of recognizing
+what's really important. And it doesn't
+ 
+what's really important. And it doesn't
+do a perfect job of coordinating and
+ 
+do a perfect job of coordinating and
+synthesizing all of that data in a
+ 
+synthesizing all of that data in a
+useful manner. It can miss stuff. Now, I
+ 
+useful manner. It can miss stuff. Now, I
+do want to call out that I expect that
+ 
+do want to call out that I expect that
+particular aspect to get better
+ 
+particular aspect to get better
+relatively quickly as models continue to
+ 
+relatively quickly as models continue to
+improve, but fundamentally it remains a
+ 
+improve, but fundamentally it remains a
+challenge because what you're doing is
+ 
+challenge because what you're doing is
+you're feeding this LLM all of this open
+ 
+you're feeding this LLM all of this open
+context from the web and the LLM has to
+ 
+context from the web and the LLM has to
+look through that context window and
+ 
+look through that context window and
+find what really matters. And that can
+ 
+find what really matters. And that can
+be hard. And so if you're giving Claude
+ 
+be hard. And so if you're giving Claude
+a data-heavy task in Chrome, I would
+ 
+a data-heavy task in Chrome, I would
+recommend breaking it up into subtasks
+ 
+recommend breaking it up into subtasks
+because I think you're more likely to
+ 
+because I think you're more likely to
+get useful results done, especially if
+ 
+get useful results done, especially if
+this is a recorded workflow and you want
+ 
+this is a recorded workflow and you want
+to run it on a schedule. You don't want
+ 
+to run it on a schedule. You don't want
+mistakes, you'd rather do a very clean
+ 
+mistakes, you'd rather do a very clean
+subtask. So if you ladder all of this
+ 
+subtask. So if you ladder all of this
+together, what does it mean? The pattern
+ 
+together, what does it mean? The pattern
+across all of these use cases is
+ 
+across all of these use cases is
+similar. It's not the AI assistant
+ 
+similar. It's not the AI assistant
+answers questions while I browse, which
+ 
+answers questions while I browse, which
+is what people often think of with these
+ 
+is what people often think of with these
+things. It's actually the browser agent
+ 
+things. It's actually the browser agent
+does real work on my behalf. It clicks,
+ 
+does real work on my behalf. It clicks,
+it navigates, it reads, it extracts. It
+ 
+it navigates, it reads, it extracts. It
+does all of the things I do on the web
+ 
+does all of the things I do on the web
+to generate value, but it does it
+ 
+to generate value, but it does it
+without me getting involved, especially
+ 
+without me getting involved, especially
+if it's on a schedule. And that
+ 
+if it's on a schedule. And that
+distinction really matters because it
+ 
+distinction really matters because it
+changes what you're optimizing for. With
+ 
+changes what you're optimizing for. With
+a chatbot, you optimize for your own
+ 
+a chatbot, you optimize for your own
+questions, right? With a browser agent,
+ 
+questions, right? With a browser agent,
+you optimize for your workflows. So the
+ 
+you optimize for your workflows. So the
+skill isn't prompting, the skill is
+ 
+skill isn't prompting, the skill is
+looking at the repetitive work you do
+ 
+looking at the repetitive work you do
+every week and asking yourself, can I
+ 
+every week and asking yourself, can I
+describe this clearly enough that an
+ 
+describe this clearly enough that an
+agent can do it for me on a schedule
+ 
+agent can do it for me on a schedule
+without supervision? And I think it's
+ 
+without supervision? And I think it's
+worth calling out that that skill is
+ 
+worth calling out that that skill is
+something that generalizes into AI age
+ 
+something that generalizes into AI age
+because so much of what we are going to
+ 
+because so much of what we are going to
+be doing in 2026, whether you're working
+ 
+be doing in 2026, whether you're working
+with Claude or ChatGPT or another LLM,
+ 
+with Claude or ChatGPT or another LLM,
+it's going to involve giving the LLM
+ 
+it's going to involve giving the LLM
+context on a repetitive piece of work
+ 
+context on a repetitive piece of work
+you're doing and asking it to do it. And
+ 
+you're doing and asking it to do it. And
+the UI can look different. Sometimes
+ 
+the UI can look different. Sometimes
+you're in the Chrome tab, sometimes
+ 
+you're in the Chrome tab, sometimes
+you're in Claude code, sometimes you're
+ 
+you're in Claude code, sometimes you're
+in co-work, sometimes you're in ChatGPT,
+ 
+in co-work, sometimes you're in ChatGPT,
+which also has scheduled tasks directly.
+ 
+which also has scheduled tasks directly.
+Well, the principle's the same. You have
+ 
+Well, the principle's the same. You have
+to understand what you want to do and be
+ 
+to understand what you want to do and be
+able to either mimic it and do it
+ 
+able to either mimic it and do it
+directly, which is really convenient in
+ 
+directly, which is really convenient in
+Chrome with that record button from
+ 
+Chrome with that record button from
+Claude, or you have to describe it
+ 
+Claude, or you have to describe it
+clearly enough that it can be done
+ 
+clearly enough that it can be done
+anyway by an LLM, which is what you
+ 
+anyway by an LLM, which is what you
+would do with a recurring task in chat
+ 
+would do with a recurring task in chat
+GPT. Now, I do want to call out that
+ 
+GPT. Now, I do want to call out that
+anytime you put an LLM into the open
+ 
+anytime you put an LLM into the open
+web, there are non-zero risks. You
+ 
+web, there are non-zero risks. You
+should be responsible and you should use
+ 
+should be responsible and you should use
+Claude on trusted sites. Do not go to
+ 
+Claude on trusted sites. Do not go to
+weird corners of the internet with this
+ 
+weird corners of the internet with this
+tool and expect not to get prompt
+ 
+tool and expect not to get prompt
+injected. There are ways for open text
+ 
+injected. There are ways for open text
+on the internet to hijack your agent and
+ 
+on the internet to hijack your agent and
+give it malicious instructions. Like,
+ 
+give it malicious instructions. Like,
+for example, if you went to a weird
+ 
+for example, if you went to a weird
+corner of the internet like corner of
+ 
+corner of the internet like corner of
+Reddit with a prompt injected thread in
+ 
+Reddit with a prompt injected thread in
+the page and you also have your email up
+ 
+the page and you also have your email up
+in the same tab, then theoretically,
+ 
+in the same tab, then theoretically,
+your LLM could get prompt injected
+ 
+your LLM could get prompt injected
+simply by reading the Reddit thread in
+ 
+simply by reading the Reddit thread in
+the page and go to your email and start
+ 
+the page and go to your email and start
+sending sensitive data. That is a real
+ 
+sending sensitive data. That is a real
+example. And so, use this tool on
+ 
+example. And so, use this tool on
+trusted sites. Please review sensitive
+ 
+trusted sites. Please review sensitive
+actions. I suggested replies to
+ 
+actions. I suggested replies to
+stakeholders or something that's
+ 
+stakeholders or something that's
+sensitive. You will have others. Don't
+ 
+sensitive. You will have others. Don't
+open your bank account on this site.
+ 
+open your bank account on this site.
+Like, don't be dumb. Treat this like a
+ 
+Like, don't be dumb. Treat this like a
+capable but new employee. Verify the
+ 
+capable but new employee. Verify the
+output. Don't assume that this thing has
+ 
+output. Don't assume that this thing has
+infinite permissions. Now, this
+ 
+infinite permissions. Now, this
+extension is available to anybody that
+ 
+extension is available to anybody that
+is on a paid plan right now. The degree
+ 
+is on a paid plan right now. The degree
+to which you can pick a model for
+ 
+to which you can pick a model for
+intelligent tasks will depend on what
+ 
+intelligent tasks will depend on what
+kind of plan you're on. In general, the
+ 
+kind of plan you're on. In general, the
+simpler your plan, the dumber the model
+ 
+simpler your plan, the dumber the model
+that's available, and dumber models have
+ 
+that's available, and dumber models have
+difficulty with ambiguity, with data.
+ 
+difficulty with ambiguity, with data.
+And so, for instance, my example with
+ 
+And so, for instance, my example with
+LinkedIn data, you may want to have
+ 
+LinkedIn data, you may want to have
+something like a max plan or a team plan
+ 
+something like a max plan or a team plan
+or an enterprise plan to do a complex
+ 
+or an enterprise plan to do a complex
+task like that where you tell the
+ 
+task like that where you tell the
+browser extension to go to multiple
+ 
+browser extension to go to multiple
+LinkedIn profiles and to summarize what
+ 
+LinkedIn profiles and to summarize what
+they posted and put that back to you.
+ 
+they posted and put that back to you.
+That's like a bunch of browsing, it's a
+ 
+That's like a bunch of browsing, it's a
+lot of context window to manage, etc.
+ 
+lot of context window to manage, etc.
+And if you get a basic pro plan, the
+ 
+And if you get a basic pro plan, the
+model may not be smart enough to do that
+ 
+model may not be smart enough to do that
+well. Ultimately,
+ 
+well. Ultimately,
+when we were in early 2025, mid-2025,
+ 
+when we were in early 2025, mid-2025,
+even fall of 2025, some of the question
+ 
+even fall of 2025, some of the question
+was, does this work? Can the agent
+ 
+was, does this work? Can the agent
+actually navigate the internet? We are
+ 
+actually navigate the internet? We are
+past that now. In early 2026, the
+ 
+past that now. In early 2026, the
+question is not, does this work anymore?
+ 
+question is not, does this work anymore?
+It does work. People are saving dozens
+ 
+It does work. People are saving dozens
+of hours a week. They're getting rid of
+ 
+of hours a week. They're getting rid of
+a lot of repetitive work. The question
+ 
+a lot of repetitive work. The question
+for you is, do you understand the tools
+ 
+for you is, do you understand the tools
+involved, which I spent a lot of this
+ 
+involved, which I spent a lot of this
+video on, and can you identify the
+ 
+video on, and can you identify the
+repetitive work clearly enough so that
+ 
+repetitive work clearly enough so that
+you can go and offload it onto tools
+ 
+you can go and offload it onto tools
+like the Anthropic extension for Claude
+ 
+like the Anthropic extension for Claude
+inside Chrome. So, there you go. I hope
+ 
+inside Chrome. So, there you go. I hope
+this has given you a sense of why this
+ 
+this has given you a sense of why this
+matters, why this is not just a chatbot
+ 
+matters, why this is not just a chatbot
+inside a browser, and you have a sense
+ 
+inside a browser, and you have a sense
+of the useful work that you can do. If
+ 
+of the useful work that you can do. If
+you want a bunch more examples, I put
+ 
+you want a bunch more examples, I put
+them all in the Substack, and I have a
+ 
+them all in the Substack, and I have a
+whole guide there. Cheers.

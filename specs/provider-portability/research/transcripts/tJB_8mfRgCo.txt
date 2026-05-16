@@ -1,0 +1,4388 @@
+ 
+Claude Opus 4.7 is the smartest model
+ 
+Claude Opus 4.7 is the smartest model
+Anthropic has ever shipped publicly.
+ 
+Anthropic has ever shipped publicly.
+It's also the most combative, the most
+ 
+It's also the most combative, the most
+literal, and the first Opus release that
+ 
+literal, and the first Opus release that
+costs you measurably more for the same
+ 
+costs you measurably more for the same
+work, even though the sticker price
+ 
+work, even though the sticker price
+didn't move. So, you have to hold all
+ 
+didn't move. So, you have to hold all
+three of these in view, or you're going
+ 
+three of these in view, or you're going
+to misread what just happened this week.
+ 
+to misread what just happened this week.
+I've been testing Opus 4.7 hard for the
+ 
+I've been testing Opus 4.7 hard for the
+last few days. The main test was a
+ 
+last few days. The main test was a
+head-to-head versus ChatGPT 5.4 on a
+ 
+head-to-head versus ChatGPT 5.4 on a
+very realistic adversarial data
+ 
+very realistic adversarial data
+migration with hundreds of messy files
+ 
+migration with hundreds of messy files
+in every single format a real business
+ 
+in every single format a real business
+would hand you, along with planted traps
+ 
+would hand you, along with planted traps
+and human sanity checks baked in. But
+ 
+and human sanity checks baked in. But
+then separately, I spent an afternoon
+ 
+then separately, I spent an afternoon
+inside Claude Design, Anthropic's brand
+ 
+inside Claude Design, Anthropic's brand
+new design product that launched the day
+ 
+new design product that launched the day
+after 4.7 shipped, and I burned honestly
+ 
+after 4.7 shipped, and I burned honestly
+42 bucks before I closed the tab.
+ 
+42 bucks before I closed the tab.
+Alongside all of that, I've been
+ 
+Alongside all of that, I've been
+shipping real work on the model since
+ 
+shipping real work on the model since
+Thursday morning. So, when the first
+ 
+Thursday morning. So, when the first
+question everyone is asking is, "Does
+ 
+question everyone is asking is, "Does
+4.7 feel different?" The answer is, it
+ 
+4.7 feel different?" The answer is, it
+does. Specifically, you're going to feel
+ 
+does. Specifically, you're going to feel
+it in some ways that are better, some
+ 
+it in some ways that are better, some
+ways that are worse, and in ways that
+ 
+ways that are worse, and in ways that
+you will feel financially in the
+ 
+you will feel financially in the
+pocketbook if you work with it
+ 
+pocketbook if you work with it
+seriously. One more thing before we get
+ 
+seriously. One more thing before we get
+into it. Anthropic shipped Opus 4.7 on
+ 
+into it. Anthropic shipped Opus 4.7 on
+the 16th, Claude Design launched the
+ 
+the 16th, Claude Design launched the
+17th, OpenAI pushed the biggest Codex
+ 
+17th, OpenAI pushed the biggest Codex
+update since launch on the same day as
+ 
+update since launch on the same day as
+4.7, and then Spud, OpenAI's next
+ 
+4.7, and then Spud, OpenAI's next
+frontier model, is expected to launch
+ 
+frontier model, is expected to launch
+later this week. I share all of this
+ 
+later this week. I share all of this
+because this is a model update in
+ 
+because this is a model update in
+competition inherently. Anthropic is
+ 
+competition inherently. Anthropic is
+fielding investor offers at $800 billion
+ 
+fielding investor offers at $800 billion
+and is apparently planning early IPO
+ 
+and is apparently planning early IPO
+talks targeting October-ish. So, the
+ 
+talks targeting October-ish. So, the
+thing you're watching is not a point
+ 
+thing you're watching is not a point
+release, it's a bridge release. You
+ 
+release, it's a bridge release. You
+should think of it as something that was
+ 
+should think of it as something that was
+shipped under public pressure into a
+ 
+shipped under public pressure into a
+week where everybody else was moving as
+ 
+week where everybody else was moving as
+well. Let's jump into it. First, the
+ 
+well. Let's jump into it. First, the
+biggest complaint about the predecessor
+ 
+biggest complaint about the predecessor
+model for Opus 4.7, which was Opus 4.6,
+ 
+model for Opus 4.7, which was Opus 4.6,
+is that it quit. So, you would hand it a
+ 
+is that it quit. So, you would hand it a
+complex debugging issue or a multi-step
+ 
+complex debugging issue or a multi-step
+refactor, and sometimes it would just
+ 
+refactor, and sometimes it would just
+prematurely declare victory and stop. It
+ 
+prematurely declare victory and stop. It
+would lose the thread. It would declare
+ 
+would lose the thread. It would declare
+itself done when it wasn't. If you use
+ 
+itself done when it wasn't. If you use
+Claude code seriously, you would run
+ 
+Claude code seriously, you would run
+into this and it was one of the biggest
+ 
+into this and it was one of the biggest
+reasons why people preferred Codex. I
+ 
+reasons why people preferred Codex. I
+hit it consistently. I saw others hit it
+ 
+hit it consistently. I saw others hit it
+consistently as I built agentic systems.
+ 
+consistently as I built agentic systems.
+It was the failure mode that made me
+ 
+It was the failure mode that made me
+route hard multi-step work to other
+ 
+route hard multi-step work to other
+models even when Claude was better at
+ 
+models even when Claude was better at
+the individual steps. Anthropic clearly
+ 
+the individual steps. Anthropic clearly
+prioritized fixing that. Based on 4 days
+ 
+prioritized fixing that. Based on 4 days
+of heavy use, the fix is real. The model
+ 
+of heavy use, the fix is real. The model
+does stay on task better than 4.6. It
+ 
+does stay on task better than 4.6. It
+follows through. It self-verifies. It
+ 
+follows through. It self-verifies. It
+runs tests. It checks its own output. It
+ 
+runs tests. It checks its own output. It
+catches inconsistencies during the
+ 
+catches inconsistencies during the
+planning phase instead of after
+ 
+planning phase instead of after
+execution. Notion's AI team reported a
+ 
+execution. Notion's AI team reported a
+14% improvement on complicated
+ 
+14% improvement on complicated
+multi-step workflows while using fewer
+ 
+multi-step workflows while using fewer
+tokens and a third of the tool errors of
+ 
+tokens and a third of the tool errors of
+4.6. Factory Droids reported a 10 to 15%
+ 
+4.6. Factory Droids reported a 10 to 15%
+lift in task success with more reliable
+ 
+lift in task success with more reliable
+follow-through on validation steps.
+ 
+follow-through on validation steps.
+GenSpark quantified the loop problem
+ 
+GenSpark quantified the loop problem
+directly. Before 4.7, their agent looped
+ 
+directly. Before 4.7, their agent looped
+indefinitely on roughly 1 in 18 queries
+ 
+indefinitely on roughly 1 in 18 queries
+and 4.7 is the first model they've
+ 
+and 4.7 is the first model they've
+tested where that number meaningfully
+ 
+tested where that number meaningfully
+drops. So, these are not benchmark
+ 
+drops. So, these are not benchmark
+numbers. These are actual workflow
+ 
+numbers. These are actual workflow
+reports from teams that are building on
+ 
+reports from teams that are building on
+the model and they match what I'm
+ 
+the model and they match what I'm
+seeing. The coding numbers are
+ 
+seeing. The coding numbers are
+relatively strong and I'm not surprised,
+ 
+relatively strong and I'm not surprised,
+right? SweBench verified climbed from
+ 
+right? SweBench verified climbed from
+80% to 87%. CursorBench meanwhile went
+ 
+80% to 87%. CursorBench meanwhile went
+from 58 to 70. Rakuten saw three times
+ 
+from 58 to 70. Rakuten saw three times
+more production tasks resolved on their
+ 
+more production tasks resolved on their
+internal SweBenchmark and MCP Atlas
+ 
+internal SweBenchmark and MCP Atlas
+moved from 75 to 77. That's the
+ 
+moved from 75 to 77. That's the
+multi-tool orchestration benchmark,
+ 
+multi-tool orchestration benchmark,
+closest thing we have to real agentic
+ 
+closest thing we have to real agentic
+evaluation and it's the biggest single
+ 
+evaluation and it's the biggest single
+jump anywhere in the agentic suite. And
+ 
+jump anywhere in the agentic suite. And
+that is what makes Claude design
+ 
+that is what makes Claude design
+possible at all. Now, whether all this
+ 
+possible at all. Now, whether all this
+visual improvement actually works
+ 
+visual improvement actually works
+reliably is a different question and
+ 
+reliably is a different question and
+I'll get into that. Something is getting
+ 
+I'll get into that. Something is getting
+buried in the launch coverage. The model
+ 
+buried in the launch coverage. The model
+went backward on web research.
+ 
+went backward on web research.
+BrowseComp, the benchmark for multi-page
+ 
+BrowseComp, the benchmark for multi-page
+synthesis and retrieval, dropped from 83
+ 
+synthesis and retrieval, dropped from 83
+to just 79. If you're wondering who
+ 
+to just 79. If you're wondering who
+leads there, GPT-5.4 Pro leads that
+ 
+leads there, GPT-5.4 Pro leads that
+benchmark by 10 points at 89 right now.
+ 
+benchmark by 10 points at 89 right now.
+Gemini 3.1 Pro leads by six and change
+ 
+Gemini 3.1 Pro leads by six and change
+at 85. Meanwhile, on Terminal Bench 2.0,
+ 
+at 85. Meanwhile, on Terminal Bench 2.0,
+which measures command line task
+ 
+which measures command line task
+execution, the kind of work coding
+ 
+execution, the kind of work coding
+agents do really consistently, Opus 4.7
+ 
+agents do really consistently, Opus 4.7
+trails ChatGPT 5.4 by nearly six points,
+ 
+trails ChatGPT 5.4 by nearly six points,
+69 versus 75. So, if your agents rely on
+ 
+69 versus 75. So, if your agents rely on
+web research or live in the terminal,
+ 
+web research or live in the terminal,
+you should benchmark your specific
+ 
+you should benchmark your specific
+workflows before you migrate.
+ 
+workflows before you migrate.
+Ultimately, the model got stronger where
+ 
+Ultimately, the model got stronger where
+Anthropic invested, in coding, in
+ 
+Anthropic invested, in coding, in
+agentic persistence, in vision, in
+ 
+agentic persistence, in vision, in
+enterprise knowledge work, and it got
+ 
+enterprise knowledge work, and it got
+weaker where it didn't. That is, this is
+ 
+weaker where it didn't. That is, this is
+not a uniform upgrade. It's a directed
+ 
+not a uniform upgrade. It's a directed
+optimization, and it's worth knowing
+ 
+optimization, and it's worth knowing
+before you make big decisions about
+ 
+before you make big decisions about
+migration.
+ 
+migration.
+And here's a detail that connects to the
+ 
+And here's a detail that connects to the
+cost question I raised at the top. The
+ 
+cost question I raised at the top. The
+reason those benchmark gains hit
+ 
+reason those benchmark gains hit
+different on your invoice is that 4.7
+ 
+different on your invoice is that 4.7
+actually ships with a new tokenizer.
+ 
+actually ships with a new tokenizer.
+It's the same text, it's your same
+ 
+It's the same text, it's your same
+prompts, your same markdown file, but it
+ 
+prompts, your same markdown file, but it
+can map to up to 35% more tokens. I'll
+ 
+can map to up to 35% more tokens. I'll
+walk through the math later, but I want
+ 
+walk through the math later, but I want
+to keep that number in your head as we
+ 
+to keep that number in your head as we
+go because it reframes all of the
+ 
+go because it reframes all of the
+benchmark gains you heard. Ultimately,
+ 
+benchmark gains you heard. Ultimately,
+you're paying more for those gains. On
+ 
+you're paying more for those gains. On
+the other hand, there is an
+ 
+the other hand, there is an
+underreported win right now, and that's
+ 
+underreported win right now, and that's
+knowledge work. On GDP Val-A, the
+ 
+knowledge work. On GDP Val-A, the
+ELO-based benchmark Anthropic uses for
+ 
+ELO-based benchmark Anthropic uses for
+economically valuable work, 4.7 scores
+ 
+economically valuable work, 4.7 scores
+1753,
+ 
+1753,
+while GPT-5.4 scores 1674,
+ 
+while GPT-5.4 scores 1674,
+and 3.1 Pro scores only 1314. So, the
+ 
+and 3.1 Pro scores only 1314. So, the
+gap to Gemini isn't a close race, and
+ 
+gap to Gemini isn't a close race, and
+4.7 is the best right now at doing
+ 
+4.7 is the best right now at doing
+economically valuable work. Hex called
+ 
+economically valuable work. Hex called
+4.7 the strongest model they've ever
+ 
+4.7 the strongest model they've ever
+evaluated, with general finance
+ 
+evaluated, with general finance
+performance climbing from 0.76 to 0.81,
+ 
+performance climbing from 0.76 to 0.81,
+and And model correctly reported missing
+ 
+and And model correctly reported missing
+data instead of fabricating plausible
+ 
+data instead of fabricating plausible
+but wrong fallbacks. The exact failure
+ 
+but wrong fallbacks. The exact failure
+mode that cost real money in finance
+ 
+mode that cost real money in finance
+applications. Harving meanwhile put it
+ 
+applications. Harving meanwhile put it
+at 90.19% on Big Law bench at high
+ 
+at 90.19% on Big Law bench at high
+effort. Data bricks reported 21% fewer
+ 
+effort. Data bricks reported 21% fewer
+errors on Office QA Pro. So if you're
+ 
+errors on Office QA Pro. So if you're
+doing legal, financial, or enterprise
+ 
+doing legal, financial, or enterprise
+document work, this is the strongest
+ 
+document work, this is the strongest
+model you can access today.
+ 
+model you can access today.
+And that's the launch pitch, right? And
+ 
+And that's the launch pitch, right? And
+if benchmarks were the whole story, the
+ 
+if benchmarks were the whole story, the
+upgrade would be obvious. But I found
+ 
+upgrade would be obvious. But I found
+something in my testing that changed how
+ 
+something in my testing that changed how
+I think about building with 4.7. It's
+ 
+I think about building with 4.7. It's
+actually not a benchmark. It's a trust
+ 
+actually not a benchmark. It's a trust
+failure and it comes from 4.7's
+ 
+failure and it comes from 4.7's
+performance on the test that I built.
+ 
+performance on the test that I built.
+I ran Chat GPT 5.4 and Opus 4.7 through
+ 
+I ran Chat GPT 5.4 and Opus 4.7 through
+the exact same test because the question
+ 
+the exact same test because the question
+that matters right now is not just is
+ 
+that matters right now is not just is
+4.7 better than 4.6? It's is 4.7 better
+ 
+4.7 better than 4.6? It's is 4.7 better
+than any other frontier option at the
+ 
+than any other frontier option at the
+specific tasks that you need to
+ 
+specific tasks that you need to
+accomplish. The setup was simple. I had
+ 
+accomplish. The setup was simple. I had
+400 some files, 465 files in every file
+ 
+400 some files, 465 files in every file
+format you'd find in a real business.
+ 
+format you'd find in a real business.
+CSV files, Excel files, PDFs, JSON,
+ 
+CSV files, Excel files, PDFs, JSON,
+images, even VCF contact card. And yes,
+ 
+images, even VCF contact card. And yes,
+I put some fake customer info as well
+ 
+I put some fake customer info as well
+that should have been caught. I put
+ 
+that should have been caught. I put
+Mickey Mouse in, test customer in,
+ 
+Mickey Mouse in, test customer in,
+ASDFASDF in the data. You get the idea.
+ 
+ASDFASDF in the data. You get the idea.
+The kind of thing a human bookkeeper
+ 
+The kind of thing a human bookkeeper
+would catch in 2 seconds. And the test
+ 
+would catch in 2 seconds. And the test
+was hard. Both models had to take this
+ 
+was hard. Both models had to take this
+entire mess and in a single shot with no
+ 
+entire mess and in a single shot with no
+guidance between stages, they had to
+ 
+guidance between stages, they had to
+inventory every file, design a database
+ 
+inventory every file, design a database
+schema, extract the data, resolve
+ 
+schema, extract the data, resolve
+entities, detect conflicts, write a
+ 
+entities, detect conflicts, write a
+migration report, and build a usable
+ 
+migration report, and build a usable
+review user interface. All in one prompt
+ 
+review user interface. All in one prompt
+with extra high reasoning. No iteration.
+ 
+with extra high reasoning. No iteration.
+Both models said they got the job done.
+ 
+Both models said they got the job done.
+Opus 4.7 finished in 33 minutes and Chat
+ 
+Opus 4.7 finished in 33 minutes and Chat
+GPT 5.4 took 53. That speed difference
+ 
+GPT 5.4 took 53. That speed difference
+matters for cost and for iteration, but
+ 
+matters for cost and for iteration, but
+the more revealing findings are
+ 
+the more revealing findings are
+structural. There are four findings from
+ 
+structural. There are four findings from
+this test that I think are worth calling
+ 
+this test that I think are worth calling
+out and each one is the thing you won't
+ 
+out and each one is the thing you won't
+see in a benchmark chart. Number one,
+ 
+see in a benchmark chart. Number one,
+Opus built a front end I would actually
+ 
+Opus built a front end I would actually
+ship as a V1. It had muted grays, proper
+ 
+ship as a V1. It had muted grays, proper
+typography, per customer conflict
+ 
+typography, per customer conflict
+resolution with selectable buttons, and
+ 
+resolution with selectable buttons, and
+source file chips showing where each
+ 
+source file chips showing where each
+piece of data came from. ChatGPT's own
+ 
+piece of data came from. ChatGPT's own
+self-review admitted that its UI quote
+ 
+self-review admitted that its UI quote
+faithfully exposes bad canonical data
+ 
+faithfully exposes bad canonical data
+and did not protect the reviewer.
+ 
+and did not protect the reviewer.
+Finding two, GPT-5.4 was more thorough
+ 
+Finding two, GPT-5.4 was more thorough
+underneath. It accounted for all 465
+ 
+underneath. It accounted for all 465
+input files. Opus 4.7 missed only two,
+ 
+input files. Opus 4.7 missed only two,
+plus it had one duplicate entry in its
+ 
+plus it had one duplicate entry in its
+inventory, which is much better
+ 
+inventory, which is much better
+performance than 4.6. GPT-5.4 correctly
+ 
+performance than 4.6. GPT-5.4 correctly
+merged most of the planted duplicate
+ 
+merged most of the planted duplicate
+customer pairs, which is an improvement.
+ 
+customer pairs, which is an improvement.
+Opus 4.7 kept all seven segregated
+ 
+Opus 4.7 kept all seven segregated
+apart. And ChatGPT-5.4 produced
+ 
+apart. And ChatGPT-5.4 produced
+something I haven't seen from a frontier
+ 
+something I haven't seen from a frontier
+model before, a 1,200-line merge log
+ 
+model before, a 1,200-line merge log
+with per-row source citations and merge
+ 
+with per-row source citations and merge
+confidence scores.
+ 
+confidence scores.
+If I'm a human reviewer trying to
+ 
+If I'm a human reviewer trying to
+understand what happened to my data,
+ 
+understand what happened to my data,
+that merge log is the single most useful
+ 
+that merge log is the single most useful
+artifact across both packages that were
+ 
+artifact across both packages that were
+produced by 4.7 and 5.4. Finding number
+ 
+produced by 4.7 and 5.4. Finding number
+three, there's a failure on the Opus
+ 
+three, there's a failure on the Opus
+side that I need to name very clearly
+ 
+side that I need to name very clearly
+because it's one of the most dangerous
+ 
+because it's one of the most dangerous
+patterns in agentic work. When asked to
+ 
+patterns in agentic work. When asked to
+process all of those files, 400-some,
+ 
+process all of those files, 400-some,
+Opus 4.7 did not process a file it
+ 
+Opus 4.7 did not process a file it
+claimed to process. It was a TSV file
+ 
+claimed to process. It was a TSV file
+and the report claims it processed it,
+ 
+and the report claims it processed it,
+but it hallucinated the audit trail. So,
+ 
+but it hallucinated the audit trail. So,
+if you're trusting an agent's report
+ 
+if you're trusting an agent's report
+about what it processed and the agent is
+ 
+about what it processed and the agent is
+willing to say, "I handled that file."
+ 
+willing to say, "I handled that file."
+when it did not, that's not just a
+ 
+when it did not, that's not just a
+missed detail. It's actually breaking
+ 
+missed detail. It's actually breaking
+trust in the whole agentic flow. It's
+ 
+trust in the whole agentic flow. It's
+the specific behavior that makes peer
+ 
+the specific behavior that makes peer
+review non-optional when you hand
+ 
+review non-optional when you hand
+agentic work to either of these models.
+ 
+agentic work to either of these models.
+Finding number four, Opus 4.7 and 5.4
+ 
+Finding number four, Opus 4.7 and 5.4
+don't catch obvious mistakes. Mickey
+ 
+don't catch obvious mistakes. Mickey
+Mouse was still in there, test customer
+ 
+Mouse was still in there, test customer
+was still in there, ASDF ASDF was still
+ 
+was still in there, ASDF ASDF was still
+in there, a $25,000, thousand unit order
+ 
+in there, a $25,000, thousand unit order
+that made no sense got silently
+ 
+that made no sense got silently
+normalized to $25 in cash and counted
+ 
+normalized to $25 in cash and counted
+toward revenue totals without any
+ 
+toward revenue totals without any
+explanation by 4.7. And GPT 5.4 had the
+ 
+explanation by 4.7. And GPT 5.4 had the
+same issues, right? It put the same
+ 
+same issues, right? It put the same
+three fake customers in as canonical
+ 
+three fake customers in as canonical
+customers. It actually promoted an
+ 
+customers. It actually promoted an
+orphan record that was a trap into a
+ 
+orphan record that was a trap into a
+canonical record. So, both models have
+ 
+canonical record. So, both models have
+the same pattern. They do not cleanly
+ 
+the same pattern. They do not cleanly
+produce data when they're asked to
+ 
+produce data when they're asked to
+process that data from raw, dirty
+ 
+process that data from raw, dirty
+inputs. So, for all the talk about
+ 
+inputs. So, for all the talk about
+frontier reasoning, the question is this
+ 
+frontier reasoning, the question is this
+a real person? Remains a human job
+ 
+a real person? Remains a human job
+unless you have a harness that is
+ 
+unless you have a harness that is
+specific to data processing that is
+ 
+specific to data processing that is
+focused on sorting out duplicate
+ 
+focused on sorting out duplicate
+customer records. And now comes the
+ 
+customer records. And now comes the
+finding that changed how I think about
+ 
+finding that changed how I think about
+building on these models. I had each
+ 
+building on these models. I had each
+model review the others output on a
+ 
+model review the others output on a
+seven-dimensional rubric. Opus
+ 
+seven-dimensional rubric. Opus
+self-reviewed at three and a half out of
+ 
+self-reviewed at three and a half out of
+five on this database test. GPT 5.4
+ 
+five on this database test. GPT 5.4
+reviewed Opus at a 2.7, much more
+ 
+reviewed Opus at a 2.7, much more
+harshly. GPT 5.4 self-reviewed at 3.1
+ 
+harshly. GPT 5.4 self-reviewed at 3.1
+out of five, while Opus 4.7 reviewed GPT
+ 
+out of five, while Opus 4.7 reviewed GPT
+5.4 at 3.6. It was more gentle. In other
+ 
+5.4 at 3.6. It was more gentle. In other
+words, Opus oversells itself and GPT 5.4
+ 
+words, Opus oversells itself and GPT 5.4
+undersells itself. And GPT 5.4's own
+ 
+undersells itself. And GPT 5.4's own
+self-review surfaced more real problems
+ 
+self-review surfaced more real problems
+than Opus 4.7's review of GPT 5.4 did.
+ 
+than Opus 4.7's review of GPT 5.4 did.
+So, in other words, the harshest, most
+ 
+So, in other words, the harshest, most
+honest grader was the model with direct
+ 
+honest grader was the model with direct
+SQL access to its own tables. So,
+ 
+SQL access to its own tables. So,
+averaged across both reviews, Opus 4.7
+ 
+averaged across both reviews, Opus 4.7
+lands at 3.1 and ChatGPT 5.4 at 3.35.
+ 
+lands at 3.1 and ChatGPT 5.4 at 3.35.
+That is inside the noise of a single
+ 
+That is inside the noise of a single
+run. I'm not worried about that minor
+ 
+run. I'm not worried about that minor
+difference. The thing that I want to
+ 
+difference. The thing that I want to
+call out is that both models are being
+ 
+call out is that both models are being
+given a task so hard that even frontier
+ 
+given a task so hard that even frontier
+models are not successfully passing. In
+ 
+models are not successfully passing. In
+other words, the test is appropriately
+ 
+other words, the test is appropriately
+scaled to where frontier models are
+ 
+scaled to where frontier models are
+today. Processing hundreds and hundreds
+ 
+today. Processing hundreds and hundreds
+and hundreds of files with conflicting
+ 
+and hundreds of files with conflicting
+information,
+ 
+information,
+putting them into an agentic pipeline,
+ 
+putting them into an agentic pipeline,
+into a database, building a UI against
+ 
+into a database, building a UI against
+them, that seems to be the kind of task
+ 
+them, that seems to be the kind of task
+that reliably measures in a granular way
+ 
+that reliably measures in a granular way
+what models are actually capable of. And
+ 
+what models are actually capable of. And
+the takeaway is that 4.7 is absolutely
+ 
+the takeaway is that 4.7 is absolutely
+competitive with 5.4 in a way that 4.6
+ 
+competitive with 5.4 in a way that 4.6
+wasn't, but neither model is blowing the
+ 
+wasn't, but neither model is blowing the
+other out of the water on this. And the
+ 
+other out of the water on this. And the
+trust issues that surfaced matter here.
+ 
+trust issues that surfaced matter here.
+If you trust self-review in your agentic
+ 
+If you trust self-review in your agentic
+workflow, Opus 4.7 will tell you it's
+ 
+workflow, Opus 4.7 will tell you it's
+done when it's not sometimes, and GPT
+ 
+done when it's not sometimes, and GPT
+5.4 will tell you something's wrong when
+ 
+5.4 will tell you something's wrong when
+it's fine. Now, I want to caution here.
+ 
+it's fine. Now, I want to caution here.
+Despite me saying that, Opus 4.7 still
+ 
+Despite me saying that, Opus 4.7 still
+does a much better job than 4.6 at
+ 
+does a much better job than 4.6 at
+actually finishing work. And so, I'm not
+ 
+actually finishing work. And so, I'm not
+saying it's not an improvement. In fact,
+ 
+saying it's not an improvement. In fact,
+I ran this same shoebox of data test
+ 
+I ran this same shoebox of data test
+against 4.6 and got a much, much lower
+ 
+against 4.6 and got a much, much lower
+score than ChatGPT 5.4. And so, 4.7
+ 
+score than ChatGPT 5.4. And so, 4.7
+really pulled up that score toward close
+ 
+really pulled up that score toward close
+to parity, and I think that that
+ 
+to parity, and I think that that
+represents real improvement on the part
+ 
+represents real improvement on the part
+of the model actually getting work done.
+ 
+of the model actually getting work done.
+That doesn't mean that Opus 4.7 isn't
+ 
+That doesn't mean that Opus 4.7 isn't
+still somewhat over-optimistic about the
+ 
+still somewhat over-optimistic about the
+work that it needs to accomplish. So,
+ 
+work that it needs to accomplish. So,
+hold that nuance in your head as we move
+ 
+hold that nuance in your head as we move
+forward here. I'm going to continue
+ 
+forward here. I'm going to continue
+testing these models against this
+ 
+testing these models against this
+benchmark because I'm really satisfied
+ 
+benchmark because I'm really satisfied
+with how it's going. I'll continue to
+ 
+with how it's going. I'll continue to
+write things up on the Substack in more
+ 
+write things up on the Substack in more
+detail so you can see these tests. And
+ 
+detail so you can see these tests. And
+if this is working for you, if you like
+ 
+if this is working for you, if you like
+this kind of real-world hit that
+ 
+this kind of real-world hit that
+subscribe button so that I can continue
+ 
+subscribe button so that I can continue
+to deliver for you the actual test
+ 
+to deliver for you the actual test
+results on real-world systems that you
+ 
+results on real-world systems that you
+would otherwise have to dig for. Because
+ 
+would otherwise have to dig for. Because
+ChatGPT is likely to release a new model
+ 
+ChatGPT is likely to release a new model
+this week, and we should be ready to run
+ 
+this week, and we should be ready to run
+this test and see what happens when the
+ 
+this test and see what happens when the
+new model code name Spud comes out. Now,
+ 
+new model code name Spud comes out. Now,
+back to it. That peer-review finding
+ 
+back to it. That peer-review finding
+where the harshest grader was the model
+ 
+where the harshest grader was the model
+with SQL access to its own table, that
+ 
+with SQL access to its own table, that
+same pattern, the gap between what a
+ 
+same pattern, the gap between what a
+model says it did and what it actually
+ 
+model says it did and what it actually
+did, showed up again the very next day.
+ 
+did, showed up again the very next day.
+Except it wasn't a data migration
+ 
+Except it wasn't a data migration
+problem. It was the design tool that
+ 
+problem. It was the design tool that
+Claude launched just the day after Opus
+ 
+Claude launched just the day after Opus
+4.7. And it cost me 42 bucks to find
+ 
+4.7. And it cost me 42 bucks to find
+this out. So, the day after 4.7,
+ 
+this out. So, the day after 4.7,
+Anthropic launched Claude Design under a
+ 
+Anthropic launched Claude Design under a
+new sub-brand called Anthropic Lab. And
+ 
+new sub-brand called Anthropic Lab. And
+the first impression of Claude Design is
+ 
+the first impression of Claude Design is
+very strong. You hand it a code base,
+ 
+very strong. You hand it a code base,
+you hand it brand assets, it's going to
+ 
+you hand it brand assets, it's going to
+read them, it will build a design
+ 
+read them, it will build a design
+system, it will generate logos, it will
+ 
+system, it will generate logos, it will
+generate uh typography at scale, it will
+ 
+generate uh typography at scale, it will
+generate a color palette, a spacing
+ 
+generate a color palette, a spacing
+system, components, really a full UI
+ 
+system, components, really a full UI
+kit. And then it does something that's
+ 
+kit. And then it does something that's
+worth flagging. It generates a skill
+ 
+worth flagging. It generates a skill
+file, a machine-readable instruction set
+ 
+file, a machine-readable instruction set
+any future AI agent can consume to
+ 
+any future AI agent can consume to
+produce on-brand output. skills.markdown
+ 
+produce on-brand output. skills.markdown
+is not a new format. It's the Claude
+ 
+is not a new format. It's the Claude
+Skills Standard, you'll find it across
+ 
+Skills Standard, you'll find it across
+Claude Code, the Skills Repo, plenty of
+ 
+Claude Code, the Skills Repo, plenty of
+community projects like my Open Brain
+ 
+community projects like my Open Brain
+Project. What's new here is that a
+ 
+Project. What's new here is that a
+design tool now produces a skill file
+ 
+design tool now produces a skill file
+natively from your code base and brand
+ 
+natively from your code base and brand
+assets to ensure that future projects
+ 
+assets to ensure that future projects
+are brand native. It's not just making
+ 
+are brand native. It's not just making
+human-facing brand docs, it's actually
+ 
+human-facing brand docs, it's actually
+turning the design system into agent
+ 
+turning the design system into agent
+infrastructure, which is where this
+ 
+infrastructure, which is where this
+category is going. The design setup flow
+ 
+category is going. The design setup flow
+is very well organized. It will take
+ 
+is very well organized. It will take
+GitHub repos, local code bases, Figma
+ 
+GitHub repos, local code bases, Figma
+files, brand assets, free-form notes,
+ 
+files, brand assets, free-form notes,
+all in one place. The review UI is super
+ 
+all in one place. The review UI is super
+clean. You click directly on the element
+ 
+clean. You click directly on the element
+you want to change, you leave a comment,
+ 
+you want to change, you leave a comment,
+you send it. The export options are
+ 
+you send it. The export options are
+unusually practical, actually. You can
+ 
+unusually practical, actually. You can
+export to zip, to PDF, to PowerPoint, to
+ 
+export to zip, to PDF, to PowerPoint, to
+HTML, to Can- Canva, or you can hand off
+ 
+HTML, to Can- Canva, or you can hand off
+to Claude Code.
+ 
+to Claude Code.
+The Canva integration is not an
+ 
+The Canva integration is not an
+afterthought. It's the stated rendering
+ 
+afterthought. It's the stated rendering
+layer, and it extends an existing
+ 
+layer, and it extends an existing
+two-year partnership between Claude and
+ 
+two-year partnership between Claude and
+Canva.
+ 
+Canva.
+The conspicuous omission in all of this
+ 
+The conspicuous omission in all of this
+is, tada, Figma. There is no export to
+ 
+is, tada, Figma. There is no export to
+Figma. Mike Krieger, Anthropic's CPO and
+ 
+Figma. Mike Krieger, Anthropic's CPO and
+co-founder of Instagram, resigned from
+ 
+co-founder of Instagram, resigned from
+Figma's board on April 14th, just 3 days
+ 
+Figma's board on April 14th, just 3 days
+before the launch. Figma stock dropped
+ 
+before the launch. Figma stock dropped
+over 7% on announcement day. The market
+ 
+over 7% on announcement day. The market
+is seeing Claude Design as a Figma
+ 
+is seeing Claude Design as a Figma
+killer. Claude Design also does animated
+ 
+killer. Claude Design also does animated
+sequences. I want to be very precise
+ 
+sequences. I want to be very precise
+here because every piece of coverage
+ 
+here because every piece of coverage
+I've seen gets this incorrect. These are
+ 
+I've seen gets this incorrect. These are
+React-based motion graphics, but they
+ 
+React-based motion graphics, but they
+are not really generated video. You
+ 
+are not really generated video. You
+cannot export them as a video file. You
+ 
+cannot export them as a video file. You
+screen record if you want the video.
+ 
+screen record if you want the video.
+This kind of animation is genuinely
+ 
+This kind of animation is genuinely
+useful for product demos and B-roll, and
+ 
+useful for product demos and B-roll, and
+I've been doing a lot of this kind of
+ 
+I've been doing a lot of this kind of
+thing manually, and it's tedious, so
+ 
+thing manually, and it's tedious, so
+it's great to see it here. But, it's
+ 
+it's great to see it here. But, it's
+code-generated animation. It's not Sora,
+ 
+code-generated animation. It's not Sora,
+and that distinction matters. And I took
+ 
+and that distinction matters. And I took
+it for a real drive. I went through a
+ 
+it for a real drive. I went through a
+real product with a real codebase with
+ 
+real product with a real codebase with
+real brand assets, and within the first
+ 
+real brand assets, and within the first
+hour of setting Claude Design loose on
+ 
+hour of setting Claude Design loose on
+those assets, I knew the story was going
+ 
+those assets, I knew the story was going
+to be more complicated than the first
+ 
+to be more complicated than the first
+impression suggested. The design system
+ 
+impression suggested. The design system
+came back impressively complete with
+ 
+came back impressively complete with
+logos, with type, with colors, with
+ 
+logos, with type, with colors, with
+spacing, with components, with a usable
+ 
+spacing, with components, with a usable
+UI kit, all organized in a file tree
+ 
+UI kit, all organized in a file tree
+with JSX components in a proper readme.
+ 
+with JSX components in a proper readme.
+And then I noticed the logo. Claude
+ 
+And then I noticed the logo. Claude
+Design had reinterpreted the logo. It
+ 
+Design had reinterpreted the logo. It
+had turned the color mark into a black
+ 
+had turned the color mark into a black
+square plus a word mark instead of
+ 
+square plus a word mark instead of
+faithfully preserving the existing,
+ 
+faithfully preserving the existing,
+correct source logo. That is a hard
+ 
+correct source logo. That is a hard
+failure for a design system generator.
+ 
+failure for a design system generator.
+The moment it starts redesigning your
+ 
+The moment it starts redesigning your
+logo without your permission or request,
+ 
+logo without your permission or request,
+every downstream artifact becomes
+ 
+every downstream artifact becomes
+suspect. And that's what happened. The
+ 
+suspect. And that's what happened. The
+broken logo propagated into the UI kit.
+ 
+broken logo propagated into the UI kit.
+Every deliverable was now carrying it.
+ 
+Every deliverable was now carrying it.
+All of those nice files that it built
+ 
+All of those nice files that it built
+were now corrupted. So, I flagged it.
+ 
+were now corrupted. So, I flagged it.
+Claude explained it was going to fix
+ 
+Claude explained it was going to fix
+this. It sounded competent. It sounded
+ 
+this. It sounded competent. It sounded
+like it understood. The first correction
+ 
+like it understood. The first correction
+pass came back incorrect. The black and
+ 
+pass came back incorrect. The black and
+white on dark variant was still wrong.
+ 
+white on dark variant was still wrong.
+This is not a taste judgment issue. This
+ 
+This is not a taste judgment issue. This
+is a straightforward brand preservation
+ 
+is a straightforward brand preservation
+mess, and even though I flagged it yet
+ 
+mess, and even though I flagged it yet
+again, and it took a second pass at it,
+ 
+again, and it took a second pass at it,
+it still got it wrong. Third pass, still
+ 
+it still got it wrong. Third pass, still
+wrong. You get the idea here. By now, I
+ 
+wrong. You get the idea here. By now, I
+was writing the instructions as
+ 
+was writing the instructions as
+literally as I could. AI should be black
+ 
+literally as I could. AI should be black
+with the white padding on the black
+ 
+with the white padding on the black
+background. The other part of the brand
+ 
+background. The other part of the brand
+logo should remain white. Please check
+ 
+logo should remain white. Please check
+your work before calling it done this
+ 
+your work before calling it done this
+time. Thank you.
+ 
+time. Thank you.
+Same error. The issue had stopped being
+ 
+Same error. The issue had stopped being
+my prompt. It never was my prompt. It
+ 
+my prompt. It never was my prompt. It
+was the system overestimating that it
+ 
+was the system overestimating that it
+had satisfied the spec. It eventually
+ 
+had satisfied the spec. It eventually
+got fixed, but by the time I fixed it,
+ 
+got fixed, but by the time I fixed it,
+I'd been through multiple review rounds.
+ 
+I'd been through multiple review rounds.
+It was something like the fifth or sixth
+ 
+It was something like the fifth or sixth
+attempt. And here's where the cost
+ 
+attempt. And here's where the cost
+thread comes back. The part that hits
+ 
+thread comes back. The part that hits
+different when you're using Claude
+ 
+different when you're using Claude
+design is that every one of those
+ 
+design is that every one of those
+correction passes costs you money. I'd
+ 
+correction passes costs you money. I'd
+started the afternoon at $5 for the
+ 
+started the afternoon at $5 for the
+initial design system. Sounds like a
+ 
+initial design system. Sounds like a
+great deal, but by the time the logos
+ 
+great deal, but by the time the logos
+were right, the review iterations alone
+ 
+were right, the review iterations alone
+had cost me another 10 bucks. And then I
+ 
+had cost me another 10 bucks. And then I
+tried the animation features. The
+ 
+tried the animation features. The
+60-second overview piece came out
+ 
+60-second overview piece came out
+reasonable, about $2.50.
+ 
+reasonable, about $2.50.
+The longer piece, 2 minutes where I
+ 
+The longer piece, 2 minutes where I
+needed five review passes to get the
+ 
+needed five review passes to get the
+quality right, it ran me $23.29.
+ 
+quality right, it ran me $23.29.
+And the verifier appeared to time out,
+ 
+And the verifier appeared to time out,
+and the agent didn't consistently check
+ 
+and the agent didn't consistently check
+its own work before declaring the job
+ 
+its own work before declaring the job
+done. By the time I closed the tab on
+ 
+done. By the time I closed the tab on
+Claude design and got all of this
+ 
+Claude design and got all of this
+reviewed and done, the total bill was
+ 
+reviewed and done, the total bill was
+$42, and I had burned through Claude
+ 
+$42, and I had burned through Claude
+design's entire usage allocation in one
+ 
+design's entire usage allocation in one
+afternoon.
+ 
+afternoon.
+Look, a first pass miss is
+ 
+Look, a first pass miss is
+understandable. A third pass failure on
+ 
+understandable. A third pass failure on
+the same visible brand correction that I
+ 
+the same visible brand correction that I
+am paying for turns the review loop from
+ 
+am paying for turns the review loop from
+helpful into expensive. And cost isn't
+ 
+helpful into expensive. And cost isn't
+separate from product experience here.
+ 
+separate from product experience here.
+It is the product experience. Whenever
+ 
+It is the product experience. Whenever
+iteration is billable, reliability isn't
+ 
+iteration is billable, reliability isn't
+just a quality concern. It's also a
+ 
+just a quality concern. It's also a
+financial one.
+ 
+financial one.
+And I want to be clear, it is still
+ 
+And I want to be clear, it is still
+amazing that we have something like
+ 
+amazing that we have something like
+Claude design that can actually create
+ 
+Claude design that can actually create
+these files at all. And so, as much as
+ 
+these files at all. And so, as much as
+$42 feels like a lot to spend on this
+ 
+$42 feels like a lot to spend on this
+tool and these revisions, and as much as
+ 
+tool and these revisions, and as much as
+I am rightly calling out that we need
+ 
+I am rightly calling out that we need
+better adherence to corrections and more
+ 
+better adherence to corrections and more
+transparent billing practices,
+ 
+transparent billing practices,
+especially when we are paying for
+ 
+especially when we are paying for
+mistakes the models make, I also don't
+ 
+mistakes the models make, I also don't
+want to lose sight of the fact that we
+ 
+want to lose sight of the fact that we
+live in a miraculous world where I can
+ 
+live in a miraculous world where I can
+get this kind of design quality at all
+ 
+get this kind of design quality at all
+done through a model automatically in
+ 
+done through a model automatically in
+just a few minutes. And so, yes, if
+ 
+just a few minutes. And so, yes, if
+you're looking at it and saying "Is $42
+ 
+you're looking at it and saying "Is $42
+worth it for a full working design
+ 
+worth it for a full working design
+system and an animated video?" I think
+ 
+system and an animated video?" I think
+the answer is yes, it is. Is it
+ 
+the answer is yes, it is. Is it
+something where I saw some of the
+ 
+something where I saw some of the
+scratches on the record, so to speak,
+ 
+scratches on the record, so to speak,
+and I see that there are some issues
+ 
+and I see that there are some issues
+with how this works today, how the
+ 
+with how this works today, how the
+billing works, how the revisions work,
+ 
+billing works, how the revisions work,
+prompt adherence? Also, yes. Keep both
+ 
+prompt adherence? Also, yes. Keep both
+of those in mind as we go forward. One
+ 
+of those in mind as we go forward. One
+thing I want to call out on Claude
+ 
+thing I want to call out on Claude
+Design is that it's trying to be much
+ 
+Design is that it's trying to be much
+more high-end than most people will
+ 
+more high-end than most people will
+realize. The onboarding speaks
+ 
+realize. The onboarding speaks
+professional design language. The output
+ 
+professional design language. The output
+includes JSX components and
+ 
+includes JSX components and
+agent-readable instruction files, which
+ 
+agent-readable instruction files, which
+may not be intuitive to everyone. Having
+ 
+may not be intuitive to everyone. Having
+someone with actual design expertise set
+ 
+someone with actual design expertise set
+up the design system is going to make a
+ 
+up the design system is going to make a
+massive difference in what you get out
+ 
+massive difference in what you get out
+of it. This system rewards expertise,
+ 
+of it. This system rewards expertise,
+and that fact alone undercuts a lot of
+ 
+and that fact alone undercuts a lot of
+the popular narrative I've seen that
+ 
+the popular narrative I've seen that
+this kills designers as a role. I don't
+ 
+this kills designers as a role. I don't
+think it does. I think it's a tool for
+ 
+think it does. I think it's a tool for
+designers to do their best work. And I
+ 
+designers to do their best work. And I
+think that's exactly why Anthropic is
+ 
+think that's exactly why Anthropic is
+leading with a Canva partnership, which
+ 
+leading with a Canva partnership, which
+signals prosumer to exactly the audience
+ 
+signals prosumer to exactly the audience
+that would get the most out of it. Now
+ 
+that would get the most out of it. Now
+that we've seen how Claude Design works
+ 
+that we've seen how Claude Design works
+a bit, let's switch gears back to
+ 
+a bit, let's switch gears back to
+overall impressions of 4.7, and then
+ 
+overall impressions of 4.7, and then
+we'll get into specific usage tips for
+ 
+we'll get into specific usage tips for
+4.7 after that. First, why does the
+ 
+4.7 after that. First, why does the
+model feel the way it feels? I think
+ 
+model feel the way it feels? I think
+three separate things are happening at
+ 
+three separate things are happening at
+once here, and most of us are collapsing
+ 
+once here, and most of us are collapsing
+them into one complaint. I think three
+ 
+them into one complaint. I think three
+separate things are happening here, and
+ 
+separate things are happening here, and
+most people are collapsing them into one
+ 
+most people are collapsing them into one
+complaint. I'll walk through all three.
+ 
+complaint. I'll walk through all three.
+First, adaptive thinking under invests
+ 
+First, adaptive thinking under invests
+on tasks it judges as simple. The model
+ 
+on tasks it judges as simple. The model
+just decides how much reasoning your
+ 
+just decides how much reasoning your
+query deserves. So, for hard coding at
+ 
+query deserves. So, for hard coding at
+extra high effort, it's going to think
+ 
+extra high effort, it's going to think
+deeply. But, for writing, for research,
+ 
+deeply. But, for writing, for research,
+for conversational reasoning, it
+ 
+for conversational reasoning, it
+sometimes decides you don't need that,
+ 
+sometimes decides you don't need that,
+and it gives you less. That's what
+ 
+and it gives you less. That's what
+people mean when they say non-coding
+ 
+people mean when they say non-coding
+replies on 4.7 feel thinner.
+ 
+replies on 4.7 feel thinner.
+Boris Cherny, who heads up Claude Code,
+ 
+Boris Cherny, who heads up Claude Code,
+recommends setting extra high for most
+ 
+recommends setting extra high for most
+tasks and max for the hardest. But, the
+ 
+tasks and max for the hardest. But, the
+problem is that's only available on
+ 
+problem is that's only available on
+Claude Code. I think Hex's CTO offered a
+ 
+Claude Code. I think Hex's CTO offered a
+useful calibration rule if you want to
+ 
+useful calibration rule if you want to
+get the sense of how 4.7 and 4.6 compare
+ 
+get the sense of how 4.7 and 4.6 compare
+here. He said low effort 4.7 is like
+ 
+here. He said low effort 4.7 is like
+medium effort 4.6. Which means if you're
+ 
+medium effort 4.6. Which means if you're
+running 4.6 on high for something, and
+ 
+running 4.6 on high for something, and
+you run extra high for 4.7, that's where
+ 
+you run extra high for 4.7, that's where
+you're seeing the real value. And that's
+ 
+you're seeing the real value. And that's
+something that only works if you're a
+ 
+something that only works if you're a
+developer who lives in the terminal. For
+ 
+developer who lives in the terminal. For
+the person paying 20 bucks a month who
+ 
+the person paying 20 bucks a month who
+has no idea what an effort level is,
+ 
+has no idea what an effort level is,
+that lever is invisible, which opens the
+ 
+that lever is invisible, which opens the
+question I keep coming back to. Is
+ 
+question I keep coming back to. Is
+adaptive thinking actually useful, or
+ 
+adaptive thinking actually useful, or
+does it just save Anthropic tokens?
+ 
+does it just save Anthropic tokens?
+Anthropic removed those old control
+ 
+Anthropic removed those old control
+services completely with this release.
+ 
+services completely with this release.
+You cannot set a thinking budget. You
+ 
+You cannot set a thinking budget. You
+cannot set a temperature. You can only
+ 
+cannot set a temperature. You can only
+get effort levels in the Claude Code
+ 
+get effort levels in the Claude Code
+interface, or you get whatever the model
+ 
+interface, or you get whatever the model
+decides. Fewer knobs for developers, and
+ 
+decides. Fewer knobs for developers, and
+ultimately less control for everyone.
+ 
+ultimately less control for everyone.
+Critically, fewer knobs doesn't mean
+ 
+Critically, fewer knobs doesn't mean
+lower cost. Remember that 35% tokenizer
+ 
+lower cost. Remember that 35% tokenizer
+increase I mentioned earlier? Adaptive
+ 
+increase I mentioned earlier? Adaptive
+thinking just decides how many of those
+ 
+thinking just decides how many of those
+expensive tokens it's going to spend on
+ 
+expensive tokens it's going to spend on
+your behalf. So, you have a model that
+ 
+your behalf. So, you have a model that
+charges more, and a system that decides
+ 
+charges more, and a system that decides
+how many tokens you get.
+ 
+how many tokens you get.
+Both levers moved in the same release.
+ 
+Both levers moved in the same release.
+That's not an accident. That's
+ 
+That's not an accident. That's
+definitely a monetization strategy. Make
+ 
+definitely a monetization strategy. Make
+a big call out here. The model follows
+ 
+a big call out here. The model follows
+instructions more literally. Anthropic's
+ 
+instructions more literally. Anthropic's
+migration guide says it explicitly. The
+ 
+migration guide says it explicitly. The
+model will not silently generalize an
+ 
+model will not silently generalize an
+instruction from one item to another,
+ 
+instruction from one item to another,
+and it will not infer requests that you
+ 
+and it will not infer requests that you
+did not make. So, if you said, "Format
+ 
+did not make. So, if you said, "Format
+this nicely to 4.6," and it made really
+ 
+this nicely to 4.6," and it made really
+generous assumptions, 4.7 does exactly
+ 
+generous assumptions, 4.7 does exactly
+what you wrote, nothing more, nothing
+ 
+what you wrote, nothing more, nothing
+less. That does make it more predictable
+ 
+less. That does make it more predictable
+for production pipelines. It makes it
+ 
+for production pipelines. It makes it
+less forgiving for all of us who relied
+ 
+less forgiving for all of us who relied
+on the model reading between the lines.
+ 
+on the model reading between the lines.
+It also reverses a trend from models at
+ 
+It also reverses a trend from models at
+getting better at inferring between the
+ 
+getting better at inferring between the
+lines, and that's a deliberate choice on
+ 
+lines, and that's a deliberate choice on
+Anthropic's part to improve long-running
+ 
+Anthropic's part to improve long-running
+agentic production work. The model also
+ 
+agentic production work. The model also
+uses tools less often by default. It
+ 
+uses tools less often by default. It
+spawns fewer sub-agents, and it has an
+ 
+spawns fewer sub-agents, and it has an
+opinionated design aesthetic. If you've
+ 
+opinionated design aesthetic. If you've
+seen it, it's warm cream, it's serif
+ 
+seen it, it's warm cream, it's serif
+type, it's terracotta accents, and that
+ 
+type, it's terracotta accents, and that
+bleeds into everything visual unless you
+ 
+bleeds into everything visual unless you
+override it. And since temperature is
+ 
+override it. And since temperature is
+gone, if you want more creativity, your
+ 
+gone, if you want more creativity, your
+prompting has to do that work. You can't
+ 
+prompting has to do that work. You can't
+just handle it by turning up the
+ 
+just handle it by turning up the
+temperature. Let me make a concrete
+ 
+temperature. Let me make a concrete
+example here because I think that that
+ 
+example here because I think that that
+will help this all to sort of land. If
+ 
+will help this all to sort of land. If
+you paste an article into Claude AI
+ 
+you paste an article into Claude AI
+today, and you ask, "Hey, can you
+ 
+today, and you ask, "Hey, can you
+summarize this in three sentences and
+ 
+summarize this in three sentences and
+make it punchy?" On Opus 4.6, you
+ 
+make it punchy?" On Opus 4.6, you
+probably got three sentences plus a
+ 
+probably got three sentences plus a
+header, maybe a closing kicker, maybe
+ 
+header, maybe a closing kicker, maybe
+some bolded key terms. The point is not
+ 
+some bolded key terms. The point is not
+the exact details you get on your run.
+ 
+the exact details you get on your run.
+The point is that it inferred between
+ 
+The point is that it inferred between
+the lines. On 4.7, you're going to get
+ 
+the lines. On 4.7, you're going to get
+three punchy sentences. You will get
+ 
+three punchy sentences. You will get
+exactly literally what you asked for, no
+ 
+exactly literally what you asked for, no
+more, no less. That's all. If you wanted
+ 
+more, no less. That's all. If you wanted
+formatting, sorry, Charlie, you had to
+ 
+formatting, sorry, Charlie, you had to
+say so. Multiply that across every
+ 
+say so. Multiply that across every
+prompt you've written, and you see the
+ 
+prompt you've written, and you see the
+migration problem with 4.7. Half the
+ 
+migration problem with 4.7. Half the
+value you were getting from 4.6 was the
+ 
+value you were getting from 4.6 was the
+model guessing at what you meant and
+ 
+model guessing at what you meant and
+filling it in.
+ 
+filling it in.
+So, that value didn't go away, just to
+ 
+So, that value didn't go away, just to
+be clear. The model can still do all
+ 
+be clear. The model can still do all
+that work, but the value moved because
+ 
+that work, but the value moved because
+now you have to ask for it explicitly.
+ 
+now you have to ask for it explicitly.
+Third big callout, the model is more
+ 
+Third big callout, the model is more
+combative and yes, we can actually
+ 
+combative and yes, we can actually
+measure that. Code Rabbit ran Opus 4.7
+ 
+measure that. Code Rabbit ran Opus 4.7
+through their tone analysis harness and
+ 
+through their tone analysis harness and
+found a 77% assertiveness rate with just
+ 
+found a 77% assertiveness rate with just
+16% hedging.
+ 
+16% hedging.
+The language comes through in
+ 
+The language comes through in
+imperatives like guard against this,
+ 
+imperatives like guard against this,
+prevent that, validate this input. It
+ 
+prevent that, validate this input. It
+almost gives you orders. Gergely Orosz
+ 
+almost gives you orders. Gergely Orosz
+of the Pragmatic Engineer said publicly
+ 
+of the Pragmatic Engineer said publicly
+that he went back to 4.6 precisely
+ 
+that he went back to 4.6 precisely
+because of this combativeness. And
+ 
+because of this combativeness. And
+Anthropic's own migration doc describes
+ 
+Anthropic's own migration doc describes
+the new tone as more directive and
+ 
+the new tone as more directive and
+opinionated. So, this isn't vibes, it's
+ 
+opinionated. So, this isn't vibes, it's
+actually a measurable shift and you'll
+ 
+actually a measurable shift and you'll
+find it comes out in specific places. In
+ 
+find it comes out in specific places. In
+code reviews, 4.7 leads with a verdict
+ 
+code reviews, 4.7 leads with a verdict
+and a patch. It does not soften. If you
+ 
+and a patch. It does not soften. If you
+prefer the older style that phrased
+ 
+prefer the older style that phrased
+everything as a suggestion, well, that
+ 
+everything as a suggestion, well, that
+style is gone.
+ 
+style is gone.
+In ambiguous creative writing tasks,
+ 
+In ambiguous creative writing tasks,
+especially anything around characters in
+ 
+especially anything around characters in
+distress or edgy humor, the model is
+ 
+distress or edgy humor, the model is
+going to trigger some safety weights and
+ 
+going to trigger some safety weights and
+push back or execute a modified version
+ 
+push back or execute a modified version
+of what you asked for instead of doing
+ 
+of what you asked for instead of doing
+what you asked. In security-adjacent
+ 
+what you asked. In security-adjacent
+coding, another safety area, the model
+ 
+coding, another safety area, the model
+will add caveats you didn't ask for,
+ 
+will add caveats you didn't ask for,
+sometimes refuse outright, sometimes
+ 
+sometimes refuse outright, sometimes
+produce a scoped-down version with a
+ 
+produce a scoped-down version with a
+warning. Why does it do this when it's
+ 
+warning. Why does it do this when it's
+supposed to follow instructions
+ 
+supposed to follow instructions
+literally? Because safety is a big focus
+ 
+literally? Because safety is a big focus
+of this release, especially in light of
+ 
+of this release, especially in light of
+Mythos. Now, in general conversation, if
+ 
+Mythos. Now, in general conversation, if
+your query touches a sensitive topic or
+ 
+your query touches a sensitive topic or
+reads as risky, the model will extend
+ 
+reads as risky, the model will extend
+that safety weighting and also steer you
+ 
+that safety weighting and also steer you
+there. Ultimately, this comes down to a
+ 
+there. Ultimately, this comes down to a
+register that is more directive than you
+ 
+register that is more directive than you
+got with 4.6. For some users, that will
+ 
+got with 4.6. For some users, that will
+land as a confident direct peer. For
+ 
+land as a confident direct peer. For
+other users, it lands as dismissive or
+ 
+other users, it lands as dismissive or
+it lands as distracting.
+ 
+it lands as distracting.
+Both of those reads are correct and
+ 
+Both of those reads are correct and
+honest. It just depends on what you're
+ 
+honest. It just depends on what you're
+looking for in a model and that's why
+ 
+looking for in a model and that's why
+I'm taking time to explain them.
+ 
+I'm taking time to explain them.
+Ultimately, the three big call outs that
+ 
+Ultimately, the three big call outs that
+I named all compound together to
+ 
+I named all compound together to
+generate the model impression, right?
+ 
+generate the model impression, right?
+Adaptive thinking gives you less
+ 
+Adaptive thinking gives you less
+reasoning than you might want. Literal
+ 
+reasoning than you might want. Literal
+interpretation takes away the inference
+ 
+interpretation takes away the inference
+you were getting for free, and that
+ 
+you were getting for free, and that
+combative direct register changes how
+ 
+combative direct register changes how
+the answer lands even when the answer is
+ 
+the answer lands even when the answer is
+correct. Where this takes you in the end
+ 
+correct. Where this takes you in the end
+is, frankly, a clear direct co-worker.
+ 
+is, frankly, a clear direct co-worker.
+And that is what Anthropic is building.
+ 
+And that is what Anthropic is building.
+I want to be very explicit about the
+ 
+I want to be very explicit about the
+strategy here. Everything you see from
+ 
+strategy here. Everything you see from
+the long-running agent to the ability to
+ 
+the long-running agent to the ability to
+do tasks that would be complex, to the
+ 
+do tasks that would be complex, to the
+work on visual acuity, to the work on
+ 
+work on visual acuity, to the work on
+understanding exactly what you meant in
+ 
+understanding exactly what you meant in
+doing it, all of it maps very cleanly to
+ 
+doing it, all of it maps very cleanly to
+the idea that Anthropic is building a
+ 
+the idea that Anthropic is building a
+co-worker who does hard, difficult tasks
+ 
+co-worker who does hard, difficult tasks
+with you at enterprise level. That is
+ 
+with you at enterprise level. That is
+where the money is, and I think that is
+ 
+where the money is, and I think that is
+what Anthropic is building to, and 4.7
+ 
+what Anthropic is building to, and 4.7
+is clearly a beat on the way to that
+ 
+is clearly a beat on the way to that
+release. Now, whether that's a good
+ 
+release. Now, whether that's a good
+trade depends on how you work. I build
+ 
+trade depends on how you work. I build
+and design long-running agentic systems
+ 
+and design long-running agentic systems
+for companies. The hardest trade-off in
+ 
+for companies. The hardest trade-off in
+that work is always the difference
+ 
+that work is always the difference
+between a model that improves on an
+ 
+between a model that improves on an
+aggregate metric and a model that's
+ 
+aggregate metric and a model that's
+actually better for the person sitting
+ 
+actually better for the person sitting
+in front of it. You can optimize all of
+ 
+in front of it. You can optimize all of
+the evals, and you can still make the
+ 
+the evals, and you can still make the
+experience worse. And I think that is
+ 
+experience worse. And I think that is
+part of the story here. Because it's
+ 
+part of the story here. Because it's
+true that the model is measurably better
+ 
+true that the model is measurably better
+on the hardest tasks, and those are not
+ 
+on the hardest tasks, and those are not
+small improvements. When I did my
+ 
+small improvements. When I did my
+shoebox test, it was better than 4.6 by
+ 
+shoebox test, it was better than 4.6 by
+a lot. But, it's also more restrictive
+ 
+a lot. But, it's also more restrictive
+on everyday use, and it's harder to
+ 
+on everyday use, and it's harder to
+prompt. Anthropic likely shipped knowing
+ 
+prompt. Anthropic likely shipped knowing
+those bugs. Alex Albert from Anthropic
+ 
+those bugs. Alex Albert from Anthropic
+acknowledged post-launch bugs on Friday.
+ 
+acknowledged post-launch bugs on Friday.
+An Anthropic PM told users the team was
+ 
+An Anthropic PM told users the team was
+sprinting on tuning up the model more
+ 
+sprinting on tuning up the model more
+after specific complaints about adaptive
+ 
+after specific complaints about adaptive
+thinking. I am confident that future
+ 
+thinking. I am confident that future
+releases will start to clean up some of
+ 
+releases will start to clean up some of
+these issues with 4.7. But, I want to be
+ 
+these issues with 4.7. But, I want to be
+clear that part of the story of this
+ 
+clear that part of the story of this
+model launch is that you can make a
+ 
+model launch is that you can make a
+model better in some ways, and you are
+ 
+model better in some ways, and you are
+trading off and making it worse in
+ 
+trading off and making it worse in
+others. If you want longer-running
+ 
+others. If you want longer-running
+agentic performance, you need a model
+ 
+agentic performance, you need a model
+that follows instructions directly,
+ 
+that follows instructions directly,
+clearly, and precisely. And that may
+ 
+clearly, and precisely. And that may
+mean it's harder to prompt.
+ 
+mean it's harder to prompt.
+We are living in a world where we are
+ 
+We are living in a world where we are
+essentially trading off the qualities of
+ 
+essentially trading off the qualities of
+these models, and the and the labs are
+ 
+these models, and the and the labs are
+doing this in ways that further their
+ 
+doing this in ways that further their
+economic interests, which is super
+ 
+economic interests, which is super
+rational, but we all have to adjust to
+ 
+rational, but we all have to adjust to
+it because these models now touch all of
+ 
+it because these models now touch all of
+our lives. That's sort of the larger
+ 
+our lives. That's sort of the larger
+story here, and that's why 4.7 is a
+ 
+story here, and that's why 4.7 is a
+challenging model to understand and why
+ 
+challenging model to understand and why
+I'm taking time to lay out all of this
+ 
+I'm taking time to lay out all of this
+detail. So, what can you actually do
+ 
+detail. So, what can you actually do
+about all of this? I'm going to give you
+ 
+about all of this? I'm going to give you
+four playbooks or tips out across 4.7,
+ 
+four playbooks or tips out across 4.7,
+and the reason I'm giving you four
+ 
+and the reason I'm giving you four
+different ones is simple.
+ 
+different ones is simple.
+The way you can configure this model is
+ 
+The way you can configure this model is
+different depending on if you're in the
+ 
+different depending on if you're in the
+API or in Claude Coder the chat, and I
+ 
+API or in Claude Coder the chat, and I
+want you to have the tools to make it
+ 
+want you to have the tools to make it
+what you want it to be. The first
+ 
+what you want it to be. The first
+playbook is universal. It applies on
+ 
+playbook is universal. It applies on
+every surface. You must front-load
+ 
+every surface. You must front-load
+intent with this model.
+ 
+intent with this model.
+Anthropic's own guidance on smarter
+ 
+Anthropic's own guidance on smarter
+models is that they need less
+ 
+models is that they need less
+prescriptive engineering, not more. And
+ 
+prescriptive engineering, not more. And
+so, ironically, with this means is you
+ 
+so, ironically, with this means is you
+have to tell 4.7 what you're building,
+ 
+have to tell 4.7 what you're building,
+who it's for, what the constraints are,
+ 
+who it's for, what the constraints are,
+and what good looks like, and then you
+ 
+and what good looks like, and then you
+need to get out of its way. And often,
+ 
+need to get out of its way. And often,
+our instinct when a model behaves more
+ 
+our instinct when a model behaves more
+literally is to write longer and more
+ 
+literally is to write longer and more
+detailed prompts. That makes sense to
+ 
+detailed prompts. That makes sense to
+us, but that is backward with this
+ 
+us, but that is backward with this
+model. The fix here is not more words,
+ 
+model. The fix here is not more words,
+it is clarity. It is clearer intent
+ 
+it is clarity. It is clearer intent
+upfront. I think Andre Karpathy's
+ 
+upfront. I think Andre Karpathy's
+framing is the right one. Increasingly,
+ 
+framing is the right one. Increasingly,
+we should not tell models what to do,
+ 
+we should not tell models what to do,
+but we should give them success criteria
+ 
+but we should give them success criteria
+and watch them go. But there's other
+ 
+and watch them go. But there's other
+elements to this playbook as well. You
+ 
+elements to this playbook as well. You
+want to, for example, batch your
+ 
+want to, for example, batch your
+questions instead of drip-feeding them.
+ 
+questions instead of drip-feeding them.
+You want to show the voice you want with
+ 
+You want to show the voice you want with
+positive examples rather than describing
+ 
+positive examples rather than describing
+it. And if you want 4.7 to spread across
+ 
+it. And if you want 4.7 to spread across
+parallel subtasks, you will need to ask
+ 
+parallel subtasks, you will need to ask
+explicitly upfront in that initial
+ 
+explicitly upfront in that initial
+prompt. It's going to spawn fewer
+ 
+prompt. It's going to spawn fewer
+subagents by default than 4.6 did, but
+ 
+subagents by default than 4.6 did, but
+that behavior is steerable in the prompt
+ 
+that behavior is steerable in the prompt
+itself. Now, the playbook two or section
+ 
+itself. Now, the playbook two or section
+two, that's specifically for Claude code
+ 
+two, that's specifically for Claude code
+where you have more levers in hand. I
+ 
+where you have more levers in hand. I
+mentioned extra high in the hex
+ 
+mentioned extra high in the hex
+calibration world a few moments ago. I
+ 
+calibration world a few moments ago. I
+would set extra high as your default and
+ 
+would set extra high as your default and
+max for the hardest stuff. Beyond
+ 
+max for the hardest stuff. Beyond
+effort, I would use plan mode and review
+ 
+effort, I would use plan mode and review
+that plan as a default. Don't just look
+ 
+that plan as a default. Don't just look
+to the diff. That's where misread intent
+ 
+to the diff. That's where misread intent
+surfaces before any code exists and it's
+ 
+surfaces before any code exists and it's
+the single highest leverage workflow
+ 
+the single highest leverage workflow
+change you can make for 4.7.
+ 
+change you can make for 4.7.
+I would also use the new /ultra review
+ 
+I would also use the new /ultra review
+command to handle the other end of the
+ 
+command to handle the other end of the
+workflow when you're done with your
+ 
+workflow when you're done with your
+code. I would remove any scaffolding you
+ 
+code. I would remove any scaffolding you
+wrote to force interim progress messages
+ 
+wrote to force interim progress messages
+because 4.7 does that natively now and
+ 
+because 4.7 does that natively now and
+the old instructions can fight that
+ 
+the old instructions can fight that
+behavior. Playbook three is for if you
+ 
+behavior. Playbook three is for if you
+use the API. The migration break most
+ 
+use the API. The migration break most
+people hit first is in parameter
+ 
+people hit first is in parameter
+removals. You're going to have to delete
+ 
+removals. You're going to have to delete
+temperature and top P and top K from
+ 
+temperature and top P and top K from
+your code. They will return 400 errors
+ 
+your code. They will return 400 errors
+now. You also have to realize that the
+ 
+now. You also have to realize that the
+thinking budget tokens parameter is gone
+ 
+thinking budget tokens parameter is gone
+and you're on adaptive thinking whether
+ 
+and you're on adaptive thinking whether
+you want to be or not. In that spirit, I
+ 
+you want to be or not. In that spirit, I
+would flip thinking display to
+ 
+would flip thinking display to
+summarized in the API unless you have a
+ 
+summarized in the API unless you have a
+reason to hide it or your users are
+ 
+reason to hide it or your users are
+going to end up seeing a long pause now
+ 
+going to end up seeing a long pause now
+followed by the output with no visible
+ 
+followed by the output with no visible
+reasoning. And that single default
+ 
+reasoning. And that single default
+change in the API is actually doing real
+ 
+change in the API is actually doing real
+reputational damage to 4.7 because
+ 
+reputational damage to 4.7 because
+overnight the experience using the API
+ 
+overnight the experience using the API
+changed for people. And in the API, I
+ 
+changed for people. And in the API, I
+would also regression test your most
+ 
+would also regression test your most
+important prompts because you need to
+ 
+important prompts because you need to
+not just assume the cost math works a
+ 
+not just assume the cost math works a
+particular way. Make sure that you are
+ 
+particular way. Make sure that you are
+testing to see how many more tokens your
+ 
+testing to see how many more tokens your
+prompt actually uses because it does
+ 
+prompt actually uses because it does
+vary and it's going to be more. Playbook
+ 
+vary and it's going to be more. Playbook
+four is the one most people actually
+ 
+four is the one most people actually
+live in. If you're in Claude.ai chat or
+ 
+live in. If you're in Claude.ai chat or
+Claude co-work, you will have none of
+ 
+Claude co-work, you will have none of
+the levers I just listed. You will not
+ 
+the levers I just listed. You will not
+have an effort selector. You will not
+ 
+have an effort selector. You will not
+have the ability to set to extra high.
+ 
+have the ability to set to extra high.
+You will not have a task budget.
+ 
+You will not have a task budget.
+Adaptive thinking is just the default.
+ 
+Adaptive thinking is just the default.
+It's the only mode on offer and the
+ 
+It's the only mode on offer and the
+model decides how hard to think for you
+ 
+model decides how hard to think for you
+based on how it reads your query.
+ 
+based on how it reads your query.
+That is the specific mechanism that
+ 
+That is the specific mechanism that
+makes chat replies in 4.7 feel thinner
+ 
+makes chat replies in 4.7 feel thinner
+than 4.6.
+ 
+than 4.6.
+And it's also, of course, Anthropic
+ 
+And it's also, of course, Anthropic
+managing compute under pressure. The
+ 
+managing compute under pressure. The
+practical consequence for you is the
+ 
+practical consequence for you is the
+same either way. You have to prompt your
+ 
+same either way. You have to prompt your
+way into deep reasoning because the
+ 
+way into deep reasoning because the
+switch is not available in the UI. So,
+ 
+switch is not available in the UI. So,
+what do you do? How do you do that in
+ 
+what do you do? How do you do that in
+chat and co-work? Ask for reasoning
+ 
+chat and co-work? Ask for reasoning
+explicitly. Say things like, "Hey, think
+ 
+explicitly. Say things like, "Hey, think
+carefully about this before answering.
+ 
+carefully about this before answering.
+Walk me through your reasoning step by
+ 
+Walk me through your reasoning step by
+step." You get the idea, right? "Where
+ 
+step." You get the idea, right? "Where
+is the strongest counterargument?" Those
+ 
+is the strongest counterargument?" Those
+are the kinds of things you need to ask
+ 
+are the kinds of things you need to ask
+because those phrases pull the model
+ 
+because those phrases pull the model
+into the kind of thinking it will not
+ 
+into the kind of thinking it will not
+allocate on its own. You also should
+ 
+allocate on its own. You also should
+upload the context instead of just
+ 
+upload the context instead of just
+describing it. Upload files, upload
+ 
+describing it. Upload files, upload
+code, upload the actual doc. 4.7 is more
+ 
+code, upload the actual doc. 4.7 is more
+literal and will take and use those
+ 
+literal and will take and use those
+files in a way that 4.6 didn't all the
+ 
+files in a way that 4.6 didn't all the
+time. I would also start fresh chats
+ 
+time. I would also start fresh chats
+really aggressively when the context
+ 
+really aggressively when the context
+gets polluted because 4.7 carries
+ 
+gets polluted because 4.7 carries
+interpretations forward very literally.
+ 
+interpretations forward very literally.
+I would use projects to carry intent
+ 
+I would use projects to carry intent
+across sessions so you're not
+ 
+across sessions so you're not
+reestablishing it at every turn.
+ 
+reestablishing it at every turn.
+Ultimately, if a prompt that worked
+ 
+Ultimately, if a prompt that worked
+perfectly on 4.6 is producing results on
+ 
+perfectly on 4.6 is producing results on
+4.7 that you don't like, the model isn't
+ 
+4.7 that you don't like, the model isn't
+necessarily getting dumber. What you may
+ 
+necessarily getting dumber. What you may
+have found is either a place where
+ 
+have found is either a place where
+adaptive thinking isn't surfacing and
+ 
+adaptive thinking isn't surfacing and
+you need to trigger it, or you may have
+ 
+you need to trigger it, or you may have
+found a spot where you need to get more
+ 
+found a spot where you need to get more
+literal in your prompting to get the
+ 
+literal in your prompting to get the
+same results. Now, let me show you the
+ 
+same results. Now, let me show you the
+math behind all of this because the cost
+ 
+math behind all of this because the cost
+thread I've been pulling on since the
+ 
+thread I've been pulling on since the
+opening deserves a full picture. This
+ 
+opening deserves a full picture. This
+new tokenizer maps the same input to up
+ 
+new tokenizer maps the same input to up
+to 35% more tokens according to
+ 
+to 35% more tokens according to
+Anthropic's own docs, and that number,
+ 
+Anthropic's own docs, and that number,
+honestly, is conservative. Simon
+ 
+honestly, is conservative. Simon
+Willison ran the Opus 4.7 system prompt
+ 
+Willison ran the Opus 4.7 system prompt
+through the token counter and actually
+ 
+through the token counter and actually
+measured 1.46x
+ 
+measured 1.46x
+above Anthropic's stated range. On the
+ 
+above Anthropic's stated range. On the
+real claw.markdown and technical content
+ 
+real claw.markdown and technical content
+that agents consume, independent
+ 
+that agents consume, independent
+measures have come in between 1.29 and
+ 
+measures have come in between 1.29 and
+1.47. The thing that I want to call out
+ 
+1.47. The thing that I want to call out
+here is that all of this precision comes
+ 
+here is that all of this precision comes
+at a cost. Ultimately, Anthropic is
+ 
+at a cost. Ultimately, Anthropic is
+getting more out of the model at higher
+ 
+getting more out of the model at higher
+effort levels, but part of the way it is
+ 
+effort levels, but part of the way it is
+doing that is by changing the token
+ 
+doing that is by changing the token
+strategy, and that has real costs. And
+ 
+strategy, and that has real costs. And
+the cost don't just live at input. You
+ 
+the cost don't just live at input. You
+also burn more output tokens because the
+ 
+also burn more output tokens because the
+model thinks harder on difficult tasks.
+ 
+model thinks harder on difficult tasks.
+This is why I hit my Claude design cap.
+ 
+This is why I hit my Claude design cap.
+Some pro subscribers hit their cap after
+ 
+Some pro subscribers hit their cap after
+three questions on agentic tasks. Boris
+ 
+three questions on agentic tasks. Boris
+Cherny had to announce he was raising
+ 
+Cherny had to announce he was raising
+max plan limits after the 4.7 launch
+ 
+max plan limits after the 4.7 launch
+because of this issue. And I don't want
+ 
+because of this issue. And I don't want
+to lose sight of the fact that this is
+ 
+to lose sight of the fact that this is
+all launching at the same time as
+ 
+all launching at the same time as
+developers losing control. So,
+ 
+developers losing control. So,
+temperature is gone, top P is gone, top
+ 
+temperature is gone, top P is gone, top
+K are gone. And all of that means you
+ 
+K are gone. And all of that means you
+have less dials to manage those model
+ 
+have less dials to manage those model
+settings, and you are trusting Anthropic
+ 
+settings, and you are trusting Anthropic
+to keep the defaults hidden and manage
+ 
+to keep the defaults hidden and manage
+them the way they want to. Which again
+ 
+them the way they want to. Which again
+points to that underlying theme that
+ 
+points to that underlying theme that
+Anthropic has compute constraints and
+ 
+Anthropic has compute constraints and
+needs more of the levers in their hands
+ 
+needs more of the levers in their hands
+versus ours. And that adds up to the
+ 
+versus ours. And that adds up to the
+mixed response that we've seen from this
+ 
+mixed response that we've seen from this
+model. When thinking display defaults
+ 
+model. When thinking display defaults
+are hidden, when adaptive thinking is on
+ 
+are hidden, when adaptive thinking is on
+can't control it, it may look like the
+ 
+can't control it, it may look like the
+model got dumber even when it did. And
+ 
+model got dumber even when it did. And
+that alone probably explains a chunk of
+ 
+that alone probably explains a chunk of
+the negative first impressions that I've
+ 
+the negative first impressions that I've
+seen in 4.1. And that alone probably
+ 
+seen in 4.1. And that alone probably
+explains a chunk of the negative first
+ 
+explains a chunk of the negative first
+impressions I've seen in 4.7. Even
+ 
+impressions I've seen in 4.7. Even
+Lambert actually flagged that the new
+ 
+Lambert actually flagged that the new
+tokenizer change suggests that this is a
+ 
+tokenizer change suggests that this is a
+new base model, not a fine-tuned 4.6,
+ 
+new base model, not a fine-tuned 4.6,
+and he may be right. If he's right, 4.7
+ 
+and he may be right. If he's right, 4.7
+is architecturally much bigger than the
+ 
+is architecturally much bigger than the
+version number suggests, but it also
+ 
+version number suggests, but it also
+means we may be looking at an early
+ 
+means we may be looking at an early
+checkpoint that shipped before it was
+ 
+checkpoint that shipped before it was
+fully smooth. The uneven quality between
+ 
+fully smooth. The uneven quality between
+coding and non-coding tasks, the
+ 
+coding and non-coding tasks, the
+combativeness being patched post-launch
+ 
+combativeness being patched post-launch
+at least potentially, the generalization
+ 
+at least potentially, the generalization
+gaps, all of that is consistent with
+ 
+gaps, all of that is consistent with
+that reading. So, if we want to sum it
+ 
+that reading. So, if we want to sum it
+up, the sticker price didn't move, but
+ 
+up, the sticker price didn't move, but
+between the tokenizer tax, the higher
+ 
+between the tokenizer tax, the higher
+output burn it extra high, and a
+ 
+output burn it extra high, and a
+correction loop in Claude design that
+ 
+correction loop in Claude design that
+charges per pass, you really are paying
+ 
+charges per pass, you really are paying
+more for the same work. And if the model
+ 
+more for the same work. And if the model
+is new, that also explains Anthropic's
+ 
+is new, that also explains Anthropic's
+need to monetize differently.
+ 
+need to monetize differently.
+So, to close the loop, the sticker price
+ 
+So, to close the loop, the sticker price
+actually isn't the thing that you need
+ 
+actually isn't the thing that you need
+to worry about here. You need to look at
+ 
+to worry about here. You need to look at
+the tokenizer tax I mentioned where it
+ 
+the tokenizer tax I mentioned where it
+tokenizes higher on inputs, the higher
+ 
+tokenizes higher on inputs, the higher
+output burn it extra high, and you need
+ 
+output burn it extra high, and you need
+to look at the way correction loops are
+ 
+to look at the way correction loops are
+handled. I called out Claude design, how
+ 
+handled. I called out Claude design, how
+it charges per pass.
+ 
+it charges per pass.
+Ultimately, if you add all of these
+ 
+Ultimately, if you add all of these
+pieces up, like more input tokens, more
+ 
+pieces up, like more input tokens, more
+extra effort on output, the Claude
+ 
+extra effort on output, the Claude
+design piece,
+ 
+design piece,
+however you slice it, you're paying
+ 
+however you slice it, you're paying
+meaningfully more for the same work, and
+ 
+meaningfully more for the same work, and
+Anthropic needs you to pay more because
+ 
+Anthropic needs you to pay more because
+they are compute constrained, and they
+ 
+they are compute constrained, and they
+are throttling demand through pricing.
+ 
+are throttling demand through pricing.
+And if they have a new model that
+ 
+And if they have a new model that
+they're trying to monetize on top of the
+ 
+they're trying to monetize on top of the
+astonishing growth in enterprise, that
+ 
+astonishing growth in enterprise, that
+makes a ton of sense. They need the
+ 
+makes a ton of sense. They need the
+revenue, and it goes into a larger story
+ 
+revenue, and it goes into a larger story
+that we're seeing in the competitive
+ 
+that we're seeing in the competitive
+landscape. But, the competitive picture
+ 
+landscape. But, the competitive picture
+isn't just about models from other
+ 
+isn't just about models from other
+players. It actually explains why
+ 
+players. It actually explains why
+Anthropic is building so many new
+ 
+Anthropic is building so many new
+product categories at once. They have to
+ 
+product categories at once. They have to
+prop their valuation. So, when they
+ 
+prop their valuation. So, when they
+launched 4.7, they launched Claude
+ 
+launched 4.7, they launched Claude
+design right away. It has animated
+ 
+design right away. It has animated
+content, it has prototypes, it has
+ 
+content, it has prototypes, it has
+slides, it has a lot more than just a
+ 
+slides, it has a lot more than just a
+design by itself product. And every one
+ 
+design by itself product. And every one
+of those new product categories helps
+ 
+of those new product categories helps
+Anthropic justify that sky-high
+ 
+Anthropic justify that sky-high
+valuation. And revenue is showing that
+ 
+valuation. And revenue is showing that
+this works. Revenue hit roughly $30
+ 
+this works. Revenue hit roughly $30
+billion annualized in April, up from $20
+ 
+billion annualized in April, up from $20
+billion a month prior, and investor
+ 
+billion a month prior, and investor
+offers are sitting at $800 billion now,
+ 
+offers are sitting at $800 billion now,
+up from $380 billion in February when
+ 
+up from $380 billion in February when
+they did their Series G.
+ 
+they did their Series G.
+Anthropic is now in talks with major
+ 
+Anthropic is now in talks with major
+banks to IPO in October with bankers
+ 
+banks to IPO in October with bankers
+estimating a $60 billion raise. Eight of
+ 
+estimating a $60 billion raise. Eight of
+the Fortune 10 are now Claude customers,
+ 
+the Fortune 10 are now Claude customers,
+right? Anthropic's enterprise share has
+ 
+right? Anthropic's enterprise share has
+climbed in a single month from 24 to 30%
+ 
+climbed in a single month from 24 to 30%
+while OpenAI has dropped from 46% to
+ 
+while OpenAI has dropped from 46% to
+35%. Every new product category is
+ 
+35%. Every new product category is
+consuming massive inference compute and
+ 
+consuming massive inference compute and
+every correction passes burning tokens
+ 
+every correction passes burning tokens
+and the strategy of vibe coding in a new
+ 
+and the strategy of vibe coding in a new
+categories is kind of in conflict with
+ 
+categories is kind of in conflict with
+this because on the one hand every new
+ 
+this because on the one hand every new
+vibe coded product increases their odds
+ 
+vibe coded product increases their odds
+of selling at the enterprise level and
+ 
+of selling at the enterprise level and
+makes a lot of sense and actually fits
+ 
+makes a lot of sense and actually fits
+philosophically with where the Anthropic
+ 
+philosophically with where the Anthropic
+team is going. If you have a great LLM
+ 
+team is going. If you have a great LLM
+model that does lots of different work
+ 
+model that does lots of different work
+well with different hardnesses, you
+ 
+well with different hardnesses, you
+should be applying that model in as many
+ 
+should be applying that model in as many
+places as you can and I would expect
+ 
+places as you can and I would expect
+them to continue to do so. On the other
+ 
+them to continue to do so. On the other
+hand,
+ 
+hand,
+you're going to have to get people to
+ 
+you're going to have to get people to
+pay for that and that's where that
+ 
+pay for that and that's where that
+pricing piece comes in and that's why
+ 
+pricing piece comes in and that's why
+4.7 costs more. Another major part of
+ 
+4.7 costs more. Another major part of
+the picture is Methos. It's officially
+ 
+the picture is Methos. It's officially
+shipped on April 7th, but we don't have
+ 
+shipped on April 7th, but we don't have
+it yet because it was deemed too
+ 
+it yet because it was deemed too
+dangerous to release. Only, frankly, the
+ 
+dangerous to release. Only, frankly, the
+government and fancy companies have it.
+ 
+government and fancy companies have it.
+AWS has it, Apple has it, Microsoft has
+ 
+AWS has it, Apple has it, Microsoft has
+it, Google has it, Cisco has it, the
+ 
+it, Google has it, Cisco has it, the
+Linux Foundation has it and the reason
+ 
+Linux Foundation has it and the reason
+why is because the model is considered
+ 
+why is because the model is considered
+too much of a security threat to be
+ 
+too much of a security threat to be
+openly released. Methos has found
+ 
+openly released. Methos has found
+thousands of zero-day vulnerabilities in
+ 
+thousands of zero-day vulnerabilities in
+every major operating system and every
+ 
+every major operating system and every
+major web browser and really what
+ 
+major web browser and really what
+Anthropic wants to do is take this time
+ 
+Anthropic wants to do is take this time
+to make sure the web is made safe for
+ 
+to make sure the web is made safe for
+Methos. But at the same time the
+ 
+Methos. But at the same time the
+competitive pressure isn't easy and
+ 
+competitive pressure isn't easy and
+that's why Opus 4.7 shipped. They can't
+ 
+that's why Opus 4.7 shipped. They can't
+stop launching just because Methos is
+ 
+stop launching just because Methos is
+too good to release. And part of why is
+ 
+too good to release. And part of why is
+OpenAI's activity. OpenAI dropped the
+ 
+OpenAI's activity. OpenAI dropped the
+biggest Codex update since launch right
+ 
+biggest Codex update since launch right
+after 4.7 dropped. The new version runs
+ 
+after 4.7 dropped. The new version runs
+background computer use on Mac. Agents
+ 
+background computer use on Mac. Agents
+can see, can click, can type across
+ 
+can see, can click, can type across
+apps. It's really cool. I'm doing a
+ 
+apps. It's really cool. I'm doing a
+whole separate video on it that's coming
+ 
+whole separate video on it that's coming
+soon. I want it to have its own time to
+ 
+soon. I want it to have its own time to
+shine. But that being said, if you're
+ 
+shine. But that being said, if you're
+Anthropic and you're looking at Windows
+ 
+Anthropic and you're looking at Windows
+release 4.7, you're in a bit of a bind
+ 
+release 4.7, you're in a bit of a bind
+because Codex drops right when you
+ 
+because Codex drops right when you
+launch and at the same time OpenAI's
+ 
+launch and at the same time OpenAI's
+next frontier model code name Spud is
+ 
+next frontier model code name Spud is
+scheduled to release very soon, perhaps
+ 
+scheduled to release very soon, perhaps
+as soon as this week. And if that's the
+ 
+as soon as this week. And if that's the
+case, then you have got to release when
+ 
+case, then you have got to release when
+Anthropic released on Thursday because
+ 
+Anthropic released on Thursday because
+if you don't, you are not going to be
+ 
+if you don't, you are not going to be
+the best new model out there and you
+ 
+the best new model out there and you
+lose the perception in the market that
+ 
+lose the perception in the market that
+you're a frontier model maker, which
+ 
+you're a frontier model maker, which
+they cannot afford to do from a
+ 
+they cannot afford to do from a
+fundraising perspective. And so they had
+ 
+fundraising perspective. And so they had
+to release what they had or else GPT-5.5
+ 
+to release what they had or else GPT-5.5
+or whatever it's going to be called
+ 
+or whatever it's going to be called
+would overtake them as the new frontier
+ 
+would overtake them as the new frontier
+competitive best model in the world when
+ 
+competitive best model in the world when
+it launched. And if you're wondering, am
+ 
+it launched. And if you're wondering, am
+I predicting that? Yeah, it's actually
+ 
+I predicting that? Yeah, it's actually
+pretty safe to predict. These labs do
+ 
+pretty safe to predict. These labs do
+not drop models unless they feel they
+ 
+not drop models unless they feel they
+have a new best in world to drop. And if
+ 
+have a new best in world to drop. And if
+you're wondering, what does that mean
+ 
+you're wondering, what does that mean
+for me the user? What it means is you
+ 
+for me the user? What it means is you
+kind of have to dig in and learn. And
+ 
+kind of have to dig in and learn. And
+that's exactly why this video is here is
+ 
+that's exactly why this video is here is
+to understand where a model works and
+ 
+to understand where a model works and
+where it doesn't so you can deploy it
+ 
+where it doesn't so you can deploy it
+where it makes sense for you. I think a
+ 
+where it makes sense for you. I think a
+nice shorthand right now is to look at
+ 
+nice shorthand right now is to look at
+Anthropic as building vertically and
+ 
+Anthropic as building vertically and
+OpenAI is building horizontally.
+ 
+OpenAI is building horizontally.
+Anthropic is building vertically across
+ 
+Anthropic is building vertically across
+design, code, review, and deploy while
+ 
+design, code, review, and deploy while
+OpenAI builds horizontally with Codex as
+ 
+OpenAI builds horizontally with Codex as
+a platform that plugs into everything on
+ 
+a platform that plugs into everything on
+your desktop including all of that
+ 
+your desktop including all of that
+computer use stuff that you didn't get
+ 
+computer use stuff that you didn't get
+any other way until Codex launched. And
+ 
+any other way until Codex launched. And
+yes, I will say, I'll just get ahead of
+ 
+yes, I will say, I'll just get ahead of
+the review, Codex is incredible at
+ 
+the review, Codex is incredible at
+computer use and we'll get into that. So
+ 
+computer use and we'll get into that. So
+is 4.7 worth it? The honest answer
+ 
+is 4.7 worth it? The honest answer
+depends on who you are. I'm going to go
+ 
+depends on who you are. I'm going to go
+through each of these use cases in
+ 
+through each of these use cases in
+detail. If you're a daily Claude code
+ 
+detail. If you're a daily Claude code
+user, if you're running agentic
+ 
+user, if you're running agentic
+pipelines, you should upgrade today. The
+ 
+pipelines, you should upgrade today. The
+persistence fix in the vision jump are
+ 
+persistence fix in the vision jump are
+worth it. But you should set your effort
+ 
+worth it. But you should set your effort
+to X high and you should read the
+ 
+to X high and you should read the
+migration guide. Your prompts will need
+ 
+migration guide. Your prompts will need
+reshaping especially anywhere you relied
+ 
+reshaping especially anywhere you relied
+on 4.6 filling in intent.
+ 
+on 4.6 filling in intent.
+If you're doing financial analysis, if
+ 
+If you're doing financial analysis, if
+you're doing legal work, if you're doing
+ 
+you're doing legal work, if you're doing
+enterprise document reasoning, you want
+ 
+enterprise document reasoning, you want
+to upgrade right away.
+ 
+to upgrade right away.
+There's a reason why this model scores
+ 
+There's a reason why this model scores
+so highly. I have used it extensively
+ 
+so highly. I have used it extensively
+for complicated knowledge work just in
+ 
+for complicated knowledge work just in
+the last 4 days. It is really, really
+ 
+the last 4 days. It is really, really
+good at that, and you should absolutely
+ 
+good at that, and you should absolutely
+go for it.
+ 
+go for it.
+If you've got production API code that's
+ 
+If you've got production API code that's
+tuned to 4.6, you've got work ahead of
+ 
+tuned to 4.6, you've got work ahead of
+you. You have to test the cost before
+ 
+you. You have to test the cost before
+you switch. You have to change the
+ 
+you switch. You have to change the
+parameters that I talked about that are
+ 
+parameters that I talked about that are
+producing 400 errors now. There's a
+ 
+producing 400 errors now. There's a
+migration task ahead. Meanwhile, if your
+ 
+migration task ahead. Meanwhile, if your
+agents live on web research or terminal
+ 
+agents live on web research or terminal
+tasks, think before you update. As I
+ 
+tasks, think before you update. As I
+called out, web research is not stronger
+ 
+called out, web research is not stronger
+in this model. It actually regressed.
+ 
+in this model. It actually regressed.
+And you want to think about whether you
+ 
+And you want to think about whether you
+need to do a lot of web retrieval before
+ 
+need to do a lot of web retrieval before
+you decide to upgrade if you have a
+ 
+you decide to upgrade if you have a
+search-heavy workflow. And if you're a
+ 
+search-heavy workflow. And if you're a
+Claude chat user and you're paying 20
+ 
+Claude chat user and you're paying 20
+bucks a month, ultimately, whether you
+ 
+bucks a month, ultimately, whether you
+decide to upgrade or not depends
+ 
+decide to upgrade or not depends
+entirely on whether you're willing to
+ 
+entirely on whether you're willing to
+change how you prompt. Because the model
+ 
+change how you prompt. Because the model
+that used to fill in the gaps will not
+ 
+that used to fill in the gaps will not
+do so anymore. Now, if you're a designer
+ 
+do so anymore. Now, if you're a designer
+and you're like, I have to upgrade
+ 
+and you're like, I have to upgrade
+anyway cuz Claude design, I would agree
+ 
+anyway cuz Claude design, I would agree
+with you. Claude design is going to cost
+ 
+with you. Claude design is going to cost
+you something, but it is a real upgrade,
+ 
+you something, but it is a real upgrade,
+and it calls out where Anthropic is
+ 
+and it calls out where Anthropic is
+going as far as building out these
+ 
+going as far as building out these
+vertical workflows. It's worth a try.
+ 
+vertical workflows. It's worth a try.
+And on the tone side of things, you
+ 
+And on the tone side of things, you
+either need to decide to go with 4.7's
+ 
+either need to decide to go with 4.7's
+directness, or you need to decide to go
+ 
+directness, or you need to decide to go
+with 4.6 being softer, or even
+ 
+with 4.6 being softer, or even
+potentially 5.4 being softer. I know we
+ 
+potentially 5.4 being softer. I know we
+didn't expect Chat GPT to be more
+ 
+didn't expect Chat GPT to be more
+personable than Claude Opus, but that is
+ 
+personable than Claude Opus, but that is
+the world we're living in with the 4.7
+ 
+the world we're living in with the 4.7
+launch. It is really, really very
+ 
+launch. It is really, really very
+direct. And that gets at one of my like
+ 
+direct. And that gets at one of my like
+interesting questions for a model these
+ 
+interesting questions for a model these
+days. Is it your 2:00 a.m. work buddy?
+ 
+days. Is it your 2:00 a.m. work buddy?
+When you need to be direct and clear and
+ 
+When you need to be direct and clear and
+helpful and really bail you out of the
+ 
+helpful and really bail you out of the
+mud, is it going to get you there? The
+ 
+mud, is it going to get you there? The
+answer, honestly, is it does, depending
+ 
+answer, honestly, is it does, depending
+on the work. If it's complicated work
+ 
+on the work. If it's complicated work
+and you know how to drive it and you're
+ 
+and you know how to drive it and you're
+okay with the directness, yes. But if
+ 
+okay with the directness, yes. But if
+you're if you need the vagueness, if you
+ 
+you're if you need the vagueness, if you
+need the ability to brainstorm and come
+ 
+need the ability to brainstorm and come
+back with something that isn't
+ 
+back with something that isn't
+completely clear and have the model
+ 
+completely clear and have the model
+infer, it's just not the right model for
+ 
+infer, it's just not the right model for
+that job. In fact, I would go back to
+ 
+that job. In fact, I would go back to
+4.6. Having spent the last few days with
+ 
+4.6. Having spent the last few days with
+this model, I think the bottom line that
+ 
+this model, I think the bottom line that
+I want to call out is this. Anthropic
+ 
+I want to call out is this. Anthropic
+had to ship this model. They had no
+ 
+had to ship this model. They had no
+choice. They needed to ship something
+ 
+choice. They needed to ship something
+competitive. This is the best model they
+ 
+competitive. This is the best model they
+could put out in that time frame. This
+ 
+could put out in that time frame. This
+model is a strategic beat that shows
+ 
+model is a strategic beat that shows
+where they're going as far as building
+ 
+where they're going as far as building
+an agentic co-worker that can do
+ 
+an agentic co-worker that can do
+long-running complicated tasks. The
+ 
+long-running complicated tasks. The
+reason I'm spending so much time in this
+ 
+reason I'm spending so much time in this
+video talking through in detail what's
+ 
+video talking through in detail what's
+good and not good about it is actually
+ 
+good and not good about it is actually
+something we need to practice more of.
+ 
+something we need to practice more of.
+We cannot get to more mature products in
+ 
+We cannot get to more mature products in
+the AI revolution without this level of
+ 
+the AI revolution without this level of
+detail. If we are not testing in this
+ 
+detail. If we are not testing in this
+level of detail when a model comes out,
+ 
+level of detail when a model comes out,
+we're not really doing our job. And
+ 
+we're not really doing our job. And
+that's why I took so much time to
+ 
+that's why I took so much time to
+understand where this model shines,
+ 
+understand where this model shines,
+where it doesn't, to run it through my
+ 
+where it doesn't, to run it through my
+own practical tests before making this
+ 
+own practical tests before making this
+video. I don't want you to have to make
+ 
+video. I don't want you to have to make
+a decision about a model upgrade based
+ 
+a decision about a model upgrade based
+on one or two points of data. I want you
+ 
+on one or two points of data. I want you
+to have real clarity about where this
+ 
+to have real clarity about where this
+model shines and where it doesn't so
+ 
+model shines and where it doesn't so
+that you can understand whether a model
+ 
+that you can understand whether a model
+works for you or not. The future we are
+ 
+works for you or not. The future we are
+building to, whether we like it or not,
+ 
+building to, whether we like it or not,
+is a multifaceted LLM future. I know
+ 
+is a multifaceted LLM future. I know
+that we started our journey in 2022 when
+ 
+that we started our journey in 2022 when
+Chat GPT came out and it was all one
+ 
+Chat GPT came out and it was all one
+thing. That world is never coming back.
+ 
+thing. That world is never coming back.
+In fact, even in Claude, I had to name a
+ 
+In fact, even in Claude, I had to name a
+bunch of surfaces today in this video to
+ 
+bunch of surfaces today in this video to
+talk through what 4.7 does and doesn't
+ 
+talk through what 4.7 does and doesn't
+do. Expect that to get even more complex
+ 
+do. Expect that to get even more complex
+because the work that we're asking these
+ 
+because the work that we're asking these
+models to do is getting more important
+ 
+models to do is getting more important
+and more detailed. And that's one of the
+ 
+and more detailed. And that's one of the
+larger themes of the 4.7 release. The
+ 
+larger themes of the 4.7 release. The
+model builders are now competing on
+ 
+model builders are now competing on
+harnesses. If you look at Claude design,
+ 
+harnesses. If you look at Claude design,
+it's really a custom harness over the
+ 
+it's really a custom harness over the
+LLM focused specifically on design. That
+ 
+LLM focused specifically on design. That
+is part of how Anthropic is shipping all
+ 
+is part of how Anthropic is shipping all
+of this stuff so fast is that they're
+ 
+of this stuff so fast is that they're
+sticking a custom harness for a
+ 
+sticking a custom harness for a
+particular task on an LLM that has been
+ 
+particular task on an LLM that has been
+reinforcement learned against a
+ 
+reinforcement learned against a
+particular subject, and so they can
+ 
+particular subject, and so they can
+compete really effectively there. And
+ 
+compete really effectively there. And
+they can build something that people
+ 
+they can build something that people
+describe as a Figma killer.
+ 
+describe as a Figma killer.
+Now, when I think about that
+ 
+Now, when I think about that
+strategically, it makes sense for
+ 
+strategically, it makes sense for
+Anthropic, as I said, to go into all of
+ 
+Anthropic, as I said, to go into all of
+these verticals. But the thing that you
+ 
+these verticals. But the thing that you
+should be thinking about is if the model
+ 
+should be thinking about is if the model
+makers are now competing not just on the
+ 
+makers are now competing not just on the
+model itself, which they did for a
+ 
+model itself, which they did for a
+while, but also on the harness, how does
+ 
+while, but also on the harness, how does
+that shape our assumption of where we
+ 
+that shape our assumption of where we
+see these model makers planning and
+ 
+see these model makers planning and
+going in the future? I think we should
+ 
+going in the future? I think we should
+assume more vertical builds, not just
+ 
+assume more vertical builds, not just
+from Anthropic, but also from OpenAI and
+ 
+from Anthropic, but also from OpenAI and
+other model makers, even from Google.
+ 
+other model makers, even from Google.
+Google has said they are going after
+ 
+Google has said they are going after
+Claude Code because they don't like how
+ 
+Claude Code because they don't like how
+much of coding workflows are now moving
+ 
+much of coding workflows are now moving
+to Anthropic. They sort of seems late,
+ 
+to Anthropic. They sort of seems late,
+but they're finally paying attention.
+ 
+but they're finally paying attention.
+Uh and I think that we should expect
+ 
+Uh and I think that we should expect
+more of those vertically themed
+ 
+more of those vertically themed
+releases, which Claude Code was arguably
+ 
+releases, which Claude Code was arguably
+the first off. And all of that harness
+ 
+the first off. And all of that harness
+optimization leads to some downstream
+ 
+optimization leads to some downstream
+implications for all of us. If you are
+ 
+implications for all of us. If you are
+building in the AI space, you need to
+ 
+building in the AI space, you need to
+think seriously about whether your
+ 
+think seriously about whether your
+advantage in a space is something you
+ 
+advantage in a space is something you
+can sustain if the model makers can ship
+ 
+can sustain if the model makers can ship
+a great harness around that space. If
+ 
+a great harness around that space. If
+they can ship a harness around design,
+ 
+they can ship a harness around design,
+if they can ship a harness that helps a
+ 
+if they can ship a harness that helps a
+model do a great job of financial
+ 
+model do a great job of financial
+modeling, do you still have a product?
+ 
+modeling, do you still have a product?
+Think about what gives you an edge that
+ 
+Think about what gives you an edge that
+goes beyond just building an agent
+ 
+goes beyond just building an agent
+harness.
+ 
+harness.
+I would also call out, if you are
+ 
+I would also call out, if you are
+thinking through this upgrade story more
+ 
+thinking through this upgrade story more
+strategically, where are you adjusting
+ 
+strategically, where are you adjusting
+your workflows so that this is easier
+ 
+your workflows so that this is easier
+next time. Because one of the things
+ 
+next time. Because one of the things
+that I'm taking away from this is that
+ 
+that I'm taking away from this is that
+we need to start to think about all of
+ 
+we need to start to think about all of
+our work as it informs the larger
+ 
+our work as it informs the larger
+project these labs have to build
+ 
+project these labs have to build
+long-running agent workflows for serious
+ 
+long-running agent workflows for serious
+work. We almost need to start to and
+ 
+work. We almost need to start to and
+think of our work as either complicated
+ 
+think of our work as either complicated
+long-running knowledge work that these
+ 
+long-running knowledge work that these
+model makers are going to work really
+ 
+model makers are going to work really
+hard to make incredibly easy and
+ 
+hard to make incredibly easy and
+automated. That includes coding, that
+ 
+automated. That includes coding, that
+includes financial modeling work, etc.
+ 
+includes financial modeling work, etc.
+Or much more casual conversational type
+ 
+Or much more casual conversational type
+work, which the model makers do not
+ 
+work, which the model makers do not
+appear to be investing in at this time.
+ 
+appear to be investing in at this time.
+And we should plan accordingly. I think
+ 
+And we should plan accordingly. I think
+4.7 is not the last beat in that story.
+ 
+4.7 is not the last beat in that story.
+We are going to be talking about similar
+ 
+We are going to be talking about similar
+themes, I think, when Chat GPT launches
+ 
+themes, I think, when Chat GPT launches
+their next model. We certainly can talk
+ 
+their next model. We certainly can talk
+about similar things with the Codex
+ 
+about similar things with the Codex
+launch and what the Codex launch
+ 
+launch and what the Codex launch
+enables. Where we are going with all of
+ 
+enables. Where we are going with all of
+this in line with a compute-constrained
+ 
+this in line with a compute-constrained
+world is that work is going to get
+ 
+world is that work is going to get
+served with these models. If you are
+ 
+served with these models. If you are
+doing hard complicated work, you have a
+ 
+doing hard complicated work, you have a
+world where LLMs are just going to keep
+ 
+world where LLMs are just going to keep
+getting better for you. But for casual
+ 
+getting better for you. But for casual
+users, there's just not enough compute
+ 
+users, there's just not enough compute
+to go around, and the model makers are
+ 
+to go around, and the model makers are
+not prioritizing that workflow. That's
+ 
+not prioritizing that workflow. That's
+why OpenAI killed Sora. That is why
+ 
+why OpenAI killed Sora. That is why
+Claude is very comfortable in the
+ 
+Claude is very comfortable in the
+prosumer category, not the widespread
+ 
+prosumer category, not the widespread
+consumer category.
+ 
+consumer category.
+We need to assume a world where serious
+ 
+We need to assume a world where serious
+work gets serious tokens, and casual
+ 
+work gets serious tokens, and casual
+interactions do not get the same level
+ 
+interactions do not get the same level
+of involvement. Now, that may be okay
+ 
+of involvement. Now, that may be okay
+because we already have lots of LLMs for
+ 
+because we already have lots of LLMs for
+casual work, and maybe it's good enough
+ 
+casual work, and maybe it's good enough
+and most of us don't notice. But it's
+ 
+and most of us don't notice. But it's
+worth naming because I think that 4.7 is
+ 
+worth naming because I think that 4.7 is
+one of those beats where I really saw
+ 
+one of those beats where I really saw
+that we are moving very, very fast down
+ 
+that we are moving very, very fast down
+a path that is technical, that is
+ 
+a path that is technical, that is
+demanding, that is focused on serious
+ 
+demanding, that is focused on serious
+knowledge work for enterprises. And if
+ 
+knowledge work for enterprises. And if
+that's you, if that's the world you
+ 
+that's you, if that's the world you
+operate in, this is a big deal.
+ 
+operate in, this is a big deal.
+If it's not you, if you're more of a
+ 
+If it's not you, if you're more of a
+casual user, you are going to see fewer
+ 
+casual user, you are going to see fewer
+and fewer and fewer releases that change
+ 
+and fewer and fewer releases that change
+your world because so many of them are
+ 
+your world because so many of them are
+focused on that category that pays the
+ 
+focused on that category that pays the
+most. And I think that's one of the
+ 
+most. And I think that's one of the
+economic questions of our time, right?
+ 
+economic questions of our time, right?
+We have built these AIs and in a real
+ 
+We have built these AIs and in a real
+sense they have saturated out the chat
+ 
+sense they have saturated out the chat
+use case and no matter how hard we try,
+ 
+use case and no matter how hard we try,
+there's not really a way to make the
+ 
+there's not really a way to make the
+chat experience all that much better.
+ 
+chat experience all that much better.
+You can slap a better UI on it and make
+ 
+You can slap a better UI on it and make
+it more engaging in certain ways. You
+ 
+it more engaging in certain ways. You
+may have a moment that is coming sooner
+ 
+may have a moment that is coming sooner
+around responsive video where AI avatars
+ 
+around responsive video where AI avatars
+chat back. There's stuff like that we
+ 
+chat back. There's stuff like that we
+can do, but the underlying LLMs that do
+ 
+can do, but the underlying LLMs that do
+hard work are evolving in another
+ 
+hard work are evolving in another
+direction. They're evolving in a way
+ 
+direction. They're evolving in a way
+that average consumers won't see it. And
+ 
+that average consumers won't see it. And
+I think about this because I have lots
+ 
+I think about this because I have lots
+of family who I have to explain I'm the
+ 
+of family who I have to explain I'm the
+AI guy for my family, right? I have to
+ 
+AI guy for my family, right? I have to
+explain what AI is and what it does.
+ 
+explain what AI is and what it does.
+It's getting harder to do. It's getting
+ 
+It's getting harder to do. It's getting
+harder and 4.7 doesn't make that easier
+ 
+harder and 4.7 doesn't make that easier
+and it's another beat in that story
+ 
+and it's another beat in that story
+where ultimately economic models are
+ 
+where ultimately economic models are
+coming that do real hard work and help
+ 
+coming that do real hard work and help
+real professionals solve hard problems.
+ 
+real professionals solve hard problems.
+I think that's different from saying
+ 
+I think that's different from saying
+they replace jobs. I know there's a lot
+ 
+they replace jobs. I know there's a lot
+of talk about that. I do not see this as
+ 
+of talk about that. I do not see this as
+a job killer and I know a lot of people
+ 
+a job killer and I know a lot of people
+do and that's the reason I didn't talk
+ 
+do and that's the reason I didn't talk
+about it here because I just don't see
+ 
+about it here because I just don't see
+the tool sets, even the designer tool
+ 
+the tool sets, even the designer tool
+sets, as being good enough to
+ 
+sets, as being good enough to
+independently replace good professional
+ 
+independently replace good professional
+serious workers. So, that's the 4.7
+ 
+serious workers. So, that's the 4.7
+story. It's a story that's complicated.
+ 
+story. It's a story that's complicated.
+It's a story that's not easy to share
+ 
+It's a story that's not easy to share
+over the dinner table if you're talking
+ 
+over the dinner table if you're talking
+with someone who's not in AI, but it's
+ 
+with someone who's not in AI, but it's
+the real story. It's the story that
+ 
+the real story. It's the story that
+shapes whether you want to upgrade or
+ 
+shapes whether you want to upgrade or
+not. And I hope you get that detail from
+ 
+not. And I hope you get that detail from
+this video and if you want more, jump in
+ 
+this video and if you want more, jump in
+and subscribe because there's going to
+ 
+and subscribe because there's going to
+be another super detailed takedown of
+ 
+be another super detailed takedown of
+Codex coming. There's going to be
+ 
+Codex coming. There's going to be
+another one coming on 5.4. I have a
+ 
+another one coming on 5.4. I have a
+write-up on all of this on the Substack
+ 
+write-up on all of this on the Substack
+including all of my test results. So, if
+ 
+including all of my test results. So, if
+you want to dive in, that's where you
+ 
+you want to dive in, that's where you
+should go. I'll see you next time.

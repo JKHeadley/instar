@@ -1,0 +1,1808 @@
+ 
+For 50 years, you and I were the most
+ 
+For 50 years, you and I were the most
+important thing in computing, and we're
+ 
+important thing in computing, and we're
+just not anymore, and it's going to be
+ 
+just not anymore, and it's going to be
+something that changes the rest of our
+ 
+something that changes the rest of our
+lives. And I don't mean that to be
+ 
+lives. And I don't mean that to be
+discouraging. I'm not here to tell you
+ 
+discouraging. I'm not here to tell you
+we're not the most important thing in
+ 
+we're not the most important thing in
+computing, so we should all despair.
+ 
+computing, so we should all despair.
+That's not what this video is about.
+ 
+That's not what this video is about.
+Instead, it's about the future of our
+ 
+Instead, it's about the future of our
+agentic partnership with the new
+ 
+agentic partnership with the new
+intelligence, how we're building the web
+ 
+intelligence, how we're building the web
+around agentic intelligence, and what
+ 
+around agentic intelligence, and what
+that means for us humans and our future
+ 
+that means for us humans and our future
+on the web. I think it's under
+ 
+on the web. I think it's under
+discussed. I think we tend to talk about
+ 
+discussed. I think we tend to talk about
+it in terms of doom, and I actually want
+ 
+it in terms of doom, and I actually want
+to talk about a rebuilt world for people
+ 
+to talk about a rebuilt world for people
+as well. So, if you want to get a sense
+ 
+as well. So, if you want to get a sense
+of how deep this rabbit hole goes, I
+ 
+of how deep this rabbit hole goes, I
+want you to look at just about any piece
+ 
+want you to look at just about any piece
+of web infrastructure and notice how
+ 
+of web infrastructure and notice how
+there are human affordances built into
+ 
+there are human affordances built into
+the very structure of every piece of
+ 
+the very structure of every piece of
+software, everything we touch on the
+ 
+software, everything we touch on the
+screen. Let's look at the spreadsheet.
+ 
+screen. Let's look at the spreadsheet.
+The spreadsheet opens a file because you
+ 
+The spreadsheet opens a file because you
+need to scan the rows at the speed your
+ 
+need to scan the rows at the speed your
+brain processes visual information.
+ 
+brain processes visual information.
+That's how it processes. The CRM or any
+ 
+That's how it processes. The CRM or any
+other web portal with a dashboard or it
+ 
+other web portal with a dashboard or it
+requires a login because it doesn't know
+ 
+requires a login because it doesn't know
+who you, the human, are and then shows a
+ 
+who you, the human, are and then shows a
+dashboard because you have to process
+ 
+dashboard because you have to process
+information with your actual human eyes,
+ 
+information with your actual human eyes,
+right? It comes back to us being human.
+ 
+right? It comes back to us being human.
+The API that you get with financial
+ 
+The API that you get with financial
+records paginates at whatever number
+ 
+records paginates at whatever number
+rows, maybe 100 rows, because it assumes
+ 
+rows, maybe 100 rows, because it assumes
+a human needs to paginate through and
+ 
+a human needs to paginate through and
+read them. Everything about the web, all
+ 
+read them. Everything about the web, all
+the way down to the core, is built
+ 
+the way down to the core, is built
+around the idea that we need human
+ 
+around the idea that we need human
+eyeballs and human hands to manipulate
+ 
+eyeballs and human hands to manipulate
+the web, and that is just wrong now.
+ 
+the web, and that is just wrong now.
+It's incorrect, and we're feeling the
+ 
+It's incorrect, and we're feeling the
+strain. Every timeout, every rate limit,
+ 
+strain. Every timeout, every rate limit,
+every authentication flow, every startup
+ 
+every authentication flow, every startup
+sequence, every pagination scheme in
+ 
+sequence, every pagination scheme in
+every tool you've ever touched, all of
+ 
+every tool you've ever touched, all of
+it was calibrated to your pace. Not
+ 
+it was calibrated to your pace. Not
+because any of us decided we wanted to
+ 
+because any of us decided we wanted to
+make it slow, but because we built it
+ 
+make it slow, but because we built it
+for ourselves, our human brains, our
+ 
+for ourselves, our human brains, our
+human hands. And I want to be really
+ 
+human hands. And I want to be really
+clear about something. That was not a
+ 
+clear about something. That was not a
+flaw. That was brilliant engineering.
+ 
+flaw. That was brilliant engineering.
+That was engineering that designed
+ 
+That was engineering that designed
+computing systems around humans as the
+ 
+computing systems around humans as the
+core users. And that was 100% correct
+ 
+core users. And that was 100% correct
+until 2025. And now it's not. And that
+ 
+until 2025. And now it's not. And that
+is what we need to confront is that
+ 
+is what we need to confront is that
+decades and decades of our thinking and
+ 
+decades and decades of our thinking and
+user research and user experience, our
+ 
+user research and user experience, our
+fundamental core understanding of how
+ 
+fundamental core understanding of how
+the web is architected, all have to get
+ 
+the web is architected, all have to get
+set to the side because we have to now
+ 
+set to the side because we have to now
+build a web that works for agents and
+ 
+build a web that works for agents and
+humans both. And this is deadly serious
+ 
+humans both. And this is deadly serious
+stuff because agents are able to do more
+ 
+stuff because agents are able to do more
+and more and more autonomously and they
+ 
+and more and more autonomously and they
+are increasingly bottlenecked by the
+ 
+are increasingly bottlenecked by the
+exact human affordances that we need to
+ 
+exact human affordances that we need to
+get around. AI agents are routinely
+ 
+get around. AI agents are routinely
+operating at 10 to 50x human speed on
+ 
+operating at 10 to 50x human speed on
+reasoning tasks that we previously did
+ 
+reasoning tasks that we previously did
+until like 2024 or 2025. Coding agents
+ 
+until like 2024 or 2025. Coding agents
+can write production code at scale. You
+ 
+can write production code at scale. You
+name the FAN company and they will have
+ 
+name the FAN company and they will have
+a press release that tells you between
+ 
+a press release that tells you between
+20 and 40% of their code is written by
+ 
+20 and 40% of their code is written by
+AI. I literally, like they all do that
+ 
+AI. I literally, like they all do that
+now. Anthropic goes further. Anthropic
+ 
+now. Anthropic goes further. Anthropic
+says that Claude code writes 80% of its
+ 
+says that Claude code writes 80% of its
+own code now. Research can analyze
+ 
+own code now. Research can analyze
+earnings faster than any financial
+ 
+earnings faster than any financial
+analyst. Enterprise agents are piloting
+ 
+analyst. Enterprise agents are piloting
+blah blah blah. You get the idea. Within
+ 
+blah blah blah. You get the idea. Within
+a couple of years, inference went from
+ 
+a couple of years, inference went from
+close to useless to dominating these
+ 
+close to useless to dominating these
+fields and it just continues to speed
+ 
+fields and it just continues to speed
+up. Jeff Dean, Google's chief scientist
+ 
+up. Jeff Dean, Google's chief scientist
+and co-creator of TensorFlow and the
+ 
+and co-creator of TensorFlow and the
+whole TPU line of chips, so he's a big
+ 
+whole TPU line of chips, so he's a big
+deal, said at GTC two weeks ago that he
+ 
+deal, said at GTC two weeks ago that he
+expects AI to perform like a solid
+ 
+expects AI to perform like a solid
+junior developer working 24/7
+ 
+junior developer working 24/7
+within about a year. I think he's late
+ 
+within about a year. I think he's late
+like I think it's going to be sooner
+ 
+like I think it's going to be sooner
+than that. Nvidia's Billy Dally said at
+ 
+than that. Nvidia's Billy Dally said at
+the same event that inference is now 90%
+ 
+the same event that inference is now 90%
+of data center power consumption, not
+ 
+of data center power consumption, not
+training, and is heading toward 10 to
+ 
+training, and is heading toward 10 to
+20,000 tokens per second per user.
+ 
+20,000 tokens per second per user.
+Imagine 10 to 20,000 tokens of AI
+ 
+Imagine 10 to 20,000 tokens of AI
+consumption per second per user. Isn't
+ 
+consumption per second per user. Isn't
+that insane? That's where we're headed
+ 
+that insane? That's where we're headed
+toward. And those users are agents,
+ 
+toward. And those users are agents,
+right? The thinking is fast, the
+ 
+right? The thinking is fast, the
+thinking is getting faster, and the
+ 
+thinking is getting faster, and the
+thinking is increasingly not ours. Those
+ 
+thinking is increasingly not ours. Those
+token consumers are not ours. I can't
+ 
+token consumers are not ours. I can't
+consume 20,000 tokens a second, an agent
+ 
+consume 20,000 tokens a second, an agent
+can. And what Dean called out at that
+ 
+can. And what Dean called out at that
+conference is exactly what I'm saying
+ 
+conference is exactly what I'm saying
+here. He noted that if an agent is
+ 
+here. He noted that if an agent is
+operating 50 times faster than we are,
+ 
+operating 50 times faster than we are,
+all of the little stuff that we have
+ 
+all of the little stuff that we have
+tolerated that isn't relevant for human
+ 
+tolerated that isn't relevant for human
+speed becomes relevant. Like the startup
+ 
+speed becomes relevant. Like the startup
+time on our tools. When was the last
+ 
+time on our tools. When was the last
+time you thought about the number of
+ 
+time you thought about the number of
+milliseconds it takes to load your
+ 
+milliseconds it takes to load your
+tools? It becomes relevant when agents
+ 
+tools? It becomes relevant when agents
+are operating this fast. And then And
+ 
+are operating this fast. And then And
+when was the last time you thought about
+ 
+when was the last time you thought about
+the number of tools you have to switch
+ 
+the number of tools you have to switch
+through and how difficult that is for an
+ 
+through and how difficult that is for an
+agent that's trying to replicate a
+ 
+agent that's trying to replicate a
+workflow. Again, it's something we have
+ 
+workflow. Again, it's something we have
+to think about when agents are this
+ 
+to think about when agents are this
+productive. And he went farther. Dean
+ 
+productive. And he went farther. Dean
+actually called out that making a model
+ 
+actually called out that making a model
+not 50 times faster, not 100 times
+ 
+not 50 times faster, not 100 times
+faster, but infinitely fast would likely
+ 
+faster, but infinitely fast would likely
+only yield a two to three x fold
+ 
+only yield a two to three x fold
+improvement in our actual productivity.
+ 
+improvement in our actual productivity.
+Why? Because of the tool costs. Because
+ 
+Why? Because of the tool costs. Because
+in other words, the model, no matter how
+ 
+in other words, the model, no matter how
+infinitely fast it is, would still be
+ 
+infinitely fast it is, would still be
+bottlenecked by our human tool
+ 
+bottlenecked by our human tool
+affordances, our human web. That is the
+ 
+affordances, our human web. That is the
+new barrier. Our human computing, that
+ 
+new barrier. Our human computing, that
+is the new barrier. In other words, if
+ 
+is the new barrier. In other words, if
+the model is already 50 x faster and
+ 
+the model is already 50 x faster and
+we're only getting two to three x back,
+ 
+we're only getting two to three x back,
+the other 47-fold increase in speed is
+ 
+the other 47-fold increase in speed is
+getting sucked into everything the AI
+ 
+getting sucked into everything the AI
+has to touch. Our compilers, our file
+ 
+has to touch. Our compilers, our file
+systems, our APIs, our databases, our
+ 
+systems, our APIs, our databases, our
+test suites, our CRMs, our ERPs, you get
+ 
+test suites, our CRMs, our ERPs, you get
+the idea. All of it was designed for you
+ 
+the idea. All of it was designed for you
+and me, none of it was designed for
+ 
+and me, none of it was designed for
+agents. We are at a point where in a lot
+ 
+agents. We are at a point where in a lot
+of agentic loops, the majority of wall
+ 
+of agentic loops, the majority of wall
+clock time is the agent handling tools.
+ 
+clock time is the agent handling tools.
+It's not the agent actually doing
+ 
+It's not the agent actually doing
+inference or thinking. The part we spent
+ 
+inference or thinking. The part we spent
+a trillion dollars on, that's not the
+ 
+a trillion dollars on, that's not the
+part that's sucking up the time. Isn't
+ 
+part that's sucking up the time. Isn't
+that ironic? We spent a trillion dollars
+ 
+that ironic? We spent a trillion dollars
+on these agents. We want them to think
+ 
+on these agents. We want them to think
+collectively. We got them to do it. We
+ 
+collectively. We got them to do it. We
+made the sand to think. Isn't that
+ 
+made the sand to think. Isn't that
+great? Now, we're bottlenecking them on
+ 
+great? Now, we're bottlenecking them on
+tool calls that were designed for
+ 
+tool calls that were designed for
+humans. That's not going to work. And
+ 
+humans. That's not going to work. And
+this is not just a coding problem. This
+ 
+this is not just a coding problem. This
+This a problem if the agent has to get
+ 
+This a problem if the agent has to get
+data from Salesforce, if it has to pull
+ 
+data from Salesforce, if it has to pull
+from an ERP, if it has to feed back into
+ 
+from an ERP, if it has to feed back into
+Zendesk, if it has to get a third-party
+ 
+Zendesk, if it has to get a third-party
+API for some non-technical task,
+ 
+API for some non-technical task,
+anything, assemble a presentation,
+ 
+anything, assemble a presentation,
+anything at all the agent has to do. If
+ 
+anything at all the agent has to do. If
+it's touching tools, it's slowing down.
+ 
+it's touching tools, it's slowing down.
+And this is where the conversation
+ 
+And this is where the conversation
+shifts from isn't this an interesting
+ 
+shifts from isn't this an interesting
+infrastructure problem to get really
+ 
+infrastructure problem to get really
+personal, right? Because we built the
+ 
+personal, right? Because we built the
+web and computing around humans. And so
+ 
+web and computing around humans. And so
+the natural question is what the heck
+ 
+the natural question is what the heck
+does this mean for my career? What does
+ 
+does this mean for my career? What does
+it mean for my team? What does it mean
+ 
+it mean for my team? What does it mean
+for the next decade of my professional
+ 
+for the next decade of my professional
+life? Because the entire software world
+ 
+life? Because the entire software world
+is about to be rebuilt for a consumer
+ 
+is about to be rebuilt for a consumer
+that is not me and that's not you. And
+ 
+that is not me and that's not you. And
+the implications of that rebuild are a
+ 
+the implications of that rebuild are a
+lot deeper than anyone in the tool
+ 
+lot deeper than anyone in the tool
+optimization conversation is really
+ 
+optimization conversation is really
+starting to dig into and think about.
+ 
+starting to dig into and think about.
+This is far-reaching. And so first, I
+ 
+This is far-reaching. And so first, I
+want to take you through a tour of this
+ 
+want to take you through a tour of this
+rebuilt world. We already see the
+ 
+rebuilt world. We already see the
+contours of what's coming. There's no
+ 
+contours of what's coming. There's no
+reason to hide it. Let's be honest.
+ 
+reason to hide it. Let's be honest.
+Let's lay it out. Let's talk about
+ 
+Let's lay it out. Let's talk about
+what's coming really clearly so we can
+ 
+what's coming really clearly so we can
+see our place in it and how we built.
+ 
+see our place in it and how we built.
+This isn't really a prediction by the
+ 
+This isn't really a prediction by the
+way. We're already seeing enough that
+ 
+way. We're already seeing enough that
+this is just a simple linear
+ 
+this is just a simple linear
+extrapolation of the patterns we're
+ 
+extrapolation of the patterns we're
+already seeing. The rebuild is underway
+ 
+already seeing. The rebuild is underway
+and it's already happening in three
+ 
+and it's already happening in three
+specific layers. Each is more radical
+ 
+specific layers. Each is more radical
+than the last. So the first piece is
+ 
+than the last. So the first piece is
+just making the existing tools we have
+ 
+just making the existing tools we have
+better. And this one is specifically for
+ 
+better. And this one is specifically for
+developers, right? Most of our tools to
+ 
+developers, right? Most of our tools to
+build the web with are coding tools. So
+ 
+build the web with are coding tools. So
+let me give you a couple examples. The
+ 
+let me give you a couple examples. The
+JavaScript ecosystem has just spent the
+ 
+JavaScript ecosystem has just spent the
+last half decade getting faster by
+ 
+last half decade getting faster by
+switching to a different coding
+ 
+switching to a different coding
+language. In this case, moving toward
+ 
+language. In this case, moving toward
+Rust, toward Go, toward Zig, all because
+ 
+Rust, toward Go, toward Zig, all because
+developers got tired of waiting around
+ 
+developers got tired of waiting around
+and they wanted things to go faster.
+ 
+and they wanted things to go faster.
+TypeScript 7 is being written in Go to
+ 
+TypeScript 7 is being written in Go to
+get a 10x+ improvement in speed. These
+ 
+get a 10x+ improvement in speed. These
+are all small changes on the surface if
+ 
+are all small changes on the surface if
+you're not a developer. You're like,
+ 
+you're not a developer. You're like,
+well, what is Go? Why do I care? I guess
+ 
+well, what is Go? Why do I care? I guess
+it's a faster programming language. But
+ 
+it's a faster programming language. But
+here's the deal. The languages that
+ 
+here's the deal. The languages that
+we're moving to are faster but also
+ 
+we're moving to are faster but also
+better for AI to write in. Rust is an
+ 
+better for AI to write in. Rust is an
+excellent language for AI to write in it
+ 
+excellent language for AI to write in it
+turns out. Lee Robinson was able to
+ 
+turns out. Lee Robinson was able to
+build a 38,000 line Rust image
+ 
+build a 38,000 line Rust image
+compressor using only coding agents with
+ 
+compressor using only coding agents with
+zero run time dependencies because the
+ 
+zero run time dependencies because the
+strict compiler acts as a natural
+ 
+strict compiler acts as a natural
+verification. If it compiles, it is much
+ 
+verification. If it compiles, it is much
+more likely to be correct. So, the same
+ 
+more likely to be correct. So, the same
+language that makes tools faster for
+ 
+language that makes tools faster for
+agents also makes code safer for agents
+ 
+agents also makes code safer for agents
+to produce. The tool chain and the agent
+ 
+to produce. The tool chain and the agent
+are co-evolving together at this point.
+ 
+are co-evolving together at this point.
+And this is just one example in one
+ 
+And this is just one example in one
+ecosystem by web developers that were
+ 
+ecosystem by web developers that were
+already frustrated with the build times
+ 
+already frustrated with the build times
+for their tools, right? Uh Python, Java,
+ 
+for their tools, right? Uh Python, Java,
+Go, .NET, none of these have really
+ 
+Go, .NET, none of these have really
+undergone the same transformation yet.
+ 
+undergone the same transformation yet.
+And enterprise middleware hasn't even
+ 
+And enterprise middleware hasn't even
+begun to start. So, your Salesforce API
+ 
+begun to start. So, your Salesforce API
+still paginates at human speed. And your
+ 
+still paginates at human speed. And your
+SAP calls still carry batch processing
+ 
+SAP calls still carry batch processing
+overhead. And your SharePoint still
+ 
+overhead. And your SharePoint still
+requires human speed authentication. You
+ 
+requires human speed authentication. You
+get the idea. So, just because some of
+ 
+get the idea. So, just because some of
+these coding tools are coming along and
+ 
+these coding tools are coming along and
+getting faster, think of them as the tip
+ 
+getting faster, think of them as the tip
+of the iceberg. You're going to get much
+ 
+of the iceberg. You're going to get much
+faster tools along the way start to
+ 
+faster tools along the way start to
+grow. In a sense, I think MCP has
+ 
+grow. In a sense, I think MCP has
+blinded us to where this needs to go
+ 
+blinded us to where this needs to go
+because so much of the time what I hear
+ 
+because so much of the time what I hear
+is we put up an MCP, now we're agent
+ 
+is we put up an MCP, now we're agent
+readable writable, and no one thinks
+ 
+readable writable, and no one thinks
+about whether the MCP experience is
+ 
+about whether the MCP experience is
+really agent native. They sort of assume
+ 
+really agent native. They sort of assume
+they can take a human friendly API and
+ 
+they can take a human friendly API and
+stick an MCP over the top and the agent
+ 
+stick an MCP over the top and the agent
+will make do. Well, agents are flexible.
+ 
+will make do. Well, agents are flexible.
+They do make do, but that doesn't mean
+ 
+They do make do, but that doesn't mean
+you don't eat wall clock time while the
+ 
+you don't eat wall clock time while the
+agent sorts through your pagination on
+ 
+agent sorts through your pagination on
+your API through the MCP. You probably
+ 
+your API through the MCP. You probably
+do. And that's a real example, by the
+ 
+do. And that's a real example, by the
+way. I I know APIs that are doing
+ 
+way. I I know APIs that are doing
+exactly that, and it's just a terrible
+ 
+exactly that, and it's just a terrible
+experience for the agent. And that
+ 
+experience for the agent. And that
+brings us to layer number two. What if
+ 
+brings us to layer number two. What if
+we replace the tool abstraction entirely
+ 
+we replace the tool abstraction entirely
+with an agent native primitive, which is
+ 
+with an agent native primitive, which is
+a fancy way of saying the tools can get
+ 
+a fancy way of saying the tools can get
+faster, but what if we did not need
+ 
+faster, but what if we did not need
+recognizable tools for humans because
+ 
+recognizable tools for humans because
+really they're tools for agents in the
+ 
+really they're tools for agents in the
+first place, and that gets even more
+ 
+first place, and that gets even more
+speed. So, the next layer of the rebuild
+ 
+speed. So, the next layer of the rebuild
+is even more radical. It replaces the
+ 
+is even more radical. It replaces the
+human tool interface to begin with with
+ 
+human tool interface to begin with with
+primitives that assume that the consumer
+ 
+primitives that assume that the consumer
+does not have eyes, does not have hands,
+ 
+does not have eyes, does not have hands,
+and does not take coffee breaks. Open AI
+ 
+and does not take coffee breaks. Open AI
+shipped some magenta primitives in
+ 
+shipped some magenta primitives in
+February such as a persistent container
+ 
+February such as a persistent container
+or hosted shell where agents can install
+ 
+or hosted shell where agents can install
+dependencies once and never restart
+ 
+dependencies once and never restart
+before turns.
+ 
+before turns.
+Uh server-side compaction can keep
+ 
+Uh server-side compaction can keep
+agents alive for hours or days. Uh this
+ 
+agents alive for hours or days. Uh this
+is not really just a faster IDE your
+ 
+is not really just a faster IDE your
+development experience. It's a world
+ 
+development experience. It's a world
+where the concept of starting up the
+ 
+where the concept of starting up the
+compiler doesn't exist because the agent
+ 
+compiler doesn't exist because the agent
+environment lives forever, it never
+ 
+environment lives forever, it never
+shuts down. This gets a little bit
+ 
+shuts down. This gets a little bit
+nerdy, but researchers have published
+ 
+nerdy, but researchers have published
+branch FS, which is a copy-on-write file
+ 
+branch FS, which is a copy-on-write file
+system that gets you sub third of a
+ 
+system that gets you sub third of a
+second branch creation, which matters if
+ 
+second branch creation, which matters if
+you're telling the agent, "Hey, try this
+ 
+you're telling the agent, "Hey, try this
+out. See if it works. Kill it if it
+ 
+out. See if it works. Kill it if it
+doesn't." That kind of iterative process
+ 
+doesn't." That kind of iterative process
+that's friendly for agent requires
+ 
+that's friendly for agent requires
+underlying primitives that are lightning
+ 
+underlying primitives that are lightning
+fast and tools like branch FS help us
+ 
+fast and tools like branch FS help us
+get there. Another example that's really
+ 
+get there. Another example that's really
+creative. The agent primitives paper
+ 
+creative. The agent primitives paper
+that came out recently showed that
+ 
+that came out recently showed that
+multi-agent coordination can be
+ 
+multi-agent coordination can be
+facilitated through a shared KV cache,
+ 
+facilitated through a shared KV cache,
+which instead of using text is much,
+ 
+which instead of using text is much,
+much faster. It's like three to four x
+ 
+much faster. It's like three to four x
+lower latency. This is something where
+ 
+lower latency. This is something where
+essentially the agents are taking on a
+ 
+essentially the agents are taking on a
+little bit of a context window burden,
+ 
+little bit of a context window burden,
+but they're getting to share a cache
+ 
+but they're getting to share a cache
+that helps them make sense of the world
+ 
+that helps them make sense of the world
+and pass messages back and forth. I'm
+ 
+and pass messages back and forth. I'm
+not sure that that will be the only way
+ 
+not sure that that will be the only way
+we solve this, but it underlines how
+ 
+we solve this, but it underlines how
+we're starting to build tool sets that
+ 
+we're starting to build tool sets that
+were never intended to be human in the
+ 
+were never intended to be human in the
+first place, which is layer two. Layer
+ 
+first place, which is layer two. Layer
+three, the primitives that we're talking
+ 
+three, the primitives that we're talking
+about here are going to grow and replace
+ 
+about here are going to grow and replace
+the human scaffolding around the web.
+ 
+the human scaffolding around the web.
+This is the bitter lesson from AI
+ 
+This is the bitter lesson from AI
+research, right? General methods that
+ 
+research, right? General methods that
+leverage computation almost always beat
+ 
+leverage computation almost always beat
+human engineered solutions over the long
+ 
+human engineered solutions over the long
+run. In this case, we're applying that
+ 
+run. In this case, we're applying that
+lesson to the entire software stack.
+ 
+lesson to the entire software stack.
+Aaron Levie connected this is Dean's
+ 
+Aaron Levie connected this is Dean's
+talk specifically when he called out
+ 
+talk specifically when he called out
+that every new generation of model
+ 
+that every new generation of model
+effectively pinches off our human
+ 
+effectively pinches off our human
+scaffolding in new ways. The tools you
+ 
+scaffolding in new ways. The tools you
+built for today's model become drag on
+ 
+built for today's model become drag on
+tomorrow's model. The interfaces we
+ 
+tomorrow's model. The interfaces we
+design for human inspection of our AI
+ 
+design for human inspection of our AI
+models become overhead when the consumer
+ 
+models become overhead when the consumer
+doesn't have eyes anymore. We're already
+ 
+doesn't have eyes anymore. We're already
+talking about agent evaluated code. It's
+ 
+talking about agent evaluated code. It's
+been just a few months. And this creates
+ 
+been just a few months. And this creates
+a dynamic that makes just optimize
+ 
+a dynamic that makes just optimize
+existing tools structurally incorrect.
+ 
+existing tools structurally incorrect.
+You can spend a year making your agent's
+ 
+You can spend a year making your agent's
+framework three times faster and feel
+ 
+framework three times faster and feel
+like you did a lot and then a new model
+ 
+like you did a lot and then a new model
+ship that's five times faster at
+ 
+ship that's five times faster at
+inference and all of a sudden your
+ 
+inference and all of a sudden your
+framework's overhead which you spent so
+ 
+framework's overhead which you spent so
+much time optimizing shoots up from 30%
+ 
+much time optimizing shoots up from 30%
+of total time to 60% of total time
+ 
+of total time to 60% of total time
+because the model got better at
+ 
+because the model got better at
+reasoning fast. In other words, you are
+ 
+reasoning fast. In other words, you are
+losing ground by standing still because
+ 
+losing ground by standing still because
+every model improvement shifts the ratio
+ 
+every model improvement shifts the ratio
+of the model capability against your
+ 
+of the model capability against your
+human effort to contain the model and
+ 
+human effort to contain the model and
+scaffold it. The only durable response
+ 
+scaffold it. The only durable response
+in this kind of a world is to start to
+ 
+in this kind of a world is to start to
+invest in an agent native scaffolding
+ 
+invest in an agent native scaffolding
+for our models that is so fast it does
+ 
+for our models that is so fast it does
+not matter how quick and smart the
+ 
+not matter how quick and smart the
+agents get. The agent primitives are
+ 
+agents get. The agent primitives are
+still going to be minimal. So the agent
+ 
+still going to be minimal. So the agent
+memory calls, the agent tool calls,
+ 
+memory calls, the agent tool calls,
+starting up a compiler, running a
+ 
+starting up a compiler, running a
+system, running a command is still going
+ 
+system, running a command is still going
+to be so fast you're not going to worry
+ 
+to be so fast you're not going to worry
+about it as an agent. Much faster than
+ 
+about it as an agent. Much faster than
+the speed of typing, right? Much faster
+ 
+the speed of typing, right? Much faster
+than the speed of waiting for the cursor
+ 
+than the speed of waiting for the cursor
+to blink back. You want to be in that
+ 
+to blink back. You want to be in that
+world where you're thinking to yourself
+ 
+world where you're thinking to yourself
+not in terms of wall clock time for
+ 
+not in terms of wall clock time for
+humans who clock out for lunch, but in
+ 
+humans who clock out for lunch, but in
+terms of clock time for agents who
+ 
+terms of clock time for agents who
+measure everything by the ticking of a
+ 
+measure everything by the ticking of a
+CPU clock where like a thousand
+ 
+CPU clock where like a thousand
+milliseconds is an eternity.
+ 
+milliseconds is an eternity.
+That's the world that you have to start
+ 
+That's the world that you have to start
+to think in as a user researcher, as a
+ 
+to think in as a user researcher, as a
+designer of web experiences because
+ 
+designer of web experiences because
+that's the world the agent experiences.
+ 
+that's the world the agent experiences.
+When you have a third of a second delay
+ 
+When you have a third of a second delay
+on something, that is time to the agent
+ 
+on something, that is time to the agent
+that the agent could be doing something.
+ 
+that the agent could be doing something.
+So, obviously the question is what
+ 
+So, obviously the question is what
+happens to the human? What happens to
+ 
+happens to the human? What happens to
+us? We're building this AI native
+ 
+us? We're building this AI native
+infrastructure. I've told you how fast
+ 
+infrastructure. I've told you how fast
+it's going to be. If you're wondering if
+ 
+it's going to be. If you're wondering if
+this is inevitable, I got bad news for
+ 
+this is inevitable, I got bad news for
+you. Computing drives efficiency. There
+ 
+you. Computing drives efficiency. There
+is a what we would call a strong
+ 
+is a what we would call a strong
+attractor around the idea of efficiency
+ 
+attractor around the idea of efficiency
+in computing. Everything trends that
+ 
+in computing. Everything trends that
+way. And that means we're going to get
+ 
+way. And that means we're going to get
+agentic primitives. That means things
+ 
+agentic primitives. That means things
+are going to go start going superhuman
+ 
+are going to go start going superhuman
+fast. going to be a powerful agentic
+ 
+fast. going to be a powerful agentic
+economy that actually operates at
+ 
+economy that actually operates at
+superhuman speeds. That is happening. If
+ 
+superhuman speeds. That is happening. If
+you want to know what happens to you,
+ 
+you want to know what happens to you,
+the human,
+ 
+the human,
+you need to start asking yourself which
+ 
+you need to start asking yourself which
+one of four roles in the future you want
+ 
+one of four roles in the future you want
+to play. And yes, I'm going to name them
+ 
+to play. And yes, I'm going to name them
+because a lot of people at this stage
+ 
+because a lot of people at this stage
+would just stop and they would say,
+ 
+would just stop and they would say,
+"Well, you know, you got to have taste.
+ 
+"Well, you know, you got to have taste.
+You got to be able to have good
+ 
+You got to be able to have good
+judgment." And those are things I've
+ 
+judgment." And those are things I've
+talked about and they're true. But I
+ 
+talked about and they're true. But I
+want to go a step farther for you. I
+ 
+want to go a step farther for you. I
+want to get more specific for you. I
+ 
+want to get more specific for you. I
+think there're going to be about four or
+ 
+think there're going to be about four or
+five roles in the future and they're
+ 
+five roles in the future and they're
+going to cross job families and all of
+ 
+going to cross job families and all of
+that. And I haven't talked about this
+ 
+that. And I haven't talked about this
+before. So, if you if you think you've
+ 
+before. So, if you if you think you've
+heard this, you you haven't. Role number
+ 
+heard this, you you haven't. Role number
+one, someone who can activate and get
+ 
+one, someone who can activate and get
+stuff started and who can drive stuff
+ 
+stuff started and who can drive stuff
+toward completion. Call that a
+ 
+toward completion. Call that a
+tool-using generalist. It's someone
+ 
+tool-using generalist. It's someone
+who's the spark in a team, someone who
+ 
+who's the spark in a team, someone who
+can say, "I know I can do that. I know
+ 
+can say, "I know I can do that. I know
+the AI tools to use and I can go and get
+ 
+the AI tools to use and I can go and get
+it done." Think vibe coder today, but
+ 
+it done." Think vibe coder today, but
+much more than that because they can
+ 
+much more than that because they can
+start to direct direct long-running
+ 
+start to direct direct long-running
+agentic processes. Role number two, you
+ 
+agentic processes. Role number two, you
+want someone who builds the pipelines.
+ 
+want someone who builds the pipelines.
+Everything we're talking about, building
+ 
+Everything we're talking about, building
+the future, building agentic primitives,
+ 
+the future, building agentic primitives,
+building pipelines, it requires someone
+ 
+building pipelines, it requires someone
+who's really good at understanding
+ 
+who's really good at understanding
+infrastructure, someone who's really
+ 
+infrastructure, someone who's really
+good at pipelines, someone who's really
+ 
+good at pipelines, someone who's really
+good at moving data around, someone
+ 
+good at moving data around, someone
+who's really good at security. This is
+ 
+who's really good at security. This is
+sort of where some of our conventional
+ 
+sort of where some of our conventional
+engineering roles are evolving. You can
+ 
+engineering roles are evolving. You can
+call that what you want, but like
+ 
+call that what you want, but like
+basically if the vibe coder type guy is
+ 
+basically if the vibe coder type guy is
+the person who's like throwing stuff out
+ 
+the person who's like throwing stuff out
+there into the world using AI tools,
+ 
+there into the world using AI tools,
+someone has to make sure the tools are
+ 
+someone has to make sure the tools are
+up and running and make sure that the
+ 
+up and running and make sure that the
+pipelines are good and you can measure
+ 
+pipelines are good and you can measure
+everything and everything is actually
+ 
+everything and everything is actually
+hunky-dory. And that's the person who
+ 
+hunky-dory. And that's the person who
+is, I don't know, a pipeline engineer,
+ 
+is, I don't know, a pipeline engineer,
+whatever you want to call it. Role
+ 
+whatever you want to call it. Role
+number three,
+ 
+number three,
+you are going to need uh sales people as
+ 
+you are going to need uh sales people as
+a good example here. You're going to
+ 
+a good example here. You're going to
+need people who are able to work with
+ 
+need people who are able to work with
+people to get business done. We are not
+ 
+people to get business done. We are not
+going to lose having dinner and closing
+ 
+going to lose having dinner and closing
+a business deal.
+ 
+a business deal.
+You were going to need people who are
+ 
+You were going to need people who are
+able to build those relationships and
+ 
+able to build those relationships and
+get work completed. If you don't have
+ 
+get work completed. If you don't have
+them on your team, even in the age of
+ 
+them on your team, even in the age of
+AI, you are still going to regret it.
+ 
+AI, you are still going to regret it.
+Because people like doing business with
+ 
+Because people like doing business with
+people and people have a lot of dollars
+ 
+people and people have a lot of dollars
+to put toward businesses that have
+ 
+to put toward businesses that have
+people in them. And this is one of the
+ 
+people in them. And this is one of the
+areas where I think the agentic commerce
+ 
+areas where I think the agentic commerce
+and agentic economy is going to collide
+ 
+and agentic economy is going to collide
+a little bit with the human economy. We
+ 
+a little bit with the human economy. We
+are probably going to see roles
+ 
+are probably going to see roles
+in the next year or so where an agent
+ 
+in the next year or so where an agent
+CEO is going to realize their close rate
+ 
+CEO is going to realize their close rate
+isn't what they want it to be
+ 
+isn't what they want it to be
+and the agent is going to hire a really
+ 
+and the agent is going to hire a really
+high-quality salesperson to be the human
+ 
+high-quality salesperson to be the human
+face of the company so that they can
+ 
+face of the company so that they can
+close the deals they want to close. That
+ 
+close the deals they want to close. That
+is how important people who can do
+ 
+is how important people who can do
+business are. And then the last category
+ 
+business are. And then the last category
+is people who have the maturity to know
+ 
+is people who have the maturity to know
+when to put a brake on the system.
+ 
+when to put a brake on the system.
+Because of course with all this speed,
+ 
+Because of course with all this speed,
+that's the question, right? When do you
+ 
+that's the question, right? When do you
+put a brake on the system and say, "No,
+ 
+put a brake on the system and say, "No,
+we don't want to go there. No, we don't
+ 
+we don't want to go there. No, we don't
+want to aim the agent that way. No, we
+ 
+want to aim the agent that way. No, we
+don't want to actually speed up in this
+ 
+don't want to actually speed up in this
+direction. Yes, this inefficiency is
+ 
+direction. Yes, this inefficiency is
+okay, it's worth pursuing." This is how
+ 
+okay, it's worth pursuing." This is how
+we put a team together. This is how we
+ 
+we put a team together. This is how we
+lead and grow. This is often going to be
+ 
+lead and grow. This is often going to be
+people who get the CEO hat, right? It's
+ 
+people who get the CEO hat, right? It's
+people who understand how to put a team
+ 
+people who understand how to put a team
+together and grow it and who can be the
+ 
+together and grow it and who can be the
+adult in the room when they need to be.
+ 
+adult in the room when they need to be.
+And if you think about it, I'm not sure
+ 
+And if you think about it, I'm not sure
+there's a lot of core role types beyond
+ 
+there's a lot of core role types beyond
+I produce a lot of stuff with AI, I'm
+ 
+I produce a lot of stuff with AI, I'm
+easy to work with and I do business, I
+ 
+easy to work with and I do business, I
+can build agentic pipelines,
+ 
+can build agentic pipelines,
+and I'm a grown-up in the room. Like
+ 
+and I'm a grown-up in the room. Like
+that's that's a lot of it right there. I
+ 
+that's that's a lot of it right there. I
+think there There be a fifth one that I
+ 
+think there There be a fifth one that I
+would call sort of a creative type.
+ 
+would call sort of a creative type.
+Basically, you need someone sort of in
+ 
+Basically, you need someone sort of in
+the Steve Jobs chair who can imagine,
+ 
+the Steve Jobs chair who can imagine,
+envision, creatively say this is what we
+ 
+envision, creatively say this is what we
+want to see. This is the experience we
+ 
+want to see. This is the experience we
+want to have. This is how we want it to
+ 
+want to have. This is how we want it to
+be uh polished. This is how we want it
+ 
+be uh polished. This is how we want it
+to be seamless. So, I think there will
+ 
+to be seamless. So, I think there will
+be that role as well. That role may not
+ 
+be that role as well. That role may not
+see a lot of change versus previously,
+ 
+see a lot of change versus previously,
+but there are not in my experience that
+ 
+but there are not in my experience that
+many people today who have that kind of
+ 
+many people today who have that kind of
+polish and experience to be excellent
+ 
+polish and experience to be excellent
+creatives. And I think that's sad
+ 
+creatives. And I think that's sad
+because I think we need more of it on
+ 
+because I think we need more of it on
+the web. But it's something that
+ 
+the web. But it's something that
+probably because we don't see a lot of
+ 
+probably because we don't see a lot of
+it out there in product leadership, we
+ 
+it out there in product leadership, we
+don't or even in business leadership, we
+ 
+don't or even in business leadership, we
+don't have a lot of good examples of
+ 
+don't have a lot of good examples of
+like superpowered design-led companies.
+ 
+like superpowered design-led companies.
+Like Apple's always the one everyone
+ 
+Like Apple's always the one everyone
+pulls out and there's only one Steve
+ 
+pulls out and there's only one Steve
+Jobs. So, if you're thinking about
+ 
+Jobs. So, if you're thinking about
+putting a team together and you're like,
+ 
+putting a team together and you're like,
+what is my starting team? I would be
+ 
+what is my starting team? I would be
+like, is there a grown-up in the room?
+ 
+like, is there a grown-up in the room?
+Is there someone who could be a tool
+ 
+Is there someone who could be a tool
+generalist? Is there someone who can
+ 
+generalist? Is there someone who can
+build your pipeline? Is there someone
+ 
+build your pipeline? Is there someone
+you can do business with? Maybe is there
+ 
+you can do business with? Maybe is there
+a creative? That is all largely a set of
+ 
+a creative? That is all largely a set of
+roles that is above the AI agents. That
+ 
+roles that is above the AI agents. That
+is that is way above what the AI agent
+ 
+is that is way above what the AI agent
+is doing day-to-day. That is the future
+ 
+is doing day-to-day. That is the future
+that we have. And yes, we're going to
+ 
+that we have. And yes, we're going to
+have a web we can work with, too, but
+ 
+have a web we can work with, too, but
+increasingly it's going to be a web that
+ 
+increasingly it's going to be a web that
+operates at human speed that's
+ 
+operates at human speed that's
+differentiated from the agentic web
+ 
+differentiated from the agentic web
+because the agentic web is going to run
+ 
+because the agentic web is going to run
+really fast and we're not really going
+ 
+really fast and we're not really going
+to be able to make sense of it. If we
+ 
+to be able to make sense of it. If we
+step back here, I want to be clear that
+ 
+step back here, I want to be clear that
+we're not looking at a demotion. This is
+ 
+we're not looking at a demotion. This is
+not a situation where you should watch
+ 
+not a situation where you should watch
+this video and think we're seeing our
+ 
+this video and think we're seeing our
+own obsolescence. I just don't buy that
+ 
+own obsolescence. I just don't buy that
+and I'll just say it. I think it's a
+ 
+and I'll just say it. I think it's a
+promotion to the hardest and most
+ 
+promotion to the hardest and most
+valuable job in computing and I think
+ 
+valuable job in computing and I think
+maybe not all of us feel ready for it,
+ 
+maybe not all of us feel ready for it,
+but that's what we're going to be asked
+ 
+but that's what we're going to be asked
+to do. Is we're going to be asked to be
+ 
+to do. Is we're going to be asked to be
+the humans in the system when a lot of
+ 
+the humans in the system when a lot of
+the execution is getting taken care of
+ 
+the execution is getting taken care of
+by the agents. And so, the next time
+ 
+by the agents. And so, the next time
+someone says to you, "My AI isn't fast
+ 
+someone says to you, "My AI isn't fast
+enough." I want you to ask yourself, is
+ 
+enough." I want you to ask yourself, is
+it really the AI or is it all of the
+ 
+it really the AI or is it all of the
+little stuff that is getting in the way
+ 
+little stuff that is getting in the way
+of the AI agent getting faster?
+ 
+of the AI agent getting faster?
+It's probably the latter. That's going
+ 
+It's probably the latter. That's going
+to go away, and then ask yourself what
+ 
+to go away, and then ask yourself what
+happens to us next. That's what this
+ 
+happens to us next. That's what this
+video is about. Ask yourself what role
+ 
+video is about. Ask yourself what role
+you want to be. Do you want to be a
+ 
+you want to be. Do you want to be a
+business dealer? Do you want to be
+ 
+business dealer? Do you want to be
+someone who's an AI tool generalist? Do
+ 
+someone who's an AI tool generalist? Do
+you want to be someone who puts these
+ 
+you want to be someone who puts these
+agentic pipelines together? Start
+ 
+agentic pipelines together? Start
+preparing now. Start getting ready now,
+ 
+preparing now. Start getting ready now,
+because this world is coming really
+ 
+because this world is coming really
+fast, because agent capabilities
+ 
+fast, because agent capabilities
+continue to scale. This is the world
+ 
+continue to scale. This is the world
+where these kinds of roles are already
+ 
+where these kinds of roles are already
+roles that people I know are doing.
+ 
+roles that people I know are doing.
+Maybe not under those titles, but that's
+ 
+Maybe not under those titles, but that's
+the role they're actually doing.
+ 
+the role they're actually doing.
+And it's only going to get more that way
+ 
+And it's only going to get more that way
+over the next 12 to 24 months. These
+ 
+over the next 12 to 24 months. These
+four to five roles are the roles of the
+ 
+four to five roles are the roles of the
+future, and you should take them
+ 
+future, and you should take them
+seriously.
+ 
+seriously.
+Cheers.

@@ -1,0 +1,2060 @@
+ 
+Right now, a new infrastructure stack is
+ 
+Right now, a new infrastructure stack is
+being assembled in public for AI, and
+ 
+being assembled in public for AI, and
+most of us aren't paying attention to
+ 
+most of us aren't paying attention to
+it. It's got billions and billions of
+ 
+it. It's got billions and billions of
+capital behind it. It's not software,
+ 
+capital behind it. It's not software,
+it's not agents, it's the layer
+ 
+it's not agents, it's the layer
+underneath both of them. It's the layer
+ 
+underneath both of them. It's the layer
+that lets agents actually do things in
+ 
+that lets agents actually do things in
+the world. And the problem right now is
+ 
+the world. And the problem right now is
+that almost nobody on the outside of
+ 
+that almost nobody on the outside of
+that category can figure out what's real
+ 
+that category can figure out what's real
+and what's hype. And this video is all
+ 
+and what's hype. And this video is all
+about disentangling that, giving you a
+ 
+about disentangling that, giving you a
+way to understand this new
+ 
+way to understand this new
+infrastructure category for agents
+ 
+infrastructure category for agents
+that's being created, and helping you
+ 
+that's being created, and helping you
+make sense of what the big pieces of
+ 
+make sense of what the big pieces of
+this category are and how you can think
+ 
+this category are and how you can think
+about what's needed for your agents and
+ 
+about what's needed for your agents and
+your deployments. I want to be clear, we
+ 
+your deployments. I want to be clear, we
+have seen this movie before. In fact,
+ 
+have seen this movie before. In fact,
+we've seen it twice before. Between 2006
+ 
+we've seen it twice before. Between 2006
+and 2010, computing infrastructure
+ 
+and 2010, computing infrastructure
+shifted from on-premise servers into the
+ 
+shifted from on-premise servers into the
+cloud. EC2, S3, Lambda, all of these
+ 
+cloud. EC2, S3, Lambda, all of these
+like cloud compute interfaces. The
+ 
+like cloud compute interfaces. The
+builders who understood the new stack
+ 
+builders who understood the new stack
+started companies that are now dominant,
+ 
+started companies that are now dominant,
+like AWS. And then, between 2012 and
+ 
+like AWS. And then, between 2012 and
+2016, we saw the movie again. Monolithic
+ 
+2016, we saw the movie again. Monolithic
+applications gave way very rapidly into
+ 
+applications gave way very rapidly into
+decomposed applications with APIs in
+ 
+decomposed applications with APIs in
+between them, and what we call our
+ 
+between them, and what we call our
+microservices architecture. Now, we're
+ 
+microservices architecture. Now, we're
+watching yet another shift. We're moving
+ 
+watching yet another shift. We're moving
+from human-first tools to agent-first
+ 
+from human-first tools to agent-first
+primitives. I believe it is foundational
+ 
+primitives. I believe it is foundational
+in the same way that moving to cloud was
+ 
+in the same way that moving to cloud was
+foundational. So, the new customer for
+ 
+foundational. So, the new customer for
+infrastructure is going to be the agent
+ 
+infrastructure is going to be the agent
+in the same way
+ 
+in the same way
+that the new customer for compute became
+ 
+that the new customer for compute became
+the enterprise renting compute from data
+ 
+the enterprise renting compute from data
+centers in the 2010s. We are talking
+ 
+centers in the 2010s. We are talking
+about a shift at least as big as cloud
+ 
+about a shift at least as big as cloud
+when we're moving to agentic primitives.
+ 
+when we're moving to agentic primitives.
+But, because it's so new, and because
+ 
+But, because it's so new, and because
+most of the startups are so small, it's
+ 
+most of the startups are so small, it's
+been really, really hard to distinguish
+ 
+been really, really hard to distinguish
+the noise in the space from the actual
+ 
+the noise in the space from the actual
+signal. And so, I'm going to break the
+ 
+signal. And so, I'm going to break the
+category down for you here. And first, a
+ 
+category down for you here. And first, a
+word of warning. I love Legos, you know
+ 
+word of warning. I love Legos, you know
+that. These are not the same thing as
+ 
+that. These are not the same thing as
+Lego bricks for agents. I want them to
+ 
+Lego bricks for agents. I want them to
+be. That's the hope they'll sell you as
+ 
+be. That's the hope they'll sell you as
+Lego bricks for agents. But right now,
+ 
+Lego bricks for agents. But right now,
+you don't have the same degree of
+ 
+you don't have the same degree of
+composability and predictability that
+ 
+composability and predictability that
+you would have in a Lego analogy. These
+ 
+you would have in a Lego analogy. These
+are not all bricks with the same size
+ 
+are not all bricks with the same size
+knobs that you can just slap together
+ 
+knobs that you can just slap together
+and they're going to make a little wall.
+ 
+and they're going to make a little wall.
+Right now, it's as if you have Legos and
+ 
+Right now, it's as if you have Legos and
+wooden blocks, and they're all marketing
+ 
+wooden blocks, and they're all marketing
+themselves as Legos. You don't know
+ 
+themselves as Legos. You don't know
+which is which, and you don't know how
+ 
+which is which, and you don't know how
+to snap them together, and that is one
+ 
+to snap them together, and that is one
+of the biggest problems in the space
+ 
+of the biggest problems in the space
+right now. I think a more reliable
+ 
+right now. I think a more reliable
+analogy for where we're at in the space
+ 
+analogy for where we're at in the space
+today is something like system calls.
+ 
+today is something like system calls.
+Agents need to find reliable interfaces
+ 
+Agents need to find reliable interfaces
+that help them figure out identity, that
+ 
+that help them figure out identity, that
+help them figure out compute, that help
+ 
+help them figure out compute, that help
+them figure out memory and persistence
+ 
+them figure out memory and persistence
+and communication and payments. And the
+ 
+and communication and payments. And the
+companies that are building those system
+ 
+companies that are building those system
+calls are essentially building the
+ 
+calls are essentially building the
+operating system that agents will need
+ 
+operating system that agents will need
+to do their work in the new economy. And
+ 
+to do their work in the new economy. And
+I want to go through and decompose that
+ 
+I want to go through and decompose that
+stack and give you layer by layer what
+ 
+stack and give you layer by layer what
+agents look like and where the agent
+ 
+agents look like and where the agent
+primitives are going in this economy.
+ 
+primitives are going in this economy.
+Number one, layer one, compute and
+ 
+Number one, layer one, compute and
+sandboxing. This one is perhaps the most
+ 
+sandboxing. This one is perhaps the most
+production-ready in the stack. It's
+ 
+production-ready in the stack. It's
+already bearing the load for agents. And
+ 
+already bearing the load for agents. And
+what's the premise? It's really simple.
+ 
+what's the premise? It's really simple.
+The agent needs somewhere safe to run
+ 
+The agent needs somewhere safe to run
+code. It should not run on your laptop,
+ 
+code. It should not run on your laptop,
+it should not run in production, and it
+ 
+it should not run in production, and it
+should not run on supervised. It needs
+ 
+should not run on supervised. It needs
+isolated, sandboxed, auditable
+ 
+isolated, sandboxed, auditable
+execution. I I think that this layer has
+ 
+execution. I I think that this layer has
+the most mature competition at this
+ 
+the most mature competition at this
+point, right? E2B has roughly $32
+ 
+point, right? E2B has roughly $32
+million in funding. It uses firecracker
+ 
+million in funding. It uses firecracker
+micro VMs that has the same tech as AWS
+ 
+micro VMs that has the same tech as AWS
+Lambda has, and it's intended to give
+ 
+Lambda has, and it's intended to give
+each agent a session with its own
+ 
+each agent a session with its own
+dedicated kernel. But it's not the only
+ 
+dedicated kernel. But it's not the only
+one, right? Daytona raised a $24 million
+ 
+one, right? Daytona raised a $24 million
+Series A recently and took a different
+ 
+Series A recently and took a different
+architectural bet. They have Docker
+ 
+architectural bet. They have Docker
+containers with a shared kernel, and
+ 
+containers with a shared kernel, and
+it's optimized for speed. I think they
+ 
+it's optimized for speed. I think they
+claim a 90-millisecond cold start, which
+ 
+claim a 90-millisecond cold start, which
+is insanely fast, and also a persistent
+ 
+is insanely fast, and also a persistent
+state.
+ 
+state.
+Uh Modal is a startup that targets
+ 
+Uh Modal is a startup that targets
+GPU-heavy workloads. Browserbase is
+ 
+GPU-heavy workloads. Browserbase is
+valued at $300 million after the Series
+ 
+valued at $300 million after the Series
+B, and it focuses on headless browser
+ 
+B, and it focuses on headless browser
+automation, giving agents the ability to
+ 
+automation, giving agents the ability to
+interact with web pages as if they were
+ 
+interact with web pages as if they were
+human users. And then there's newer
+ 
+human users. And then there's newer
+entrants in the space. Uh Alibaba's Open
+ 
+entrants in the space. Uh Alibaba's Open
+Sandboxes is a good example. The
+ 
+Sandboxes is a good example. The
+interesting split in this space is
+ 
+interesting split in this space is
+really philosophical. Are you going to
+ 
+really philosophical. Are you going to
+be ephemeral with your agents, or are
+ 
+be ephemeral with your agents, or are
+you going to be persistent? E2B treats
+ 
+you going to be persistent? E2B treats
+sandboxes as disposable. You spin one
+ 
+sandboxes as disposable. You spin one
+up, you run code, you spin it down.
+ 
+up, you run code, you spin it down.
+Daytona and Sprite treat these spaces as
+ 
+Daytona and Sprite treat these spaces as
+long-lived, and they assume that your
+ 
+long-lived, and they assume that your
+agent can install dependencies, that it
+ 
+agent can install dependencies, that it
+can create files, and that your agent,
+ 
+can create files, and that your agent,
+in some sense, will come back later.
+ 
+in some sense, will come back later.
+They assume a degree of agentic
+ 
+They assume a degree of agentic
+persistence. This is not a style
+ 
+persistence. This is not a style
+preference. This is not optional for you
+ 
+preference. This is not optional for you
+to think about. This is an architectural
+ 
+to think about. This is an architectural
+bet from these startups on how long
+ 
+bet from these startups on how long
+agent sessions in the new economy will
+ 
+agent sessions in the new economy will
+run, and whether state matters for those
+ 
+run, and whether state matters for those
+agent sessions. Both camps will probably
+ 
+agent sessions. Both camps will probably
+survive cuz the agent economy is going
+ 
+survive cuz the agent economy is going
+to be that big, but you're going to have
+ 
+to be that big, but you're going to have
+to think about what your workloads need.
+ 
+to think about what your workloads need.
+If you want to look at this part of the
+ 
+If you want to look at this part of the
+stack, this is a really high-durability
+ 
+stack, this is a really high-durability
+component, right? Whatever you want to
+ 
+component, right? Whatever you want to
+bet on, whether you want to bet on
+ 
+bet on, whether you want to bet on
+persistent agents or disposable agents,
+ 
+persistent agents or disposable agents,
+your agents need safe spaces to run
+ 
+your agents need safe spaces to run
+code, and it totally makes sense that
+ 
+code, and it totally makes sense that
+they're going to have virtual boxes to
+ 
+they're going to have virtual boxes to
+do it on. There will be a lot more
+ 
+do it on. There will be a lot more
+startups working to solve this problem
+ 
+startups working to solve this problem
+over the next year or so, but this is an
+ 
+over the next year or so, but this is an
+area where it's relatively mature now,
+ 
+area where it's relatively mature now,
+and you have multiple options, and you
+ 
+and you have multiple options, and you
+need to think about which one you want
+ 
+need to think about which one you want
+to use if you want to deploy your agents
+ 
+to use if you want to deploy your agents
+in any kind of computing environment
+ 
+in any kind of computing environment
+that is virtual. What is layer two on
+ 
+that is virtual. What is layer two on
+top of the compute piece? Layer two is
+ 
+top of the compute piece? Layer two is
+identity and communication. This is in a
+ 
+identity and communication. This is in a
+weird space. It's transitional, and I
+ 
+weird space. It's transitional, and I
+think that we need to be thoughtful
+ 
+think that we need to be thoughtful
+about what we consider basic in this
+ 
+about what we consider basic in this
+space. So, right now, we know that an
+ 
+space. So, right now, we know that an
+agent needs to exist on the internet as
+ 
+agent needs to exist on the internet as
+an entity. It needs to send and receive
+ 
+an entity. It needs to send and receive
+messages of some sort. It needs to
+ 
+messages of some sort. It needs to
+authenticate with services. It needs to
+ 
+authenticate with services. It needs to
+hold some kind of verifiable identity
+ 
+hold some kind of verifiable identity
+that other systems can recognize. And
+ 
+that other systems can recognize. And
+today, one of the pragmatic answers to
+ 
+today, one of the pragmatic answers to
+that is, well, the agent needs an email
+ 
+that is, well, the agent needs an email
+address. So, AgentMail raised a $6
+ 
+address. So, AgentMail raised a $6
+million seed round from General Catalyst
+ 
+million seed round from General Catalyst
+a couple of weeks ago.
+ 
+a couple of weeks ago.
+And Paul Graham and HubSpot CTO Dharmesh
+ 
+And Paul Graham and HubSpot CTO Dharmesh
+Shah are both angels on AgentMail. The
+ 
+Shah are both angels on AgentMail. The
+API lets you programmatically create
+ 
+API lets you programmatically create
+email inboxes for for agents. Real
+ 
+email inboxes for for agents. Real
+addresses, full threading, attachment,
+ 
+addresses, full threading, attachment,
+labels, search. The onboarding API even
+ 
+labels, search. The onboarding API even
+lets agents sign themselves up. So far,
+ 
+lets agents sign themselves up. So far,
+so good. The thesis is very sharp.
+ 
+so good. The thesis is very sharp.
+AgentMail CEO frames email not as a
+ 
+AgentMail CEO frames email not as a
+communication tool, but as a fundamental
+ 
+communication tool, but as a fundamental
+identity layer. And he's not the only
+ 
+identity layer. And he's not the only
+one, by the way. There's like half a
+ 
+one, by the way. There's like half a
+dozen startups in this space going after
+ 
+dozen startups in this space going after
+email. Email is today a universal key to
+ 
+email. Email is today a universal key to
+the internet. Every SaaS service needs
+ 
+the internet. Every SaaS service needs
+one at sign-up. Every verification flow
+ 
+one at sign-up. Every verification flow
+sends codes to it. If you give an agent
+ 
+sends codes to it. If you give an agent
+email address, the idea goes, you're
+ 
+email address, the idea goes, you're
+essentially giving it an identity. But,
+ 
+essentially giving it an identity. But,
+what if that is a shim? Email works
+ 
+what if that is a shim? Email works
+today because it's everywhere, not
+ 
+today because it's everywhere, not
+because it's the right protocol for
+ 
+because it's the right protocol for
+agents, but because it's the right
+ 
+agents, but because it's the right
+protocol for humans who built the
+ 
+protocol for humans who built the
+internet. And right now, we all have
+ 
+internet. And right now, we all have
+problems with email as humans, right?
+ 
+problems with email as humans, right?
+Threading is brittle. We have rate
+ 
+Threading is brittle. We have rate
+limits designed to prevent spam and
+ 
+limits designed to prevent spam and
+automated agents in particular. We have
+ 
+automated agents in particular. We have
+a signal-to-noise ratio that's terrible
+ 
+a signal-to-noise ratio that's terrible
+for agentic context windows. The real
+ 
+for agentic context windows. The real
+need underneath the presenting need for
+ 
+need underneath the presenting need for
+email is a need to give an agent
+ 
+email is a need to give an agent
+identity and communication protocols.
+ 
+identity and communication protocols.
+Something that doesn't require
+ 
+Something that doesn't require
+pretending to be human. And multiple
+ 
+pretending to be human. And multiple
+teams are working on this, right? You
+ 
+teams are working on this, right? You
+have on-chain agent identity options.
+ 
+have on-chain agent identity options.
+You have dedicated A2A communication
+ 
+You have dedicated A2A communication
+standards. You have MCP-based service
+ 
+standards. You have MCP-based service
+discovery. Nothing has a defined right
+ 
+discovery. Nothing has a defined right
+to win yet in this space. If you are in
+ 
+to win yet in this space. If you are in
+this space, be thoughtful about what an
+ 
+this space, be thoughtful about what an
+agent-native protocol looks like. Now,
+ 
+agent-native protocol looks like. Now,
+by the way, I am not the person to bet
+ 
+by the way, I am not the person to bet
+against email. Email has been famously
+ 
+against email. Email has been famously
+cockroach-like in its ability to survive
+ 
+cockroach-like in its ability to survive
+lots and lots of revolutions. It just
+ 
+lots and lots of revolutions. It just
+seems to stick around. So, I'm not the
+ 
+seems to stick around. So, I'm not the
+one to say agents will never use email.
+ 
+one to say agents will never use email.
+But you should be aware, if you're
+ 
+But you should be aware, if you're
+betting on agent email, that you're
+ 
+betting on agent email, that you're
+making a pragmatic bet, not necessarily
+ 
+making a pragmatic bet, not necessarily
+an architectural bet. Okay, so agents
+ 
+an architectural bet. Okay, so agents
+need compute. That's a layer that's kind
+ 
+need compute. That's a layer that's kind
+of mature. Agents need identity and
+ 
+of mature. Agents need identity and
+communication. That one's really in
+ 
+communication. That one's really in
+flux. Agents need memory and
+ 
+flux. Agents need memory and
+statefulness. This is early, this is
+ 
+statefulness. This is early, this is
+real, and the platform risk is just as
+ 
+real, and the platform risk is just as
+real. Now, the need is clear, right?
+ 
+real. Now, the need is clear, right?
+Agents need to be able to remember what
+ 
+Agents need to be able to remember what
+happened in many cases, not just within
+ 
+happened in many cases, not just within
+a session, but across many sessions,
+ 
+a session, but across many sessions,
+many tasks, many days.
+ 
+many tasks, many days.
+Mem Zero is the clear leader here.
+ 
+Mem Zero is the clear leader here.
+They've raised $24 million, hit 41,000
+ 
+They've raised $24 million, hit 41,000
+some GitHub stars and 14 million
+ 
+some GitHub stars and 14 million
+downloads, and were selected by AWS as
+ 
+downloads, and were selected by AWS as
+the exclusive memory provider for its
+ 
+the exclusive memory provider for its
+agent SDK. So, of course, their API has
+ 
+agent SDK. So, of course, their API has
+done very well. Call call volume has
+ 
+done very well. Call call volume has
+gone up fivefold, the whole thing. What
+ 
+gone up fivefold, the whole thing. What
+Mem Zero gets right is the insight that
+ 
+Mem Zero gets right is the insight that
+memory isn't there to save the
+ 
+memory isn't there to save the
+conversation, which is the old chat way
+ 
+conversation, which is the old chat way
+of doing things. It's actually that
+ 
+of doing things. It's actually that
+memory is an act of active curation. So,
+ 
+memory is an act of active curation. So,
+their system will store important
+ 
+their system will store important
+information. It will It will It will
+ 
+information. It will It will It will
+deliberately forget outdated,
+ 
+deliberately forget outdated,
+conflicting details, and only recall
+ 
+conflicting details, and only recall
+relevant context when you are inferring
+ 
+relevant context when you are inferring
+something with an LLM query. So, the
+ 
+something with an LLM query. So, the
+architecture is very much a hybrid data
+ 
+architecture is very much a hybrid data
+store to reflect that. It has a network
+ 
+store to reflect that. It has a network
+graph, it has a vector database, and it
+ 
+graph, it has a vector database, and it
+also has a key-value store. And those
+ 
+also has a key-value store. And those
+three different formats allows Mem Zero
+ 
+three different formats allows Mem Zero
+to treat memory as managed
+ 
+to treat memory as managed
+infrastructure, not just a feature
+ 
+infrastructure, not just a feature
+bolted onto the model. And you get
+ 
+bolted onto the model. And you get
+better results, right? On the Loco Mo
+ 
+better results, right? On the Loco Mo
+benchmark, they outperform OpenAI's
+ 
+benchmark, they outperform OpenAI's
+built-in memory by 26% on accuracy with
+ 
+built-in memory by 26% on accuracy with
+91% faster latency and 90% reduced token
+ 
+91% faster latency and 90% reduced token
+usage. It's a It's a clear win. But,
+ 
+usage. It's a It's a clear win. But,
+keep in mind that every frontier lab is
+ 
+keep in mind that every frontier lab is
+obsessed with building memory into its
+ 
+obsessed with building memory into its
+models. OpenAI already has big
+ 
+models. OpenAI already has big
+investments in long-term memory, and
+ 
+investments in long-term memory, and
+it's going to continue working on it.
+ 
+it's going to continue working on it.
+Anthropic is building memory into
+ 
+Anthropic is building memory into
+Claude. If memory becomes a model-level
+ 
+Claude. If memory becomes a model-level
+feature that the labs build, in the same
+ 
+feature that the labs build, in the same
+way that search got sort of built into
+ 
+way that search got sort of built into
+ChatGPT and not as a separate feature,
+ 
+ChatGPT and not as a separate feature,
+then all of these standalone memory
+ 
+then all of these standalone memory
+companies are at risk because the model
+ 
+companies are at risk because the model
+makers can just grab them. Now, if
+ 
+makers can just grab them. Now, if
+you're on the Mem Zero side of things,
+ 
+you're on the Mem Zero side of things,
+the counter thesis is portability,
+ 
+the counter thesis is portability,
+right? And we've talked about this, the
+ 
+right? And we've talked about this, the
+idea that no one should own your memory.
+ 
+idea that no one should own your memory.
+That's a really important concept that
+ 
+That's a really important concept that
+you should be able to own your memory.
+ 
+you should be able to own your memory.
+I've talked about this in relation to
+ 
+I've talked about this in relation to
+the Frontier project that OpenAI is
+ 
+the Frontier project that OpenAI is
+doing with AWS. Do you feel confident
+ 
+doing with AWS. Do you feel confident
+with your context layer, which is a step
+ 
+with your context layer, which is a step
+above memory, being something that a
+ 
+above memory, being something that a
+company owns and not you own? So, I
+ 
+company owns and not you own? So, I
+think the question here is really it
+ 
+think the question here is really it
+it's a question of which thesis wins,
+ 
+it's a question of which thesis wins,
+and I think it's a very uncertain
+ 
+and I think it's a very uncertain
+outlook.
+ 
+outlook.
+Will this be a situation where the
+ 
+Will this be a situation where the
+market decides that they want a memory
+ 
+market decides that they want a memory
+solution that does not belong to a
+ 
+solution that does not belong to a
+hyperscaler, or is it a situation where
+ 
+hyperscaler, or is it a situation where
+the convenience the hyperscalers offer
+ 
+the convenience the hyperscalers offer
+is so compelling that the market as a
+ 
+is so compelling that the market as a
+whole just decides to go with it and
+ 
+whole just decides to go with it and
+throw memory at the hyperscalers and
+ 
+throw memory at the hyperscalers and
+say, "You guys solve the problem," and
+ 
+say, "You guys solve the problem," and
+we look back in 2 years and we see
+ 
+we look back in 2 years and we see
+companies like Mem Zero and we say,
+ 
+companies like Mem Zero and we say,
+"Yeah, they didn't last cuz they just
+ 
+"Yeah, they didn't last cuz they just
+weren't convenient enough."
+ 
+weren't convenient enough."
+I don't know. It feels a little bit like
+ 
+I don't know. It feels a little bit like
+a coin flip, and I think we get to shape
+ 
+a coin flip, and I think we get to shape
+that by what we demand. Okay, so we've
+ 
+that by what we demand. Okay, so we've
+talked about compute in sandboxes, we've
+ 
+talked about compute in sandboxes, we've
+talked about identity and communication,
+ 
+talked about identity and communication,
+we've talked about agent memory and
+ 
+we've talked about agent memory and
+state. Let's talk about tools and
+ 
+state. Let's talk about tools and
+integration for agents.
+ 
+integration for agents.
+This one is growing explosively quickly
+ 
+This one is growing explosively quickly
+as a layer, and it solves real and
+ 
+as a layer, and it solves real and
+immediate pain points. Any agent needs
+ 
+immediate pain points. Any agent needs
+to interact with tools to do its work,
+ 
+to interact with tools to do its work,
+right? Whether it's interacting with
+ 
+right? Whether it's interacting with
+Slack or with Jira or with Salesforce or
+ 
+Slack or with Jira or with Salesforce or
+with GitHub or with Google Workspace,
+ 
+with GitHub or with Google Workspace,
+and those are all integrations, or with
+ 
+and those are all integrations, or with
+basic primitives like it's running Unix
+ 
+basic primitives like it's running Unix
+or it's running Python or whatever it
+ 
+or it's running Python or whatever it
+is.
+ 
+is.
+And you have to have those tools if
+ 
+And you have to have those tools if
+you're going to do work at an enterprise
+ 
+you're going to do work at an enterprise
+level, and you have to have those
+ 
+level, and you have to have those
+integrations. Anything that makes that
+ 
+integrations. Anything that makes that
+easier is going to coin. And so,
+ 
+easier is going to coin. And so,
+Compozio, with $29 million in funding
+ 
+Compozio, with $29 million in funding
+from Lightspeed, provides a managed
+ 
+from Lightspeed, provides a managed
+integration layer for agents, right? It
+ 
+integration layer for agents, right? It
+provides authentication handling without
+ 
+provides authentication handling without
+complicated OAuth flows, it provides
+ 
+complicated OAuth flows, it provides
+pre-built connectors to a couple of
+ 
+pre-built connectors to a couple of
+hundred solutions, and it provides
+ 
+hundred solutions, and it provides
+observability on every tool call. So,
+ 
+observability on every tool call. So,
+they don't necessarily build agents, all
+ 
+they don't necessarily build agents, all
+they're doing is equipping agents with
+ 
+they're doing is equipping agents with
+the plumbing that the agents need to
+ 
+the plumbing that the agents need to
+navigate enterprise environments
+ 
+navigate enterprise environments
+successfully and safe and safely. The
+ 
+successfully and safe and safely. The
+problem is the classic N * M integration
+ 
+problem is the classic N * M integration
+nightmare, right? Without middleware,
+ 
+nightmare, right? Without middleware,
+every single agent builder independently
+ 
+every single agent builder independently
+is going to manage their credentials,
+ 
+is going to manage their credentials,
+their auth flows, their rate limits,
+ 
+their auth flows, their rate limits,
+their error handling, their API schema
+ 
+their error handling, their API schema
+changes for every single tool that agent
+ 
+changes for every single tool that agent
+touches, which is just an enormous
+ 
+touches, which is just an enormous
+combinatorial problem. That's
+ 
+combinatorial problem. That's
+unsustainable at small scale. That is
+ 
+unsustainable at small scale. That is
+why it's N * M, right? It's it's the
+ 
+why it's N * M, right? It's it's the
+number of middleware times an infinite
+ 
+number of middleware times an infinite
+number. And at enterprise scale, where
+ 
+number. And at enterprise scale, where
+an agent might need to touch your CRM,
+ 
+an agent might need to touch your CRM,
+your ticketing, your email, your
+ 
+your ticketing, your email, your
+calendar, it's just impossible to keep
+ 
+calendar, it's just impossible to keep
+up with. And so, I would argue that this
+ 
+up with. And so, I would argue that this
+space is a very durable space to operate
+ 
+space is a very durable space to operate
+in if you're building. As long as the
+ 
+in if you're building. As long as the
+ecosystem for tools remains fragmented,
+ 
+ecosystem for tools remains fragmented,
+and if anything is going to fragment
+ 
+and if anything is going to fragment
+more as companies build their own stuff,
+ 
+more as companies build their own stuff,
+agents are going to need an integration
+ 
+agents are going to need an integration
+layer. The long-term risk here is
+ 
+layer. The long-term risk here is
+standardization. If MCP truly becomes a
+ 
+standardization. If MCP truly becomes a
+universal, the value of a managed
+ 
+universal, the value of a managed
+integration is going to start to
+ 
+integration is going to start to
+diminish. So, you're essentially
+ 
+diminish. So, you're essentially
+betting, if you're building in this
+ 
+betting, if you're building in this
+space like Compozio, that agents are
+ 
+space like Compozio, that agents are
+going to need something to handle all of
+ 
+going to need something to handle all of
+the massive enterprise integration
+ 
+the massive enterprise integration
+touchpoints for a long time to come
+ 
+touchpoints for a long time to come
+because so many of these companies are
+ 
+because so many of these companies are
+going to be slow to roll out MCPs, and
+ 
+going to be slow to roll out MCPs, and
+then slow many of the enterprises that
+ 
+then slow many of the enterprises that
+have those tools are going to be slow to
+ 
+have those tools are going to be slow to
+adopt those MCPs, and that gap is where
+ 
+adopt those MCPs, and that gap is where
+your entire company thesis sits if
+ 
+your entire company thesis sits if
+you're Compozio. That one's going to
+ 
+you're Compozio. That one's going to
+stick around for a while. I do not
+ 
+stick around for a while. I do not
+believe in fast-changing enterprises at
+ 
+believe in fast-changing enterprises at
+scale. I think a lot of enterprises move
+ 
+scale. I think a lot of enterprises move
+like dinosaurs, and it's going to it's
+ 
+like dinosaurs, and it's going to it's
+going to stick around. Okay, so compute
+ 
+going to stick around. Okay, so compute
+in sandboxes done, identity done, memory
+ 
+in sandboxes done, identity done, memory
+done, tool access we've talked about
+ 
+done, tool access we've talked about
+that. Layer five for agents provisioning
+ 
+that. Layer five for agents provisioning
+and billing. This is just brand new is
+ 
+and billing. This is just brand new is
+the trust layer, and it's just starting
+ 
+the trust layer, and it's just starting
+to arrive now. Agents essentially need
+ 
+to arrive now. Agents essentially need
+to be able to acquire services and pay
+ 
+to be able to acquire services and pay
+for them securely. And this is where
+ 
+for them securely. And this is where
+Stripe projects fits. It launched this
+ 
+Stripe projects fits. It launched this
+past week, it's the first credible trust
+ 
+past week, it's the first credible trust
+layer for agent to service transactions.
+ 
+layer for agent to service transactions.
+The agent uses the same CLI commands as
+ 
+The agent uses the same CLI commands as
+a human does, and it can provision its
+ 
+a human does, and it can provision its
+own database, it can upgrade a hosting
+ 
+own database, it can upgrade a hosting
+tier, Stripe can tokenize payment
+ 
+tier, Stripe can tokenize payment
+credentials for that agent, and the
+ 
+credentials for that agent, and the
+developer's raw card details never leave
+ 
+developer's raw card details never leave
+Stripe's vault. The problem is very
+ 
+Stripe's vault. The problem is very
+simple. Since the start of this year,
+ 
+simple. Since the start of this year,
+agents have been able to do almost
+ 
+agents have been able to do almost
+everything when it comes to spinning up
+ 
+everything when it comes to spinning up
+a project except for the part where they
+ 
+a project except for the part where they
+need to create accounts and provision
+ 
+need to create accounts and provision
+infrastructure because that is always
+ 
+infrastructure because that is always
+required a human for authentication.
+ 
+required a human for authentication.
+And that's the gap that Stripe is
+ 
+And that's the gap that Stripe is
+closing here. Their databases are ready
+ 
+closing here. Their databases are ready
+in roughly 350 milliseconds or a third
+ 
+in roughly 350 milliseconds or a third
+of a second. They're free to start. They
+ 
+of a second. They're free to start. They
+scale to zero when inactive. Every
+ 
+scale to zero when inactive. Every
+design choice is optimized for how
+ 
+design choice is optimized for how
+quickly an agent can provision something
+ 
+quickly an agent can provision something
+that the agent is building. It's not for
+ 
+that the agent is building. It's not for
+human speed dashboard clicking, you are
+ 
+human speed dashboard clicking, you are
+assuming a terminal access here. We
+ 
+assuming a terminal access here. We
+still have some missing pieces here. I
+ 
+still have some missing pieces here. I
+think we're going to see growth around
+ 
+think we're going to see growth around
+agent-to-agent payments, we're going to
+ 
+agent-to-agent payments, we're going to
+see growth around metered billing that
+ 
+see growth around metered billing that
+maps to agent compute patterns, we're
+ 
+maps to agent compute patterns, we're
+going to see growth around dynamic
+ 
+going to see growth around dynamic
+budget allocation where like agent A can
+ 
+budget allocation where like agent A can
+spend so many dollars without human
+ 
+spend so many dollars without human
+approval and agent B can spend so many
+ 
+approval and agent B can spend so many
+dollars with human approval. We're going
+ 
+dollars with human approval. We're going
+to have a lot of like observability
+ 
+to have a lot of like observability
+layers that we build in. I think this is
+ 
+layers that we build in. I think this is
+a case where Stripe, as usual, has made
+ 
+a case where Stripe, as usual, has made
+an excellent product decision. Uh
+ 
+an excellent product decision. Uh
+they're known for that, and this is
+ 
+they're known for that, and this is
+something that's going to stick around.
+ 
+something that's going to stick around.
+Like this is immediately looking like
+ 
+Like this is immediately looking like
+fundamental infrastructure for how
+ 
+fundamental infrastructure for how
+agents build on the web. I think we're
+ 
+agents build on the web. I think we're
+going to see a few more players in this
+ 
+going to see a few more players in this
+space, but fundamentally it's going to
+ 
+space, but fundamentally it's going to
+be focused not on human readability
+ 
+be focused not on human readability
+first, but on agent legibility and agent
+ 
+first, but on agent legibility and agent
+buildability, and then human
+ 
+buildability, and then human
+observability over the top. But
+ 
+observability over the top. But
+regardless, like any agentic economy
+ 
+regardless, like any agentic economy
+future, you're going to have
+ 
+future, you're going to have
+provisioning and billing, and so it's
+ 
+provisioning and billing, and so it's
+it's newly here, but it's here to stay.
+ 
+it's newly here, but it's here to stay.
+Okay, the last layer is orchestration
+ 
+Okay, the last layer is orchestration
+and coordination. This is the biggest
+ 
+and coordination. This is the biggest
+opportunity in the stack because you can
+ 
+opportunity in the stack because you can
+leverage the power of multiple agents.
+ 
+leverage the power of multiple agents.
+It's also a big gap right now. So, the
+ 
+It's also a big gap right now. So, the
+agent needs to work with other agents
+ 
+agent needs to work with other agents
+reliably at scale, with fallback
+ 
+reliably at scale, with fallback
+handling, with audit trails, with cost
+ 
+handling, with audit trails, with cost
+controls, and it it it matters a lot to
+ 
+controls, and it it it matters a lot to
+get that right, and there's just so
+ 
+get that right, and there's just so
+little done well around this. And it's
+ 
+little done well around this. And it's
+not for lack of interest. Like Gartner
+ 
+not for lack of interest. Like Gartner
+reported a 1,445%
+ 
+reported a 1,445%
+surge. I don't even know, what is that?
+ 
+surge. I don't even know, what is that?
+14x surge in multi-agent system
+ 
+14x surge in multi-agent system
+inquiries between Q1 2024 and Q2 2025,
+ 
+inquiries between Q1 2024 and Q2 2025,
+let alone 2026, which is going to be up
+ 
+let alone 2026, which is going to be up
+again. Look, quite bluntly, the current
+ 
+again. Look, quite bluntly, the current
+tooling is at the framework level, not
+ 
+tooling is at the framework level, not
+the infrastructure level. So, LangChain
+ 
+the infrastructure level. So, LangChain
+lets you stand up a multi-agent
+ 
+lets you stand up a multi-agent
+workflow, right? But the gap between I
+ 
+workflow, right? But the gap between I
+can spin up three agents in a notebook
+ 
+can spin up three agents in a notebook
+and I can reliably run 50 agents across
+ 
+and I can reliably run 50 agents across
+enterprise systems with failure recovery
+ 
+enterprise systems with failure recovery
+and cost controls and audit logging and
+ 
+and cost controls and audit logging and
+human escalation paths,
+ 
+human escalation paths,
+that latter piece that we all need, that
+ 
+that latter piece that we all need, that
+is something that we're all hand rolling
+ 
+is something that we're all hand rolling
+right now. And so, individual agent
+ 
+right now. And so, individual agent
+capabilities are something we've largely
+ 
+capabilities are something we've largely
+solved. What's been missing is the layer
+ 
+solved. What's been missing is the layer
+that makes those capabilities composable
+ 
+that makes those capabilities composable
+and parallelable and reliable. And so,
+ 
+and parallelable and reliable. And so,
+if you're building in this space, here's
+ 
+if you're building in this space, here's
+what doesn't exist yet that needs to
+ 
+what doesn't exist yet that needs to
+exist. Number one, you need a scheduling
+ 
+exist. Number one, you need a scheduling
+and life cycle layer for agents. Not in
+ 
+and life cycle layer for agents. Not in
+the container sense, right? I'm not
+ 
+the container sense, right? I'm not
+saying that it's a Kubernetes container.
+ 
+saying that it's a Kubernetes container.
+I'm saying that you need something that
+ 
+I'm saying that you need something that
+handles agent creation and assignment
+ 
+handles agent creation and assignment
+and health checking and scaling and
+ 
+and health checking and scaling and
+termination as a managed service.
+ 
+termination as a managed service.
+Number two, you need merge and
+ 
+Number two, you need merge and
+coordination infrastructure that is
+ 
+coordination infrastructure that is
+built from the ground up for parallel
+ 
+built from the ground up for parallel
+agent work, right? When five agents work
+ 
+agent work, right? When five agents work
+on related tasks simultaneously, you
+ 
+on related tasks simultaneously, you
+need merge queues, you need conflict
+ 
+need merge queues, you need conflict
+detection, you need resolution
+ 
+detection, you need resolution
+protocols, and today this is like a
+ 
+protocols, and today this is like a
+bunch of duct tape and a bunch of get
+ 
+bunch of duct tape and a bunch of get
+work trees. Like it can be so much
+ 
+work trees. Like it can be so much
+better. You need number three,
+ 
+better. You need number three,
+supervision hierarchies, right? Meta
+ 
+supervision hierarchies, right? Meta
+agents that monitor and evaluate and
+ 
+agents that monitor and evaluate and
+course correct other agents, not as a
+ 
+course correct other agents, not as a
+framework pattern you have to code
+ 
+framework pattern you have to code
+yourself, which so many of us have to do
+ 
+yourself, which so many of us have to do
+now, but as infrastructure that you can
+ 
+now, but as infrastructure that you can
+configure. You need financial
+ 
+configure. You need financial
+observability, right? Across multiple
+ 
+observability, right? Across multiple
+agent workflows. What What did this
+ 
+agent workflows. What What did this
+agent spend? What was the outcome
+ 
+agent spend? What was the outcome
+quality? What's the cost per successful
+ 
+quality? What's the cost per successful
+task? This is like FinOps for agents,
+ 
+task? This is like FinOps for agents,
+and it's brand new, it barely exists.
+ 
+and it's brand new, it barely exists.
+Last but not least, you need standard
+ 
+Last but not least, you need standard
+failure patterns and standard recovery
+ 
+failure patterns and standard recovery
+patterns. So, when an agent's tool call
+ 
+patterns. So, when an agent's tool call
+fails, instead of making it up on an
+ 
+fails, instead of making it up on an
+individual team basis, you have to have
+ 
+individual team basis, you have to have
+some like standard provisioning around
+ 
+some like standard provisioning around
+what happens, right? You shouldn't have
+ 
+what happens, right? You shouldn't have
+to depend on the tool, the framework, or
+ 
+to depend on the tool, the framework, or
+what the PM had for lunch that day to
+ 
+what the PM had for lunch that day to
+decide whether or not your agent
+ 
+decide whether or not your agent
+recovered. Look, this layer, this
+ 
+recovered. Look, this layer, this
+orchestration layer, this is the layer
+ 
+orchestration layer, this is the layer
+where the next infrastructure-defining
+ 
+where the next infrastructure-defining
+company is going to get built. The
+ 
+company is going to get built. The
+orchestration problem for agents is
+ 
+orchestration problem for agents is
+structurally analogous to the container
+ 
+structurally analogous to the container
+orchestration problem that Kubernetes
+ 
+orchestration problem that Kubernetes
+solved, right? Not the compute itself,
+ 
+solved, right? Not the compute itself,
+but the scheduling, the scaling, the
+ 
+but the scheduling, the scaling, the
+health checking, the life cycle
+ 
+health checking, the life cycle
+management that makes compute usable at
+ 
+management that makes compute usable at
+enterprise scale. So, whoever solves
+ 
+enterprise scale. So, whoever solves
+orchestration at infrastructure grade is
+ 
+orchestration at infrastructure grade is
+going to own the most valuable position
+ 
+going to own the most valuable position
+in the agent stack, and it is too early
+ 
+in the agent stack, and it is too early
+to call a winner. So, what does all of
+ 
+to call a winner. So, what does all of
+this mean? You've seen the six layers of
+ 
+this mean? You've seen the six layers of
+the stack. What does it mean for
+ 
+the stack. What does it mean for
+builders right now? I want to give you
+ 
+builders right now? I want to give you
+three lessons that you should take away
+ 
+three lessons that you should take away
+if you're building on the agent stack
+ 
+if you're building on the agent stack
+today that are truisms for 2026. I don't
+ 
+today that are truisms for 2026. I don't
+think they're going to change a lot this
+ 
+think they're going to change a lot this
+year, the stack has to evolve
+ 
+year, the stack has to evolve
+significantly. Number one, right now
+ 
+significantly. Number one, right now
+reliability is compounding in the wrong
+ 
+reliability is compounding in the wrong
+direction. When your agent depends on
+ 
+direction. When your agent depends on
+five different primitives, your
+ 
+five different primitives, your
+end-to-end reliability is the product of
+ 
+end-to-end reliability is the product of
+five different reliabilities. So, if
+ 
+five different reliabilities. So, if
+each delivers 99% uptime, your system
+ 
+each delivers 99% uptime, your system
+delivers only 95%.
+ 
+delivers only 95%.
+If it's at 97% each, it's at 86. You get
+ 
+If it's at 97% each, it's at 86. You get
+the idea. Essentially, you are stacking
+ 
+the idea. Essentially, you are stacking
+the liabilities of all your agentic
+ 
+the liabilities of all your agentic
+primitives right now because you have to
+ 
+primitives right now because you have to
+compose so much of this layer by hand.
+ 
+compose so much of this layer by hand.
+Reliability is really hard to engineer
+ 
+Reliability is really hard to engineer
+these days. Number two,
+ 
+these days. Number two,
+transitional lock-in is a real risk this
+ 
+transitional lock-in is a real risk this
+year, right? Building on shims like
+ 
+year, right? Building on shims like
+email as identity creates migration
+ 
+email as identity creates migration
+costs when native protocols arrive.
+ 
+costs when native protocols arrive.
+Every single shim you adopt is a bet
+ 
+Every single shim you adopt is a bet
+that it either becomes the standard or
+ 
+that it either becomes the standard or
+it becomes something that you're willing
+ 
+it becomes something that you're willing
+to swap out. So, think about your
+ 
+to swap out. So, think about your
+choices and think strategically about
+ 
+choices and think strategically about
+what is truly agent native and what is
+ 
+what is truly agent native and what is
+something that is a practical bet and
+ 
+something that is a practical bet and
+make a choice about what you think is
+ 
+make a choice about what you think is
+going to be correct over the next two or
+ 
+going to be correct over the next two or
+three years. We're all living through
+ 
+three years. We're all living through
+this together. I can't tell you if
+ 
+this together. I can't tell you if
+email, like a wonderful cockroach, is
+ 
+email, like a wonderful cockroach, is
+going to survive forever because it
+ 
+going to survive forever because it
+might, or if we're actually going to get
+ 
+might, or if we're actually going to get
+true agent-to-agent communication that
+ 
+true agent-to-agent communication that
+is post-email. Number three, and this is
+ 
+is post-email. Number three, and this is
+a big one, agent sprawl is coming. This
+ 
+a big one, agent sprawl is coming. This
+is the same problem that plagued
+ 
+is the same problem that plagued
+microservices back in 2018 when when
+ 
+microservices back in 2018 when when
+when you would get people literally
+ 
+when you would get people literally
+walking into startups from places like
+ 
+walking into startups from places like
+Amazon and Microsoft, and the first
+ 
+Amazon and Microsoft, and the first
+thing they did when when this little
+ 
+thing they did when when this little
+startup had a tiny little codebase and
+ 
+startup had a tiny little codebase and
+just wanted to ship, they would say,
+ 
+just wanted to ship, they would say,
+"Well, it all needs to be a
+ 
+"Well, it all needs to be a
+microservices architecture."
+ 
+microservices architecture."
+Did it? No, it didn't. It's a monolith.
+ 
+Did it? No, it didn't. It's a monolith.
+Ship fast. In the same way, people are
+ 
+Ship fast. In the same way, people are
+looking at agents and they're saying
+ 
+looking at agents and they're saying
+everything needs to be an agent and it's
+ 
+everything needs to be an agent and it's
+sprawling all over the enterprise and
+ 
+sprawling all over the enterprise and
+they're taking unexpected actions and
+ 
+they're taking unexpected actions and
+you don't have observability and you
+ 
+you don't have observability and you
+don't have an orchestration layer and so
+ 
+don't have an orchestration layer and so
+you're just kind of guessing and vibing.
+ 
+you're just kind of guessing and vibing.
+That is going to be a bigger and bigger
+ 
+That is going to be a bigger and bigger
+problem over the course of 2026 unless
+ 
+problem over the course of 2026 unless
+people invest now in orchestration
+ 
+people invest now in orchestration
+layers that yes, you're going to have to
+ 
+layers that yes, you're going to have to
+hand roll. Look, I've talked about what
+ 
+hand roll. Look, I've talked about what
+I think the new builder skills are. I'll
+ 
+I think the new builder skills are. I'll
+just reiterate them for you here.
+ 
+just reiterate them for you here.
+Context engineering matters a lot these
+ 
+Context engineering matters a lot these
+days because what you feed the agent
+ 
+days because what you feed the agent
+matters for the outcomes you drive.
+ 
+matters for the outcomes you drive.
+Eval-driven development matters because
+ 
+Eval-driven development matters because
+you have to be able to get the agent to
+ 
+you have to be able to get the agent to
+autonomously drive against a result to
+ 
+autonomously drive against a result to
+avoid a lot of the bottlenecks that
+ 
+avoid a lot of the bottlenecks that
+comes from human-reviewed code. And
+ 
+comes from human-reviewed code. And
+stack literacy is going to be really
+ 
+stack literacy is going to be really
+important, right? You have to know which
+ 
+important, right? You have to know which
+layer in the stack is your competitive
+ 
+layer in the stack is your competitive
+advantage and why, and you have to build
+ 
+advantage and why, and you have to build
+relentlessly against that. In the world
+ 
+relentlessly against that. In the world
+of agents, the builders who survive, and
+ 
+of agents, the builders who survive, and
+I don't care if you're building in the
+ 
+I don't care if you're building in the
+space as an entrepreneur, if you're
+ 
+space as an entrepreneur, if you're
+building as an individual with your open
+ 
+building as an individual with your open
+claw, or if you're building as a leader
+ 
+claw, or if you're building as a leader
+and you're building on top of the stack
+ 
+and you're building on top of the stack
+and you need to get agents implemented.
+ 
+and you need to get agents implemented.
+Regardless, the ones who survive, you're
+ 
+Regardless, the ones who survive, you're
+going to have to have stack literacy.
+ 
+going to have to have stack literacy.
+You're going to have to understand how
+ 
+You're going to have to understand how
+these six layers work. You're going to
+ 
+these six layers work. You're going to
+have to keep a weather eye on which
+ 
+have to keep a weather eye on which
+pieces of the stack are changing and how
+ 
+pieces of the stack are changing and how
+they affect your business. There is no
+ 
+they affect your business. There is no
+excuse for lack of stack literacy. And
+ 
+excuse for lack of stack literacy. And
+part of the reason this matters, part of
+ 
+part of the reason this matters, part of
+the reason I'm talking about it in this
+ 
+the reason I'm talking about it in this
+channel is because if you don't have
+ 
+channel is because if you don't have
+that, even as a business leader, even as
+ 
+that, even as a business leader, even as
+a non-CTO, non-tech leader, you are
+ 
+a non-CTO, non-tech leader, you are
+going to be in big trouble because
+ 
+going to be in big trouble because
+agents drive so much business outcome
+ 
+agents drive so much business outcome
+and business leverage now that is so
+ 
+and business leverage now that is so
+dependent on these pieces of the stack.
+ 
+dependent on these pieces of the stack.
+And so, if you want to have an agent
+ 
+And so, if you want to have an agent
+that has tremendous blast radius across
+ 
+that has tremendous blast radius across
+your customer success, you got to
+ 
+your customer success, you got to
+understand what's driving that. What
+ 
+understand what's driving that. What
+parts of the stack actually work? What
+ 
+parts of the stack actually work? What
+parts of the stack are you hand rolling?
+ 
+parts of the stack are you hand rolling?
+What are your shims that you're betting
+ 
+What are your shims that you're betting
+on? If you don't have that detailed
+ 
+on? If you don't have that detailed
+understanding, you're just kind of
+ 
+understanding, you're just kind of
+hoping and praying that the agent works.
+ 
+hoping and praying that the agent works.
+That's not a good strategy for the long
+ 
+That's not a good strategy for the long
+term. And so, we need to have better
+ 
+term. And so, we need to have better
+stack literacy and that's why this video
+ 
+stack literacy and that's why this video
+is important. So, share it with someone
+ 
+is important. So, share it with someone
+who doesn't understand the agent stack
+ 
+who doesn't understand the agent stack
+because I guarantee you there are a lot
+ 
+because I guarantee you there are a lot
+of people who are walking around with a
+ 
+of people who are walking around with a
+lot of LinkedIn buzzwords in their heads
+ 
+lot of LinkedIn buzzwords in their heads
+and they don't understand the agent
+ 
+and they don't understand the agent
+stack and that's going to lead to a lot
+ 
+stack and that's going to lead to a lot
+of suffering and pain, frankly, for a
+ 
+of suffering and pain, frankly, for a
+lot of IC engineering teams that are
+ 
+lot of IC engineering teams that are
+going to be asked to build stuff that
+ 
+going to be asked to build stuff that
+doesn't make any sense.
+ 
+doesn't make any sense.
+Best of luck with that. Cheers.

@@ -1,0 +1,2285 @@
+ 
+In April 2026, OpenClaw grew up. The
+ 
+In April 2026, OpenClaw grew up. The
+teenager not only got their hands on the
+ 
+teenager not only got their hands on the
+keys to the car, they actually grew a
+ 
+keys to the car, they actually grew a
+prefrontal cortex and can make
+ 
+prefrontal cortex and can make
+responsible decisions now. That's what
+ 
+responsible decisions now. That's what
+it feels like if you are an OpenClaw
+ 
+it feels like if you are an OpenClaw
+user that started in January and you're
+ 
+user that started in January and you're
+now in April. Because OpenClaw has been
+ 
+now in April. Because OpenClaw has been
+adding features at a breakneck pace that
+ 
+adding features at a breakneck pace that
+basically amount to adding a responsible
+ 
+basically amount to adding a responsible
+thinking adult brain into the system.
+ 
+thinking adult brain into the system.
+What's happening is that Peter and team
+ 
+What's happening is that Peter and team
+are adding the ability to execute
+ 
+are adding the ability to execute
+complex multi-step orchestrated
+ 
+complex multi-step orchestrated
+workflows across many different tasks in
+ 
+workflows across many different tasks in
+OpenClaw. The beauty of OpenClaw was
+ 
+OpenClaw. The beauty of OpenClaw was
+always that it was a simple architecture
+ 
+always that it was a simple architecture
+that was extensible, that could do many,
+ 
+that was extensible, that could do many,
+many things. That's why people love it
+ 
+many things. That's why people love it
+so much. But as models get better, you
+ 
+so much. But as models get better, you
+want to be in a place where you can
+ 
+want to be in a place where you can
+orchestrate more complex runtime
+ 
+orchestrate more complex runtime
+environments, more complex agent
+ 
+environments, more complex agent
+environments, more complex agentic
+ 
+environments, more complex agentic
+tasks. And that is the heart of what
+ 
+tasks. And that is the heart of what
+OpenClaw released. But there's a
+ 
+OpenClaw released. But there's a
+problem, and the problem is pretty
+ 
+problem, and the problem is pretty
+simple. When you do harder work, you
+ 
+simple. When you do harder work, you
+have a hard time assigning all of that
+ 
+have a hard time assigning all of that
+work to one brain, right? To one LLM.
+ 
+work to one brain, right? To one LLM.
+And so what I want to give you today is
+ 
+And so what I want to give you today is
+how to think about these April results
+ 
+how to think about these April results
+thoughtfully and strategically for your
+ 
+thoughtfully and strategically for your
+claw. You need to think about where does
+ 
+claw. You need to think about where does
+it make sense to put one LLM in versus
+ 
+it make sense to put one LLM in versus
+another? How do you not be dependent on
+ 
+another? How do you not be dependent on
+LLMs? And yes, I'm going to give you
+ 
+LLMs? And yes, I'm going to give you
+specific perspective there. And really,
+ 
+specific perspective there. And really,
+this is the critical piece. What do you
+ 
+this is the critical piece. What do you
+need to build so that you are not stuck
+ 
+need to build so that you are not stuck
+when Anthropic makes another change,
+ 
+when Anthropic makes another change,
+which they did this month, we'll talk
+ 
+which they did this month, we'll talk
+about it. When OpenAI makes a change,
+ 
+about it. When OpenAI makes a change,
+which they did this month, we'll talk
+ 
+which they did this month, we'll talk
+about it. Both related to OpenClaw. I
+ 
+about it. Both related to OpenClaw. I
+want you to have your own claw that does
+ 
+want you to have your own claw that does
+its own work, and you need the ability
+ 
+its own work, and you need the ability
+to control the core workflow loop
+ 
+to control the core workflow loop
+without having to depend on one LLM to
+ 
+without having to depend on one LLM to
+do it. Because if you can swap LLMs, you
+ 
+do it. Because if you can swap LLMs, you
+can do so much more with your claw.
+ 
+can do so much more with your claw.
+There are so many more use cases. And
+ 
+There are so many more use cases. And
+yes, if you're wondering, what are those
+ 
+yes, if you're wondering, what are those
+use cases? I have a claw. I've been
+ 
+use cases? I have a claw. I've been
+wondering. We will talk about that. We
+ 
+wondering. We will talk about that. We
+will get into that in this video. And
+ 
+will get into that in this video. And
+yes, there's a whole build here. If claw
+ 
+yes, there's a whole build here. If claw
+people are builders, we have a whole
+ 
+people are builders, we have a whole
+build to improve the durability of your
+ 
+build to improve the durability of your
+workflow so it can survive this model
+ 
+workflow so it can survive this model
+war that is happening in April over the
+ 
+war that is happening in April over the
+open claw agent brain. So, let's hop
+ 
+open claw agent brain. So, let's hop
+into it. After all of the progress for
+ 
+into it. After all of the progress for
+open claw in April 2026, open claw is
+ 
+open claw in April 2026, open claw is
+starting to look less like a viral agent
+ 
+starting to look less like a viral agent
+demo and more like a real runtime that
+ 
+demo and more like a real runtime that
+gets real work done. And once that
+ 
+gets real work done. And once that
+happens, the model fight that people
+ 
+happens, the model fight that people
+report on gets a lot more interesting
+ 
+report on gets a lot more interesting
+because the model is no longer the whole
+ 
+because the model is no longer the whole
+work product. It's a brain inside a much
+ 
+work product. It's a brain inside a much
+larger work loop with a lot more impact.
+ 
+larger work loop with a lot more impact.
+So, I want to separate very clearly
+ 
+So, I want to separate very clearly
+three things that are getting mashed
+ 
+three things that are getting mashed
+together in April around open claw.
+ 
+together in April around open claw.
+First, open claw itself got more mature.
+ 
+First, open claw itself got more mature.
+Second, the model layer around it got
+ 
+Second, the model layer around it got
+much more contested. And third, once the
+ 
+much more contested. And third, once the
+runtime can swap brains, memory becomes
+ 
+runtime can swap brains, memory becomes
+a strategic layer. That third point is
+ 
+a strategic layer. That third point is
+the one I think people are
+ 
+the one I think people are
+underestimating. If the claw can run
+ 
+underestimating. If the claw can run
+many brains, which it can, the memory
+ 
+many brains, which it can, the memory
+should not live inside any one of those
+ 
+should not live inside any one of those
+brains and should be built to adjust to
+ 
+brains and should be built to adjust to
+the intelligence you want to apply to a
+ 
+the intelligence you want to apply to a
+particular workflow. So, if you paid
+ 
+particular workflow. So, if you paid
+attention to open claw a month ago and
+ 
+attention to open claw a month ago and
+are kind of checking back in now, the
+ 
+are kind of checking back in now, the
+simple update is, "Wow, there were a lot
+ 
+simple update is, "Wow, there were a lot
+of releases." And that is true. Open
+ 
+of releases." And that is true. Open
+claw shipped at a pace that would be
+ 
+claw shipped at a pace that would be
+exhausting for a normal product team and
+ 
+exhausting for a normal product team and
+almost absurd for an open source agent
+ 
+almost absurd for an open source agent
+framework. There were task updates,
+ 
+framework. There were task updates,
+memory updates, provider updates,
+ 
+memory updates, provider updates,
+channel updates, code and automation
+ 
+channel updates, code and automation
+updates. The release notes alone feel
+ 
+updates. The release notes alone feel
+like a product team is sprinting while
+ 
+like a product team is sprinting while
+the rest of the market argues about
+ 
+the rest of the market argues about
+model access. But, release velocity is
+ 
+model access. But, release velocity is
+not really the whole point here. The
+ 
+not really the whole point here. The
+point is that the shape of the product
+ 
+point is that the shape of the product
+changed with all these releases. A month
+ 
+changed with all these releases. A month
+ago, it was still pretty easy to
+ 
+ago, it was still pretty easy to
+describe open claw as a viral open
+ 
+describe open claw as a viral open
+source agent framework. It gave a model
+ 
+source agent framework. It gave a model
+access to your computer and your files
+ 
+access to your computer and your files
+and your browser and your apps and your
+ 
+and your browser and your apps and your
+messaging services. It was very
+ 
+messaging services. It was very
+powerful. it was a bit messy, it was
+ 
+powerful. it was a bit messy, it was
+risky in the way all serious agent
+ 
+risky in the way all serious agent
+systems are risky, and it was compelling
+ 
+systems are risky, and it was compelling
+because it made the model feel like it
+ 
+because it made the model feel like it
+had hands. That description is still
+ 
+had hands. That description is still
+true. It's just incomplete now. Open
+ 
+true. It's just incomplete now. Open
+Claw is starting to clarify what kind of
+ 
+Claw is starting to clarify what kind of
+thing it actually is. The Claw is
+ 
+thing it actually is. The Claw is
+becoming a particular species of crab or
+ 
+becoming a particular species of crab or
+lobster. It's not just a chatbot
+ 
+lobster. It's not just a chatbot
+wrapper, it's not just a clawed
+ 
+wrapper, it's not just a clawed
+launcher, it's not just a terminal toy
+ 
+launcher, it's not just a terminal toy
+for people who want to see how much
+ 
+for people who want to see how much
+power they can hand to an AI assistant
+ 
+power they can hand to an AI assistant
+before something weird happens. Open
+ 
+before something weird happens. Open
+Claw is becoming an action layer for
+ 
+Claw is becoming an action layer for
+agents. More specifically, it's becoming
+ 
+agents. More specifically, it's becoming
+a runtime abstraction for serious
+ 
+a runtime abstraction for serious
+agentic work. That sounds abstract, so
+ 
+agentic work. That sounds abstract, so
+let me make it very plain. A chatbot is
+ 
+let me make it very plain. A chatbot is
+a place where you ask for help, an agent
+ 
+a place where you ask for help, an agent
+runtime is a place where work happens,
+ 
+runtime is a place where work happens,
+and when you were starting to experiment
+ 
+and when you were starting to experiment
+with agents, the bar is how demanding is
+ 
+with agents, the bar is how demanding is
+your agent runtime at quality so you can
+ 
+your agent runtime at quality so you can
+do serious work. And that's the progress
+ 
+do serious work. And that's the progress
+we see with Open Claw in April, and I'll
+ 
+we see with Open Claw in April, and I'll
+get into the details. A serious agent
+ 
+get into the details. A serious agent
+runtime has state, it has tools, it has
+ 
+runtime has state, it has tools, it has
+permissions, it has retries, it has
+ 
+permissions, it has retries, it has
+handoffs, it has context that needs to
+ 
+handoffs, it has context that needs to
+survive more than one prompt, it has a
+ 
+survive more than one prompt, it has a
+user who needs to know what happened,
+ 
+user who needs to know what happened,
+what failed, what changed, and what
+ 
+what failed, what changed, and what
+ought to happen next. That is a big
+ 
+ought to happen next. That is a big
+shift, right? Open Claw is moving from
+ 
+shift, right? Open Claw is moving from
+can I make the agent do something to can
+ 
+can I make the agent do something to can
+I build a durable work loop once and
+ 
+I build a durable work loop once and
+route different models through it to get
+ 
+route different models through it to get
+a bunch of different work done. That is
+ 
+a bunch of different work done. That is
+a way bigger idea than original Open
+ 
+a way bigger idea than original Open
+Claw, and it's a wonderful example of
+ 
+Claw, and it's a wonderful example of
+how building the right primitives allows
+ 
+how building the right primitives allows
+very fast progress in the age of AI. And
+ 
+very fast progress in the age of AI. And
+so, hats off to Peter for building an
+ 
+so, hats off to Peter for building an
+extensible primitive here. The clearest
+ 
+extensible primitive here. The clearest
+evidence for all this is the boring
+ 
+evidence for all this is the boring
+stuff, and I do mean that as a
+ 
+stuff, and I do mean that as a
+compliment. When agent products are
+ 
+compliment. When agent products are
+immature, the exciting features get all
+ 
+immature, the exciting features get all
+the attention. A model opens a browser,
+ 
+the attention. A model opens a browser,
+a model sends a message, a model buys a
+ 
+a model sends a message, a model buys a
+car. That was one of the stories that I
+ 
+car. That was one of the stories that I
+covered right out of the gate with Open
+ 
+covered right out of the gate with Open
+Claw. That stage matters, you need the
+ 
+Claw. That stage matters, you need the
+demo moment, but the next stage is where
+ 
+demo moment, but the next stage is where
+the product either becomes
+ 
+the product either becomes
+infrastructure or just is a party trick.
+ 
+infrastructure or just is a party trick.
+And infrastructure announces itself with
+ 
+And infrastructure announces itself with
+really boring words like tasks, queues,
+ 
+really boring words like tasks, queues,
+histories, checkpoints, visible
+ 
+histories, checkpoints, visible
+delivery, scoped memory, provider
+ 
+delivery, scoped memory, provider
+manifests, permission profiles, retry
+ 
+manifests, permission profiles, retry
+behaviors, tool boundaries. These are
+ 
+behaviors, tool boundaries. These are
+not the words that make a launch go
+ 
+not the words that make a launch go
+viral. They're the words that decide
+ 
+viral. They're the words that decide
+whether anyone can build on the system
+ 
+whether anyone can build on the system
+for serious work. Open claw task flow
+ 
+for serious work. Open claw task flow
+work is a good example. The docs now
+ 
+work is a good example. The docs now
+describe task flow as the orchestration
+ 
+describe task flow as the orchestration
+layer above background tasks. It manages
+ 
+layer above background tasks. It manages
+durable multi-step flows with their own
+ 
+durable multi-step flows with their own
+state and revision tracking while the
+ 
+state and revision tracking while the
+individual tasks stay a unit of detached
+ 
+individual tasks stay a unit of detached
+work on their own. And that really
+ 
+work on their own. And that really
+matters because a task you can inspect
+ 
+matters because a task you can inspect
+and route and cancel and recover and
+ 
+and route and cancel and recover and
+deliver back to the right channel is
+ 
+deliver back to the right channel is
+way, way different from a chat response.
+ 
+way, way different from a chat response.
+It's way, way different from the
+ 
+It's way, way different from the
+original open claw vision where you
+ 
+original open claw vision where you
+didn't have that idea that you would
+ 
+didn't have that idea that you would
+want to manage multiple tasks like that
+ 
+want to manage multiple tasks like that
+with your lobster. A web hook triggered
+ 
+with your lobster. A web hook triggered
+workflow is different from a user
+ 
+workflow is different from a user
+manually typing, "Please do this." And
+ 
+manually typing, "Please do this." And
+that is again something that serious
+ 
+that is again something that serious
+work needs. A sub agent that can run its
+ 
+work needs. A sub agent that can run its
+own session and report back reliably
+ 
+own session and report back reliably
+when it's done is different from one big
+ 
+when it's done is different from one big
+thread. So, the product maturity layer
+ 
+thread. So, the product maturity layer
+is starting to come together and it's
+ 
+is starting to come together and it's
+easy to underrate because it doesn't
+ 
+easy to underrate because it doesn't
+look like a single feature. It's a dozen
+ 
+look like a single feature. It's a dozen
+different updates, dozens of updates
+ 
+different updates, dozens of updates
+that make the agent less fragile. And
+ 
+that make the agent less fragile. And
+that is exactly the point. The magic
+ 
+that is exactly the point. The magic
+demo is the model did something at all
+ 
+demo is the model did something at all
+and that was February. The mature
+ 
+and that was February. The mature
+product is we are actually building real
+ 
+product is we are actually building real
+work here. Memory is part of this same
+ 
+work here. Memory is part of this same
+story. Early agent memory, of course,
+ 
+story. Early agent memory, of course,
+was mostly a novelty. The bot remembers
+ 
+was mostly a novelty. The bot remembers
+your name, the bot remembers that you
+ 
+your name, the bot remembers that you
+like TypeScript, the bot remembers a
+ 
+like TypeScript, the bot remembers a
+preference and inserts it later in a way
+ 
+preference and inserts it later in a way
+that feels delightful or maybe slightly
+ 
+that feels delightful or maybe slightly
+creepy. That gets attention. But serious
+ 
+creepy. That gets attention. But serious
+work needs a very disciplined memory
+ 
+work needs a very disciplined memory
+model. If an agent is operating on a
+ 
+model. If an agent is operating on a
+repo and reviewing PRs and triaging
+ 
+repo and reviewing PRs and triaging
+incidents or maintaining customer
+ 
+incidents or maintaining customer
+feedback, memory can't just be a pile of
+ 
+feedback, memory can't just be a pile of
+things the model said or that you said
+ 
+things the model said or that you said
+to the model. You need to know where
+ 
+to the model. You need to know where
+memory comes from, was it observed from
+ 
+memory comes from, was it observed from
+a real source, was it confirmed by a
+ 
+a real source, was it confirmed by a
+user, is it stale, is it scoped, should
+ 
+user, is it stale, is it scoped, should
+it be retrieved automatically, does it
+ 
+it be retrieved automatically, does it
+tie to a particular LLM or not? Those
+ 
+tie to a particular LLM or not? Those
+questions sound boring and fussy until
+ 
+questions sound boring and fussy until
+you use an agent for real work. And then
+ 
+you use an agent for real work. And then
+they become the difference between
+ 
+they become the difference between
+useful continuity and just a bunch of
+ 
+useful continuity and just a bunch of
+sludge that accumulates in memory. Open
+ 
+sludge that accumulates in memory. Open
+Claw's memory direction with memory
+ 
+Claw's memory direction with memory
+wiki, active memory, and a lot of
+ 
+wiki, active memory, and a lot of
+provenance-rich recall points toward a
+ 
+provenance-rich recall points toward a
+mental model of memory that's helpful
+ 
+mental model of memory that's helpful
+here. Memory is not just
+ 
+here. Memory is not just
+personalization, right? Memory is
+ 
+personalization, right? Memory is
+operational context, and that changes
+ 
+operational context, and that changes
+what the whole product is. If the agent
+ 
+what the whole product is. If the agent
+remembers what happened last time, it
+ 
+remembers what happened last time, it
+can do way more than answer, right? It
+ 
+can do way more than answer, right? It
+continues, it reviews against repo
+ 
+continues, it reviews against repo
+conventions, it implements against
+ 
+conventions, it implements against
+meeting decisions, and it starts the
+ 
+meeting decisions, and it starts the
+next incident with the last incident in
+ 
+next incident with the last incident in
+view. And that's the second piece of our
+ 
+view. And that's the second piece of our
+story here. It's not just about actions,
+ 
+story here. It's not just about actions,
+it's about continuity. Channels are the
+ 
+it's about continuity. Channels are the
+third big piece, and this is another
+ 
+third big piece, and this is another
+place where the boring details matter.
+ 
+place where the boring details matter.
+Open Claw being available across Slack
+ 
+Open Claw being available across Slack
+and Telegram and Discord and WhatsApp
+ 
+and Telegram and Discord and WhatsApp
+and Teams and Matrix and Feishu and
+ 
+and Teams and Matrix and Feishu and
+other surfaces is not just a
+ 
+other surfaces is not just a
+distribution flex. The channel is an
+ 
+distribution flex. The channel is an
+important part of the runtime. Different
+ 
+important part of the runtime. Different
+channels have different rules, threading
+ 
+channels have different rules, threading
+is different, mentions are different,
+ 
+is different, mentions are different,
+file limits are different, bot
+ 
+file limits are different, bot
+permissions are different. An agent that
+ 
+permissions are different. An agent that
+finishes a task but never replies
+ 
+finishes a task but never replies
+visibly is broken in one way. An agent
+ 
+visibly is broken in one way. An agent
+that replies in the wrong thread is
+ 
+that replies in the wrong thread is
+broken in another. So, mature channel
+ 
+broken in another. So, mature channel
+behavior isn't glamorous, but it's a
+ 
+behavior isn't glamorous, but it's a
+really important surface to handle. Claw
+ 
+really important surface to handle. Claw
+story starts to look less like an agent
+ 
+story starts to look less like an agent
+that kind of developed in a chat app and
+ 
+that kind of developed in a chat app and
+more like a runtime that happens to have
+ 
+more like a runtime that happens to have
+a bunch of human-facing surfaces. The
+ 
+a bunch of human-facing surfaces. The
+human might be in Slack, the agent might
+ 
+human might be in Slack, the agent might
+be doing code work in GitHub, a
+ 
+be doing code work in GitHub, a
+sub-agent might be analyzing logs, and
+ 
+sub-agent might be analyzing logs, and
+there may be multiple models involved
+ 
+there may be multiple models involved
+here, right? A stronger model might
+ 
+here, right? A stronger model might
+handle the hard stuff while a cheaper
+ 
+handle the hard stuff while a cheaper
+model does a first-pass classification
+ 
+model does a first-pass classification
+of intent. From the user's perspective,
+ 
+of intent. From the user's perspective,
+the work just needs to come back, right?
+ 
+the work just needs to come back, right?
+In the right place with the right amount
+ 
+In the right place with the right amount
+of detail done at the right time. That
+ 
+of detail done at the right time. That
+is a larger conception of what an agent
+ 
+is a larger conception of what an agent
+can solve, and open clause maturing
+ 
+can solve, and open clause maturing
+enough to get there. So, that's the key
+ 
+enough to get there. So, that's the key
+big story in April. Open claw got more
+ 
+big story in April. Open claw got more
+mature. But, the market drama entered at
+ 
+mature. But, the market drama entered at
+the same time because while open claw
+ 
+the same time because while open claw
+was becoming much more serious, the
+ 
+was becoming much more serious, the
+model layer underneath it got really,
+ 
+model layer underneath it got really,
+really contested. Anthropic's April move
+ 
+really contested. Anthropic's April move
+was extremely disliked by the developer
+ 
+was extremely disliked by the developer
+community. I can't paint it any other
+ 
+community. I can't paint it any other
+way. Claude subscriptions were, of
+ 
+way. Claude subscriptions were, of
+course, never designed to power always
+ 
+course, never designed to power always
+on third-party agents at scale. That is
+ 
+on third-party agents at scale. That is
+the basic Anthropic position and I kind
+ 
+the basic Anthropic position and I kind
+of get it. Agents aren't normal chat
+ 
+of get it. Agents aren't normal chat
+users. They run longer. They retry. They
+ 
+users. They run longer. They retry. They
+call tools. They carry more context.
+ 
+call tools. They carry more context.
+They sit in loops. You can't price them
+ 
+They sit in loops. You can't price them
+the same way, right? They create
+ 
+the same way, right? They create
+intermediate work that a human never
+ 
+intermediate work that a human never
+sees. That's also tokens. They can turn
+ 
+sees. That's also tokens. They can turn
+a flat rate consumer subscription into
+ 
+a flat rate consumer subscription into
+infrastructure for sub derivative
+ 
+infrastructure for sub derivative
+product. And from Anthropic's point of
+ 
+product. And from Anthropic's point of
+view, that is money losing, right? If
+ 
+view, that is money losing, right? If
+Claude is being used as infrastructure,
+ 
+Claude is being used as infrastructure,
+Anthropic wants it paid for like
+ 
+Anthropic wants it paid for like
+infrastructure. Use the API. Buy extra
+ 
+infrastructure. Use the API. Buy extra
+usage. You need to protect the margins
+ 
+usage. You need to protect the margins
+that make Claude a sustainable user
+ 
+that make Claude a sustainable user
+experience. And that is rational, but it
+ 
+experience. And that is rational, but it
+was deeply unpopular and it's also a
+ 
+was deeply unpopular and it's also a
+strategic choice. And I don't want to
+ 
+strategic choice. And I don't want to
+hide those other pieces. If Claude is
+ 
+hide those other pieces. If Claude is
+being used as infrastructure, Anthropic
+ 
+being used as infrastructure, Anthropic
+wants it paid for like infrastructure.
+ 
+wants it paid for like infrastructure.
+Use the API. Buy extra usage. Stay
+ 
+Use the API. Buy extra usage. Stay
+inside official products. Protect
+ 
+inside official products. Protect
+Anthropic's capacity. Protect
+ 
+Anthropic's capacity. Protect
+Anthropic's margins. Protect the direct
+ 
+Anthropic's margins. Protect the direct
+Claude user experience. Seems really
+ 
+Claude user experience. Seems really
+rational from Anthropic's point of view.
+ 
+rational from Anthropic's point of view.
+It's also a very intentional choice that
+ 
+It's also a very intentional choice that
+we shouldn't run away from. Anthropic is
+ 
+we shouldn't run away from. Anthropic is
+effectively saying Claude is powerful
+ 
+effectively saying Claude is powerful
+enough to be an agent brain, but
+ 
+enough to be an agent brain, but
+Anthropic wants to control the terms
+ 
+Anthropic wants to control the terms
+under which the brain is used. It
+ 
+under which the brain is used. It
+doesn't make Claude less useful, but it
+ 
+doesn't make Claude less useful, but it
+changes the default architecture for a
+ 
+changes the default architecture for a
+lot of Claude builders who started out
+ 
+lot of Claude builders who started out
+with Claude. Claude becomes a very
+ 
+with Claude. Claude becomes a very
+premium metered component to open claw,
+ 
+premium metered component to open claw,
+not the cheap always on substrate for
+ 
+not the cheap always on substrate for
+background loops. It's a different
+ 
+background loops. It's a different
+design assumption and frankly, it is
+ 
+design assumption and frankly, it is
+costing Anthropic with the developer
+ 
+costing Anthropic with the developer
+community. Even if it's the correct
+ 
+community. Even if it's the correct
+decision for them from a token usage
+ 
+decision for them from a token usage
+perspective. Remember, we have to view a
+ 
+perspective. Remember, we have to view a
+lot of Anthropic's actions in the past
+ 
+lot of Anthropic's actions in the past
+month as a function of hyper growth
+ 
+month as a function of hyper growth
+leading to compute constraints. And they
+ 
+leading to compute constraints. And they
+are making tough choices all across the
+ 
+are making tough choices all across the
+board to handle that bind. And I have a
+ 
+board to handle that bind. And I have a
+lot of empathy for them cuz that's not
+ 
+lot of empathy for them cuz that's not
+an easy place to be in. This is one of
+ 
+an easy place to be in. This is one of
+those tough choices. And yes, it was
+ 
+those tough choices. And yes, it was
+unpopular. It doesn't mean that they had
+ 
+unpopular. It doesn't mean that they had
+a lot of other options. I I expect they
+ 
+a lot of other options. I I expect they
+knew it was unpopular and they made the
+ 
+knew it was unpopular and they made the
+call anyway. OpenAI has more online
+ 
+call anyway. OpenAI has more online
+compute and they are taking a different
+ 
+compute and they are taking a different
+posture. Codex is already an agentic
+ 
+posture. Codex is already an agentic
+product. OpenAI's help docs now make
+ 
+product. OpenAI's help docs now make
+Codex part of the ChatGPT subscription
+ 
+Codex part of the ChatGPT subscription
+across all paid tiers. And Open Claw's
+ 
+across all paid tiers. And Open Claw's
+provider docs describe a Codex OAuth
+ 
+provider docs describe a Codex OAuth
+route alongside direct API usage. That
+ 
+route alongside direct API usage. That
+matters because OpenAI is essentially
+ 
+matters because OpenAI is essentially
+looking at Open Claw and seeing
+ 
+looking at Open Claw and seeing
+distribution within the plan. In fact,
+ 
+distribution within the plan. In fact,
+Sam Altman said that very explicitly on
+ 
+Sam Altman said that very explicitly on
+May 1st, calling out that Open Claw is
+ 
+May 1st, calling out that Open Claw is
+now just flat available under ChatGPT
+ 
+now just flat available under ChatGPT
+paid plans. And that is basically the
+ 
+paid plans. And that is basically the
+opposite of what Anthropic chose to do
+ 
+opposite of what Anthropic chose to do
+in April. Think of it from OpenAI's
+ 
+in April. Think of it from OpenAI's
+point of view. If they have the compute,
+ 
+point of view. If they have the compute,
+then if Open Claw users route more work
+ 
+then if Open Claw users route more work
+to ChatGPT and Codex, it reinforces
+ 
+to ChatGPT and Codex, it reinforces
+OpenAI's agent strategy. It makes Codex
+ 
+OpenAI's agent strategy. It makes Codex
+more central and it makes OpenAI
+ 
+more central and it makes OpenAI
+infrastructure feel like a natural place
+ 
+infrastructure feel like a natural place
+for open agent workflows to land. And
+ 
+for open agent workflows to land. And
+yes, the Peter Steinberger piece matters
+ 
+yes, the Peter Steinberger piece matters
+here, too. When the creator of Open Claw
+ 
+here, too. When the creator of Open Claw
+is working at OpenAI and OpenAI is
+ 
+is working at OpenAI and OpenAI is
+making Codex more available as a
+ 
+making Codex more available as a
+subscription backed agent surface, the
+ 
+subscription backed agent surface, the
+power dynamic changes. Anthropic had the
+ 
+power dynamic changes. Anthropic had the
+model many early users loved. OpenAI now
+ 
+model many early users loved. OpenAI now
+has Codex subscription access and a
+ 
+has Codex subscription access and a
+strong incentive to make these workflows
+ 
+strong incentive to make these workflows
+feel native on its infrastructure. But I
+ 
+feel native on its infrastructure. But I
+don't think the responsible version of
+ 
+don't think the responsible version of
+this story is as simple as OpenAI wins
+ 
+this story is as simple as OpenAI wins
+and Anthropic loses. I think the larger
+ 
+and Anthropic loses. I think the larger
+story is that there are many ways to run
+ 
+story is that there are many ways to run
+your agent, and that's a principle
+ 
+your agent, and that's a principle
+that's worth defending. Open Claw should
+ 
+that's worth defending. Open Claw should
+not depend on one provider subscription
+ 
+not depend on one provider subscription
+policies to work. It should be able to
+ 
+policies to work. It should be able to
+run on 5.5 Claude API, Gemini, Deep
+ 
+run on 5.5 Claude API, Gemini, Deep
+Seek, Open Router, Ollama, LM Studio,
+ 
+Seek, Open Router, Ollama, LM Studio,
+Gemma for whatever comes next. The point
+ 
+Gemma for whatever comes next. The point
+of the runtime abstraction is that the
+ 
+of the runtime abstraction is that the
+action layer can stay stable while the
+ 
+action layer can stay stable while the
+brain changes. And that is the real
+ 
+brain changes. And that is the real
+strategic idea. And that is why Google's
+ 
+strategic idea. And that is why Google's
+Gemma 4 is not a side quest here. Google
+ 
+Gemma 4 is not a side quest here. Google
+launched Gemma 4 under Apache 2.0 and
+ 
+launched Gemma 4 under Apache 2.0 and
+the positioning is very explicit. These
+ 
+the positioning is very explicit. These
+are open models built for advanced
+ 
+are open models built for advanced
+reasoning, agentic workflows, and
+ 
+reasoning, agentic workflows, and
+on-device use. The Google developer post
+ 
+on-device use. The Google developer post
+is even more direct. Gemma 4 is meant to
+ 
+is even more direct. Gemma 4 is meant to
+bring agentic skills to the edge,
+ 
+bring agentic skills to the edge,
+including multi-step planning,
+ 
+including multi-step planning,
+autonomous action, offline code
+ 
+autonomous action, offline code
+generation, and multimodal processing on
+ 
+generation, and multimodal processing on
+device. That matters because it gives
+ 
+device. That matters because it gives
+builders a credible local branch of the
+ 
+builders a credible local branch of the
+overall runtime tree to play with. Not
+ 
+overall runtime tree to play with. Not
+every agent step deserves frontier model
+ 
+every agent step deserves frontier model
+pricing, and Google is recognizing that
+ 
+pricing, and Google is recognizing that
+here. And this is where the model
+ 
+here. And this is where the model
+conversation gets super practical. The
+ 
+conversation gets super practical. The
+old argument was which model is best.
+ 
+old argument was which model is best.
+The better argument is which model
+ 
+The better argument is which model
+should handle this step. Use a local
+ 
+should handle this step. Use a local
+Gemma class model for cheap background
+ 
+Gemma class model for cheap background
+classification, for duplicate detection,
+ 
+classification, for duplicate detection,
+for low-risk triage. Use GPT 5.5 through
+ 
+for low-risk triage. Use GPT 5.5 through
+Codex for hard implementation and
+ 
+Codex for hard implementation and
+complex repo work. Use Claude API when
+ 
+complex repo work. Use Claude API when
+the judgment, the writing style, or
+ 
+the judgment, the writing style, or
+maybe the architectural reasoning is
+ 
+maybe the architectural reasoning is
+worth the metered cost. Use cheaper
+ 
+worth the metered cost. Use cheaper
+hosted models for bulk summarization or
+ 
+hosted models for bulk summarization or
+formatting. Your workflow should be
+ 
+formatting. Your workflow should be
+sophisticated enough to survive those
+ 
+sophisticated enough to survive those
+routing decisions. And that is the aha
+ 
+routing decisions. And that is the aha
+moment that I see a lot of builders
+ 
+moment that I see a lot of builders
+hitting in April. You can build one work
+ 
+hitting in April. You can build one work
+loop once for Open Claw, and you can
+ 
+loop once for Open Claw, and you can
+stop treating model choice as a
+ 
+stop treating model choice as a
+permanent architectural decision. Don't
+ 
+permanent architectural decision. Don't
+be fooled by the arguments about Claude
+ 
+be fooled by the arguments about Claude
+versus Open AI. That's not the point.
+ 
+versus Open AI. That's not the point.
+And this is the headline for builders.
+ 
+And this is the headline for builders.
+The practical unlock is not simply that
+ 
+The practical unlock is not simply that
+Open Claw can use different models. A
+ 
+Open Claw can use different models. A
+model drop-down, I'll find, it's
+ 
+model drop-down, I'll find, it's
+convenient. But if you are swapping your
+ 
+convenient. But if you are swapping your
+entire runtime brain, that is a
+ 
+entire runtime brain, that is a
+strategic shift you need to plan for.
+ 
+strategic shift you need to plan for.
+How do you design workflows that outlive
+ 
+How do you design workflows that outlive
+a model, a subscription plan, a provider
+ 
+a model, a subscription plan, a provider
+policy, a context window? That's what I
+ 
+policy, a context window? That's what I
+mean by a durable workflow. A durable
+ 
+mean by a durable workflow. A durable
+workflow has a job to do, a place to
+ 
+workflow has a job to do, a place to
+run, memory of what happened before, and
+ 
+run, memory of what happened before, and
+enough structure that the underlying
+ 
+enough structure that the underlying
+model can change without destroying the
+ 
+model can change without destroying the
+workflow. The model still matters, of
+ 
+workflow. The model still matters, of
+course. Sometimes it matters more, but
+ 
+course. Sometimes it matters more, but
+it is no longer the product's surface.
+ 
+it is no longer the product's surface.
+The workflow has its own identity. It
+ 
+The workflow has its own identity. It
+has inputs, outputs, permissions, tools,
+ 
+has inputs, outputs, permissions, tools,
+state, review steps, a human-facing
+ 
+state, review steps, a human-facing
+channel, a failure mode memory. The
+ 
+channel, a failure mode memory. The
+model becomes the reasoning engine
+ 
+model becomes the reasoning engine
+inside a much larger operating loop. And
+ 
+inside a much larger operating loop. And
+as you swap the model, you can do
+ 
+as you swap the model, you can do
+different things with that
+ 
+different things with that
+general-purpose loop. Let's imagine
+ 
+general-purpose loop. Let's imagine
+you're handling a repo. Not an agent
+ 
+you're handling a repo. Not an agent
+that can code in the abstract. I mean a
+ 
+that can code in the abstract. I mean a
+workflow that watches GitHub issues and
+ 
+workflow that watches GitHub issues and
+pull requests over time. It triages
+ 
+pull requests over time. It triages
+incoming work, compares new issues
+ 
+incoming work, compares new issues
+against past fixes, knows which files
+ 
+against past fixes, knows which files
+are risky, and remembers the tests that
+ 
+are risky, and remembers the tests that
+usually catch regressions. The useful
+ 
+usually catch regressions. The useful
+knowledge is not all in the prompt. It's
+ 
+knowledge is not all in the prompt. It's
+in the history of the code base, old
+ 
+in the history of the code base, old
+review comments, prior bugs, deployment
+ 
+review comments, prior bugs, deployment
+failures, style preferences,
+ 
+failures, style preferences,
+architectural decisions, and the we
+ 
+architectural decisions, and the we
+tried this in a broke staging lessons
+ 
+tried this in a broke staging lessons
+that every real team tends to
+ 
+that every real team tends to
+accumulate. If that memory lives inside
+ 
+accumulate. If that memory lives inside
+just a chat transcript, obviously your
+ 
+just a chat transcript, obviously your
+workflow isn't going to work for very
+ 
+workflow isn't going to work for very
+long. If it lives inside one provider's
+ 
+long. If it lives inside one provider's
+product, the workflow is locked to that
+ 
+product, the workflow is locked to that
+provider. If it lives outside the model,
+ 
+provider. If it lives outside the model,
+the runtime can call whichever model is
+ 
+the runtime can call whichever model is
+right for the step and still behave like
+ 
+right for the step and still behave like
+the same operator. That is the idea of a
+ 
+the same operator. That is the idea of a
+durable workflow. A local model can
+ 
+durable workflow. A local model can
+classify the issue and gather context.
+ 
+classify the issue and gather context.
+GPT-5.5 and Codex could make a patch. A
+ 
+GPT-5.5 and Codex could make a patch. A
+review model can inspect the diff.
+ 
+review model can inspect the diff.
+Claude can write a high-judgment
+ 
+Claude can write a high-judgment
+architecture pass if the change is
+ 
+architecture pass if the change is
+sensitive. You can use whatever model
+ 
+sensitive. You can use whatever model
+you want here, right? I'm not saying you
+ 
+you want here, right? I'm not saying you
+have to use those models. The user
+ 
+have to use those models. The user
+doesn't have to care which brain handled
+ 
+doesn't have to care which brain handled
+which sub-step. The user cares that the
+ 
+which sub-step. The user cares that the
+repo operator understood the job and
+ 
+repo operator understood the job and
+left the team with something reviewable.
+ 
+left the team with something reviewable.
+Code review is a super clean way to talk
+ 
+Code review is a super clean way to talk
+about this, but I want to call out
+ 
+about this, but I want to call out
+there's lots of examples where we have
+ 
+there's lots of examples where we have
+durable workflows that are non-technical
+ 
+durable workflows that are non-technical
+as well. Like, if you are trying to do a
+ 
+as well. Like, if you are trying to do a
+scheduled review that has multiple
+ 
+scheduled review that has multiple
+layers of your email inbox, which I'm
+ 
+layers of your email inbox, which I'm
+naming email cuz it's like the number
+ 
+naming email cuz it's like the number
+one most popular use for OpenClaw across
+ 
+one most popular use for OpenClaw across
+non-technical users. Then, that's
+ 
+non-technical users. Then, that's
+multiple jobs, right? You have to
+ 
+multiple jobs, right? You have to
+segregate out sensitive emails with high
+ 
+segregate out sensitive emails with high
+judgment. You have to draft replies. If
+ 
+judgment. You have to draft replies. If
+you're going to draft replies, you have
+ 
+you're going to draft replies, you have
+to automatically review those replies
+ 
+to automatically review those replies
+for quality, tone, how it responds to
+ 
+for quality, tone, how it responds to
+the sender, how it handles the original
+ 
+the sender, how it handles the original
+message. You have to figure out how you
+ 
+message. You have to figure out how you
+are threading replies correctly and make
+ 
+are threading replies correctly and make
+sure you have a QA pass for that. You
+ 
+sure you have a QA pass for that. You
+have to handle any artifacts that come
+ 
+have to handle any artifacts that come
+with emails like attachments correctly
+ 
+with emails like attachments correctly
+and securely. You have lots of tasks
+ 
+and securely. You have lots of tasks
+with email that would require models one
+ 
+with email that would require models one
+remembering how you like this done, two
+ 
+remembering how you like this done, two
+executing the workflow and the right
+ 
+executing the workflow and the right
+model getting called, and three having a
+ 
+model getting called, and three having a
+durable memory of how all of this goes
+ 
+durable memory of how all of this goes
+together so that the next pass works.
+ 
+together so that the next pass works.
+Incident response is the last example
+ 
+Incident response is the last example
+I'll call out here in the video. If
+ 
+I'll call out here in the video. If
+you're interested in diving in more to
+ 
+you're interested in diving in more to
+how to use OpenClaw in practice, I have
+ 
+how to use OpenClaw in practice, I have
+net new workflow examples in the
+ 
+net new workflow examples in the
+Substack including customer feedback
+ 
+Substack including customer feedback
+loops, meetings to execution, and more.
+ 
+loops, meetings to execution, and more.
+For this video, I'm picking incident
+ 
+For this video, I'm picking incident
+response because the pattern it shows
+ 
+response because the pattern it shows
+spans a bunch of surfaces and I think it
+ 
+spans a bunch of surfaces and I think it
+illustrates, right? You have to deal
+ 
+illustrates, right? You have to deal
+with logs and dashboards and Slack and
+ 
+with logs and dashboards and Slack and
+GitHub and runbooks and deployment
+ 
+GitHub and runbooks and deployment
+history and customer reports and
+ 
+history and customer reports and
+previous postmortems and a live timeline
+ 
+previous postmortems and a live timeline
+and everyone is panicking and asking
+ 
+and everyone is panicking and asking
+what changed at the exact moment when
+ 
+what changed at the exact moment when
+like they're not thinking straight. A
+ 
+like they're not thinking straight. A
+durable OpenClaw workflow sits across
+ 
+durable OpenClaw workflow sits across
+all of that. And when an incident
+ 
+all of that. And when an incident
+starts, it gathers context and
+ 
+starts, it gathers context and
+identifies changes and compares symptoms
+ 
+identifies changes and compares symptoms
+against prior incidents and drafts the
+ 
+against prior incidents and drafts the
+first update and suggests rollback
+ 
+first update and suggests rollback
+candidates and turns the resolution into
+ 
+candidates and turns the resolution into
+a postmortem draft. The point is not a
+ 
+a postmortem draft. The point is not a
+magical model does all of this for you.
+ 
+magical model does all of this for you.
+No, you may want a fast model for logs,
+ 
+No, you may want a fast model for logs,
+a cheap model for updates, a deep
+ 
+a cheap model for updates, a deep
+inference model for root cause, but the
+ 
+inference model for root cause, but the
+instant workflow shouldn't need to care
+ 
+instant workflow shouldn't need to care
+at the product level which brain did
+ 
+at the product level which brain did
+which step. The same pattern is useful
+ 
+which step. The same pattern is useful
+across a bunch of other tasks, and that
+ 
+across a bunch of other tasks, and that
+brings us to the common layer underneath
+ 
+brings us to the common layer underneath
+it all, memory. If the workflow is
+ 
+it all, memory. If the workflow is
+durable and the brain is swappable,
+ 
+durable and the brain is swappable,
+memory can't live inside any one brain.
+ 
+memory can't live inside any one brain.
+This is the point that connects OpenClaw
+ 
+This is the point that connects OpenClaw
+to the OpenBrain project. When agents
+ 
+to the OpenBrain project. When agents
+were mostly chat companions, shared
+ 
+were mostly chat companions, shared
+memory was useful. When agents become
+ 
+memory was useful. When agents become
+real workers the way OpenClaw has
+ 
+real workers the way OpenClaw has
+matured, shared memory is something you
+ 
+matured, shared memory is something you
+have to handle. A worker needs to know
+ 
+have to handle. A worker needs to know
+what happened before, right? Project
+ 
+what happened before, right? Project
+conventions, people involved, decisions
+ 
+conventions, people involved, decisions
+made, etc. If that memory lives inside a
+ 
+made, etc. If that memory lives inside a
+single model product, regardless of what
+ 
+single model product, regardless of what
+job you're doing with your claw, you
+ 
+job you're doing with your claw, you
+have a lock-in problem. If it lives in a
+ 
+have a lock-in problem. If it lives in a
+random chat transcript or only markdown
+ 
+random chat transcript or only markdown
+files, you're going to have a retrieval
+ 
+files, you're going to have a retrieval
+problem. If it lives in the agent's
+ 
+problem. If it lives in the agent's
+scratchpad, you have a continuity
+ 
+scratchpad, you have a continuity
+problem. If it lives in a user-owned
+ 
+problem. If it lives in a user-owned
+memory layer, you have an architecture
+ 
+memory layer, you have an architecture
+problem. This is why I think an
+ 
+problem. This is why I think an
+OpenBrain recipe for claw makes sense
+ 
+OpenBrain recipe for claw makes sense
+now. Look, OpenBrain doesn't need to
+ 
+now. Look, OpenBrain doesn't need to
+trace every OpenClaw feature, and it
+ 
+trace every OpenClaw feature, and it
+won't. But, OpenClaw users, by the
+ 
+won't. But, OpenClaw users, by the
+thousand, are already wiring in
+ 
+thousand, are already wiring in
+OpenBrain on their own, and it just
+ 
+OpenBrain on their own, and it just
+makes sense to publish a recipe that
+ 
+makes sense to publish a recipe that
+makes that easier. It just makes the
+ 
+makes that easier. It just makes the
+whole architecture and the whole
+ 
+whole architecture and the whole
+approach very legible. And so, OpenClaw
+ 
+approach very legible. And so, OpenClaw
+agent memory for OpenBrain is now live
+ 
+agent memory for OpenBrain is now live
+in our open-source GitHub repo. The job
+ 
+in our open-source GitHub repo. The job
+here is not to add another abstraction
+ 
+here is not to add another abstraction
+or to complexify your claw. The job is
+ 
+or to complexify your claw. The job is
+to make the existing pattern very easy
+ 
+to make the existing pattern very easy
+to adopt and go through, and sort of to
+ 
+to adopt and go through, and sort of to
+publish what works so that thousands of
+ 
+publish what works so that thousands of
+users aren't having to roll their own
+ 
+users aren't having to roll their own
+approach here. So, what does the
+ 
+approach here. So, what does the
+OpenBrain recipe for claw do? It defines
+ 
+OpenBrain recipe for claw do? It defines
+how the agent retrieves before
+ 
+how the agent retrieves before
+meaningful work starts for your claw
+ 
+meaningful work starts for your claw
+specifically, for serious workflows that
+ 
+specifically, for serious workflows that
+claw is now capable of. For project
+ 
+claw is now capable of. For project
+context, people, decisions, prior
+ 
+context, people, decisions, prior
+failures, current task, constraints. It
+ 
+failures, current task, constraints. It
+defines how the agent writes back for
+ 
+defines how the agent writes back for
+serious work, for outputs, lessons,
+ 
+serious work, for outputs, lessons,
+unresolved questions, source channel,
+ 
+unresolved questions, source channel,
+model used, task ID, confidence, etc.
+ 
+model used, task ID, confidence, etc.
+And finally, user confirmation status.
+ 
+And finally, user confirmation status.
+That last piece matters. Agent written
+ 
+That last piece matters. Agent written
+memory needs provenance. Was this
+ 
+memory needs provenance. Was this
+observed from a source, inferred by a
+ 
+observed from a source, inferred by a
+model, confirmed by a user, imported
+ 
+model, confirmed by a user, imported
+from a transcript? How did we get it? Is
+ 
+from a transcript? How did we get it? Is
+it valid? Can it be used as an
+ 
+it valid? Can it be used as an
+instruction later? Without clear labels,
+ 
+instruction later? Without clear labels,
+memory gets dangerous. But when you have
+ 
+memory gets dangerous. But when you have
+good labels, memory gets operational.
+ 
+good labels, memory gets operational.
+And so yes, I'm releasing multiple
+ 
+And so yes, I'm releasing multiple
+recipes here that help you realize this
+ 
+recipes here that help you realize this
+overall vision of Open Brain for Open
+ 
+overall vision of Open Brain for Open
+Claw. I'm releasing a code review memory
+ 
+Claw. I'm releasing a code review memory
+recipe that stores reusable lessons from
+ 
+recipe that stores reusable lessons from
+PRs, a task flow work log that records
+ 
+PRs, a task flow work log that records
+what a long-running agent attempted,
+ 
+what a long-running agent attempted,
+what changed, what blocked it, what the
+ 
+what changed, what blocked it, what the
+next agent should know. I'm releasing a
+ 
+next agent should know. I'm releasing a
+memory and provenance recipe that labels
+ 
+memory and provenance recipe that labels
+where the memory was observed and
+ 
+where the memory was observed and
+confirmed and imported from. And that
+ 
+confirmed and imported from. And that
+becomes especially important in a
+ 
+becomes especially important in a
+brain-swappable world, which Open Claw
+ 
+brain-swappable world, which Open Claw
+can now do really, really well for
+ 
+can now do really, really well for
+serious work. And this is what helps you
+ 
+serious work. And this is what helps you
+build one loop and swap those brains in
+ 
+build one loop and swap those brains in
+and be confident that the memory
+ 
+and be confident that the memory
+actually works, so that you can actually
+ 
+actually works, so that you can actually
+attack different problems with the same
+ 
+attack different problems with the same
+agentic pipeline. Bad memory makes the
+ 
+agentic pipeline. Bad memory makes the
+agent confidently wrong in a way that
+ 
+agent confidently wrong in a way that
+often feels personalized, but a good
+ 
+often feels personalized, but a good
+memory architecture makes the agent
+ 
+memory architecture makes the agent
+operate continuously without making it
+ 
+operate continuously without making it
+unaccountable. And that's the line I'm
+ 
+unaccountable. And that's the line I'm
+looking to draw here with this update
+ 
+looking to draw here with this update
+for Open Brain that's designed
+ 
+for Open Brain that's designed
+specifically for Open Claw. Now, if you
+ 
+specifically for Open Claw. Now, if you
+want more detail on these recipes, and
+ 
+want more detail on these recipes, and
+as I called out on the use cases, I have
+ 
+as I called out on the use cases, I have
+that on the Substack. Of course, you can
+ 
+that on the Substack. Of course, you can
+head over to the open-sourced Open Brain
+ 
+head over to the open-sourced Open Brain
+repo and get all of the code right away.
+ 
+repo and get all of the code right away.
+But for this video, the important point
+ 
+But for this video, the important point
+is the architecture. Open Claw is
+ 
+is the architecture. Open Claw is
+maturing into a runtime. The model layer
+ 
+maturing into a runtime. The model layer
+is becoming swappable and very contested
+ 
+is becoming swappable and very contested
+by model makers. Therefore, memory needs
+ 
+by model makers. Therefore, memory needs
+to be user owned. And that is really,
+ 
+to be user owned. And that is really,
+really important as we see this OpenAI
+ 
+really important as we see this OpenAI
+versus Anthropic story continue to
+ 
+versus Anthropic story continue to
+unfold. We need to be confident that
+ 
+unfold. We need to be confident that
+agent builders can design for a world
+ 
+agent builders can design for a world
+where models can be swapped out really
+ 
+where models can be swapped out really
+easily. A serious agent workflow needs
+ 
+easily. A serious agent workflow needs
+to survive model churn and pricing
+ 
+to survive model churn and pricing
+changes and better local models and
+ 
+changes and better local models and
+everything else we know the future is
+ 
+everything else we know the future is
+going to throw at us because otherwise,
+ 
+going to throw at us because otherwise,
+how are you going to take advantage of
+ 
+how are you going to take advantage of
+the serious workflow features that allow
+ 
+the serious workflow features that allow
+your claw to be more than a toy and be
+ 
+your claw to be more than a toy and be
+really useful? Just think about it. If
+ 
+really useful? Just think about it. If
+channel delivery is unreliable, the
+ 
+channel delivery is unreliable, the
+agent may do work no one sees. If
+ 
+agent may do work no one sees. If
+permissions are sloppy, driven by
+ 
+permissions are sloppy, driven by
+memory, a more capable model makes the
+ 
+memory, a more capable model makes the
+system more dangerous. If providence for
+ 
+system more dangerous. If providence for
+memory is absent, then the memory itself
+ 
+memory is absent, then the memory itself
+is untrustworthy. All of this boring
+ 
+is untrustworthy. All of this boring
+product work is what makes exciting work
+ 
+product work is what makes exciting work
+with your claw possible. So, the
+ 
+with your claw possible. So, the
+post-April open claw thesis is actually
+ 
+post-April open claw thesis is actually
+pretty simple. Open claw gives agents an
+ 
+pretty simple. Open claw gives agents an
+action layer that really works now.
+ 
+action layer that really works now.
+Models provide a reasoning engine, task
+ 
+Models provide a reasoning engine, task
+flow gives work a durable loop, channels
+ 
+flow gives work a durable loop, channels
+are where humans interact, memory is a
+ 
+are where humans interact, memory is a
+continuity layer, permissions and
+ 
+continuity layer, permissions and
+providence are a trust layer. It's good
+ 
+providence are a trust layer. It's good
+architecture. Once you see the stack
+ 
+architecture. Once you see the stack
+this way, the opportunity for builders
+ 
+this way, the opportunity for builders
+changes. The opportunity is not make
+ 
+changes. The opportunity is not make
+another shallow claw wrapper. That layer
+ 
+another shallow claw wrapper. That layer
+is going to get crowded out really
+ 
+is going to get crowded out really
+quickly. The more interesting
+ 
+quickly. The more interesting
+opportunity is to build vertical work
+ 
+opportunity is to build vertical work
+loops on top of the runtime. Build for
+ 
+loops on top of the runtime. Build for
+sales operations, build for research
+ 
+sales operations, build for research
+workflows, build for meeting follow-up,
+ 
+workflows, build for meeting follow-up,
+build for compliance review, build for
+ 
+build for compliance review, build for
+chief of staff loops, for finance
+ 
+chief of staff loops, for finance
+analysis, for personal knowledge
+ 
+analysis, for personal knowledge
+maintenance. In each case, the product
+ 
+maintenance. In each case, the product
+is not an agent, the product is the loop
+ 
+is not an agent, the product is the loop
+that is tied to that workflow. And the
+ 
+that is tied to that workflow. And the
+scarce asset is not just access to a
+ 
+scarce asset is not just access to a
+model, the scarce asset is ownership of
+ 
+model, the scarce asset is ownership of
+the memory, the tools, the permissions,
+ 
+the memory, the tools, the permissions,
+the operating rhythm around the model.
+ 
+the operating rhythm around the model.
+Open claw is becoming more useful
+ 
+Open claw is becoming more useful
+because it is becoming less dependent on
+ 
+because it is becoming less dependent on
+one interaction platform. Look, the labs
+ 
+one interaction platform. Look, the labs
+will keep fighting over open claw's
+ 
+will keep fighting over open claw's
+brain. That's inevitable. Frontier
+ 
+brain. That's inevitable. Frontier
+models are expensive to train, expensive
+ 
+models are expensive to train, expensive
+to serve, and strategically critical. I
+ 
+to serve, and strategically critical. I
+expect OpenAI, Anthropic, Google, and
+ 
+expect OpenAI, Anthropic, Google, and
+everyone else to make choices that
+ 
+everyone else to make choices that
+reflect their incentives. Some paths
+ 
+reflect their incentives. Some paths
+will open, some paths will close, some
+ 
+will open, some paths will close, some
+companies will push APIs, some will push
+ 
+companies will push APIs, some will push
+subscriptions, some will push official
+ 
+subscriptions, some will push official
+agent products, and some will push local
+ 
+agent products, and some will push local
+models. The builder response should not
+ 
+models. The builder response should not
+be religious loyalty to any provider. It
+ 
+be religious loyalty to any provider. It
+should be architecture. Build the
+ 
+should be architecture. Build the
+runtime so the model can change, build
+ 
+runtime so the model can change, build
+the memory so the user owns it, build
+ 
+the memory so the user owns it, build
+the workflow so it survives the session,
+ 
+the workflow so it survives the session,
+right? Build routing so cheap that
+ 
+right? Build routing so cheap that
+models can do the work they need to do.
+ 
+models can do the work they need to do.
+Open Claw has crossed into serious work
+ 
+Open Claw has crossed into serious work
+mode. And once you can run multiple
+ 
+mode. And once you can run multiple
+brains through the serious work layer
+ 
+brains through the serious work layer
+that Open Claw has added in April, you
+ 
+that Open Claw has added in April, you
+are in business for a bunch of new use
+ 
+are in business for a bunch of new use
+cases. But only if the memory lives
+ 
+cases. But only if the memory lives
+independently of that brain that is so
+ 
+independently of that brain that is so
+hotly contested in Silicon Valley right
+ 
+hotly contested in Silicon Valley right
+now. And that is your takeaway for Open
+ 
+now. And that is your takeaway for Open
+Claw in April. Stay with me. We have
+ 
+Claw in April. Stay with me. We have
+lots more model updates coming this
+ 
+lots more model updates coming this
+week. Cheers.

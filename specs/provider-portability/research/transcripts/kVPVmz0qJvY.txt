@@ -1,0 +1,1922 @@
+ 
+The scary thing about the open claw
+ 
+The scary thing about the open claw
+stories is that so many of them are
+ 
+stories is that so many of them are
+real. You can actually build a complete
+ 
+real. You can actually build a complete
+$320,000 value SAS replacement suite by
+ 
+$320,000 value SAS replacement suite by
+hooking your open claw up to APIs. Yes,
+ 
+hooking your open claw up to APIs. Yes,
+that's true. You can also build a
+ 
+that's true. You can also build a
+complete CRM replacement in just a few
+ 
+complete CRM replacement in just a few
+days with open claw. Also true, also a
+ 
+days with open claw. Also true, also a
+verified story. Yes, you can scale your
+ 
+verified story. Yes, you can scale your
+ad creator from 20 to 2000. Also true,
+ 
+ad creator from 20 to 2000. Also true,
+also a verified story. And the point of
+ 
+also a verified story. And the point of
+all of that is that you are taking a
+ 
+all of that is that you are taking a
+tool that is designed to be a general
+ 
+tool that is designed to be a general
+purpose agent and using it to cover over
+ 
+purpose agent and using it to cover over
+a lot of your own existing issues. And
+ 
+a lot of your own existing issues. And
+that's what I want to talk about today
+ 
+that's what I want to talk about today
+because when we talk about open claw,
+ 
+because when we talk about open claw,
+what we're talking about is the
+ 
+what we're talking about is the
+enthusiasm and the energy that comes
+ 
+enthusiasm and the energy that comes
+from the world's first widely available
+ 
+from the world's first widely available
+general purpose agent. And I love all
+ 
+general purpose agent. And I love all
+that hype. I love that energy. I love
+ 
+that hype. I love that energy. I love
+that you actually can do this stuff with
+ 
+that you actually can do this stuff with
+open claw, but what I don't love is that
+ 
+open claw, but what I don't love is that
+so many people are taking it as a blank
+ 
+so many people are taking it as a blank
+slate permission slip and just saying,
+ 
+slate permission slip and just saying,
+you know what? It doesn't matter. It's
+ 
+you know what? It doesn't matter. It's
+okay. I don't have to think about my
+ 
+okay. I don't have to think about my
+data anymore. I don't have to think
+ 
+data anymore. I don't have to think
+about my best practices anymore. I don't
+ 
+about my best practices anymore. I don't
+have to think about my software anymore.
+ 
+have to think about my software anymore.
+Open claw will make it better. No, it
+ 
+Open claw will make it better. No, it
+won't. Open claw will not fix those
+ 
+won't. Open claw will not fix those
+things. Look, I've spent the last couple
+ 
+things. Look, I've spent the last couple
+of years arguing that the biggest risk
+ 
+of years arguing that the biggest risk
+that we face in software is not taking
+ 
+that we face in software is not taking
+our entire stack seriously when we bring
+ 
+our entire stack seriously when we bring
+AI into it. If we're going to do a true
+ 
+AI into it. If we're going to do a true
+reinvention for AI, we need to actually
+ 
+reinvention for AI, we need to actually
+take seriously the idea that AI will
+ 
+take seriously the idea that AI will
+need to be at the heart of a reinvented
+ 
+need to be at the heart of a reinvented
+stack. We cannot just stick an open claw
+ 
+stack. We cannot just stick an open claw
+agent over the top, paper over all of
+ 
+agent over the top, paper over all of
+the data issues, and pretend it's going
+ 
+the data issues, and pretend it's going
+to work. It won't. It just won't. Now, I
+ 
+to work. It won't. It just won't. Now, I
+want to be precise about what open claw
+ 
+want to be precise about what open claw
+actually is because the discourse has
+ 
+actually is because the discourse has
+gotten very muddy with all of the hype
+ 
+gotten very muddy with all of the hype
+and the hundreds of thousands of GitHub
+ 
+and the hundreds of thousands of GitHub
+stars and everything else. Open claw is
+ 
+stars and everything else. Open claw is
+an open source, self-hosted,
+ 
+an open source, self-hosted,
+model-agnostic AI agent framework. It
+ 
+model-agnostic AI agent framework. It
+runs as a persistent daemon on your
+ 
+runs as a persistent daemon on your
+machine. It connects to your messaging
+ 
+machine. It connects to your messaging
+app, Slack, WhatsApp, Telegram, Signal,
+ 
+app, Slack, WhatsApp, Telegram, Signal,
+you name it, and then acts on your
+ 
+you name it, and then acts on your
+behalf through shell access, browser
+ 
+behalf through shell access, browser
+automation, file operations, email, etc.
+ 
+automation, file operations, email, etc.
+It has a skill system that lets the
+ 
+It has a skill system that lets the
+agent extend itself into a bunch of
+ 
+agent extend itself into a bunch of
+community-built capabilities, and it has
+ 
+community-built capabilities, and it has
+a set of memory that was originally
+ 
+a set of memory that was originally
+stored as markdown files and is now
+ 
+stored as markdown files and is now
+undergoing some changes.
+ 
+undergoing some changes.
+The combination of all of those things
+ 
+The combination of all of those things
+as a modular architecture is new and was
+ 
+as a modular architecture is new and was
+extremely explosive when it came out. We
+ 
+extremely explosive when it came out. We
+all know that. I've told that story. The
+ 
+all know that. I've told that story. The
+problem is we are now a few months into
+ 
+problem is we are now a few months into
+the Open Claw story,
+ 
+the Open Claw story,
+and what we're finding is that the story
+ 
+and what we're finding is that the story
+gets more complicated as you try and use
+ 
+gets more complicated as you try and use
+your Open Claw agent to paper over
+ 
+your Open Claw agent to paper over
+inefficiencies and weaknesses in your
+ 
+inefficiencies and weaknesses in your
+stack. And that's what I want to warn
+ 
+stack. And that's what I want to warn
+you about because you can absolutely do
+ 
+you about because you can absolutely do
+incredible things with Open Claw, 100%,
+ 
+incredible things with Open Claw, 100%,
+but you have to make sure that you are
+ 
+but you have to make sure that you are
+building the layers of your software
+ 
+building the layers of your software
+stacks so that you can do that
+ 
+stacks so that you can do that
+correctly. I think the simplest way to
+ 
+correctly. I think the simplest way to
+tell this story is to talk about real
+ 
+tell this story is to talk about real
+builds that we've had with Open Claw and
+ 
+builds that we've had with Open Claw and
+the risks that you have in that Open
+ 
+the risks that you have in that Open
+Claw architecture if you don't take care
+ 
+Claw architecture if you don't take care
+of the rest of the stack. So, build
+ 
+of the rest of the stack. So, build
+number one. I talked about the CRM. It's
+ 
+number one. I talked about the CRM. It's
+a real story. It was a real non-coder
+ 
+a real story. It was a real non-coder
+who was able to build a real CRM using
+ 
+who was able to build a real CRM using
+Open Claw. That is both a tremendous
+ 
+Open Claw. That is both a tremendous
+accomplishment, a mark of how far agents
+ 
+accomplishment, a mark of how far agents
+have come, and also something that is
+ 
+have come, and also something that is
+absolutely terrifying if you understand
+ 
+absolutely terrifying if you understand
+how CRMs are built. Not because we want
+ 
+how CRMs are built. Not because we want
+to go slow. We want to go really fast,
+ 
+to go slow. We want to go really fast,
+and there are real speedups available.
+ 
+and there are real speedups available.
+It's because CRMs are fundamentally not
+ 
+It's because CRMs are fundamentally not
+pieces of software. We think of them as
+ 
+pieces of software. We think of them as
+pieces of software, and the piece that
+ 
+pieces of software, and the piece that
+came out, "Wow, you can vibe code this
+ 
+came out, "Wow, you can vibe code this
+in 12 days," or whatever it was, it
+ 
+in 12 days," or whatever it was, it
+painted it as if Open Claw built
+ 
+painted it as if Open Claw built
+software that replaced a SaaS.
+ 
+software that replaced a SaaS.
+But, but, but, that is not really what a
+ 
+But, but, but, that is not really what a
+CRM is. What a CRM is is encoded
+ 
+CRM is. What a CRM is is encoded
+workflow logic that reflects the reality
+ 
+workflow logic that reflects the reality
+of your business in a way that makes
+ 
+of your business in a way that makes
+sense for for sales process and for your
+ 
+sense for for sales process and for your
+customer care process.
+ 
+customer care process.
+All of the things you know about your
+ 
+All of the things you know about your
+customers and how they buy and how they
+ 
+customers and how they buy and how they
+choose to make purchasing decisions and
+ 
+choose to make purchasing decisions and
+how they choose to keep their purchase
+ 
+how they choose to keep their purchase
+and how they choose to expand and
+ 
+and how they choose to expand and
+upgrade their purchase with you, all of
+ 
+upgrade their purchase with you, all of
+that needs to have a place in your CRM.
+ 
+that needs to have a place in your CRM.
+And when we talk about people who are
+ 
+And when we talk about people who are
+choosing not to go with Salesforce, who
+ 
+choosing not to go with Salesforce, who
+are vibe coding their own CRMs, and this
+ 
+are vibe coding their own CRMs, and this
+is one of n, right? There's so many.
+ 
+is one of n, right? There's so many.
+What we see when they're at their best
+ 
+What we see when they're at their best
+is that people are moving quickly,
+ 
+is that people are moving quickly,
+they're encoding something, and they
+ 
+they're encoding something, and they
+make specific decisions about their CRM
+ 
+make specific decisions about their CRM
+that reflect what they want out of the
+ 
+that reflect what they want out of the
+customer relationship, why their
+ 
+customer relationship, why their
+business model exists the way it is.
+ 
+business model exists the way it is.
+They have that intent, that clarity of
+ 
+They have that intent, that clarity of
+intent. I talk about clarity of intent a
+ 
+intent. I talk about clarity of intent a
+lot for a reason. They have that intent
+ 
+lot for a reason. They have that intent
+across their data structures and across
+ 
+across their data structures and across
+their workflows, and all their agent
+ 
+their workflows, and all their agent
+does, all their open claw does, is it
+ 
+does, all their open claw does, is it
+helps them instantiate that intent.
+ 
+helps them instantiate that intent.
+That's all. That's it. If you have
+ 
+That's all. That's it. If you have
+any lack of clarity in your intent, if
+ 
+any lack of clarity in your intent, if
+you just point your open claw at a CRM
+ 
+you just point your open claw at a CRM
+and say, "I want to build a CRM. Please
+ 
+and say, "I want to build a CRM. Please
+just vibe code me one." You will get
+ 
+just vibe code me one." You will get
+trash. You will get absolute trash. Not
+ 
+trash. You will get absolute trash. Not
+because it's not functioning software,
+ 
+because it's not functioning software,
+not because your agent can't call it,
+ 
+not because your agent can't call it,
+but because what is built is going to
+ 
+but because what is built is going to
+reflect generic, middle-of-the-road a
+ 
+reflect generic, middle-of-the-road a
+workflow that works for everybody out of
+ 
+workflow that works for everybody out of
+the box and therefore for nobody,
+ 
+the box and therefore for nobody,
+and you're not going to get something
+ 
+and you're not going to get something
+that actually harnesses the power of
+ 
+that actually harnesses the power of
+custom software, which is the whole
+ 
+custom software, which is the whole
+reason you use agents in the first
+ 
+reason you use agents in the first
+place. And so, what I am begging you to
+ 
+place. And so, what I am begging you to
+do when you think about the promise of
+ 
+do when you think about the promise of
+the agentically developed software, and
+ 
+the agentically developed software, and
+it is promise and it's real, is take the
+ 
+it is promise and it's real, is take the
+high road here. There are two ways to
+ 
+high road here. There are two ways to
+build agentic software quickly. Both are
+ 
+build agentic software quickly. Both are
+fast. You're not trading speed.
+ 
+fast. You're not trading speed.
+Number one, have clarity of intent
+ 
+Number one, have clarity of intent
+around the workflows you are trying to
+ 
+around the workflows you are trying to
+encode and perhaps why they are
+ 
+encode and perhaps why they are
+different in the age of AI, perhaps why
+ 
+different in the age of AI, perhaps why
+your customer relationship is changing.
+ 
+your customer relationship is changing.
+Certainly, you should have a set of
+ 
+Certainly, you should have a set of
+requirements that reflect what actually
+ 
+requirements that reflect what actually
+works on the ground in your business
+ 
+works on the ground in your business
+that's very clear, that's unique, that's
+ 
+that's very clear, that's unique, that's
+different from other businesses.
+ 
+different from other businesses.
+Otherwise, you just buy the software,
+ 
+Otherwise, you just buy the software,
+right?
+ 
+right?
+Then,
+ 
+Then,
+go ahead and build quickly with agents.
+ 
+go ahead and build quickly with agents.
+The alternative is when you jump
+ 
+The alternative is when you jump
+straight to building because that's the
+ 
+straight to building because that's the
+seductive part, that's the easy part,
+ 
+seductive part, that's the easy part,
+and you don't take the time to get clear
+ 
+and you don't take the time to get clear
+on your intent, then you're in trouble
+ 
+on your intent, then you're in trouble
+because what you're going to get is
+ 
+because what you're going to get is
+generic average. It is whatever the
+ 
+generic average. It is whatever the
+average idea the LLM has the software
+ 
+average idea the LLM has the software
+will be, and that's true whether you're
+ 
+will be, and that's true whether you're
+using Open Claw or agents
+ 
+using Open Claw or agents
+uh of any kind.
+ 
+uh of any kind.
+So, that's lesson number one. It's about
+ 
+So, that's lesson number one. It's about
+CRM, it's about software, it's about
+ 
+CRM, it's about software, it's about
+SaaS. Lesson number two in these Open
+ 
+SaaS. Lesson number two in these Open
+Claw agent deployments that we're
+ 
+Claw agent deployments that we're
+starting to see is that you got to get
+ 
+starting to see is that you got to get
+your underlying data clean. This is part
+ 
+your underlying data clean. This is part
+of the reason I put Open Brain together.
+ 
+of the reason I put Open Brain together.
+I wanted people to have a clean data
+ 
+I wanted people to have a clean data
+layer. It's I don't care if it's Open
+ 
+layer. It's I don't care if it's Open
+Brain or if it's something else for you.
+ 
+Brain or if it's something else for you.
+What I worry about is that you need to
+ 
+What I worry about is that you need to
+use your agent on day 30, day 300 as
+ 
+use your agent on day 30, day 300 as
+well as you use it on day one. And if
+ 
+well as you use it on day one. And if
+you have a dirty memory system, a memory
+ 
+you have a dirty memory system, a memory
+system that is not organized, you're
+ 
+system that is not organized, you're
+going to be in trouble.
+ 
+going to be in trouble.
+And why are you going to be in trouble?
+ 
+And why are you going to be in trouble?
+You're going to be in trouble because
+ 
+You're going to be in trouble because
+Open Claw and other agents are not by
+ 
+Open Claw and other agents are not by
+default data organizers. Unless you tell
+ 
+default data organizers. Unless you tell
+them to be, unless you give them
+ 
+them to be, unless you give them
+guardrails, explicit constraints that
+ 
+guardrails, explicit constraints that
+require them to respect your data
+ 
+require them to respect your data
+schema, as in keep data clean, they
+ 
+schema, as in keep data clean, they
+won't.
+ 
+won't.
+And so, you need to start to think about
+ 
+And so, you need to start to think about
+the world as if it is a data-shaped
+ 
+the world as if it is a data-shaped
+problem that agents can help you
+ 
+problem that agents can help you
+accelerate, but the agents themselves
+ 
+accelerate, but the agents themselves
+are going to be messy, messy data
+ 
+are going to be messy, messy data
+engineers unless you structure them
+ 
+engineers unless you structure them
+appropriately. There is a story
+ 
+appropriately. There is a story
+circulating about a team that spent
+ 
+circulating about a team that spent
+$14,000
+ 
+$14,000
+building a voice agent to handle lots of
+ 
+building a voice agent to handle lots of
+inbound calls. On paper, it seemed to
+ 
+inbound calls. On paper, it seemed to
+work, but when you looked under the
+ 
+work, but when you looked under the
+surface at the data the agent was
+ 
+surface at the data the agent was
+handling, no one had specified how the
+ 
+handling, no one had specified how the
+schema was going to work. They found
+ 
+schema was going to work. They found
+records all over the place. They had no
+ 
+records all over the place. They had no
+good way to measure inbound and funnel,
+ 
+good way to measure inbound and funnel,
+and it was just a complete mess, even
+ 
+and it was just a complete mess, even
+though it was up and functioning and
+ 
+though it was up and functioning and
+apparently took calls.
+ 
+apparently took calls.
+So, take the time to get the schema
+ 
+So, take the time to get the schema
+right. Do not be satisfied with your
+ 
+right. Do not be satisfied with your
+open claw just because you can query it
+ 
+open claw just because you can query it
+in a Slack message or a text message and
+ 
+in a Slack message or a text message and
+it says something back. When I talk
+ 
+it says something back. When I talk
+about legibility of surfaces as a key
+ 
+about legibility of surfaces as a key
+criterion for AI agents, this is what I
+ 
+criterion for AI agents, this is what I
+mean. If if you just send a text message
+ 
+mean. If if you just send a text message
+and it's like a void and you don't know
+ 
+and it's like a void and you don't know
+what happens and then an answer comes
+ 
+what happens and then an answer comes
+back and you like the answer, you do not
+ 
+back and you like the answer, you do not
+have an agent, you have a problem
+ 
+have an agent, you have a problem
+masquerading as a helpful answer.
+ 
+masquerading as a helpful answer.
+You really do because how do you know if
+ 
+You really do because how do you know if
+it recorded it correctly? How do you
+ 
+it recorded it correctly? How do you
+know if it wrote it down anywhere?
+ 
+know if it wrote it down anywhere?
+Unless you understand that stack, unless
+ 
+Unless you understand that stack, unless
+a company deliberately makes it clear
+ 
+a company deliberately makes it clear
+and says we're going to be transparent,
+ 
+and says we're going to be transparent,
+this is where your data lives, this is
+ 
+this is where your data lives, this is
+where it's going to be, this is how we
+ 
+where it's going to be, this is how we
+update it, these are our guardrails,
+ 
+update it, these are our guardrails,
+you're in trouble.
+ 
+you're in trouble.
+And so please, please, please, if you
+ 
+And so please, please, please, if you
+are building with agents,
+ 
+are building with agents,
+recognize that you don't want to be in
+ 
+recognize that you don't want to be in
+the position of spending money, spending
+ 
+the position of spending money, spending
+tokens on building something that looks
+ 
+tokens on building something that looks
+good in a text message, but the data
+ 
+good in a text message, but the data
+underneath is dirty. So we've talked
+ 
+underneath is dirty. So we've talked
+about CRMs, we've talked about data
+ 
+about CRMs, we've talked about data
+clarity. You know what the next thing we
+ 
+clarity. You know what the next thing we
+need to talk about is? It is mistaking a
+ 
+need to talk about is? It is mistaking a
+skill for a process.
+ 
+skill for a process.
+I love skills. Skills are great. I've
+ 
+I love skills. Skills are great. I've
+talked about how important they are. I
+ 
+talked about how important they are. I
+think they're critical. Do not mistake a
+ 
+think they're critical. Do not mistake a
+skill or a tool call for a process. If
+ 
+skill or a tool call for a process. If
+you have a business workflow, it should
+ 
+you have a business workflow, it should
+be as much as you can hardwired in. You
+ 
+be as much as you can hardwired in. You
+should not be trying to take your
+ 
+should not be trying to take your
+business workflow and tell yourself it's
+ 
+business workflow and tell yourself it's
+going to work good and stick it as a
+ 
+going to work good and stick it as a
+skill in open claw and hope it works
+ 
+skill in open claw and hope it works
+that way for production grade data every
+ 
+that way for production grade data every
+single time. Instead, your agent should
+ 
+single time. Instead, your agent should
+be operating across hardwired process
+ 
+be operating across hardwired process
+and speeding that along and you should
+ 
+and speeding that along and you should
+be able to evaluate the success of that
+ 
+be able to evaluate the success of that
+agent across that process. And what do I
+ 
+agent across that process. And what do I
+mean by that? What does that look like
+ 
+mean by that? What does that look like
+in practice? Let's say one of the skills
+ 
+in practice? Let's say one of the skills
+your agent has is send an email, but
+ 
+your agent has is send an email, but
+that exists inside a larger process,
+ 
+that exists inside a larger process,
+right? It exists inside a larger process
+ 
+right? It exists inside a larger process
+around triaging a ticket and talking to
+ 
+around triaging a ticket and talking to
+a customer and then recording an action.
+ 
+a customer and then recording an action.
+All of the stuff in between those
+ 
+All of the stuff in between those
+actions like triage the ticket or write
+ 
+actions like triage the ticket or write
+the email or contact the customer,
+ 
+the email or contact the customer,
+whatever it is. When it's the in-between
+ 
+whatever it is. When it's the in-between
+glue, the stuff that passes the data,
+ 
+glue, the stuff that passes the data,
+make that deterministic. In other words,
+ 
+make that deterministic. In other words,
+make it as hardwired as you can because
+ 
+make it as hardwired as you can because
+you want the agent to do the things it's
+ 
+you want the agent to do the things it's
+really good at where it's actually
+ 
+really good at where it's actually
+composing the email in a tone that works
+ 
+composing the email in a tone that works
+for you and it's doing all of the
+ 
+for you and it's doing all of the
+wonderful things that LLMs do.
+ 
+wonderful things that LLMs do.
+You don't want it to try to remember the
+ 
+You don't want it to try to remember the
+whole process end to end and pretend it
+ 
+whole process end to end and pretend it
+will follow that. You know what that's
+ 
+will follow that. You know what that's
+like? It's like ripping up your railroad
+ 
+like? It's like ripping up your railroad
+and sticking your train on the ground
+ 
+and sticking your train on the ground
+and saying, "Kind of go that way." And
+ 
+and saying, "Kind of go that way." And
+you hope it's going to work. Don't take
+ 
+you hope it's going to work. Don't take
+your rails out. Leave your rails in and
+ 
+your rails out. Leave your rails in and
+let the agent do what it's good at.
+ 
+let the agent do what it's good at.
+Agents are extremely good at text
+ 
+Agents are extremely good at text
+processing. Agents are actually really
+ 
+processing. Agents are actually really
+good at tool calling now. Agents can
+ 
+good at tool calling now. Agents can
+compose very, very sharp solutions to
+ 
+compose very, very sharp solutions to
+difficult problems. But if you want an
+ 
+difficult problems. But if you want an
+agent to follow a process the same way
+ 
+agent to follow a process the same way
+every time, you should be hardwiring
+ 
+every time, you should be hardwiring
+those triggers. The agent should get the
+ 
+those triggers. The agent should get the
+same exact trigger at the same exact
+ 
+same exact trigger at the same exact
+time every time a ticket is opened, for
+ 
+time every time a ticket is opened, for
+instance. That's how you build
+ 
+instance. That's how you build
+dependable working software. And I see a
+ 
+dependable working software. And I see a
+lot of people confusing this and they're
+ 
+lot of people confusing this and they're
+like, "Well, it's a complicated process,
+ 
+like, "Well, it's a complicated process,
+so I'm just going to stick it all in a
+ 
+so I'm just going to stick it all in a
+skill file and I'm going to I'm sure the
+ 
+skill file and I'm going to I'm sure the
+agent will figure it out." No, it won't.
+ 
+agent will figure it out." No, it won't.
+Not predictably, not dependably, and I
+ 
+Not predictably, not dependably, and I
+don't want to roll the dice with my
+ 
+don't want to roll the dice with my
+customers. I hope you don't either.
+ 
+customers. I hope you don't either.
+Please, please, please do not mistake
+ 
+Please, please, please do not mistake
+the wonderful ability of an agent to
+ 
+the wonderful ability of an agent to
+call tools and skills with the ability
+ 
+call tools and skills with the ability
+to follow a workflow. Those are not the
+ 
+to follow a workflow. Those are not the
+same things and we should stop thinking
+ 
+same things and we should stop thinking
+they are. Look, I talked to a lot of
+ 
+they are. Look, I talked to a lot of
+leaders. The pattern I see is fairly
+ 
+leaders. The pattern I see is fairly
+consistent. The first month of an
+ 
+consistent. The first month of an
+agentic deployment, if you're not
+ 
+agentic deployment, if you're not
+careful, it all feels really good. It's
+ 
+careful, it all feels really good. It's
+the second and third month that things
+ 
+the second and third month that things
+start to get scary because then you
+ 
+start to get scary because then you
+start to look underneath and you say,
+ 
+start to look underneath and you say,
+"Oh, okay, wait.
+ 
+"Oh, okay, wait.
+We didn't actually hardwire in this
+ 
+We didn't actually hardwire in this
+process and a lot of things are slipping
+ 
+process and a lot of things are slipping
+through the cracks. The agent is saying
+ 
+through the cracks. The agent is saying
+it's going well, it's going great." And
+ 
+it's going well, it's going great." And
+and and we just believed it initially.
+ 
+and and we just believed it initially.
+You you got to stop letting agents tell
+ 
+You you got to stop letting agents tell
+you whether they're doing a good job or
+ 
+you whether they're doing a good job or
+not. You got to actually evaluate them.
+ 
+not. You got to actually evaluate them.
+You got to actually hardwire in that
+ 
+You got to actually hardwire in that
+process workflow if you can. So, we've
+ 
+process workflow if you can. So, we've
+talked about CRMs, we've talked about
+ 
+talked about CRMs, we've talked about
+data, we've talked about tools and
+ 
+data, we've talked about tools and
+workflows, and the difference between
+ 
+workflows, and the difference between
+them. Now, we're going to talk about the
+ 
+them. Now, we're going to talk about the
+org redesign that you're going to have
+ 
+org redesign that you're going to have
+to face if you take agents seriously.
+ 
+to face if you take agents seriously.
+Because what people don't tell you, like
+ 
+Because what people don't tell you, like
+the the story that went viral, and it's
+ 
+the the story that went viral, and it's
+a real one, about how Open Co scaled
+ 
+a real one, about how Open Co scaled
+their number of creatives from 20 to
+ 
+their number of creatives from 20 to
+20,000. That sounds amazing if you're in
+ 
+20,000. That sounds amazing if you're in
+the ad creative business. The problem
+ 
+the ad creative business. The problem
+is, you just earned yourself a huge
+ 
+is, you just earned yourself a huge
+problem on the human side to review all
+ 
+problem on the human side to review all
+that creative and figure out what you're
+ 
+that creative and figure out what you're
+going to do with it. So often, we look
+ 
+going to do with it. So often, we look
+at these tools as generative, and we put
+ 
+at these tools as generative, and we put
+like 10% of the thought into making
+ 
+like 10% of the thought into making
+these tools evaluative, into making
+ 
+these tools evaluative, into making
+these tools critical thinkers.
+ 
+these tools critical thinkers.
+And you can. There are absolutely
+ 
+And you can. There are absolutely
+companies out there who are
+ 
+companies out there who are
+prioritizing,
+ 
+prioritizing,
+"I want my LLM to review the PRs that
+ 
+"I want my LLM to review the PRs that
+are sent to my GitHub repo. I want my
+ 
+are sent to my GitHub repo. I want my
+LLM to think about how it can auto-fix
+ 
+LLM to think about how it can auto-fix
+bugs that are reported and auto-submit
+ 
+bugs that are reported and auto-submit
+tickets that I can then review." And
+ 
+tickets that I can then review." And
+they're thinking as much about how the
+ 
+they're thinking as much about how the
+LLM is useful in evaluating quality as
+ 
+LLM is useful in evaluating quality as
+they are thinking about how the LLM can
+ 
+they are thinking about how the LLM can
+generate. We need to do more of that
+ 
+generate. We need to do more of that
+thinking. We cannot just sit there and
+ 
+thinking. We cannot just sit there and
+hope that if we generate a bunch of
+ 
+hope that if we generate a bunch of
+stuff with our agent, because it looks
+ 
+stuff with our agent, because it looks
+good on day one, it's not going to make
+ 
+good on day one, it's not going to make
+ourselves really miserable on day 30 and
+ 
+ourselves really miserable on day 30 and
+day 60 when we have to evaluate it with
+ 
+day 60 when we have to evaluate it with
+the same size org. And the org redesign
+ 
+the same size org. And the org redesign
+needs to reflect that reality. We need
+ 
+needs to reflect that reality. We need
+to be thinking in our org design about
+ 
+to be thinking in our org design about
+how people are going to move to be
+ 
+how people are going to move to be
+managers. I can't even say they're going
+ 
+managers. I can't even say they're going
+to be moved to be like reviewers
+ 
+to be moved to be like reviewers
+anymore. Like, increasingly, we need to
+ 
+anymore. Like, increasingly, we need to
+think about getting ourselves abstracted
+ 
+think about getting ourselves abstracted
+out as much as we can of the agentic
+ 
+out as much as we can of the agentic
+processes that are running, because
+ 
+processes that are running, because
+otherwise, scale breakpoints are going
+ 
+otherwise, scale breakpoints are going
+to pop up, and you're going to see
+ 
+to pop up, and you're going to see
+agents piling up work on a human's
+ 
+agents piling up work on a human's
+plate, stressing out the human, the
+ 
+plate, stressing out the human, the
+whole process slows down, you lose a lot
+ 
+whole process slows down, you lose a lot
+of the benefits of all the tokens you're
+ 
+of the benefits of all the tokens you're
+burning, et cetera. As much as we can,
+ 
+burning, et cetera. As much as we can,
+we need to be thinking about it like
+ 
+we need to be thinking about it like
+there is a high-speed rail in the middle
+ 
+there is a high-speed rail in the middle
+of a highway, where the humans are
+ 
+of a highway, where the humans are
+driving on the highway and nobody
+ 
+driving on the highway and nobody
+touches the high-speed rail where the
+ 
+touches the high-speed rail where the
+trains go back and forth and back and
+ 
+trains go back and forth and back and
+forth. That's kind of like the agent
+ 
+forth. That's kind of like the agent
+layer in enterprise right now. The more
+ 
+layer in enterprise right now. The more
+we architect it as if it needs its own
+ 
+we architect it as if it needs its own
+dedicated high-speed rail and we are
+ 
+dedicated high-speed rail and we are
+end-to-end thinking about the value it
+ 
+end-to-end thinking about the value it
+produces, so that it's from inception to
+ 
+produces, so that it's from inception to
+the end of the workflow, it's agentic
+ 
+the end of the workflow, it's agentic
+and laid out and clean and structured
+ 
+and laid out and clean and structured
+and evaluated and we know it works.
+ 
+and evaluated and we know it works.
+That is what we're looking to do.
+ 
+That is what we're looking to do.
+Because if you start to mix, if you want
+ 
+Because if you start to mix, if you want
+to move the train to run it on the
+ 
+to move the train to run it on the
+highway, you're going to have car
+ 
+highway, you're going to have car
+accidents. It's going to be a problem.
+ 
+accidents. It's going to be a problem.
+And increasingly, what that means is the
+ 
+And increasingly, what that means is the
+work that we do as humans is moving from
+ 
+work that we do as humans is moving from
+we're going to be transporting goods in
+ 
+we're going to be transporting goods in
+our analogy. Now now the train does
+ 
+our analogy. Now now the train does
+that, right? Instead, we're going to be
+ 
+that, right? Instead, we're going to be
+focused on the beginning and the end,
+ 
+focused on the beginning and the end,
+the handoff points, the way we design
+ 
+the handoff points, the way we design
+the system, constructing that railroad.
+ 
+the system, constructing that railroad.
+All of that stuff that is an analogy in
+ 
+All of that stuff that is an analogy in
+our transport networks, that really
+ 
+our transport networks, that really
+works pretty well for a tech right now.
+ 
+works pretty well for a tech right now.
+Like we're building the agentic
+ 
+Like we're building the agentic
+pipeline. We're clustering around the
+ 
+pipeline. We're clustering around the
+handoff points where data goes in and
+ 
+handoff points where data goes in and
+where data comes out. This is what the
+ 
+where data comes out. This is what the
+future of jobs looks like. And I think
+ 
+future of jobs looks like. And I think
+so often we have the mini-me fallacy. We
+ 
+so often we have the mini-me fallacy. We
+sit there and we think, "Well, these
+ 
+sit there and we think, "Well, these
+agents are good. My mini open claw can
+ 
+agents are good. My mini open claw can
+do what my mini-me does and it's going
+ 
+do what my mini-me does and it's going
+to be great." And we never think about
+ 
+to be great." And we never think about
+the org design. Your open claw should
+ 
+the org design. Your open claw should
+not be a mini-me. Your open claw, your
+ 
+not be a mini-me. Your open claw, your
+agents that you take seriously, should
+ 
+agents that you take seriously, should
+actually be something at the heart of
+ 
+actually be something at the heart of
+the business that it's it's configured
+ 
+the business that it's it's configured
+for them first. And you're just there to
+ 
+for them first. And you're just there to
+make sure that you are able to bring the
+ 
+make sure that you are able to bring the
+judgment and the overall direction that
+ 
+judgment and the overall direction that
+you need to bring. And that is
+ 
+you need to bring. And that is
+increasingly something you need to
+ 
+increasingly something you need to
+expect down the chain from individual
+ 
+expect down the chain from individual
+contributors. And it's changing what we
+ 
+contributors. And it's changing what we
+think individual contributors do.
+ 
+think individual contributors do.
+They're now managers of agents. And that
+ 
+They're now managers of agents. And that
+is a skill set that we need to train
+ 
+is a skill set that we need to train
+into people. Look, so much of the open
+ 
+into people. Look, so much of the open
+claw story has been about security,
+ 
+claw story has been about security,
+right? I've talked about it, the fact
+ 
+right? I've talked about it, the fact
+that there are many vulnerabilities. In
+ 
+that there are many vulnerabilities. In
+fact, it's such a big deal that folks
+ 
+fact, it's such a big deal that folks
+like Jensen have spent a lot of time and
+ 
+like Jensen have spent a lot of time and
+unveiled entire tech stacks that are
+ 
+unveiled entire tech stacks that are
+designed specifically to address that.
+ 
+designed specifically to address that.
+Safe open claw is now an entire category
+ 
+Safe open claw is now an entire category
+of software. The problem is deeper,
+ 
+of software. The problem is deeper,
+though.
+ 
+though.
+The problem is this. The reason why open
+ 
+The problem is this. The reason why open
+claw is unsafe is not necessarily a
+ 
+claw is unsafe is not necessarily a
+technical one, it's a people reason. It
+ 
+technical one, it's a people reason. It
+is because people are so hyped up on
+ 
+is because people are so hyped up on
+open claw and the promise of agents that
+ 
+open claw and the promise of agents that
+they're moving really fast and they're
+ 
+they're moving really fast and they're
+skipping all of these foundations.
+ 
+skipping all of these foundations.
+They're just saying, "No, no, no, no,
+ 
+They're just saying, "No, no, no, no,
+I'm good." and they're just moving on.
+ 
+I'm good." and they're just moving on.
+Don't do that. Don't skip the
+ 
+Don't do that. Don't skip the
+foundational work. Eat your vegetables.
+ 
+foundational work. Eat your vegetables.
+Please, please, please take the idea
+ 
+Please, please, please take the idea
+that you need to have clean data
+ 
+that you need to have clean data
+seriously. That's the whole premise
+ 
+seriously. That's the whole premise
+behind this open brain project. Take the
+ 
+behind this open brain project. Take the
+idea that you need to have mapped out
+ 
+idea that you need to have mapped out
+workflows seriously. That really
+ 
+workflows seriously. That really
+matters.
+ 
+matters.
+Take the idea that you need to have
+ 
+Take the idea that you need to have
+clarity of intent and evaluations and
+ 
+clarity of intent and evaluations and
+you need to think about these tools not
+ 
+you need to think about these tools not
+just as generative, but as evaluative
+ 
+just as generative, but as evaluative
+seriously. If you don't, you are going
+ 
+seriously. If you don't, you are going
+to end up with something that is worth a
+ 
+to end up with something that is worth a
+cake and a party on day one and like
+ 
+cake and a party on day one and like
+you're going to be tearing your hair out
+ 
+you're going to be tearing your hair out
+on day 30 because it's not what she
+ 
+on day 30 because it's not what she
+thought it was. And there are real
+ 
+thought it was. And there are real
+stories. I told you some of those
+ 
+stories. I told you some of those
+stories in this video. Real stories of
+ 
+stories in this video. Real stories of
+people who spent real money on tokens,
+ 
+people who spent real money on tokens,
+who celebrated success, who thought they
+ 
+who celebrated success, who thought they
+launched something good, and then just
+ 
+launched something good, and then just
+like that telephone call story, the the
+ 
+like that telephone call story, the the
+LLM handled all the inbound calls, the
+ 
+LLM handled all the inbound calls, the
+open claw seemed to be doing good, and
+ 
+open claw seemed to be doing good, and
+now they don't know where all the data
+ 
+now they don't know where all the data
+was and like it's all mixed up and the
+ 
+was and like it's all mixed up and the
+data structures were never there in the
+ 
+data structures were never there in the
+first place.
+ 
+first place.
+You got to take the rest of the stack
+ 
+You got to take the rest of the stack
+seriously if you want agents to do good
+ 
+seriously if you want agents to do good
+for you over the long term.
+ 
+for you over the long term.
+Agents are not a magic wand that you can
+ 
+Agents are not a magic wand that you can
+wave and fix everything. They are an
+ 
+wave and fix everything. They are an
+incredibly powerful tool that you have
+ 
+incredibly powerful tool that you have
+to set up to use properly. So, what are
+ 
+to set up to use properly. So, what are
+my commandments for open claw here?
+ 
+my commandments for open claw here?
+Number one, if you're going to put
+ 
+Number one, if you're going to put
+agents into your enterprise, if you're
+ 
+agents into your enterprise, if you're
+going to try and open claw your
+ 
+going to try and open claw your
+enterprise, audit before you automate.
+ 
+enterprise, audit before you automate.
+Commandment number one, map the actual
+ 
+Commandment number one, map the actual
+process, not the idealized one, the one
+ 
+process, not the idealized one, the one
+with all the edge cases, the one with
+ 
+with all the edge cases, the one with
+the tribal knowledge, the one with the
+ 
+the tribal knowledge, the one with the
+undocumented exception handling, all the
+ 
+undocumented exception handling, all the
+things that are in your head. Map that.
+ 
+things that are in your head. Map that.
+That's the first thing you do. Audit
+ 
+That's the first thing you do. Audit
+before you automate. Commandment number
+ 
+before you automate. Commandment number
+two, fix the data before you give an
+ 
+two, fix the data before you give an
+agent access to it. Establish a source
+ 
+agent access to it. Establish a source
+of truth. Define your schemas. Build
+ 
+of truth. Define your schemas. Build
+your validation. Decide which system
+ 
+your validation. Decide which system
+wins when there are two sources of truth
+ 
+wins when there are two sources of truth
+that disagree. This is super boring
+ 
+that disagree. This is super boring
+work. It's also very essential if you
+ 
+work. It's also very essential if you
+want it to work well. So, audit before
+ 
+want it to work well. So, audit before
+you automate, fix the data, redesign
+ 
+you automate, fix the data, redesign
+your org for the throughput that you're
+ 
+your org for the throughput that you're
+about to get. If the agent is going to
+ 
+about to get. If the agent is going to
+10x your production capacity, plan your
+ 
+10x your production capacity, plan your
+whole org around that. Do not assume the
+ 
+whole org around that. Do not assume the
+org will magically adjust. It won't. You
+ 
+org will magically adjust. It won't. You
+have to think about job roles, where
+ 
+have to think about job roles, where
+people sit, what they do, what tools
+ 
+people sit, what they do, what tools
+they need access to. I can't tell you
+ 
+they need access to. I can't tell you
+how many times people have been excited
+ 
+how many times people have been excited
+about Open Claw and agents, and then
+ 
+about Open Claw and agents, and then
+they find the IT department wasn't told
+ 
+they find the IT department wasn't told
+about all the excitement and the hype,
+ 
+about all the excitement and the hype,
+and they have a bunch of restrictions on
+ 
+and they have a bunch of restrictions on
+their computers, and they can't even use
+ 
+their computers, and they can't even use
+the fancy new software they got. Please,
+ 
+the fancy new software they got. Please,
+please, please, think about your org and
+ 
+please, please, think about your org and
+its provisioning and its and what people
+ 
+its provisioning and its and what people
+do before you try and just strap on a
+ 
+do before you try and just strap on a
+rocket ship and go. You got to think it
+ 
+rocket ship and go. You got to think it
+through. So, audit, fix the data, think
+ 
+through. So, audit, fix the data, think
+about your org structure and redesign as
+ 
+about your org structure and redesign as
+you need to. And number four, build
+ 
+you need to. And number four, build
+observability from day one.
+ 
+observability from day one.
+Observability is not an afterthought. If
+ 
+Observability is not an afterthought. If
+you want to know if your agents are
+ 
+you want to know if your agents are
+doing the scary stuff, you got to be
+ 
+doing the scary stuff, you got to be
+observing them in production. You've got
+ 
+observing them in production. You've got
+to actually look and see, what did the
+ 
+to actually look and see, what did the
+agent do? What is the audit? What is the
+ 
+agent do? What is the audit? What is the
+stack trace? How do you know that the
+ 
+stack trace? How do you know that the
+agent was able to do task X or task Y
+ 
+agent was able to do task X or task Y
+and successfully get it done? Do not
+ 
+and successfully get it done? Do not
+rely on agent self-reporting. Instead,
+ 
+rely on agent self-reporting. Instead,
+have an independent perspective,
+ 
+have an independent perspective,
+preferably automated, that tells you if
+ 
+preferably automated, that tells you if
+the agent got the job done correctly or
+ 
+the agent got the job done correctly or
+not. If you don't have that, you are
+ 
+not. If you don't have that, you are
+just rolling the dice with agents in
+ 
+just rolling the dice with agents in
+production. Number five, so we did build
+ 
+production. Number five, so we did build
+observability, we did redesign the org,
+ 
+observability, we did redesign the org,
+we did fix the data, and we did audit
+ 
+we did fix the data, and we did audit
+before you automate. All of those are
+ 
+before you automate. All of those are
+great. Last one, last command. We only
+ 
+great. Last one, last command. We only
+have five commandments here. Scope
+ 
+have five commandments here. Scope
+authority deliberately. Decide what the
+ 
+authority deliberately. Decide what the
+agent can do and cannot do. Make sure
+ 
+agent can do and cannot do. Make sure
+it's very clear. Make sure it's guard
+ 
+it's very clear. Make sure it's guard
+railed, and do not give the agent free
+ 
+railed, and do not give the agent free
+access to everything. That is one of the
+ 
+access to everything. That is one of the
+core sources of insecurity in a lot of
+ 
+core sources of insecurity in a lot of
+open claw deployments is the people just
+ 
+open claw deployments is the people just
+say, "Oh, yeah, I can do anything."
+ 
+say, "Oh, yeah, I can do anything."
+Dangerously skip permissions. Off you
+ 
+Dangerously skip permissions. Off you
+go. No, don't do that.
+ 
+go. No, don't do that.
+That may make it faster on day one. It
+ 
+That may make it faster on day one. It
+does not make your life better on day
+ 
+does not make your life better on day
+30, or even possibly day two.
+ 
+30, or even possibly day two.
+Look, I'm not against speed. If you're
+ 
+Look, I'm not against speed. If you're
+on here and you see my channel, you know
+ 
+on here and you see my channel, you know
+I love how fast AI is making us go. I
+ 
+I love how fast AI is making us go. I
+adore it. But,
+ 
+adore it. But,
+do not get fooled by the possibility of
+ 
+do not get fooled by the possibility of
+going fast and think you can skip these
+ 
+going fast and think you can skip these
+thinking steps. You can't. The people
+ 
+thinking steps. You can't. The people
+who are going to go sustainably fast
+ 
+who are going to go sustainably fast
+over a long period of time in the age of
+ 
+over a long period of time in the age of
+AI are people who take the formation of
+ 
+AI are people who take the formation of
+good intention and good structures that
+ 
+good intention and good structures that
+surround agents extremely seriously.
+ 
+surround agents extremely seriously.
+They're the ones that are not just going
+ 
+They're the ones that are not just going
+to go fast on day one. They're going to
+ 
+to go fast on day one. They're going to
+go fast on day 60 and 90 and 120.
+ 
+go fast on day 60 and 90 and 120.
+They're the ones that have a system that
+ 
+They're the ones that have a system that
+enables sustained speed over time. And
+ 
+enables sustained speed over time. And
+that's what I'm interested in building.
+ 
+that's what I'm interested in building.
+I'm not interested in something where we
+ 
+I'm not interested in something where we
+can wave our hands and have a party on
+ 
+can wave our hands and have a party on
+day one. I want something where we have
+ 
+day one. I want something where we have
+sustained speed months and years later
+ 
+sustained speed months and years later
+because we actually built our agents
+ 
+because we actually built our agents
+correctly. So, listen to the five
+ 
+correctly. So, listen to the five
+commandments for open claw, and good
+ 
+commandments for open claw, and good
+luck with your agent deployments. And
+ 
+luck with your agent deployments. And
+please, please, please, please, please,
+ 
+please, please, please, please, please,
+do not dangerously skip permissions. Do
+ 
+do not dangerously skip permissions. Do
+not tell your agent to build something
+ 
+not tell your agent to build something
+and not have clear intent. Please,
+ 
+and not have clear intent. Please,
+please, please, do not give your agent
+ 
+please, please, do not give your agent
+tasks to do that should properly be
+ 
+tasks to do that should properly be
+given to something with defined
+ 
+given to something with defined
+workflows, deterministic software, and
+ 
+workflows, deterministic software, and
+excellent data underneath. Think about
+ 
+excellent data underneath. Think about
+what each part of your stack does
+ 
+what each part of your stack does
+intentionally, and you will be way, way
+ 
+intentionally, and you will be way, way
+better off. I will see you on the other
+ 
+better off. I will see you on the other
+side, and good luck with your
+ 
+side, and good luck with your
+deployments.
+ 
+deployments.
+I love Open Claw. I love agents. I just
+ 
+I love Open Claw. I love agents. I just
+want it done correctly because I want
+ 
+want it done correctly because I want
+all of us to be able to speed up.
+ 
+all of us to be able to speed up.
+Cheers.

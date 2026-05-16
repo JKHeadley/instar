@@ -1,0 +1,2804 @@
+ 
+There are moments in AI when everything
+ 
+There are moments in AI when everything
+changes, and we just had one of those
+ 
+changes, and we just had one of those
+the last few days. Claude Mythos leaked.
+ 
+the last few days. Claude Mythos leaked.
+Now, Claude Mythos is the first model,
+ 
+Now, Claude Mythos is the first model,
+as far as we know, that has been trained
+ 
+as far as we know, that has been trained
+on Nvidia's new GB3 chips. It is a
+ 
+on Nvidia's new GB3 chips. It is a
+massive model. It is a step forward.
+ 
+massive model. It is a step forward.
+Anthropic has confirmed its existence,
+ 
+Anthropic has confirmed its existence,
+and they've given it a new lineage name.
+ 
+and they've given it a new lineage name.
+So, it won't be called Sonnet, it won't
+ 
+So, it won't be called Sonnet, it won't
+be called Opus. It appears to be called
+ 
+be called Opus. It appears to be called
+Capybara. I don't know why we switched
+ 
+Capybara. I don't know why we switched
+to furry animals, but here we are. This
+ 
+to furry animals, but here we are. This
+is the biggest model in the world. It is
+ 
+is the biggest model in the world. It is
+by most measures, according to Claude
+ 
+by most measures, according to Claude
+and it is going to be the most powerful
+ 
+and it is going to be the most powerful
+model in the world. But, don't just take
+ 
+model in the world. But, don't just take
+my word for it. Don't just take
+ 
+my word for it. Don't just take
+Anthropic's word for how powerful it is.
+ 
+Anthropic's word for how powerful it is.
+Look at what security researchers
+ 
+Look at what security researchers
+themselves are saying. Security
+ 
+themselves are saying. Security
+researchers themselves are saying that
+ 
+researchers themselves are saying that
+Claude Mythos is terrifyingly good at
+ 
+Claude Mythos is terrifyingly good at
+finding vulnerabilities in your own
+ 
+finding vulnerabilities in your own
+infrastructure, better than a human. In
+ 
+infrastructure, better than a human. In
+fact, one of the most experienced
+ 
+fact, one of the most experienced
+security researchers in the world stood
+ 
+security researchers in the world stood
+up at a conference in San Francisco in
+ 
+up at a conference in San Francisco in
+the past few days and said that Claude
+ 
+the past few days and said that Claude
+Mythos immediately found zero-day
+ 
+Mythos immediately found zero-day
+vulnerabilities in Ghost, which is a
+ 
+vulnerabilities in Ghost, which is a
+50,000-star GitHub repo that has never
+ 
+50,000-star GitHub repo that has never
+had major issues before. And as soon as
+ 
+had major issues before. And as soon as
+Mythos was let loose on it, it found a
+ 
+Mythos was let loose on it, it found a
+bunch of issues that even the world's
+ 
+bunch of issues that even the world's
+best security researchers haven't found.
+ 
+best security researchers haven't found.
+And this is why Anthropic is taking the
+ 
+And this is why Anthropic is taking the
+unusual step of allowing security
+ 
+unusual step of allowing security
+researchers to dig into Mythos, to
+ 
+researchers to dig into Mythos, to
+battle test Mythos against some of the
+ 
+battle test Mythos against some of the
+most popular utilities on the internet,
+ 
+most popular utilities on the internet,
+and to harden up their defenses ahead of
+ 
+and to harden up their defenses ahead of
+time, because as soon as Mythos is
+ 
+time, because as soon as Mythos is
+released, Mythos is going to be able to
+ 
+released, Mythos is going to be able to
+act as a threat to any IT repo out there
+ 
+act as a threat to any IT repo out there
+and identify vulnerabilities that even
+ 
+and identify vulnerabilities that even
+good security researchers haven't been
+ 
+good security researchers haven't been
+able to find. Which immediately suggests
+ 
+able to find. Which immediately suggests
+that the first thing you should do if
+ 
+that the first thing you should do if
+you are in IT or security, as soon as
+ 
+you are in IT or security, as soon as
+Mythos comes out, is to say, "Let's
+ 
+Mythos comes out, is to say, "Let's
+battle test it against our own systems,
+ 
+battle test it against our own systems,
+and let's see what vulnerabilities it
+ 
+and let's see what vulnerabilities it
+finds." That is That is job number one,
+ 
+finds." That is That is job number one,
+day zero, you've got to do that. But
+ 
+day zero, you've got to do that. But
+let's go beyond that. Let's look at what
+ 
+let's go beyond that. Let's look at what
+Claude Mythos means. I want to be really
+ 
+Claude Mythos means. I want to be really
+honest with you.
+ 
+honest with you.
+This model is one of the inflection
+ 
+This model is one of the inflection
+points in 2026 that we all need to pay
+ 
+points in 2026 that we all need to pay
+attention to. This is a chance to catch
+ 
+attention to. This is a chance to catch
+up before the train leaves the station.
+ 
+up before the train leaves the station.
+And I know that you may hear from me,
+ 
+And I know that you may hear from me,
+things are getting faster, things are
+ 
+things are getting faster, things are
+getting faster a lot, but guess what?
+ 
+getting faster a lot, but guess what?
+That's what it's like when you're on an
+ 
+That's what it's like when you're on an
+exponential curve. Things keep getting
+ 
+exponential curve. Things keep getting
+faster. And I'm here to tell you this
+ 
+faster. And I'm here to tell you this
+moment before Mythos release, and it may
+ 
+moment before Mythos release, and it may
+release as soon as next month or the
+ 
+release as soon as next month or the
+month after, this moment is your chance
+ 
+month after, this moment is your chance
+to get things figured out before it
+ 
+to get things figured out before it
+arrives and upends everything. And I
+ 
+arrives and upends everything. And I
+don't just mean about security. I mean
+ 
+don't just mean about security. I mean
+how you build stuff, how you prepare,
+ 
+how you build stuff, how you prepare,
+etc. Why is that? Well, when models get
+ 
+etc. Why is that? Well, when models get
+bigger, they force you to simplify.
+ 
+bigger, they force you to simplify.
+They force you to think, what can I
+ 
+They force you to think, what can I
+delete about my systems and my practices
+ 
+delete about my systems and my practices
+because the model can do so much more
+ 
+because the model can do so much more
+now that that it couldn't do before. And
+ 
+now that that it couldn't do before. And
+that is what we have to understand. That
+ 
+that is what we have to understand. That
+is what we would call the bitter lesson
+ 
+is what we would call the bitter lesson
+of building with LLMs. We as humans
+ 
+of building with LLMs. We as humans
+think we have a lot of value to add to
+ 
+think we have a lot of value to add to
+these models. We can add our judgment,
+ 
+these models. We can add our judgment,
+we can complexify, we can add a lot of
+ 
+we can complexify, we can add a lot of
+scaffolding and systems around these
+ 
+scaffolding and systems around these
+models and it will make them better. And
+ 
+models and it will make them better. And
+as they get more powerful, the bitter
+ 
+as they get more powerful, the bitter
+lesson is that simpler works best. And
+ 
+lesson is that simpler works best. And
+so, I'm going to go through and in this
+ 
+so, I'm going to go through and in this
+video, I'm going to lay out some of the
+ 
+video, I'm going to lay out some of the
+things you should be checking ahead of
+ 
+things you should be checking ahead of
+time. But there's a larger thing that
+ 
+time. But there's a larger thing that
+you should take away, which is simply
+ 
+you should take away, which is simply
+be sure
+ 
+be sure
+that you are taking the idea that the
+ 
+that you are taking the idea that the
+LLM can do a lot more seriously. And
+ 
+LLM can do a lot more seriously. And
+we'll get into what that is. We'll cover
+ 
+we'll get into what that is. We'll cover
+Mythos when it comes out. We'll talk
+ 
+Mythos when it comes out. We'll talk
+about all of that. But for now, as we go
+ 
+about all of that. But for now, as we go
+through the next few questions, as you
+ 
+through the next few questions, as you
+audit yourself, as you think about
+ 
+audit yourself, as you think about
+whether you're ready for Mythos,
+ 
+whether you're ready for Mythos,
+that's the larger lesson. But anyone can
+ 
+that's the larger lesson. But anyone can
+tell you that. What are the What are the
+ 
+tell you that. What are the What are the
+specific questions that help you know if
+ 
+specific questions that help you know if
+you're ready for a big model change? If
+ 
+you're ready for a big model change? If
+you're ready for effectively a step
+ 
+you're ready for effectively a step
+change. And by the way, I know that
+ 
+change. And by the way, I know that
+models come out all the time, but step
+ 
+models come out all the time, but step
+changes are more rare. And what we get
+ 
+changes are more rare. And what we get
+when we do a pre-training run on GB300s
+ 
+when we do a pre-training run on GB300s
+and it's much larger and more powerful
+ 
+and it's much larger and more powerful
+underneath is we get the scaling law in
+ 
+underneath is we get the scaling law in
+effect, right? So what I'm trying to
+ 
+effect, right? So what I'm trying to
+tell you is, yes, there'll be another
+ 
+tell you is, yes, there'll be another
+model along from somebody in the next
+ 
+model along from somebody in the next
+week or so, but until Mythos comes out
+ 
+week or so, but until Mythos comes out
+and there will be other models that are
+ 
+and there will be other models that are
+in that lineage that come out from other
+ 
+in that lineage that come out from other
+model makers that are also big, that are
+ 
+model makers that are also big, that are
+also trained on GB300. Those are the
+ 
+also trained on GB300. Those are the
+step change that we're going to see in
+ 
+step change that we're going to see in
+the first half of the year. And so you
+ 
+the first half of the year. And so you
+need to learn to differentiate between
+ 
+need to learn to differentiate between
+the models that are 5, 10, 15% better
+ 
+the models that are 5, 10, 15% better
+and the models that are significantly
+ 
+and the models that are significantly
+better, a step change better. And that's
+ 
+better, a step change better. And that's
+why this is a big deal because we are
+ 
+why this is a big deal because we are
+going to have another lurch up where the
+ 
+going to have another lurch up where the
+models are going to get significantly
+ 
+models are going to get significantly
+stronger in the next few months and and
+ 
+stronger in the next few months and and
+you need to get ready for that now.
+ 
+you need to get ready for that now.
+Okay, here's your questions. I'm going
+ 
+Okay, here's your questions. I'm going
+to give you four specific things to look
+ 
+to give you four specific things to look
+at that are going to likely break when
+ 
+at that are going to likely break when
+Claude Mythos comes out and you need to
+ 
+Claude Mythos comes out and you need to
+take them seriously. If you are building
+ 
+take them seriously. If you are building
+in AI at all, this is going to come up.
+ 
+in AI at all, this is going to come up.
+Number one is your prompt scaffolding,
+ 
+Number one is your prompt scaffolding,
+how you think about prompting to drive
+ 
+how you think about prompting to drive
+results. Ask yourself, and this is not a
+ 
+results. Ask yourself, and this is not a
+per prompt document question, this is a
+ 
+per prompt document question, this is a
+per line question. Really dig in. Is
+ 
+per line question. Really dig in. Is
+this instruction here because the model
+ 
+this instruction here because the model
+needs it or is it here because I needed
+ 
+needs it or is it here because I needed
+the model to need it? This is the
+ 
+the model to need it? This is the
+question that I want to really dig into.
+ 
+question that I want to really dig into.
+Anthropic's recommendation is very
+ 
+Anthropic's recommendation is very
+unambiguous here. Consider adding
+ 
+unambiguous here. Consider adding
+complexity only when it demonstrably
+ 
+complexity only when it demonstrably
+improves outcomes. And this is true not
+ 
+improves outcomes. And this is true not
+just for Anthropic models. OpenAI's
+ 
+just for Anthropic models. OpenAI's
+Codex guide tells us something similar
+ 
+Codex guide tells us something similar
+when it says, "Just tell it what you
+ 
+when it says, "Just tell it what you
+need without writing long instructions."
+ 
+need without writing long instructions."
+This is going to be more and more the
+ 
+This is going to be more and more the
+case, right? We are going to more and
+ 
+case, right? We are going to more and
+more be asked to communicate with the
+ 
+more be asked to communicate with the
+model what and why we need something in
+ 
+model what and why we need something in
+the end and less and less about how. So,
+ 
+the end and less and less about how. So,
+for example, let's say you have a
+ 
+for example, let's say you have a
+customer support agent with a 3,000
+ 
+customer support agent with a 3,000
+token system prompt, and half of it is
+ 
+token system prompt, and half of it is
+procedural, right? Like, first classify
+ 
+procedural, right? Like, first classify
+the intent, then check your response for
+ 
+the intent, then check your response for
+hallucinating URLs that do X, then do Y.
+ 
+hallucinating URLs that do X, then do Y.
+That sequence was written down because
+ 
+That sequence was written down because
+the model would skip knowledge checks
+ 
+the model would skip knowledge checks
+enough of the time that it was needed.
+ 
+enough of the time that it was needed.
+Think about whether you're really going
+ 
+Think about whether you're really going
+to need that when a model gets two or
+ 
+to need that when a model gets two or
+three times smarter. You may be able to
+ 
+three times smarter. You may be able to
+delete that like 30, 40, 50% of that
+ 
+delete that like 30, 40, 50% of that
+3,000 token prompt because so much of
+ 
+3,000 token prompt because so much of
+the procedural is just not needed when
+ 
+the procedural is just not needed when
+the model is more intelligent. Let's say
+ 
+the model is more intelligent. Let's say
+you're not building agents. What's the
+ 
+you're not building agents. What's the
+implication for you if you're just
+ 
+implication for you if you're just
+chatting, if you're using co-work, and
+ 
+chatting, if you're using co-work, and
+you're wanting to get work done, and
+ 
+you're wanting to get work done, and
+you're less technical? It's pretty
+ 
+you're less technical? It's pretty
+simple. Ask for what you want in the
+ 
+simple. Ask for what you want in the
+end, and explain why. In plain language,
+ 
+end, and explain why. In plain language,
+and you don't need to elaborate on how
+ 
+and you don't need to elaborate on how
+to get there. As long as the model has
+ 
+to get there. As long as the model has
+access to the inputs it needs, the data
+ 
+access to the inputs it needs, the data
+it needs, it's going to get there on its
+ 
+it needs, it's going to get there on its
+own.
+ 
+own.
+Increasingly, across 2026, this is the
+ 
+Increasingly, across 2026, this is the
+bitter lesson we have to learn. All of
+ 
+bitter lesson we have to learn. All of
+the way we have described process, the
+ 
+the way we have described process, the
+things that are precious to us, are
+ 
+things that are precious to us, are
+things that are associated with our
+ 
+things that are associated with our
+ability to execute work in a certain
+ 
+ability to execute work in a certain
+series of steps, and somehow we've
+ 
+series of steps, and somehow we've
+decided that's an important reflection
+ 
+decided that's an important reflection
+of our work identity. What Claude Methos
+ 
+of our work identity. What Claude Methos
+and similar models are going to teach us
+ 
+and similar models are going to teach us
+is that that doesn't matter anymore. And
+ 
+is that that doesn't matter anymore. And
+what matters is the outcome, and our
+ 
+what matters is the outcome, and our
+ability to name the outcome, and let go
+ 
+ability to name the outcome, and let go
+of the process. You got to let go of the
+ 
+of the process. You got to let go of the
+process with these models. And that, by
+ 
+process with these models. And that, by
+the way, also goes for when you're
+ 
+the way, also goes for when you're
+auditing. Let's say you have a business
+ 
+auditing. Let's say you have a business
+process that you thought you could make
+ 
+process that you thought you could make
+better. I would bet you if you give it
+ 
+better. I would bet you if you give it
+to Methos, or maybe you give it to
+ 
+to Methos, or maybe you give it to
+Andrej Karpathy's auto research, you're
+ 
+Andrej Karpathy's auto research, you're
+going to find ways to make that better
+ 
+going to find ways to make that better
+that a human can't figure out. The LLMs
+ 
+that a human can't figure out. The LLMs
+are now better than us at finding
+ 
+are now better than us at finding
+efficient ways to process, and we should
+ 
+efficient ways to process, and we should
+stop specifying. So, that's point number
+ 
+stop specifying. So, that's point number
+one. Check your prompts. Stop over
+ 
+one. Check your prompts. Stop over
+specifying. Lesson number two is about
+ 
+specifying. Lesson number two is about
+retrieval architecture and memory.
+ 
+retrieval architecture and memory.
+You're basically asking, "How is the
+ 
+You're basically asking, "How is the
+model changing the way it relates to
+ 
+model changing the way it relates to
+memory based on the model's gain in
+ 
+memory based on the model's gain in
+capabilities?" And so, another way of
+ 
+capabilities?" And so, another way of
+looking at it is to say, "In the past,
+ 
+looking at it is to say, "In the past,
+we had to carry a lot of the logic for
+ 
+we had to carry a lot of the logic for
+retrieval on our side, so the model
+ 
+retrieval on our side, so the model
+would retrieve correctly. But really,
+ 
+would retrieve correctly. But really,
+how much of my retrieval logic should
+ 
+how much of my retrieval logic should
+belong to the model if the model's
+ 
+belong to the model if the model's
+smarter?" This is a much more nuanced
+ 
+smarter?" This is a much more nuanced
+take than takes like that say sort of
+ 
+take than takes like that say sort of
+rag is dead. I've heard I've heard
+ 
+rag is dead. I've heard I've heard
+people like beating on retrieval
+ 
+people like beating on retrieval
+augmented generation a lot. Think more
+ 
+augmented generation a lot. Think more
+broadly.
+ 
+broadly.
+If you're in a large context window
+ 
+If you're in a large context window
+situation, if you have like a million
+ 
+situation, if you have like a million
+tokens, 10 million tokens, 100 million
+ 
+tokens, 10 million tokens, 100 million
+tokens, increasingly, you should start
+ 
+tokens, increasingly, you should start
+to think about how the model wants to
+ 
+to think about how the model wants to
+handle retrieval for that situation and
+ 
+handle retrieval for that situation and
+how the model thinks it can handle it
+ 
+how the model thinks it can handle it
+efficiently, and you should think less
+ 
+efficiently, and you should think less
+about predetermining how all of that
+ 
+about predetermining how all of that
+works. Now, there are going to be pieces
+ 
+works. Now, there are going to be pieces
+you're going to have to decide from the
+ 
+you're going to have to decide from the
+get-go. You'll have to decide what goes
+ 
+get-go. You'll have to decide what goes
+into the initial context window. You're
+ 
+into the initial context window. You're
+going to have to decide whether the
+ 
+going to have to decide whether the
+model is going to be invited to look at
+ 
+model is going to be invited to look at
+particular repos, etc.
+ 
+particular repos, etc.
+But, once you've made those initial
+ 
+But, once you've made those initial
+decisions, a lot of the rest of it with
+ 
+decisions, a lot of the rest of it with
+these very powerful models essentially
+ 
+these very powerful models essentially
+relies on you being able to present a
+ 
+relies on you being able to present a
+really well-organized, searchable repo
+ 
+really well-organized, searchable repo
+of some sort. Maybe it's documents,
+ 
+of some sort. Maybe it's documents,
+maybe it's code, etc. Maybe it's the
+ 
+maybe it's code, etc. Maybe it's the
+file system on your computer if you're
+ 
+file system on your computer if you're
+non-technical. And then you need to say,
+ 
+non-technical. And then you need to say,
+"You go ahead and have a look. You look
+ 
+"You go ahead and have a look. You look
+for what you want." And you need to
+ 
+for what you want." And you need to
+trust the model to find what it needs to
+ 
+trust the model to find what it needs to
+find. And there again, you see the
+ 
+find. And there again, you see the
+theme? The theme is we have to let go so
+ 
+theme? The theme is we have to let go so
+the model can do more.
+ 
+the model can do more.
+If we want to take advantage of the
+ 
+If we want to take advantage of the
+power, and that is going to be one of
+ 
+power, and that is going to be one of
+the one of the job skills that is hard
+ 
+the one of the job skills that is hard
+to measure in 2026 is the ability of
+ 
+to measure in 2026 is the ability of
+someone to see a new model coming like
+ 
+someone to see a new model coming like
+Methuselah and to say, "Okay,
+ 
+Methuselah and to say, "Okay,
+I can see in advance. I understand how
+ 
+I can see in advance. I understand how
+to model the improvements that an new
+ 
+to model the improvements that an new
+intelligence is going to bring to the
+ 
+intelligence is going to bring to the
+table and I'm going to change my
+ 
+table and I'm going to change my
+workflow. I'm going to be ready so that
+ 
+workflow. I'm going to be ready so that
+I cut down the prompt where I need to.
+ 
+I cut down the prompt where I need to.
+I'm going to be ready so I adjust my
+ 
+I'm going to be ready so I adjust my
+retrieval strategy and I'm not over
+ 
+retrieval strategy and I'm not over
+specified retrieval. I'm going to let
+ 
+specified retrieval. I'm going to let
+the model pick what it wants to pick out
+ 
+the model pick what it wants to pick out
+of this file system, out of this repo,
+ 
+of this file system, out of this repo,
+etc.
+ 
+etc.
+Because that is where we need to go. We
+ 
+Because that is where we need to go. We
+need to assume
+ 
+need to assume
+that the model is increasingly going to
+ 
+that the model is increasingly going to
+be better than we are at deciding what
+ 
+be better than we are at deciding what
+to put in its context window if we can
+ 
+to put in its context window if we can
+specify where it should go and we can
+ 
+specify where it should go and we can
+have a directed prompt and we can
+ 
+have a directed prompt and we can
+understand with the model what we want
+ 
+understand with the model what we want
+to accomplish. And so our goal
+ 
+to accomplish. And so our goal
+increasingly is to say here is the goal.
+ 
+increasingly is to say here is the goal.
+Go get it done and then to measure
+ 
+Go get it done and then to measure
+success. And that's it. That is the
+ 
+success. And that's it. That is the
+goal. And the smarter the model gets,
+ 
+goal. And the smarter the model gets,
+the more our work resolves down to that
+ 
+the more our work resolves down to that
+and we need to get out of the way. And
+ 
+and we need to get out of the way. And
+that, in my observation, is really hard.
+ 
+that, in my observation, is really hard.
+That's why it's called the bitter lesson
+ 
+That's why it's called the bitter lesson
+because we humans like to think that our
+ 
+because we humans like to think that our
+contributions here are special. That we
+ 
+contributions here are special. That we
+have a way of doing scaffolding, that we
+ 
+have a way of doing scaffolding, that we
+have a way of doing rag, that our
+ 
+have a way of doing rag, that our
+special system prompt. No, let it go.
+ 
+special system prompt. No, let it go.
+That was for that moment, that was for
+ 
+That was for that moment, that was for
+that model, and we need to start to
+ 
+that model, and we need to start to
+think increasingly about how we put
+ 
+think increasingly about how we put
+these models in the heart of our
+ 
+these models in the heart of our
+workflows in ways that allow them to do
+ 
+workflows in ways that allow them to do
+their most powerful work in the
+ 
+their most powerful work in the
+direction we set, in alignment with
+ 
+direction we set, in alignment with
+where we want to go.
+ 
+where we want to go.
+And our job is to point them in that
+ 
+And our job is to point them in that
+direction very, very clear. So retrieval
+ 
+direction very, very clear. So retrieval
+architecture is another example of that.
+ 
+architecture is another example of that.
+You just have to be very clear. Here are
+ 
+You just have to be very clear. Here are
+the resources you can access. Here is
+ 
+the resources you can access. Here is
+the goal and increasingly the model is
+ 
+the goal and increasingly the model is
+going to figure that out. Now, do I have
+ 
+going to figure that out. Now, do I have
+specific advice for you because Mythos
+ 
+specific advice for you because Mythos
+is already out in the world and I've
+ 
+is already out in the world and I've
+tested against 20 different things? I do
+ 
+tested against 20 different things? I do
+not. We will get to that when it comes
+ 
+not. We will get to that when it comes
+out.
+ 
+out.
+But I do have very, very high confidence
+ 
+But I do have very, very high confidence
+that Mythos is going to be much better
+ 
+that Mythos is going to be much better
+at this, much better at intelligently
+ 
+at this, much better at intelligently
+filling its context window than previous
+ 
+filling its context window than previous
+models because that is exactly what you
+ 
+models because that is exactly what you
+get with the scaling law. When you get
+ 
+get with the scaling law. When you get
+more intelligence, we we have seen over
+ 
+more intelligence, we we have seen over
+and over again, you get better at using
+ 
+and over again, you get better at using
+your context window. This is going to be
+ 
+your context window. This is going to be
+another jump in that direction.
+ 
+another jump in that direction.
+And it is a good chance to remember one
+ 
+And it is a good chance to remember one
+of the big lessons that we've should
+ 
+of the big lessons that we've should
+have learned over and over again over
+ 
+have learned over and over again over
+the last 2 years. As models improve,
+ 
+the last 2 years. As models improve,
+this stuff gets simpler. Okay.
+ 
+this stuff gets simpler. Okay.
+On the simplification train, number
+ 
+On the simplification train, number
+three, look at how much you have to hard
+ 
+three, look at how much you have to hard
+code domain knowledge versus how much
+ 
+code domain knowledge versus how much
+the model can infer.
+ 
+the model can infer.
+In other words, when you're thinking
+ 
+In other words, when you're thinking
+about these things that you want to
+ 
+about these things that you want to
+emphasize over and over again to a
+ 
+emphasize over and over again to a
+model, ask yourself which of these
+ 
+model, ask yourself which of these
+business rules did I write down because
+ 
+business rules did I write down because
+the model could not infer this from
+ 
+the model could not infer this from
+context,
+ 
+context,
+and which of these can I actually let go
+ 
+and which of these can I actually let go
+of? And this is true for us
+ 
+of? And this is true for us
+non-technical folks when we look at how
+ 
+non-technical folks when we look at how
+we work at co-work and chat as well
+ 
+we work at co-work and chat as well
+because how often are you writing down
+ 
+because how often are you writing down
+this is what I do, this is my rule, and
+ 
+this is what I do, this is my rule, and
+maybe you have a saved prompt for that,
+ 
+maybe you have a saved prompt for that,
+or maybe you have it in memory
+ 
+or maybe you have it in memory
+somewhere. You're increasingly not going
+ 
+somewhere. You're increasingly not going
+to need to do that because the model is
+ 
+to need to do that because the model is
+going to infer it from the context you
+ 
+going to infer it from the context you
+give so reliably that you'll be fine.
+ 
+give so reliably that you'll be fine.
+Another example is let's say you have a
+ 
+Another example is let's say you have a
+house style for writing your client
+ 
+house style for writing your client
+reports. The model can just infer that
+ 
+reports. The model can just infer that
+at a very high fidelity from a given
+ 
+at a very high fidelity from a given
+example report. That's the whole point
+ 
+example report. That's the whole point
+of the scaling law is that intelligence
+ 
+of the scaling law is that intelligence
+gets better at reliably answering your
+ 
+gets better at reliably answering your
+query. In this case, a query about
+ 
+query. In this case, a query about
+constructing a report will be more
+ 
+constructing a report will be more
+reliably answered in the voice of that.
+ 
+reliably answered in the voice of that.
+And so, you should count your rules. You
+ 
+And so, you should count your rules. You
+should count the things you have to
+ 
+should count the things you have to
+remind the model of. Ask yourself, do
+ 
+remind the model of. Ask yourself, do
+you really need to fill the token window
+ 
+you really need to fill the token window
+for better models with this? Be prepared
+ 
+for better models with this? Be prepared
+to let go of some of that. And look,
+ 
+to let go of some of that. And look,
+this is also hard for me. This is not
+ 
+this is also hard for me. This is not
+something that I'm saying isn't hard for
+ 
+something that I'm saying isn't hard for
+all of us. I had an example recently
+ 
+all of us. I had an example recently
+where there was a a prompt that I was
+ 
+where there was a a prompt that I was
+using around how I do research, and I'd
+ 
+using around how I do research, and I'd
+been using it for a couple of model
+ 
+been using it for a couple of model
+generations, and one day I forgot to put
+ 
+generations, and one day I forgot to put
+the full 10-line prompt in and I just
+ 
+the full 10-line prompt in and I just
+put a one-liner and said go research and
+ 
+put a one-liner and said go research and
+I got a better result back because the
+ 
+I got a better result back because the
+10-line prompt, and this is a micro
+ 
+10-line prompt, and this is a micro
+example, right? The 10-line prompt was
+ 
+example, right? The 10-line prompt was
+more detailed about methodology than it
+ 
+more detailed about methodology than it
+needed to be and was over constraining
+ 
+needed to be and was over constraining
+my model. It had hardcoded my domain
+ 
+my model. It had hardcoded my domain
+knowledge about what resources to look
+ 
+knowledge about what resources to look
+up, etc. And that had been really good
+ 
+up, etc. And that had been really good
+two model generations ago and now I
+ 
+two model generations ago and now I
+needed to let it go. Now I needed to let
+ 
+needed to let it go. Now I needed to let
+it go.
+ 
+it go.
+I needed to just let the model go find
+ 
+I needed to just let the model go find
+the right resources and come back with a
+ 
+the right resources and come back with a
+research report.
+ 
+research report.
+And so as much as the art of prompting
+ 
+And so as much as the art of prompting
+for the first couple years of LLMs was
+ 
+for the first couple years of LLMs was
+about what you put in, increasingly the
+ 
+about what you put in, increasingly the
+art of prompting is about what you leave
+ 
+art of prompting is about what you leave
+out.
+ 
+out.
+And it's still an art. It's still hard.
+ 
+And it's still an art. It's still hard.
+You still have to prompt. And the skill
+ 
+You still have to prompt. And the skill
+is valuable. It's just that the skill is
+ 
+is valuable. It's just that the skill is
+evolving because the models are getting
+ 
+evolving because the models are getting
+better. Okay, question number four, this
+ 
+better. Okay, question number four, this
+one's all about did the model do what we
+ 
+one's all about did the model do what we
+asked it to do? Can we sniff check it
+ 
+asked it to do? Can we sniff check it
+and show that it worked? Now, if you're
+ 
+and show that it worked? Now, if you're
+doing non-technical work, the answer is
+ 
+doing non-technical work, the answer is
+going to be increasingly clear. You're
+ 
+going to be increasingly clear. You're
+going to look at it say, "Wow, that
+ 
+going to look at it say, "Wow, that
+looks really good." and move on. And a
+ 
+looks really good." and move on. And a
+lot of people are going to do that. And
+ 
+lot of people are going to do that. And
+the art of checking non-technical work
+ 
+the art of checking non-technical work
+is increasingly going to involve you
+ 
+is increasingly going to involve you
+having a very high standard. One of the
+ 
+having a very high standard. One of the
+challenges of working with good models
+ 
+challenges of working with good models
+is learning to make sure our bar is
+ 
+is learning to make sure our bar is
+really high. Don't be afraid just cuz
+ 
+really high. Don't be afraid just cuz
+this model is really good to look at
+ 
+this model is really good to look at
+something it produces like a PowerPoint
+ 
+something it produces like a PowerPoint
+deck or an Excel and say this isn't
+ 
+deck or an Excel and say this isn't
+quite right. You got 99% of this right,
+ 
+quite right. You got 99% of this right,
+but this is the 1% I want fixed. Apply
+ 
+but this is the 1% I want fixed. Apply
+your high standard. That's how we get
+ 
+your high standard. That's how we get
+good work. That's how we don't pass slop
+ 
+good work. That's how we don't pass slop
+on. But if you're building software,
+ 
+on. But if you're building software,
+this is one of those things you have to
+ 
+this is one of those things you have to
+apply a lot of judgment to because 99%
+ 
+apply a lot of judgment to because 99%
+and verification checks in software is a
+ 
+and verification checks in software is a
+very different game from 85% and
+ 
+very different game from 85% and
+verification checks. And we are in a
+ 
+verification checks. And we are in a
+world now where we are closer to 99%
+ 
+world now where we are closer to 99%
+right more of the time than we are to
+ 
+right more of the time than we are to
+85%. And Mythos is just going to push us
+ 
+85%. And Mythos is just going to push us
+more in that direction. Which suggests
+ 
+more in that direction. Which suggests
+to me that we need to be really smart
+ 
+to me that we need to be really smart
+about writing our evals. I would say we
+ 
+about writing our evals. I would say we
+are moving toward a point where we want
+ 
+are moving toward a point where we want
+one eval gate at the end of the software
+ 
+one eval gate at the end of the software
+process and it needs to check absolutely
+ 
+process and it needs to check absolutely
+everything and send things back when it
+ 
+everything and send things back when it
+doesn't work. Because if we do
+ 
+doesn't work. Because if we do
+intermediate evals along the way, net
+ 
+intermediate evals along the way, net
+net, there's enough right about what
+ 
+net, there's enough right about what
+these systems build, it's just not worth
+ 
+these systems build, it's just not worth
+it. You don't want to mess around with a
+ 
+it. You don't want to mess around with a
+more complicated pipeline. Simplify,
+ 
+more complicated pipeline. Simplify,
+simplify.
+ 
+simplify.
+Just write the eval at the end.
+ 
+Just write the eval at the end.
+And when you write the eval at the end,
+ 
+And when you write the eval at the end,
+make sure that it tests absolutely
+ 
+make sure that it tests absolutely
+everything. Your functional
+ 
+everything. Your functional
+requirements, your non-functional
+ 
+requirements, your non-functional
+requirements. And then make sure when it
+ 
+requirements. And then make sure when it
+comes back that you are sure if you read
+ 
+comes back that you are sure if you read
+that eval script and all the tests pass
+ 
+that eval script and all the tests pass
+that you're confident it's good. Because
+ 
+that you're confident it's good. Because
+increasingly, we need to be at a point
+ 
+increasingly, we need to be at a point
+where we're not the ones who are the
+ 
+where we're not the ones who are the
+bottleneck for telling whether a
+ 
+bottleneck for telling whether a
+particular piece of software reliably
+ 
+particular piece of software reliably
+calls dependencies. And whether the code
+ 
+calls dependencies. And whether the code
+is clean and has appropriate exception
+ 
+is clean and has appropriate exception
+handling. Whether edge cases are
+ 
+handling. Whether edge cases are
+handled. Like that all needs to go into
+ 
+handled. Like that all needs to go into
+automated evals or else we're going to
+ 
+automated evals or else we're going to
+be overwhelmed by the number of pieces
+ 
+be overwhelmed by the number of pieces
+of software we can produce and the
+ 
+of software we can produce and the
+amount of checks we have to do. Like
+ 
+amount of checks we have to do. Like
+there are already conversations being
+ 
+there are already conversations being
+had in San Francisco around the fact
+ 
+had in San Francisco around the fact
+that humans cannot review all the code
+ 
+that humans cannot review all the code
+and we have to find ways to start to
+ 
+and we have to find ways to start to
+scale out of ourselves. We are the
+ 
+scale out of ourselves. We are the
+bottleneck. Mythos is going to make that
+ 
+bottleneck. Mythos is going to make that
+worse.
+ 
+worse.
+If you are depending on humans and human
+ 
+If you are depending on humans and human
+handoffs as a key part of your agentic
+ 
+handoffs as a key part of your agentic
+software development pipeline, you're in
+ 
+software development pipeline, you're in
+trouble. And there is sort of an analogy
+ 
+trouble. And there is sort of an analogy
+there for non-tech folks. If you are
+ 
+there for non-tech folks. If you are
+depending on humans as a handoff between
+ 
+depending on humans as a handoff between
+PowerPoint and Excel and you're doing AI
+ 
+PowerPoint and Excel and you're doing AI
+for both of those pieces, you should be
+ 
+for both of those pieces, you should be
+looking seriously at whether you can
+ 
+looking seriously at whether you can
+automate those non-tech artifact
+ 
+automate those non-tech artifact
+handoffs because Mythos can help you do
+ 
+handoffs because Mythos can help you do
+that. And I'm not talking about Mythos
+ 
+that. And I'm not talking about Mythos
+as if this is the only model that will
+ 
+as if this is the only model that will
+ever be able to help you with this. I'm
+ 
+ever be able to help you with this. I'm
+saying it is the first leaked model of a
+ 
+saying it is the first leaked model of a
+new class.
+ 
+new class.
+And we're going to see similar models
+ 
+And we're going to see similar models
+come out from other hyperscalers. Google
+ 
+come out from other hyperscalers. Google
+will have one, OpenAI will have one.
+ 
+will have one, OpenAI will have one.
+They will also probably drop them in the
+ 
+They will also probably drop them in the
+next couple of months. We will all
+ 
+next couple of months. We will all
+together, regardless of the underlying
+ 
+together, regardless of the underlying
+model we use, be in this new world. And
+ 
+model we use, be in this new world. And
+we need to think about that. Do you know
+ 
+we need to think about that. Do you know
+another reason why we need to think
+ 
+another reason why we need to think
+about simplicity?
+ 
+about simplicity?
+It's very It's very obvious. These are
+ 
+It's very It's very obvious. These are
+not cheap models. Anthropic basically
+ 
+not cheap models. Anthropic basically
+confirmed that. These are going to be
+ 
+confirmed that. These are going to be
+very expensive models to run. You want
+ 
+very expensive models to run. You want
+to be very efficient with them. You want
+ 
+to be very efficient with them. You want
+to make sure they're using the tokens as
+ 
+to make sure they're using the tokens as
+efficiently as possible. You don't want
+ 
+efficiently as possible. You don't want
+to clutter them up with a bunch of human
+ 
+to clutter them up with a bunch of human
+described process. You want to use them
+ 
+described process. You want to use them
+as effectively as you can. I am willing
+ 
+as effectively as you can. I am willing
+to bet you that Mythos, when it
+ 
+to bet you that Mythos, when it
+launches, is only going to initially be
+ 
+launches, is only going to initially be
+available for Max plan users for Claude.
+ 
+available for Max plan users for Claude.
+Because it's so expensive to serve. And
+ 
+Because it's so expensive to serve. And
+we are headed toward a world where
+ 
+we are headed toward a world where
+increasingly the first and best models
+ 
+increasingly the first and best models
+are only going to be available on those
+ 
+are only going to be available on those
+premium plans
+ 
+premium plans
+because of how expensive they are to
+ 
+because of how expensive they are to
+build and train and run and serve. And
+ 
+build and train and run and serve. And
+so, we need to think to ourselves, like
+ 
+so, we need to think to ourselves, like
+if you're thinking about your future,
+ 
+if you're thinking about your future,
+about your career, you need to ask
+ 
+about your career, you need to ask
+yourself, basically, am I in a position
+ 
+yourself, basically, am I in a position
+where I can invest in intelligence, in
+ 
+where I can invest in intelligence, in
+one of these plans, in order to get
+ 
+one of these plans, in order to get
+access to this, and then I will leverage
+ 
+access to this, and then I will leverage
+it to the hilt, and I will make it worth
+ 
+it to the hilt, and I will make it worth
+it, and I will tell Claude Mythos, "Save
+ 
+it, and I will tell Claude Mythos, "Save
+me my 200 bucks." And you can do this
+ 
+me my 200 bucks." And you can do this
+now. You don't have to wait for Mythos.
+ 
+now. You don't have to wait for Mythos.
+Just tell your AI, "Look at my recurring
+ 
+Just tell your AI, "Look at my recurring
+subscriptions for my household and find
+ 
+subscriptions for my household and find
+me $200 in savings." Most households in
+ 
+me $200 in savings." Most households in
+America can find $200 a month in savings
+ 
+America can find $200 a month in savings
+somewhere from some of their
+ 
+somewhere from some of their
+subscriptions, just because the
+ 
+subscriptions, just because the
+subscription economy latches onto our
+ 
+subscription economy latches onto our
+credit cards like barnacles, and we just
+ 
+credit cards like barnacles, and we just
+need to find some space. And LLMs right
+ 
+need to find some space. And LLMs right
+now, without waiting for Claude Mythos,
+ 
+now, without waiting for Claude Mythos,
+are already very good at that. And so,
+ 
+are already very good at that. And so,
+this is one of those things where think
+ 
+this is one of those things where think
+about the kind of intelligence you want
+ 
+about the kind of intelligence you want
+to purchase and the timeline you want to
+ 
+to purchase and the timeline you want to
+buy it on. Because the people who are
+ 
+buy it on. Because the people who are
+able to get Claude Mythos now, if you
+ 
+able to get Claude Mythos now, if you
+have a plan to leverage it effectively,
+ 
+have a plan to leverage it effectively,
+are going to be ahead. There's just no
+ 
+are going to be ahead. There's just no
+other way to put it. They have access to
+ 
+other way to put it. They have access to
+a better brain. Now, that doesn't mean
+ 
+a better brain. Now, that doesn't mean
+that Mythos will always be expensive. We
+ 
+that Mythos will always be expensive. We
+have the Vera Rubin chip set coming up
+ 
+have the Vera Rubin chip set coming up
+behind the GB300. It's a whole new
+ 
+behind the GB300. It's a whole new
+generation of chip from Nvidia. And as
+ 
+generation of chip from Nvidia. And as
+that starts to come online and even
+ 
+that starts to come online and even
+better models start to come out and it
+ 
+better models start to come out and it
+becomes cheaper and cheaper to serve
+ 
+becomes cheaper and cheaper to serve
+Mythos, we are going to be in a position
+ 
+Mythos, we are going to be in a position
+in a few months, 6 months, maybe less,
+ 
+in a few months, 6 months, maybe less,
+where you start to see the cost come
+ 
+where you start to see the cost come
+down. And you start to instead see more
+ 
+down. And you start to instead see more
+expensive models come out that are even
+ 
+expensive models come out that are even
+better than Mythos.
+ 
+better than Mythos.
+And so, really, when you start to think
+ 
+And so, really, when you start to think
+about what you're investing in, if you
+ 
+about what you're investing in, if you
+think about the plans you're purchasing
+ 
+think about the plans you're purchasing
+and what you want to invest in. This
+ 
+and what you want to invest in. This
+goes for corporations buying for for
+ 
+goes for corporations buying for for
+their employees. It goes for
+ 
+their employees. It goes for
+individuals.
+ 
+individuals.
+Think about it as what trajectory, what
+ 
+Think about it as what trajectory, what
+curve do I want to be on? Do I want to
+ 
+curve do I want to be on? Do I want to
+pay to be on the cutting edge curve? And
+ 
+pay to be on the cutting edge curve? And
+I'm going to use it to the health, and
+ 
+I'm going to use it to the health, and
+I'm going to build really cool things,
+ 
+I'm going to build really cool things,
+and I'm going to learn, and I'm going to
+ 
+and I'm going to learn, and I'm going to
+leverage it to 10x myself, etc. Or do I
+ 
+leverage it to 10x myself, etc. Or do I
+want to be a step behind on like a pro
+ 
+want to be a step behind on like a pro
+plan or whatever the 20 buck a month
+ 
+plan or whatever the 20 buck a month
+plan is? And then in that case, I'm
+ 
+plan is? And then in that case, I'm
+willing to wait,
+ 
+willing to wait,
+and I'm not going to be the first. I'm
+ 
+and I'm not going to be the first. I'm
+willing to take the hit on my career for
+ 
+willing to take the hit on my career for
+that. I'm willing to take the hit for my
+ 
+that. I'm willing to take the hit for my
+employees if I'm a company. And in that
+ 
+employees if I'm a company. And in that
+situation, I should not expect
+ 
+situation, I should not expect
+productivity that will resemble what
+ 
+productivity that will resemble what
+people who are on those cutting edge
+ 
+people who are on those cutting edge
+plans get.
+ 
+plans get.
+And that's a very serious thing. You
+ 
+And that's a very serious thing. You
+might think, "Oh, but talent will make
+ 
+might think, "Oh, but talent will make
+up for it." No, human talent will not.
+ 
+up for it." No, human talent will not.
+Like increasingly, the whole point of
+ 
+Like increasingly, the whole point of
+human talent is to simplify and get out
+ 
+human talent is to simplify and get out
+of the way so that AI can do its thing.
+ 
+of the way so that AI can do its thing.
+And the bigger the models get, the more
+ 
+And the bigger the models get, the more
+that becomes obvious. And Mythos is one
+ 
+that becomes obvious. And Mythos is one
+of those moments when I think it's going
+ 
+of those moments when I think it's going
+to be very, very obvious that we are in
+ 
+to be very, very obvious that we are in
+a different world, and that the people
+ 
+a different world, and that the people
+who have that $200 a month plan are
+ 
+who have that $200 a month plan are
+going to effectively have superpowers.
+ 
+going to effectively have superpowers.
+And so, think about whether you want
+ 
+And so, think about whether you want
+those superpowers or not. I'm not saying
+ 
+those superpowers or not. I'm not saying
+there's an easy answer. I know $200 a
+ 
+there's an easy answer. I know $200 a
+month is a lot for a lot of us.
+ 
+month is a lot for a lot of us.
+And I know it's a lot for companies.
+ 
+And I know it's a lot for companies.
+Like if you're paying for it by token,
+ 
+Like if you're paying for it by token,
+it's also not going to be cheap.
+ 
+it's also not going to be cheap.
+Think about whether it's worth it.
+ 
+Think about whether it's worth it.
+Think about whether you can leverage it.
+ 
+Think about whether you can leverage it.
+Think about your multi-model strategy if
+ 
+Think about your multi-model strategy if
+you're a company. What are you using for
+ 
+you're a company. What are you using for
+Mythos-shaped problems? Do you have a
+ 
+Mythos-shaped problems? Do you have a
+reliable way to see what is a
+ 
+reliable way to see what is a
+complicated problem that is worth
+ 
+complicated problem that is worth
+putting a cutting-edge model on versus
+ 
+putting a cutting-edge model on versus
+not? And by the way, if you're thinking
+ 
+not? And by the way, if you're thinking
+I'm kidding about the gain in
+ 
+I'm kidding about the gain in
+capability, we had another one of those
+ 
+capability, we had another one of those
+stock market spook events where like
+ 
+stock market spook events where like
+security stocks for cybersecurity firms
+ 
+security stocks for cybersecurity firms
+dropped between 5% and 9% as soon as
+ 
+dropped between 5% and 9% as soon as
+Claude Mythos was even leaked.
+ 
+Claude Mythos was even leaked.
+The entire world is starting to take AI
+ 
+The entire world is starting to take AI
+models seriously because they have seen
+ 
+models seriously because they have seen
+enough evidence to show what these
+ 
+enough evidence to show what these
+models are capable of doing.
+ 
+models are capable of doing.
+And so, yes, I fully expect that the
+ 
+And so, yes, I fully expect that the
+leaked blog post that came out on the
+ 
+leaked blog post that came out on the
+Anthropic servers is broadly correct. It
+ 
+Anthropic servers is broadly correct. It
+is going to be a big jump in coding. It
+ 
+is going to be a big jump in coding. It
+is going to be a big jump in the ability
+ 
+is going to be a big jump in the ability
+to produce excellent artifacts like
+ 
+to produce excellent artifacts like
+Excel and PowerPoint. It's going to be a
+ 
+Excel and PowerPoint. It's going to be a
+big jump in the ability to reason. It's
+ 
+big jump in the ability to reason. It's
+going to be a massive jump in
+ 
+going to be a massive jump in
+cybersecurity and more. We should take
+ 
+cybersecurity and more. We should take
+that seriously. When you look at what
+ 
+that seriously. When you look at what
+Mythos is going to mean, you should
+ 
+Mythos is going to mean, you should
+assume it means a step change that's
+ 
+assume it means a step change that's
+coming in the next month or two. I've
+ 
+coming in the next month or two. I've
+been telling you 2026 isn't slowing
+ 
+been telling you 2026 isn't slowing
+down. This is an inflection point. Pay
+ 
+down. This is an inflection point. Pay
+attention. So, what does a simpler
+ 
+attention. So, what does a simpler
+system look like? What does a
+ 
+system look like? What does a
+Mythos-ready system look like? I think a
+ 
+Mythos-ready system look like? I think a
+lot of the time like the larger public
+ 
+lot of the time like the larger public
+conversation has been around the
+ 
+conversation has been around the
+security thing. It's been around, "Oh,
+ 
+security thing. It's been around, "Oh,
+this is a big model." And those are fair
+ 
+this is a big model." And those are fair
+to call out. But I want to go past that.
+ 
+to call out. But I want to go past that.
+I want to look at what it means to have
+ 
+I want to look at what it means to have
+a well-architected system that lets you
+ 
+a well-architected system that lets you
+sleep at night before Mythos comes.
+ 
+sleep at night before Mythos comes.
+Number one, make sure you have very
+ 
+Number one, make sure you have very
+clear outcome specifications. Specify
+ 
+clear outcome specifications. Specify
+your intent in a way that makes sense
+ 
+your intent in a way that makes sense
+for a smarter model. Let me give you an
+ 
+for a smarter model. Let me give you an
+example back in the customer service
+ 
+example back in the customer service
+world. Let's say what you want to
+ 
+world. Let's say what you want to
+specify is resolve this customer's issue
+ 
+specify is resolve this customer's issue
+using our knowledge base, our policies,
+ 
+using our knowledge base, our policies,
+and our account history, and you make
+ 
+and our account history, and you make
+sure the model has access to that. The
+ 
+sure the model has access to that. The
+customer should leave satisfied, and the
+ 
+customer should leave satisfied, and the
+resolution should comply with our return
+ 
+resolution should comply with our return
+policy. That is actually a decent
+ 
+policy. That is actually a decent
+outcome specification. Compare that to
+ 
+outcome specification. Compare that to
+what most production systems I see look
+ 
+what most production systems I see look
+like. It's essentially a process, right?
+ 
+like. It's essentially a process, right?
+Well, first classify the intent into one
+ 
+Well, first classify the intent into one
+of 14 categories, then route to the
+ 
+of 14 categories, then route to the
+appropriate handler, then retrieve the
+ 
+appropriate handler, then retrieve the
+top five knowledge-based using hybrid
+ 
+top five knowledge-based using hybrid
+search with alpha equals 0.7, then
+ 
+search with alpha equals 0.7, then
+generate a response using only the
+ 
+generate a response using only the
+retrieved context. That is what most of
+ 
+retrieved context. That is what most of
+the prompts that I look at today look
+ 
+the prompts that I look at today look
+like. You see the difference between
+ 
+like. You see the difference between
+that and the outcome one? The outcome
+ 
+that and the outcome one? The outcome
+one just says, "I need to resolve the
+ 
+one just says, "I need to resolve the
+issue. It needs to be in line with this
+ 
+issue. It needs to be in line with this
+policy. Here's where the policies are."
+ 
+policy. Here's where the policies are."
+You may not be able to do that today
+ 
+You may not be able to do that today
+with today's models, but be ready to do
+ 
+with today's models, but be ready to do
+that.
+ 
+that.
+Get ready now because it's going to take
+ 
+Get ready now because it's going to take
+time to re-architect your systems. Start
+ 
+time to re-architect your systems. Start
+to think about how you need to
+ 
+to think about how you need to
+prioritize your work to get stuff.
+ 
+prioritize your work to get stuff.
+Number two, think about your constraints
+ 
+Number two, think about your constraints
+and guardrails. These are things that
+ 
+and guardrails. These are things that
+must be true regardless of how the model
+ 
+must be true regardless of how the model
+achieves the outcome because when you
+ 
+achieves the outcome because when you
+give the model more flexibility, you
+ 
+give the model more flexibility, you
+need to be more clear about your
+ 
+need to be more clear about your
+constraints and guardrails. For example,
+ 
+constraints and guardrails. For example,
+never disclose customer financial data.
+ 
+never disclose customer financial data.
+That's a pretty good customer guardrail.
+ 
+That's a pretty good customer guardrail.
+Always verify refund eligibility against
+ 
+Always verify refund eligibility against
+our policy. There's another one.
+ 
+our policy. There's another one.
+These should survive model upgrades
+ 
+These should survive model upgrades
+because they represent ongoing business
+ 
+because they represent ongoing business
+rules that you want any model to follow
+ 
+rules that you want any model to follow
+regardless of how smart it gets. Get
+ 
+regardless of how smart it gets. Get
+good at those. Number three, think about
+ 
+good at those. Number three, think about
+the tools your model can use. You want
+ 
+the tools your model can use. You want
+to make sure you have an excellent set
+ 
+to make sure you have an excellent set
+of tools that have the right
+ 
+of tools that have the right
+capabilities where a model can look at
+ 
+capabilities where a model can look at
+the tool set and say, "I know what this
+ 
+the tool set and say, "I know what this
+does. I can use it, and it's going to be
+ 
+does. I can use it, and it's going to be
+effective at what it does." So, right,
+ 
+effective at what it does." So, right,
+maybe it's search your knowledge base,
+ 
+maybe it's search your knowledge base,
+maybe it's look up an account, maybe
+ 
+maybe it's look up an account, maybe
+it's process a refund. The model is
+ 
+it's process a refund. The model is
+going to decide increasingly what to
+ 
+going to decide increasingly what to
+call on in what order.
+ 
+call on in what order.
+And it's going to be up to you to define
+ 
+And it's going to be up to you to define
+what the tools do, and to be effective
+ 
+what the tools do, and to be effective
+about that, and present those tools
+ 
+about that, and present those tools
+effectively. So, put some work into your
+ 
+effectively. So, put some work into your
+tool definitions.
+ 
+tool definitions.
+And then number four, and then last but
+ 
+And then number four, and then last but
+not least, if you're thinking about
+ 
+not least, if you're thinking about
+larger agentic software,
+ 
+larger agentic software,
+we're going to go back to multi-agent
+ 
+we're going to go back to multi-agent
+coordination patterns, which I've talked
+ 
+coordination patterns, which I've talked
+about before. I've talked about Cursor's
+ 
+about before. I've talked about Cursor's
+idea that you have like a two-agent
+ 
+idea that you have like a two-agent
+hierarchy, and that's much more
+ 
+hierarchy, and that's much more
+effective than an agent swarm. You now
+ 
+effective than an agent swarm. You now
+need to be thinking about long-term
+ 
+need to be thinking about long-term
+planning with agents and what it means
+ 
+planning with agents and what it means
+to let an agent like Metheus spin up
+ 
+to let an agent like Metheus spin up
+agents from a variety of capability sets
+ 
+agents from a variety of capability sets
+to get a task done. Like you should be
+ 
+to get a task done. Like you should be
+in a position where you understand how
+ 
+in a position where you understand how
+to present an outcome spec that Metheus
+ 
+to present an outcome spec that Metheus
+can take, how you then present a overall
+ 
+can take, how you then present a overall
+set of evals Metheus has to work
+ 
+set of evals Metheus has to work
+against, and how you give Metheus a tool
+ 
+against, and how you give Metheus a tool
+suite that allows it to spin up a lot of
+ 
+suite that allows it to spin up a lot of
+sub-instantiated agents to execute
+ 
+sub-instantiated agents to execute
+against that plan, how it has places to
+ 
+against that plan, how it has places to
+track progress, and how it can measure
+ 
+track progress, and how it can measure
+itself with evals. You need to take the
+ 
+itself with evals. You need to take the
+idea that Metheus is the planner of your
+ 
+idea that Metheus is the planner of your
+software more seriously. And again, I
+ 
+software more seriously. And again, I
+don't just mean Metheus. Any of these
+ 
+don't just mean Metheus. Any of these
+next-generation models is going to do
+ 
+next-generation models is going to do
+this. Codex is going to drop a new model
+ 
+this. Codex is going to drop a new model
+not too long from now, and it's also
+ 
+not too long from now, and it's also
+going to be more and more able to do
+ 
+going to be more and more able to do
+this. And all we're doing is extending
+ 
+this. And all we're doing is extending
+the current pattern we see at
+ 
+the current pattern we see at
+factory.ai, at Cursor, et cetera. And
+ 
+factory.ai, at Cursor, et cetera. And
+we're saying these models are more
+ 
+we're saying these models are more
+capable, you're going to give them more
+ 
+capable, you're going to give them more
+to work with. You're going to be more
+ 
+to work with. You're going to be more
+confident that they will get it done
+ 
+confident that they will get it done
+well, and you're going to make sure the
+ 
+well, and you're going to make sure the
+evals allow them to assess themselves in
+ 
+evals allow them to assess themselves in
+a way that is reliable so you can trust
+ 
+a way that is reliable so you can trust
+the result. And by the way, you can also
+ 
+the result. And by the way, you can also
+have a different instantiated Metheus
+ 
+have a different instantiated Metheus
+model assess the work of that other
+ 
+model assess the work of that other
+model so that you don't have a second
+ 
+model so that you don't have a second
+pair of eyes, right? You don't need to
+ 
+pair of eyes, right? You don't need to
+trust the model that did the work
+ 
+trust the model that did the work
+to do the eval as well. But really,
+ 
+to do the eval as well. But really,
+increasingly, once you can specify the
+ 
+increasingly, once you can specify the
+outputs and the guardrails and the
+ 
+outputs and the guardrails and the
+tools,
+ 
+tools,
+and you just give the model a sense of
+ 
+and you just give the model a sense of
+the harness and architecture to get to
+ 
+the harness and architecture to get to
+the outcome, you're going to step out of
+ 
+the outcome, you're going to step out of
+the way. And that's increasingly going
+ 
+the way. And that's increasingly going
+to be the case not just for technical
+ 
+to be the case not just for technical
+work, but also for knowledge work. Like
+ 
+work, but also for knowledge work. Like
+we're going to start to architect in a
+ 
+we're going to start to architect in a
+sense technical flows for non-technical
+ 
+sense technical flows for non-technical
+work. And we're just at the beginning of
+ 
+work. And we're just at the beginning of
+this, but I think Mythos is going to
+ 
+this, but I think Mythos is going to
+invite us to start thinking about that.
+ 
+invite us to start thinking about that.
+Like our under-the-desk software, our
+ 
+Like our under-the-desk software, our
+software we build as non-technical
+ 
+software we build as non-technical
+people is going to get increasingly
+ 
+people is going to get increasingly
+sophisticated because we're going to
+ 
+sophisticated because we're going to
+have access to models that can do
+ 
+have access to models that can do
+increasingly sophisticated things just
+ 
+increasingly sophisticated things just
+by communicating an intent in plain
+ 
+by communicating an intent in plain
+chat. And so we should be looking as IT
+ 
+chat. And so we should be looking as IT
+administrators, we should be looking as
+ 
+administrators, we should be looking as
+leaders at the idea that this
+ 
+leaders at the idea that this
+under-the-desk software category that
+ 
+under-the-desk software category that
+was just for personal use may
+ 
+was just for personal use may
+increasingly be developing really useful
+ 
+increasingly be developing really useful
+team applications that never end up
+ 
+team applications that never end up
+touching the engineering team. How do
+ 
+touching the engineering team. How do
+you maintain that? How do you think
+ 
+you maintain that? How do you think
+about that? How do you teach the idea
+ 
+about that? How do you teach the idea
+that you want these concepts,
+ 
+that you want these concepts,
+guardrails, outcome specifications
+ 
+guardrails, outcome specifications
+for non-tech folks, for folks who are
+ 
+for non-tech folks, for folks who are
+like, "What is a spec?" Well, a spec is
+ 
+like, "What is a spec?" Well, a spec is
+just defining what you want the model to
+ 
+just defining what you want the model to
+do, right? There's ways we can teach
+ 
+do, right? There's ways we can teach
+this that is really not going to be
+ 
+this that is really not going to be
+intimidating and that doesn't require
+ 
+intimidating and that doesn't require
+using the terminal or the command line
+ 
+using the terminal or the command line
+and that will allow you to build useful
+ 
+and that will allow you to build useful
+working software to solve non-technical
+ 
+working software to solve non-technical
+problems. And this goes for families,
+ 
+problems. And this goes for families,
+too. Let's say you want to build a
+ 
+too. Let's say you want to build a
+family calendar. Like it's increasingly
+ 
+family calendar. Like it's increasingly
+going to be possible to not just build
+ 
+going to be possible to not just build
+one for your personal use that you start
+ 
+one for your personal use that you start
+up personally on your laptop, but like
+ 
+up personally on your laptop, but like
+that you just build and you can deploy
+ 
+that you just build and you can deploy
+and maintain for the family and it's not
+ 
+and maintain for the family and it's not
+even going to be something you think
+ 
+even going to be something you think
+about as a piece of software because you
+ 
+about as a piece of software because you
+never touched the code. It just got
+ 
+never touched the code. It just got
+built for you because you specified it
+ 
+built for you because you specified it
+and you said, "Please hook into my
+ 
+and you said, "Please hook into my
+Google." Now, do we need better agentic
+ 
+Google." Now, do we need better agentic
+primitives? Do we need better ways to
+ 
+primitives? Do we need better ways to
+hook into things like a Google calendar
+ 
+hook into things like a Google calendar
+so it's easier? Absolutely. That is one
+ 
+so it's easier? Absolutely. That is one
+of the big pain points right now, but
+ 
+of the big pain points right now, but
+that is the direction we're headed. And
+ 
+that is the direction we're headed. And
+so if you're looking at this from a role
+ 
+so if you're looking at this from a role
+perspective, from a team perspective,
+ 
+perspective, from a team perspective,
+you should be stepping back and asking
+ 
+you should be stepping back and asking
+yourself, "How much of my role is
+ 
+yourself, "How much of my role is
+compensating for a model's limitations
+ 
+compensating for a model's limitations
+today
+ 
+today
+versus how much of my role is really
+ 
+versus how much of my role is really
+thinking about how to architect and
+ 
+thinking about how to architect and
+correctly aim artificial intelligence so
+ 
+correctly aim artificial intelligence so
+it accomplishes a lot of work?" That's
+ 
+it accomplishes a lot of work?" That's
+the part you want to be on, right?
+ 
+the part you want to be on, right?
+That's where you want to lean your role,
+ 
+That's where you want to lean your role,
+and everybody has to some degree it's a
+ 
+and everybody has to some degree it's a
+chance to lean there, right? You can
+ 
+chance to lean there, right? You can
+lean more into I want to guide the model
+ 
+lean more into I want to guide the model
+toward work that it needs to do, and
+ 
+toward work that it needs to do, and
+less into my job is to compensate for
+ 
+less into my job is to compensate for
+model limitations. Because model
+ 
+model limitations. Because model
+limitations are going to keep shrinking,
+ 
+limitations are going to keep shrinking,
+we're about to have another big step
+ 
+we're about to have another big step
+change there with Mythos. All right, so
+ 
+change there with Mythos. All right, so
+what does this mean for you? I want to
+ 
+what does this mean for you? I want to
+step back and simplify this in the
+ 
+step back and simplify this in the
+spirit of Mythos. You need to take the
+ 
+spirit of Mythos. You need to take the
+idea that we are going to keep seeing
+ 
+idea that we are going to keep seeing
+model generations getting better very,
+ 
+model generations getting better very,
+very seriously. We are not hitting a
+ 
+very seriously. We are not hitting a
+wall. That means you need to think
+ 
+wall. That means you need to think
+across your role and across your
+ 
+across your role and across your
+technical systems about how you can
+ 
+technical systems about how you can
+dramatically simplify.
+ 
+dramatically simplify.
+How can you simplify so that the model
+ 
+How can you simplify so that the model
+has room to be intelligent? If you take
+ 
+has room to be intelligent? If you take
+one thing away, that is what I want you
+ 
+one thing away, that is what I want you
+to take away.
+ 
+to take away.
+And yes, you absolutely will need to
+ 
+And yes, you absolutely will need to
+look in detail to get there because most
+ 
+look in detail to get there because most
+of us have added a lot of guardrails and
+ 
+of us have added a lot of guardrails and
+a lot of cruft around our work so that
+ 
+a lot of cruft around our work so that
+we feel like we add value and or so that
+ 
+we feel like we add value and or so that
+the weaker models can do their jobs.
+ 
+the weaker models can do their jobs.
+That's fine. The challenge is to grow by
+ 
+That's fine. The challenge is to grow by
+being able to simplify what you ask the
+ 
+being able to simplify what you ask the
+model to do against a larger outcome set
+ 
+model to do against a larger outcome set
+so that we get out of the way and let
+ 
+so that we get out of the way and let
+the model do its job, and we focus on
+ 
+the model do its job, and we focus on
+making sure that we are aiming the model
+ 
+making sure that we are aiming the model
+in the direction of a big cool goal, and
+ 
+in the direction of a big cool goal, and
+we focus on making sure we're building
+ 
+we focus on making sure we're building
+the pipeline and the support and the and
+ 
+the pipeline and the support and the and
+the tool availability, and the
+ 
+the tool availability, and the
+availability of data so the model can do
+ 
+availability of data so the model can do
+its job.
+ 
+its job.
+And we also have a good sense of what
+ 
+And we also have a good sense of what
+good looks like. I've I've talked about
+ 
+good looks like. I've I've talked about
+that a lot. That's going to matter for
+ 
+that a lot. That's going to matter for
+technical and non-technical work. Is the
+ 
+technical and non-technical work. Is the
+code clean? Is the Excel absolutely
+ 
+code clean? Is the Excel absolutely
+right? That's not going to stop being
+ 
+right? That's not going to stop being
+important.
+ 
+important.
+We just need to make sure that we give
+ 
+We just need to make sure that we give
+the model what it needs so that it can
+ 
+the model what it needs so that it can
+accomplish those goals successfully, and
+ 
+accomplish those goals successfully, and
+when we measure it and check it, we have
+ 
+when we measure it and check it, we have
+confidence that the model got it done.
+ 
+confidence that the model got it done.
+So, Claude Mythos is coming. The
+ 
+So, Claude Mythos is coming. The
+inflection point is here. This is
+ 
+inflection point is here. This is
+another one of those moments when you
+ 
+another one of those moments when you
+need to be able to catch the train
+ 
+need to be able to catch the train
+before it leaves the station.
+ 
+before it leaves the station.
+I hope this gives you a set of
+ 
+I hope this gives you a set of
+actionable recommendations to go with
+ 
+actionable recommendations to go with
+today
+ 
+today
+to actually get ready for this. Because
+ 
+to actually get ready for this. Because
+this is one of those things if you look
+ 
+this is one of those things if you look
+at the checklist I gave you here in this
+ 
+at the checklist I gave you here in this
+video, you're going to need to do some
+ 
+video, you're going to need to do some
+work to get ready for this. If you want
+ 
+work to get ready for this. If you want
+to be ready day one, your systems need
+ 
+to be ready day one, your systems need
+to be ready to simplify. So, take the
+ 
+to be ready to simplify. So, take the
+time whether it's your own personal
+ 
+time whether it's your own personal
+checklist and you're saying how what
+ 
+checklist and you're saying how what
+what what can prompts do I use? Can I
+ 
+what what can prompts do I use? Can I
+simplify those? Or whether it's a work
+ 
+simplify those? Or whether it's a work
+checklist and you're looking at like
+ 
+checklist and you're looking at like
+Agent systems and how you prepare for
+ 
+Agent systems and how you prepare for
+them and guardrails, get ready. It's
+ 
+them and guardrails, get ready. It's
+coming. It's not going to be that long.
+ 
+coming. It's not going to be that long.
+It's a matter of weeks now. Good luck.

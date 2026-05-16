@@ -1,0 +1,2065 @@
+ 
+This is a piece about the strategy that
+ 
+This is a piece about the strategy that
+we have to build as product leaders when
+ 
+we have to build as product leaders when
+we think about where agents play best.
+ 
+we think about where agents play best.
+And what I'm asserting is that the work
+ 
+And what I'm asserting is that the work
+primitive is what really matters. And a
+ 
+primitive is what really matters. And a
+lot of us are assuming that the agent's
+ 
+lot of us are assuming that the agent's
+ability to use the computer sort of
+ 
+ability to use the computer sort of
+levels the playing field because we can
+ 
+levels the playing field because we can
+all sort of put our programs out there
+ 
+all sort of put our programs out there
+and the agent can use it. Or we can
+ 
+and the agent can use it. Or we can
+build an MCP server and it's just going
+ 
+build an MCP server and it's just going
+to work. I want to suggest that there's
+ 
+to work. I want to suggest that there's
+a deeper strategy in play that some of
+ 
+a deeper strategy in play that some of
+the hyper scalers understand and that
+ 
+the hyper scalers understand and that
+needs to be more widely shared and
+ 
+needs to be more widely shared and
+understood. I don't want us to get stuck
+ 
+understood. I don't want us to get stuck
+in a world where we just build demos
+ 
+in a world where we just build demos
+that look good in a Twitter video and
+ 
+that look good in a Twitter video and
+we're not thinking about that more
+ 
+we're not thinking about that more
+carefully. So, let's dive in and
+ 
+carefully. So, let's dive in and
+understand what happens under the
+ 
+understand what happens under the
+surface when you see an agentic workflow
+ 
+surface when you see an agentic workflow
+and what we mean by controlling a work
+ 
+and what we mean by controlling a work
+primitive. Cuz it's a new term, so we're
+ 
+primitive. Cuz it's a new term, so we're
+going to define it, we're going to
+ 
+going to define it, we're going to
+explain what it means, and we're going
+ 
+explain what it means, and we're going
+to explain why it's valuable. Let's jump
+ 
+to explain why it's valuable. Let's jump
+in. When an AI agent opens a browser and
+ 
+in. When an AI agent opens a browser and
+moves through tabs and clicks buttons
+ 
+moves through tabs and clicks buttons
+and fills out a form or checks your
+ 
+and fills out a form or checks your
+calendar and it can do all of that now,
+ 
+calendar and it can do all of that now,
+it feels like the model has crossed a
+ 
+it feels like the model has crossed a
+line. And I will say specifically Codex
+ 
+line. And I will say specifically Codex
+computer use can do that. It is no
+ 
+computer use can do that. It is no
+longer just answering questions, it's
+ 
+longer just answering questions, it's
+doing real work for you. But I think
+ 
+doing real work for you. But I think
+that the visible work that the model
+ 
+that the visible work that the model
+does is distracting us from the platform
+ 
+does is distracting us from the platform
+shift underneath. The future is not an
+ 
+shift underneath. The future is not an
+AI that gets really good at clicking
+ 
+AI that gets really good at clicking
+buttons for you. That's the bridge. The
+ 
+buttons for you. That's the bridge. The
+real fight is over who defines what the
+ 
+real fight is over who defines what the
+button means. Because once agents start
+ 
+button means. Because once agents start
+acting inside companies, the question is
+ 
+acting inside companies, the question is
+not just can it click a button for me?
+ 
+not just can it click a button for me?
+The question is does the system
+ 
+The question is does the system
+understand what kind of work is being
+ 
+understand what kind of work is being
+done, who's allowed to do it, what could
+ 
+done, who's allowed to do it, what could
+go wrong, and how the result is checked.
+ 
+go wrong, and how the result is checked.
+I've seen this personally just in using
+ 
+I've seen this personally just in using
+Codex computer use. I feel like I'm
+ 
+Codex computer use. I feel like I'm
+running into these sort of friction
+ 
+running into these sort of friction
+points that I never would have expected
+ 
+points that I never would have expected
+to see because I am now using an agent
+ 
+to see because I am now using an agent
+on my computer at the same time as I am
+ 
+on my computer at the same time as I am
+on that computer. And so I'm trying to
+ 
+on that computer. And so I'm trying to
+figure out what does it look like when
+ 
+figure out what does it look like when
+we have a different set of permission
+ 
+we have a different set of permission
+states for agents versus people. Let's
+ 
+states for agents versus people. Let's
+jump into the details here. There are
+ 
+jump into the details here. There are
+three layers to keep in your head.
+ 
+three layers to keep in your head.
+Access, meaning, and authority. Those
+ 
+Access, meaning, and authority. Those
+are all layers that agents can touch.
+ 
+are all layers that agents can touch.
+Computer use lets agents access parts of
+ 
+Computer use lets agents access parts of
+the computer. Semantic work primitives
+ 
+the computer. Semantic work primitives
+gives agents meaning. So, there are
+ 
+gives agents meaning. So, there are
+three layers to keep in your head as we
+ 
+three layers to keep in your head as we
+go through this video. The layer of
+ 
+go through this video. The layer of
+access, underneath it the layer of
+ 
+access, underneath it the layer of
+meaning, and deeper still the layer of
+ 
+meaning, and deeper still the layer of
+authority. Computer use is what I've
+ 
+authority. Computer use is what I've
+been messing with. It gives agents
+ 
+been messing with. It gives agents
+access. Semantic work primitives give
+ 
+access. Semantic work primitives give
+agents a real sense of meaning. And the
+ 
+agents a real sense of meaning. And the
+companies that control those primitives
+ 
+companies that control those primitives
+are the ones that end up with real
+ 
+are the ones that end up with real
+platform power. So, there's three
+ 
+platform power. So, there's three
+levels, right? And that sounds abstract,
+ 
+levels, right? And that sounds abstract,
+so we're going to start with something
+ 
+so we're going to start with something
+really simple. Imagine an AI agent
+ 
+really simple. Imagine an AI agent
+moving a calendar invite. I've had Codex
+ 
+moving a calendar invite. I've had Codex
+do that. On the screen, that looks like
+ 
+do that. On the screen, that looks like
+changing a time and clicking save. But
+ 
+changing a time and clicking save. But
+the action is not really click save. It
+ 
+the action is not really click save. It
+may notify five people, it may move prep
+ 
+may notify five people, it may move prep
+time, it may break a commitment someone
+ 
+time, it may break a commitment someone
+made to a customer, it may turn a
+ 
+made to a customer, it may turn a
+private conversation into a meeting that
+ 
+private conversation into a meeting that
+now conflicts with something more
+ 
+now conflicts with something more
+important. The human sees a calendar
+ 
+important. The human sees a calendar
+event and brings all of that context
+ 
+event and brings all of that context
+with them. The software sees fields in a
+ 
+with them. The software sees fields in a
+database, right? The agent sees that it
+ 
+database, right? The agent sees that it
+needs to fill out the calendar and just
+ 
+needs to fill out the calendar and just
+do the job. It doesn't necessarily
+ 
+do the job. It doesn't necessarily
+understand the human intent behind the
+ 
+understand the human intent behind the
+meeting. And the human intent behind the
+ 
+meeting. And the human intent behind the
+meeting, making that more legible, is
+ 
+meeting, making that more legible, is
+what I mean by a semantic work
+ 
+what I mean by a semantic work
+primitive. It's a fancy word, but it
+ 
+primitive. It's a fancy word, but it
+means basically, does the computer
+ 
+means basically, does the computer
+understand what it's doing and what we
+ 
+understand what it's doing and what we
+humans need it to do when it does a
+ 
+humans need it to do when it does a
+task, or is it just using the fields?
+ 
+task, or is it just using the fields?
+And that's a big difference. The same
+ 
+And that's a big difference. The same
+thing happens with checkout. A button
+ 
+thing happens with checkout. A button
+that says buy is not just a button. It
+ 
+that says buy is not just a button. It
+represents money, user consent, tax,
+ 
+represents money, user consent, tax,
+merchant identity, fraud risk,
+ 
+merchant identity, fraud risk,
+fulfillment, returns, card security, and
+ 
+fulfillment, returns, card security, and
+maybe a dispute a few weeks from now. Or
+ 
+maybe a dispute a few weeks from now. Or
+take deleting a file. One file might be
+ 
+take deleting a file. One file might be
+harmless cleanup, another might be the
+ 
+harmless cleanup, another might be the
+only copy of a signed agreement. On the
+ 
+only copy of a signed agreement. On the
+screen, those actions can look
+ 
+screen, those actions can look
+identical. In the work, they're very
+ 
+identical. In the work, they're very
+different. So, yes, agents need to use
+ 
+different. So, yes, agents need to use
+computers. They need browsers, they need
+ 
+computers. They need browsers, they need
+desktops, they need to survive inside
+ 
+desktops, they need to survive inside
+software that was built for people. But,
+ 
+software that was built for people. But,
+computer use is not a long-term moat.
+ 
+computer use is not a long-term moat.
+Computer use is like how agents reach
+ 
+Computer use is like how agents reach
+the old world, right? The thing that
+ 
+the old world, right? The thing that
+makes agents really valuable long-term
+ 
+makes agents really valuable long-term
+is the layer that tells the agent what
+ 
+is the layer that tells the agent what
+it is touching and why it matters. And
+ 
+it is touching and why it matters. And
+right now, we're kind of we're kind of
+ 
+right now, we're kind of we're kind of
+getting hints of that. So, the auto
+ 
+getting hints of that. So, the auto
+review feature in Codex basically is
+ 
+review feature in Codex basically is
+there to guard human intent and ensure
+ 
+there to guard human intent and ensure
+that the agent using the computer is
+ 
+that the agent using the computer is
+actually using it to do the right task.
+ 
+actually using it to do the right task.
+I love it. It works pretty well, but it
+ 
+I love it. It works pretty well, but it
+feels like an initial draft in that
+ 
+feels like an initial draft in that
+direction because it's very much a
+ 
+direction because it's very much a
+guardrail tool. It's there to guardrail
+ 
+guardrail tool. It's there to guardrail
+the agent and keep it from doing
+ 
+the agent and keep it from doing
+something it shouldn't. That's good. I
+ 
+something it shouldn't. That's good. I
+want it to do its job, but that's
+ 
+want it to do its job, but that's
+different from positively ensuring that
+ 
+different from positively ensuring that
+agents have the semantic meaning they
+ 
+agents have the semantic meaning they
+need to really deeply understand my
+ 
+need to really deeply understand my
+calendar. Calendars are complex things.
+ 
+calendar. Calendars are complex things.
+Deeply understand the email context for
+ 
+Deeply understand the email context for
+a relationship I've had for 3 and 1/2
+ 
+a relationship I've had for 3 and 1/2
+years with someone when they write one
+ 
+years with someone when they write one
+message. That's a larger piece of
+ 
+message. That's a larger piece of
+context. And look, I get it. Most of the
+ 
+context. And look, I get it. Most of the
+world is not agent-native, and the fact
+ 
+world is not agent-native, and the fact
+that we have computer use is hugely
+ 
+that we have computer use is hugely
+helpful. The fact that we have jumped in
+ 
+helpful. The fact that we have jumped in
+just a few months to the point where
+ 
+just a few months to the point where
+it's useful is a godsend. Companies are
+ 
+it's useful is a godsend. Companies are
+full of software that assumes a human is
+ 
+full of software that assumes a human is
+sitting there interpreting everything,
+ 
+sitting there interpreting everything,
+right? Internal dashboards, procurement
+ 
+right? Internal dashboards, procurement
+tools, shared drives, government
+ 
+tools, shared drives, government
+websites, Excel workflows, the whole
+ 
+websites, Excel workflows, the whole
+thing, right? Like this All of computing
+ 
+thing, right? Like this All of computing
+assumes a human will use it. If an agent
+ 
+assumes a human will use it. If an agent
+cannot use a computer visually in that
+ 
+cannot use a computer visually in that
+world, it cannot reach so much of our
+ 
+world, it cannot reach so much of our
+work. It is stuck inside the clean,
+ 
+work. It is stuck inside the clean,
+modern, API-friendly part of the world,
+ 
+modern, API-friendly part of the world,
+which is much smaller than people in
+ 
+which is much smaller than people in
+tech want it to be. So, computer use is
+ 
+tech want it to be. So, computer use is
+absolutely necessary. It is the
+ 
+absolutely necessary. It is the
+universal adapter for the messy middle
+ 
+universal adapter for the messy middle
+period. It's kind of like screenshots,
+ 
+period. It's kind of like screenshots,
+right? It just is going to be a
+ 
+right? It just is going to be a
+universal adapter. But, a universal
+ 
+universal adapter. But, a universal
+adapter is typically a shallow
+ 
+adapter is typically a shallow
+interface. A screenshot can show the
+ 
+interface. A screenshot can show the
+agent what is on the screen, but it does
+ 
+agent what is on the screen, but it does
+not automatically reveal the structure
+ 
+not automatically reveal the structure
+underneath. A browser can reach almost
+ 
+underneath. A browser can reach almost
+every web app, but it does not
+ 
+every web app, but it does not
+automatically know the domain meaning of
+ 
+automatically know the domain meaning of
+each workflow. A desktop controller can
+ 
+each workflow. A desktop controller can
+click a button, but it does not
+ 
+click a button, but it does not
+automatically know whether that button
+ 
+automatically know whether that button
+is reversible, whether that button is
+ 
+is reversible, whether that button is
+financially material or dangerous. The
+ 
+financially material or dangerous. The
+agent can guess, and the guesses are
+ 
+agent can guess, and the guesses are
+getting much, much better, but guessing
+ 
+getting much, much better, but guessing
+is not a strategy for high consequence
+ 
+is not a strategy for high consequence
+work. If an agent is helping you
+ 
+work. If an agent is helping you
+summarize an article, then guessing is
+ 
+summarize an article, then guessing is
+probably something you can fix. If it is
+ 
+probably something you can fix. If it is
+deciding whether to issue a contract,
+ 
+deciding whether to issue a contract,
+that's a different thing entirely,
+ 
+that's a different thing entirely,
+right? If it's deciding whether to email
+ 
+right? If it's deciding whether to email
+a customer, that's a different thing
+ 
+a customer, that's a different thing
+entirely, or spend money, you have to be
+ 
+entirely, or spend money, you have to be
+sure. And this is where the hierarchy of
+ 
+sure. And this is where the hierarchy of
+meaning becomes clear. Agents should use
+ 
+meaning becomes clear. Agents should use
+the richest semantic interface
+ 
+the richest semantic interface
+available. If there's a connector, use
+ 
+available. If there's a connector, use
+the connector. If there's a proper
+ 
+the connector. If there's a proper
+protocol, use the protocol. If the
+ 
+protocol, use the protocol. If the
+system exposes a typed object and a
+ 
+system exposes a typed object and a
+permission to action, use that. Only
+ 
+permission to action, use that. Only
+fall back to a browser or desktop
+ 
+fall back to a browser or desktop
+control when the richer interface
+ 
+control when the richer interface
+doesn't exist. This is not just
+ 
+doesn't exist. This is not just
+engineering preference here. This is how
+ 
+engineering preference here. This is how
+things should be architected, and as far
+ 
+things should be architected, and as far
+as I can see, this is generally how the
+ 
+as I can see, this is generally how the
+hyperscalers have built their models.
+ 
+hyperscalers have built their models.
+Codex works this way, Claude prefers to
+ 
+Codex works this way, Claude prefers to
+work through MCPs when it can, and I
+ 
+work through MCPs when it can, and I
+think that's correct. Ultimately, it is
+ 
+think that's correct. Ultimately, it is
+that hierarchy of meaning that ensures
+ 
+that hierarchy of meaning that ensures
+that we get the richest possible
+ 
+that we get the richest possible
+experience for any given task. So, we're
+ 
+experience for any given task. So, we're
+not likely to have as many issues as
+ 
+not likely to have as many issues as
+long as we have as many connectors as
+ 
+long as we have as many connectors as
+possible plugged into our preferred AI
+ 
+possible plugged into our preferred AI
+systems, which by the way is an intended
+ 
+systems, which by the way is an intended
+a plug for you adding plugins to your
+ 
+a plug for you adding plugins to your
+chat GPT, to your Codex, to your Claude.
+ 
+chat GPT, to your Codex, to your Claude.
+Make sure it has those rich tools if
+ 
+Make sure it has those rich tools if
+they are available to you. And
+ 
+they are available to you. And
+increasingly, so much of our work, we
+ 
+increasingly, so much of our work, we
+have MCPs or APIs that are already
+ 
+have MCPs or APIs that are already
+pre-built as plugins for these tools,
+ 
+pre-built as plugins for these tools,
+you should add them. That is just a very
+ 
+you should add them. That is just a very
+practical takeaway here. If you want
+ 
+practical takeaway here. If you want
+your agent to not have to use computer
+ 
+your agent to not have to use computer
+use all the time, add the plugins. Add
+ 
+use all the time, add the plugins. Add
+the connectors. All of that is there
+ 
+the connectors. All of that is there
+just to facilitate access, right? The
+ 
+just to facilitate access, right? The
+model needs access to tools, the agent
+ 
+model needs access to tools, the agent
+needs access to the browser, the
+ 
+needs access to the browser, the
+assistant needs to access your files.
+ 
+assistant needs to access your files.
+So, you get the idea. But, access only
+ 
+So, you get the idea. But, access only
+gets the agent into the workspace. It
+ 
+gets the agent into the workspace. It
+doesn't make the work understandable.
+ 
+doesn't make the work understandable.
+The next layer that we are just getting
+ 
+The next layer that we are just getting
+to now is meaning. What is this object?
+ 
+to now is meaning. What is this object?
+What action is being proposed? Who owns
+ 
+What action is being proposed? Who owns
+it? Who's allowed to change it? What
+ 
+it? Who's allowed to change it? What
+happens if the action succeeds? What
+ 
+happens if the action succeeds? What
+happens if it fails? Is it reversible?
+ 
+happens if it fails? Is it reversible?
+Does it touch the money? Does it touch
+ 
+Does it touch the money? Does it touch
+customer data? Does it touch production?
+ 
+customer data? Does it touch production?
+Does it create an obligation outside the
+ 
+Does it create an obligation outside the
+company? Does it require approval? Can
+ 
+company? Does it require approval? Can
+another agent review it? Can the system
+ 
+another agent review it? Can the system
+tell whether the outcome is correct?
+ 
+tell whether the outcome is correct?
+These sound like governance questions,
+ 
+These sound like governance questions,
+but they're really product questions.
+ 
+but they're really product questions.
+The more clearly a system can answer
+ 
+The more clearly a system can answer
+those correctly, the more autonomy it
+ 
+those correctly, the more autonomy it
+can support. The less clearly it can
+ 
+can support. The less clearly it can
+answer them, the more the human has to
+ 
+answer them, the more the human has to
+sit there supervise it. This is why I
+ 
+sit there supervise it. This is why I
+think describing the agent having the
+ 
+think describing the agent having the
+power to write is just you trust it's
+ 
+power to write is just you trust it's
+right, trusted right access. Access is
+ 
+right, trusted right access. Access is
+the engineering term. That's too small a
+ 
+the engineering term. That's too small a
+way of picturing what we're doing here.
+ 
+way of picturing what we're doing here.
+Trust is not a switch. An agent might be
+ 
+Trust is not a switch. An agent might be
+trusted to read but not write, draft but
+ 
+trusted to read but not write, draft but
+not send, stage but not deploy,
+ 
+not send, stage but not deploy,
+recommend but not approve, change a
+ 
+recommend but not approve, change a
+sandbox but not production, write in one
+ 
+sandbox but not production, write in one
+space but not another. All of those
+ 
+space but not another. All of those
+distinctions depend on semantics. If it
+ 
+distinctions depend on semantics. If it
+cannot tell the difference between
+ 
+cannot tell the difference between
+issuing a refund from your chosen
+ 
+issuing a refund from your chosen
+Shopify shop versus issuing a refund
+ 
+Shopify shop versus issuing a refund
+from your Stripe, you're going to have
+ 
+from your Stripe, you're going to have
+problems as well. If it cannot tell the
+ 
+problems as well. If it cannot tell the
+difference between staging and
+ 
+difference between staging and
+production, which by the way there were
+ 
+production, which by the way there were
+real production systems deleted as a
+ 
+real production systems deleted as a
+result of exactly that issue, then it
+ 
+result of exactly that issue, then it
+shouldn't be anywhere near the deploy
+ 
+shouldn't be anywhere near the deploy
+button. So, the real primitive here is
+ 
+button. So, the real primitive here is
+not the ability of the agent to use the
+ 
+not the ability of the agent to use the
+computer. It's not even the browser tab
+ 
+computer. It's not even the browser tab
+for web browsing. The real primitive,
+ 
+for web browsing. The real primitive,
+the foundation on which we're building,
+ 
+the foundation on which we're building,
+is a semantically meaningful unit of
+ 
+is a semantically meaningful unit of
+work. A refund, a reschedule, a payment
+ 
+work. A refund, a reschedule, a payment
+authorization, a compliance exception, a
+ 
+authorization, a compliance exception, a
+meeting brief. all examples of this,
+ 
+meeting brief. all examples of this,
+right? Those are things that agents need
+ 
+right? Those are things that agents need
+to understand as units of work. Human
+ 
+to understand as units of work. Human
+software hides them behind buttons and
+ 
+software hides them behind buttons and
+forms, but humans have always understood
+ 
+forms, but humans have always understood
+them intuitively. Agent-native software
+ 
+them intuitively. Agent-native software
+needs to expose them directly. This, by
+ 
+needs to expose them directly. This, by
+the way, is why coding agents arrived
+ 
+the way, is why coding agents arrived
+first. This, by the way, is also why
+ 
+first. This, by the way, is also why
+coding agents arrived first. It is very
+ 
+coding agents arrived first. It is very
+tempting to say that coding agents
+ 
+tempting to say that coding agents
+worked first because code is text and
+ 
+worked first because code is text and
+language models are good at text. That's
+ 
+language models are good at text. That's
+part of it, but it's not the whole
+ 
+part of it, but it's not the whole
+story. Coding agents worked first
+ 
+story. Coding agents worked first
+because software development already has
+ 
+because software development already has
+unusually rich work semantics. A code
+ 
+unusually rich work semantics. A code
+base is not just a pile of text files.
+ 
+base is not just a pile of text files.
+It has modules and dependencies and
+ 
+It has modules and dependencies and
+tests and type systems and linters and
+ 
+tests and type systems and linters and
+package managers and get history, et
+ 
+package managers and get history, et
+cetera, right? It has all of these
+ 
+cetera, right? It has all of these
+things. That means the agent can
+ 
+things. That means the agent can
+perceive state and act on state and
+ 
+perceive state and act on state and
+observe feedback and revise its actions.
+ 
+observe feedback and revise its actions.
+It can inspect the repo. It can edit a
+ 
+It can inspect the repo. It can edit a
+file. It can run a test. It can see the
+ 
+file. It can run a test. It can see the
+error. It can change the implementation
+ 
+error. It can change the implementation
+and hand the result back. The loop is
+ 
+and hand the result back. The loop is
+powerful because the work environment
+ 
+powerful because the work environment
+itself gives the agent semantic
+ 
+itself gives the agent semantic
+feedback. The human doesn't have to
+ 
+feedback. The human doesn't have to
+answer every 30 seconds, is this right,
+ 
+answer every 30 seconds, is this right,
+if the test is failing. The agent can
+ 
+if the test is failing. The agent can
+just tell it's wrong. In other words,
+ 
+just tell it's wrong. In other words,
+when we are talking about coding tests,
+ 
+when we are talking about coding tests,
+we are not just talking about
+ 
+we are not just talking about
+verification artifacts. We're talking
+ 
+verification artifacts. We're talking
+about semantic meaning artifacts. They
+ 
+about semantic meaning artifacts. They
+tell the agent what world it's operating
+ 
+tell the agent what world it's operating
+in. Most knowledge work is not like that
+ 
+in. Most knowledge work is not like that
+yet, right? A strategy doc doesn't have
+ 
+yet, right? A strategy doc doesn't have
+tests. A calendar has events, but the
+ 
+tests. A calendar has events, but the
+importance of those events is hidden
+ 
+importance of those events is hidden
+behind politics and priorities and
+ 
+behind politics and priorities and
+relationships. A sales process might
+ 
+relationships. A sales process might
+depend on unwritten account history.
+ 
+depend on unwritten account history.
+Often it does. A procurement decision
+ 
+Often it does. A procurement decision
+may depend on budget timing and risk
+ 
+may depend on budget timing and risk
+tolerance, which isn't written down.
+ 
+tolerance, which isn't written down.
+Agents can help in those domains. They
+ 
+Agents can help in those domains. They
+already do, but the environment doesn't
+ 
+already do, but the environment doesn't
+give them the same density of meaning
+ 
+give them the same density of meaning
+that a code base would give them. This
+ 
+that a code base would give them. This
+is why coding is a wedge, not because
+ 
+is why coding is a wedge, not because
+all work automatically becomes coding or
+ 
+all work automatically becomes coding or
+every worker becomes a coder. Coding is
+ 
+every worker becomes a coder. Coding is
+a wedge because code is legible enough
+ 
+a wedge because code is legible enough
+that an agent can facilitate and
+ 
+that an agent can facilitate and
+participate in it without a human being
+ 
+participate in it without a human being
+a full-time supervisor. So, once you see
+ 
+a full-time supervisor. So, once you see
+the world that way, products like Codex
+ 
+the world that way, products like Codex
+stop looking like coding tools and they
+ 
+stop looking like coding tools and they
+start looking like labs for where the
+ 
+start looking like labs for where the
+future of work is going to be. And
+ 
+future of work is going to be. And
+that's where the product strategy starts
+ 
+that's where the product strategy starts
+to get really interesting. The model is
+ 
+to get really interesting. The model is
+still central, right? Better models
+ 
+still central, right? Better models
+definitely matter, faster models matter,
+ 
+definitely matter, faster models matter,
+reasoning matters, but the model alone
+ 
+reasoning matters, but the model alone
+is not the product and hasn't been for a
+ 
+is not the product and hasn't been for a
+while. Because to do work, a model needs
+ 
+while. Because to do work, a model needs
+to be in a harness that can enable it to
+ 
+to be in a harness that can enable it to
+access and operate against
+ 
+units of work. And if you want it to be
+ 
+units of work. And if you want it to be
+non-coding work, then the non-coding
+ 
+non-coding work, then the non-coding
+work has to be semantically meaningful.
+ 
+work has to be semantically meaningful.
+So, harnesses really matter. Harnesses
+ 
+So, harnesses really matter. Harnesses
+help the agent access the work, but you
+ 
+help the agent access the work, but you
+also have to make sure that the work
+ 
+also have to make sure that the work
+that's being accessed is actually done
+ 
+that's being accessed is actually done
+in a way that makes sense. The whole
+ 
+in a way that makes sense. The whole
+point of an agent doing the work is to
+ 
+point of an agent doing the work is to
+reduce the amount of attention I have to
+ 
+reduce the amount of attention I have to
+spend coordinating the work. If I still
+ 
+spend coordinating the work. If I still
+carry all of that harness intuition that
+ 
+carry all of that harness intuition that
+makes the semantic meaning of work
+ 
+makes the semantic meaning of work
+legible inside my head, I'm not getting
+ 
+legible inside my head, I'm not getting
+very far. If I carry all the meaning of
+ 
+very far. If I carry all the meaning of
+my three calendars and the agent can't
+ 
+my three calendars and the agent can't
+figure it out, we're not getting very
+ 
+figure it out, we're not getting very
+far. And I want to be blunt here. I know
+ 
+far. And I want to be blunt here. I know
+that this is a hard problem, but it is
+ 
+that this is a hard problem, but it is
+exactly the hard problems that are
+ 
+exactly the hard problems that are
+valuable to solve. This is basically a
+ 
+valuable to solve. This is basically a
+free roadmap if you are a startup.
+ 
+free roadmap if you are a startup.
+Because as a startup, you want to be in
+ 
+Because as a startup, you want to be in
+a position where you can solve problems
+ 
+a position where you can solve problems
+that are not easy for someone else to
+ 
+that are not easy for someone else to
+come and grab. And one of those classic
+ 
+come and grab. And one of those classic
+problem shapes is make a semantic
+ 
+problem shapes is make a semantic
+meaning of work legible to agents today.
+ 
+meaning of work legible to agents today.
+Don't just rely on a standard MCP
+ 
+Don't just rely on a standard MCP
+interface, try and break it. Understand
+ 
+interface, try and break it. Understand
+where it's not working. Understand where
+ 
+where it's not working. Understand where
+it connects to levers, but the agent
+ 
+it connects to levers, but the agent
+doesn't know how to reliably drive the
+ 
+doesn't know how to reliably drive the
+levers from a prompt because there's
+ 
+levers from a prompt because there's
+something else about understanding the
+ 
+something else about understanding the
+task that isn't there. I get super
+ 
+task that isn't there. I get super
+passionate about this because if we
+ 
+passionate about this because if we
+don't have agents that understand the
+ 
+don't have agents that understand the
+meaning of work, we get bad calendar
+ 
+meaning of work, we get bad calendar
+invites, decks that feel like they're
+ 
+invites, decks that feel like they're
+off on tone but we can't explain why. We
+ 
+off on tone but we can't explain why. We
+get refunds that are issued to customers
+ 
+get refunds that are issued to customers
+that shouldn't be issued to customers.
+ 
+that shouldn't be issued to customers.
+All kinds of things go wrong not because
+ 
+All kinds of things go wrong not because
+the agents can't control the system but
+ 
+the agents can't control the system but
+because the semantic meaning of your
+ 
+because the semantic meaning of your
+work is not available. Now, in the
+ 
+work is not available. Now, in the
+article that I'm writing for this on
+ 
+article that I'm writing for this on
+Substack, I spend more time on getting
+ 
+Substack, I spend more time on getting
+into the commerce stack, understanding
+ 
+into the commerce stack, understanding
+the difference between discovery and
+ 
+the difference between discovery and
+checkout and infrastructure, and how our
+ 
+checkout and infrastructure, and how our
+agentic commerce strategies are shaped
+ 
+agentic commerce strategies are shaped
+by this approach, by how we understand
+ 
+by this approach, by how we understand
+semantic meanings of work. Because
+ 
+semantic meanings of work. Because
+there's a critical semantic layer to
+ 
+there's a critical semantic layer to
+agentic transactions that's super
+ 
+agentic transactions that's super
+important. But for our purposes today,
+ 
+important. But for our purposes today,
+we're going to assume that you realize
+ 
+we're going to assume that you realize
+we have to have a semantic meaning to
+ 
+we have to have a semantic meaning to
+transactions, that transactions
+ 
+transactions, that transactions
+themselves are part of the semantic
+ 
+themselves are part of the semantic
+meaning of work, that there's a whole
+ 
+meaning of work, that there's a whole
+strategy there, and we're also going to
+ 
+strategy there, and we're also going to
+put a pin in that and look at something
+ 
+put a pin in that and look at something
+that is more tangible and easy to
+ 
+that is more tangible and easy to
+understand in a quick video. And that's
+ 
+understand in a quick video. And that's
+Perplexity. Perplexity's strategy is
+ 
+Perplexity. Perplexity's strategy is
+super interesting here. If you think
+ 
+super interesting here. If you think
+about it from a move to the semantic
+ 
+about it from a move to the semantic
+meaning of work perspective, a lot more
+ 
+meaning of work perspective, a lot more
+makes sense. This is why Perplexity has
+ 
+makes sense. This is why Perplexity has
+to move toward products like Comet and
+ 
+to move toward products like Comet and
+Computer and Personal Computer long
+ 
+Computer and Personal Computer long
+term. It needs to get away from search
+ 
+term. It needs to get away from search
+per se and closer to the browser, the
+ 
+per se and closer to the browser, the
+desktop, the files, the apps, the
+ 
+desktop, the files, the apps, the
+workflows where research becomes action.
+ 
+workflows where research becomes action.
+That move makes sense. The browser is
+ 
+That move makes sense. The browser is
+where a huge amount of work already
+ 
+where a huge amount of work already
+happens. Email, documents, dashboards,
+ 
+happens. Email, documents, dashboards,
+SaaS apps, analytics, shopping,
+ 
+SaaS apps, analytics, shopping,
+calendar, support tools, customer
+ 
+calendar, support tools, customer
+systems, internal tools, they all
+ 
+systems, internal tools, they all
+collapse into tabs. An agent inside the
+ 
+collapse into tabs. An agent inside the
+browser can see context between web apps
+ 
+browser can see context between web apps
+and compare pages and take multi-step
+ 
+and compare pages and take multi-step
+actions, and it just becomes legible
+ 
+actions, and it just becomes legible
+because it sees your work. And this is
+ 
+because it sees your work. And this is
+why browsers and AI are interesting and
+ 
+why browsers and AI are interesting and
+why one of the things that is really
+ 
+why one of the things that is really
+undecided in 2026 is who is going to
+ 
+undecided in 2026 is who is going to
+have the AI browser. If Perplexity
+ 
+have the AI browser. If Perplexity
+becomes an AI browser for someone else's
+ 
+becomes an AI browser for someone else's
+tools and other tools plug into it, it
+ 
+tools and other tools plug into it, it
+gets durable control here because it
+ 
+gets durable control here because it
+manages the browser that can see your
+ 
+manages the browser that can see your
+calendar and the calendar system owns
+ 
+calendar and the calendar system owns
+your recurrence and your attendees and
+ 
+your recurrence and your attendees and
+your notifications and your meeting
+ 
+your notifications and your meeting
+state. It can see your GitHub. It can
+ 
+state. It can see your GitHub. It can
+see whatever you're logging into. But
+ 
+see whatever you're logging into. But
+the browser war is not just about which
+ 
+the browser war is not just about which
+company gets closest to the user. It's
+ 
+company gets closest to the user. It's
+about whether the browser can assemble
+ 
+about whether the browser can assemble
+cross-domain meaning for you. If
+ 
+cross-domain meaning for you. If
+Perplexity owns the browser in common,
+ 
+Perplexity owns the browser in common,
+can it build a durable work graph above
+ 
+can it build a durable work graph above
+the underlying apps? Can it turn search
+ 
+the underlying apps? Can it turn search
+results into structured actions with
+ 
+results into structured actions with
+permissions and validation and review?
+ 
+permissions and validation and review?
+Can it remember the user's projects and
+ 
+Can it remember the user's projects and
+policies in a way that makes work easier
+ 
+policies in a way that makes work easier
+or does it remain just an operator of
+ 
+or does it remain just an operator of
+interfaces? And that is the trap for any
+ 
+interfaces? And that is the trap for any
+kind of search native or browser native
+ 
+kind of search native or browser native
+agent. And that is why even though
+ 
+agent. And that is why even though
+browser is a play for Perplexity,
+ 
+browser is a play for Perplexity,
+Perplexity also has to move to the
+ 
+Perplexity also has to move to the
+computer because if they're not on the
+ 
+computer because if they're not on the
+computer, if they're not handling those
+ 
+computer, if they're not handling those
+compute files I talked about close to
+ 
+compute files I talked about close to
+semantic meaning, where it basically has
+ 
+semantic meaning, where it basically has
+an open claw in your computer,
+ 
+an open claw in your computer,
+Perplexity personal computer, and it
+ 
+Perplexity personal computer, and it
+touches files. It touches these compute
+ 
+touches files. It touches these compute
+primitives I was talking about earlier
+ 
+primitives I was talking about earlier
+in this video, it still has kind of a
+ 
+in this video, it still has kind of a
+shaky hold on the semantic meaning of
+ 
+shaky hold on the semantic meaning of
+work. Basically, there are two big plays
+ 
+work. Basically, there are two big plays
+going on right now to figure out how
+ 
+going on right now to figure out how
+agents will do meaningful work in the
+ 
+agents will do meaningful work in the
+world. Play one is to start from the
+ 
+world. Play one is to start from the
+semantic meaning of work out here in the
+ 
+semantic meaning of work out here in the
+real world where we do work and work
+ 
+real world where we do work and work
+back to the agents. It's the only play a
+ 
+back to the agents. It's the only play a
+lot of people who aren't hyper-scalers
+ 
+lot of people who aren't hyper-scalers
+have. That's why I chose the Perplexity
+ 
+have. That's why I chose the Perplexity
+example. The other play is the play
+ 
+example. The other play is the play
+that's available to the hyper-scalers.
+ 
+that's available to the hyper-scalers.
+And that is to start from the models
+ 
+And that is to start from the models
+themselves and their ability to
+ 
+themselves and their ability to
+understand and use code and move out
+ 
+understand and use code and move out
+through computing primitives to figure
+ 
+through computing primitives to figure
+out how to do work from there. And that
+ 
+out how to do work from there. And that
+is why people have made a lot of hay out
+ 
+is why people have made a lot of hay out
+of the fact that Claude and Codex have
+ 
+of the fact that Claude and Codex have
+not too many tools, but use those tools
+ 
+not too many tools, but use those tools
+super super well to do the
+ 
+super super well to do the
+They are close to the computer. They use
+ 
+They are close to the computer. They use
+the tools that make sense for them,
+ 
+the tools that make sense for them,
+they're allowed to compose tools to
+ 
+they're allowed to compose tools to
+accomplish complex workflows, and their
+ 
+accomplish complex workflows, and their
+ability to understand the semantic
+ 
+ability to understand the semantic
+meaning of code turns out to be a good
+ 
+meaning of code turns out to be a good
+general unlock for a lot of other work.
+ 
+general unlock for a lot of other work.
+But, the thing is, the bridge in between
+ 
+But, the thing is, the bridge in between
+those two approaches has some holes in
+ 
+those two approaches has some holes in
+it. If you're just coming from the
+ 
+it. If you're just coming from the
+computer side, as I've been sharing many
+ 
+computer side, as I've been sharing many
+specific examples of, your computer may
+ 
+specific examples of, your computer may
+not fully understand the purpose of the
+ 
+not fully understand the purpose of the
+work it's doing. Your agent may not
+ 
+work it's doing. Your agent may not
+fully understand the purpose of the work
+ 
+fully understand the purpose of the work
+it's doing. The calendar example is a
+ 
+it's doing. The calendar example is a
+good one. If it moves the calendar
+ 
+good one. If it moves the calendar
+invite, does it really realize it's
+ 
+invite, does it really realize it's
+inconveniencing two or three other
+ 
+inconveniencing two or three other
+people you don't want to mess with?
+ 
+people you don't want to mess with?
+Probably not. On the other hand, if
+ 
+Probably not. On the other hand, if
+you're coming from the semantic meaning
+ 
+you're coming from the semantic meaning
+of work, if you're coming from making
+ 
+of work, if you're coming from making
+sure that you understand how to bundle
+ 
+sure that you understand how to bundle
+that together and make it useful, sort
+ 
+that together and make it useful, sort
+of like Perplexity is doing, you have to
+ 
+of like Perplexity is doing, you have to
+think about it and say, "Am I ready to
+ 
+think about it and say, "Am I ready to
+make this bridge into the hyperscalers,
+ 
+make this bridge into the hyperscalers,
+and where do I plug in?" And what
+ 
+and where do I plug in?" And what
+Perplexity has basically decided to do
+ 
+Perplexity has basically decided to do
+is to say, "We welcome all models. We're
+ 
+is to say, "We welcome all models. We're
+going to be the shop where you have all
+ 
+going to be the shop where you have all
+models, and our focus is going to be
+ 
+models, and our focus is going to be
+making these semantic
+ 
+making these semantic
+units of work very, very legible and
+ 
+units of work very, very legible and
+easy." And that's why Personal Computer
+ 
+easy." And that's why Personal Computer
+is full of specific workflows for
+ 
+is full of specific workflows for
+knowledge work, like finance. They're so
+ 
+knowledge work, like finance. They're so
+far in on finance. And so, you kind of
+ 
+far in on finance. And so, you kind of
+have to pick a lane, one approach or the
+ 
+have to pick a lane, one approach or the
+other. And if you're not a hyperscaler,
+ 
+other. And if you're not a hyperscaler,
+the lane's been picked for you because
+ 
+the lane's been picked for you because
+you don't have a gigantic model that you
+ 
+you don't have a gigantic model that you
+can use to do code with. It doesn't
+ 
+can use to do code with. It doesn't
+belong to someone else that you're
+ 
+belong to someone else that you're
+renting. And so, when you think about it
+ 
+renting. And so, when you think about it
+that way, the world becomes simpler.
+ 
+that way, the world becomes simpler.
+Humans need clear interfaces, agents
+ 
+Humans need clear interfaces, agents
+need clear semantics, the best software
+ 
+need clear semantics, the best software
+will provide both. It is going to stay
+ 
+will provide both. It is going to stay
+simple for people while making
+ 
+simple for people while making
+underlying objects and operations really
+ 
+underlying objects and operations really
+legible to agents, and that is going to
+ 
+legible to agents, and that is going to
+generate a software where AI and humans
+ 
+generate a software where AI and humans
+can coexist together. And that's what
+ 
+can coexist together. And that's what
+this video is really about. Software
+ 
+this video is really about. Software
+that is ready for AI to tell the agent
+ 
+that is ready for AI to tell the agent
+what exists, what can be done, what each
+ 
+what exists, what can be done, what each
+action means, what permission is
+ 
+action means, what permission is
+required, how the results should be
+ 
+required, how the results should be
+checked, and what happens next. That is
+ 
+checked, and what happens next. That is
+a way, way higher bar to software than I
+ 
+a way, way higher bar to software than I
+see for most software today. It is the
+ 
+see for most software today. It is the
+It is the future of software in 2026.
+ 
+It is the future of software in 2026.
+That is your road map if you are not
+ 
+That is your road map if you are not
+doing that today. So, the coming
+ 
+doing that today. So, the coming
+platform fight is not going to look like
+ 
+platform fight is not going to look like
+one company simply winning AI. It's
+ 
+one company simply winning AI. It's
+going to look like a negotiation across
+ 
+going to look like a negotiation across
+the whole stack. Model companies want
+ 
+the whole stack. Model companies want
+broad agents that can operate across
+ 
+broad agents that can operate across
+domains. Browser companies want to
+ 
+domains. Browser companies want to
+orchestrate work across applications.
+ 
+orchestrate work across applications.
+SaaS companies want to preserve
+ 
+SaaS companies want to preserve
+authority over domain semantics.
+ 
+authority over domain semantics.
+Identity providers want to govern
+ 
+Identity providers want to govern
+authorization. They all have their
+ 
+authorization. They all have their
+interests, right? The question is going
+ 
+interests, right? The question is going
+to be which layer owns the meaning of
+ 
+to be which layer owns the meaning of
+work? Which layer owns the meaning of
+ 
+work? Which layer owns the meaning of
+work that the agent can read? And every
+ 
+work that the agent can read? And every
+software company is going to have to
+ 
+software company is going to have to
+decide how much semantic access to
+ 
+decide how much semantic access to
+expose into whom. If you expose too
+ 
+expose into whom. If you expose too
+little, generic agents will operate
+ 
+little, generic agents will operate
+clumsily through the UI. If you expose
+ 
+clumsily through the UI. If you expose
+too much, the product risks becoming
+ 
+too much, the product risks becoming
+back-end infrastructure for someone
+ 
+back-end infrastructure for someone
+else's agentic interface. That is the
+ 
+else's agentic interface. That is the
+tension that anyone in software is
+ 
+tension that anyone in software is
+facing today. This is actually a great
+ 
+facing today. This is actually a great
+tension exemplified by uh Salesforce 360
+ 
+tension exemplified by uh Salesforce 360
+versus how SAP is handling agents. SAP
+ 
+versus how SAP is handling agents. SAP
+is locking off agents right now. They
+ 
+is locking off agents right now. They
+don't want agents to use their products.
+ 
+don't want agents to use their products.
+Salesforce is going the other way.
+ 
+Salesforce is going the other way.
+They're saying they're leading into
+ 
+They're saying they're leading into
+agents and saying, "Let agents operate
+ 
+agents and saying, "Let agents operate
+across our substrate and grab MCPs and
+ 
+across our substrate and grab MCPs and
+grab APIs and we're going to be headless
+ 
+grab APIs and we're going to be headless
+from the get-go because we know that's
+ 
+from the get-go because we know that's
+the future." I think Salesforce is more
+ 
+the future." I think Salesforce is more
+correct here, especially from their
+ 
+correct here, especially from their
+perspective as a system of record. They
+ 
+perspective as a system of record. They
+want to be a system of record that's
+ 
+want to be a system of record that's
+sticky, and so they want to be legible
+ 
+sticky, and so they want to be legible
+semantically to agents and humans. And I
+ 
+semantically to agents and humans. And I
+think that's a good example. I think SAP
+ 
+think that's a good example. I think SAP
+is not going to last with that approach.
+ 
+is not going to last with that approach.
+Like SAP deciding, "Eh, we're going to
+ 
+Like SAP deciding, "Eh, we're going to
+say no, no to agents" is like sticking
+ 
+say no, no to agents" is like sticking
+your head in the sand when the tidal
+ 
+your head in the sand when the tidal
+wave is coming. Pardon my mixed
+ 
+wave is coming. Pardon my mixed
+metaphors. It's going to be a disaster.
+ 
+metaphors. It's going to be a disaster.
+And under this deeper test for semantic
+ 
+And under this deeper test for semantic
+meaning, a lot of flashy products start
+ 
+meaning, a lot of flashy products start
+to look thin. A A clicking through a
+ 
+to look thin. A A clicking through a
+website is great today. It does do work.
+ 
+website is great today. It does do work.
+I'm glad it works, but it's not the end
+ 
+I'm glad it works, but it's not the end
+result when we think about the kinds of
+ 
+result when we think about the kinds of
+work we want to do with agents long-term
+ 
+work we want to do with agents long-term
+that are durable and repeatable. And
+ 
+that are durable and repeatable. And
+that's the question I ask every time I
+ 
+that's the question I ask every time I
+see a new AI product. Does this give the
+ 
+see a new AI product. Does this give the
+model access or does it give the model a
+ 
+model access or does it give the model a
+meaningful set of levers it can really
+ 
+meaningful set of levers it can really
+use to drive the product? I love raw
+ 
+use to drive the product? I love raw
+computer access. I love that we're
+ 
+computer access. I love that we're
+getting the agent closer to file
+ 
+getting the agent closer to file
+primitives, closer to the work. I love
+ 
+primitives, closer to the work. I love
+these MCP services. I love that we're
+ 
+these MCP services. I love that we're
+talking about access in 2026. I want to
+ 
+talking about access in 2026. I want to
+talk about semantic control and semantic
+ 
+talk about semantic control and semantic
+meaning. I want to talk about an AI
+ 
+meaning. I want to talk about an AI
+understanding the implications of my
+ 
+understanding the implications of my
+calendar and how messy it is. And that
+ 
+calendar and how messy it is. And that
+is going to require a new set of
+ 
+is going to require a new set of
+rethought software that is designed to
+ 
+rethought software that is designed to
+be agent readable from the get-go,
+ 
+be agent readable from the get-go,
+semantically readable to the agent, not
+ 
+semantically readable to the agent, not
+just technically legible, not just that
+ 
+just technically legible, not just that
+the agent can use edit calendar and move
+ 
+the agent can use edit calendar and move
+the date, but that the agent understands
+ 
+the date, but that the agent understands
+the semantic context of this particular
+ 
+the semantic context of this particular
+environment with these people. We don't
+ 
+environment with these people. We don't
+have software for that yet. We need a
+ 
+have software for that yet. We need a
+lot of software like that. This is part
+ 
+lot of software like that. This is part
+of why I think software isn't dead. And
+ 
+of why I think software isn't dead. And
+it's part of why Perplexity moving
+ 
+it's part of why Perplexity moving
+toward the computer is strategically
+ 
+toward the computer is strategically
+necessary, but maybe not complete.
+ 
+necessary, but maybe not complete.
+Because Perplexity has to move into a
+ 
+Because Perplexity has to move into a
+world where it is able to deliver a lot
+ 
+world where it is able to deliver a lot
+more workflows like the finance workflow
+ 
+more workflows like the finance workflow
+it's talking about to become truly
+ 
+it's talking about to become truly
+sticky. Because the future is not an AI
+ 
+sticky. Because the future is not an AI
+that clicks every button for you. That's
+ 
+that clicks every button for you. That's
+the bridge we have today. The future is
+ 
+the bridge we have today. The future is
+software where the button is no longer
+ 
+software where the button is no longer
+the primitive. The primitive is the
+ 
+the primitive. The primitive is the
+action behind it. It's described, it's
+ 
+action behind it. It's described, it's
+permissioned, it's reviewable, it's
+ 
+permissioned, it's reviewable, it's
+reversible where possible, it's
+ 
+reversible where possible, it's
+composable. So, computer use and tools
+ 
+composable. So, computer use and tools
+like that give agents hands. MCP gives
+ 
+like that give agents hands. MCP gives
+agents hands. Semantic controls tell the
+ 
+agents hands. Semantic controls tell the
+agent what it's touching. And that is
+ 
+agent what it's touching. And that is
+the deeper remote. Now, if you want to
+ 
+the deeper remote. Now, if you want to
+dive deeper on this, I'm going to go
+ 
+dive deeper on this, I'm going to go
+into memory ownership, enterprise
+ 
+into memory ownership, enterprise
+permissions, browser strategy, and
+ 
+permissions, browser strategy, and
+agentic commerce on the Substack. But
+ 
+agentic commerce on the Substack. But
+the core lens here is the same one I
+ 
+the core lens here is the same one I
+would use for every AI product over the
+ 
+would use for every AI product over the
+next year. Do not ask only whether the
+ 
+next year. Do not ask only whether the
+agent can act. Ask whether the product
+ 
+agent can act. Ask whether the product
+knows what that action means. That is
+ 
+knows what that action means. That is
+your key takeaway. All right, I'll see
+ 
+your key takeaway. All right, I'll see
+you next time. Cheers.

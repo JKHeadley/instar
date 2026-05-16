@@ -1,0 +1,1823 @@
+ 
+March 2026 was one of the biggest months
+ 
+March 2026 was one of the biggest months
+in AI history. We had multiple frontier
+ 
+in AI history. We had multiple frontier
+models shipping in a single month,
+ 
+models shipping in a single month,
+ChatGPT 5.4, Gemini 3.1 Ultra, Nvidia's
+ 
+ChatGPT 5.4, Gemini 3.1 Ultra, Nvidia's
+GTC happened, the SAS apocalypse
+ 
+GTC happened, the SAS apocalypse
+continued, a major AI product got
+ 
+continued, a major AI product got
+killed, a frontier lab got blacklisted.
+ 
+killed, a frontier lab got blacklisted.
+You have seen all of those hot takes
+ 
+You have seen all of those hot takes
+because we all have, right? They're in
+ 
+because we all have, right? They're in
+every single newsletter that hits your
+ 
+every single newsletter that hits your
+inbox, they're in all of those YouTube
+ 
+inbox, they're in all of those YouTube
+reels. I want to do something more
+ 
+reels. I want to do something more
+difficult and more interesting with you
+ 
+difficult and more interesting with you
+in this video. I want to read under the
+ 
+in this video. I want to read under the
+March headlines and show you
+ 
+March headlines and show you
+moves that happened while everybody else
+ 
+moves that happened while everybody else
+was watching the model drops. And those
+ 
+was watching the model drops. And those
+might not make a good TikTok, but
+ 
+might not make a good TikTok, but
+ultimately this is about what is going
+ 
+ultimately this is about what is going
+to shape the industry over the next 12
+ 
+to shape the industry over the next 12
+months. How can we learn to develop the
+ 
+months. How can we learn to develop the
+skill to read under the fog of war with
+ 
+skill to read under the fog of war with
+AI and understand the structural drivers
+ 
+AI and understand the structural drivers
+that are shaping where AI is going. A
+ 
+that are shaping where AI is going. A
+month like March produces so much noise,
+ 
+month like March produces so much noise,
+it's really hard to read signal. And the
+ 
+it's really hard to read signal. And the
+model releases end up being these big
+ 
+model releases end up being these big
+bangs that suck up all the attention in
+ 
+bangs that suck up all the attention in
+the room, but they're not really the
+ 
+the room, but they're not really the
+most important thing these days. And the
+ 
+most important thing these days. And the
+thing to remember is the pace isn't even
+ 
+thing to remember is the pace isn't even
+going to slow down from here. Like March
+ 
+going to slow down from here. Like March
+was dense, but April has multiple model
+ 
+was dense, but April has multiple model
+releases in the pipeline, there's new
+ 
+releases in the pipeline, there's new
+agent framework shipping, and there's
+ 
+agent framework shipping, and there's
+going to be a bunch of governmental
+ 
+going to be a bunch of governmental
+responses to all of this coming as well.
+ 
+responses to all of this coming as well.
+The cadence overall is actually getting
+ 
+The cadence overall is actually getting
+more dense, not less dense, which means
+ 
+more dense, not less dense, which means
+that the skill of reading under the
+ 
+that the skill of reading under the
+news, of pulling the structural signal
+ 
+news, of pulling the structural signal
+out of the noise, of seeing the pattern
+ 
+out of the noise, of seeing the pattern
+behind the product launch and
+ 
+behind the product launch and
+identifying what actually shifts the
+ 
+identifying what actually shifts the
+power dynamics versus what just
+ 
+power dynamics versus what just
+generates engagement, that's becoming
+ 
+generates engagement, that's becoming
+one of the most valuable skills you can
+ 
+one of the most valuable skills you can
+practice. So, it's not really about
+ 
+practice. So, it's not really about
+reading more, it's about reading
+ 
+reading more, it's about reading
+differently. I built an AI news analysis
+ 
+differently. I built an AI news analysis
+skill, I built a prompt kit specifically
+ 
+skill, I built a prompt kit specifically
+to help you do this kind of synthesis
+ 
+to help you do this kind of synthesis
+yourself. I'll link to it at the end
+ 
+yourself. I'll link to it at the end
+here. And we're actually at a point with
+ 
+here. And we're actually at a point with
+AI where you can take this transcript,
+ 
+AI where you can take this transcript,
+pop it into your agent, and you're going
+ 
+pop it into your agent, and you're going
+to get a good read and a good skill on
+ 
+to get a good read and a good skill on
+how to do this going forward. So, let's
+ 
+how to do this going forward. So, let's
+jump into March. What is it about March
+ 
+jump into March. What is it about March
+that's going to matter in 12 months.
+ 
+that's going to matter in 12 months.
+Number one, inference became a reason to
+ 
+Number one, inference became a reason to
+kill product and Sora was the first
+ 
+kill product and Sora was the first
+victim. On March 24th, OpenAI quietly
+ 
+victim. On March 24th, OpenAI quietly
+announced that it was shutting Sora
+ 
+announced that it was shutting Sora
+down. It's shutting everything, the API,
+ 
+down. It's shutting everything, the API,
+the video generation in ChatGPT, the
+ 
+the video generation in ChatGPT, the
+app, and that's just 6 months after
+ 
+app, and that's just 6 months after
+launching it publicly. The Disney
+ 
+launching it publicly. The Disney
+billion-dollar deal collapsed with it.
+ 
+billion-dollar deal collapsed with it.
+There is no money that changed hands
+ 
+There is no money that changed hands
+there. And of course, the headline story
+ 
+there. And of course, the headline story
+is, well, AI video product is failing.
+ 
+is, well, AI video product is failing.
+This is terrible. The structural story
+ 
+This is terrible. The structural story
+is bigger than that. It's bigger than
+ 
+is bigger than that. It's bigger than
+OpenAI. It's not about dunking on
+ 
+OpenAI. It's not about dunking on
+OpenAI. Sora was burning an estimated
+ 
+OpenAI. Sora was burning an estimated
+$15 million a day in inference costs
+ 
+$15 million a day in inference costs
+against just $2.1 million in lifetime
+ 
+against just $2.1 million in lifetime
+revenue. You cannot square those
+ 
+revenue. You cannot square those
+numbers. That's not a pricing problem. A
+ 
+numbers. That's not a pricing problem. A
+go-to-market adjustment does not fix
+ 
+go-to-market adjustment does not fix
+that. Even Bill Peebles, OpenAI's own
+ 
+that. Even Bill Peebles, OpenAI's own
+head of Sora, admitted on social media
+ 
+head of Sora, admitted on social media
+that the economics were completely
+ 
+that the economics were completely
+unsustainable. And this matters because
+ 
+unsustainable. And this matters because
+it's the loudest signal yet of a shift
+ 
+it's the loudest signal yet of a shift
+in where the hard constraint lives in
+ 
+in where the hard constraint lives in
+AI. So, for the last 3 years, the AI
+ 
+AI. So, for the last 3 years, the AI
+narrative has been about training. Who
+ 
+narrative has been about training. Who
+can build the biggest cluster? Who can
+ 
+can build the biggest cluster? Who can
+afford the most data? Who can push the
+ 
+afford the most data? Who can push the
+frontier? We are past the training wall.
+ 
+frontier? We are past the training wall.
+We are hitting an inference wall, and
+ 
+We are hitting an inference wall, and
+that is what we need to acknowledge as
+ 
+that is what we need to acknowledge as
+an industry. Fundamentally,
+ 
+an industry. Fundamentally,
+the chips we use to train should not be
+ 
+the chips we use to train should not be
+the chips we use to infer because
+ 
+the chips we use to infer because
+inference is a different problem.
+ 
+inference is a different problem.
+Inference is serving a model that
+ 
+Inference is serving a model that
+already exists, and the challenge is
+ 
+already exists, and the challenge is
+we've built all of our chipsets
+ 
+we've built all of our chipsets
+increasingly on training. So, if you are
+ 
+increasingly on training. So, if you are
+in the business of building AI product,
+ 
+in the business of building AI product,
+for 99% of us, if you're not at one of
+ 
+for 99% of us, if you're not at one of
+the three or four hyper-scaling
+ 
+the three or four hyper-scaling
+companies in the world, the question for
+ 
+companies in the world, the question for
+you is how can you efficiently serve
+ 
+you is how can you efficiently serve
+models? And that's why Google's Turbo
+ 
+models? And that's why Google's Turbo
+Quant paper and other approaches to
+ 
+Quant paper and other approaches to
+effectively compressing memory and
+ 
+effectively compressing memory and
+serving more efficiently are so
+ 
+serving more efficiently are so
+important in 2026. We need to figure out
+ 
+important in 2026. We need to figure out
+ways to get inference efficiency going
+ 
+ways to get inference efficiency going
+if we are going to successfully serve
+ 
+if we are going to successfully serve
+complex AI products to customers. So,
+ 
+complex AI products to customers. So,
+the most important number in AI is
+ 
+the most important number in AI is
+moving from the training flop count,
+ 
+moving from the training flop count,
+which is sort of how big your scale is
+ 
+which is sort of how big your scale is
+for training, to your inference cost per
+ 
+for training, to your inference cost per
+delivered unit of revenue. Every AI
+ 
+delivered unit of revenue. Every AI
+product team needs to start to think
+ 
+product team needs to start to think
+about how much does it cost to serve the
+ 
+about how much does it cost to serve the
+model and what kind of dollars am I
+ 
+model and what kind of dollars am I
+getting back? The AI industry is growing
+ 
+getting back? The AI industry is growing
+up here. Number two, speaking of
+ 
+up here. Number two, speaking of
+dollars, the first real ad dollar
+ 
+dollars, the first real ad dollar
+entered the AI interface and it
+ 
+entered the AI interface and it
+converted at 1.5x. On March the 2nd,
+ 
+converted at 1.5x. On March the 2nd,
+Criteo became the first adtech company
+ 
+Criteo became the first adtech company
+to integrate with OpenAI's advertising
+ 
+to integrate with OpenAI's advertising
+pilot in ChatGPT's free and go tiers.
+ 
+pilot in ChatGPT's free and go tiers.
+Within days, Criteo was pitching at
+ 
+Within days, Criteo was pitching at
+17,000 advertisers on placing ads
+ 
+17,000 advertisers on placing ads
+directly inside conversations. Most
+ 
+directly inside conversations. Most
+coverage treated this like a footnote,
+ 
+coverage treated this like a footnote,
+but it's not. The early data from a
+ 
+but it's not. The early data from a
+sample of 500 Criteo retailers showed
+ 
+sample of 500 Criteo retailers showed
+that users arriving at retail sites from
+ 
+that users arriving at retail sites from
+LLM platforms converted at 1 and 1/2 x
+ 
+LLM platforms converted at 1 and 1/2 x
+the rate of other referral channels. The
+ 
+the rate of other referral channels. The
+sample size is small, the time window is
+ 
+sample size is small, the time window is
+also small, but the direction of the
+ 
+also small, but the direction of the
+signal matters a lot because it begins
+ 
+signal matters a lot because it begins
+to answer a question everybody's been
+ 
+to answer a question everybody's been
+dancing around. Where does the ad dollar
+ 
+dancing around. Where does the ad dollar
+go when the search results page starts
+ 
+go when the search results page starts
+to erode? The structural shift that's
+ 
+to erode? The structural shift that's
+going on is this. In a conversational
+ 
+going on is this. In a conversational
+interface, there is no list of 10 blue
+ 
+interface, there is no list of 10 blue
+links. There is no page one versus page
+ 
+links. There is no page one versus page
+two. There's just a recommendation,
+ 
+two. There's just a recommendation,
+singular, woven into a response the user
+ 
+singular, woven into a response the user
+trusts. Criteo's pitch deck shared with
+ 
+trusts. Criteo's pitch deck shared with
+Digiday frames this very explicitly. The
+ 
+Digiday frames this very explicitly. The
+purchase funnel is collapsing from a
+ 
+purchase funnel is collapsing from a
+multi-step journey into a single
+ 
+multi-step journey into a single
+conversation. Discovery, consideration,
+ 
+conversation. Discovery, consideration,
+and conversion happen in the exact same
+ 
+and conversion happen in the exact same
+context window. This is not just a new
+ 
+context window. This is not just a new
+ad format, it's an entirely new surface
+ 
+ad format, it's an entirely new surface
+for conversion, and it is the first
+ 
+for conversion, and it is the first
+surface in a decade that credibly
+ 
+surface in a decade that credibly
+threatens Google's core monetization
+ 
+threatens Google's core monetization
+model. Google built a $300
+ 
+model. Google built a $300
+advertising business on capturing search
+ 
+advertising business on capturing search
+intent. If conversational AI captures
+ 
+intent. If conversational AI captures
+that intent upstream, and that is an if,
+ 
+that intent upstream, and that is an if,
+before the user ever opens a browser,
+ 
+before the user ever opens a browser,
+all of that value will migrate with it.
+ 
+all of that value will migrate with it.
+So, OpenAI isn't selling the ads
+ 
+So, OpenAI isn't selling the ads
+directly here, Criteo is, and that's a
+ 
+directly here, Criteo is, and that's a
+signal in itself. OpenAI is just
+ 
+signal in itself. OpenAI is just
+building the surface and letting the
+ 
+building the surface and letting the
+existing programmatic ad infrastructure
+ 
+existing programmatic ad infrastructure
+operate against that surface and pipe
+ 
+operate against that surface and pipe
+product relevant signals into
+ 
+product relevant signals into
+conversations through Criteo's MCP
+ 
+conversations through Criteo's MCP
+server. And I think that is a larger
+ 
+server. And I think that is a larger
+pattern that will define AI
+ 
+pattern that will define AI
+monetization. All the model providers
+ 
+monetization. All the model providers
+are going to do is create context, and
+ 
+are going to do is create context, and
+the ad tech layer as it currently exists
+ 
+the ad tech layer as it currently exists
+is going to fill that context and handle
+ 
+is going to fill that context and handle
+all of the programmatic ad buying as
+ 
+all of the programmatic ad buying as
+usual. So, the underlying shift is that
+ 
+usual. So, the underlying shift is that
+the interface where people make
+ 
+the interface where people make
+decisions is migrating from search to
+ 
+decisions is migrating from search to
+conversation, and OpenAI is just
+ 
+conversation, and OpenAI is just
+building an interface so the advertising
+ 
+building an interface so the advertising
+industry's $600 billion in budget can
+ 
+industry's $600 billion in budget can
+follow that. So, if your company
+ 
+follow that. So, if your company
+monetizes through search visibility,
+ 
+monetizes through search visibility,
+organic or paid, March is when your
+ 
+organic or paid, March is when your
+strategic planning horizon changed,
+ 
+strategic planning horizon changed,
+because you have to start thinking about
+ 
+because you have to start thinking about
+where those ad dollars go in a world
+ 
+where those ad dollars go in a world
+where this ad product became the fastest
+ 
+where this ad product became the fastest
+scale from zero to $100 million in
+ 
+scale from zero to $100 million in
+history, and they're just going farther
+ 
+history, and they're just going farther
+from there. Okay, let's jump to number
+ 
+from there. Okay, let's jump to number
+three. The White House is trying to
+ 
+three. The White House is trying to
+clear the regulatory path for AI, but
+ 
+clear the regulatory path for AI, but
+the physical path to AI in the US is
+ 
+the physical path to AI in the US is
+closing. On March the 20th, the White
+ 
+closing. On March the 20th, the White
+House released a national policy
+ 
+House released a national policy
+framework for AI, four pages of
+ 
+framework for AI, four pages of
+legislative recommendations urging
+ 
+legislative recommendations urging
+Congress to establish a single federal
+ 
+Congress to establish a single federal
+standard that preempts state AI laws
+ 
+standard that preempts state AI laws
+imposing conflicting requirements. No
+ 
+imposing conflicting requirements. No
+new regulatory body, reliance on
+ 
+new regulatory body, reliance on
+existing sector specific regulators and
+ 
+existing sector specific regulators and
+industry led standards, copyright
+ 
+industry led standards, copyright
+questions deferred to the courts,
+ 
+questions deferred to the courts,
+streamlined permitting for AI
+ 
+streamlined permitting for AI
+infrastructure. It sounds really good,
+ 
+infrastructure. It sounds really good,
+doesn't it? That's the headline, but
+ 
+doesn't it? That's the headline, but
+when people think of that as an easier
+ 
+when people think of that as an easier
+regulatory environment in the US,
+ 
+regulatory environment in the US,
+they're missing the detail here. It is
+ 
+they're missing the detail here. It is
+true the White House framework can
+ 
+true the White House framework can
+preempt state AI regulation, rules about
+ 
+preempt state AI regulation, rules about
+model transparency, bias audits,
+ 
+model transparency, bias audits,
+liability for employers, but what it
+ 
+liability for employers, but what it
+cannot very easily preempt is the wave
+ 
+cannot very easily preempt is the wave
+of state and local resistance to
+ 
+of state and local resistance to
+physical infrastructure AI requires to
+ 
+physical infrastructure AI requires to
+exist. And that wave is breaking now. As
+ 
+exist. And that wave is breaking now. As
+of March, lawmakers in at least 12
+ 
+of March, lawmakers in at least 12
+states have filed data center moratorium
+ 
+states have filed data center moratorium
+bills, formal pauses on new construction
+ 
+bills, formal pauses on new construction
+while legislators study impacts on power
+ 
+while legislators study impacts on power
+grids, water supplies, and so on. These
+ 
+grids, water supplies, and so on. These
+are not fringe proposals. The states
+ 
+are not fringe proposals. The states
+include Virginia, home to data center
+ 
+include Virginia, home to data center
+alley in Loudoun County, the densest
+ 
+alley in Loudoun County, the densest
+data center corridor on Earth, plus
+ 
+data center corridor on Earth, plus
+Georgia, New York, Maryland, Oklahoma,
+ 
+Georgia, New York, Maryland, Oklahoma,
+Vermont, South Dakota, Michigan, and
+ 
+Vermont, South Dakota, Michigan, and
+Minnesota. At the local level, 54
+ 
+Minnesota. At the local level, 54
+governments have passed short-term
+ 
+governments have passed short-term
+freezes from St. Charles, Missouri to
+ 
+freezes from St. Charles, Missouri to
+DeKalb County, Georgia. And on March
+ 
+DeKalb County, Georgia. And on March
+25th, Senator Sanders and Representative
+ 
+25th, Senator Sanders and Representative
+Ocasio-Cortez introduced an AI data
+ 
+Ocasio-Cortez introduced an AI data
+center moratorium act at the federal
+ 
+center moratorium act at the federal
+level. Now, obviously that's a long shot
+ 
+level. Now, obviously that's a long shot
+under current control of the house, but
+ 
+under current control of the house, but
+the point is that they're using zoning,
+ 
+the point is that they're using zoning,
+energy, water, and land use bills to
+ 
+energy, water, and land use bills to
+control AI. And those sit on an entirely
+ 
+control AI. And those sit on an entirely
+different legal surface than the White
+ 
+different legal surface than the White
+House framework targets. Federal
+ 
+House framework targets. Federal
+preemption of state AI laws does nothing
+ 
+preemption of state AI laws does nothing
+to override a county that will not
+ 
+to override a county that will not
+rezone farmland for a gigawatt campus,
+ 
+rezone farmland for a gigawatt campus,
+or a state utility commission that
+ 
+or a state utility commission that
+refuses to approve the grid
+ 
+refuses to approve the grid
+interconnection. So, the constraint here
+ 
+interconnection. So, the constraint here
+isn't about regulatory theory, it's
+ 
+isn't about regulatory theory, it's
+about backlash to use of power and
+ 
+about backlash to use of power and
+water. Holing shows that most people
+ 
+water. Holing shows that most people
+would oppose a data center built within
+ 
+would oppose a data center built within
+a few miles of their home. That's a not
+ 
+a few miles of their home. That's a not
+in my backyard or NIMBY problem, and
+ 
+in my backyard or NIMBY problem, and
+NIMBY problems do not yield well to
+ 
+NIMBY problems do not yield well to
+federal frameworks. And the geography
+ 
+federal frameworks. And the geography
+question got even more complicated in
+ 
+question got even more complicated in
+March because of the conflict in the
+ 
+March because of the conflict in the
+Gulf. When Iranian drones struck AWS
+ 
+Gulf. When Iranian drones struck AWS
+facilities in the UAE and Bahrain,
+ 
+facilities in the UAE and Bahrain,
+damaging physical infrastructure and
+ 
+damaging physical infrastructure and
+disrupting cloud services, we realized
+ 
+disrupting cloud services, we realized
+for the first time that commercial
+ 
+for the first time that commercial
+hyperscale data centers could be
+ 
+hyperscale data centers could be
+explicit kinetic military targets.
+ 
+explicit kinetic military targets.
+Reuters reported that an affected UAE
+ 
+Reuters reported that an affected UAE
+insurance platform was working with AWS
+ 
+insurance platform was working with AWS
+to temporarily shift workloads, but the
+ 
+to temporarily shift workloads, but the
+local data residency rules required
+ 
+local data residency rules required
+regulatory approval before a migration
+ 
+regulatory approval before a migration
+could proceed. Meanwhile, $700 billion
+ 
+could proceed. Meanwhile, $700 billion
+in hyperscaler capex needs somewhere to
+ 
+in hyperscaler capex needs somewhere to
+land this year, and next year there's
+ 
+land this year, and next year there's
+even more. The UAE, Saudi Arabia, and
+ 
+even more. The UAE, Saudi Arabia, and
+Southeast Asia are attracting billions,
+ 
+Southeast Asia are attracting billions,
+but that is now at risk because of the
+ 
+but that is now at risk because of the
+Gulf conflict. In the middle of all
+ 
+Gulf conflict. In the middle of all
+this, Asia is advancing itself as an
+ 
+this, Asia is advancing itself as an
+alternative compute geography precisely
+ 
+alternative compute geography precisely
+because US domestic sites face
+ 
+because US domestic sites face
+permitting gridlock, and the Middle East
+ 
+permitting gridlock, and the Middle East
+is in a conflict zone. So, the real
+ 
+is in a conflict zone. So, the real
+picture in March is sort of a
+ 
+picture in March is sort of a
+three-layer contradiction around the
+ 
+three-layer contradiction around the
+power infrastructure for AI. On the one
+ 
+power infrastructure for AI. On the one
+hand, the White House is trying to clear
+ 
+hand, the White House is trying to clear
+a regulatory path. Communities in the US
+ 
+a regulatory path. Communities in the US
+are blocking a physical path to AI, and
+ 
+are blocking a physical path to AI, and
+the geopolitical path is complicated by
+ 
+the geopolitical path is complicated by
+the conflict in the Gulf. And so, the
+ 
+the conflict in the Gulf. And so, the
+question of where AI physically lives is
+ 
+question of where AI physically lives is
+going to be a function of which of those
+ 
+going to be a function of which of those
+constraints gives first, and in the
+ 
+constraints gives first, and in the
+absence of a clear easing of the
+ 
+absence of a clear easing of the
+conflict in the Gulf, the center of
+ 
+conflict in the Gulf, the center of
+gravity for AI data center construction
+ 
+gravity for AI data center construction
+is shifting to Asia. It is by far the
+ 
+is shifting to Asia. It is by far the
+easiest place to build data centers
+ 
+easiest place to build data centers
+right now relative to Europe, the US, or
+ 
+right now relative to Europe, the US, or
+the Gulf. Number four, the SaaS business
+ 
+the Gulf. Number four, the SaaS business
+model continues to be in crisis, and
+ 
+model continues to be in crisis, and
+Atlassian became a case study for a
+ 
+Atlassian became a case study for a
+really interesting reason. On March
+ 
+really interesting reason. On March
+11th, Atlassian CEO Mike Cannon-Brookes
+ 
+11th, Atlassian CEO Mike Cannon-Brookes
+sent an email to staff announcing 1,600
+ 
+sent an email to staff announcing 1,600
+layoffs, or about 10% of the company.
+ 
+layoffs, or about 10% of the company.
+More than 900 of those roles were in
+ 
+More than 900 of those roles were in
+software. Employees received just 20
+ 
+software. Employees received just 20
+minutes notice after a pre-recorded
+ 
+minutes notice after a pre-recorded
+video was posted, and they got 6 hours
+ 
+video was posted, and they got 6 hours
+on Slack to say goodbye. The same
+ 
+on Slack to say goodbye. The same
+announcement disclosed that CTO Rajeev
+ 
+announcement disclosed that CTO Rajeev
+Rajan would step down on March 31st
+ 
+Rajan would step down on March 31st
+after 4 years. He would be replaced by
+ 
+after 4 years. He would be replaced by
+two executives, one titled CTO of
+ 
+two executives, one titled CTO of
+teamwork, the other CTO enterprise and
+ 
+teamwork, the other CTO enterprise and
+chief trust officer, both from AI native
+ 
+chief trust officer, both from AI native
+backgrounds. The message was not subtle.
+ 
+backgrounds. The message was not subtle.
+Cannon-Brookes framed the layoffs as
+ 
+Cannon-Brookes framed the layoffs as
+adaptation, self-funding further
+ 
+adaptation, self-funding further
+investment in AI and enterprise sales.
+ 
+investment in AI and enterprise sales.
+The stock, already down about 60% in 12
+ 
+The stock, already down about 60% in 12
+months, ticked up 2%. The stock, down
+ 
+months, ticked up 2%. The stock, down
+about 60% in 12 months like so many SaaS
+ 
+about 60% in 12 months like so many SaaS
+stocks, did tick up a little bit in
+ 
+stocks, did tick up a little bit in
+after-hours trading. But that's just the
+ 
+after-hours trading. But that's just the
+surface news. The part that nobody
+ 
+surface news. The part that nobody
+really connected is this. In October of
+ 
+really connected is this. In October of
+2025, five months before the layoffs,
+ 
+2025, five months before the layoffs,
+Cannon Brookes appeared on the 20 VC
+ 
+Cannon Brookes appeared on the 20 VC
+podcast and said technology creation is
+ 
+podcast and said technology creation is
+not output bound. Atlassian, he
+ 
+not output bound. Atlassian, he
+predicted, would employ more engineers
+ 
+predicted, would employ more engineers
+in five years rather than fewer, and he
+ 
+in five years rather than fewer, and he
+pledged more new graduate hires in 2025
+ 
+pledged more new graduate hires in 2025
+and 2026. And then March came and lots
+ 
+and 2026. And then March came and lots
+of people got fired. Either the AI
+ 
+of people got fired. Either the AI
+landscape shifted so dramatically in
+ 
+landscape shifted so dramatically in
+five months that the CEO's entire thesis
+ 
+five months that the CEO's entire thesis
+became obsolete, or maybe the workforce
+ 
+became obsolete, or maybe the workforce
+thesis was never the real driver.
+ 
+thesis was never the real driver.
+Atlassian stock has been caught up in
+ 
+Atlassian stock has been caught up in
+the broader SaaS apocalypse, a
+ 
+the broader SaaS apocalypse, a
+quarter-long sell-off that erased more
+ 
+quarter-long sell-off that erased more
+than a trillion dollars in value from
+ 
+than a trillion dollars in value from
+the market as companies realized that AI
+ 
+the market as companies realized that AI
+could come for SaaS business models. The
+ 
+could come for SaaS business models. The
+mechanism, of course, is very simple. If
+ 
+mechanism, of course, is very simple. If
+10 AI agents can do the work of 100
+ 
+10 AI agents can do the work of 100
+reps, you need 10 Salesforce seats, not
+ 
+reps, you need 10 Salesforce seats, not
+100, and that's a 90% revenue
+ 
+100, and that's a 90% revenue
+compression for the same work output. In
+ 
+compression for the same work output. In
+March, Atlassian reported its first-ever
+ 
+March, Atlassian reported its first-ever
+decline in enterprise seat counts.
+ 
+decline in enterprise seat counts.
+Meanwhile, Block cut 4,000 jobs in
+ 
+Meanwhile, Block cut 4,000 jobs in
+February citing an intel- ligence native
+ 
+February citing an intel- ligence native
+model. Workday cut 8.5%. Oracle said AI
+ 
+model. Workday cut 8.5%. Oracle said AI
+was enabling it to shrink development
+ 
+was enabling it to shrink development
+teams, and by early March, tech layoffs
+ 
+teams, and by early March, tech layoffs
+globally had surpassed 45,000 with AI
+ 
+globally had surpassed 45,000 with AI
+among the most frequently cited
+ 
+among the most frequently cited
+justifications. Now, you guys know that
+ 
+justifications. Now, you guys know that
+I don't entirely buy that. On the inside
+ 
+I don't entirely buy that. On the inside
+of the boardroom, I have heard a very
+ 
+of the boardroom, I have heard a very
+different narrative where often the
+ 
+different narrative where often the
+conversation is about over-hiring
+ 
+conversation is about over-hiring
+previously, using AI as an
+ 
+previously, using AI as an
+investor-friendly way to justify cuts
+ 
+investor-friendly way to justify cuts
+that need to be made, and the reality
+ 
+that need to be made, and the reality
+that in many cases when the cuts are
+ 
+that in many cases when the cuts are
+made, there hasn't actually been AI
+ 
+made, there hasn't actually been AI
+automation in any reliable way behind
+ 
+automation in any reliable way behind
+the scenes, and all they're really doing
+ 
+the scenes, and all they're really doing
+is burdening the humans that much more.
+ 
+is burdening the humans that much more.
+That being said, part of what is going
+ 
+That being said, part of what is going
+on here is that the markets themselves
+ 
+on here is that the markets themselves
+are imposing a structural reality on the
+ 
+are imposing a structural reality on the
+SaaS industry that the SaaS industry is
+ 
+SaaS industry that the SaaS industry is
+not ready to accept. Fundamentally, the
+ 
+not ready to accept. Fundamentally, the
+market has seen that per-seat pricing is
+ 
+market has seen that per-seat pricing is
+over faster than most SaaS companies.
+ 
+over faster than most SaaS companies.
+And because most SaaS companies do not
+ 
+And because most SaaS companies do not
+yet have a viable outcome-driven pricing
+ 
+yet have a viable outcome-driven pricing
+model, they're all being punished for
+ 
+model, they're all being punished for
+it. And that's the larger story that
+ 
+it. And that's the larger story that
+we're not talking about. You need to
+ 
+we're not talking about. You need to
+shift to a different pricing model to
+ 
+shift to a different pricing model to
+engage with the larger, more
+ 
+engage with the larger, more
+exploratory, more dynamic vision that
+ 
+exploratory, more dynamic vision that
+CEOs like Jensen Huang have articulated
+ 
+CEOs like Jensen Huang have articulated
+when they've said, "Firing people is
+ 
+when they've said, "Firing people is
+short-sighted. You want to be keeping
+ 
+short-sighted. You want to be keeping
+your people and pointing them at more
+ 
+your people and pointing them at more
+interesting and compelling missions."
+ 
+interesting and compelling missions."
+And if you don't have those, that's your
+ 
+And if you don't have those, that's your
+failure as a chief executive. That's
+ 
+failure as a chief executive. That's
+your failure as a leader. It's not the
+ 
+your failure as a leader. It's not the
+failure of your people. And Jensen has
+ 
+failure of your people. And Jensen has
+said that in so many terms, and he said
+ 
+said that in so many terms, and he said
+he's keeping his engineers and he's
+ 
+he's keeping his engineers and he's
+pointing them at more interesting
+ 
+pointing them at more interesting
+missions. Now, granted, he's not in the
+ 
+missions. Now, granted, he's not in the
+SaaS business, and his stock has not
+ 
+SaaS business, and his stock has not
+been punished in the last 12 months. All
+ 
+been punished in the last 12 months. All
+of that being said, I think he has a
+ 
+of that being said, I think he has a
+point. Over and over again, I've seen so
+ 
+point. Over and over again, I've seen so
+many leaders look to their existing
+ 
+many leaders look to their existing
+education, their existing domain
+ 
+education, their existing domain
+experience, and fail to understand that
+ 
+experience, and fail to understand that
+they can raise their sights and have
+ 
+they can raise their sights and have
+wider ambitions. And I think what we're
+ 
+wider ambitions. And I think what we're
+seeing right now is that you don't get
+ 
+seeing right now is that you don't get
+to have those wider ambitions in SaaS if
+ 
+to have those wider ambitions in SaaS if
+you do not learn to pivot your pricing
+ 
+you do not learn to pivot your pricing
+model fast. I keep saying the future's
+ 
+model fast. I keep saying the future's
+coming at you fast, and I think part of
+ 
+coming at you fast, and I think part of
+the story in March for SaaS companies is
+ 
+the story in March for SaaS companies is
+the market realized how quickly the
+ 
+the market realized how quickly the
+future is coming before SaaS businesses
+ 
+future is coming before SaaS businesses
+did. And that dislocation is something
+ 
+did. And that dislocation is something
+we are going to keep seeing where Wall
+ 
+we are going to keep seeing where Wall
+Street is going to see ahead and see
+ 
+Street is going to see ahead and see
+around corners and see AI impacts faster
+ 
+around corners and see AI impacts faster
+unless businesses start to figure this
+ 
+unless businesses start to figure this
+out now and proactively adjust to AI.
+ 
+out now and proactively adjust to AI.
+Shift number five, safety posture has
+ 
+Shift number five, safety posture has
+become a market position with economic
+ 
+become a market position with economic
+implications, and we're still sorting
+ 
+implications, and we're still sorting
+through that because we processed it as
+ 
+through that because we processed it as
+a political drama first. On February
+ 
+a political drama first. On February
+26th, Anthropic CEO Dario Amodei
+ 
+26th, Anthropic CEO Dario Amodei
+published a statement explaining that
+ 
+published a statement explaining that
+the company could not accept the
+ 
+the company could not accept the
+Pentagon's demand that its AI models be
+ 
+Pentagon's demand that its AI models be
+available for all lawful purposes
+ 
+available for all lawful purposes
+because Anthropic had red lines. One, no
+ 
+because Anthropic had red lines. One, no
+use of Claude in fully autonomous
+ 
+use of Claude in fully autonomous
+weapons. Two, no use for mass
+ 
+weapons. Two, no use for mass
+surveillance of American citizens. The
+ 
+surveillance of American citizens. The
+Pentagon said it could not accept a
+ 
+Pentagon said it could not accept a
+private company dictating terms on a
+ 
+private company dictating terms on a
+classified network. Negotiations
+ 
+classified network. Negotiations
+collapsed, but what happened next, of
+ 
+collapsed, but what happened next, of
+course, was unprecedented because on the
+ 
+course, was unprecedented because on the
+27th, the government directed federal
+ 
+27th, the government directed federal
+agencies to cease use of Anthropic's
+ 
+agencies to cease use of Anthropic's
+technology. Defense Secretary Hagseth
+ 
+technology. Defense Secretary Hagseth
+designated Anthropic a supply chain risk
+ 
+designated Anthropic a supply chain risk
+to national security, and that
+ 
+to national security, and that
+designation required defense contractors
+ 
+designation required defense contractors
+to certify they don't use Claude. Now,
+ 
+to certify they don't use Claude. Now,
+at that point, a lawsuit kicked off. I
+ 
+at that point, a lawsuit kicked off. I
+followed that. Anthropic has since
+ 
+followed that. Anthropic has since
+earned an early victory in federal
+ 
+earned an early victory in federal
+courts, but that's not the point here.
+ 
+courts, but that's not the point here.
+What makes this structurally important
+ 
+What makes this structurally important
+is that the market is now sorting AI
+ 
+is that the market is now sorting AI
+companies, and really every lab, every
+ 
+companies, and really every lab, every
+startup, every enterprise buyer is
+ 
+startup, every enterprise buyer is
+sorting around whether or not the safety
+ 
+sorting around whether or not the safety
+posture of a particular vendor is
+ 
+posture of a particular vendor is
+something that you can align with. And
+ 
+something that you can align with. And
+as these models get more capable, we are
+ 
+as these models get more capable, we are
+going to be asking more and more
+ 
+going to be asking more and more
+questions about the safety posture of
+ 
+questions about the safety posture of
+the model makers themselves. We could
+ 
+the model makers themselves. We could
+get lost in the battle between OpenAI
+ 
+get lost in the battle between OpenAI
+and Anthropic here, but that's not the
+ 
+and Anthropic here, but that's not the
+point. The point is that safety posture
+ 
+point. The point is that safety posture
+is no longer just an ethics question or
+ 
+is no longer just an ethics question or
+a talent retention strategy. It is
+ 
+a talent retention strategy. It is
+actually a marketing positioning
+ 
+actually a marketing positioning
+question at this point, and it has
+ 
+question at this point, and it has
+revenue consequences that run in
+ 
+revenue consequences that run in
+multiple directions. Anthropic's stance
+ 
+multiple directions. Anthropic's stance
+cost it a $200 million contract and
+ 
+cost it a $200 million contract and
+triggered a government-wide ban, but it
+ 
+triggered a government-wide ban, but it
+also drove record consumer adoption,
+ 
+also drove record consumer adoption,
+generated enormous goodwill among
+ 
+generated enormous goodwill among
+enterprise buyers who value AI
+ 
+enterprise buyers who value AI
+governance, and created a
+ 
+governance, and created a
+differentiation signal that no marketing
+ 
+differentiation signal that no marketing
+campaign could buy. OpenAI captured the
+ 
+campaign could buy. OpenAI captured the
+defense revenue, but absorbed
+ 
+defense revenue, but absorbed
+reputational damage, internal dissent,
+ 
+reputational damage, internal dissent,
+and scrutiny that will follow it into
+ 
+and scrutiny that will follow it into
+every future enterprise deal where trust
+ 
+every future enterprise deal where trust
+is part of the conversation. The great
+ 
+is part of the conversation. The great
+sorting has begun, and all of us are on
+ 
+sorting has begun, and all of us are on
+this spectrum. We're all between a world
+ 
+this spectrum. We're all between a world
+where we are deploy-first and a world
+ 
+where we are deploy-first and a world
+where we are safety-first. And it's so
+ 
+where we are safety-first. And it's so
+easy to make simple binaries out of that
+ 
+easy to make simple binaries out of that
+distinction. It's so easy to say, well,
+ 
+distinction. It's so easy to say, well,
+one of these companies is a good guy and
+ 
+one of these companies is a good guy and
+one of these companies is not a good
+ 
+one of these companies is not a good
+guy. I think it's more useful to ask
+ 
+guy. I think it's more useful to ask
+ourselves, where are we willing to
+ 
+ourselves, where are we willing to
+allocate investment in the future? Are
+ 
+allocate investment in the future? Are
+we going to allocate investment toward
+ 
+we going to allocate investment toward
+models that are designed to be
+ 
+models that are designed to be
+effectively licensed whole and allowed
+ 
+effectively licensed whole and allowed
+to do whatever they want by the vendor
+ 
+to do whatever they want by the vendor
+or the buyer and caveat emptor and good
+ 
+or the buyer and caveat emptor and good
+luck using the model, you get it no
+ 
+luck using the model, you get it no
+strings attached, or are we looking for
+ 
+strings attached, or are we looking for
+a situation where the model maker
+ 
+a situation where the model maker
+retains some degree of influence over
+ 
+retains some degree of influence over
+what the model is used for? You know,
+ 
+what the model is used for? You know,
+traditionally, we would probably assume
+ 
+traditionally, we would probably assume
+that the approach of here's the model,
+ 
+that the approach of here's the model,
+you do with it what you want is the one
+ 
+you do with it what you want is the one
+that will triumph because that is the
+ 
+that will triumph because that is the
+simplest, cleanest way to hand over a
+ 
+simplest, cleanest way to hand over a
+model. I'm not sure if that's actually
+ 
+model. I'm not sure if that's actually
+the case. I think one of the biggest
+ 
+the case. I think one of the biggest
+open questions between Anthropic and
+ 
+open questions between Anthropic and
+OpenAI right now is how this Defense
+ 
+OpenAI right now is how this Defense
+Department conflict changes their
+ 
+Department conflict changes their
+go-to-market strategy for large
+ 
+go-to-market strategy for large
+enterprise customers. To what extent do
+ 
+enterprise customers. To what extent do
+they learn from this and say, you know
+ 
+they learn from this and say, you know
+what, we're going to take these larger
+ 
+what, we're going to take these larger
+models and we're really going to make it
+ 
+models and we're really going to make it
+hands-off with enterprise customers and
+ 
+hands-off with enterprise customers and
+you can get whatever you want, the model
+ 
+you can get whatever you want, the model
+will do whatever you want, and we're
+ 
+will do whatever you want, and we're
+going to wash our hands of it. Very
+ 
+going to wash our hands of it. Very
+similar to OpenAI's approach with
+ 
+similar to OpenAI's approach with
+Defense Department or at least the way
+ 
+Defense Department or at least the way
+that's been portrayed. Now, OpenAI will
+ 
+that's been portrayed. Now, OpenAI will
+be the first to tell you they think that
+ 
+be the first to tell you they think that
+they have put enough safeguards in place
+ 
+they have put enough safeguards in place
+that in practice, they won't hit those
+ 
+that in practice, they won't hit those
+red lines Anthropic worried about.
+ 
+red lines Anthropic worried about.
+There's a lot of debate there. On the
+ 
+There's a lot of debate there. On the
+other side, if you're looking at
+ 
+other side, if you're looking at
+enterprise contracts, maybe you're going
+ 
+enterprise contracts, maybe you're going
+to take this approach and you're going
+ 
+to take this approach and you're going
+to say we actually want to retain some
+ 
+to say we actually want to retain some
+control over how the model is used. We
+ 
+control over how the model is used. We
+don't want to assume that the model is
+ 
+don't want to assume that the model is
+just going to be whatever the enterprise
+ 
+just going to be whatever the enterprise
+wants it to be, maybe used for mass
+ 
+wants it to be, maybe used for mass
+employee surveillance, whatever it might
+ 
+employee surveillance, whatever it might
+be. We want to retain some control over
+ 
+be. We want to retain some control over
+how the model we license to you is used.
+ 
+how the model we license to you is used.
+I think that that question is going to
+ 
+I think that that question is going to
+shape a lot of enterprise contracts and
+ 
+shape a lot of enterprise contracts and
+we're looking at it through a government
+ 
+we're looking at it through a government
+lens right now. And so I am curious as
+ 
+lens right now. And so I am curious as
+we start to look at enterprise deals
+ 
+we start to look at enterprise deals
+later into 2026, to what extent is model
+ 
+later into 2026, to what extent is model
+autonomy on the table for these
+ 
+autonomy on the table for these
+conversations and what are the terms of
+ 
+conversations and what are the terms of
+that debate? I think we saw an early
+ 
+that debate? I think we saw an early
+version of that in the defense
+ 
+version of that in the defense
+department conversation this March. Do
+ 
+department conversation this March. Do
+you see the throughline here? It's all
+ 
+you see the throughline here? It's all
+about what is sustainable to build over
+ 
+about what is sustainable to build over
+time and that's also what SaaS companies
+ 
+time and that's also what SaaS companies
+are grappling with, right? They're
+ 
+are grappling with, right? They're
+grappling with how much human head count
+ 
+grappling with how much human head count
+they can use to go after their ambitions
+ 
+they can use to go after their ambitions
+and dream when they haven't actually
+ 
+and dream when they haven't actually
+changed the pricing models. That's also
+ 
+changed the pricing models. That's also
+the challenge that large AI companies
+ 
+the challenge that large AI companies
+are going to face as they build these
+ 
+are going to face as they build these
+sustainable enterprise contracts post
+ 
+sustainable enterprise contracts post
+DOD conversation. How are they going to
+ 
+DOD conversation. How are they going to
+frame these enterprise contracts in ways
+ 
+frame these enterprise contracts in ways
+that allow them to have long-term
+ 
+that allow them to have long-term
+revenue while also giving enterprises
+ 
+revenue while also giving enterprises
+the degree of autonomy that they need.
+ 
+the degree of autonomy that they need.
+In the first couple years of AI, I would
+ 
+In the first couple years of AI, I would
+say we were in a capability phase and it
+ 
+say we were in a capability phase and it
+rewarded the question, is it possible to
+ 
+rewarded the question, is it possible to
+build something? What can we build? Now
+ 
+build something? What can we build? Now
+it seems we're entering an economics
+ 
+it seems we're entering an economics
+phase. We're trying to figure out what's
+ 
+phase. We're trying to figure out what's
+sustainable and it rewards a different
+ 
+sustainable and it rewards a different
+question. What can we build and make
+ 
+question. What can we build and make
+margin on? What can we sustain? What's a
+ 
+margin on? What can we sustain? What's a
+reasonable business proposition? That
+ 
+reasonable business proposition? That
+question is not going anywhere and
+ 
+question is not going anywhere and
+that's the question I want you to think
+ 
+that's the question I want you to think
+about as you look at the moves that are
+ 
+about as you look at the moves that are
+coming in April as well because I think
+ 
+coming in April as well because I think
+that we are going to see this as a macro
+ 
+that we are going to see this as a macro
+trend heading into the rest of the year.
+ 
+trend heading into the rest of the year.
+If you're interested in following in
+ 
+If you're interested in following in
+April the way I followed it in March
+ 
+April the way I followed it in March
+like this, you should definitely grab
+ 
+like this, you should definitely grab
+the scale I put together to look
+ 
+the scale I put together to look
+underneath the news and see what the
+ 
+underneath the news and see what the
+trendlines are. I think it will be
+ 
+trendlines are. I think it will be
+helpful. Best of luck.

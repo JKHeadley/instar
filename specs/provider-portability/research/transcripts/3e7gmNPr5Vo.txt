@@ -1,0 +1,2486 @@
+ 
+Anthropic finished up shipping OpenClaw
+ 
+Anthropic finished up shipping OpenClaw
+for Claude. What they shipped is
+ 
+for Claude. What they shipped is
+dispatch and then a day later computer
+ 
+dispatch and then a day later computer
+use. And what they give you together is
+ 
+use. And what they give you together is
+exactly what people do with OpenClaw but
+ 
+exactly what people do with OpenClaw but
+without all the security risks. So you
+ 
+without all the security risks. So you
+can text claude from your phone. It
+ 
+can text claude from your phone. It
+takes over your desktop. It can open up
+ 
+takes over your desktop. It can open up
+apps. It can click its way through
+ 
+apps. It can click its way through
+screens. It can navigate tools that have
+ 
+screens. It can navigate tools that have
+no API. And it delivers finished work
+ 
+no API. And it delivers finished work
+while you are away at your phone
+ 
+while you are away at your phone
+wherever you want to be. Not a summary
+ 
+wherever you want to be. Not a summary
+for you to review, not a draft to edit.
+ 
+for you to review, not a draft to edit.
+the thing itself just gets sorted. And
+ 
+the thing itself just gets sorted. And
+that distinction between work that lands
+ 
+that distinction between work that lands
+on your desk and work that gets off of
+ 
+on your desk and work that gets off of
+it is the whole game now. And I don't
+ 
+it is the whole game now. And I don't
+think we're talking about it enough. So
+ 
+think we're talking about it enough. So
+much of the time I see AI agent demos
+ 
+much of the time I see AI agent demos
+that are optimized to look good, not
+ 
+that are optimized to look good, not
+optimized to actually get work off your
+ 
+optimized to actually get work off your
+desk. Like, let's be honest. How many AI
+ 
+desk. Like, let's be honest. How many AI
+agents want to come to you now and say,
+ 
+agents want to come to you now and say,
+"I have a briefing for you, a proactive
+ 
+"I have a briefing for you, a proactive
+briefing. It's a really important
+ 
+briefing. It's a really important
+briefing. It's going to be before your
+ 
+briefing. It's going to be before your
+meeting. It's another docy." And maybe
+ 
+meeting. It's another docy." And maybe
+for an important meeting, it's worth it.
+ 
+for an important meeting, it's worth it.
+But I've tried a lot of agents and if
+ 
+But I've tried a lot of agents and if
+that's the thing they want to be
+ 
+that's the thing they want to be
+proactive about, I got to be honest,
+ 
+proactive about, I got to be honest,
+some days it feels like just another
+ 
+some days it feels like just another
+dock to read. And so, I wanted to
+ 
+dock to read. And so, I wanted to
+actually think about now that we have
+ 
+actually think about now that we have
+these tools, what do we do with them
+ 
+these tools, what do we do with them
+that's useful? How can we start to think
+ 
+that's useful? How can we start to think
+logically through the gaps that we're
+ 
+logically through the gaps that we're
+closing in agentic workflows that allow
+ 
+closing in agentic workflows that allow
+us to get real work done and then start
+ 
+us to get real work done and then start
+to say, okay, what are the use cases
+ 
+to say, okay, what are the use cases
+they unlock that get stuff off our
+ 
+they unlock that get stuff off our
+desks? And so this video is about what's
+ 
+desks? And so this video is about what's
+actually worth building once you have
+ 
+actually worth building once you have
+the power of Claude in your pocket with
+ 
+the power of Claude in your pocket with
+dispatch and computer use and all the
+ 
+dispatch and computer use and all the
+rest of it. It's about how you clear out
+ 
+rest of it. It's about how you clear out
+the technical debt. It's about how you
+ 
+the technical debt. It's about how you
+clear out that hum or that buzz in your
+ 
+clear out that hum or that buzz in your
+head when you have an idea and you can't
+ 
+head when you have an idea and you can't
+write it down. It's about how you make
+ 
+write it down. It's about how you make
+sure that you make good decisions with
+ 
+sure that you make good decisions with
+highquality information when you're out
+ 
+highquality information when you're out
+and about. Look, I've been automating
+ 
+and about. Look, I've been automating
+systems for a long time. And one of the
+ 
+systems for a long time. And one of the
+things you learn about automating
+ 
+things you learn about automating
+systems is that if they don't do work
+ 
+systems is that if they don't do work
+while you sleep, they're probably not
+ 
+while you sleep, they're probably not
+worth it. And that's something that I
+ 
+worth it. And that's something that I
+notice a lot is that the people who tend
+ 
+notice a lot is that the people who tend
+to know how to use their agents figure
+ 
+to know how to use their agents figure
+out how to kick off work that actually
+ 
+out how to kick off work that actually
+builds and compounds over time. That's a
+ 
+builds and compounds over time. That's a
+lot of what I talked about when I talk
+ 
+lot of what I talked about when I talk
+about the open brain concept, right? The
+ 
+about the open brain concept, right? The
+idea that you want to have a database
+ 
+idea that you want to have a database
+that you control that's cheap, almost
+ 
+that you control that's cheap, almost
+nothing, almost free that you can then
+ 
+nothing, almost free that you can then
+build on by just naturally putting in
+ 
+build on by just naturally putting in
+what works for you and the channel that
+ 
+what works for you and the channel that
+works for you. It just starts to acrue
+ 
+works for you. It just starts to acrue
+more knowledge. It allows your agent to
+ 
+more knowledge. It allows your agent to
+be more proactive. Basically, I'm in a
+ 
+be more proactive. Basically, I'm in a
+quest to make the leverage you get from
+ 
+quest to make the leverage you get from
+professional engineering available to
+ 
+professional engineering available to
+all of us. And I think agents are the
+ 
+all of us. And I think agents are the
+key. And I think tools like Dispatch
+ 
+key. And I think tools like Dispatch
+give us a way to do that. And if you're
+ 
+give us a way to do that. And if you're
+wondering if Dispatch will plug into
+ 
+wondering if Dispatch will plug into
+OpenBrain, of course, yes it will. I'll
+ 
+OpenBrain, of course, yes it will. I'll
+show you how. It's not that hard. The
+ 
+show you how. It's not that hard. The
+reason I'm spending this video covering
+ 
+reason I'm spending this video covering
+these use cases, these launches for
+ 
+these use cases, these launches for
+Claude, is that I think this is the
+ 
+Claude, is that I think this is the
+closest we've had to a widely available,
+ 
+closest we've had to a widely available,
+secure, remote, always on agent that can
+ 
+secure, remote, always on agent that can
+do real work. I want it to do work for
+ 
+do real work. I want it to do work for
+us that matters now. And I want to make
+ 
+us that matters now. And I want to make
+sure you understand why this all stacks
+ 
+sure you understand why this all stacks
+up and works. So the first building
+ 
+up and works. So the first building
+block, the first Lego brick here is
+ 
+block, the first Lego brick here is
+scheduled tasks. It's not the same as
+ 
+scheduled tasks. It's not the same as
+scheduled tasks in chat. This is
+ 
+scheduled tasks in chat. This is
+something that open clause users really
+ 
+something that open clause users really
+loved because it let you do stuff while
+ 
+loved because it let you do stuff while
+you were away and the Mac menu was on.
+ 
+you were away and the Mac menu was on.
+Well, cloud scheduled tasks with Claude
+ 
+Well, cloud scheduled tasks with Claude
+essentially closes the same gap. You get
+ 
+essentially closes the same gap. You get
+a repository, you get a schedule, and
+ 
+a repository, you get a schedule, and
+you get a prompt. And Anthropics
+ 
+you get a prompt. And Anthropics
+infrastructure runs it. whether your
+ 
+infrastructure runs it. whether your
+laptop is on or not. Not a closet
+ 
+laptop is on or not. Not a closet
+server, a controlled cloud environment
+ 
+server, a controlled cloud environment
+with configurable network access,
+ 
+with configurable network access,
+environment variables, and setup
+ 
+environment variables, and setup
+scripts. Basically, scheduled tasks from
+ 
+scripts. Basically, scheduled tasks from
+Claude gives you a computer in the cloud
+ 
+Claude gives you a computer in the cloud
+that you can message and tell it to do
+ 
+that you can message and tell it to do
+stuff on a schedule. Now, I will say
+ 
+stuff on a schedule. Now, I will say
+there's some limitations, right? They're
+ 
+there's some limitations, right? They're
+not going to let you check every minute
+ 
+not going to let you check every minute
+for scheduled tasks. If you want
+ 
+for scheduled tasks. If you want
+something that's done constantly, this
+ 
+something that's done constantly, this
+is not the environment for you. But if
+ 
+is not the environment for you. But if
+you want something checked every hour,
+ 
+you want something checked every hour,
+every two hours, every 3 hours, and it's
+ 
+every two hours, every 3 hours, and it's
+just a recurring task, this is perfect.
+ 
+just a recurring task, this is perfect.
+And this is something that I think
+ 
+And this is something that I think
+really speaks to developers. In fact,
+ 
+really speaks to developers. In fact,
+that's where Enthropic went in their
+ 
+that's where Enthropic went in their
+launch video. They talked about using
+ 
+launch video. They talked about using
+this exact scheduled approach
+ 
+this exact scheduled approach
+internally. By the way, Enthropic dog
+ 
+internally. By the way, Enthropic dog
+foods their stuff internally
+ 
+foods their stuff internally
+obsessively. That's part of sort of how
+ 
+obsessively. That's part of sort of how
+they build and how they know what to
+ 
+they build and how they know what to
+build. They said that they use this sync
+ 
+build. They said that they use this sync
+to maintain a Go/Python
+ 
+to maintain a Go/Python
+library internally. In other words, a
+ 
+library internally. In other words, a
+codebase in one language that
+ 
+codebase in one language that
+automatically stays in sync with a
+ 
+automatically stays in sync with a
+codebase in another language because of
+ 
+codebase in another language because of
+this scheduled task function. So that's
+ 
+this scheduled task function. So that's
+a production workflow normally would
+ 
+a production workflow normally would
+require an engineer spending a few hours
+ 
+require an engineer spending a few hours
+a week on a task that is important but
+ 
+a week on a task that is important but
+never urgent. Exactly the kind of work
+ 
+never urgent. Exactly the kind of work
+that tends to fall through the cracks in
+ 
+that tends to fall through the cracks in
+most engineering organizations. And yes,
+ 
+most engineering organizations. And yes,
+you can connect it to any MCP server
+ 
+you can connect it to any MCP server
+you've already wired into Claude, right?
+ 
+you've already wired into Claude, right?
+You can connect it to Linear, you can
+ 
+You can connect it to Linear, you can
+connect it to GitHub, you can connect it
+ 
+connect it to GitHub, you can connect it
+to Slack, you can connect it to
+ 
+to Slack, you can connect it to
+OpenBrain, you can connect it to Google
+ 
+OpenBrain, you can connect it to Google
+Drive, whatever you've already set up,
+ 
+Drive, whatever you've already set up,
+and the connectors just carry. You don't
+ 
+and the connectors just carry. You don't
+have to configure them twice. And so
+ 
+have to configure them twice. And so
+anytime you have scheduled tasks, you
+ 
+anytime you have scheduled tasks, you
+can just say, "Run this script at 2 a.m.
+ 
+can just say, "Run this script at 2 a.m.
+every night," and it will just do it. So
+ 
+every night," and it will just do it. So
+what does this look like if you're not a
+ 
+what does this look like if you're not a
+developer? Let me give you some ideas
+ 
+developer? Let me give you some ideas
+that actually get work off your desk.
+ 
+that actually get work off your desk.
+Number one, I find that I constantly
+ 
+Number one, I find that I constantly
+need to keep up with AI news. Big
+ 
+need to keep up with AI news. Big
+surprise. It's a lot of what I have to
+ 
+surprise. It's a lot of what I have to
+do. It is awfully nice to wake up in the
+ 
+do. It is awfully nice to wake up in the
+morning and have a lot of that work done
+ 
+morning and have a lot of that work done
+because of a scheduled job. And that is
+ 
+because of a scheduled job. And that is
+something that I have had to hack around
+ 
+something that I have had to hack around
+on for a while. And it is a whole lot
+ 
+on for a while. And it is a whole lot
+simpler when Anthropic just launches a
+ 
+simpler when Anthropic just launches a
+basic primitive that says just schedule
+ 
+basic primitive that says just schedule
+it out. and it's a full job that can run
+ 
+it out. and it's a full job that can run
+and it can stick it into your MCP server
+ 
+and it can stick it into your MCP server
+and put it in your open brain and it's
+ 
+and put it in your open brain and it's
+just done. And then I can get a parsed
+ 
+just done. And then I can get a parsed
+version, I can get a research version, I
+ 
+version, I can get a research version, I
+can get a condensed version, I can get
+ 
+can get a condensed version, I can get
+whatever I want, right? I can I can edit
+ 
+whatever I want, right? I can I can edit
+the schedule if I want it, etc. And so
+ 
+the schedule if I want it, etc. And so
+if you're trying to keep up on AI,
+ 
+if you're trying to keep up on AI,
+that's an example of something that like
+ 
+that's an example of something that like
+you just don't have to put as much work
+ 
+you just don't have to put as much work
+into reading the news because the news
+ 
+into reading the news because the news
+gets fed to you. Another great example
+ 
+gets fed to you. Another great example
+of what you can do with this, let's say,
+ 
+of what you can do with this, let's say,
+look, aviation prices are up. You're
+ 
+look, aviation prices are up. You're
+looking for good deals. You don't want
+ 
+looking for good deals. You don't want
+to have to scan the airline prices all
+ 
+to have to scan the airline prices all
+the time. You get the idea, right? You
+ 
+the time. You get the idea, right? You
+can run that schedule every hour. You
+ 
+can run that schedule every hour. You
+can come back and it will just pop in
+ 
+can come back and it will just pop in
+and alert you when it goes below a
+ 
+and alert you when it goes below a
+certain threshold for the route that
+ 
+certain threshold for the route that
+you're looking at. Anything that happens
+ 
+you're looking at. Anything that happens
+in time, this can take care of for you.
+ 
+in time, this can take care of for you.
+Here's another one. There are some
+ 
+Here's another one. There are some
+places that don't let you put auto
+ 
+places that don't let you put auto
+payments on a schedule. You have to
+ 
+payments on a schedule. You have to
+remember to pay your bills on time. Why
+ 
+remember to pay your bills on time. Why
+not just give yourself a reminder and it
+ 
+not just give yourself a reminder and it
+pops up for you so you never forget to
+ 
+pops up for you so you never forget to
+pay the bill? I think that one of the
+ 
+pay the bill? I think that one of the
+biggest challenges in 2026 is
+ 
+biggest challenges in 2026 is
+recognizing how much of our lives is
+ 
+recognizing how much of our lives is
+actually agent shaped. There's so many
+ 
+actually agent shaped. There's so many
+problems that we can start to solve if
+ 
+problems that we can start to solve if
+we have these primitives in place. And
+ 
+we have these primitives in place. And
+so what I call a primitive is basically
+ 
+so what I call a primitive is basically
+just a building block that you can build
+ 
+just a building block that you can build
+a lot of the rest of the work you want
+ 
+a lot of the rest of the work you want
+to do on. In this case, the building
+ 
+to do on. In this case, the building
+block is just native scheduling with
+ 
+block is just native scheduling with
+claude. But look how it comes together.
+ 
+claude. But look how it comes together.
+Number two is persistence. So if we talk
+ 
+Number two is persistence. So if we talk
+about scheduling as a primitive and what
+ 
+about scheduling as a primitive and what
+claude released there in the last few
+ 
+claude released there in the last few
+days, the second thing they released, I
+ 
+days, the second thing they released, I
+mentioned this at the top is dispatch.
+ 
+mentioned this at the top is dispatch.
+So openclaw also has persistence. Claude
+ 
+So openclaw also has persistence. Claude
+is very deliberately copying OpenClaw
+ 
+is very deliberately copying OpenClaw
+here. It's not a secret. OpenClaw
+ 
+here. It's not a secret. OpenClaw
+remembered your context. It carried work
+ 
+remembered your context. It carried work
+across sessions. You didn't start over
+ 
+across sessions. You didn't start over
+every time you open the app. That
+ 
+every time you open the app. That
+continuity was a feature that felt
+ 
+continuity was a feature that felt
+really obvious once you experienced it
+ 
+really obvious once you experienced it
+and that every traditional chatbot
+ 
+and that every traditional chatbot
+interface lacked and people responded to
+ 
+interface lacked and people responded to
+this, right? This is part of what people
+ 
+this, right? This is part of what people
+want is an always on agent. Dispatch
+ 
+want is an always on agent. Dispatch
+closes that gap for Enthropic, but not
+ 
+closes that gap for Enthropic, but not
+in the way a lot of the coverage has
+ 
+in the way a lot of the coverage has
+talked about. So the surface level
+ 
+talked about. So the surface level
+description has been look it's just
+ 
+description has been look it's just
+persistent chat for your phone. It's not
+ 
+persistent chat for your phone. It's not
+that hard. You just chat and it's one
+ 
+that hard. You just chat and it's one
+long context window. But that undersells
+ 
+long context window. But that undersells
+what is really going on. When you pair
+ 
+what is really going on. When you pair
+your phone with claw desktop via QR
+ 
+your phone with claw desktop via QR
+code, you don't get a single thread that
+ 
+code, you don't get a single thread that
+runs a task. You're actually getting an
+ 
+runs a task. You're actually getting an
+orchestration layer. So from one
+ 
+orchestration layer. So from one
+conversation on your phone, you can
+ 
+conversation on your phone, you can
+spawn and manage multiple claw work task
+ 
+spawn and manage multiple claw work task
+sessions running simultaneously on your
+ 
+sessions running simultaneously on your
+desktop. Each session runs
+ 
+desktop. Each session runs
+independently, its own context, its own
+ 
+independently, its own context, its own
+file access, its own connectors. Your
+ 
+file access, its own connectors. Your
+phone is the command surface for all
+ 
+phone is the command surface for all
+this and your desktop is the execution
+ 
+this and your desktop is the execution
+surface. The sessions can run in
+ 
+surface. The sessions can run in
+parallel. That's not remote control.
+ 
+parallel. That's not remote control.
+That's actually a dispatch layer in the
+ 
+That's actually a dispatch layer in the
+literal sense of the word. That's
+ 
+literal sense of the word. That's
+probably why they named it dispatch.
+ 
+probably why they named it dispatch.
+You're dispatching work to parallel
+ 
+You're dispatching work to parallel
+agents from a mobile interface wherever
+ 
+agents from a mobile interface wherever
+you happen to be. And what that means is
+ 
+you happen to be. And what that means is
+you are able to get all the work you can
+ 
+you are able to get all the work you can
+envision for clawed co-work done without
+ 
+envision for clawed co-work done without
+having to be at the computer anymore.
+ 
+having to be at the computer anymore.
+And let me tell you, for some of us,
+ 
+And let me tell you, for some of us,
+especially if you're a parent, if you're
+ 
+especially if you're a parent, if you're
+out and about a lot, it is awfully nice
+ 
+out and about a lot, it is awfully nice
+to not be tethered to the desk. I
+ 
+to not be tethered to the desk. I
+actually love this example from Pavle
+ 
+actually love this example from Pavle
+Hurin. He's a product manager who ran
+ 
+Hurin. He's a product manager who ran
+dispatch for 48 consecutive hours on
+ 
+dispatch for 48 consecutive hours on
+work and he documented sort of the
+ 
+work and he documented sort of the
+behavioral shift and he's a parent too,
+ 
+behavioral shift and he's a parent too,
+right? He went to a kid's bounce house
+ 
+right? He went to a kid's bounce house
+and the work ran without him from the
+ 
+and the work ran without him from the
+sidelines. He had his phone in his hand
+ 
+sidelines. He had his phone in his hand
+and he could direct multiple rounds of
+ 
+and he could direct multiple rounds of
+iteration on something he was working on
+ 
+iteration on something he was working on
+as he watched the kids bounce around. I
+ 
+as he watched the kids bounce around. I
+relate to that, right? Like I've been to
+ 
+relate to that, right? Like I've been to
+that bounce house. He could do
+ 
+that bounce house. He could do
+competitor analysis. he could draft sort
+ 
+competitor analysis. he could draft sort
+of messaging to stakeholders and he
+ 
+of messaging to stakeholders and he
+could do all of this running in parallel
+ 
+could do all of this running in parallel
+across multiple co-work instances and he
+ 
+across multiple co-work instances and he
+actually tracked how much time he spent
+ 
+actually tracked how much time he spent
+and it turns out that over a couple of
+ 
+and it turns out that over a couple of
+days he spent roughly 25 minutes
+ 
+days he spent roughly 25 minutes
+actually entering commands in and then
+ 
+actually entering commands in and then
+claude just executed in parallel over
+ 
+claude just executed in parallel over
+multiple hours of work and he didn't
+ 
+multiple hours of work and he didn't
+have to fill in the dead time at the
+ 
+have to fill in the dead time at the
+desk while Claude was tokenizing. Have
+ 
+desk while Claude was tokenizing. Have
+you ever been the guy at the desk?
+ 
+you ever been the guy at the desk?
+You're like, "Oh, well, Claude's
+ 
+You're like, "Oh, well, Claude's
+tokenizing. I don't know what am I going
+ 
+tokenizing. I don't know what am I going
+to do." And so, you don't have to do
+ 
+to do." And so, you don't have to do
+that anymore. You can do what you need
+ 
+that anymore. You can do what you need
+to do and go about your day and just
+ 
+to do and go about your day and just
+check in with Cloud when you need to.
+ 
+check in with Cloud when you need to.
+Really, what's going on is that this is
+ 
+Really, what's going on is that this is
+parallel asynchronization
+ 
+parallel asynchronization
+from your pocket. Now, the constraint
+ 
+from your pocket. Now, the constraint
+here is really obvious. Unlike the cloud
+ 
+here is really obvious. Unlike the cloud
+example, if you want this to work, you
+ 
+example, if you want this to work, you
+got to have your desktop up and it's got
+ 
+got to have your desktop up and it's got
+to be on. There's no substitute for
+ 
+to be on. There's no substitute for
+that. Now, I suspect very, very strongly
+ 
+that. Now, I suspect very, very strongly
+all the indicators are written on the
+ 
+all the indicators are written on the
+wall. Claude is going to fix that.
+ 
+wall. Claude is going to fix that.
+Claude is going to make it so you don't
+ 
+Claude is going to make it so you don't
+have to have your laptop always on or it
+ 
+have to have your laptop always on or it
+could wake itself up or whatever it
+ 
+could wake itself up or whatever it
+needs to do. It's not here yet, but I
+ 
+needs to do. It's not here yet, but I
+bet you it's coming soon. And there's
+ 
+bet you it's coming soon. And there's
+some other minor teething issues I
+ 
+some other minor teething issues I
+expect to work through here. Every
+ 
+expect to work through here. Every
+subtask that Dispatch spawns requests
+ 
+subtask that Dispatch spawns requests
+folder access on your desktop
+ 
+folder access on your desktop
+individually that you have to approve.
+ 
+individually that you have to approve.
+There's no bulk approval right now. You
+ 
+There's no bulk approval right now. You
+can't attach files from the phone yet.
+ 
+can't attach files from the phone yet.
+You can't even receive output files back
+ 
+You can't even receive output files back
+directly. The workaround is syncing your
+ 
+directly. The workaround is syncing your
+co-work instance to your Google Drive or
+ 
+co-work instance to your Google Drive or
+your Dropbox so that it dumps the files
+ 
+your Dropbox so that it dumps the files
+in both directions automatically. And
+ 
+in both directions automatically. And
+yes, you can do that and I can show you
+ 
+yes, you can do that and I can show you
+how. Complex multi-app tasks are going
+ 
+how. Complex multi-app tasks are going
+to succeed roughly half the time based
+ 
+to succeed roughly half the time based
+on early testing. So, think about it as
+ 
+on early testing. So, think about it as
+big multi-step tasks and you're getting
+ 
+big multi-step tasks and you're getting
+about a 50% success rate. But if you're
+ 
+about a 50% success rate. But if you're
+out and about all day, maybe you don't
+ 
+out and about all day, maybe you don't
+mind that because hey, you flip a coin,
+ 
+mind that because hey, you flip a coin,
+you get the success. If it doesn't work,
+ 
+you get the success. If it doesn't work,
+you just try a fresh instance and maybe
+ 
+you just try a fresh instance and maybe
+that one works. That's probably why
+ 
+that one works. That's probably why
+Claude has labeled this research
+ 
+Claude has labeled this research
+preview. But I think the unlock you get
+ 
+preview. But I think the unlock you get
+from being freed from the desk is really
+ 
+from being freed from the desk is really
+huge because fundamentally it moves you
+ 
+huge because fundamentally it moves you
+into the correct pattern for agents. You
+ 
+into the correct pattern for agents. You
+are in a management pattern. When a
+ 
+are in a management pattern. When a
+manager is truly managing a person, do
+ 
+manager is truly managing a person, do
+they sit there and look over their
+ 
+they sit there and look over their
+shoulder? I mean, I've had managers that
+ 
+shoulder? I mean, I've had managers that
+do that. I didn't like those managers.
+ 
+do that. I didn't like those managers.
+Most people don't. You want the manager
+ 
+Most people don't. You want the manager
+to go about their day and let you do
+ 
+to go about their day and let you do
+your thing. That's the mode we need to
+ 
+your thing. That's the mode we need to
+get into in 2026 with agents. And that
+ 
+get into in 2026 with agents. And that
+is why I keep harping on the fact that
+ 
+is why I keep harping on the fact that
+we need to expect our agents to lift
+ 
+we need to expect our agents to lift
+work off the desk and not just create
+ 
+work off the desk and not just create
+more busy work for us in the name of AI
+ 
+more busy work for us in the name of AI
+agents. And so if you're thinking about
+ 
+agents. And so if you're thinking about
+using dispatch, don't think of using
+ 
+using dispatch, don't think of using
+dispatch just to make up work for
+ 
+dispatch just to make up work for
+dispatch. Instead, look at the kind of
+ 
+dispatch. Instead, look at the kind of
+work that you would love to do in
+ 
+work that you would love to do in
+background while you have other stuff
+ 
+background while you have other stuff
+going and like you got to cook dinner,
+ 
+going and like you got to cook dinner,
+you got to pick up the kids from school,
+ 
+you got to pick up the kids from school,
+whatever it is, and you want to spin up
+ 
+whatever it is, and you want to spin up
+a clawed co-work task and just sort of
+ 
+a clawed co-work task and just sort of
+keep an eye on it on the phone. That is
+ 
+keep an eye on it on the phone. That is
+the perfect example. Now, anything
+ 
+the perfect example. Now, anything
+co-work can do, and that is a broad
+ 
+co-work can do, and that is a broad
+spectrum, dispatch can do as well. And
+ 
+spectrum, dispatch can do as well. And
+so, if you tell Dispatch, hey, I'm
+ 
+so, if you tell Dispatch, hey, I'm
+trying to do some deep research. I'm
+ 
+trying to do some deep research. I'm
+preparing to write a complex research
+ 
+preparing to write a complex research
+report at my desk. I want to think about
+ 
+report at my desk. I want to think about
+the way our brains are changing as we
+ 
+the way our brains are changing as we
+relate to artificial intelligence, which
+ 
+relate to artificial intelligence, which
+is the topic I've been thinking about.
+ 
+is the topic I've been thinking about.
+You can just tell Dispatch to dig into
+ 
+You can just tell Dispatch to dig into
+the research and Claude Co-work will
+ 
+the research and Claude Co-work will
+spin that up and do all of that and have
+ 
+spin that up and do all of that and have
+that ready for you by the time you get
+ 
+that ready for you by the time you get
+to the desk. If you want, for example,
+ 
+to the desk. If you want, for example,
+to have Claude Co-work dig in and start
+ 
+to have Claude Co-work dig in and start
+to build something for you, start to
+ 
+to build something for you, start to
+code something for you. So, if you can
+ 
+code something for you. So, if you can
+get to the desk and review the code
+ 
+get to the desk and review the code
+block and review the prototype and see
+ 
+block and review the prototype and see
+how it's going, you can kick that off as
+ 
+how it's going, you can kick that off as
+well. This is the kind of work I want to
+ 
+well. This is the kind of work I want to
+encourage you to think about. And by the
+ 
+encourage you to think about. And by the
+way, don't be afraid of the code. If you
+ 
+way, don't be afraid of the code. If you
+haven't coded before, trust me, I have
+ 
+haven't coded before, trust me, I have
+lots of guides on this. It is not scary.
+ 
+lots of guides on this. It is not scary.
+You can actually build interesting tools
+ 
+You can actually build interesting tools
+now straight from co-work. In fact, I
+ 
+now straight from co-work. In fact, I
+know someone who never coded before in
+ 
+know someone who never coded before in
+her life who has built an entire
+ 
+her life who has built an entire
+complete calendar app that meets her
+ 
+complete calendar app that meets her
+needs and that nobody else has been able
+ 
+needs and that nobody else has been able
+to code for her for 20 years. And she
+ 
+to code for her for 20 years. And she
+did it in like two weeks with no coding
+ 
+did it in like two weeks with no coding
+experience. And I don't say that as an
+ 
+experience. And I don't say that as an
+exception. She's great, but like
+ 
+exception. She's great, but like
+everybody can do that now. And so this
+ 
+everybody can do that now. And so this
+is one of those things where I want to
+ 
+is one of those things where I want to
+keep emphasizing these agents are
+ 
+keep emphasizing these agents are
+really, really good. If you have clarity
+ 
+really, really good. If you have clarity
+of intent and you want to get work off
+ 
+of intent and you want to get work off
+your desk and say, "I really need this.
+ 
+your desk and say, "I really need this.
+This is going to save me hours a week.
+ 
+This is going to save me hours a week.
+Please make it right. That is the kind
+ 
+Please make it right. That is the kind
+of urgency I want us to bring to agents.
+ 
+of urgency I want us to bring to agents.
+And then dispatch frees us to be the
+ 
+And then dispatch frees us to be the
+manager and say, "So, start to work on
+ 
+manager and say, "So, start to work on
+that calendar app. Start to work on
+ 
+that calendar app. Start to work on
+whatever the thing is that is your pet
+ 
+whatever the thing is that is your pet
+project. Let me come back to it later."
+ 
+project. Let me come back to it later."
+Right? I'll come back and check on you
+ 
+Right? I'll come back and check on you
+in an hour. And this is more and more
+ 
+in an hour. And this is more and more
+the pattern we're going to see in 2026.
+ 
+the pattern we're going to see in 2026.
+Okay. And the last one, the thing that I
+ 
+Okay. And the last one, the thing that I
+think is the best is what Claude saved
+ 
+think is the best is what Claude saved
+for last. What about the apps that don't
+ 
+for last. What about the apps that don't
+have MCP servers? What about the apps
+ 
+have MCP servers? What about the apps
+that don't have connectors? I think this
+ 
+that don't have connectors? I think this
+is the most consequential piece for
+ 
+is the most consequential piece for
+builders and I think it's really really
+ 
+builders and I think it's really really
+big that we understand what this means.
+ 
+big that we understand what this means.
+So I love that Claude reaches for MCP
+ 
+So I love that Claude reaches for MCP
+connectors first. It's very very
+ 
+connectors first. It's very very
+wellnown. They prefer it. They love it.
+ 
+wellnown. They prefer it. They love it.
+They encourage you to use it. There's a
+ 
+They encourage you to use it. There's a
+reason I put open brain into MCP.
+ 
+reason I put open brain into MCP.
+There's a reason everybody puts things
+ 
+There's a reason everybody puts things
+into MCP. There is a reason that when
+ 
+into MCP. There is a reason that when
+Google launches their products, they
+ 
+Google launches their products, they
+talk about MCPs that work with clot. MCP
+ 
+talk about MCPs that work with clot. MCP
+is the universal USB of the AI age. But
+ 
+is the universal USB of the AI age. But
+despite that, not everybody puts their
+ 
+despite that, not everybody puts their
+stuff into MCP. It's just a reality. The
+ 
+stuff into MCP. It's just a reality. The
+web is vast. There are many, many tools.
+ 
+web is vast. There are many, many tools.
+There's just never going to be a world
+ 
+There's just never going to be a world
+where we have close to 100% coverage.
+ 
+where we have close to 100% coverage.
+There's never going to be a world where
+ 
+There's never going to be a world where
+we have 50% coverage with MCP servers,
+ 
+we have 50% coverage with MCP servers,
+right? More than half the world is not
+ 
+right? More than half the world is not
+accessible to agents easily. And we're
+ 
+accessible to agents easily. And we're
+talking just about the limited world of
+ 
+talking just about the limited world of
+the screen. Still, more than half of
+ 
+the screen. Still, more than half of
+that is not accessible to agents. And so
+ 
+that is not accessible to agents. And so
+what Claude did here is it took the
+ 
+what Claude did here is it took the
+blinders off and it basically said, "You
+ 
+blinders off and it basically said, "You
+know what? We're going to make sure that
+ 
+know what? We're going to make sure that
+remotely through co-work
+ 
+remotely through co-work
+tool on your computer and that includes
+ 
+tool on your computer and that includes
+the web browser and you can do any kind
+ 
+the web browser and you can do any kind
+of remote work that involves keyboard
+ 
+of remote work that involves keyboard
+and mouse clicking." That's right. You
+ 
+and mouse clicking." That's right. You
+can be, you know, 10 miles away watching
+ 
+can be, you know, 10 miles away watching
+the kids at the bounce house and your
+ 
+the kids at the bounce house and your
+computer is going to be typing away and
+ 
+computer is going to be typing away and
+your mouse is going to be moving and
+ 
+your mouse is going to be moving and
+it's not going to be haunted and it's
+ 
+it's not going to be haunted and it's
+not going to be a horror movie. It's
+ 
+not going to be a horror movie. It's
+just going to be Claude doing his job
+ 
+just going to be Claude doing his job
+because you asked it to via dispatch.
+ 
+because you asked it to via dispatch.
+And this is really a case where you
+ 
+And this is really a case where you
+start to solve business problems, where
+ 
+start to solve business problems, where
+you start to get work off the desk.
+ 
+you start to get work off the desk.
+Think about the old instance of Jira.
+ 
+Think about the old instance of Jira.
+Maybe it's not up to date. Maybe it
+ 
+Maybe it's not up to date. Maybe it
+doesn't have a good MCP. Think about a
+ 
+doesn't have a good MCP. Think about a
+bespoke ERP screen. Think about an old
+ 
+bespoke ERP screen. Think about an old
+SAP instance. Think about something that
+ 
+SAP instance. Think about something that
+is not ever ever ever going to be easy
+ 
+is not ever ever ever going to be easy
+to get data out of. And maybe you don't
+ 
+to get data out of. And maybe you don't
+have time to build the full connector
+ 
+have time to build the full connector
+with the engineering team because you
+ 
+with the engineering team because you
+can't get on their backlog, but you have
+ 
+can't get on their backlog, but you have
+a process that has to run and you have
+ 
+a process that has to run and you have
+to get it into a spreadsheet and then
+ 
+to get it into a spreadsheet and then
+you have to send it to the accountant.
+ 
+you have to send it to the accountant.
+I've been there, right? I've been the
+ 
+I've been there, right? I've been the
+person who had to go through the
+ 
+person who had to go through the
+agonizing process of checking two or
+ 
+agonizing process of checking two or
+three different antique sites for data
+ 
+three different antique sites for data
+that I then manually put into a
+ 
+that I then manually put into a
+spreadsheet and it took me like half the
+ 
+spreadsheet and it took me like half the
+day. There is so much office work that
+ 
+day. There is so much office work that
+falls into that category. And
+ 
+falls into that category. And
+essentially what Claude said is you're
+ 
+essentially what Claude said is you're
+the manager now. Just send the task via
+ 
+the manager now. Just send the task via
+dispatch. Walk away and let Claude
+ 
+dispatch. Walk away and let Claude
+manage it for you. Let Claude get that
+ 
+manage it for you. Let Claude get that
+out for you. And that's why I keep
+ 
+out for you. And that's why I keep
+harping on like think like a manager.
+ 
+harping on like think like a manager.
+Get work off your desk. Don't be
+ 
+Get work off your desk. Don't be
+satisfied with what I would call pseudo
+ 
+satisfied with what I would call pseudo
+work. So much of the demos we see brag
+ 
+work. So much of the demos we see brag
+on pseudo work. I was looking at another
+ 
+on pseudo work. I was looking at another
+one today. It's like so obsessed with
+ 
+one today. It's like so obsessed with
+proactive briefing. So obsessed with
+ 
+proactive briefing. So obsessed with
+essentially making more text for me to
+ 
+essentially making more text for me to
+read. Stop making more text for me to
+ 
+read. Stop making more text for me to
+read. Agents should take work off my
+ 
+read. Agents should take work off my
+desk. If they're not taking work off my
+ 
+desk. If they're not taking work off my
+desk, I don't want it. And this is what
+ 
+desk, I don't want it. And this is what
+makes this exciting is because this is
+ 
+makes this exciting is because this is
+actually a string of Lego bricks, a
+ 
+actually a string of Lego bricks, a
+string of primitives you can put
+ 
+string of primitives you can put
+together that you can actually get real
+ 
+together that you can actually get real
+work done with. You can assign the task
+ 
+work done with. You can assign the task
+from your phone. You can use desktop
+ 
+from your phone. You can use desktop
+apps to complete it and it can be
+ 
+apps to complete it and it can be
+totally done. If you're the engineer,
+ 
+totally done. If you're the engineer,
+you can schedule it in the cloud and it
+ 
+you can schedule it in the cloud and it
+can just be done. And people are going
+ 
+can just be done. And people are going
+to tell you at this point that the key
+ 
+to tell you at this point that the key
+difference between openclaw and
+ 
+difference between openclaw and
+anthropic is safety, that anthropic is
+ 
+anthropic is safety, that anthropic is
+the safe one, and openclaw is the
+ 
+the safe one, and openclaw is the
+dangerous one. I don't think that's
+ 
+dangerous one. I don't think that's
+correct. I think that the difference is
+ 
+correct. I think that the difference is
+the degree to which you want to
+ 
+the degree to which you want to
+self-host versus the degree to which you
+ 
+self-host versus the degree to which you
+want a managed agent. So, open clause
+ 
+want a managed agent. So, open clause
+infrastructure that you have to roll and
+ 
+infrastructure that you have to roll and
+run yourself. You set the server up. You
+ 
+run yourself. You set the server up. You
+configure the network. You manage the
+ 
+configure the network. You manage the
+credentials. You vet the skills. You
+ 
+credentials. You vet the skills. You
+troubleshoot the websocket connections.
+ 
+troubleshoot the websocket connections.
+You decide what the agent can access and
+ 
+You decide what the agent can access and
+what it cannot. For developers who want
+ 
+what it cannot. For developers who want
+that control, it is a super powerful
+ 
+that control, it is a super powerful
+thing. For everybody else, it kind of
+ 
+thing. For everybody else, it kind of
+feels like a second job. The Mac Mini in
+ 
+feels like a second job. The Mac Mini in
+the closet does need to be maintained.
+ 
+the closet does need to be maintained.
+And for developers who know how to do
+ 
+And for developers who know how to do
+it, it's not too bad. They can get it
+ 
+it, it's not too bad. They can get it
+done. I've written the guide on how to
+ 
+done. I've written the guide on how to
+do that. You can totally do it even if
+ 
+do that. You can totally do it even if
+you're non-technical. But I don't want
+ 
+you're non-technical. But I don't want
+to pretend it's not work. Enthropic
+ 
+to pretend it's not work. Enthropic
+brings managed infrastructure. Cloud
+ 
+brings managed infrastructure. Cloud
+scheduled tasks run on their servers,
+ 
+scheduled tasks run on their servers,
+not yours. Dispatch runs in a sandboxed
+ 
+not yours. Dispatch runs in a sandboxed
+environment where Claude accesses the
+ 
+environment where Claude accesses the
+files and the apps that you've
+ 
+files and the apps that you've
+explicitly stated that it can access
+ 
+explicitly stated that it can access
+with permission. Computer use is going
+ 
+with permission. Computer use is going
+to ask you before it touches new
+ 
+to ask you before it touches new
+applications. You don't configure the
+ 
+applications. You don't configure the
+network. You don't vet the skills
+ 
+network. You don't vet the skills
+marketplace. You don't configure the
+ 
+marketplace. You don't configure the
+server. So much of that is abstracted
+ 
+server. So much of that is abstracted
+away for you. And I want you to think
+ 
+away for you. And I want you to think
+back to the history of compute here.
+ 
+back to the history of compute here.
+This is the exact same shift that
+ 
+This is the exact same shift that
+happened with email where we went from
+ 
+happened with email where we went from
+self-hosted send mail to Gmail for those
+ 
+self-hosted send mail to Gmail for those
+of you who have gray beards with compute
+ 
+of you who have gray beards with compute
+where we went from rack servers to AWS
+ 
+where we went from rack servers to AWS
+with CI/CD where we went from Jenkins on
+ 
+with CI/CD where we went from Jenkins on
+your box to GitHub actions. Every time
+ 
+your box to GitHub actions. Every time
+the self-hosted version comes first and
+ 
+the self-hosted version comes first and
+proves that the category exists. The
+ 
+proves that the category exists. The
+managed version comes second and that's
+ 
+managed version comes second and that's
+the thing that gets mass adoption for
+ 
+the thing that gets mass adoption for
+you. It's not because the self-hosted
+ 
+you. It's not because the self-hosted
+version was wrong, quote unquote. It's
+ 
+version was wrong, quote unquote. It's
+just that that's the way you learn if
+ 
+just that that's the way you learn if
+something works and if people want it.
+ 
+something works and if people want it.
+And once you prove that, it's relatively
+ 
+And once you prove that, it's relatively
+easy to roll out the managed version to
+ 
+easy to roll out the managed version to
+a wider audience, which is exactly what
+ 
+a wider audience, which is exactly what
+Peter Steinberger is working to do at
+ 
+Peter Steinberger is working to do at
+OpenAI. I guarantee you, they are
+ 
+OpenAI. I guarantee you, they are
+looking at what Claude is launching over
+ 
+looking at what Claude is launching over
+at OpenAI and they're like, "We can't
+ 
+at OpenAI and they're like, "We can't
+wait. We're going to launch soon." And
+ 
+wait. We're going to launch soon." And
+look, I'll be honest, the ceiling is
+ 
+look, I'll be honest, the ceiling is
+different here with agents, right? Open
+ 
+different here with agents, right? Open
+Claw is going to give you more raw
+ 
+Claw is going to give you more raw
+freedom. It is the dangerously skip
+ 
+freedom. It is the dangerously skip
+permissions version of agents and
+ 
+permissions version of agents and
+Enthropic is going to rain it in a
+ 
+Enthropic is going to rain it in a
+little bit. Enthropic stack runs on
+ 
+little bit. Enthropic stack runs on
+cloud. You can't just swap any LLM in.
+ 
+cloud. You can't just swap any LLM in.
+It reaches what your connectors and
+ 
+It reaches what your connectors and
+computer use can touch. If you want to
+ 
+computer use can touch. If you want to
+wire in your local O Lama on prem, I'm
+ 
+wire in your local O Lama on prem, I'm
+not going to pretend this is for you.
+ 
+not going to pretend this is for you.
+But for most of us, for the vast
+ 
+But for most of us, for the vast
+majority of people who are passionately
+ 
+majority of people who are passionately
+interested in agents, and I get asked
+ 
+interested in agents, and I get asked
+about this all the time, when is there
+ 
+about this all the time, when is there
+an agent? When is there an open clause?
+ 
+an agent? When is there an open clause?
+Is open clause safe for me? This is the
+ 
+Is open clause safe for me? This is the
+safe open claw, right? This is safe
+ 
+safe open claw, right? This is safe
+enough. It's useful enough. It does
+ 
+enough. It's useful enough. It does
+enough that it works. And that's why I
+ 
+enough that it works. And that's why I
+keep emphasizing tasks that get work off
+ 
+keep emphasizing tasks that get work off
+our desk. I want us to think about that.
+ 
+our desk. I want us to think about that.
+I want you to comment on this video and
+ 
+I want you to comment on this video and
+tell me the tasks that get work off the
+ 
+tell me the tasks that get work off the
+desk versus the fake work, the stuff
+ 
+desk versus the fake work, the stuff
+that works in demos that doesn't
+ 
+that works in demos that doesn't
+actually get work off the desk. I'll
+ 
+actually get work off the desk. I'll
+give you another one from trips. I
+ 
+give you another one from trips. I
+talked earlier about the fact that
+ 
+talked earlier about the fact that
+scanning for airline prices and saving
+ 
+scanning for airline prices and saving
+real money, which can save you the cost
+ 
+real money, which can save you the cost
+of the closet subscription, hey, that
+ 
+of the closet subscription, hey, that
+gets worked off the desk. You know what
+ 
+gets worked off the desk. You know what
+doesn't get work off the desk? Every
+ 
+doesn't get work off the desk? Every
+single time they demo the special
+ 
+single time they demo the special
+travel, trip preparation, whatever.
+ 
+travel, trip preparation, whatever.
+Look, I do spend a little bit of time
+ 
+Look, I do spend a little bit of time
+planning a trip, but I do not understand
+ 
+planning a trip, but I do not understand
+why that has to be the showcase demo for
+ 
+why that has to be the showcase demo for
+every single app that is Aentic. We
+ 
+every single app that is Aentic. We
+don't all plan trips quite that much. So
+ 
+don't all plan trips quite that much. So
+before I close this video, I want to
+ 
+before I close this video, I want to
+give you the framework to start to
+ 
+give you the framework to start to
+figure out how to get stuff off your
+ 
+figure out how to get stuff off your
+desk and give it to agents in the way
+ 
+desk and give it to agents in the way
+that we need to in 2026 with a
+ 
+that we need to in 2026 with a
+management mindset. The first principle
+ 
+management mindset. The first principle
+I want to teach you here is that you
+ 
+I want to teach you here is that you
+need to find something that is buzzing
+ 
+need to find something that is buzzing
+in the back of your brain that you need
+ 
+in the back of your brain that you need
+to close. Look for it as a commitment
+ 
+to close. Look for it as a commitment
+loop that you need to close. every
+ 
+loop that you need to close. every
+promise you make and people the more
+ 
+promise you make and people the more
+responsible you are the more promises
+ 
+responsible you are the more promises
+you have to write whether you're
+ 
+you have to write whether you're
+promising in email whether you're
+ 
+promising in email whether you're
+promising in Slack whether you're
+ 
+promising in Slack whether you're
+promising in WhatsApp it's an open loop
+ 
+promising in WhatsApp it's an open loop
+you told the client you'd send the
+ 
+you told the client you'd send the
+revised scope by Thursday you signed the
+ 
+revised scope by Thursday you signed the
+memorandum of understanding by Wednesday
+ 
+memorandum of understanding by Wednesday
+you told your team that you get the
+ 
+you told your team that you get the
+minutes from the last meeting to them by
+ 
+minutes from the last meeting to them by
+tomorrow whatever it is you made a
+ 
+tomorrow whatever it is you made a
+promise you need to keep it and it's
+ 
+promise you need to keep it and it's
+sitting in your head that is the kind of
+ 
+sitting in your head that is the kind of
+thing that you need to be delegating to
+ 
+thing that you need to be delegating to
+agents. And especially if you are
+ 
+agents. And especially if you are
+someone who has lots and lots of these
+ 
+someone who has lots and lots of these
+open promises at once, you got to close
+ 
+open promises at once, you got to close
+them. You got to give more of them to
+ 
+them. You got to give more of them to
+agents and let those agents do the work
+ 
+agents and let those agents do the work
+and carry the mental load forward and
+ 
+and carry the mental load forward and
+close it. And if you're going to tell
+ 
+close it. And if you're going to tell
+me, Nate, I can't do it because the
+ 
+me, Nate, I can't do it because the
+agents quality isn't good enough, I'm
+ 
+agents quality isn't good enough, I'm
+going to say, that's a skill issue.
+ 
+going to say, that's a skill issue.
+That's a prompting issue. And that is
+ 
+That's a prompting issue. And that is
+something we can fix. That is something
+ 
+something we can fix. That is something
+we can fix because you can learn to give
+ 
+we can fix because you can learn to give
+the agent what it needs either through
+ 
+the agent what it needs either through
+the system instructions, through the
+ 
+the system instructions, through the
+context layer that you're giving it,
+ 
+context layer that you're giving it,
+through the prompt that you're giving it
+ 
+through the prompt that you're giving it
+to get a quality result. It is not
+ 
+to get a quality result. It is not
+impossible in 2026. I do not want to
+ 
+impossible in 2026. I do not want to
+hear I can't get a good report out of
+ 
+hear I can't get a good report out of
+AI. I don't want to hear I can't get a
+ 
+AI. I don't want to hear I can't get a
+good draft of the memorandum of
+ 
+good draft of the memorandum of
+understanding. I can't get good meeting
+ 
+understanding. I can't get good meeting
+minutes out. No, no, no, no, no. You
+ 
+minutes out. No, no, no, no, no. You
+can. It's a skill issue and you can
+ 
+can. It's a skill issue and you can
+learn and I have a guide for that. You
+ 
+learn and I have a guide for that. You
+can figure it out. I'll give you another
+ 
+can figure it out. I'll give you another
+category that I think is really
+ 
+category that I think is really
+important to get work off the desk. If
+ 
+important to get work off the desk. If
+you are trying to make a decision, so
+ 
+you are trying to make a decision, so
+often we come against these decisions in
+ 
+often we come against these decisions in
+business and we don't have time to
+ 
+business and we don't have time to
+consider the information involved and
+ 
+consider the information involved and
+make a good choice. We're running into
+ 
+make a good choice. We're running into
+the meeting, we're late, we didn't read
+ 
+the meeting, we're late, we didn't read
+the docs in advance. How many of us read
+ 
+the docs in advance. How many of us read
+the docs in advance? Let's just be
+ 
+the docs in advance? Let's just be
+honest. And we're like, "Okay, what do I
+ 
+honest. And we're like, "Okay, what do I
+have? What do I figure out?" And do you
+ 
+have? What do I figure out?" And do you
+know how many people sit there and
+ 
+know how many people sit there and
+they're stuffing the docs into Chad GPT
+ 
+they're stuffing the docs into Chad GPT
+and they're like, "Tell me what to
+ 
+and they're like, "Tell me what to
+think. Tell me what to do. Tell me what
+ 
+think. Tell me what to do. Tell me what
+to decide. Please don't do that. You
+ 
+to decide. Please don't do that. You
+have time to figure this out. You can
+ 
+have time to figure this out. You can
+run a scheduled task for this. You can
+ 
+run a scheduled task for this. You can
+tell your dispatch in the morning on the
+ 
+tell your dispatch in the morning on the
+way to work to help you develop an
+ 
+way to work to help you develop an
+understanding of the subject area. You
+ 
+understanding of the subject area. You
+can figure out your opinion by bouncing
+ 
+can figure out your opinion by bouncing
+it off of an AI, even if you're on the
+ 
+it off of an AI, even if you're on the
+phone and getting data back. And by the
+ 
+phone and getting data back. And by the
+way, there's a way to do this badly and
+ 
+way, there's a way to do this badly and
+well. The bad way to do it is to try and
+ 
+well. The bad way to do it is to try and
+use the AI to confirm your own opinion.
+ 
+use the AI to confirm your own opinion.
+The good way to do it is to actually
+ 
+The good way to do it is to actually
+push and say, "I need more data and more
+ 
+push and say, "I need more data and more
+information than I would normally use to
+ 
+information than I would normally use to
+make this decision." Typically, if I'm
+ 
+make this decision." Typically, if I'm
+running into a meeting and I'm late, I'm
+ 
+running into a meeting and I'm late, I'm
+making the decision with 30% of the
+ 
+making the decision with 30% of the
+available information or less. Why not
+ 
+available information or less. Why not
+make it with 70%. Why not go fishing for
+ 
+make it with 70%. Why not go fishing for
+data that would help you make a better
+ 
+data that would help you make a better
+choice? Maybe it's using computer use
+ 
+choice? Maybe it's using computer use
+and finding the dashboard that you
+ 
+and finding the dashboard that you
+normally wouldn't have time to check.
+ 
+normally wouldn't have time to check.
+Maybe it's digging up the Excel
+ 
+Maybe it's digging up the Excel
+spreadsheet you normally wouldn't have
+ 
+spreadsheet you normally wouldn't have
+time to grabbing and pulling it in. The
+ 
+time to grabbing and pulling it in. The
+more you start to use the agentic tools
+ 
+more you start to use the agentic tools
+at your disposal to pull in that data,
+ 
+at your disposal to pull in that data,
+the better off you're going to be.
+ 
+the better off you're going to be.
+Compound signal detection. I have I have
+ 
+Compound signal detection. I have I have
+emphasized this with open brain. I'm
+ 
+emphasized this with open brain. I'm
+just going to come back to it again. If
+ 
+just going to come back to it again. If
+you have attached your open brain, you
+ 
+you have attached your open brain, you
+have so much value here because you are
+ 
+have so much value here because you are
+now on your phone with your dispatch and
+ 
+now on your phone with your dispatch and
+your claude knows OpenBrain and can talk
+ 
+your claude knows OpenBrain and can talk
+to Openrain via the MCP server and you
+ 
+to Openrain via the MCP server and you
+can start to benefit from compounding
+ 
+can start to benefit from compounding
+signal detection across weeks wherever
+ 
+signal detection across weeks wherever
+you happen to be. And so your agent
+ 
+you happen to be. And so your agent
+might come back and say, "Hey, you ran a
+ 
+might come back and say, "Hey, you ran a
+scheduled task. I noticed that your
+ 
+scheduled task. I noticed that your
+competitor is hiring aggressively around
+ 
+competitor is hiring aggressively around
+payments. This is something we talked
+ 
+payments. This is something we talked
+about when we talked about corporate
+ 
+about when we talked about corporate
+strategy three weeks ago. I think you
+ 
+strategy three weeks ago. I think you
+should do X or Y. Or your agent might be
+ 
+should do X or Y. Or your agent might be
+doing research and say, hey, a
+ 
+doing research and say, hey, a
+competitor filed two patents. The
+ 
+competitor filed two patents. The
+patents are around crossber settlement.
+ 
+patents are around crossber settlement.
+I'm connecting this with their hiring
+ 
+I'm connecting this with their hiring
+patterns. Now we're seeing their
+ 
+patterns. Now we're seeing their
+crossber strategy emerge, etc., etc.
+ 
+crossber strategy emerge, etc., etc.
+Essentially, if you have dispatch and
+ 
+Essentially, if you have dispatch and
+you have open brain, you have a
+ 
+you have open brain, you have a
+proactive way to figure out patterns
+ 
+proactive way to figure out patterns
+over time wherever you happen to be. on
+ 
+over time wherever you happen to be. on
+a schedule, not on a schedule, using
+ 
+a schedule, not on a schedule, using
+computer use, not using computer use. It
+ 
+computer use, not using computer use. It
+takes the agent from being reactive to
+ 
+takes the agent from being reactive to
+what you stick into dispatch to being
+ 
+what you stick into dispatch to being
+something where you can proactively pop
+ 
+something where you can proactively pop
+up, see an email from your agent, and
+ 
+up, see an email from your agent, and
+say, "Ah, that's something I want to pay
+ 
+say, "Ah, that's something I want to pay
+attention to." And this one is for
+ 
+attention to." And this one is for
+engineers. We loved doing overnight
+ 
+engineers. We loved doing overnight
+engineering work, jobs that would run
+ 
+engineering work, jobs that would run
+all night when I was at Amazon, because
+ 
+all night when I was at Amazon, because
+it's work that you can do and it cleans
+ 
+it's work that you can do and it cleans
+stuff up while you sleep. It's perfect.
+ 
+stuff up while you sleep. It's perfect.
+Hopefully nobody gets woken up. I don't
+ 
+Hopefully nobody gets woken up. I don't
+mean run the llinter, run an analysis of
+ 
+mean run the llinter, run an analysis of
+your code file. I mean migrate this
+ 
+your code file. I mean migrate this
+dependency. I mean please improve test
+ 
+dependency. I mean please improve test
+coverage, write test coverage to cover
+ 
+coverage, write test coverage to cover
+80% of use cases. I mean refactor the
+ 
+80% of use cases. I mean refactor the
+authentication layer we can never get to
+ 
+authentication layer we can never get to
+stuff like that. And if you think this
+ 
+stuff like that. And if you think this
+is too technical for you, I'm going to
+ 
+is too technical for you, I'm going to
+remind you there are people who are
+ 
+remind you there are people who are
+coding whole apps who have never coded
+ 
+coding whole apps who have never coded
+before. If you have clarity of intent of
+ 
+before. If you have clarity of intent of
+what you want to get done, the technical
+ 
+what you want to get done, the technical
+piece is not an obstacle. In fact, you
+ 
+piece is not an obstacle. In fact, you
+can delegate a lot of it in 2026 and you
+ 
+can delegate a lot of it in 2026 and you
+can get a surprisingly useful result.
+ 
+can get a surprisingly useful result.
+I'm not going to pretend that you can
+ 
+I'm not going to pretend that you can
+vibe code Amazon.com or you can vibe
+ 
+vibe code Amazon.com or you can vibe
+code Salesforce and it will be exactly
+ 
+code Salesforce and it will be exactly
+the same. But I will say there are
+ 
+the same. But I will say there are
+people who have vibecoded their own CRM
+ 
+people who have vibecoded their own CRM
+and are perfectly happy at startups. So
+ 
+and are perfectly happy at startups. So
+the distance is maybe not as much as you
+ 
+the distance is maybe not as much as you
+think. The pattern across all of these
+ 
+think. The pattern across all of these
+cases that I have called out to you in
+ 
+cases that I have called out to you in
+the last few minutes is consistent. It
+ 
+the last few minutes is consistent. It
+is work off the desk. It is the agent
+ 
+is work off the desk. It is the agent
+takes something off of your plate. That
+ 
+takes something off of your plate. That
+is the meta skill that I want you to
+ 
+is the meta skill that I want you to
+learn. Look at these primitives as free
+ 
+learn. Look at these primitives as free
+leverage. This is leverage you can use
+ 
+leverage. This is leverage you can use
+in 2026 to get more of what you want
+ 
+in 2026 to get more of what you want
+done off your plate. That is what we
+ 
+done off your plate. That is what we
+should expect from our agents. I want to
+ 
+should expect from our agents. I want to
+close with a reflection that I think is
+ 
+close with a reflection that I think is
+a big piece of this year that I don't
+ 
+a big piece of this year that I don't
+see talked about anywhere. People talk
+ 
+see talked about anywhere. People talk
+about agents like the next best thing
+ 
+about agents like the next best thing
+since sliced bread. They put all these
+ 
+since sliced bread. They put all these
+demos out that are basically fake work,
+ 
+demos out that are basically fake work,
+which we've talked about extensively in
+ 
+which we've talked about extensively in
+this video. But what we don't talk about
+ 
+this video. But what we don't talk about
+is the fact that it is hard for us as
+ 
+is the fact that it is hard for us as
+humans to trust that the computer is
+ 
+humans to trust that the computer is
+doing work when we aren't looking at it.
+ 
+doing work when we aren't looking at it.
+I have this problem, too. I walk away. I
+ 
+I have this problem, too. I walk away. I
+used my dispatch and I'm itchy. I'm
+ 
+used my dispatch and I'm itchy. I'm
+like, I want to go back. I want to make
+ 
+like, I want to go back. I want to make
+sure it's working. Is it really working?
+ 
+sure it's working. Is it really working?
+We're going to need to learn to shift
+ 
+We're going to need to learn to shift
+that. We're going to need to learn to
+ 
+that. We're going to need to learn to
+untether. We're going to need to learn
+ 
+untether. We're going to need to learn
+to trust that the agent is doing the
+ 
+to trust that the agent is doing the
+work when we walk away. That is one of
+ 
+work when we walk away. That is one of
+the big shifts I see in the next half of
+ 
+the big shifts I see in the next half of
+the year. And it's going to be the
+ 
+the year. And it's going to be the
+people who are able to walk away, who
+ 
+people who are able to walk away, who
+are able to touch grass, who are able to
+ 
+are able to touch grass, who are able to
+see the kids at the bouncy castle, who
+ 
+see the kids at the bouncy castle, who
+are able to reset, who can make good
+ 
+are able to reset, who can make good
+decisions about what they want to give
+ 
+decisions about what they want to give
+their agents, and who ultimately get the
+ 
+their agents, and who ultimately get the
+leverage back that this whole AI thing
+ 
+leverage back that this whole AI thing
+is all about. Because AI is really not
+ 
+is all about. Because AI is really not
+about the fake work. And people tell me
+ 
+about the fake work. And people tell me
+it's a bubble. It's a bubble. I'm like,
+ 
+it's a bubble. It's a bubble. I'm like,
+no, it's not a bubble. The demand for
+ 
+no, it's not a bubble. The demand for
+tokens is outstripping supply and we're
+ 
+tokens is outstripping supply and we're
+building it as fast as we can. This is
+ 
+building it as fast as we can. This is
+not a bubble problem. It is a how do we
+ 
+not a bubble problem. It is a how do we
+use it intelligently problem and that is
+ 
+use it intelligently problem and that is
+on us and we have got to figure out how
+ 
+on us and we have got to figure out how
+to change our skill set so we are more
+ 
+to change our skill set so we are more
+and more and more managers as we move
+ 
+and more and more managers as we move
+into the second half of this year and
+ 
+into the second half of this year and
+that is the story on dispatch that no
+ 
+that is the story on dispatch that no
+one is telling you. Cheers.

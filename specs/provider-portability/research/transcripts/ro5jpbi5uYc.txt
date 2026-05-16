@@ -1,0 +1,2123 @@
+ 
+The most important thing in the Claude
+ 
+The most important thing in the Claude
+code leak isn't the code. I talked last
+ 
+code leak isn't the code. I talked last
+week about how important it is to
+ 
+week about how important it is to
+understand the harness around Claude
+ 
+understand the harness around Claude
+code. I want to talk today about how
+ 
+code. I want to talk today about how
+Anthropic is building an always-on agent
+ 
+Anthropic is building an always-on agent
+called Conway. That was part of the
+ 
+called Conway. That was part of the
+leak. It wasn't announced. It was buried
+ 
+leak. It wasn't announced. It was buried
+in the Claude code source that Anthropic
+ 
+in the Claude code source that Anthropic
+accidentally published last week when a
+ 
+accidentally published last week when a
+packaging error pushed half a million
+ 
+packaging error pushed half a million
+lines of code to a public registry.
+ 
+lines of code to a public registry.
+While everyone focused on the source
+ 
+While everyone focused on the source
+code itself, the takedown notices, the
+ 
+code itself, the takedown notices, the
+security flaws, some of the bigger
+ 
+security flaws, some of the bigger
+pieces of news have taken a while to
+ 
+pieces of news have taken a while to
+really dig into. Conway is one of those
+ 
+really dig into. Conway is one of those
+pieces. It's a standalone agent
+ 
+pieces. It's a standalone agent
+environment. That means it's separate
+ 
+environment. That means it's separate
+from the chat. It has its own extension
+ 
+from the chat. It has its own extension
+format. It has the ability to be woken
+ 
+format. It has the ability to be woken
+up by outside events. It has browser
+ 
+up by outside events. It has browser
+control. It has connections to your
+ 
+control. It has connections to your
+tools. This is nowhere on Anthropic's
+ 
+tools. This is nowhere on Anthropic's
+roadmap page. It's an internal project
+ 
+roadmap page. It's an internal project
+today. And when you line it up against
+ 
+today. And when you line it up against
+everything else Anthropic has shipped in
+ 
+everything else Anthropic has shipped in
+the last 3 months, it reveals a platform
+ 
+the last 3 months, it reveals a platform
+strategy that I think a lot of us aren't
+ 
+strategy that I think a lot of us aren't
+seeing clearly enough. So, let's dig
+ 
+seeing clearly enough. So, let's dig
+into what Conway actually looks like.
+ 
+into what Conway actually looks like.
+Let me make this concrete because the
+ 
+Let me make this concrete because the
+implications don't really land until you
+ 
+implications don't really land until you
+dig into what this really means.
+ 
+dig into what this really means.
+According to the leak, Conway operates
+ 
+According to the leak, Conway operates
+as a standalone sidebar inside the
+ 
+as a standalone sidebar inside the
+Claude interface. It's not a chat
+ 
+Claude interface. It's not a chat
+window. It's actually an entire agentic
+ 
+window. It's actually an entire agentic
+environment. It opens a dedicated page
+ 
+environment. It opens a dedicated page
+tied to a Conway instance with three
+ 
+tied to a Conway instance with three
+core areas: search, chat, and system.
+ 
+core areas: search, chat, and system.
+The system section is where it gets
+ 
+The system section is where it gets
+really interesting. There's an
+ 
+really interesting. There's an
+extensions area where you can install
+ 
+extensions area where you can install
+add-ons like custom tools, like
+ 
+add-ons like custom tools, like
+interface panels, and ways for the agent
+ 
+interface panels, and ways for the agent
+to understand new kinds of information.
+ 
+to understand new kinds of information.
+Think of it like an app store for agent
+ 
+Think of it like an app store for agent
+capabilities. If someone builds an
+ 
+capabilities. If someone builds an
+extension and packages it up, Conway can
+ 
+extension and packages it up, Conway can
+install it, right? There's also a
+ 
+install it, right? There's also a
+connectors and tools section showing
+ 
+connectors and tools section showing
+what other services are plugged in,
+ 
+what other services are plugged in,
+including a toggle that lets Claude and
+ 
+including a toggle that lets Claude and
+Chrome connect directly to the Conway
+ 
+Chrome connect directly to the Conway
+instance. All of this is from the leak,
+ 
+instance. All of this is from the leak,
+by the way. And there's a section for
+ 
+by the way. And there's a section for
+automatic triggers, public web addresses
+ 
+automatic triggers, public web addresses
+that outside services can ping to wake
+ 
+that outside services can ping to wake
+the agent up. You can toggle which
+ 
+the agent up. You can toggle which
+services are allowed to do this, and I
+ 
+services are allowed to do this, and I
+want you to take all of that in. And and
+ 
+want you to take all of that in. And and
+now imagine what a Tuesday morning looks
+ 
+now imagine what a Tuesday morning looks
+like 6 months after you set this up. You
+ 
+like 6 months after you set this up. You
+wake up, Conway has been running
+ 
+wake up, Conway has been running
+overnight. It noticed three emails that
+ 
+overnight. It noticed three emails that
+match patterns learned over time matter
+ 
+match patterns learned over time matter
+to you. Not because you wrote rules, but
+ 
+to you. Not because you wrote rules, but
+because after 6 months of watching you
+ 
+because after 6 months of watching you
+work, it knows which three emails
+ 
+work, it knows which three emails
+matter. It already drafted responses to
+ 
+matter. It already drafted responses to
+the easy ones, but the third one is from
+ 
+the easy ones, but the third one is from
+your VP, and it flagged that one but
+ 
+your VP, and it flagged that one but
+didn't touch it cuz it knows you need to
+ 
+didn't touch it cuz it knows you need to
+see it. It also checked the Slack
+ 
+see it. It also checked the Slack
+channels that it knows it needs to
+ 
+channels that it knows it needs to
+monitor. There's a thread in engineering
+ 
+monitor. There's a thread in engineering
+where someone asked a question about
+ 
+where someone asked a question about
+auth architecture. Conway pulled context
+ 
+auth architecture. Conway pulled context
+from a design doc you reviewed last
+ 
+from a design doc you reviewed last
+month, and it already drafted a reply
+ 
+month, and it already drafted a reply
+sitting in queue for approval. It
+ 
+sitting in queue for approval. It
+noticed a competitor mentioned in
+ 
+noticed a competitor mentioned in
+competitive intel and cross-referenced
+ 
+competitive intel and cross-referenced
+it against the research you've been
+ 
+it against the research you've been
+running. Your calendar also has a board
+ 
+running. Your calendar also has a board
+meeting prep session at 10:00 cuz it
+ 
+meeting prep session at 10:00 cuz it
+knows you need to get ready for the
+ 
+knows you need to get ready for the
+board. Conway already pulled the latest
+ 
+board. Conway already pulled the latest
+numbers from the dashboard it has access
+ 
+numbers from the dashboard it has access
+to to help you prepare. By the way, you
+ 
+to to help you prepare. By the way, you
+haven't typed a word yet. And about a
+ 
+haven't typed a word yet. And about a
+third of what Conway did overnight might
+ 
+third of what Conway did overnight might
+be wrong. Right, the email draft might
+ 
+be wrong. Right, the email draft might
+misread tone, the Slack reply might be
+ 
+misread tone, the Slack reply might be
+technically inaccurate. You're going to
+ 
+technically inaccurate. You're going to
+catch this pretty quickly, but the net
+ 
+catch this pretty quickly, but the net
+is still positive as long as Conway is
+ 
+is still positive as long as Conway is
+partly right because it's so fast. And
+ 
+partly right because it's so fast. And
+so, what I want to get into is the gap
+ 
+so, what I want to get into is the gap
+between impressive demo cuz the demos
+ 
+between impressive demo cuz the demos
+always show this is completely working
+ 
+always show this is completely working
+and actual reality. Both futures are
+ 
+and actual reality. Both futures are
+true. The future that's a flashy demo is
+ 
+true. The future that's a flashy demo is
+true in the sense that it unlocks real
+ 
+true in the sense that it unlocks real
+capabilities, and Conway shows that
+ 
+capabilities, and Conway shows that
+leak. But the reality is also true.
+ 
+leak. But the reality is also true.
+These kinds of agents tend to need a lot
+ 
+These kinds of agents tend to need a lot
+of babysitting, and the way they make
+ 
+of babysitting, and the way they make
+value for you in your day is actually a
+ 
+value for you in your day is actually a
+function of their speed and ability to
+ 
+function of their speed and ability to
+iterate, not just their ability to get
+ 
+iterate, not just their ability to get
+everything right the first time. And
+ 
+everything right the first time. And
+that's why the story I'm telling you is
+ 
+that's why the story I'm telling you is
+not just a hype session for Anthropic.
+ 
+not just a hype session for Anthropic.
+It actually digs into why these agents
+ 
+It actually digs into why these agents
+are hard to get right. To make this
+ 
+are hard to get right. To make this
+work, Anthropic has to have a phenomenal
+ 
+work, Anthropic has to have a phenomenal
+ability to understand what you should
+ 
+ability to understand what you should
+prioritize in a massive array of
+ 
+prioritize in a massive array of
+undifferentiated noise that is your
+ 
+undifferentiated noise that is your
+workplace. And that is probably why they
+ 
+workplace. And that is probably why they
+haven't launched Conway yet.
+ 
+haven't launched Conway yet.
+Nevertheless, I think that's a
+ 
+Nevertheless, I think that's a
+reasonable guess at what a few months
+ 
+reasonable guess at what a few months
+with Conway might look like not too long
+ 
+with Conway might look like not too long
+from now. Let's back up. Conway doesn't
+ 
+from now. Let's back up. Conway doesn't
+make sense in isolation. It makes sense
+ 
+make sense in isolation. It makes sense
+as the capstone of a strategy Anthropic
+ 
+as the capstone of a strategy Anthropic
+has been executing against all quarter.
+ 
+has been executing against all quarter.
+Because in the last 90 days, Anthropic
+ 
+Because in the last 90 days, Anthropic
+has shipped Claude code channels letting
+ 
+has shipped Claude code channels letting
+you message Claude code through Discord
+ 
+you message Claude code through Discord
+and Telegram and get notified when it
+ 
+and Telegram and get notified when it
+finishes tasks. And this neutralized the
+ 
+finishes tasks. And this neutralized the
+core appeal of open claw because it
+ 
+core appeal of open claw because it
+allowed you to essentially do open claw
+ 
+allowed you to essentially do open claw
+inside Anthropic's own surface. It
+ 
+inside Anthropic's own surface. It
+launched Claude co-work for
+ 
+launched Claude co-work for
+non-technical users targeting the 95% of
+ 
+non-technical users targeting the 95% of
+enterprise employees who aren't
+ 
+enterprise employees who aren't
+engineers. And co-work's initial
+ 
+engineers. And co-work's initial
+adoption reportedly outpaced Claude code
+ 
+adoption reportedly outpaced Claude code
+at the same stage. It was extremely
+ 
+at the same stage. It was extremely
+popular. And then it launched Claude
+ 
+popular. And then it launched Claude
+marketplace, an enterprise procurement
+ 
+marketplace, an enterprise procurement
+layer where partner apps built on Claude
+ 
+layer where partner apps built on Claude
+like GitLab or Harvey or Snowflake could
+ 
+like GitLab or Harvey or Snowflake could
+be purchased through Anthropic billing.
+ 
+be purchased through Anthropic billing.
+Anthropic handles the invoices and
+ 
+Anthropic handles the invoices and
+purchases count against existing spend
+ 
+purchases count against existing spend
+commitments. No commission yet. They're
+ 
+commitments. No commission yet. They're
+just buying market share in the
+ 
+just buying market share in the
+distribution. Meanwhile, Anthropic
+ 
+distribution. Meanwhile, Anthropic
+committed $100 million to the Claude
+ 
+committed $100 million to the Claude
+partner network. And Accenture started
+ 
+partner network. And Accenture started
+training 30,000 professionals on Claude.
+ 
+training 30,000 professionals on Claude.
+All Deloitte and Cognizant and Infosys
+ 
+All Deloitte and Cognizant and Infosys
+act as anchor partners for the
+ 
+act as anchor partners for the
+initiative. This is what a complete
+ 
+initiative. This is what a complete
+system integrator lock-in looks like at
+ 
+system integrator lock-in looks like at
+enterprise scale. And Anthropic
+ 
+enterprise scale. And Anthropic
+surprised everybody with what happens
+ 
+surprised everybody with what happens
+next. They're already going for this
+ 
+next. They're already going for this
+enterprise lock-in with their current
+ 
+enterprise lock-in with their current
+strategy. They have now blocked all
+ 
+strategy. They have now blocked all
+third-party tools from Claude
+ 
+third-party tools from Claude
+subscriptions as their next move. Open
+ 
+subscriptions as their next move. Open
+claw came first with Anthropic
+ 
+claw came first with Anthropic
+confirming the restriction will roll out
+ 
+confirming the restriction will roll out
+to everything else in coming weeks. So,
+ 
+to everything else in coming weeks. So,
+if you want to use Claude through
+ 
+if you want to use Claude through
+anything Anthropic didn't build, your
+ 
+anything Anthropic didn't build, your
+pay-per-use rates could run 10 to 50
+ 
+pay-per-use rates could run 10 to 50
+times higher than what the subscription
+ 
+times higher than what the subscription
+covered, period. No way to change that.
+ 
+covered, period. No way to change that.
+Now, add Conway on the top, and you're
+ 
+Now, add Conway on the top, and you're
+not looking at five separate product
+ 
+not looking at five separate product
+decisions, you're looking at a single
+ 
+decisions, you're looking at a single
+platform strategy executed across five
+ 
+platform strategy executed across five
+surfaces in a quarter. You have a
+ 
+surfaces in a quarter. You have a
+developer tool, Claude Code, an
+ 
+developer tool, Claude Code, an
+enterprise tool, Co-work, the always-on
+ 
+enterprise tool, Co-work, the always-on
+agent, Conway, the distribution layer,
+ 
+agent, Conway, the distribution layer,
+and an enforcement mechanism. That's the
+ 
+and an enforcement mechanism. That's the
+heart harness side. Every one of those
+ 
+heart harness side. Every one of those
+pieces pushes in the same direction. If
+ 
+pieces pushes in the same direction. If
+you're old enough to remember the
+ 
+you're old enough to remember the
+trajectory of Microsoft in the '90s,
+ 
+trajectory of Microsoft in the '90s,
+this feels familiar, right? Microsoft
+ 
+this feels familiar, right? Microsoft
+went from selling an operating system,
+ 
+went from selling an operating system,
+DOS, to owning the desktop, Windows, to
+ 
+DOS, to owning the desktop, Windows, to
+controlling the application layer,
+ 
+controlling the application layer,
+Office, to locking in the enterprise
+ 
+Office, to locking in the enterprise
+with Active Directory and Exchange.
+ 
+with Active Directory and Exchange.
+Every step was an individual product,
+ 
+Every step was an individual product,
+but together they were a strategy that
+ 
+but together they were a strategy that
+moved Microsoft from operating system
+ 
+moved Microsoft from operating system
+vendor to the company that owns how
+ 
+vendor to the company that owns how
+businesses compute. And that's about 15
+ 
+businesses compute. And that's about 15
+years. Anthropic is speed-running this.
+ 
+years. Anthropic is speed-running this.
+They're attempting the same arc, model
+ 
+They're attempting the same arc, model
+provider to developer tool to enterprise
+ 
+provider to developer tool to enterprise
+platform to agent operating system in 15
+ 
+platform to agent operating system in 15
+months. Conway is kind of the Active
+ 
+months. Conway is kind of the Active
+Directory play. It's the piece that
+ 
+Directory play. It's the piece that
+makes everything else in the stack
+ 
+makes everything else in the stack
+sticky because the persistent agent
+ 
+sticky because the persistent agent
+knows your organization in a way that
+ 
+knows your organization in a way that
+nothing else does. The detail in the
+ 
+nothing else does. The detail in the
+Conway leak that I keep coming back to
+ 
+Conway leak that I keep coming back to
+is the extension format, which is a
+ 
+is the extension format, which is a
+funny detail to pick on, but it exposes
+ 
+funny detail to pick on, but it exposes
+the tension at the heart of Anthropic
+ 
+the tension at the heart of Anthropic
+strategy. Remember, the model context
+ 
+strategy. Remember, the model context
+protocol is Anthropic's own open
+ 
+protocol is Anthropic's own open
+standard. They published it, and
+ 
+standard. They published it, and
+everybody went for it. OpenAI adopted
+ 
+everybody went for it. OpenAI adopted
+it. Google adopted it. The Linux
+ 
+it. Google adopted it. The Linux
+Foundation hosts It is designed to be
+ 
+Foundation hosts It is designed to be
+the universal connector between AI tools
+ 
+the universal connector between AI tools
+and AI data sources. If you built
+ 
+and AI data sources. If you built
+OpenBrain after my piece in March, you
+ 
+OpenBrain after my piece in March, you
+are running on an MCP server right now.
+ 
+are running on an MCP server right now.
+The whole point is that any AI client
+ 
+The whole point is that any AI client
+can talk to any data source through one
+ 
+can talk to any data source through one
+open protocol. Well, Conway uses MCP,
+ 
+open protocol. Well, Conway uses MCP,
+but not in the same way. Conway's
+ 
+but not in the same way. Conway's
+CNW.zip extension format sits on top of
+ 
+CNW.zip extension format sits on top of
+MCP and creates a proprietary layer. So,
+ 
+MCP and creates a proprietary layer. So,
+extensions packaged as a c n w dot zip
+ 
+extensions packaged as a c n w dot zip
+include custom interface panels,
+ 
+include custom interface panels,
+information handlers, and tools that
+ 
+information handlers, and tools that
+work specifically inside Conway's
+ 
+work specifically inside Conway's
+environment. They're not portable tools
+ 
+environment. They're not portable tools
+that work everywhere, they're Conway
+ 
+that work everywhere, they're Conway
+only tools. This is the Google Play
+ 
+only tools. This is the Google Play
+Services pattern. Android is built on
+ 
+Services pattern. Android is built on
+open-source software, sure, it's free
+ 
+open-source software, sure, it's free
+for anyone to use, but the Google Play
+ 
+for anyone to use, but the Google Play
+Services layer that makes Android
+ 
+Services layer that makes Android
+commercially viable like maps, payments,
+ 
+commercially viable like maps, payments,
+push notifications, the Play Store
+ 
+push notifications, the Play Store
+itself, that's proprietary. So, you can
+ 
+itself, that's proprietary. So, you can
+technically build an Android phone
+ 
+technically build an Android phone
+without Google, but in practice nobody
+ 
+without Google, but in practice nobody
+does because the valuable stuff lives in
+ 
+does because the valuable stuff lives in
+the proprietary layer. So, MCP is the
+ 
+the proprietary layer. So, MCP is the
+open foundation and Conway's extension
+ 
+open foundation and Conway's extension
+ecosystem is the proprietary layer on
+ 
+ecosystem is the proprietary layer on
+the top. And Prophetic gets the
+ 
+the top. And Prophetic gets the
+credibility of publishing an open
+ 
+credibility of publishing an open
+standard and the commercial advantage of
+ 
+standard and the commercial advantage of
+building the valuable tooling on a
+ 
+building the valuable tooling on a
+format that runs in their environment.
+ 
+format that runs in their environment.
+Now, think about what this means if
+ 
+Now, think about what this means if
+you're a developer building tools for
+ 
+you're a developer building tools for
+agents. You have two paths. Path one,
+ 
+agents. You have two paths. Path one,
+you can build a standard MCP tool. It's
+ 
+you can build a standard MCP tool. It's
+portable. It works with Claude. It works
+ 
+portable. It works with Claude. It works
+with ChatGPT. It works with Gemini. Any
+ 
+with ChatGPT. It works with Gemini. Any
+MCP compatible client. That's great, but
+ 
+MCP compatible client. That's great, but
+there's no distribution mechanism. You
+ 
+there's no distribution mechanism. You
+have to come up with a distribution
+ 
+have to come up with a distribution
+mechanism. There's no app store, right?
+ 
+mechanism. There's no app store, right?
+There's no featured placement. You're
+ 
+There's no featured placement. You're
+building a website in 2008 and
+ 
+building a website in 2008 and
+everybody's downloading iPhone apps.
+ 
+everybody's downloading iPhone apps.
+It's the same thing. Path two, let's say
+ 
+It's the same thing. Path two, let's say
+you build a Conway extension. Oh, well,
+ 
+you build a Conway extension. Oh, well,
+it only works inside Conway, but Conway
+ 
+it only works inside Conway, but Conway
+has a built-in extensions directory.
+ 
+has a built-in extensions directory.
+This is the app store. So, when
+ 
+This is the app store. So, when
+Anthropic launches this to millions of
+ 
+Anthropic launches this to millions of
+Claude subscribers, your extension is
+ 
+Claude subscribers, your extension is
+discoverable inside the environment
+ 
+discoverable inside the environment
+where people are already working. You
+ 
+where people are already working. You
+don't need to convince anyone to install
+ 
+don't need to convince anyone to install
+anything, you're in the store. See that?
+ 
+anything, you're in the store. See that?
+If that choice sounds familiar, it sure
+ 
+If that choice sounds familiar, it sure
+should. It's exactly the same choice
+ 
+should. It's exactly the same choice
+Apple gave mobile developers in 2008 and
+ 
+Apple gave mobile developers in 2008 and
+2009. Build for the open web or build
+ 
+2009. Build for the open web or build
+native for the iPhone. And we know how
+ 
+native for the iPhone. And we know how
+that played out by and large. The open
+ 
+that played out by and large. The open
+web might have been the long-term
+ 
+web might have been the long-term
+architectural choice, but the App Store
+ 
+architectural choice, but the App Store
+made all the money, and so all of the
+ 
+made all the money, and so all of the
+app makers went to the App Store. Now, a
+ 
+app makers went to the App Store. Now, a
+decade later, of course, the web still
+ 
+decade later, of course, the web still
+exists, it's still critically important,
+ 
+exists, it's still critically important,
+but the center of gravity in mobile
+ 
+but the center of gravity in mobile
+software is native apps distributed
+ 
+software is native apps distributed
+through platform-controlled stores. The
+ 
+through platform-controlled stores. The
+developers who bet on Google Play
+ 
+developers who bet on Google Play
+services for Android learned this the
+ 
+services for Android learned this the
+hard way. And Amazon even tried it with
+ 
+hard way. And Amazon even tried it with
+a Fire Phone and Fire tablets, and it
+ 
+a Fire Phone and Fire tablets, and it
+totally flopped. Not because the
+ 
+totally flopped. Not because the
+hardware was bad, but because the
+ 
+hardware was bad, but because the
+ecosystem had already organized around
+ 
+ecosystem had already organized around
+Google's proprietary layer. The open
+ 
+Google's proprietary layer. The open
+kernel didn't matter when the valuable
+ 
+kernel didn't matter when the valuable
+apps needed the proprietary services to
+ 
+apps needed the proprietary services to
+function. This is a pattern we've seen
+ 
+function. This is a pattern we've seen
+before, and it's a pattern that has a
+ 
+before, and it's a pattern that has a
+known outcome. If you're building on MCP
+ 
+known outcome. If you're building on MCP
+because you believed it meant your tools
+ 
+because you believed it meant your tools
+would be portable across all platforms,
+ 
+would be portable across all platforms,
+that's technically true, but you should
+ 
+that's technically true, but you should
+also understand that Conway's extension
+ 
+also understand that Conway's extension
+model creates a gravitational pull
+ 
+model creates a gravitational pull
+toward Anthropic, and other model makers
+ 
+toward Anthropic, and other model makers
+are going to follow suit. And so, we are
+ 
+are going to follow suit. And so, we are
+going to start to live in a world where
+ 
+going to start to live in a world where
+Conway becomes the only place tools work
+ 
+Conway becomes the only place tools work
+on Anthropic, and you'll have a similar
+ 
+on Anthropic, and you'll have a similar
+thing in OpenAI, and probably a similar
+ 
+thing in OpenAI, and probably a similar
+thing in Google. I think what happened
+ 
+thing in Google. I think what happened
+to Open Claw over the last couple weeks
+ 
+to Open Claw over the last couple weeks
+is too related to be coincidental. Peter
+ 
+is too related to be coincidental. Peter
+Steinberger, Open Claw's creator, joined
+ 
+Steinberger, Open Claw's creator, joined
+OpenAI on February 14th. Sam Altman was
+ 
+OpenAI on February 14th. Sam Altman was
+excited and said he'd drive the next
+ 
+excited and said he'd drive the next
+generation of personal agents. Open Claw
+ 
+generation of personal agents. Open Claw
+moved to a foundation with OpenAI's
+ 
+moved to a foundation with OpenAI's
+backing, and within weeks Anthropic
+ 
+backing, and within weeks Anthropic
+began enforcing that ban. First, quietly
+ 
+began enforcing that ban. First, quietly
+blocking third-party tools from using
+ 
+blocking third-party tools from using
+subscription login credentials in
+ 
+subscription login credentials in
+January, retroactively justified as
+ 
+January, retroactively justified as
+tightening safeguards, and then a terms
+ 
+tightening safeguards, and then a terms
+of service revision in February
+ 
+of service revision in February
+explicitly prohibiting that activity,
+ 
+explicitly prohibiting that activity,
+and then the enforcement that cut off
+ 
+and then the enforcement that cut off
+Open Claw and everyone else that came
+ 
+Open Claw and everyone else that came
+even more recently than that. So,
+ 
+even more recently than that. So,
+Steinberger's read was pretty simple.
+ 
+Steinberger's read was pretty simple.
+First, they copy popular features into
+ 
+First, they copy popular features into
+their closed harness, and then they lock
+ 
+their closed harness, and then they lock
+out open source. And that's exactly the
+ 
+out open source. And that's exactly the
+pattern I keep an eye on when it comes
+ 
+pattern I keep an eye on when it comes
+to Conway. Step one, build the
+ 
+to Conway. Step one, build the
+first-party version of what the
+ 
+first-party version of what the
+community built. Open Claw became Club,
+ 
+community built. Open Claw became Club,
+Code Channels became Conway. Step two,
+ 
+Code Channels became Conway. Step two,
+make the first party version free or
+ 
+make the first party version free or
+subsidized inside the subscription. Step
+ 
+subsidized inside the subscription. Step
+three, make the third party version
+ 
+three, make the third party version
+expensive or impossible. And step four,
+ 
+expensive or impossible. And step four,
+ship the proprietary format that ensures
+ 
+ship the proprietary format that ensures
+the ecosystem builds for your surface,
+ 
+the ecosystem builds for your surface,
+not the open one. We are at step one on
+ 
+not the open one. We are at step one on
+Conway, and steps two through four came
+ 
+Conway, and steps two through four came
+out in that Club Code leak. Every
+ 
+out in that Club Code leak. Every
+previous form of tech platform lock-in
+ 
+previous form of tech platform lock-in
+was about stuff. Microsoft locked you in
+ 
+was about stuff. Microsoft locked you in
+by your files, Salesforce locked you in
+ 
+by your files, Salesforce locked you in
+by your customer records, Slack locked
+ 
+by your customer records, Slack locked
+you in by your communication history.
+ 
+you in by your communication history.
+And stuff is really painful to migrate.
+ 
+And stuff is really painful to migrate.
+A lot of people will not do it.
+ 
+A lot of people will not do it.
+Technically, it's possible. There are
+ 
+Technically, it's possible. There are
+export tools. There are consultants who
+ 
+export tools. There are consultants who
+specialize in that. The switching cost
+ 
+specialize in that. The switching cost
+is painful. It's measured in months and
+ 
+is painful. It's measured in months and
+sometimes tens of thousands or more
+ 
+sometimes tens of thousands or more
+dollars, but it's nothing compared to
+ 
+dollars, but it's nothing compared to
+Conway. If Conway launches, it locks in
+ 
+Conway. If Conway launches, it locks in
+something different. It locks in the
+ 
+something different. It locks in the
+accumulated model of how you work, not
+ 
+accumulated model of how you work, not
+your files, but the patterns that agent
+ 
+your files, but the patterns that agent
+learned by watching you use them. Not
+ 
+learned by watching you use them. Not
+your Slack messages, but the
+ 
+your Slack messages, but the
+understanding of which messages you
+ 
+understanding of which messages you
+respond to in 5 minutes and which ones
+ 
+respond to in 5 minutes and which ones
+you ignore for 3 days. Not your
+ 
+you ignore for 3 days. Not your
+calendar, but the knowledge that you
+ 
+calendar, but the knowledge that you
+always reschedule your 2:00 p.m. on
+ 
+always reschedule your 2:00 p.m. on
+Thursdays and that meetings with your VP
+ 
+Thursdays and that meetings with your VP
+always run long. The model doesn't
+ 
+always run long. The model doesn't
+export that. There's no CSV of how this
+ 
+export that. There's no CSV of how this
+person thinks that you can grab. There's
+ 
+person thinks that you can grab. There's
+no migration consultant for behavioral
+ 
+no migration consultant for behavioral
+context. So, when you switch away from
+ 
+context. So, when you switch away from
+Conway after 6 months, you don't just
+ 
+Conway after 6 months, you don't just
+lose an agent, you lose the 6 months of
+ 
+lose an agent, you lose the 6 months of
+compounding that made agent useful.
+ 
+compounding that made agent useful.
+You're back to a brilliant stranger you
+ 
+You're back to a brilliant stranger you
+have to explain everything to, and
+ 
+have to explain everything to, and
+that's a trade no one wants to make. To
+ 
+that's a trade no one wants to make. To
+be honest, this is lock-in at a layer
+ 
+be honest, this is lock-in at a layer
+that hasn't existed before. It's not
+ 
+that hasn't existed before. It's not
+really about data portability. We have
+ 
+really about data portability. We have
+laws, we have frameworks for that. It's
+ 
+laws, we have frameworks for that. It's
+about intelligence portability. The
+ 
+about intelligence portability. The
+model of you that the agent built is the
+ 
+model of you that the agent built is the
+product of your data plus their compute
+ 
+product of your data plus their compute
+plus 6 months of inference. Who owns
+ 
+plus 6 months of inference. Who owns
+that? Can you take it with you? If you
+ 
+that? Can you take it with you? If you
+can take it with you,
+ 
+can take it with you,
+what format can you take it with you in?
+ 
+what format can you take it with you in?
+These questions don't have legal
+ 
+These questions don't have legal
+frameworks yet, let alone regulatory
+ 
+frameworks yet, let alone regulatory
+frameworks, let alone even like
+ 
+frameworks, let alone even like
+considered opinions cuz we haven't had
+ 
+considered opinions cuz we haven't had
+to face it before. Ultimately, I think
+ 
+to face it before. Ultimately, I think
+it's fair to say the accumulated
+ 
+it's fair to say the accumulated
+behavioral model, the understanding of
+ 
+behavioral model, the understanding of
+how you work, seems like it should be
+ 
+how you work, seems like it should be
+portable. I've suggested a way to make
+ 
+portable. I've suggested a way to make
+it portable by launching a skill that
+ 
+it portable by launching a skill that
+helps you understand how you work, but
+ 
+helps you understand how you work, but
+it will only truly be portable if we
+ 
+it will only truly be portable if we
+agree as a business community that
+ 
+agree as a business community that
+that's the way things ought to work.
+ 
+that's the way things ought to work.
+Because ultimately, to do that well, we
+ 
+Because ultimately, to do that well, we
+need a praxis. We need technical
+ 
+need a praxis. We need technical
+solutions from all the major model
+ 
+solutions from all the major model
+makers that say, "Yes, your behavior is
+ 
+makers that say, "Yes, your behavior is
+something that we will not use for
+ 
+something that we will not use for
+lock-in. Your behavior is something that
+ 
+lock-in. Your behavior is something that
+should come with you." So, the policies
+ 
+should come with you." So, the policies
+around behavioral context portability
+ 
+around behavioral context portability
+should ship before Conway does, not
+ 
+should ship before Conway does, not
+after. If we step back a minute, here's
+ 
+after. If we step back a minute, here's
+the frame that I think is useful for
+ 
+the frame that I think is useful for
+understanding what's actually happening
+ 
+understanding what's actually happening
+in the industry. The first era of AI
+ 
+in the industry. The first era of AI
+competition was all about the models,
+ 
+competition was all about the models,
+right? We knew that, right? 2023, 2024,
+ 
+right? We knew that, right? 2023, 2024,
+who has the best foundation model,
+ 
+who has the best foundation model,
+benchmarks, training runs, context
+ 
+benchmarks, training runs, context
+windows, we all talked about it a lot,
+ 
+windows, we all talked about it a lot,
+right? GPT versus Claude versus Gemini.
+ 
+right? GPT versus Claude versus Gemini.
+That race isn't over, but the margins
+ 
+That race isn't over, but the margins
+between frontier models have compressed
+ 
+between frontier models have compressed
+to the point where it's no longer the
+ 
+to the point where it's no longer the
+primary axis of competition. And the
+ 
+primary axis of competition. And the
+second era that we're coming to now is
+ 
+second era that we're coming to now is
+about some of these different surfaces
+ 
+about some of these different surfaces
+and the memory behind them, right? 2025
+ 
+and the memory behind them, right? 2025
+and into 2026, who owns the interface
+ 
+and into 2026, who owns the interface
+where people actually work? Claude Code,
+ 
+where people actually work? Claude Code,
+Cursor, Open Claude, Windsurf, Harness
+ 
+Cursor, Open Claude, Windsurf, Harness
+Wars. This is the era we just watched
+ 
+Wars. This is the era we just watched
+reach its climax with the Open Claude
+ 
+reach its climax with the Open Claude
+ban and Steinberger's defection to Open
+ 
+ban and Steinberger's defection to Open
+AI. And we are moving from interfaces
+ 
+AI. And we are moving from interfaces
+into this idea of persistence and memory
+ 
+into this idea of persistence and memory
+that drives those experience. Who owns
+ 
+that drives those experience. Who owns
+the always-on layer is the question for
+ 
+the always-on layer is the question for
+the rest of 2026. The agent that doesn't
+ 
+the rest of 2026. The agent that doesn't
+just respond when prompted, but stays
+ 
+just respond when prompted, but stays
+running, accumulates context, wakes on
+ 
+running, accumulates context, wakes on
+events, and acts autonomously. That
+ 
+events, and acts autonomously. That
+agent that knows you not because you
+ 
+agent that knows you not because you
+told it something, but because it's been
+ 
+told it something, but because it's been
+watching, learning, and remembering.
+ 
+watching, learning, and remembering.
+That is the persistence question that
+ 
+That is the persistence question that
+shapes the next year. That is the
+ 
+shapes the next year. That is the
+question that we have to wrestle with
+ 
+question that we have to wrestle with
+whether we're looking at Google or
+ 
+whether we're looking at Google or
+OpenAI or Anthropic. Who do we want to
+ 
+OpenAI or Anthropic. Who do we want to
+choose to run that persistence layer for
+ 
+choose to run that persistence layer for
+us? All three labs, Gemini, all three
+ 
+us? All three labs, Gemini, all three
+labs, Google, Anthropic, and OpenAI have
+ 
+labs, Google, Anthropic, and OpenAI have
+converged on the same insight. They're
+ 
+converged on the same insight. They're
+all building the model as a loss leader,
+ 
+all building the model as a loss leader,
+and they want to own this persistent
+ 
+and they want to own this persistent
+agent layer. The thing that holds your
+ 
+agent layer. The thing that holds your
+memory, your context, your workflows,
+ 
+memory, your context, your workflows,
+your integrations. That's the money
+ 
+your integrations. That's the money
+product. Whoever owns that layer has
+ 
+product. Whoever owns that layer has
+customer lock-in like we have never seen
+ 
+customer lock-in like we have never seen
+before. Not because the model is better,
+ 
+before. Not because the model is better,
+but because the switching cost is
+ 
+but because the switching cost is
+unthinkable. You cannot imagine the cost
+ 
+unthinkable. You cannot imagine the cost
+of switching when this model knows you
+ 
+of switching when this model knows you
+that well. If you're building agents for
+ 
+that well. If you're building agents for
+yourself, for your team, for your
+ 
+yourself, for your team, for your
+clients, Conway changes your calculus
+ 
+clients, Conway changes your calculus
+now. Just the fact that it leaked
+ 
+now. Just the fact that it leaked
+changes your calculus. If you're an
+ 
+changes your calculus. If you're an
+enterprise architecting an agent
+ 
+enterprise architecting an agent
+platform, the question is really clear
+ 
+platform, the question is really clear
+at this point. Do you want your agent
+ 
+at this point. Do you want your agent
+memory to live inside a single
+ 
+memory to live inside a single
+provider's infrastructure? Conway and
+ 
+provider's infrastructure? Conway and
+similar products will be convenient.
+ 
+similar products will be convenient.
+They will be polished. They will ship
+ 
+They will be polished. They will ship
+with an extension ecosystem from day
+ 
+with an extension ecosystem from day
+one, but everything your agents learn
+ 
+one, but everything your agents learn
+about your organization, your workflows,
+ 
+about your organization, your workflows,
+your decisions, your institutional
+ 
+your decisions, your institutional
+knowledge lives inside Anthropic. If you
+ 
+knowledge lives inside Anthropic. If you
+switch providers, you're leaving your
+ 
+switch providers, you're leaving your
+brain behind. If you built a solution
+ 
+brain behind. If you built a solution
+that is a universal context layer. I've
+ 
+that is a universal context layer. I've
+suggested this with open brain. There's
+ 
+suggested this with open brain. There's
+lots of other ways to do it, then the
+ 
+lots of other ways to do it, then the
+memory is yours, and it it's exposed
+ 
+memory is yours, and it it's exposed
+through an open protocol that any model
+ 
+through an open protocol that any model
+can access. Conway's launch is going to
+ 
+can access. Conway's launch is going to
+test whether that matters enough to
+ 
+test whether that matters enough to
+justify the setup cost or whether
+ 
+justify the setup cost or whether
+convenience is going to win. And I need
+ 
+convenience is going to win. And I need
+to be honest. I think for a lot of
+ 
+to be honest. I think for a lot of
+companies convenience is going to win.
+ 
+companies convenience is going to win.
+Anthropic and Google and Open AI will
+ 
+Anthropic and Google and Open AI will
+make it easy. If you get an agent that
+ 
+make it easy. If you get an agent that
+just takes care of everything and it
+ 
+just takes care of everything and it
+pulls you in and it's easy to onboard
+ 
+pulls you in and it's easy to onboard
+and you're already a Claude user and now
+ 
+and you're already a Claude user and now
+you can use Conway and you wake up and
+ 
+you can use Conway and you wake up and
+it's just incredible from day one.
+ 
+it's just incredible from day one.
+You're not going to switch, right? Even
+ 
+You're not going to switch, right? Even
+if it's not perfect, even if it's
+ 
+if it's not perfect, even if it's
+learning what your VP needs to hear in
+ 
+learning what your VP needs to hear in
+that third email from the beginning of
+ 
+that third email from the beginning of
+the video, you're still not going to
+ 
+the video, you're still not going to
+switch cuz it's so good at everything
+ 
+switch cuz it's so good at everything
+else. It can be partially good and still
+ 
+else. It can be partially good and still
+so proactive, so memorable, so nuanced,
+ 
+so proactive, so memorable, so nuanced,
+so thoughtful, you won't move. You won't
+ 
+so thoughtful, you won't move. You won't
+switch. And I have no illusions about
+ 
+switch. And I have no illusions about
+that. I think that one of the things
+ 
+that. I think that one of the things
+that we are going to see that is the
+ 
+that we are going to see that is the
+whole game for the rest of 2026 is which
+ 
+whole game for the rest of 2026 is which
+companies and to some extent which
+ 
+companies and to some extent which
+individuals decide that they would
+ 
+individuals decide that they would
+rather own their own persistent memory
+ 
+rather own their own persistent memory
+layer regardless of the convenience of a
+ 
+layer regardless of the convenience of a
+particular launched agentic system
+ 
+particular launched agentic system
+versus which ones want to lean in and
+ 
+versus which ones want to lean in and
+pick an agentic system and end up
+ 
+pick an agentic system and end up
+realizing they're locked in there. I
+ 
+realizing they're locked in there. I
+think that story is already starting to
+ 
+think that story is already starting to
+take shape. I think we're starting to
+ 
+take shape. I think we're starting to
+see the broader consumer base pick
+ 
+see the broader consumer base pick
+ChatGPT free or go plans. We're starting
+ 
+ChatGPT free or go plans. We're starting
+to see active professionals pick Claude
+ 
+to see active professionals pick Claude
+Anthropic plans and that's starting to
+ 
+Anthropic plans and that's starting to
+leak into enterprise contracts and we
+ 
+leak into enterprise contracts and we
+are going to have to see whether
+ 
+are going to have to see whether
+concerns around portability and privacy
+ 
+concerns around portability and privacy
+shape enterprise deals and consumer
+ 
+shape enterprise deals and consumer
+choices or whether people are going to
+ 
+choices or whether people are going to
+be comfortable with a product like
+ 
+be comfortable with a product like
+Conway because Conway is just the tip of
+ 
+Conway because Conway is just the tip of
+the iceberg. We are going to see
+ 
+the iceberg. We are going to see
+Anthropic, Open AI, and Google all ship
+ 
+Anthropic, Open AI, and Google all ship
+versions of this in the next few months.
+ 
+versions of this in the next few months.
+We're going to have to see if people are
+ 
+We're going to have to see if people are
+comfortable staking the future of their
+ 
+comfortable staking the future of their
+careers on a lock-in with a company. And
+ 
+careers on a lock-in with a company. And
+I'm not over exaggerating. If you want
+ 
+I'm not over exaggerating. If you want
+to get promoted, increasingly it will be
+ 
+to get promoted, increasingly it will be
+a function of how well you use the
+ 
+a function of how well you use the
+persistent agent layer at your company,
+ 
+persistent agent layer at your company,
+which requires your willingness to hop
+ 
+which requires your willingness to hop
+in and use it from day one. If you want
+ 
+in and use it from day one. If you want
+to build a team, you're going to need to
+ 
+to build a team, you're going to need to
+show that you can build that team from
+ 
+show that you can build that team from
+day one across a persistent context
+ 
+day one across a persistent context
+layer that the company decides. If you
+ 
+layer that the company decides. If you
+want to start a business, you are going
+ 
+want to start a business, you are going
+to have to face the decision which of
+ 
+to have to face the decision which of
+these agentic interfaces do I choose?
+ 
+these agentic interfaces do I choose?
+And in your own life, you're going to
+ 
+And in your own life, you're going to
+have to decide do I want these agentic
+ 
+have to decide do I want these agentic
+interfaces? Do I want to build my own?
+ 
+interfaces? Do I want to build my own?
+And enterprises will make that same
+ 
+And enterprises will make that same
+choice. And there will be third parties
+ 
+choice. And there will be third parties
+who will claim to stitch together
+ 
+who will claim to stitch together
+particular models in particular context
+ 
+particular models in particular context
+layers into something that enterprises
+ 
+layers into something that enterprises
+can choose and that is claimed to be
+ 
+can choose and that is claimed to be
+portable. I am concerned that in the
+ 
+portable. I am concerned that in the
+middle of all that mess, we are going to
+ 
+middle of all that mess, we are going to
+miss the larger point. We are going to
+ 
+miss the larger point. We are going to
+miss the realization that the behavioral
+ 
+miss the realization that the behavioral
+evidence of how we work should belong to
+ 
+evidence of how we work should belong to
+us. It should be ours. And that
+ 
+us. It should be ours. And that
+companies should be able to learn from
+ 
+companies should be able to learn from
+it, leverage it while we work there with
+ 
+it, leverage it while we work there with
+them. And then we should be able to take
+ 
+them. And then we should be able to take
+it with us so that our persistent talent
+ 
+it with us so that our persistent talent
+imprint on the context layer is not
+ 
+imprint on the context layer is not
+something they can just copy and
+ 
+something they can just copy and
+continue to leverage after we depart.
+ 
+continue to leverage after we depart.
+And so there's a sense in which my
+ 
+And so there's a sense in which my
+ability to handle a slack message
+ 
+ability to handle a slack message
+triage, my ability to read email and see
+ 
+triage, my ability to read email and see
+what's important, my ability to
+ 
+what's important, my ability to
+understand whether a PowerPoint is well
+ 
+understand whether a PowerPoint is well
+structured or not, that is becoming not
+ 
+structured or not, that is becoming not
+just my talent, but a company's skill.
+ 
+just my talent, but a company's skill.
+And so I want us to have an intentional
+ 
+And so I want us to have an intentional
+conversation because I understand this
+ 
+conversation because I understand this
+is very valuable to companies that when
+ 
+is very valuable to companies that when
+you have talent on your roster that can
+ 
+you have talent on your roster that can
+do this, that's incredibly worthwhile.
+ 
+do this, that's incredibly worthwhile.
+You want to capture it. I get it. It's
+ 
+You want to capture it. I get it. It's
+going to happen. But in that case, what
+ 
+going to happen. But in that case, what
+is the right way to allocate that value
+ 
+is the right way to allocate that value
+back? Do you then say we're compensating
+ 
+back? Do you then say we're compensating
+the employee for using this behavioral
+ 
+the employee for using this behavioral
+evidence as a way to improve our context
+ 
+evidence as a way to improve our context
+layer over time. Do you instead go with
+ 
+layer over time. Do you instead go with
+the approach that the context layer is
+ 
+the approach that the context layer is
+portable and the employee should be able
+ 
+portable and the employee should be able
+to take some sort of behavioral
+ 
+to take some sort of behavioral
+fingerprint out and some of the facts
+ 
+fingerprint out and some of the facts
+and the proprietary information should
+ 
+and the proprietary information should
+stay or and I think this is probably the
+ 
+stay or and I think this is probably the
+most likely do we not have the
+ 
+most likely do we not have the
+conversation at all because it's a
+ 
+conversation at all because it's a
+difficult conversation with weird power
+ 
+difficult conversation with weird power
+dynamics and instead we say you know
+ 
+dynamics and instead we say you know
+what we're going to default to the old
+ 
+what we're going to default to the old
+assumption whatever you do while you
+ 
+assumption whatever you do while you
+work is the company's property and that
+ 
+work is the company's property and that
+includes your behavior at the company
+ 
+includes your behavior at the company
+and if the company can learn a lot from
+ 
+and if the company can learn a lot from
+that they're going to do that and
+ 
+that they're going to do that and
+they're going to move on. I think the
+ 
+they're going to move on. I think the
+latter is more likely but I think it
+ 
+latter is more likely but I think it
+poses some real challenges for
+ 
+poses some real challenges for
+employees. Ironically this approach as
+ 
+employees. Ironically this approach as
+much as it empowers individuals and
+ 
+much as it empowers individuals and
+we've talked so much about how
+ 
+we've talked so much about how
+persistent context can give individuals
+ 
+persistent context can give individuals
+and small team superpowers the idea of a
+ 
+and small team superpowers the idea of a
+persistent context memory like this
+ 
+persistent context memory like this
+leaked Conway approach actually empowers
+ 
+leaked Conway approach actually empowers
+enterprises in the employer relationship
+ 
+enterprises in the employer relationship
+because the enterprise can look at this
+ 
+because the enterprise can look at this
+employee and say we know how good you
+ 
+employee and say we know how good you
+are at this this this and this. We know
+ 
+are at this this this and this. We know
+how to promote you. We know how to give
+ 
+how to promote you. We know how to give
+you what you want to stay but also we
+ 
+you what you want to stay but also we
+know that you're effective because of
+ 
+know that you're effective because of
+this agent and you're going to want to
+ 
+this agent and you're going to want to
+stay because when you work with this
+ 
+stay because when you work with this
+agent you're two x more effective and we
+ 
+agent you're two x more effective and we
+can prove it. And we have never had that
+ 
+can prove it. And we have never had that
+kind of carrot and stick approach from
+ 
+kind of carrot and stick approach from
+employers to employees and we're all
+ 
+employers to employees and we're all
+going to figure that out. As you look at
+ 
+going to figure that out. As you look at
+the cloud code leaks as you look at
+ 
+the cloud code leaks as you look at
+Conway as you look at other leaks that
+ 
+Conway as you look at other leaks that
+come out
+ 
+come out
+please start to think through
+ 
+please start to think through
+what are the larger implications here?
+ 
+what are the larger implications here?
+What are the non-obvious implications of
+ 
+What are the non-obvious implications of
+extending agents into our lives in ways
+ 
+extending agents into our lives in ways
+that are persistent? I hope this video
+ 
+that are persistent? I hope this video
+has given you a sense of the different
+ 
+has given you a sense of the different
+ways that this can unfold. And if you're
+ 
+ways that this can unfold. And if you're
+interested in building a persistent
+ 
+interested in building a persistent
+memory layer you know I have a way to do
+ 
+memory layer you know I have a way to do
+that, and it can be yours, and you would
+ 
+that, and it can be yours, and you would
+have a behavioral audit that you take
+ 
+have a behavioral audit that you take
+with you. Because I think that's really
+ 
+with you. Because I think that's really
+important. I have no illusions. We are
+ 
+important. I have no illusions. We are
+going to be at a point in many cases
+ 
+going to be at a point in many cases
+where that's not an option, because
+ 
+where that's not an option, because
+employers are going to hold the cards,
+ 
+employers are going to hold the cards,
+and they're going to encourage
+ 
+and they're going to encourage
+employees, either through carrots or
+ 
+employees, either through carrots or
+through sticks, to participate in these
+ 
+through sticks, to participate in these
+proprietary contextual platforms in ways
+ 
+proprietary contextual platforms in ways
+that enable the employer to leverage the
+ 
+that enable the employer to leverage the
+collective intelligence of teams to make
+ 
+collective intelligence of teams to make
+those agents better and stronger. And
+ 
+those agents better and stronger. And
+not even necessarily for nefarious
+ 
+not even necessarily for nefarious
+purposes. Like the easy narrative is,
+ 
+purposes. Like the easy narrative is,
+"Oh, then they're going to fire
+ 
+"Oh, then they're going to fire
+everybody." I don't think that's true,
+ 
+everybody." I don't think that's true,
+because you still have to have a lot of
+ 
+because you still have to have a lot of
+smart humans to manage these agents.
+ 
+smart humans to manage these agents.
+But, it does mean that the lock-in
+ 
+But, it does mean that the lock-in
+effect for employees inside employers is
+ 
+effect for employees inside employers is
+going to get very strong in the second
+ 
+going to get very strong in the second
+half of 2026. So, pick your fighter
+ 
+half of 2026. So, pick your fighter
+carefully, right? Choose your employer
+ 
+carefully, right? Choose your employer
+carefully, because increasingly choosing
+ 
+carefully, because increasingly choosing
+your employer is going to mean who are
+ 
+your employer is going to mean who are
+you choosing to work with as a
+ 
+you choosing to work with as a
+persistent agent? Are you working with a
+ 
+persistent agent? Are you working with a
+Claude company or a ChatGPT company? It
+ 
+Claude company or a ChatGPT company? It
+used to be Windows and Mac, right? Well,
+ 
+used to be Windows and Mac, right? Well,
+this is more important than that. Now
+ 
+this is more important than that. Now
+it's are you working with an agent that
+ 
+it's are you working with an agent that
+understands you and that you're super
+ 
+understands you and that you're super
+familiar with and that you can be two or
+ 
+familiar with and that you can be two or
+three x more productive with because
+ 
+three x more productive with because
+you've had that time. That's the future
+ 
+you've had that time. That's the future
+that Conway is pointing at, and I want
+ 
+that Conway is pointing at, and I want
+us to understand that because it's easy
+ 
+us to understand that because it's easy
+to get lost in the open claw fiasco, but
+ 
+to get lost in the open claw fiasco, but
+I want you to understand underneath that
+ 
+I want you to understand underneath that
+why Anthropic is making the moves that
+ 
+why Anthropic is making the moves that
+they are and where they're going with
+ 
+they are and where they're going with
+the persistent agent layer, because
+ 
+the persistent agent layer, because
+that's also where at OpenAI and Google
+ 
+that's also where at OpenAI and Google
+are going to. Best of luck out there.

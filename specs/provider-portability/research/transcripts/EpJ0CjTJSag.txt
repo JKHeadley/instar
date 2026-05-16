@@ -1,0 +1,1808 @@
+ 
+$20, two hours to get full read and
+ 
+$20, two hours to get full read and
+write access to the AI platform that 70%
+ 
+write access to the AI platform that 70%
+of McKenzie's 40,000 consultants use
+ 
+of McKenzie's 40,000 consultants use
+every single day. This was an autonomous
+ 
+every single day. This was an autonomous
+agent that spent 20 bucks with no
+ 
+agent that spent 20 bucks with no
+credentials and zero insider help to get
+ 
+credentials and zero insider help to get
+access to tens of millions of chat
+ 
+access to tens of millions of chat
+messages, access to tens of thousands of
+ 
+messages, access to tens of thousands of
+user accounts, and every system prompt
+ 
+user accounts, and every system prompt
+governing how the platform reasons. All
+ 
+governing how the platform reasons. All
+of them writable access, not just
+ 
+of them writable access, not just
+readable, writable. In other words, an
+ 
+readable, writable. In other words, an
+attacker could have silently rewritten
+ 
+attacker could have silently rewritten
+how the AI advises consultants who
+ 
+how the AI advises consultants who
+advise the largest firms in the world.
+ 
+advise the largest firms in the world.
+The platform is called Lily. The startup
+ 
+The platform is called Lily. The startup
+that broke the news is called Codewall
+ 
+that broke the news is called Codewall
+and the date was February 28th because
+ 
+and the date was February 28th because
+it's taken the industry a couple of
+ 
+it's taken the industry a couple of
+months to figure out what this agentic
+ 
+months to figure out what this agentic
+pattern looks like, what the lessons
+ 
+pattern looks like, what the lessons
+learned are, and how we change the way
+ 
+learned are, and how we change the way
+we purchase, invest, and build in
+ 
+we purchase, invest, and build in
+software in response. And that's what I
+ 
+software in response. And that's what I
+want to talk about today. First, this
+ 
+want to talk about today. First, this
+exploit wasn't exotic. It was SQL
+ 
+exploit wasn't exotic. It was SQL
+injection. The first documented case of
+ 
+injection. The first documented case of
+SQL injection is in 1998. It's taught in
+ 
+SQL injection is in 1998. It's taught in
+every introductory web security course.
+ 
+every introductory web security course.
+And McKenzie, they have a great
+ 
+And McKenzie, they have a great
+engineering team. Lily had been in
+ 
+engineering team. Lily had been in
+production for more than 2 years. So,
+ 
+production for more than 2 years. So,
+how did this happen? The answer has
+ 
+how did this happen? The answer has
+implications for your AI roadmap, for
+ 
+implications for your AI roadmap, for
+the platform that you signed up for last
+ 
+the platform that you signed up for last
+quarter. Most companies have a platform
+ 
+quarter. Most companies have a platform
+they signed up for last quarter. We have
+ 
+they signed up for last quarter. We have
+a lot of AI purchasing going on right
+ 
+a lot of AI purchasing going on right
+now, and of course, for the deal that
+ 
+now, and of course, for the deal that
+you're probably considering because
+ 
+you're probably considering because
+again, most companies at most scales are
+ 
+again, most companies at most scales are
+considering an AI purchase this quarter.
+ 
+considering an AI purchase this quarter.
+Three things to cover in this video.
+ 
+Three things to cover in this video.
+One, why calling Lily a security failure
+ 
+One, why calling Lily a security failure
+misses the point. Two, the procurement
+ 
+misses the point. Two, the procurement
+sequence most companies still use and
+ 
+sequence most companies still use and
+why agents are breaking it now. And
+ 
+why agents are breaking it now. And
+three, two questions you can ask this
+ 
+three, two questions you can ask this
+week that will tell you whether your AI
+ 
+week that will tell you whether your AI
+investment is actual strategy or just an
+ 
+investment is actual strategy or just an
+unpriced liability. I'm putting a
+ 
+unpriced liability. I'm putting a
+further six question checklist for your
+ 
+further six question checklist for your
+technical team on Substack because
+ 
+technical team on Substack because
+that's part of the answer to how we
+ 
+that's part of the answer to how we
+avoid situations like the Lily story.
+ 
+avoid situations like the Lily story.
+So, first here's what most of the
+ 
+So, first here's what most of the
+analysis did with the Lily story.
+ 
+analysis did with the Lily story.
+Codewall disclosed responsibly on March
+ 
+Codewall disclosed responsibly on March
+9th. They did not use this maliciously.
+ 
+9th. They did not use this maliciously.
+McKenzie patched it up with an hour's
+ 
+McKenzie patched it up with an hour's
+credit to them. The postmortem said what
+ 
+credit to them. The postmortem said what
+postmortems typically say. You should
+ 
+postmortems typically say. You should
+authenticate your endpoints. You should
+ 
+authenticate your endpoints. You should
+sanitize your inputs. Treat your AI
+ 
+sanitize your inputs. Treat your AI
+platform like production. That's not
+ 
+platform like production. That's not
+wrong. It's correct. It's true. But it's
+ 
+wrong. It's correct. It's true. But it's
+not the story. If you stop there, you
+ 
+not the story. If you stop there, you
+walk away thinking the lesson is a story
+ 
+walk away thinking the lesson is a story
+of technical hygiene. But it's not. The
+ 
+of technical hygiene. But it's not. The
+technical hygiene was never the issue
+ 
+technical hygiene was never the issue
+here. McKenzie has many many great
+ 
+here. McKenzie has many many great
+engineers who know how to authenticate
+ 
+engineers who know how to authenticate
+an endpoint. That defense is trivial to
+ 
+an endpoint. That defense is trivial to
+implement at this point. There's no
+ 
+implement at this point. There's no
+organization on earth where this is a
+ 
+organization on earth where this is a
+hard engineering problem. So let's run
+ 
+hard engineering problem. So let's run
+the p pattern backward and let's ask
+ 
+the p pattern backward and let's ask
+ourselves deeper questions. 22 of 200
+ 
+ourselves deeper questions. 22 of 200
+endpoints shipped with no
+ 
+endpoints shipped with no
+authentication. 22 of them at that
+ 
+authentication. 22 of them at that
+scale. That's not a random mistake.
+ 
+scale. That's not a random mistake.
+That's that's a pattern. That's a
+ 
+That's that's a pattern. That's a
+platform where maybe the default or
+ 
+platform where maybe the default or
+maybe the assumption is that you can
+ 
+maybe the assumption is that you can
+push to prod without that level of
+ 
+push to prod without that level of
+scrutiny on your endpoint. Because just
+ 
+scrutiny on your endpoint. Because just
+to be clear for those of you not
+ 
+to be clear for those of you not
+familiar with APIs, this is not they
+ 
+familiar with APIs, this is not they
+forgot to lock the door. That framing
+ 
+forgot to lock the door. That framing
+puts the failure on a single person,
+ 
+puts the failure on a single person,
+some engineer on some Friday who skipped
+ 
+some engineer on some Friday who skipped
+a checklist. If that's what happened,
+ 
+a checklist. If that's what happened,
+the fix would be training and it would
+ 
+the fix would be training and it would
+be easy. But if you have 22 of these and
+ 
+be easy. But if you have 22 of these and
+in particular if the exploit that
+ 
+in particular if the exploit that
+happened happened because one of the
+ 
+happened happened because one of the
+endpoints allowed production write
+ 
+endpoints allowed production write
+access without authentication that's a
+ 
+access without authentication that's a
+much deeper engineering culture and
+ 
+much deeper engineering culture and
+structure problem that needs to be fixed
+ 
+structure problem that needs to be fixed
+that depends on a deeper knowledge of
+ 
+that depends on a deeper knowledge of
+what agents are capable of today. And
+ 
+what agents are capable of today. And
+let me be clear this is not they forgot
+ 
+let me be clear this is not they forgot
+to lock the door. I know that not
+ 
+to lock the door. I know that not
+everyone's familiar with APIs here. It
+ 
+everyone's familiar with APIs here. It
+it's not that like you should lock the
+ 
+it's not that like you should lock the
+door in the API and it would be fixed
+ 
+door in the API and it would be fixed
+because that framing puts the failure on
+ 
+because that framing puts the failure on
+an individual like some engineer some
+ 
+an individual like some engineer some
+Friday someone skipped a checklist. If
+ 
+Friday someone skipped a checklist. If
+that's what happened the fix would be
+ 
+that's what happened the fix would be
+training but if that's what happened we
+ 
+training but if that's what happened we
+would not see 22 of these endpoints in
+ 
+would not see 22 of these endpoints in
+production. I don't believe I don't
+ 
+production. I don't believe I don't
+think that's what happened. I don't
+ 
+think that's what happened. I don't
+think that's the root cause. I think the
+ 
+think that's the root cause. I think the
+root cause is closer to no one asking
+ 
+root cause is closer to no one asking
+whether the API endpoint itself was the
+ 
+whether the API endpoint itself was the
+correct shape for assuming strong
+ 
+correct shape for assuming strong
+agentic access on the web. We need to be
+ 
+agentic access on the web. We need to be
+assuming that the production software we
+ 
+assuming that the production software we
+put into place is going to meet AI
+ 
+put into place is going to meet AI
+agents and it looks like that
+ 
+agents and it looks like that
+consideration did not happen. And if the
+ 
+consideration did not happen. And if the
+people who would ask those questions,
+ 
+people who would ask those questions,
+probably technical people, probably
+ 
+probably technical people, probably
+engineers, are not in the room with
+ 
+engineers, are not in the room with
+space to talk, then a lot of the shape
+ 
+space to talk, then a lot of the shape
+of the software we're putting out as AI
+ 
+of the software we're putting out as AI
+software is going to be determined by
+ 
+software is going to be determined by
+executives and business teams working to
+ 
+executives and business teams working to
+a deadline rather than technical folks
+ 
+a deadline rather than technical folks
+who can speak to where this agentic
+ 
+who can speak to where this agentic
+impact is going to show up in business
+ 
+impact is going to show up in business
+results, which is exactly what happened
+ 
+results, which is exactly what happened
+here when when Lily first came out 2
+ 
+here when when Lily first came out 2
+years ago. go. We didn't have autonomous
+ 
+years ago. go. We didn't have autonomous
+AI agents that could hack through a
+ 
+AI agents that could hack through a
+public endpoint and get to production
+ 
+public endpoint and get to production
+data. That is something that is very
+ 
+data. That is something that is very
+normal in 2026. If we want to build
+ 
+normal in 2026. If we want to build
+software and purchase software that has
+ 
+software and purchase software that has
+lasting value, we need technical voices
+ 
+lasting value, we need technical voices
+at the table that can anticipate that
+ 
+at the table that can anticipate that
+kind of trajectory and speak to it in a
+ 
+kind of trajectory and speak to it in a
+way that helps us to shape our purchase
+ 
+way that helps us to shape our purchase
+path. And this is where I have a lot of
+ 
+path. And this is where I have a lot of
+sympathy for the Mckenzie team. I don't
+ 
+sympathy for the Mckenzie team. I don't
+believe this is really a McKenzie story
+ 
+believe this is really a McKenzie story
+per se. I think McKenzie is the version
+ 
+per se. I think McKenzie is the version
+that made the news because the
+ 
+that made the news because the
+consequences were vivid. The report was
+ 
+consequences were vivid. The report was
+good and frankly the brand is very
+ 
+good and frankly the brand is very
+large. But I've seen the inside of
+ 
+large. But I've seen the inside of
+enough enterprise AI programs this year
+ 
+enough enterprise AI programs this year
+to tell you that the shape of this
+ 
+to tell you that the shape of this
+failure shows up in a lot of places. The
+ 
+failure shows up in a lot of places. The
+shape is that governance and thoughtful
+ 
+shape is that governance and thoughtful
+technical perspective tend to arrive
+ 
+technical perspective tend to arrive
+late and the exploit just happens to
+ 
+late and the exploit just happens to
+show up in some cases as like a receipt.
+ 
+show up in some cases as like a receipt.
+But knowing the shape of failure by
+ 
+But knowing the shape of failure by
+itself isn't the useful part. The the
+ 
+itself isn't the useful part. The the
+useful piece here is understanding the
+ 
+useful piece here is understanding the
+process that keeps producing it because
+ 
+process that keeps producing it because
+once you see the process, you can change
+ 
+once you see the process, you can change
+your pattern and actually update it and
+ 
+your pattern and actually update it and
+do better next time. Here's the process.
+ 
+do better next time. Here's the process.
+Most enterprise software has been bought
+ 
+Most enterprise software has been bought
+for the last 15 years or more in the
+ 
+for the last 15 years or more in the
+same sequence. Strategic decision at the
+ 
+same sequence. Strategic decision at the
+top procurement negotiates the contract.
+ 
+top procurement negotiates the contract.
+Security and compliance review. IT plans
+ 
+Security and compliance review. IT plans
+and integration. Developers build
+ 
+and integration. Developers build
+against whatever platform already got
+ 
+against whatever platform already got
+purchased. That sequence works great for
+ 
+purchased. That sequence works great for
+SAS. It worked for Salesforce, Workday,
+ 
+SAS. It worked for Salesforce, Workday,
+Service Now, the entire generation of
+ 
+Service Now, the entire generation of
+cloud applications most companies run on
+ 
+cloud applications most companies run on
+today. And it worked because SAS is
+ 
+today. And it worked because SAS is
+bounded. The vendor gives you an admin
+ 
+bounded. The vendor gives you an admin
+console, a set of integration points, a
+ 
+console, a set of integration points, a
+published API, and a permissions model
+ 
+published API, and a permissions model
+that maps cleanly to roles. You're
+ 
+that maps cleanly to roles. You're
+configuring software. That's not that
+ 
+configuring software. That's not that
+much to build, right? For agents, that
+ 
+much to build, right? For agents, that
+same sequence leads to disaster. Walk
+ 
+same sequence leads to disaster. Walk
+through what an agent actually does on a
+ 
+through what an agent actually does on a
+single real run inside a company in
+ 
+single real run inside a company in
+2026. Now, the user says, "Prepare the
+ 
+2026. Now, the user says, "Prepare the
+renewal brief for our largest customer."
+ 
+renewal brief for our largest customer."
+It's April 2026. The agent has to figure
+ 
+It's April 2026. The agent has to figure
+out which systems hold the answer. It
+ 
+out which systems hold the answer. It
+pulls from the CRM, from support
+ 
+pulls from the CRM, from support
+tickets, from contract management, from
+ 
+tickets, from contract management, from
+product usage data, from call
+ 
+product usage data, from call
+transcripts, from an internal wiki. It
+ 
+transcripts, from an internal wiki. It
+crosses permission boundaries that for a
+ 
+crosses permission boundaries that for a
+human are mediated by what's visible on
+ 
+human are mediated by what's visible on
+a screen. But for an agent may be
+ 
+a screen. But for an agent may be
+mediated by tokens and roles and scopes
+ 
+mediated by tokens and roles and scopes
+that have to actually exist as code
+ 
+that have to actually exist as code
+written by someone. When a human
+ 
+written by someone. When a human
+consultant pulls a renewal brief
+ 
+consultant pulls a renewal brief
+together, none of this complexity that I
+ 
+together, none of this complexity that I
+just described is visible to them. They
+ 
+just described is visible to them. They
+open Salesforce. They glance at the
+ 
+open Salesforce. They glance at the
+support history. They check the
+ 
+support history. They check the
+contract. They scan a Slack thread from
+ 
+contract. They scan a Slack thread from
+last quarter. They don't notice. The
+ 
+last quarter. They don't notice. The
+contract management tool has its own
+ 
+contract management tool has its own
+permissions. The support system has its
+ 
+permissions. The support system has its
+own audit log. The CRM treats their
+ 
+own audit log. The CRM treats their
+access differently from the analysts
+ 
+access differently from the analysts
+access. They don't notice half the wiki
+ 
+access. They don't notice half the wiki
+pages they're reading are stale. They
+ 
+pages they're reading are stale. They
+don't have to notice. Their eyes do the
+ 
+don't have to notice. Their eyes do the
+work. The screen is the permissions
+ 
+work. The screen is the permissions
+model. If they shouldn't see something,
+ 
+model. If they shouldn't see something,
+the screen doesn't show it. An agent has
+ 
+the screen doesn't show it. An agent has
+no eyes. The agent is asking each of
+ 
+no eyes. The agent is asking each of
+those systems in code, am I allowed to
+ 
+those systems in code, am I allowed to
+read this? And every one of those
+ 
+read this? And every one of those
+systems has to have a clear answer. And
+ 
+systems has to have a clear answer. And
+every one of those has to be auditable.
+ 
+every one of those has to be auditable.
+And every one of those audits has to
+ 
+And every one of those audits has to
+compose with every other one when a
+ 
+compose with every other one when a
+regulator asks what happened in this
+ 
+regulator asks what happened in this
+sequence. None of this exists by
+ 
+sequence. None of this exists by
+default. All of it is engineering work
+ 
+default. All of it is engineering work
+that someone has to do against a
+ 
+that someone has to do against a
+deadline before the agent ships. And
+ 
+deadline before the agent ships. And
+that's just for one task. Multiply that
+ 
+that's just for one task. Multiply that
+by all the workflows your roadmap
+ 
+by all the workflows your roadmap
+promises to automate and you see the
+ 
+promises to automate and you see the
+shape of what we're committing to as a
+ 
+shape of what we're committing to as a
+community. The SAS environment that
+ 
+community. The SAS environment that
+we've described for procurement was a
+ 
+we've described for procurement was a
+very bounded place. I just described how
+ 
+very bounded place. I just described how
+clean it is to grab software, install
+ 
+clean it is to grab software, install
+it, and then maybe you build a few
+ 
+it, and then maybe you build a few
+integrations. What I'm describing with
+ 
+integrations. What I'm describing with
+crossworkflow integrations is not that.
+ 
+crossworkflow integrations is not that.
+It's extremely unbounded and we are
+ 
+It's extremely unbounded and we are
+signing up for that. And that is part of
+ 
+signing up for that. And that is part of
+why this is so complex and why the
+ 
+why this is so complex and why the
+procurement process is breaking with
+ 
+procurement process is breaking with
+agents. The implementation question
+ 
+agents. The implementation question
+isn't downstream of a strategic
+ 
+isn't downstream of a strategic
+decision. It's effectively the strategic
+ 
+decision. It's effectively the strategic
+decision itself. If the agent can't
+ 
+decision itself. If the agent can't
+authenticate against the system it
+ 
+authenticate against the system it
+needs, the strategy isn't going to work.
+ 
+needs, the strategy isn't going to work.
+If the permissions model only thinks
+ 
+If the permissions model only thinks
+about humans clicking through screens,
+ 
+about humans clicking through screens,
+the strategy doesn't work either. If if
+ 
+the strategy doesn't work either. If if
+every run reassembles the same business
+ 
+every run reassembles the same business
+context from scratch and your token bill
+ 
+context from scratch and your token bill
+goes up by 3x, the strategy doesn't
+ 
+goes up by 3x, the strategy doesn't
+work. I if you can't audit what the
+ 
+work. I if you can't audit what the
+agent did, the strategy is not going to
+ 
+agent did, the strategy is not going to
+get past legal and shouldn't. None of
+ 
+get past legal and shouldn't. None of
+these are implementation details to be
+ 
+these are implementation details to be
+worked out later, every one of them is
+ 
+worked out later, every one of them is
+enough to change how the road map
+ 
+enough to change how the road map
+actually is shaped. So when you put
+ 
+actually is shaped. So when you put
+implementation and your dev team last in
+ 
+implementation and your dev team last in
+the buying sequence, you're committing
+ 
+the buying sequence, you're committing
+capital to a strategy whose viability
+ 
+capital to a strategy whose viability
+has not been tested. And you don't find
+ 
+has not been tested. And you don't find
+that out with a demo. You find it out 6
+ 
+that out with a demo. You find it out 6
+months in when your team is trying to
+ 
+months in when your team is trying to
+push the workflow into production and
+ 
+push the workflow into production and
+discovering one boundary at a time that
+ 
+discovering one boundary at a time that
+the platform you purchased wasn't
+ 
+the platform you purchased wasn't
+buildable for the work you bought it to
+ 
+buildable for the work you bought it to
+do. The vendors know this now. That's
+ 
+do. The vendors know this now. That's
+what this week has made clear and that
+ 
+what this week has made clear and that
+closes the circle on the February
+ 
+closes the circle on the February
+conversation and what happened with
+ 
+conversation and what happened with
+Codewall and Lily. Because in the last
+ 
+Codewall and Lily. Because in the last
+week or so, Anthropic and OpenAI have
+ 
+week or so, Anthropic and OpenAI have
+both stood up enterprise services
+ 
+both stood up enterprise services
+companies with billions of dollars
+ 
+companies with billions of dollars
+behind them to put engineers inside
+ 
+behind them to put engineers inside
+customer buildrooms for this exact
+ 
+customer buildrooms for this exact
+complexity. SAP acquired Dreo and Prior
+ 
+complexity. SAP acquired Dreo and Prior
+Labs to bring a unified data layer and
+ 
+Labs to bring a unified data layer and
+tabular foundation models to the place
+ 
+tabular foundation models to the place
+where actual business data lives. The
+ 
+where actual business data lives. The
+ledgers of the business, right? Not
+ 
+ledgers of the business, right? Not
+marketing copy. Pine Cone launched
+ 
+marketing copy. Pine Cone launched
+Nexus, which is essentially stop making
+ 
+Nexus, which is essentially stop making
+your agent rebuild the business from
+ 
+your agent rebuild the business from
+scratch every time it runs. Salesforce
+ 
+scratch every time it runs. Salesforce
+shipped headless 360 which exposes their
+ 
+shipped headless 360 which exposes their
+platform as APIs and tools and command
+ 
+platform as APIs and tools and command
+line commands because agents don't click
+ 
+line commands because agents don't click
+through screens. Service Now opened up
+ 
+through screens. Service Now opened up
+Action Fabric so outside agents can
+ 
+Action Fabric so outside agents can
+trigger governed workflows, playbooks,
+ 
+trigger governed workflows, playbooks,
+approvals, cataloges through a
+ 
+approvals, cataloges through a
+controlled surface with identity and
+ 
+controlled surface with identity and
+audit attached. You see how this ties
+ 
+audit attached. You see how this ties
+in, right? Six different announcements
+ 
+in, right? Six different announcements
+all within the last week or so. One
+ 
+all within the last week or so. One
+story. Every single one of those vendors
+ 
+story. Every single one of those vendors
+is now selling you the thing your AI
+ 
+is now selling you the thing your AI
+roadmap was supposed to already have.
+ 
+roadmap was supposed to already have.
+reachable surfaces, governed action,
+ 
+reachable surfaces, governed action,
+permissionaware data, cheaper context
+ 
+permissionaware data, cheaper context
+assembly, forward deployed humans who
+ 
+assembly, forward deployed humans who
+can actually wire up your workflows. I'm
+ 
+can actually wire up your workflows. I'm
+not saying that this is a silver bullet,
+ 
+not saying that this is a silver bullet,
+but I'm saying it's a signal. The signal
+ 
+but I'm saying it's a signal. The signal
+is that the model was never the hard
+ 
+is that the model was never the hard
+part. The hard part is exactly what the
+ 
+part. The hard part is exactly what the
+Lily incident surfaced, whether the
+ 
+Lily incident surfaced, whether the
+agent can reach the right data, use the
+ 
+agent can reach the right data, use the
+right permissions, trigger the right
+ 
+right permissions, trigger the right
+workflow, leave the right audit trail,
+ 
+workflow, leave the right audit trail,
+and do all of it at a cost the company
+ 
+and do all of it at a cost the company
+can live with. So the question isn't
+ 
+can live with. So the question isn't
+which vendor you pick from that list.
+ 
+which vendor you pick from that list.
+I'm not asking about that. The question
+ 
+I'm not asking about that. The question
+is how do you know before you sign with
+ 
+is how do you know before you sign with
+the vendor whether any of what they are
+ 
+the vendor whether any of what they are
+promising is going to deliver actual
+ 
+promising is going to deliver actual
+value. You might be wondering why are we
+ 
+value. You might be wondering why are we
+talking about an external hack of Lily
+ 
+talking about an external hack of Lily
+which was a system that McKenzie stood
+ 
+which was a system that McKenzie stood
+up on its own. And the rest of this
+ 
+up on its own. And the rest of this
+video is about purchasing software from
+ 
+video is about purchasing software from
+other people. I'll give you a real clear
+ 
+other people. I'll give you a real clear
+answer. The build versus buy
+ 
+answer. The build versus buy
+conversation comes down to this.
+ 
+conversation comes down to this.
+Regardless like whether you are building
+ 
+Regardless like whether you are building
+internally or whether you are buying,
+ 
+internally or whether you are buying,
+whether you are building your version of
+ 
+whether you are building your version of
+Lily or whether you are buying, you
+ 
+Lily or whether you are buying, you
+still have to deal with this
+ 
+still have to deal with this
+crossworkflow complexity that agents
+ 
+crossworkflow complexity that agents
+bring to the table, which means you
+ 
+bring to the table, which means you
+still have to involve your technical
+ 
+still have to involve your technical
+teams to get it right. And when we go
+ 
+teams to get it right. And when we go
+back through the Lily experience and the
+ 
+back through the Lily experience and the
+incident that happened and understand
+ 
+incident that happened and understand
+what Codewall did with their exploit,
+ 
+what Codewall did with their exploit,
+what we see are are are failures that
+ 
+what we see are are are failures that
+are taught in computer science 101. What
+ 
+are taught in computer science 101. What
+we see are basic failures at a scale 22
+ 
+we see are basic failures at a scale 22
+out of 200 over 10% endpoints not
+ 
+out of 200 over 10% endpoints not
+authenticated, especially especially
+ 
+authenticated, especially especially
+endpoints that were writable. Endpoints
+ 
+endpoints that were writable. Endpoints
+writable to production that were
+ 
+writable to production that were
+unauthenticated. Question number one,
+ 
+unauthenticated. Question number one,
+does your AI platform really know the
+ 
+does your AI platform really know the
+difference between a human user and an
+ 
+difference between a human user and an
+AI agent? Let's go back to the Mackenzie
+ 
+AI agent? Let's go back to the Mackenzie
+story just to illustrate. Perhaps a
+ 
+story just to illustrate. Perhaps a
+senior consultant at McKenzie using Lily
+ 
+senior consultant at McKenzie using Lily
+might have legitimate read access to X
+ 
+might have legitimate read access to X
+client account, say 40 built up over 5
+ 
+client account, say 40 built up over 5
+years. Perhaps an agent running on a
+ 
+years. Perhaps an agent running on a
+particular client account should only
+ 
+particular client account should only
+touch that client account. That seems
+ 
+touch that client account. That seems
+pretty logical, right? You want to bound
+ 
+pretty logical, right? You want to bound
+the agents permissions to what the agent
+ 
+the agents permissions to what the agent
+is supposed to do. If the platform
+ 
+is supposed to do. If the platform
+doesn't enforce that boundary I just
+ 
+doesn't enforce that boundary I just
+described one incident becomes a
+ 
+described one incident becomes a
+companywide exposure event that is not
+ 
+companywide exposure event that is not
+an IT problem right that's a board level
+ 
+an IT problem right that's a board level
+liability conversation second audit if
+ 
+liability conversation second audit if
+something goes wrong regulators don't
+ 
+something goes wrong regulators don't
+ask what did the user do they ask what
+ 
+ask what did the user do they ask what
+did the system do on behalf of the user
+ 
+did the system do on behalf of the user
+and can you prove if your platform can't
+ 
+and can you prove if your platform can't
+answer that question for agents
+ 
+answer that question for agents
+specifically your compliance team is
+ 
+specifically your compliance team is
+going to find out the hard way that the
+ 
+going to find out the hard way that the
+audit trail has a gap in it the size of
+ 
+audit trail has a gap in it the size of
+every agent action in your organization,
+ 
+every agent action in your organization,
+which is a fairly large gap given how
+ 
+which is a fairly large gap given how
+capable agents are. Third, control. Can
+ 
+capable agents are. Third, control. Can
+someone unplug this agent now? Not
+ 
+someone unplug this agent now? Not
+delete it, not file a ticket, not wait
+ 
+delete it, not file a ticket, not wait
+for a code deploy. Can someone from a
+ 
+for a code deploy. Can someone from a
+console revoke the agent's access in the
+ 
+console revoke the agent's access in the
+next 5 minutes while you figure out what
+ 
+next 5 minutes while you figure out what
+happened? If the answer is no, your
+ 
+happened? If the answer is no, your
+incident response plan has a big hole in
+ 
+incident response plan has a big hole in
+it, and you will not discover that hole
+ 
+it, and you will not discover that hole
+either until you do a tabletop exercise
+ 
+either until you do a tabletop exercise
+or until you discover it at 3:00 a.m.
+ 
+or until you discover it at 3:00 a.m.
+when there's a big problem. The codewall
+ 
+when there's a big problem. The codewall
+agent walked up to Lily's API and the
+ 
+agent walked up to Lily's API and the
+API didn't ask who was calling. There
+ 
+API didn't ask who was calling. There
+was nothing to authenticate because the
+ 
+was nothing to authenticate because the
+system wasn't built with the concept of
+ 
+system wasn't built with the concept of
+an agent in it to authenticate at all.
+ 
+an agent in it to authenticate at all.
+So your liability question, the first
+ 
+So your liability question, the first
+one is already answered. The blast
+ 
+one is already answered. The blast
+radius is unbounded. There is no this
+ 
+radius is unbounded. There is no this
+agent to bound. And that's again part of
+ 
+agent to bound. And that's again part of
+why this incident is so important. We
+ 
+why this incident is so important. We
+cannot design our software for a world
+ 
+cannot design our software for a world
+where humans click through screens and
+ 
+where humans click through screens and
+where agents are bolted on afterward. We
+ 
+where agents are bolted on afterward. We
+also cannot design our software in a
+ 
+also cannot design our software in a
+world where technical teams cannot be at
+ 
+world where technical teams cannot be at
+the table talking about the complexities
+ 
+the table talking about the complexities
+of implementation of agentic workflows
+ 
+of implementation of agentic workflows
+as first class business problems. So
+ 
+as first class business problems. So
+that's the first core question and I
+ 
+that's the first core question and I
+hope you see why it matters. You have to
+ 
+hope you see why it matters. You have to
+have a system that distinguishes between
+ 
+have a system that distinguishes between
+agents and humans. You should be asking
+ 
+agents and humans. You should be asking
+that second core question. Second
+ 
+that second core question. Second
+question, what happens on your platform
+ 
+question, what happens on your platform
+when the team is under pressure? This is
+ 
+when the team is under pressure? This is
+an organizational question more than a
+ 
+an organizational question more than a
+technical question. It's a question
+ 
+technical question. It's a question
+about our our defaults as a team more
+ 
+about our our defaults as a team more
+than policies, right? Here's what I
+ 
+than policies, right? Here's what I
+mean. There were 200 API endpoints. 22
+ 
+mean. There were 200 API endpoints. 22
+of them shipped with no authentication,
+ 
+of them shipped with no authentication,
+including this critical one that enabled
+ 
+including this critical one that enabled
+right access to production. So, the
+ 
+right access to production. So, the
+question we should be asking is why
+ 
+question we should be asking is why
+didn't one individual catch that? The
+ 
+didn't one individual catch that? The
+question we should be asking is why
+ 
+question we should be asking is why
+wasn't there a default behavior set that
+ 
+wasn't there a default behavior set that
+would have captured this error as a team
+ 
+would have captured this error as a team
+default operating procedure before any
+ 
+default operating procedure before any
+endpoint shipped at all. That is the
+ 
+endpoint shipped at all. That is the
+deeper question and it gets at
+ 
+deeper question and it gets at
+organizational design not technology
+ 
+organizational design not technology
+because that is an organizational design
+ 
+because that is an organizational design
+question not a technology question. If
+ 
+question not a technology question. If
+the default is that a technical
+ 
+the default is that a technical
+architect's opinion about what matters
+ 
+architect's opinion about what matters
+is really important in the business,
+ 
+is really important in the business,
+then that is going to shape
+ 
+then that is going to shape
+conversations in a way that you won't
+ 
+conversations in a way that you won't
+get if you leave the technical
+ 
+get if you leave the technical
+architecture to deal with whatever
+ 
+architecture to deal with whatever
+happens at 3:00 a.m. when there's an
+ 
+happens at 3:00 a.m. when there's an
+incident and you have to clean up
+ 
+incident and you have to clean up
+afterward. And when I'm evaluating an AI
+ 
+afterward. And when I'm evaluating an AI
+platform, I don't just ask does it
+ 
+platform, I don't just ask does it
+support security controls in sort of an
+ 
+support security controls in sort of an
+abstract way. I ask much more specific
+ 
+abstract way. I ask much more specific
+questions that get at this idea of team
+ 
+questions that get at this idea of team
+dynamics and how this particular piece
+ 
+dynamics and how this particular piece
+of software shapes them. I ask what
+ 
+of software shapes them. I ask what
+happens when my team can't configure
+ 
+happens when my team can't configure
+them. I ask what the out of the box
+ 
+them. I ask what the out of the box
+posture is. I ask what the platform
+ 
+posture is. I ask what the platform
+looks like in a couple of years if
+ 
+looks like in a couple of years if
+nobody touches the security settings
+ 
+nobody touches the security settings
+after an initial setup event because
+ 
+after an initial setup event because
+that's going to be the version you're
+ 
+that's going to be the version you're
+running. And by the way, if you're
+ 
+running. And by the way, if you're
+building a system, you need to ask the
+ 
+building a system, you need to ask the
+same team dynamic questions internally
+ 
+same team dynamic questions internally
+as I'm suggesting you ask externally
+ 
+as I'm suggesting you ask externally
+because a vendor might say, well, we
+ 
+because a vendor might say, well, we
+have a comprehensive authentication
+ 
+have a comprehensive authentication
+framework. Well, that may be true. Or
+ 
+framework. Well, that may be true. Or
+all our authentication options are
+ 
+all our authentication options are
+documented in the developer guide. I
+ 
+documented in the developer guide. I
+believe that or our enterprise customers
+ 
+believe that or our enterprise customers
+have full flexibility to configure
+ 
+have full flexibility to configure
+policies. I am sure that is true. But
+ 
+policies. I am sure that is true. But
+those kinds of sentences don't answer
+ 
+those kinds of sentences don't answer
+the core question. Because the core
+ 
+the core question. Because the core
+question that is asked is what happens
+ 
+question that is asked is what happens
+when your team is told to move quickly.
+ 
+when your team is told to move quickly.
+What is the technical default? What is
+ 
+What is the technical default? What is
+true if the technical team does not have
+ 
+true if the technical team does not have
+time to talk with the business about a
+ 
+time to talk with the business about a
+particular piece of architecture? Where
+ 
+particular piece of architecture? Where
+do we go? Do we go toward a default not
+ 
+do we go? Do we go toward a default not
+authenticated state? Do we go toward a
+ 
+authenticated state? Do we go toward a
+default not authenticated state? Do we
+ 
+default not authenticated state? Do we
+go toward a default where agents can be
+ 
+go toward a default where agents can be
+in charge and have fairly unlimited
+ 
+in charge and have fairly unlimited
+right access and that's the default? and
+ 
+right access and that's the default? and
+and therefore we should assume technical
+ 
+and therefore we should assume technical
+teams going fast are going to run into
+ 
+teams going fast are going to run into
+that at some point. So if you're a
+ 
+that at some point. So if you're a
+decision maker and you can't answer the
+ 
+decision maker and you can't answer the
+questions that I am posing, this is
+ 
+questions that I am posing, this is
+going to be a challenge for you. If you
+ 
+going to be a challenge for you. If you
+can't answer whether your stack
+ 
+can't answer whether your stack
+separately authenticates humans and
+ 
+separately authenticates humans and
+agents and whether your stack is able to
+ 
+agents and whether your stack is able to
+handle going quickly and respecting
+ 
+handle going quickly and respecting
+technical team concerns, that's
+ 
+technical team concerns, that's
+something I would suggest you start
+ 
+something I would suggest you start
+focusing on because I think that if we
+ 
+focusing on because I think that if we
+don't have both of those covered, we run
+ 
+don't have both of those covered, we run
+the risk inside of our our organizations
+ 
+the risk inside of our our organizations
+of basically rolling the dice and
+ 
+of basically rolling the dice and
+waiting for another Lilyike incident to
+ 
+waiting for another Lilyike incident to
+happen. I don't think Lily was an
+ 
+happen. I don't think Lily was an
+isolated thing that is special to
+ 
+isolated thing that is special to
+McKenzie. As I've said before, lots of
+ 
+McKenzie. As I've said before, lots of
+organizations struggle with this and I
+ 
+organizations struggle with this and I
+think Mackenzie got unlucky. So, as I've
+ 
+think Mackenzie got unlucky. So, as I've
+shared, I'm putting a six question
+ 
+shared, I'm putting a six question
+technical checklist into the Substack
+ 
+technical checklist into the Substack
+today. These are the questions your
+ 
+today. These are the questions your
+developers need to ask your vendors or
+ 
+developers need to ask your vendors or
+frankly if you're building something
+ 
+frankly if you're building something
+your developers need to ask themselves.
+ 
+your developers need to ask themselves.
+They cover the two areas I talked about
+ 
+They cover the two areas I talked about
+plus a couple more. How permissions
+ 
+plus a couple more. How permissions
+compound when agents delegate to other
+ 
+compound when agents delegate to other
+agents. That's a very technical
+ 
+agents. That's a very technical
+question. What actual token cost looks
+ 
+question. What actual token cost looks
+like at scale. whether your audit trail
+ 
+like at scale. whether your audit trail
+can answer a regulator quickly and and
+ 
+can answer a regulator quickly and and
+what's reversible when an agent makes a
+ 
+what's reversible when an agent makes a
+mistake. The these kinds of questions
+ 
+mistake. The these kinds of questions
+have specific failure modes that you
+ 
+have specific failure modes that you
+would rather catch up front so that you
+ 
+would rather catch up front so that you
+can be confident that the technical
+ 
+can be confident that the technical
+default you're running with isn't going
+ 
+default you're running with isn't going
+to end up in an unauthenticated endpoint
+ 
+to end up in an unauthenticated endpoint
+that an agent on the internet can access
+ 
+that an agent on the internet can access
+and write to your production database.
+ 
+and write to your production database.
+This is the intervention that helps us
+ 
+This is the intervention that helps us
+to take the lessons the industry has
+ 
+to take the lessons the industry has
+learned since February and that the
+ 
+learned since February and that the
+industry is implementing as a bunch of
+ 
+industry is implementing as a bunch of
+solutions they're selling and actually
+ 
+solutions they're selling and actually
+apply them internally. So no in the end
+ 
+apply them internally. So no in the end
+I don't think Lily was a security
+ 
+I don't think Lily was a security
+failure. I think it was a procurement
+ 
+failure. I think it was a procurement
+and build failure that happened to
+ 
+and build failure that happened to
+surface as a security incident. I think
+ 
+surface as a security incident. I think
+yes the exploit may have happened by SQL
+ 
+yes the exploit may have happened by SQL
+injection but that's not the particular
+ 
+injection but that's not the particular
+attack vector I worry about. The the
+ 
+attack vector I worry about. The the
+larger concern I worry about is do we
+ 
+larger concern I worry about is do we
+have technical teams who are able to be
+ 
+have technical teams who are able to be
+at the table with business and clearly
+ 
+at the table with business and clearly
+articulate the disproportionate impact
+ 
+articulate the disproportionate impact
+that agents have across our data
+ 
+that agents have across our data
+structures when we expect them and
+ 
+structures when we expect them and
+empower them to do the work they are
+ 
+empower them to do the work they are
+capable of doing today. That is not
+ 
+capable of doing today. That is not
+traditional SAS. It requires a complete
+ 
+traditional SAS. It requires a complete
+rethink of how permissions and security
+ 
+rethink of how permissions and security
+works across those workflows. And I
+ 
+works across those workflows. And I
+don't think we are asking questions of
+ 
+don't think we are asking questions of
+our vendors or questions of our teams
+ 
+our vendors or questions of our teams
+that we listen to that allow us to get
+ 
+that we listen to that allow us to get
+to the bottom of that. And because we're
+ 
+to the bottom of that. And because we're
+not doing so, I think it opens a lot of
+ 
+not doing so, I think it opens a lot of
+us internally to a frankly liability
+ 
+us internally to a frankly liability
+that we are going to end up rolling the
+ 
+that we are going to end up rolling the
+dice on and hopefully hopefully avoiding
+ 
+dice on and hopefully hopefully avoiding
+but maybe getting into the news on,
+ 
+but maybe getting into the news on,
+right? getting into the news in a way
+ 
+right? getting into the news in a way
+that we don't want to be because a
+ 
+that we don't want to be because a
+security incident happens. And when you
+ 
+security incident happens. And when you
+peel the onion on that security
+ 
+peel the onion on that security
+incident, it's a people challenge. It's
+ 
+incident, it's a people challenge. It's
+about listening to your technical teams
+ 
+about listening to your technical teams
+and empowering them to be at the table
+ 
+and empowering them to be at the table
+with business and describe how these
+ 
+with business and describe how these
+agents make software purchasing
+ 
+agents make software purchasing
+different. Ultimately, the cheapest
+ 
+different. Ultimately, the cheapest
+thing you can do this quarter is to move
+ 
+thing you can do this quarter is to move
+the technical developer review, a deep
+ 
+the technical developer review, a deep
+architectural review of whatever
+ 
+architectural review of whatever
+solution you're assessing earlier in the
+ 
+solution you're assessing earlier in the
+process. bring your developers up to the
+ 
+process. bring your developers up to the
+table quicker and give them more
+ 
+table quicker and give them more
+influence on timeline on deployment.
+ 
+influence on timeline on deployment.
+Have people who understand architecture
+ 
+Have people who understand architecture
+weigh in on the business timelines and
+ 
+weigh in on the business timelines and
+the impact of that on these complex
+ 
+the impact of that on these complex
+crossogentic workflows because the most
+ 
+crossogentic workflows because the most
+expensive thing you could do is to just
+ 
+expensive thing you could do is to just
+keep the existing procurement process
+ 
+keep the existing procurement process
+the way it is and pretend that these
+ 
+the way it is and pretend that these
+complex multi-agent workflows work like
+ 
+complex multi-agent workflows work like
+SAS when they don't. So, I will see you
+ 
+SAS when they don't. So, I will see you
+next time. We're going to cover a lot
+ 
+next time. We're going to cover a lot
+more fun model news this week. The full
+ 
+more fun model news this week. The full
+six question developer checklist is in
+ 
+six question developer checklist is in
+the Substack today with the failure
+ 
+the Substack today with the failure
+modes, the vendor answer rubric, and the
+ 
+modes, the vendor answer rubric, and the
+playbook for what to do if you've
+ 
+playbook for what to do if you've
+already signed something that doesn't
+ 
+already signed something that doesn't
+pass those tests. I didn't get a chance
+ 
+pass those tests. I didn't get a chance
+to talk about that today, but we have
+ 
+to talk about that today, but we have
+the repair playbook as well. Link in the
+ 
+the repair playbook as well. Link in the
+description. I'll see you next time.

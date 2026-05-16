@@ -1,0 +1,36 @@
+# Nate B Jones videos selected for Phase 5a research (model+framework fitness).
+# Filtered from his last ~60 uploads to those directly relevant to:
+#   - model strengths/weaknesses (GPT-5.5, Claude Opus 4.7, Gemini, etc.)
+#   - framework strengths/weaknesses (Claude Code, Codex CLI, Agent SDK)
+#   - agent architecture / orchestration / model-locking
+#   - cost/quota economics
+
+# Format: VIDEO_ID|TITLE
+
+# MODEL-FOCUSED
+9aIYhjeYxzM|GPT-5.5 vs Claude vs Gemini: The Real Difference Nobody's Talking About
+tJB_8mfRgCo|Your Prompts Didn't Change. Opus 4.7 Did.
+EpJ0CjTJSag|Anthropic And OpenAI Just Admitted The Model Isn't Enough
+0vdlwOK_Qdk|3 Model Drops. $15M Day in Burn. One Product Dead. Nobody Connected Them
+ro5jpbi5uYc|I Analyzed 512,000 Lines of Leaked Code
+
+# FRAMEWORK / AGENT-FOCUSED
+2d9ZmA-4QzU|Your Apps Don't Need an API Anymore. Codex Just Proved It
+KlPxWaY91rE|Claude Design Does In 30 Minutes What Your Team Does In A Sprint
+JvCtGjrn_N0|Microsoft Is Testing Claude Against Its Own Copilot
+85Q9htV2CBE|Your AI Agent Is Locked To One Model. OpenClaw Just Killed That
+vqnAOV8NMZ4|Anthropic Just Gave Your AI Agent The One Thing OpenClaw Has
+b1fxYGPbHeo|The Work Primitive: What Every AI Product Leader Gets Wrong
+b7IS4C9QALc|I Mapped Where Every AI Agent Actually Sits
+awV2kJzh8zk|Your AI Agent Fails 97.5% of Real Work
+7HP1jFJ9W1c|The Missing Orchestration Layer Destroying Teams Right Now
+dxq7WtWxi44|Karpathys Wiki vs Open Brain
+xnG8h3UnNFI|Karpathys Agent Ran 700 Experiments While He Slept
+hV5_XSEBZNg|Your AI Stack Isnt Ready for Claude Mythos
+3e7gmNPr5Vo|Anthropic Just Gave You 3 Tools That Work While Youre Gone
+2PWJu6uAaoU|The Real Problem With AI Agents Nobodys Talking About
+XlfumXPPrLY|Your AI is 50x Faster Youre Getting 2x
+5ztI_dbj6ek|Your Claude Limit Burns In 90 Minutes Because Of One ChatGPT Habit
+kVPVmz0qJvY|Your Agent Produces at 100x Your Org Reviews at 3x
+4KAF72BTyCE|Anthropic And OpenAI Are Fighting Over Your Memory
+QT7W_uHjqWE|Anthropic Didnt Build a New Browser

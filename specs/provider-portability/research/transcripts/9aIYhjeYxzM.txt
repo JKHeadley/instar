@@ -1,0 +1,2851 @@
+ 
+GPT2 5.5 reset the bar, and I think it's
+ 
+GPT2 5.5 reset the bar, and I think it's
+the strongest model in the world today.
+ 
+the strongest model in the world today.
+I want to explain why I think that, why
+ 
+I want to explain why I think that, why
+it matters if you're actually using AI
+ 
+it matters if you're actually using AI
+for work, and what I would change in
+ 
+for work, and what I would change in
+your workflow because of this model.
+ 
+your workflow because of this model.
+Because the most important thing about
+ 
+Because the most important thing about
+this release, it's not that 5.5 is
+ 
+this release, it's not that 5.5 is
+better than 5.4. That's true, but it's
+ 
+better than 5.4. That's true, but it's
+like the least interesting thing. The
+ 
+like the least interesting thing. The
+most important thing is that it changes
+ 
+most important thing is that it changes
+what you can reasonably ask a model to
+ 
+what you can reasonably ask a model to
+do. So, let me start with why I think
+ 
+do. So, let me start with why I think
+the bar moved. Then, I want to show you
+ 
+the bar moved. Then, I want to show you
+the evidence because I put these models
+ 
+the evidence because I put these models
+through the paces. I don't think easy
+ 
+through the paces. I don't think easy
+prompts tell you that much, so I pushed
+ 
+prompts tell you that much, so I pushed
+it through a really detailed executive
+ 
+it through a really detailed executive
+knowledge work package, a messy data
+ 
+knowledge work package, a messy data
+migration, and an interactive 3D
+ 
+migration, and an interactive 3D
+research build. And then, I want to make
+ 
+research build. And then, I want to make
+it practical for you. Where would I use
+ 
+it practical for you. Where would I use
+5.5 today? Where would I still reach for
+ 
+5.5 today? Where would I still reach for
+Claude? And where do you need
+ 
+Claude? And where do you need
+validation, review, or a different
+ 
+validation, review, or a different
+workflow because the model is just not
+ 
+workflow because the model is just not
+safe to trust on its own yet. But, the
+ 
+safe to trust on its own yet. But, the
+first thing to realize is that the floor
+ 
+first thing to realize is that the floor
+moved. That phrase matters because not
+ 
+moved. That phrase matters because not
+every model release moves the floor. A
+ 
+every model release moves the floor. A
+lot of recent progress has come from
+ 
+lot of recent progress has come from
+inference time compute. More time, more
+ 
+inference time compute. More time, more
+thinking, more search, more tool calls.
+ 
+thinking, more search, more tool calls.
+It's useful, it makes models better.
+ 
+It's useful, it makes models better.
+It's not the same thing as the default
+ 
+It's not the same thing as the default
+model being bigger and smarter. 5.5
+ 
+model being bigger and smarter. 5.5
+feels like a bigger pre-train showing up
+ 
+feels like a bigger pre-train showing up
+in everyday use. The fast modes are
+ 
+in everyday use. The fast modes are
+sharper, the thinking modes are
+ 
+sharper, the thinking modes are
+stronger, the model figures out the
+ 
+stronger, the model figures out the
+shape of the task sooner. It needs less
+ 
+shape of the task sooner. It needs less
+hand-holding. It can take a messy task
+ 
+hand-holding. It can take a messy task
+and get closer to a finished result
+ 
+and get closer to a finished result
+faster. And the public numbers point the
+ 
+faster. And the public numbers point the
+same way, right? OpenAI reports an 82%
+ 
+same way, right? OpenAI reports an 82%
+on Terminal Bench, which is around
+ 
+on Terminal Bench, which is around
+software engineering, an 84% on GDP Val,
+ 
+software engineering, an 84% on GDP Val,
+which is around knowledge work tasks.
+ 
+which is around knowledge work tasks.
+And there are other high-value numbers.
+ 
+And there are other high-value numbers.
+Artificial Analysis put 5.5 at extra
+ 
+Artificial Analysis put 5.5 at extra
+high reasoning effort at the top of the
+ 
+high reasoning effort at the top of the
+intelligence index by three points. But,
+ 
+intelligence index by three points. But,
+that's not the point, right? It wins,
+ 
+that's not the point, right? It wins,
+but also they note that the model uses
+ 
+but also they note that the model uses
+way less tokens than 5.4 over the index
+ 
+way less tokens than 5.4 over the index
+run. In other words, it's smarter and
+ 
+run. In other words, it's smarter and
+more efficient. But, the benchmarks
+ 
+more efficient. But, the benchmarks
+don't tell the whole story here. We
+ 
+don't tell the whole story here. We
+spend so much time comparing tiny deltas
+ 
+spend so much time comparing tiny deltas
+that it's really easy to miss the basic
+ 
+that it's really easy to miss the basic
+fact that we are still on a curve that
+ 
+fact that we are still on a curve that
+is moving up very fast. Dario Amodei has
+ 
+is moving up very fast. Dario Amodei has
+used the image of being on a rainbow
+ 
+used the image of being on a rainbow
+with no visible end to describe this
+ 
+with no visible end to describe this
+moment in 2026. OpenAI's framing around
+ 
+moment in 2026. OpenAI's framing around
+5.5 is basically the same idea. Scaling
+ 
+5.5 is basically the same idea. Scaling
+is still working, the gains are still
+ 
+is still working, the gains are still
+compounding, and the lab is not acting
+ 
+compounding, and the lab is not acting
+like the curve is over. No lab is acting
+ 
+like the curve is over. No lab is acting
+like the curve is over. Whether you like
+ 
+like the curve is over. Whether you like
+the rainbow metaphor, 5.5 is a reminder
+ 
+the rainbow metaphor, 5.5 is a reminder
+that the frontier moving is still the
+ 
+that the frontier moving is still the
+most important variable in the whole
+ 
+most important variable in the whole
+industry because when the frontier
+ 
+industry because when the frontier
+moves, our ambitions move with it. So,
+ 
+moves, our ambitions move with it. So,
+that's the reason the floor moved. 5.5
+ 
+that's the reason the floor moved. 5.5
+is not just a little bit better at
+ 
+is not just a little bit better at
+benchmark tasks. This model feels
+ 
+benchmark tasks. This model feels
+different. Not just more competent, it
+ 
+different. Not just more competent, it
+feels like it gets what you want and
+ 
+feels like it gets what you want and
+gets after your intent more effectively
+ 
+gets after your intent more effectively
+over a longer period of time. It feels
+ 
+over a longer period of time. It feels
+like a big lift intuitively when you are
+ 
+like a big lift intuitively when you are
+actually using it day-to-day. And that's
+ 
+actually using it day-to-day. And that's
+what I found, and that's what I'm going
+ 
+what I found, and that's what I'm going
+to walk you through next. And before I
+ 
+to walk you through next. And before I
+get there, I just want to call out there
+ 
+get there, I just want to call out there
+is a take floating around AI right now
+ 
+is a take floating around AI right now
+that sounds really smart, but I think
+ 
+that sounds really smart, but I think
+it's wrong. The take is that the best
+ 
+it's wrong. The take is that the best
+model is mattering less now than it used
+ 
+model is mattering less now than it used
+to because all the frontier models are
+ 
+to because all the frontier models are
+already good enough. And there's a
+ 
+already good enough. And there's a
+version of this that feels true. If your
+ 
+version of this that feels true. If your
+task is small and clean and
+ 
+task is small and clean and
+well-defined, a lot of the models now
+ 
+well-defined, a lot of the models now
+feel interchangeable. Summarize this
+ 
+feel interchangeable. Summarize this
+document, draft this email, make a basic
+ 
+document, draft this email, make a basic
+landing page, explain this error, write
+ 
+landing page, explain this error, write
+a normal SQL query. Any good frontier
+ 
+a normal SQL query. Any good frontier
+model can do those things. The frontier
+ 
+model can do those things. The frontier
+has really moved past easy tasks. So, if
+ 
+has really moved past easy tasks. So, if
+you evaluate models on easy tasks, you
+ 
+you evaluate models on easy tasks, you
+will conclude that the differences are
+ 
+will conclude that the differences are
+small or non-existent. You just will.
+ 
+small or non-existent. You just will.
+And you will be right, but only about
+ 
+And you will be right, but only about
+the wrong category of work. The best
+ 
+the wrong category of work. The best
+model matters in the places where the
+ 
+model matters in the places where the
+work is real and ugly. It matters when
+ 
+work is real and ugly. It matters when
+the brief is under-specified, the files
+ 
+the brief is under-specified, the files
+are messy, the source material can be
+ 
+are messy, the source material can be
+contradictory, and the model has to
+ 
+contradictory, and the model has to
+decide what matters and use tools and
+ 
+decide what matters and use tools and
+preserve uncertainty and produce real
+ 
+preserve uncertainty and produce real
+artifacts and check the result and keep
+ 
+artifacts and check the result and keep
+going long enough to finish. That feels
+ 
+going long enough to finish. That feels
+like real work, right? And that is the
+ 
+like real work, right? And that is the
+work where ChatGPT 5.5 feels
+ 
+work where ChatGPT 5.5 feels
+meaningfully different. The old question
+ 
+meaningfully different. The old question
+was, can the model answer this? The new
+ 
+was, can the model answer this? The new
+question is, can the model carry this?
+ 
+question is, can the model carry this?
+Can it carry a long context without
+ 
+Can it carry a long context without
+losing the thread? Can it carry a
+ 
+losing the thread? Can it carry a
+deliverable across multiple formats? Can
+ 
+deliverable across multiple formats? Can
+it carry legal and ethical risk without
+ 
+it carry legal and ethical risk without
+smoothing over the uncomfortable or
+ 
+smoothing over the uncomfortable or
+dangerous parts? Can it carry a data
+ 
+dangerous parts? Can it carry a data
+migration far enough that the human only
+ 
+migration far enough that the human only
+has to check the tough cases instead of
+ 
+has to check the tough cases instead of
+rebuilding the whole database? That's
+ 
+rebuilding the whole database? That's
+the part of the market where the best
+ 
+the part of the market where the best
+model still matters. And it matters even
+ 
+model still matters. And it matters even
+more once you stop thinking of the model
+ 
+more once you stop thinking of the model
+as just a chatbot. Because in 2026, you
+ 
+as just a chatbot. Because in 2026, you
+are not only judging the weights of the
+ 
+are not only judging the weights of the
+model. That's not really relevant.
+ 
+model. That's not really relevant.
+You're judging the system around the
+ 
+You're judging the system around the
+weights as much as the model itself. The
+ 
+weights as much as the model itself. The
+tools, the file access, the browser
+ 
+tools, the file access, the browser
+control, the memory, the computer use,
+ 
+control, the memory, the computer use,
+the image generation, the interface, the
+ 
+the image generation, the interface, the
+available compute, and the way all of
+ 
+available compute, and the way all of
+those pieces combine into something that
+ 
+those pieces combine into something that
+can get work done. The timing also
+ 
+can get work done. The timing also
+matters because 5.5 did not land in a
+ 
+matters because 5.5 did not land in a
+vacuum. Anthropic announced Opus 4.7 on
+ 
+vacuum. Anthropic announced Opus 4.7 on
+April 16th. OpenAI announced 5.5 on
+ 
+April 16th. OpenAI announced 5.5 on
+April 23rd. 4.7 is a real model that's
+ 
+April 23rd. 4.7 is a real model that's
+an advancement. I still use it. It's
+ 
+an advancement. I still use it. It's
+strong especially on planning, critique,
+ 
+strong especially on planning, critique,
+and front-end taste. But, Opus 4.7 also
+ 
+and front-end taste. But, Opus 4.7 also
+landed under the shadow of Mythos, the
+ 
+landed under the shadow of Mythos, the
+more advanced Anthropic model that has
+ 
+more advanced Anthropic model that has
+been teased and restricted because of
+ 
+been teased and restricted because of
+cybersecurity concerns. So, 4.7 felt to
+ 
+cybersecurity concerns. So, 4.7 felt to
+me like a bridge release. Useful,
+ 
+me like a bridge release. Useful,
+important, better than what came before,
+ 
+important, better than what came before,
+but not the release that redefined
+ 
+but not the release that redefined
+Anthropic's place on the frontier. 5.5
+ 
+Anthropic's place on the frontier. 5.5
+feels different. It arrived as a model
+ 
+feels different. It arrived as a model
+release, but also part of a larger
+ 
+release, but also part of a larger
+OpenAI workflow launch. You have 5.5 in
+ 
+OpenAI workflow launch. You have 5.5 in
+ChatGPT and Codex. You have Codex at the
+ 
+ChatGPT and Codex. You have Codex at the
+same time getting stronger as a place
+ 
+same time getting stronger as a place
+where the model can actually act on
+ 
+where the model can actually act on
+files, code, browsers, documents, and
+ 
+files, code, browsers, documents, and
+interfaces. You have ChatGPT Images 2.0
+ 
+interfaces. You have ChatGPT Images 2.0
+arriving in the same window, which
+ 
+arriving in the same window, which
+matters because the visual direction has
+ 
+matters because the visual direction has
+been one of the places where OpenAI
+ 
+been one of the places where OpenAI
+models have lagged Claude. Those pieces
+ 
+models have lagged Claude. Those pieces
+all fit together. Images 2.0 can produce
+ 
+all fit together. Images 2.0 can produce
+the visual reference, Codex can operate
+ 
+the visual reference, Codex can operate
+in the working environment, 5.5 can
+ 
+in the working environment, 5.5 can
+reason through the task and build the
+ 
+reason through the task and build the
+artifact and test it and keep iterating.
+ 
+artifact and test it and keep iterating.
+That combination is much stronger than
+ 
+That combination is much stronger than
+asking a model to do everything from a
+ 
+asking a model to do everything from a
+blank prompt. That's the argument for
+ 
+blank prompt. That's the argument for
+why the best model still matters. The
+ 
+why the best model still matters. The
+hardest work isn't clean, and the best
+ 
+hardest work isn't clean, and the best
+system matters because the model needs
+ 
+system matters because the model needs
+somewhere to act. Now, the real question
+ 
+somewhere to act. Now, the real question
+is, does that show up in the real test,
+ 
+is, does that show up in the real test,
+or am I just saying something that feels
+ 
+or am I just saying something that feels
+good cuz the launch was impressive?
+ 
+good cuz the launch was impressive?
+Let's make this concrete. I ran 5.5
+ 
+Let's make this concrete. I ran 5.5
+through three hard tests because most
+ 
+through three hard tests because most
+public model evaluations strike me as
+ 
+public model evaluations strike me as
+too easy to tell you something useful.
+ 
+too easy to tell you something useful.
+If you ask a frontier model to build a
+ 
+If you ask a frontier model to build a
+to-do app, or to summarize a transcript,
+ 
+to-do app, or to summarize a transcript,
+or to make a chart, or to write a memo,
+ 
+or to make a chart, or to write a memo,
+you're not really testing the frontier
+ 
+you're not really testing the frontier
+anymore. You are testing whether the
+ 
+anymore. You are testing whether the
+model can do something that good models
+ 
+model can do something that good models
+have been able to do for a long time.
+ 
+have been able to do for a long time.
+The differences show up when you really
+ 
+The differences show up when you really
+try and reset the bar and raise your
+ 
+try and reset the bar and raise your
+ambitions. So, the three tests I
+ 
+ambitions. So, the three tests I
+designed were designed to get the model
+ 
+designed were designed to get the model
+to fail in different ways. And yes, all
+ 
+to fail in different ways. And yes, all
+of them were designed to be so hard that
+ 
+of them were designed to be so hard that
+any frontier model, including 5.5, would
+ 
+any frontier model, including 5.5, would
+fail. And I expect that as models get
+ 
+fail. And I expect that as models get
+better, I'm going to have to keep
+ 
+better, I'm going to have to keep
+evolving these tests, and I'm very
+ 
+evolving these tests, and I'm very
+comfortable with that. Part of what I
+ 
+comfortable with that. Part of what I
+love about having a private bench is
+ 
+love about having a private bench is
+that I don't have to publish percentage
+ 
+that I don't have to publish percentage
+marks that show up with publicly
+ 
+marks that show up with publicly
+available tests that you can see models
+ 
+available tests that you can see models
+literally get into the 80s and the 90s
+ 
+literally get into the 80s and the 90s
+and essentially saturate the benchmark.
+ 
+and essentially saturate the benchmark.
+I can make these as hard as I want, and
+ 
+I can make these as hard as I want, and
+that helps test the models because the
+ 
+that helps test the models because the
+models are being tested in ways that
+ 
+models are being tested in ways that
+they weren't explicitly trained to test
+ 
+they weren't explicitly trained to test
+on. And I love that. I love that because
+ 
+on. And I love that. I love that because
+it helps us to measure one of the key
+ 
+it helps us to measure one of the key
+values of intelligence in a model, the
+ 
+values of intelligence in a model, the
+ability to generalize across new problem
+ 
+ability to generalize across new problem
+sets. And so, that's why I have a
+ 
+sets. And so, that's why I have a
+private bench, and this one is wicked. I
+ 
+private bench, and this one is wicked. I
+wrote three tests, all designed to fail
+ 
+wrote three tests, all designed to fail
+in different ways. The first was Dingo
+ 
+in different ways. The first was Dingo
+and Company, a full executive knowledge
+ 
+and Company, a full executive knowledge
+work package about a dingo company in
+ 
+work package about a dingo company in
+Alaska. The second was Splash Brothers,
+ 
+Alaska. The second was Splash Brothers,
+a dirty small business data migration
+ 
+a dirty small business data migration
+about a car wash company. And the third
+ 
+about a car wash company. And the third
+was Artemis 2, an interactive 3D
+ 
+was Artemis 2, an interactive 3D
+visualization and research build. Each
+ 
+visualization and research build. Each
+one checks a different capability. Dingo
+ 
+one checks a different capability. Dingo
+tests judgment plus production
+ 
+tests judgment plus production
+discipline. Splash Brothers tests boring
+ 
+discipline. Splash Brothers tests boring
+back-end correctness. And Artemis tests
+ 
+back-end correctness. And Artemis tests
+research, interactivity, and visual
+ 
+research, interactivity, and visual
+taste. And the important thing is that
+ 
+taste. And the important thing is that
+any one of these tests by itself might
+ 
+any one of these tests by itself might
+give you the wrong story. For example,
+ 
+give you the wrong story. For example,
+Dingo makes 5.5 look like a runaway
+ 
+Dingo makes 5.5 look like a runaway
+winner. Splash Brothers, it's going to
+ 
+winner. Splash Brothers, it's going to
+make you feel more cautious. And Artemis
+ 
+make you feel more cautious. And Artemis
+makes the routing picture much more
+ 
+makes the routing picture much more
+complex because Opus still has a real
+ 
+complex because Opus still has a real
+edge in visual composition. If you look
+ 
+edge in visual composition. If you look
+across all of them, they give you a more
+ 
+across all of them, they give you a more
+complete picture. Start with Dingo.
+ 
+complete picture. Start with Dingo.
+Dingo is a fictional Anchorage pet tech
+ 
+Dingo is a fictional Anchorage pet tech
+startup selling an automated litter box
+ 
+startup selling an automated litter box
+for dingos and dingo hybrid pets. The
+ 
+for dingos and dingo hybrid pets. The
+product is called Dingo Box Pro, and the
+ 
+product is called Dingo Box Pro, and the
+company has a related subsidiary called
+ 
+company has a related subsidiary called
+Northern Canine Imports that helps
+ 
+Northern Canine Imports that helps
+create the market by importing the
+ 
+create the market by importing the
+dingos. The premise is intentionally
+ 
+dingos. The premise is intentionally
+absurd, and the absurdity is the point
+ 
+absurd, and the absurdity is the point
+because a weaker model treats this like
+ 
+because a weaker model treats this like
+a normal product launch with a funny
+ 
+a normal product launch with a funny
+animal attached. A stronger model
+ 
+animal attached. A stronger model
+realizes that this is commercially
+ 
+realizes that this is commercially
+interesting, it's legally sensitive,
+ 
+interesting, it's legally sensitive,
+it's ethically fraught, and it's
+ 
+it's ethically fraught, and it's
+operationally very complex. It has to
+ 
+operationally very complex. It has to
+separate the product company from the
+ 
+separate the product company from the
+import funnel. It has to size the market
+ 
+import funnel. It has to size the market
+around qualified owners, not fantasy
+ 
+around qualified owners, not fantasy
+demand. It has to avoid implying that
+ 
+demand. It has to avoid implying that
+the product makes exotic ownership
+ 
+the product makes exotic ownership
+legal, or simple, or suitable. And it
+ 
+legal, or simple, or suitable. And it
+has to do all of that while producing
+ 
+has to do all of that while producing
+real files a human can open and edit and
+ 
+real files a human can open and edit and
+send. The assignment required 23
+ 
+send. The assignment required 23
+deliverables in a single prompt. Docs, a
+ 
+deliverables in a single prompt. Docs, a
+deck, spreadsheets with formulas and
+ 
+deck, spreadsheets with formulas and
+charts, a PDF one-pager, an interactive
+ 
+charts, a PDF one-pager, an interactive
+dashboard, launch communications, FAQs,
+ 
+dashboard, launch communications, FAQs,
+personas, an email sequence, a risk
+ 
+personas, an email sequence, a risk
+assessment, a go-to-market plan, and
+ 
+assessment, a go-to-market plan, and
+more. This is the kind of task where a
+ 
+more. This is the kind of task where a
+model can write something impressive and
+ 
+model can write something impressive and
+still fail because the deliverable is
+ 
+still fail because the deliverable is
+not have good thoughts about the launch.
+ 
+not have good thoughts about the launch.
+The deliverable is assemble the launch
+ 
+The deliverable is assemble the launch
+packet. GPT2 5.5 won this test by a wide
+ 
+packet. GPT2 5.5 won this test by a wide
+margin. And yes, I am going to talk
+ 
+margin. And yes, I am going to talk
+about the scores because it shows how
+ 
+about the scores because it shows how
+big the victory was. The scores were
+ 
+big the victory was. The scores were
+87.3 for 5.5, 67.0 for Opus 4.7, 65.0
+ 
+87.3 for 5.5, 67.0 for Opus 4.7, 65.0
+for 4.7 Sonnet, and 49.8 for Gemini 3.1
+ 
+for 4.7 Sonnet, and 49.8 for Gemini 3.1
+Pro. And more importantly, 5.5 produced
+ 
+Pro. And more importantly, 5.5 produced
+real usable artifacts. All 23 required
+ 
+real usable artifacts. All 23 required
+deliverables were real artifact types.
+ 
+deliverables were real artifact types.
+They weren't HTML or markdown wearing
+ 
+They weren't HTML or markdown wearing
+the wrong file extension. The deck had
+ 
+the wrong file extension. The deck had
+17 real slides and 26 media files. The
+ 
+17 real slides and 26 media files. The
+spreadsheets had real formulas and real
+ 
+spreadsheets had real formulas and real
+charts. The dashboard worked and used
+ 
+charts. The dashboard worked and used
+the supplied logo and product hero
+ 
+the supplied logo and product hero
+image. The research file had 34 URLs
+ 
+image. The research file had 34 URLs
+with strong official source coverage on
+ 
+with strong official source coverage on
+the legal and regulatory claims. And
+ 
+the legal and regulatory claims. And
+that legal posture is at the heart of
+ 
+that legal posture is at the heart of
+this test. The other models failed at in
+ 
+this test. The other models failed at in
+different ways. Opus 4.7
+ 
+was shakier and it drifted on important
+ 
+was shakier and it drifted on important
+numbers. Sonic 4.7 had useful strategy
+ 
+numbers. Sonic 4.7 had useful strategy
+but under produced on the artifact
+ 
+but under produced on the artifact
+layer. Gemini 3.1 Pro understood parts
+ 
+layer. Gemini 3.1 Pro understood parts
+of the premise but several files that
+ 
+of the premise but several files that
+were supposed to be real documents or
+ 
+were supposed to be real documents or
+decks or workbooks or PDFs, they were
+ 
+decks or workbooks or PDFs, they were
+just HTML or text files with the right
+ 
+just HTML or text files with the right
+extensions. That is not a small issue.
+ 
+extensions. That is not a small issue.
+You cannot send a fake PowerPoint to a
+ 
+You cannot send a fake PowerPoint to a
+board. The most impressive thing about
+ 
+board. The most impressive thing about
+5.5 in Dingo was not that it finished.
+ 
+5.5 in Dingo was not that it finished.
+It was that it understood the posture of
+ 
+It was that it understood the posture of
+the work. It framed the launch as a very
+ 
+the work. It framed the launch as a very
+narrow qualified household release, not
+ 
+narrow qualified household release, not
+a broad novelty campaign. It treated
+ 
+a broad novelty campaign. It treated
+northern candid imports as a central
+ 
+northern candid imports as a central
+source of risk. It separated curiosity
+ 
+source of risk. It separated curiosity
+traffic from real buyers. And it
+ 
+traffic from real buyers. And it
+repeatedly stated in the right places
+ 
+repeatedly stated in the right places
+that the product doesn't make exotic
+ 
+that the product doesn't make exotic
+ownership legal, simple or suitable.
+ 
+ownership legal, simple or suitable.
+That's the kind of judgment I want from
+ 
+That's the kind of judgment I want from
+a model doing real executive work. Now,
+ 
+a model doing real executive work. Now,
+there were still defects. The PowerPoint
+ 
+there were still defects. The PowerPoint
+had invalid XML metadata because the
+ 
+had invalid XML metadata because the
+ampersand in Dingo and Co was not
+ 
+ampersand in Dingo and Co was not
+escaped correctly. One slide rounded an
+ 
+escaped correctly. One slide rounded an
+NPS number incorrectly. Some pricing
+ 
+NPS number incorrectly. Some pricing
+claims were stale or imprecise. I would
+ 
+claims were stale or imprecise. I would
+fix those before sending anything
+ 
+fix those before sending anything
+externally. But they are final mile
+ 
+externally. But they are final mile
+production defects. They are not
+ 
+production defects. They are not
+failures to understand the assignment.
+ 
+failures to understand the assignment.
+And that distinction matters because in
+ 
+And that distinction matters because in
+real work, the expensive part is often
+ 
+real work, the expensive part is often
+getting from nothing to a coherent first
+ 
+getting from nothing to a coherent first
+version with the right structure, the
+ 
+version with the right structure, the
+right evidence, the right files and the
+ 
+right evidence, the right files and the
+right risk posture. 5.5 compressed that
+ 
+right risk posture. 5.5 compressed that
+bit better than any model I've tested.
+ 
+bit better than any model I've tested.
+And that's the first hard test. 5.5
+ 
+And that's the first hard test. 5.5
+looks great here when job is a messy
+ 
+looks great here when job is a messy
+executive handoff. The second hard test
+ 
+executive handoff. The second hard test
+is where the review gets a little bit
+ 
+is where the review gets a little bit
+more complicated. So, Splash Brothers is
+ 
+more complicated. So, Splash Brothers is
+a fictional mobile detailing and car
+ 
+a fictional mobile detailing and car
+wash business with 465 files. And the
+ 
+wash business with 465 files. And the
+folder is intentionally gross. There are
+ 
+folder is intentionally gross. There are
+CSV exports, Excel sheets in three
+ 
+CSV exports, Excel sheets in three
+different schemas, JSON backups, a
+ 
+different schemas, JSON backups, a
+corrupted JSON file, VCF contact cards,
+ 
+corrupted JSON file, VCF contact cards,
+scan PDFs of handwritten receipts, text
+ 
+scan PDFs of handwritten receipts, text
+notes, conflicting service list,
+ 
+notes, conflicting service list,
+inconsistent payment records and a pile
+ 
+inconsistent payment records and a pile
+of junk that looks like the kind of junk
+ 
+of junk that looks like the kind of junk
+a real small business accumulates over
+ 
+a real small business accumulates over
+years of duct tape operations. The
+ 
+years of duct tape operations. The
+assignment is to migrate the entire
+ 
+assignment is to migrate the entire
+thing into a clean database. That means
+ 
+thing into a clean database. That means
+the model has to inventory the files,
+ 
+the model has to inventory the files,
+decide what matters, parse multiple
+ 
+decide what matters, parse multiple
+formats, design a schema, extract the
+ 
+formats, design a schema, extract the
+records, merge duplicate customers,
+ 
+records, merge duplicate customers,
+reject fake records, normalize services,
+ 
+reject fake records, normalize services,
+reconcile prices, detect conflicts,
+ 
+reconcile prices, detect conflicts,
+preserve source provenance, write a
+ 
+preserve source provenance, write a
+migration report and build a review UI.
+ 
+migration report and build a review UI.
+This is not glamorous work, but a huge
+ 
+This is not glamorous work, but a huge
+amount of real business work does look
+ 
+amount of real business work does look
+like this. The planted traps are a mix
+ 
+like this. The planted traps are a mix
+of obvious and subtle. There are fake
+ 
+of obvious and subtle. There are fake
+customers named Mickey Mouse, test
+ 
+customers named Mickey Mouse, test
+customer, ASDF ASDF. There's a fake
+ 
+customer, ASDF ASDF. There's a fake
+$25,000 payment. There are duplicate
+ 
+$25,000 payment. There are duplicate
+customers, name typos, service name
+ 
+customers, name typos, service name
+variants, inconsistent date formats,
+ 
+variants, inconsistent date formats,
+messy payment statuses and payment
+ 
+messy payment statuses and payment
+methods scattered across many different
+ 
+methods scattered across many different
+capitalizations and labels. And then
+ 
+capitalizations and labels. And then
+there are the less obvious traps. An
+ 
+there are the less obvious traps. An
+orphaned order tied to a customer named
+ 
+orphaned order tied to a customer named
+Terence Blackwood, a service code
+ 
+Terence Blackwood, a service code
+conflict, a handwritten receipt image
+ 
+conflict, a handwritten receipt image
+that could easily produce false
+ 
+that could easily produce false
+canonical customers if the OCR step is
+ 
+canonical customers if the OCR step is
+handled sloppily. Now, in previous
+ 
+handled sloppily. Now, in previous
+checks of this evaluation, both Opus 4.7
+ 
+checks of this evaluation, both Opus 4.7
+and 5.4 fell down in some important
+ 
+and 5.4 fell down in some important
+ways. For example, both thought Mickey
+ 
+ways. For example, both thought Mickey
+Mouse was a real customer. Test customer
+ 
+Mouse was a real customer. Test customer
+became a real customer. ASDF ASDF became
+ 
+became a real customer. ASDF ASDF became
+a real customer. The fake $25,000
+ 
+a real customer. The fake $25,000
+payment got normalized and counted as
+ 
+payment got normalized and counted as
+revenue. Those are the mistakes that
+ 
+revenue. Those are the mistakes that
+make you sit up straight because a real
+ 
+make you sit up straight because a real
+human catches those really quick. If the
+ 
+human catches those really quick. If the
+model misses them, you can't treat the
+ 
+model misses them, you can't treat the
+migration as production safe. 5.5 is the
+ 
+migration as production safe. 5.5 is the
+first model to catch the mistakes I
+ 
+first model to catch the mistakes I
+planted in the data on purpose. It
+ 
+planted in the data on purpose. It
+rejected Mickey Mouse. It rejected test
+ 
+rejected Mickey Mouse. It rejected test
+customer. It rejected ASDF correctly. It
+ 
+customer. It rejected ASDF correctly. It
+rejected the fake orders and the fake
+ 
+rejected the fake orders and the fake
+$25,000 payment. It correctly merged all
+ 
+$25,000 payment. It correctly merged all
+seven planted duplicate customer pairs.
+ 
+seven planted duplicate customer pairs.
+It caught all 13 name typo orders. It
+ 
+It caught all 13 name typo orders. It
+discovered all 465 source files. It
+ 
+discovered all 465 source files. It
+produced a deterministic rebuild of the
+ 
+produced a deterministic rebuild of the
+database. It generated a 7,287 line
+ 
+database. It generated a 7,287 line
+migration report with a profile audit
+ 
+migration report with a profile audit
+trail. And it landed in 186 customers
+ 
+trail. And it landed in 186 customers
+against a target of 192, which is pretty
+ 
+against a target of 192, which is pretty
+close. My previous conclusion running
+ 
+close. My previous conclusion running
+this eval has been that no frontier
+ 
+this eval has been that no frontier
+model should be safe to trust with a
+ 
+model should be safe to trust with a
+one-shot business data migration. 5.5
+ 
+one-shot business data migration. 5.5
+narrows that claim down, but it doesn't
+ 
+narrows that claim down, but it doesn't
+eliminate it because 5.5 still missed
+ 
+eliminate it because 5.5 still missed
+service code conflicts. Its schema did
+ 
+service code conflicts. Its schema did
+not include a service code column, which
+ 
+not include a service code column, which
+meant one of the planted conflicts could
+ 
+meant one of the planted conflicts could
+not even be represented in the final
+ 
+not even be represented in the final
+output. It did create Terence Blackwood
+ 
+output. It did create Terence Blackwood
+as a canonical customer instead of
+ 
+as a canonical customer instead of
+sending that record to human review. It
+ 
+sending that record to human review. It
+left payment status with 29 distinct raw
+ 
+left payment status with 29 distinct raw
+values and left payment methods
+ 
+values and left payment methods
+unnormalized and overproduced services
+ 
+unnormalized and overproduced services
+and jobs and built a review UI where two
+ 
+and jobs and built a review UI where two
+parts of the interface disagreed on the
+ 
+parts of the interface disagreed on the
+number of flagged items. And that
+ 
+number of flagged items. And that
+failure pattern is very instructive. 5.5
+ 
+failure pattern is very instructive. 5.5
+got much better at the areas that are
+ 
+got much better at the areas that are
+semantically obvious to a human. Fake
+ 
+semantically obvious to a human. Fake
+records, duplicate people, typoed names,
+ 
+records, duplicate people, typoed names,
+absurd payments. It still struggled with
+ 
+absurd payments. It still struggled with
+the boring back-end hygiene that makes a
+ 
+the boring back-end hygiene that makes a
+migration durable. Enum normalization,
+ 
+migration durable. Enum normalization,
+service code preservation, orphan
+ 
+service code preservation, orphan
+handling, canonical job grouping and
+ 
+handling, canonical job grouping and
+reconciliation between dashboard counts
+ 
+reconciliation between dashboard counts
+and database counts. So, this is my
+ 
+and database counts. So, this is my
+practical read. I would absolutely use
+ 
+practical read. I would absolutely use
+5.5 as the first serious pass on a
+ 
+5.5 as the first serious pass on a
+migration like this. I would ask it to
+ 
+migration like this. I would ask it to
+inventory the files, design the schema,
+ 
+inventory the files, design the schema,
+build the extraction pipeline, preserve
+ 
+build the extraction pipeline, preserve
+source provenance, generate the audit
+ 
+source provenance, generate the audit
+report and produce the review UI. But I
+ 
+report and produce the review UI. But I
+would not let it declare the database
+ 
+would not let it declare the database
+canonical. I would add validators. I
+ 
+canonical. I would add validators. I
+would check row counts. I would inspect
+ 
+would check row counts. I would inspect
+enum maps. I would require service code
+ 
+enum maps. I would require service code
+in the schema. And I would have a human
+ 
+in the schema. And I would have a human
+approve canonical merges before anything
+ 
+approve canonical merges before anything
+last staging. That's not a criticism of
+ 
+last staging. That's not a criticism of
+5.5. That's just the correct way to use
+ 
+5.5. That's just the correct way to use
+it. The model can compress a fair bit of
+ 
+it. The model can compress a fair bit of
+the middle of the work, but production
+ 
+the middle of the work, but production
+trust still comes from the system you
+ 
+trust still comes from the system you
+build around it. One important caveat on
+ 
+build around it. One important caveat on
+the 5.5 Splash Brothers results. I
+ 
+the 5.5 Splash Brothers results. I
+compared it directly to 5.4. And what I
+ 
+compared it directly to 5.4. And what I
+saw is that the back-end work that I'm
+ 
+saw is that the back-end work that I'm
+calling out as an issue with 5.5 was
+ 
+calling out as an issue with 5.5 was
+actually a little better with 5.4. And
+ 
+actually a little better with 5.4. And
+so we're in this interesting position
+ 
+so we're in this interesting position
+where you can see some regression in 5.5
+ 
+where you can see some regression in 5.5
+around some of the back-end database
+ 
+around some of the back-end database
+hygiene discipline that 5.4 got right.
+ 
+hygiene discipline that 5.4 got right.
+But you see a lot of progress when it
+ 
+But you see a lot of progress when it
+comes to the intuitive stuff that a
+ 
+comes to the intuitive stuff that a
+human would catch very quickly, like the
+ 
+human would catch very quickly, like the
+Mickey Mouse example. So, what I want to
+ 
+Mickey Mouse example. So, what I want to
+leave you with is one, no model is
+ 
+leave you with is one, no model is
+perfect. Two, if I had to pick right
+ 
+perfect. Two, if I had to pick right
+now, what I would do is I would use 5.5
+ 
+now, what I would do is I would use 5.5
+prompted carefully for clear, complex
+ 
+prompted carefully for clear, complex
+work on the back-end. And I would trust
+ 
+work on the back-end. And I would trust
+it more with that front-end intuitive
+ 
+it more with that front-end intuitive
+work that adds a layer of polish to the
+ 
+work that adds a layer of polish to the
+finished database migration effort. All
+ 
+finished database migration effort. All
+of that to say, understand that when
+ 
+of that to say, understand that when
+you're testing models at the frontier,
+ 
+you're testing models at the frontier,
+you're going to get interesting results
+ 
+you're going to get interesting results
+like that. Places where the model
+ 
+like that. Places where the model
+regresses unexpectedly. This is exactly
+ 
+regresses unexpectedly. This is exactly
+what we would expect from a model tested
+ 
+what we would expect from a model tested
+on a private benchmark because you see
+ 
+on a private benchmark because you see
+places where the generalization just
+ 
+places where the generalization just
+doesn't work as well. This is something
+ 
+doesn't work as well. This is something
+that's easily fixable with a harness and
+ 
+that's easily fixable with a harness and
+a good prompt. My prompt here was
+ 
+a good prompt. My prompt here was
+intentionally messy and badly formed and
+ 
+intentionally messy and badly formed and
+that's part of the challenge. So, not
+ 
+that's part of the challenge. So, not
+something you need to worry about a
+ 
+something you need to worry about a
+whole lot if you're using 5.5, not a
+ 
+whole lot if you're using 5.5, not a
+reason to go back to 5.4, but a callout
+ 
+reason to go back to 5.4, but a callout
+for those who like to dive deep. When
+ 
+for those who like to dive deep. When
+you put Dingo and Splash Brothers next
+ 
+you put Dingo and Splash Brothers next
+to each other, the picture of the
+ 
+to each other, the picture of the
+release gets more complete. Dingo says
+ 
+release gets more complete. Dingo says
+5.5 can get remarkably close to a real
+ 
+5.5 can get remarkably close to a real
+executive handoff. Splash Brothers says
+ 
+executive handoff. Splash Brothers says
+it can do a serious first pass on messy
+ 
+it can do a serious first pass on messy
+production data, but it cannot be the
+ 
+production data, but it cannot be the
+final authority. The third test is
+ 
+final authority. The third test is
+different yet again because it shows the
+ 
+different yet again because it shows the
+part of the Open AI stack that still
+ 
+part of the Open AI stack that still
+needs help. The Artemis 2 test asks the
+ 
+needs help. The Artemis 2 test asks the
+model to build an interactive 3D
+ 
+model to build an interactive 3D
+visualization of NASA's Artemis 2
+ 
+visualization of NASA's Artemis 2
+mission. No facts are provided, no tech
+ 
+mission. No facts are provided, no tech
+stack is specified. The model has to
+ 
+stack is specified. The model has to
+research the mission, build the SLS
+ 
+research the mission, build the SLS
+vehicle, animate the launch all the way
+ 
+vehicle, animate the launch all the way
+through lunar flyby and return and
+ 
+through lunar flyby and return and
+create the environment, add the
+ 
+create the environment, add the
+controls, support timeline scrubbing,
+ 
+controls, support timeline scrubbing,
+make components clickable and make the
+ 
+make components clickable and make the
+artifact ultimately educational. This
+ 
+artifact ultimately educational. This
+test is very different from Dingo and
+ 
+test is very different from Dingo and
+Splash Brothers. A model can get the
+ 
+Splash Brothers. A model can get the
+research right and still build a very
+ 
+research right and still build a very
+ugly visualization. It can build
+ 
+ugly visualization. It can build
+something beautiful while hallucinating
+ 
+something beautiful while hallucinating
+the mission. It can animate the rocket
+ 
+the mission. It can animate the rocket
+but fail at the controls. It can produce
+ 
+but fail at the controls. It can produce
+something technically interesting that
+ 
+something technically interesting that
+no one wants to look at. Both 5.5 and
+ 
+no one wants to look at. Both 5.5 and
+Opus 4.7 got the core mission shape
+ 
+Opus 4.7 got the core mission shape
+right here. They understood that Artemis
+ 
+right here. They understood that Artemis
+2 is a lunar flyby, not a landing and
+ 
+2 is a lunar flyby, not a landing and
+not a lunar orbit. The trajectories were
+ 
+not a lunar orbit. The trajectories were
+not perfect in either case, but they
+ 
+not perfect in either case, but they
+were reasonable for a browser
+ 
+were reasonable for a browser
+visualization. Neither model collapsed
+ 
+visualization. Neither model collapsed
+Artemis 2 into Apollo or Artemis 1 or
+ 
+Artemis 2 into Apollo or Artemis 1 or
+Artemis 3. Now, the key difference that
+ 
+Artemis 3. Now, the key difference that
+showed up was in presentation. 5.5
+ 
+showed up was in presentation. 5.5
+leaned into information density.
+ 
+leaned into information density.
+Clickable bubbles and panels and dense
+ 
+Clickable bubbles and panels and dense
+labels and multiple ways to surface
+ 
+labels and multiple ways to surface
+facts. If the goal was to learn, the 5.5
+ 
+facts. If the goal was to learn, the 5.5
+build did a lot right. But visually, it
+ 
+build did a lot right. But visually, it
+looked more cartoonish than it should
+ 
+looked more cartoonish than it should
+have. The scale felt off. The
+ 
+have. The scale felt off. The
+proportions were not as grounded. The
+ 
+proportions were not as grounded. The
+scene lacked the visual authority that a
+ 
+scene lacked the visual authority that a
+NASA mission deserves. Opus 4.7 made the
+ 
+NASA mission deserves. Opus 4.7 made the
+opposite trade-off. The visuals were
+ 
+opposite trade-off. The visuals were
+substantially stronger, better lighting,
+ 
+substantially stronger, better lighting,
+better composition and a more grounded
+ 
+better composition and a more grounded
+scene. It felt more like something you
+ 
+scene. It felt more like something you
+would actually want to show someone, but
+ 
+would actually want to show someone, but
+the information was less immediately
+ 
+the information was less immediately
+discoverable. Neither model nailed the
+ 
+discoverable. Neither model nailed the
+controls. Both needed another pass. Opus
+ 
+controls. Both needed another pass. Opus
+had a sort of strange semi-transparent
+ 
+had a sort of strange semi-transparent
+Earth issue. 5.5 had scale and style
+ 
+Earth issue. 5.5 had scale and style
+problems. If I were turning either one
+ 
+problems. If I were turning either one
+into a final public artifact, I would
+ 
+into a final public artifact, I would
+probably start from the Opus version and
+ 
+probably start from the Opus version and
+add 5.5's information density over the
+ 
+add 5.5's information density over the
+top. And this is where routing starts to
+ 
+top. And this is where routing starts to
+matter, right? I I don't yet trust 5.5
+ 
+matter, right? I I don't yet trust 5.5
+to invent by itself a beautiful
+ 
+to invent by itself a beautiful
+front-end or visual style from a blank
+ 
+front-end or visual style from a blank
+page the way I trust Opus. Claude still
+ 
+page the way I trust Opus. Claude still
+has an edge in visual composition, in
+ 
+has an edge in visual composition, in
+taste, in blank canvas front-end craft.
+ 
+taste, in blank canvas front-end craft.
+But I do trust 5.5 to implement a strong
+ 
+But I do trust 5.5 to implement a strong
+visual reference faithfully. And that's
+ 
+visual reference faithfully. And that's
+why Images 2.0 changes the workflow.
+ 
+why Images 2.0 changes the workflow.
+Instead of asking 5.5 to invent taste
+ 
+Instead of asking 5.5 to invent taste
+from nothing, you can generate a strong
+ 
+from nothing, you can generate a strong
+mock-up, hand that image to 5.5 inside
+ 
+mock-up, hand that image to 5.5 inside
+Codex, and ask it to build the working
+ 
+Codex, and ask it to build the working
+version against the reference. Inventing
+ 
+version against the reference. Inventing
+taste is hard. Implementing to a target
+ 
+taste is hard. Implementing to a target
+is much easier. That's the practical
+ 
+is much easier. That's the practical
+difference between just picking a model
+ 
+difference between just picking a model
+no matter what and like figuring out
+ 
+no matter what and like figuring out
+what actually works. I'm not here for
+ 
+what actually works. I'm not here for
+blind model loyalty. I'm here for
+ 
+blind model loyalty. I'm here for
+finding the real ways we can use models
+ 
+finding the real ways we can use models
+in harnesses to get work done. If I need
+ 
+in harnesses to get work done. If I need
+back-end volume, audit depth, tool use,
+ 
+back-end volume, audit depth, tool use,
+and completion, I'm going to reach for
+ 
+and completion, I'm going to reach for
+5.5. If I need a blank canvas visual
+ 
+5.5. If I need a blank canvas visual
+taste, I still want Opus. If I need a
+ 
+taste, I still want Opus. If I need a
+strong user interface that actually
+ 
+strong user interface that actually
+works, I increasingly want a reference
+ 
+works, I increasingly want a reference
+image plus 5.5 in Codex. Now, I hope the
+ 
+image plus 5.5 in Codex. Now, I hope the
+larger pattern is coming into focus
+ 
+larger pattern is coming into focus
+here. 5.5 isn't perfect. It's not magic.
+ 
+here. 5.5 isn't perfect. It's not magic.
+It's not the best model at every task,
+ 
+It's not the best model at every task,
+but it is the strongest default for
+ 
+but it is the strongest default for
+complex work that I've used because it
+ 
+complex work that I've used because it
+carries more of the task before it drops
+ 
+carries more of the task before it drops
+the thread, which brings us to the
+ 
+the thread, which brings us to the
+fourth part of this video. Why Codex
+ 
+fourth part of this video. Why Codex
+matters so much for 5.5. I've been using
+ 
+matters so much for 5.5. I've been using
+Codex more than ChatGPT for serious work
+ 
+Codex more than ChatGPT for serious work
+recently, and 5.5 makes that distinction
+ 
+recently, and 5.5 makes that distinction
+much sharper. ChatGPT is still a broad
+ 
+much sharper. ChatGPT is still a broad
+consumer surface. It's good for quick
+ 
+consumer surface. It's good for quick
+questions and search and image work and
+ 
+questions and search and image work and
+voice and general assistance and fast
+ 
+voice and general assistance and fast
+thinking, but Codex is increasingly
+ 
+thinking, but Codex is increasingly
+where work actually happens. That
+ 
+where work actually happens. That
+matters because a model this strong
+ 
+matters because a model this strong
+trapped inside a chat window is very
+ 
+trapped inside a chat window is very
+underused. Inside a chat window, 5.5 can
+ 
+underused. Inside a chat window, 5.5 can
+tell you what to do. Inside Codex, it
+ 
+tell you what to do. Inside Codex, it
+can inspect files. It can edit code. It
+ 
+can inspect files. It can edit code. It
+can run commands. It can drive a
+ 
+can run commands. It can drive a
+browser. It can test interfaces. It can
+ 
+browser. It can test interfaces. It can
+read docs. It can generate artifacts and
+ 
+read docs. It can generate artifacts and
+iterate on its own output. That's a
+ 
+iterate on its own output. That's a
+different product. The model's not just
+ 
+different product. The model's not just
+responding. It's working in the
+ 
+responding. It's working in the
+environment where the task lives. This
+ 
+environment where the task lives. This
+is why the model plus system argument is
+ 
+is why the model plus system argument is
+not an abstract one in 2026. Most useful
+ 
+not an abstract one in 2026. Most useful
+work still doesn't happen in clean
+ 
+work still doesn't happen in clean
+surfaces. It happens in messy folders
+ 
+surfaces. It happens in messy folders
+with web apps, with PDFs, with
+ 
+with web apps, with PDFs, with
+spreadsheets, with desktop interfaces,
+ 
+spreadsheets, with desktop interfaces,
+with internal tools, with
+ 
+with internal tools, with
+half-maintained systems, and documents
+ 
+half-maintained systems, and documents
+that were never designed for automation.
+ 
+that were never designed for automation.
+A model that can operate across those
+ 
+A model that can operate across those
+surfaces can reach much more of the
+ 
+surfaces can reach much more of the
+world than a model limited to a text
+ 
+world than a model limited to a text
+prompt. And 5.5 inside Codex feels like
+ 
+prompt. And 5.5 inside Codex feels like
+a step in that direction. It can hold a
+ 
+a step in that direction. It can hold a
+task across many, many steps. It can
+ 
+task across many, many steps. It can
+inspect the code base. It can run a
+ 
+inspect the code base. It can run a
+test. It can hit an error. It can revise
+ 
+test. It can hit an error. It can revise
+the plan. It can patch the file and test
+ 
+the plan. It can patch the file and test
+again and then tell you what changed.
+ 
+again and then tell you what changed.
+It's a monster. It can generate a
+ 
+It's a monster. It can generate a
+document and render it and notice the
+ 
+document and render it and notice the
+layout is broken and fix it and
+ 
+layout is broken and fix it and
+re-render. That's the kind of work where
+ 
+re-render. That's the kind of work where
+intelligence and agency multiply each
+ 
+intelligence and agency multiply each
+other. A smarter model matters more when
+ 
+other. A smarter model matters more when
+it has tools. Better tools matter more
+ 
+it has tools. Better tools matter more
+when the model is smart enough to use
+ 
+when the model is smart enough to use
+them without constant supervision.
+ 
+them without constant supervision.
+That's the loop 5.5 improves inside
+ 
+That's the loop 5.5 improves inside
+Codex. And this is also why availability
+ 
+Codex. And this is also why availability
+is a part of product quality. The best
+ 
+is a part of product quality. The best
+model in the world is not useful if you
+ 
+model in the world is not useful if you
+can't use it when you need it. Compute
+ 
+can't use it when you need it. Compute
+constraints show up as caps, as degraded
+ 
+constraints show up as caps, as degraded
+experiences, as slowdowns, as weird
+ 
+experiences, as slowdowns, as weird
+routing decisions, as limited sessions,
+ 
+routing decisions, as limited sessions,
+and moments where the model you want is
+ 
+and moments where the model you want is
+just not available. The public status
+ 
+just not available. The public status
+pages from Anthropic and OpenAI tell a
+ 
+pages from Anthropic and OpenAI tell a
+real story here. Anthropic's 90-day
+ 
+real story here. Anthropic's 90-day
+status page has recently shown
+ 
+status page has recently shown
+materially lower uptime across Claude,
+ 
+materially lower uptime across Claude,
+the Claude console, the Claude API, and
+ 
+the Claude console, the Claude API, and
+Claude code versus OpenAI's status page.
+ 
+Claude code versus OpenAI's status page.
+And to give you a sense of that, we
+ 
+And to give you a sense of that, we
+measure reliability in nines, and many
+ 
+measure reliability in nines, and many
+of Anthropic's services are at one nine
+ 
+of Anthropic's services are at one nine
+of availability right now. That means
+ 
+of availability right now. That means
+90-some percent, right? Not 99, 97,
+ 
+90-some percent, right? Not 99, 97,
+maybe 98. It's not the same thing. By
+ 
+maybe 98. It's not the same thing. By
+contrast, OpenAI's services, as of this
+ 
+contrast, OpenAI's services, as of this
+recording, are showing three nines in
+ 
+recording, are showing three nines in
+places, sometimes two nines, but every
+ 
+places, sometimes two nines, but every
+nine of availability indicates another
+ 
+nine of availability indicates another
+step change in value for a model that
+ 
+step change in value for a model that
+has to be up all the time for real-world
+ 
+has to be up all the time for real-world
+work. And so, if you're doing serious
+ 
+work. And so, if you're doing serious
+work, you have to ask yourself, am I
+ 
+work, you have to ask yourself, am I
+willing to tolerate gaps in compute? And
+ 
+willing to tolerate gaps in compute? And
+I share this not because I'm reasoning
+ 
+I share this not because I'm reasoning
+only from the numbers. I think the
+ 
+only from the numbers. I think the
+numbers tell a story that we're also
+ 
+numbers tell a story that we're also
+hearing in anecdotes from serious Claude
+ 
+hearing in anecdotes from serious Claude
+users. There have been widespread
+ 
+users. There have been widespread
+reports coming in to me personally and
+ 
+reports coming in to me personally and
+also across the internet of frustration
+ 
+also across the internet of frustration
+with Claude's availability over the last
+ 
+with Claude's availability over the last
+month. It is not an accident that
+ 
+month. It is not an accident that
+Anthropic has cut deals for more than 10
+ 
+Anthropic has cut deals for more than 10
+gigawatts of compute in the last 30
+ 
+gigawatts of compute in the last 30
+days. It needs it because right now
+ 
+days. It needs it because right now
+demand for Claude is outstripping
+ 
+demand for Claude is outstripping
+availability across the board. And when
+ 
+availability across the board. And when
+demand outstrips availability, you do
+ 
+demand outstrips availability, you do
+have issues. And that's why I want to
+ 
+have issues. And that's why I want to
+call out the reliability you get with
+ 
+call out the reliability you get with
+5.5 does matter these days. And that may
+ 
+5.5 does matter these days. And that may
+flip, right? This is always an ongoing
+ 
+flip, right? This is always an ongoing
+journey. As Dario says, the rainbow
+ 
+journey. As Dario says, the rainbow
+continues. We'll see what the next
+ 
+continues. We'll see what the next
+chapter has. Without further ado, here's
+ 
+chapter has. Without further ado, here's
+how I'm routing work now based on all of
+ 
+how I'm routing work now based on all of
+this testing. For complex multi-step
+ 
+this testing. For complex multi-step
+execution, 5.5 is now my first call. If
+ 
+execution, 5.5 is now my first call. If
+the task involves files or code or tools
+ 
+the task involves files or code or tools
+or documents or browser use or data or
+ 
+or documents or browser use or data or
+spreadsheets or artifacts or anything
+ 
+spreadsheets or artifacts or anything
+that has to be carried through multiple
+ 
+that has to be carried through multiple
+steps, I start in 5.5. The longer and
+ 
+steps, I start in 5.5. The longer and
+messier the job is, the wider that gap
+ 
+messier the job is, the wider that gap
+feels. For blank canvas front-end taste,
+ 
+feels. For blank canvas front-end taste,
+I still often start with Opus 4.7.
+ 
+I still often start with Opus 4.7.
+Claude continues to make stronger visual
+ 
+Claude continues to make stronger visual
+designs when there's no reference image
+ 
+designs when there's no reference image
+and no design system, and that does
+ 
+and no design system, and that does
+carry through into beautiful
+ 
+carry through into beautiful
+PowerPoints, maybe beautifully designed
+ 
+PowerPoints, maybe beautifully designed
+spreadsheets, that kind of thing. If the
+ 
+spreadsheets, that kind of thing. If the
+question is make this beautiful from
+ 
+question is make this beautiful from
+scratch, Opus is still very much in the
+ 
+scratch, Opus is still very much in the
+conversation. For UI work where I want
+ 
+conversation. For UI work where I want
+both taste and production strength, I
+ 
+both taste and production strength, I
+want a reference first. I could generate
+ 
+want a reference first. I could generate
+the mock-up with Images 2.0. I might
+ 
+the mock-up with Images 2.0. I might
+also start with Claude design and let
+ 
+also start with Claude design and let
+them bake off.
+ 
+them bake off.
+I could use a screenshot. I could give
+ 
+I could use a screenshot. I could give
+the model a clear visual target. But
+ 
+the model a clear visual target. But
+regardless, I'm going to hand it over to
+ 
+regardless, I'm going to hand it over to
+5.5 Codex and ask it to implement that
+ 
+5.5 Codex and ask it to implement that
+work faithfully and see where I get
+ 
+work faithfully and see where I get
+first. And then, if I want to, if I'm
+ 
+first. And then, if I want to, if I'm
+starting with Claude design, I feel like
+ 
+starting with Claude design, I feel like
+Claude design came out with a stronger
+ 
+Claude design came out with a stronger
+model, then maybe I'll give it to a
+ 
+model, then maybe I'll give it to a
+bake-off between Claude code and 5.5.
+ 
+bake-off between Claude code and 5.5.
+But either way, I think 5.5 ought to be
+ 
+But either way, I think 5.5 ought to be
+in the mix because of the strength of
+ 
+in the mix because of the strength of
+the model at long-running code execution
+ 
+the model at long-running code execution
+with high correctness. For engineering
+ 
+with high correctness. For engineering
+work, I like it to model workflow as
+ 
+work, I like it to model workflow as
+well. Opus 4.7 is strong at planning, at
+ 
+well. Opus 4.7 is strong at planning, at
+thinking through the shape of the work
+ 
+thinking through the shape of the work
+overall, and the customer value. 5.5 in
+ 
+overall, and the customer value. 5.5 in
+Codex is excellent at execution, at
+ 
+Codex is excellent at execution, at
+testing, and carrying the work through.
+ 
+testing, and carrying the work through.
+Combining them together is often better
+ 
+Combining them together is often better
+than pretending one model should own the
+ 
+than pretending one model should own the
+whole pipeline. For writing, 5.5 has
+ 
+whole pipeline. For writing, 5.5 has
+taken a real step forward, and the
+ 
+taken a real step forward, and the
+improvement is not just sentence
+ 
+improvement is not just sentence
+quality. It's structure. Most AI writing
+ 
+quality. It's structure. Most AI writing
+failures are shape failures. The model
+ 
+failures are shape failures. The model
+writes an introduction, a bunch of body
+ 
+writes an introduction, a bunch of body
+sections, and a conclusion, but the
+ 
+sections, and a conclusion, but the
+argument doesn't build. The sections sit
+ 
+argument doesn't build. The sections sit
+next to each other instead of moving the
+ 
+next to each other instead of moving the
+viewer forward. The transitions are
+ 
+viewer forward. The transitions are
+generic. The nuance gets kind of
+ 
+generic. The nuance gets kind of
+averaged out. The piece answers a prompt
+ 
+averaged out. The piece answers a prompt
+instead of actually writing well toward
+ 
+instead of actually writing well toward
+a case. 5.5 is actually much better at
+ 
+a case. 5.5 is actually much better at
+holding the shape of a long argument. It
+ 
+holding the shape of a long argument. It
+still needs taste. I would not publish
+ 
+still needs taste. I would not publish
+raw output without editing, but I'm
+ 
+raw output without editing, but I'm
+willing to trust it with more of the
+ 
+willing to trust it with more of the
+structure and more of the first serious
+ 
+structure and more of the first serious
+draft than I was with any previous
+ 
+draft than I was with any previous
+OpenAI model. For data work, I use 5.5
+ 
+OpenAI model. For data work, I use 5.5
+aggressively but with validation built
+ 
+aggressively but with validation built
+in. Don't ask the model to finish the
+ 
+in. Don't ask the model to finish the
+migration and trust the results. Ask for
+ 
+migration and trust the results. Ask for
+source provenance. Ask for rejected
+ 
+source provenance. Ask for rejected
+records. Ask for duplicate logic. Do
+ 
+records. Ask for duplicate logic. Do
+that detailed prompting. Splash Brothers
+ 
+that detailed prompting. Splash Brothers
+is our reminder here, right? 5.5 found
+ 
+is our reminder here, right? 5.5 found
+Mickey Mouse. It still missed the
+ 
+Mickey Mouse. It still missed the
+careful back-end hygiene, and there was
+ 
+careful back-end hygiene, and there was
+a bit of regression there. For
+ 
+a bit of regression there. For
+research-heavy work, I want the model to
+ 
+research-heavy work, I want the model to
+dig into sources and uncertainty, and I
+ 
+dig into sources and uncertainty, and I
+need to expect to do that myself before
+ 
+need to expect to do that myself before
+I approve it. Artificial Analysis
+ 
+I approve it. Artificial Analysis
+actually flagged this by calling out
+ 
+actually flagged this by calling out
+that the model felt overconfident even
+ 
+that the model felt overconfident even
+as it did excellent work. And that's an
+ 
+as it did excellent work. And that's an
+interesting nuance with 5.5 that you
+ 
+interesting nuance with 5.5 that you
+should be aware of. So, use 5.5 as the
+ 
+should be aware of. So, use 5.5 as the
+default for serious execution. Use Opus
+ 
+default for serious execution. Use Opus
+where taste and critique are better. Use
+ 
+where taste and critique are better. Use
+Images 2.0 or a reference image when
+ 
+Images 2.0 or a reference image when
+visual direction matters. Use validation
+ 
+visual direction matters. Use validation
+whenever the output touches anything
+ 
+whenever the output touches anything
+serious, right? Money, law, operations,
+ 
+serious, right? Money, law, operations,
+production data, or anything where being
+ 
+production data, or anything where being
+confidently wrong gets very expensive.
+ 
+confidently wrong gets very expensive.
+The future of AI use is not one model,
+ 
+The future of AI use is not one model,
+people. It's routing. The people who get
+ 
+people. It's routing. The people who get
+the most out of the frontier are going
+ 
+the most out of the frontier are going
+to be the people who know which system
+ 
+to be the people who know which system
+to use for which task. But today, if you
+ 
+to use for which task. But today, if you
+force me to use a model that tends to
+ 
+force me to use a model that tends to
+become a default for a lot of different
+ 
+become a default for a lot of different
+work day-to-day, my answer is going to
+ 
+work day-to-day, my answer is going to
+be 5.5 in Codex today because that's
+ 
+be 5.5 in Codex today because that's
+where I see the most value right now.
+ 
+where I see the most value right now.
+So, the bottom line is this. 5.5 is the
+ 
+So, the bottom line is this. 5.5 is the
+strongest model in the world today, and
+ 
+strongest model in the world today, and
+the ways in which it is the strongest
+ 
+the ways in which it is the strongest
+matter more than the ways in which it
+ 
+matter more than the ways in which it
+isn't. It's especially good at complex,
+ 
+isn't. It's especially good at complex,
+messy, multi-step, tool-heavy work. It's
+ 
+messy, multi-step, tool-heavy work. It's
+meaningfully better at long writing
+ 
+meaningfully better at long writing
+structure than previous OpenAI models.
+ 
+structure than previous OpenAI models.
+It's great inside Codex. It benefits
+ 
+It's great inside Codex. It benefits
+from the surrounding OpenAI release
+ 
+from the surrounding OpenAI release
+cadence in a way that few model releases
+ 
+cadence in a way that few model releases
+do. Images 2.0 helps with visual
+ 
+do. Images 2.0 helps with visual
+direction. Codex gives the model a place
+ 
+direction. Codex gives the model a place
+to act. 5.5 supplies the reasoning and
+ 
+to act. 5.5 supplies the reasoning and
+persistence to do real work. The three
+ 
+persistence to do real work. The three
+tests tell the story in a way that no
+ 
+tests tell the story in a way that no
+single publicly available benchmark will
+ 
+single publicly available benchmark will
+do. I think Dingo shows the promise of
+ 
+do. I think Dingo shows the promise of
+complex executive-level knowledge work.
+ 
+complex executive-level knowledge work.
+5.5 can take a strange business
+ 
+5.5 can take a strange business
+situation, a pile of evidence, and
+ 
+situation, a pile of evidence, and
+produce something that's sort of usable
+ 
+produce something that's sort of usable
+as a first draft for an executive
+ 
+as a first draft for an executive
+handoff. The Splash Brothers company
+ 
+handoff. The Splash Brothers company
+example shows the issues around
+ 
+example shows the issues around
+duplicates, around fake records, but
+ 
+duplicates, around fake records, but
+also shows the promise in catching some
+ 
+also shows the promise in catching some
+of those things that only humans have
+ 
+of those things that only humans have
+caught previously and no previous model
+ 
+caught previously and no previous model
+caught, like the fake customers. Artemis
+ 
+caught, like the fake customers. Artemis
+shows where you have to really think
+ 
+shows where you have to really think
+through visual presentation because 5.5
+ 
+through visual presentation because 5.5
+was strong on information density but
+ 
+was strong on information density but
+just couldn't produce a final artifact
+ 
+just couldn't produce a final artifact
+that was as stunning, as beautiful, as
+ 
+that was as stunning, as beautiful, as
+Opus did. None of this is to suggest
+ 
+Opus did. None of this is to suggest
+that 5.5 is a replacement for human
+ 
+that 5.5 is a replacement for human
+judgment. It is not the best taste model
+ 
+judgment. It is not the best taste model
+on the frontier. It is not safe to trust
+ 
+on the frontier. It is not safe to trust
+blindly with final production data. I
+ 
+blindly with final production data. I
+would trust no model blindly with final
+ 
+would trust no model blindly with final
+production data. It still needs review
+ 
+production data. It still needs review
+and validation and direction from
+ 
+and validation and direction from
+someone who knows what good looks like.
+ 
+someone who knows what good looks like.
+But it is the new high-water mark for
+ 
+But it is the new high-water mark for
+what a single model can carry in real
+ 
+what a single model can carry in real
+work. And high-water marks matter. They
+ 
+work. And high-water marks matter. They
+change what users are willing to try,
+ 
+change what users are willing to try,
+how ambitious the prompt gets, how much
+ 
+how ambitious the prompt gets, how much
+work we will delegate, and what products
+ 
+work we will delegate, and what products
+become possible to build around the
+ 
+become possible to build around the
+model. I'll give you a couple of
+ 
+model. I'll give you a couple of
+examples that are really fun here. There
+ 
+examples that are really fun here. There
+are new million-dollar businesses
+ 
+are new million-dollar businesses
+waiting to be built around the
+ 
+waiting to be built around the
+capabilities that 5.5 unlocks. And I've
+ 
+capabilities that 5.5 unlocks. And I've
+illustrated some of the challenges that
+ 
+illustrated some of the challenges that
+the model can tackle in the tests I've
+ 
+the model can tackle in the tests I've
+done. Two business ideas, if you're
+ 
+done. Two business ideas, if you're
+interested in the combination of 5.5 and
+ 
+interested in the combination of 5.5 and
+images and Codex. Like what can you do
+ 
+images and Codex. Like what can you do
+with all of those together? Number one,
+ 
+with all of those together? Number one,
+there is probably a million-dollar small
+ 
+there is probably a million-dollar small
+business waiting to be built in the
+ 
+business waiting to be built in the
+Apple App Store or somewhere like that
+ 
+Apple App Store or somewhere like that
+for palm reading. Because Images 2.0 can
+ 
+for palm reading. Because Images 2.0 can
+provide a reasonable palm read and Codex
+ 
+provide a reasonable palm read and Codex
+can help you build a app for that task
+ 
+can help you build a app for that task
+with a front-end designed by Images 2.0
+ 
+with a front-end designed by Images 2.0
+itself. That's an example of how you can
+ 
+itself. That's an example of how you can
+tie all of those three release products
+ 
+tie all of those three release products
+together into something that is not
+ 
+together into something that is not
+enterprise scale at all, but it's
+ 
+enterprise scale at all, but it's
+definitely side gig solopreneur scale.
+ 
+definitely side gig solopreneur scale.
+Another example, you can get a custom
+ 
+Another example, you can get a custom
+Lego business going because Images 2 is
+ 
+Lego business going because Images 2 is
+now good enough that it can design for
+ 
+now good enough that it can design for
+you a small Lego set from a prompt with
+ 
+you a small Lego set from a prompt with
+accurate part numbers from Lego. And so
+ 
+accurate part numbers from Lego. And so
+you can imagine you can use Codex to
+ 
+you can imagine you can use Codex to
+start to put together an app for that.
+ 
+start to put together an app for that.
+You can use Images 2 to design the UI
+ 
+You can use Images 2 to design the UI
+and Images 2 to power some of the custom
+ 
+and Images 2 to power some of the custom
+Lego presentation. And then you have to
+ 
+Lego presentation. And then you have to
+figure out the supply chain on the Lego
+ 
+figure out the supply chain on the Lego
+side, but it could be a fun little
+ 
+side, but it could be a fun little
+business for someone. And I'm not saying
+ 
+business for someone. And I'm not saying
+this because 5.5 is only going to be
+ 
+this because 5.5 is only going to be
+useful for small business, but I am
+ 
+useful for small business, but I am
+calling it out because I think often
+ 
+calling it out because I think often
+times people hear me talking about
+ 
+times people hear me talking about
+enterprise use cases and they think
+ 
+enterprise use cases and they think
+these models are only good if you have
+ 
+these models are only good if you have
+500 or 5,000 or 50,000 or 500,000 people
+ 
+500 or 5,000 or 50,000 or 500,000 people
+in your company. That's not true. These
+ 
+in your company. That's not true. These
+models offer individuals really cool
+ 
+models offer individuals really cool
+opportunities to build new stuff. And
+ 
+opportunities to build new stuff. And
+the two examples I gave are not
+ 
+the two examples I gave are not
+businesses that were really possible
+ 
+businesses that were really possible
+even a week ago. And so look for those
+ 
+even a week ago. And so look for those
+as ways to see how models improve. Look
+ 
+as ways to see how models improve. Look
+for those kinds of examples. And I'm
+ 
+for those kinds of examples. And I'm
+going to close with this reminder. If
+ 
+going to close with this reminder. If
+you are testing models from here out on
+ 
+you are testing models from here out on
+easy tasks, you are missing the point.
+ 
+easy tasks, you are missing the point.
+The previous models are already good
+ 
+The previous models are already good
+enough for easy tasks. To see what
+ 
+enough for easy tasks. To see what
+changed, you are going to have to give
+ 
+changed, you are going to have to give
+it the kind of work that used to break
+ 
+it the kind of work that used to break
+models just a few months ago. The
+ 
+models just a few months ago. The
+multi-artifact briefs, the data piles,
+ 
+multi-artifact briefs, the data piles,
+the gigantic loops, and more. And you
+ 
+the gigantic loops, and more. And you
+can't really do it in a chat window
+ 
+can't really do it in a chat window
+anymore. The chat window use case is
+ 
+anymore. The chat window use case is
+saturated. When you test that way, this
+ 
+saturated. When you test that way, this
+release starts to make sense. The model
+ 
+release starts to make sense. The model
+is smarter in quick mode because the
+ 
+is smarter in quick mode because the
+underlying pre-trained is better, I
+ 
+underlying pre-trained is better, I
+think. It is stronger in thinking mode
+ 
+think. It is stronger in thinking mode
+for the same reason, I think. It is Open
+ 
+for the same reason, I think. It is Open
+AI won't release these things and tell
+ 
+AI won't release these things and tell
+you this is what we're guessing. It is
+ 
+you this is what we're guessing. It is
+better wrapped inside Codex than any
+ 
+better wrapped inside Codex than any
+previous Open AI model has been. It
+ 
+previous Open AI model has been. It
+pairs naturally with Images 2.0 on
+ 
+pairs naturally with Images 2.0 on
+visual work. And it appears available
+ 
+visual work. And it appears available
+enough to become a daily default rather
+ 
+enough to become a daily default rather
+than a special occasion tool. So the old
+ 
+than a special occasion tool. So the old
+question feels too small. The
+ 
+question feels too small. The
+interesting question is not can 5.5
+ 
+interesting question is not can 5.5
+answer better than 5.4. The interesting
+ 
+answer better than 5.4. The interesting
+question is what can I now ask it to do?
+ 
+question is what can I now ask it to do?
+And for the first time in a while, that
+ 
+And for the first time in a while, that
+question has a much bigger answer than
+ 
+question has a much bigger answer than
+it did a week ago.

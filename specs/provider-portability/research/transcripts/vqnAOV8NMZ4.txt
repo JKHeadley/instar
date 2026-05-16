@@ -1,0 +1,2798 @@
+ 
+You know, a few weeks ago I talked about
+ 
+You know, a few weeks ago I talked about
+open brain, which is a simple idea. You
+ 
+open brain, which is a simple idea. You
+have a SQL database and you connect it
+ 
+have a SQL database and you connect it
+via an MCP server to your AI and now
+ 
+via an MCP server to your AI and now
+your AI has a memory. And it's cheap
+ 
+your AI has a memory. And it's cheap
+because it's not disintermediated. It's
+ 
+because it's not disintermediated. It's
+not built on top of another company.
+ 
+not built on top of another company.
+It's just a clear, clean, free
+ 
+It's just a clear, clean, free
+superbased database and that's it. So
+ 
+superbased database and that's it. So
+far so good. So many of you built it.
+ 
+far so good. So many of you built it.
+That's great. But what I want to talk
+ 
+That's great. But what I want to talk
+about now goes beyond that. So if open
+ 
+about now goes beyond that. So if open
+brain gave you a memory, I want to talk
+ 
+brain gave you a memory, I want to talk
+about how you can use common natively
+ 
+about how you can use common natively
+available tools inside AI to give your
+ 
+available tools inside AI to give your
+memory a heartbeat, a proactive rhythm,
+ 
+memory a heartbeat, a proactive rhythm,
+and to give it tools so that you can
+ 
+and to give it tools so that you can
+have it do useful work.
+ 
+have it do useful work.
+This is really about putting an agent
+ 
+This is really about putting an agent
+together because an agent is like memory
+ 
+together because an agent is like memory
+plus tools plus the ability to be
+ 
+plus tools plus the ability to be
+proactive. And so that's what we're
+ 
+proactive. And so that's what we're
+going to cover here. And yes, I'm going
+ 
+going to cover here. And yes, I'm going
+to talk about examples. I always do. I'm
+ 
+to talk about examples. I always do. I'm
+going to include examples in my
+ 
+going to include examples in my
+substack. I always do. That's all great.
+ 
+substack. I always do. That's all great.
+But the key thing that's different is
+ 
+But the key thing that's different is
+OpenBrain has become a community
+ 
+OpenBrain has become a community
+project. Thousands of you have built it.
+ 
+project. Thousands of you have built it.
+And so I am opening this up to the
+ 
+And so I am opening this up to the
+community. You guys will have a space to
+ 
+community. You guys will have a space to
+communicate and to share your own
+ 
+communicate and to share your own
+recipes for how you are using OpenBrain
+ 
+recipes for how you are using OpenBrain
+to tackle different kinds of projects so
+ 
+to tackle different kinds of projects so
+we can all learn from one another. And I
+ 
+we can all learn from one another. And I
+think that's really cool because you
+ 
+think that's really cool because you
+guys are going to come up with some
+ 
+guys are going to come up with some
+incredible use cases. And I wanted to
+ 
+incredible use cases. And I wanted to
+find a place for that to be shared, for
+ 
+find a place for that to be shared, for
+that to be visible for everyone. That's
+ 
+that to be visible for everyone. That's
+something that has literally been
+ 
+something that has literally been
+thousands of messages in my Substack
+ 
+thousands of messages in my Substack
+community over the last few weeks. And
+ 
+community over the last few weeks. And
+we need a place to share it and to share
+ 
+we need a place to share it and to share
+these use cases. So, as much as this
+ 
+these use cases. So, as much as this
+video is about how do you put together
+ 
+video is about how do you put together
+uh proactive action with memory, with
+ 
+uh proactive action with memory, with
+tools, and that's super important. We're
+ 
+tools, and that's super important. We're
+going to talk about a feature that
+ 
+going to talk about a feature that
+Claude launched that most of us didn't
+ 
+Claude launched that most of us didn't
+pay attention to. Cool stuff. I want you
+ 
+pay attention to. Cool stuff. I want you
+to know that there is a way for you to
+ 
+to know that there is a way for you to
+communicate and contribute your favorite
+ 
+communicate and contribute your favorite
+use case for an agent to our growing
+ 
+use case for an agent to our growing
+recipe rolodex for agents. It's going to
+ 
+recipe rolodex for agents. It's going to
+be super cool. And if you're like,
+ 
+be super cool. And if you're like,
+"Wait, Nate, uh, tools, memory, uh,
+ 
+"Wait, Nate, uh, tools, memory, uh,
+being proactive, this sounds like
+ 
+being proactive, this sounds like
+OpenClaw." Yeah, it should sound like
+ 
+OpenClaw." Yeah, it should sound like
+OpenClaw. One of the really interesting
+ 
+OpenClaw. One of the really interesting
+things about the whole OpenClaw
+ 
+things about the whole OpenClaw
+phenomenon is that what people were
+ 
+phenomenon is that what people were
+interested in was so simple. It was a
+ 
+interested in was so simple. It was a
+framework that let an agent take actions
+ 
+framework that let an agent take actions
+with particular tools on a particular
+ 
+with particular tools on a particular
+schedule against a particular database.
+ 
+schedule against a particular database.
+And it turns out if you combine
+ 
+And it turns out if you combine
+OpenBrain and tool sets and you combine
+ 
+OpenBrain and tool sets and you combine
+proactive action, you get a lot of the
+ 
+proactive action, you get a lot of the
+capabilities of OpenClaw without having
+ 
+capabilities of OpenClaw without having
+to download that repo and install
+ 
+to download that repo and install
+OpenClaw specifically. And so we're
+ 
+OpenClaw specifically. And so we're
+going to get into that more. There's
+ 
+going to get into that more. There's
+going to be a whole piece of the
+ 
+going to be a whole piece of the
+Substack guide about it. But I also want
+ 
+Substack guide about it. But I also want
+you guys to have the space to contribute
+ 
+you guys to have the space to contribute
+your own open claw-l like recipes that
+ 
+your own open claw-l like recipes that
+are using those simple primitives using
+ 
+are using those simple primitives using
+memory using tools and using the ability
+ 
+memory using tools and using the ability
+of the AI to be proactive. So now let's
+ 
+of the AI to be proactive. So now let's
+jump in. So last week Anthropic shipped
+ 
+jump in. So last week Anthropic shipped
+a little noticed feature called loop.
+ 
+a little noticed feature called loop.
+Now you might be like what is loop? Why
+ 
+Now you might be like what is loop? Why
+do I care? Loop is just a way for claude
+ 
+do I care? Loop is just a way for claude
+code to run a job without you being at
+ 
+code to run a job without you being at
+the computer. It lets your agent be
+ 
+the computer. It lets your agent be
+proactive. And what people didn't notice
+ 
+proactive. And what people didn't notice
+is that this is the last piece you need
+ 
+is that this is the last piece you need
+to recreate Open Claw. And I think
+ 
+to recreate Open Claw. And I think
+Anthropic did it on purpose. So, let's
+ 
+Anthropic did it on purpose. So, let's
+open up the box of Legos. Let's look at
+ 
+open up the box of Legos. Let's look at
+what's on the table and let's go through
+ 
+what's on the table and let's go through
+each component. And I will show you the
+ 
+each component. And I will show you the
+three key components that make it
+ 
+three key components that make it
+possible to have an agent that does
+ 
+possible to have an agent that does
+proactive work like OpenClaw without
+ 
+proactive work like OpenClaw without
+necessarily getting into the security
+ 
+necessarily getting into the security
+issues that go with OpenClaw. So, we're
+ 
+issues that go with OpenClaw. So, we're
+going to be super simple here. We're
+ 
+going to be super simple here. We're
+going to keep it really high level.
+ 
+going to keep it really high level.
+We're going to talk about use cases and
+ 
+We're going to talk about use cases and
+then if you want more details, you know,
+ 
+then if you want more details, you know,
+you can always go to the Substack where
+ 
+you can always go to the Substack where
+I have a complete guide for how to put
+ 
+I have a complete guide for how to put
+this system together. So, there are
+ 
+this system together. So, there are
+three things an agent needs before it
+ 
+three things an agent needs before it
+stops being a chatbot and starts being
+ 
+stops being a chatbot and starts being
+something you can actually send work off
+ 
+something you can actually send work off
+to. It needs memory, which is the
+ 
+to. It needs memory, which is the
+ability to read and write to something
+ 
+ability to read and write to something
+persistent. So, it remembers what
+ 
+persistent. So, it remembers what
+happened yesterday, last week, 3 weeks
+ 
+happened yesterday, last week, 3 weeks
+ago. Without memory, every single
+ 
+ago. Without memory, every single
+interaction starts from zero. and the
+ 
+interaction starts from zero. and the
+agent is perpetually a new hire on their
+ 
+agent is perpetually a new hire on their
+very first day. Block two is
+ 
+very first day. Block two is
+proactivity. That is what anthropic ship
+ 
+proactivity. That is what anthropic ship
+is. It's the ability to act without
+ 
+is. It's the ability to act without
+being specifically prompted that time.
+ 
+being specifically prompted that time.
+So the agent will wake up, it will check
+ 
+So the agent will wake up, it will check
+on things, it will do a job and go back
+ 
+on things, it will do a job and go back
+to sleep on its own schedule. Without
+ 
+to sleep on its own schedule. Without
+proactivity, the agent only moves when
+ 
+proactivity, the agent only moves when
+you push it. You are the metronome. And
+ 
+you push it. You are the metronome. And
+every minute you spend being the
+ 
+every minute you spend being the
+metronome is a minute the agent could
+ 
+metronome is a minute the agent could
+spend doing work. And frankly, who has
+ 
+spend doing work. And frankly, who has
+the time to remember to bug their
+ 
+the time to remember to bug their
+agents? And then the third big piece is
+ 
+agents? And then the third big piece is
+tools. It's the ability to reach out and
+ 
+tools. It's the ability to reach out and
+touch systems, to pull data, to call
+ 
+touch systems, to pull data, to call
+APIs, to generate artifacts, to write to
+ 
+APIs, to generate artifacts, to write to
+databases, to trigger workflows. If you
+ 
+databases, to trigger workflows. If you
+don't have tools, the agent can think,
+ 
+don't have tools, the agent can think,
+but it doesn't have hands and feet. It's
+ 
+but it doesn't have hands and feet. It's
+a brain in a jar. So a few weeks ago I
+ 
+a brain in a jar. So a few weeks ago I
+introduced OpenBrain, a personal
+ 
+introduced OpenBrain, a personal
+knowledge database that you own
+ 
+knowledge database that you own
+connected to your AI tools through MCP
+ 
+connected to your AI tools through MCP
+servers. Thousands of people in the
+ 
+servers. Thousands of people in the
+community responded and they built their
+ 
+community responded and they built their
+own versions. Some of you are using it
+ 
+own versions. Some of you are using it
+for work. Some of you are using it for
+ 
+for work. Some of you are using it for
+personal. The beauty of this system is
+ 
+personal. The beauty of this system is
+that you can decide how you use it and
+ 
+that you can decide how you use it and
+it's your memory and it's your database
+ 
+it's your memory and it's your database
+and you get to pick. That addresses the
+ 
+and you get to pick. That addresses the
+memory component. Now, you can make it
+ 
+memory component. Now, you can make it
+fancier, you can make it less fancy, but
+ 
+fancier, you can make it less fancy, but
+fundamentally if you have a database
+ 
+fundamentally if you have a database
+through an MCP server, the agent can
+ 
+through an MCP server, the agent can
+call that database and it can see what
+ 
+call that database and it can see what
+you've put into it. It doesn't cost much
+ 
+you've put into it. It doesn't cost much
+to run. I think it cost 10 to 30 cents a
+ 
+to run. I think it cost 10 to 30 cents a
+month to run. There's no platform lock
+ 
+month to run. There's no platform lock
+in the way I recommended it and there's
+ 
+in the way I recommended it and there's
+no amnesia. But one of the things that
+ 
+no amnesia. But one of the things that
+we were missing in this whole story was
+ 
+we were missing in this whole story was
+the heartbeat, a way for the agent to
+ 
+the heartbeat, a way for the agent to
+wake up on its own, to check on things,
+ 
+wake up on its own, to check on things,
+to act on what it finds, and to go back
+ 
+to act on what it finds, and to go back
+to sleep without you being the one to
+ 
+to sleep without you being the one to
+poke it every time. Slash loop is that
+ 
+poke it every time. Slash loop is that
+heartbeat. It solves proactivity for
+ 
+heartbeat. It solves proactivity for
+agents. And it doesn't just solve it for
+ 
+agents. And it doesn't just solve it for
+people who built my open brain version
+ 
+people who built my open brain version
+because my open brain version, it's just
+ 
+because my open brain version, it's just
+a SQL database, right? Like it's a SQL
+ 
+a SQL database, right? Like it's a SQL
+database tied to an MCP server. It's not
+ 
+database tied to an MCP server. It's not
+super special on its own. It's the
+ 
+super special on its own. It's the
+components that come together that make
+ 
+components that come together that make
+the agent special. And so what I want
+ 
+the agent special. And so what I want
+you to recognize is that what we are
+ 
+you to recognize is that what we are
+seeing out there more and more is all
+ 
+seeing out there more and more is all
+the components you need to put together
+ 
+the components you need to put together
+a personal agent that does real
+ 
+a personal agent that does real
+meaningful proactive work for you. And
+ 
+meaningful proactive work for you. And
+that's what this video is all about. How
+ 
+that's what this video is all about. How
+do we name those Lego bricks like memory
+ 
+do we name those Lego bricks like memory
+and productivity and tools? How do we
+ 
+and productivity and tools? How do we
+put them together in ways that are
+ 
+put them together in ways that are
+useful for us to do real work? And what
+ 
+useful for us to do real work? And what
+does that look like in practice? Now, if
+ 
+does that look like in practice? Now, if
+you've already built OpenBrain and if
+ 
+you've already built OpenBrain and if
+you've already connected it to tools,
+ 
+you've already connected it to tools,
+you're so close, right? You can just add
+ 
+you're so close, right? You can just add
+/ loop and now you have a proactive
+ 
+/ loop and now you have a proactive
+agent. And that is the entire reason I
+ 
+agent. And that is the entire reason I
+recommended setting up a SQL database to
+ 
+recommended setting up a SQL database to
+act as a memory store and sticking it
+ 
+act as a memory store and sticking it
+behind an MCP server. It is so simple.
+ 
+behind an MCP server. It is so simple.
+It works with you when new launches
+ 
+It works with you when new launches
+happen. And so, a new launch happened
+ 
+happen. And so, a new launch happened
+that I didn't plan on called / loop. And
+ 
+that I didn't plan on called / loop. And
+it conveniently, strategically
+ 
+it conveniently, strategically
+reinforces the value we've already
+ 
+reinforces the value we've already
+built. That is why you think about what
+ 
+built. That is why you think about what
+you choose to design before you design
+ 
+you choose to design before you design
+and implement it. We want to build our
+ 
+and implement it. We want to build our
+agentic systems whether they're personal
+ 
+agentic systems whether they're personal
+or professional so that they are in line
+ 
+or professional so that they are in line
+with where the ecosystem is going. And
+ 
+with where the ecosystem is going. And
+that's what we're doing here. You might
+ 
+that's what we're doing here. You might
+wonder what is a real example, Nate? Why
+ 
+wonder what is a real example, Nate? Why
+do we care about memory and tools and
+ 
+do we care about memory and tools and
+productivity? What is it about those
+ 
+productivity? What is it about those
+three that is magic with an agent? Start
+ 
+three that is magic with an agent? Start
+with a really simple case. You're trying
+ 
+with a really simple case. You're trying
+to get your energy levels under control
+ 
+to get your energy levels under control
+and you ask an agent to check in with
+ 
+and you ask an agent to check in with
+you every morning with SL loop and no
+ 
+you every morning with SL loop and no
+memory system. Let's say you're not
+ 
+memory system. Let's say you're not
+hooked up to open brain. You're not
+ 
+hooked up to open brain. You're not
+hooked up to any other memory system.
+ 
+hooked up to any other memory system.
+The agent just asks how you slept, what
+ 
+The agent just asks how you slept, what
+you ate, and how you feel. If you say,
+ 
+you ate, and how you feel. If you say,
+"I'm tired today and I skipped breakfast
+ 
+"I'm tired today and I skipped breakfast
+and I feel groggy." Will say, "Drink
+ 
+and I feel groggy." Will say, "Drink
+water, take a walk, eat something." And
+ 
+water, take a walk, eat something." And
+tomorrow, if it asks again and you say,
+ 
+tomorrow, if it asks again and you say,
+"Tired, had coffee but no food, headache
+ 
+"Tired, had coffee but no food, headache
+by 2 p.m., it'll give you more advice.
+ 
+by 2 p.m., it'll give you more advice.
+eat a real meal. This is already a big
+ 
+eat a real meal. This is already a big
+step, right? It's nice that the agent is
+ 
+step, right? It's nice that the agent is
+proactive and Claude gives you this
+ 
+proactive and Claude gives you this
+without any kind of memory system at
+ 
+without any kind of memory system at
+all. But think about what happens when
+ 
+all. But think about what happens when
+the system gets memory because right now
+ 
+the system gets memory because right now
+in this example, the agent has no
+ 
+in this example, the agent has no
+memory. It doesn't know that you've done
+ 
+memory. It doesn't know that you've done
+this two or three days in a row. It
+ 
+this two or three days in a row. It
+doesn't realize you've been tired nine
+ 
+doesn't realize you've been tired nine
+of the last 12 mornings. What happens if
+ 
+of the last 12 mornings. What happens if
+the agent recognizes the pattern? That
+ 
+the agent recognizes the pattern? That
+is what memory gives the agent. And that
+ 
+is what memory gives the agent. And that
+is why you have to think about how to
+ 
+is why you have to think about how to
+stack these Legos together to get real
+ 
+stack these Legos together to get real
+agentic workflows and long-term value.
+ 
+agentic workflows and long-term value.
+So let's say the agent does a morning
+ 
+So let's say the agent does a morning
+check-in, but now it has a SQL database.
+ 
+check-in, but now it has a SQL database.
+It could be open brain. It could be
+ 
+It could be open brain. It could be
+whatever other implementation you want.
+ 
+whatever other implementation you want.
+It writes what you report, energy
+ 
+It writes what you report, energy
+levels, sleep quality, and meals back to
+ 
+levels, sleep quality, and meals back to
+the database. The next morning, before
+ 
+the database. The next morning, before
+it gives you advice, it reads what it
+ 
+it gives you advice, it reads what it
+wrote yesterday and the day before and
+ 
+wrote yesterday and the day before and
+the week before that. Hey, you've
+ 
+the week before that. Hey, you've
+reported low energy nine of the last 12
+ 
+reported low energy nine of the last 12
+mornings. the three good mornings were
+ 
+mornings. the three good mornings were
+the, you know, the 1st of March, the
+ 
+the, you know, the 1st of March, the
+4th, and the 7th. If we look at what
+ 
+4th, and the 7th. If we look at what
+those days had in common, it then
+ 
+those days had in common, it then
+queries the brain and finds its own
+ 
+queries the brain and finds its own
+notes. All three followed evenings where
+ 
+notes. All three followed evenings where
+you ate before 8:00 p.m., right? Your
+ 
+you ate before 8:00 p.m., right? Your
+energy problems. And and then look at
+ 
+energy problems. And and then look at
+what the agent can do. Hey, your energy
+ 
+what the agent can do. Hey, your energy
+problems seem to correlate strongly with
+ 
+problems seem to correlate strongly with
+late eating and late sleep, not with
+ 
+late eating and late sleep, not with
+caffeine. So, the caffeine experiment
+ 
+caffeine. So, the caffeine experiment
+that you ran a couple of weeks ago
+ 
+that you ran a couple of weeks ago
+actually didn't help because the
+ 
+actually didn't help because the
+underlying pattern is your meal timing.
+ 
+underlying pattern is your meal timing.
+Look what happened. The agent didn't
+ 
+Look what happened. The agent didn't
+just respond to your morning complaint.
+ 
+just respond to your morning complaint.
+It recognized a pattern across weeks,
+ 
+It recognized a pattern across weeks,
+retrieved its own prior observations,
+ 
+retrieved its own prior observations,
+identified the real variable, and
+ 
+identified the real variable, and
+dismissed the one that didn't work, and
+ 
+dismissed the one that didn't work, and
+then gave you a specific action tied to
+ 
+then gave you a specific action tied to
+evidence that it put together itself.
+ 
+evidence that it put together itself.
+That is the difference between a parrot
+ 
+That is the difference between a parrot
+that repeats a phrase, which is what you
+ 
+that repeats a phrase, which is what you
+get with loop, and a detective that
+ 
+get with loop, and a detective that
+builds a case, which is what you get
+ 
+builds a case, which is what you get
+when you combine memory and proactivity.
+ 
+when you combine memory and proactivity.
+One recites, the other accumulates
+ 
+One recites, the other accumulates
+evidence and acts on a pattern. You have
+ 
+evidence and acts on a pattern. You have
+no pattern recognition without memory.
+ 
+no pattern recognition without memory.
+This same principle, by the way, if you
+ 
+This same principle, by the way, if you
+think this is only a personal example,
+ 
+think this is only a personal example,
+it obviously scales to business, too.
+ 
+it obviously scales to business, too.
+Take customer success. An agent runs
+ 
+Take customer success. An agent runs
+weekly health checks across your
+ 
+weekly health checks across your
+accounts, usage metrics, support
+ 
+accounts, usage metrics, support
+tickets, engagement data. Without
+ 
+tickets, engagement data. Without
+memory, it tells you, hey, usage is down
+ 
+memory, it tells you, hey, usage is down
+15% and moves on for this particular
+ 
+15% and moves on for this particular
+client. With memory, it reads what it
+ 
+client. With memory, it reads what it
+wrote last week, sees that usage was
+ 
+wrote last week, sees that usage was
+down 15% prior week and is now down 28%
+ 
+down 15% prior week and is now down 28%
+total, and it finds a similar example
+ 
+total, and it finds a similar example
+with a similar trajectory from 6 months
+ 
+with a similar trajectory from 6 months
+ago, also in the memory database. And
+ 
+ago, also in the memory database. And
+then it comes out and says, "Hey, this
+ 
+then it comes out and says, "Hey, this
+is a pattern we've seen before. It looks
+ 
+is a pattern we've seen before. It looks
+like that account really went down the
+ 
+like that account really went down the
+drain after 3 weeks. We want to avoid
+ 
+drain after 3 weeks. We want to avoid
+that. Let's go flag this for executive
+ 
+that. Let's go flag this for executive
+outreach this week. Again, the agent
+ 
+outreach this week. Again, the agent
+didn't just parrot a metric. It pattern
+ 
+didn't just parrot a metric. It pattern
+matched against its own history of
+ 
+matched against its own history of
+account failures and recommended action
+ 
+account failures and recommended action
+with a deadline. Proactivity got it
+ 
+with a deadline. Proactivity got it
+going. Memory made it smart. The two
+ 
+going. Memory made it smart. The two
+together are needed. So, now we have an
+ 
+together are needed. So, now we have an
+agent that can wake up on its own and
+ 
+agent that can wake up on its own and
+learn from what it finds. But we're not
+ 
+learn from what it finds. But we're not
+done yet. I mentioned tools earlier in
+ 
+done yet. I mentioned tools earlier in
+the video. I want to dig into what tools
+ 
+the video. I want to dig into what tools
+bring you because so far the agent can
+ 
+bring you because so far the agent can
+only talk to you in this example. The
+ 
+only talk to you in this example. The
+third primitive tools really changes
+ 
+third primitive tools really changes
+this. And I'm using these specific
+ 
+this. And I'm using these specific
+examples because I think that so often
+ 
+examples because I think that so often
+when I talk about agents, people think
+ 
+when I talk about agents, people think
+of them as little guys. And that's
+ 
+of them as little guys. And that's
+great, but you have to understand what
+ 
+great, but you have to understand what
+those little guys do and what what
+ 
+those little guys do and what what
+components come together to make them
+ 
+components come together to make them
+able to do useful work. Tools are one of
+ 
+able to do useful work. Tools are one of
+those big pieces. They really do give
+ 
+those big pieces. They really do give
+the agent hands. In software terms, a
+ 
+the agent hands. In software terms, a
+tool is very simple. It can enable an
+ 
+tool is very simple. It can enable an
+agent to pull data from systems to build
+ 
+agent to pull data from systems to build
+stuff like generate an artifact, write
+ 
+stuff like generate an artifact, write
+data. It can trigger a whole workflow.
+ 
+data. It can trigger a whole workflow.
+It can reach to another service where
+ 
+It can reach to another service where
+other work lives. All of those things
+ 
+other work lives. All of those things
+are tools, but I think that that's
+ 
+are tools, but I think that that's
+sometimes too abstract. So, let me give
+ 
+sometimes too abstract. So, let me give
+you a specific example. Let's say you go
+ 
+you a specific example. Let's say you go
+to a networking happy hour every Friday
+ 
+to a networking happy hour every Friday
+evening. Your agent knows this because
+ 
+evening. Your agent knows this because
+it's in the brain because you've been
+ 
+it's in the brain because you've been
+doing a good job logging it, which I
+ 
+doing a good job logging it, which I
+talked about in a prior video. On Friday
+ 
+talked about in a prior video. On Friday
+afternoon, the /loop command that
+ 
+afternoon, the /loop command that
+Anthropic launched fires. The agent
+ 
+Anthropic launched fires. The agent
+queries OpenBrain for every person
+ 
+queries OpenBrain for every person
+you've interacted with in the past
+ 
+you've interacted with in the past
+couple of weeks. It looks for meetings,
+ 
+couple of weeks. It looks for meetings,
+for emails, for Slack threads. It pulls
+ 
+for emails, for Slack threads. It pulls
+context on who they are, what you talked
+ 
+context on who they are, what you talked
+about, what's still outstanding. Then it
+ 
+about, what's still outstanding. Then it
+calls a tool. Maybe it's Remotion. It's
+ 
+calls a tool. Maybe it's Remotion. It's
+a video generation tool that you can
+ 
+a video generation tool that you can
+connect via MCP. And yes, I have a guide
+ 
+connect via MCP. And yes, I have a guide
+for this. The agent passes all those
+ 
+for this. The agent passes all those
+names, those conversation summaries, all
+ 
+names, those conversation summaries, all
+of that context to Remotion and
+ 
+of that context to Remotion and
+generates a personalized briefing video
+ 
+generates a personalized briefing video
+for you with faces, talking points,
+ 
+for you with faces, talking points,
+follow-ups you owe that you can watch on
+ 
+follow-ups you owe that you can watch on
+the way to the event.
+ 
+the way to the event.
+&gt;&gt; Yeah. So, he's not making that up.
+ 
+&gt;&gt; Yeah. So, he's not making that up.
+Claude code can call Remotion through
+ 
+Claude code can call Remotion through
+MCP, hand it structured data from your
+ 
+MCP, hand it structured data from your
+open brain, names, context, talking
+ 
+open brain, names, context, talking
+points, and Remotion renders an actual
+ 
+points, and Remotion renders an actual
+video. The agent writes the script, the
+ 
+video. The agent writes the script, the
+tool renders the frames. The loop means
+ 
+tool renders the frames. The loop means
+it happens on a schedule without you
+ 
+it happens on a schedule without you
+asking. In fact, this video, the one
+ 
+asking. In fact, this video, the one
+you're watching right now, Claude built
+ 
+you're watching right now, Claude built
+it. not a text dump, a produced visual
+ 
+it. not a text dump, a produced visual
+briefing built from your own data. The
+ 
+briefing built from your own data. The
+agent passes on the names, the
+ 
+agent passes on the names, the
+conversation summaries, the context to
+ 
+conversation summaries, the context to
+Remotion and generates a personalized,
+ 
+Remotion and generates a personalized,
+detailed briefing video for you that you
+ 
+detailed briefing video for you that you
+can watch on the way to the event with
+ 
+can watch on the way to the event with
+talking points, follow-ups, people you
+ 
+talking points, follow-ups, people you
+should focus on. It's not just a text
+ 
+should focus on. It's not just a text
+dump. You actually get a a visual
+ 
+dump. You actually get a a visual
+briefing built from your own data
+ 
+briefing built from your own data
+assembled by the agent, rendered by a
+ 
+assembled by the agent, rendered by a
+tool, delivered on a schedule. That is
+ 
+tool, delivered on a schedule. That is
+tools plus memory plus proactivity
+ 
+tools plus memory plus proactivity
+working together to do useful work. Or
+ 
+working together to do useful work. Or
+maybe you don't need a video. Maybe the
+ 
+maybe you don't need a video. Maybe the
+agent just queries your calendar and it
+ 
+agent just queries your calendar and it
+cross references it with your memory
+ 
+cross references it with your memory
+system and it sends you a Slack message.
+ 
+system and it sends you a Slack message.
+Hey, you're seeing Sarah tonight. Last
+ 
+Hey, you're seeing Sarah tonight. Last
+time you talked, she mentioned her team
+ 
+time you talked, she mentioned her team
+was evaluating a new data platform. You
+ 
+was evaluating a new data platform. You
+said you'd send her the write up, but
+ 
+said you'd send her the write up, but
+you didn't because I've been looking and
+ 
+you didn't because I've been looking and
+you didn't. Here's that link. you might
+ 
+you didn't. Here's that link. you might
+want to send it before you walk in the
+ 
+want to send it before you walk in the
+door.
+ 
+door.
+This sounds like magic, but these kinds
+ 
+This sounds like magic, but these kinds
+of magical moments are actually built on
+ 
+of magical moments are actually built on
+really simple building blocks. And the
+ 
+really simple building blocks. And the
+thing that makes sloop a big deal is it
+ 
+thing that makes sloop a big deal is it
+is one of those core building blocks.
+ 
+is one of those core building blocks.
+And you now no longer have to go and get
+ 
+And you now no longer have to go and get
+a special extra addition to your claude
+ 
+a special extra addition to your claude
+code to do that. Because I'll be honest
+ 
+code to do that. Because I'll be honest
+with you, there were people who were
+ 
+with you, there were people who were
+doing stuff like this before. In fact,
+ 
+doing stuff like this before. In fact,
+the whole open phenomenon can be
+ 
+the whole open phenomenon can be
+simplified as saying Peter Steinberger
+ 
+simplified as saying Peter Steinberger
+put together an LLM with memory plus
+ 
+put together an LLM with memory plus
+tools and made sure you could message it
+ 
+tools and made sure you could message it
+from a messaging platform.
+ 
+from a messaging platform.
+It's actually not that complicated. So
+ 
+It's actually not that complicated. So
+when you see a launch like this from
+ 
+when you see a launch like this from
+Anthropic, you should be looking at it
+ 
+Anthropic, you should be looking at it
+in the context of the agent openclaw
+ 
+in the context of the agent openclaw
+movement because that has reminded the
+ 
+movement because that has reminded the
+world that we are hungry for agents. We
+ 
+world that we are hungry for agents. We
+want agents that can do real work. You
+ 
+want agents that can do real work. You
+can look at the 200 some thousand GitHub
+ 
+can look at the 200 some thousand GitHub
+stars on OpenClaw. It's the fastest
+ 
+stars on OpenClaw. It's the fastest
+growing piece of software in history. In
+ 
+growing piece of software in history. In
+fact, Jensen Huang, the CEO of Invidia,
+ 
+fact, Jensen Huang, the CEO of Invidia,
+has called it the most consequential
+ 
+has called it the most consequential
+software launch in history. People are
+ 
+software launch in history. People are
+so hungry for agents. And the beautiful
+ 
+so hungry for agents. And the beautiful
+thing is you don't have to use OpenClaw
+ 
+thing is you don't have to use OpenClaw
+to get OpenClaw like work done to have
+ 
+to get OpenClaw like work done to have
+an agent like OpenClaw. And that's what
+ 
+an agent like OpenClaw. And that's what
+you get if you put together something
+ 
+you get if you put together something
+like a little SQL database with an MCP
+ 
+like a little SQL database with an MCP
+server which I call open brain and
+ 
+server which I call open brain and
+a/loop command from Anthropic and a
+ 
+a/loop command from Anthropic and a
+little bit of tool use. It's really not
+ 
+little bit of tool use. It's really not
+super complicated and I think it's
+ 
+super complicated and I think it's
+really important because we can do
+ 
+really important because we can do
+things that we would never be able to do
+ 
+things that we would never be able to do
+otherwise. I can't tell you. I I know I
+ 
+otherwise. I can't tell you. I I know I
+used the happy hour example, but that's
+ 
+used the happy hour example, but that's
+partly because whenever I've been
+ 
+partly because whenever I've been
+networking, it's always been tough for
+ 
+networking, it's always been tough for
+me to think, what do I strategically
+ 
+me to think, what do I strategically
+want to accomplish here? What matters?
+ 
+want to accomplish here? What matters?
+Who should I talk to? Well, these kinds
+ 
+Who should I talk to? Well, these kinds
+of small personal challenges add up. And
+ 
+of small personal challenges add up. And
+you may not realize how many different
+ 
+you may not realize how many different
+personal and professional gaps you face
+ 
+personal and professional gaps you face
+that an agent could close. And that's
+ 
+that an agent could close. And that's
+why I care about being specific. So, I'm
+ 
+why I care about being specific. So, I'm
+going to be more specific. I'm going to
+ 
+going to be more specific. I'm going to
+keep talking about examples here. Let's
+ 
+keep talking about examples here. Let's
+say you do job applications. You do them
+ 
+say you do job applications. You do them
+every Thursday afternoon. Sloop fires at
+ 
+every Thursday afternoon. Sloop fires at
+noon on Thursday. The agent reads your
+ 
+noon on Thursday. The agent reads your
+open brain for what happened since last
+ 
+open brain for what happened since last
+Thursday. It reads it for projects you
+ 
+Thursday. It reads it for projects you
+shipped, for conversations that went
+ 
+shipped, for conversations that went
+well, for metrics that moved. It pulls
+ 
+well, for metrics that moved. It pulls
+your resume from a connected drive. It
+ 
+your resume from a connected drive. It
+writes the draft to a doc and pings you,
+ 
+writes the draft to a doc and pings you,
+hey, I updated the cover letter already.
+ 
+hey, I updated the cover letter already.
+I added the deployment metric from
+ 
+I added the deployment metric from
+Tuesday and the client testimonial from
+ 
+Tuesday and the client testimonial from
+the Slack thread on Wednesday. please
+ 
+the Slack thread on Wednesday. please
+review for your application session. In
+ 
+review for your application session. In
+other words, you have a proactive buddy
+ 
+other words, you have a proactive buddy
+on the job application search. And yes,
+ 
+on the job application search. And yes,
+I know updating your cover letter might
+ 
+I know updating your cover letter might
+not seem glamorous, but now it's the
+ 
+not seem glamorous, but now it's the
+agent's job. And it can also help you in
+ 
+agent's job. And it can also help you in
+other ways. You can have an agent with
+ 
+other ways. You can have an agent with
+toolled access go out and scrape for job
+ 
+toolled access go out and scrape for job
+postings. You can have an agent with
+ 
+postings. You can have an agent with
+tool access go out and look at how to
+ 
+tool access go out and look at how to
+adjust your resume to job postings
+ 
+adjust your resume to job postings
+proactively so you can review it without
+ 
+proactively so you can review it without
+having to touch it yourself. There are
+ 
+having to touch it yourself. There are
+all kinds of things that you can solve
+ 
+all kinds of things that you can solve
+proactively. When you think of the world
+ 
+proactively. When you think of the world
+as a set of problems that you can solve
+ 
+as a set of problems that you can solve
+with something that has memory and
+ 
+with something that has memory and
+something that has tools and something
+ 
+something that has tools and something
+that has a schedule, it is amazing how
+ 
+that has a schedule, it is amazing how
+much of the world that covers from a
+ 
+much of the world that covers from a
+task perspective. Let's say you're
+ 
+task perspective. Let's say you're
+managing a content calendar. The agent
+ 
+managing a content calendar. The agent
+is going to run every morning. It's
+ 
+is going to run every morning. It's
+going to check what's scheduled to
+ 
+going to check what's scheduled to
+publish this week. It's going to read
+ 
+publish this week. It's going to read
+the open brain for any recent news or
+ 
+the open brain for any recent news or
+conversations that might be relevant to
+ 
+conversations that might be relevant to
+upcoming posts. It's going to search the
+ 
+upcoming posts. It's going to search the
+web for breaking developments in your
+ 
+web for breaking developments in your
+topic areas. that's going to flag
+ 
+topic areas. that's going to flag
+conflicts or opportunities. Hey, your
+ 
+conflicts or opportunities. Hey, your
+Thursday post on AI coding tools
+ 
+Thursday post on AI coding tools
+references cursor pricing. They
+ 
+references cursor pricing. They
+announced a new tier yesterday. You
+ 
+announced a new tier yesterday. You
+might want to update the comparison
+ 
+might want to update the comparison
+table before it goes live. Each of these
+ 
+table before it goes live. Each of these
+follows the same agent cycle, right? The
+ 
+follows the same agent cycle, right? The
+agent proactively awakens with /loop. It
+ 
+agent proactively awakens with /loop. It
+proactively reads a memory system. It
+ 
+proactively reads a memory system. It
+proactively calls tools and it takes an
+ 
+proactively calls tools and it takes an
+action and then it writes that action
+ 
+action and then it writes that action
+result back into the memory system. So
+ 
+result back into the memory system. So
+you set the rhythm once and then you
+ 
+you set the rhythm once and then you
+don't have to think about it again for
+ 
+don't have to think about it again for
+anything that's scheduled. That's not
+ 
+anything that's scheduled. That's not
+really a chatbot. That's not even an
+ 
+really a chatbot. That's not even an
+assistant you have to remember to ask.
+ 
+assistant you have to remember to ask.
+It means that it's a proactive agent
+ 
+It means that it's a proactive agent
+that comes to you. Honestly, I have
+ 
+that comes to you. Honestly, I have
+worked with people who don't do this,
+ 
+worked with people who don't do this,
+right? I have worked with people that
+ 
+right? I have worked with people that
+you have to chase for every single
+ 
+you have to chase for every single
+deliverable. Do you know how tiring that
+ 
+deliverable. Do you know how tiring that
+is? That is the difference that
+ 
+is? That is the difference that
+proactivity makes. And that is why the
+ 
+proactivity makes. And that is why the
+sloop command is such a big deal. But
+ 
+sloop command is such a big deal. But
+there's one thing more that I want to
+ 
+there's one thing more that I want to
+call out here. You might be thinking of
+ 
+call out here. You might be thinking of
+sloop as this is a command that helps me
+ 
+sloop as this is a command that helps me
+on the next job. And that's true. But
+ 
+on the next job. And that's true. But
+the larger principle here is that the
+ 
+the larger principle here is that the
+value of setting up a loop like I'm
+ 
+value of setting up a loop like I'm
+describing a proactive action where
+ 
+describing a proactive action where
+you're reading and writing to a database
+ 
+you're reading and writing to a database
+and improving memory over time. It's the
+ 
+and improving memory over time. It's the
+accumulation across cycles that matters
+ 
+accumulation across cycles that matters
+here. Right? One of the most popular
+ 
+here. Right? One of the most popular
+uses of AI agents in the last few months
+ 
+uses of AI agents in the last few months
+is the overnight coding loop. If you
+ 
+is the overnight coding loop. If you
+give your agent a goal, like improving
+ 
+give your agent a goal, like improving
+test coverage or refactoring a module or
+ 
+test coverage or refactoring a module or
+migrating a dependency or honestly just
+ 
+migrating a dependency or honestly just
+doing research for you, so you can look
+ 
+doing research for you, so you can look
+at job postings in the morning or you
+ 
+at job postings in the morning or you
+can look at competitive news in the
+ 
+can look at competitive news in the
+morning or you can look at AI news in
+ 
+morning or you can look at AI news in
+the morning and the agent will just work
+ 
+the morning and the agent will just work
+on that and it will work through the
+ 
+on that and it will work through the
+night and it will work while you're not
+ 
+night and it will work while you're not
+at the desk. That entire technique was
+ 
+at the desk. That entire technique was
+happening before Sloop launched and it
+ 
+happening before Sloop launched and it
+blew up because it works. Developers
+ 
+blew up because it works. Developers
+went from non-working software to
+ 
+went from non-working software to
+software that mostly worked overnight or
+ 
+software that mostly worked overnight or
+entirely worked overnight. I saw
+ 
+entirely worked overnight. I saw
+multiple examples because they were able
+ 
+multiple examples because they were able
+to get the agent to do a loop over and
+ 
+to get the agent to do a loop over and
+over and over and over again until it
+ 
+over and over and over again until it
+got a job completely done. But until
+ 
+got a job completely done. But until
+now, implementations like that required
+ 
+now, implementations like that required
+some degree of scaffolding or structure
+ 
+some degree of scaffolding or structure
+around your agent implementation. You
+ 
+around your agent implementation. You
+had to have external tools that managed
+ 
+had to have external tools that managed
+the loop that managed restarting the
+ 
+the loop that managed restarting the
+agent and going again. And you had to
+ 
+agent and going again. And you had to
+have markdown files to carry context
+ 
+have markdown files to carry context
+between iterations. And you had to have
+ 
+between iterations. And you had to have
+completion conditions, we call them
+ 
+completion conditions, we call them
+eval, bolted on with duct tape. And the
+ 
+eval, bolted on with duct tape. And the
+reason for all of this was pretty
+ 
+reason for all of this was pretty
+simple. The agent had no native way to
+ 
+simple. The agent had no native way to
+run on a schedule and no native way to
+ 
+run on a schedule and no native way to
+remember what it did. Slash loop solves
+ 
+remember what it did. Slash loop solves
+the first problem. It solves how the
+ 
+the first problem. It solves how the
+agent remembers to do something on a
+ 
+agent remembers to do something on a
+schedule. If you have a memory system,
+ 
+schedule. If you have a memory system,
+you can address that second piece as
+ 
+you can address that second piece as
+well. Together, that turns a hack into
+ 
+well. Together, that turns a hack into
+architecture.
+ 
+architecture.
+Here's the principle that ties all of
+ 
+Here's the principle that ties all of
+this together. The value of a loop isn't
+ 
+this together. The value of a loop isn't
+in any single cycle. It's in the
+ 
+in any single cycle. It's in the
+accumulation across cycles. Let me give
+ 
+accumulation across cycles. Let me give
+you an example. Over the past few
+ 
+you an example. Over the past few
+months, developers have been really,
+ 
+months, developers have been really,
+really excited about putting together
+ 
+really excited about putting together
+agent scaffolding that lets an agent do
+ 
+agent scaffolding that lets an agent do
+a task over and over again until it
+ 
+a task over and over again until it
+passes a certain test. And this has
+ 
+passes a certain test. And this has
+allowed developers to go to sleep and
+ 
+allowed developers to go to sleep and
+wake up to working software. And the
+ 
+wake up to working software. And the
+three or four building blocks in there
+ 
+three or four building blocks in there
+that really matter are that the agent is
+ 
+that really matter are that the agent is
+proactive, that it can repeat tasks,
+ 
+proactive, that it can repeat tasks,
+that it knows what it did last time, and
+ 
+that it knows what it did last time, and
+that it is able to pass a series of
+ 
+that it is able to pass a series of
+tests to make sure the software actually
+ 
+tests to make sure the software actually
+runs before it says it's really, really
+ 
+runs before it says it's really, really
+done. Now, that has required developer
+ 
+done. Now, that has required developer
+scaffolding. You have to get a framework
+ 
+scaffolding. You have to get a framework
+to make that work or you have to roll
+ 
+to make that work or you have to roll
+your own framework. And developers are
+ 
+your own framework. And developers are
+fairly technical and they have no
+ 
+fairly technical and they have no
+trouble doing that. For the rest of us,
+ 
+trouble doing that. For the rest of us,
+that can be challenging. And so one of
+ 
+that can be challenging. And so one of
+the things I notice is that these
+ 
+the things I notice is that these
+developer patterns start to move into
+ 
+developer patterns start to move into
+non-developer spaces. And that's a lot
+ 
+non-developer spaces. And that's a lot
+of what loop does for us because it
+ 
+of what loop does for us because it
+means that we can be proactive across
+ 
+means that we can be proactive across
+time and we can get accumulated work
+ 
+time and we can get accumulated work
+done if we're talking with a memory
+ 
+done if we're talking with a memory
+system like open brain or something
+ 
+system like open brain or something
+else. And that matters a ton because you
+ 
+else. And that matters a ton because you
+can get a lot more work done if you have
+ 
+can get a lot more work done if you have
+accumulating
+ 
+accumulating
+proactivity cycles which is really what
+ 
+proactivity cycles which is really what
+loop gives you.
+ 
+loop gives you.
+Let's start with a specific example to
+ 
+Let's start with a specific example to
+see how these cycles accumulate net
+ 
+see how these cycles accumulate net
+value over time. Let's say your agent
+ 
+value over time. Let's say your agent
+runs every morning at 6:00 a.m., but
+ 
+runs every morning at 6:00 a.m., but
+this time it's running against a sales
+ 
+this time it's running against a sales
+pipeline. Every cycle it reads the
+ 
+pipeline. Every cycle it reads the
+memory system. And by the way, OpenBrain
+ 
+memory system. And by the way, OpenBrain
+does scale into small corporate
+ 
+does scale into small corporate
+contexts. But I will be honest with you,
+ 
+contexts. But I will be honest with you,
+the point here is not to use a
+ 
+the point here is not to use a
+particular thing that I'm pedalling.
+ 
+particular thing that I'm pedalling.
+That's not the point. It's just a SQL
+ 
+That's not the point. It's just a SQL
+database behind an MCP server. Let's say
+ 
+database behind an MCP server. Let's say
+this. Your agent runs every morning at
+ 
+this. Your agent runs every morning at
+6:00 a.m. against your sales pipeline.
+ 
+6:00 a.m. against your sales pipeline.
+And if you're wondering, can I use this
+ 
+And if you're wondering, can I use this
+in business? Can I have an agent that
+ 
+in business? Can I have an agent that
+queries memory? Could could my open
+ 
+queries memory? Could could my open
+brain work for this? There are people in
+ 
+brain work for this? There are people in
+the community that are doing exactly
+ 
+the community that are doing exactly
+this. So, yes, it does. Each cycle, it
+ 
+this. So, yes, it does. Each cycle, it
+reads the memory system and it discovers
+ 
+reads the memory system and it discovers
+something like this. Yesterday, I
+ 
+something like this. Yesterday, I
+reviewed 34 inbound leads. Let's say
+ 
+reviewed 34 inbound leads. Let's say
+eight of them met my ICP ideal customer
+ 
+eight of them met my ICP ideal customer
+profile criteria. Of those, three
+ 
+profile criteria. Of those, three
+already had active conversations going
+ 
+already had active conversations going
+and I flagged them for follow-up. The
+ 
+and I flagged them for follow-up. The
+agent is doing all this proactively,
+ 
+agent is doing all this proactively,
+right? Two were duplicates of leads that
+ 
+right? Two were duplicates of leads that
+we lost in Q2. I tagged those as win
+ 
+we lost in Q2. I tagged those as win
+back. The remaining three are net new
+ 
+back. The remaining three are net new
+and qualified. I drafted first touch
+ 
+and qualified. I drafted first touch
+emails using the messaging that got the
+ 
+emails using the messaging that got the
+highest reply rate last month. And so in
+ 
+highest reply rate last month. And so in
+this case, the agent is proactively
+ 
+this case, the agent is proactively
+looking at the database to look at
+ 
+looking at the database to look at
+previous touches from the sales team and
+ 
+previous touches from the sales team and
+it's using tools. And this is why it's
+ 
+it's using tools. And this is why it's
+so important to understand structures of
+ 
+so important to understand structures of
+agents because yes, you can do this with
+ 
+agents because yes, you can do this with
+an open brain implementation, but you
+ 
+an open brain implementation, but you
+can do the exact same thing if it's
+ 
+can do the exact same thing if it's
+talking to Salesforce and Salesforce is
+ 
+talking to Salesforce and Salesforce is
+your CRM of choice. The the principle is
+ 
+your CRM of choice. The the principle is
+the same. It's just Salesforce is acting
+ 
+the same. It's just Salesforce is acting
+as the memory system instead of
+ 
+as the memory system instead of
+something you built yourself. And the
+ 
+something you built yourself. And the
+beauty of these proactive cycles is that
+ 
+beauty of these proactive cycles is that
+they keep compounding. the agent can
+ 
+they keep compounding. the agent can
+pick up SMB emails tomorrow and it knows
+ 
+pick up SMB emails tomorrow and it knows
+it already drafted the emails to your
+ 
+it already drafted the emails to your
+ICP into enterprise and so it's going to
+ 
+ICP into enterprise and so it's going to
+go back and look at SMB leads and
+ 
+go back and look at SMB leads and
+recognize the work it did and move on to
+ 
+recognize the work it did and move on to
+the next task. And that combination of
+ 
+the next task. And that combination of
+proactivity and memory allows it to do
+ 
+proactivity and memory allows it to do
+the kind of proactive pattern matching
+ 
+the kind of proactive pattern matching
+and take action with tools that you
+ 
+and take action with tools that you
+could never do without those three Lego
+ 
+could never do without those three Lego
+bricks together. Without memory, without
+ 
+bricks together. Without memory, without
+proactivity, without tools. Ultimately,
+ 
+proactivity, without tools. Ultimately,
+the ability to build on these compound
+ 
+the ability to build on these compound
+loops is what enables agents to go from
+ 
+loops is what enables agents to go from
+just doing work to building momentum.
+ 
+just doing work to building momentum.
+And that's why it's so important to put
+ 
+And that's why it's so important to put
+these three primitives together.
+ 
+these three primitives together.
+Proactivity keeps the loop turning.
+ 
+Proactivity keeps the loop turning.
+Memory keeps each turn informed by the
+ 
+Memory keeps each turn informed by the
+previous turn. And tools let each turn
+ 
+previous turn. And tools let each turn
+actually change things in your work
+ 
+actually change things in your work
+environment. If you remove any one of
+ 
+environment. If you remove any one of
+the three, it's not really the same
+ 
+the three, it's not really the same
+agent anymore. I want to give you an
+ 
+agent anymore. I want to give you an
+example from just the past week or so
+ 
+example from just the past week or so
+that I think was a really big deal that
+ 
+that I think was a really big deal that
+most people didn't pay attention to.
+ 
+most people didn't pay attention to.
+Andre Karpathy open- sourced a project
+ 
+Andre Karpathy open- sourced a project
+called Auto Research. It gives an AI
+ 
+called Auto Research. It gives an AI
+agent a training setup for a small
+ 
+agent a training setup for a small
+language model, a single GPU and a clear
+ 
+language model, a single GPU and a clear
+success metric and then it lets it run
+ 
+success metric and then it lets it run
+experiments independently overnight. The
+ 
+experiments independently overnight. The
+agent modifies the code. It trains for
+ 
+agent modifies the code. It trains for
+exactly 5 minutes. It checks if a metric
+ 
+exactly 5 minutes. It checks if a metric
+improved. It keeps or discards the
+ 
+improved. It keeps or discards the
+results. and then it loops. You can run
+ 
+results. and then it loops. You can run
+about a 100 experiments overnight with
+ 
+about a 100 experiments overnight with
+zero human intervention. The key
+ 
+zero human intervention. The key
+architectural decision is the same one
+ 
+architectural decision is the same one
+we've been talking about in this video.
+ 
+we've been talking about in this video.
+It's a persistent log of what the agent
+ 
+It's a persistent log of what the agent
+tried, what worked, and what didn't.
+ 
+tried, what worked, and what didn't.
+Without that log, the agent would be
+ 
+Without that log, the agent would be
+running random experiments, no better
+ 
+running random experiments, no better
+than a brute force search. With it,
+ 
+than a brute force search. With it,
+every experiment is informed by the full
+ 
+every experiment is informed by the full
+history of previous experiments. The
+ 
+history of previous experiments. The
+search becomes intelligent and that
+ 
+search becomes intelligent and that
+enables the agent to converge on a
+ 
+enables the agent to converge on a
+better pattern. Shopify CEO Toby Luki is
+ 
+better pattern. Shopify CEO Toby Luki is
+one of the most technical CEOs out
+ 
+one of the most technical CEOs out
+there. He picked up this GitHub repo
+ 
+there. He picked up this GitHub repo
+from Andre Carpathy. It's out there.
+ 
+from Andre Carpathy. It's out there.
+Anybody can grab it. You could grab it.
+ 
+Anybody can grab it. You could grab it.
+And he made an agent optimized smaller
+ 
+And he made an agent optimized smaller
+model that outperformed a larger model
+ 
+model that outperformed a larger model
+that had been handtuned by a human. Not
+ 
+that had been handtuned by a human. Not
+because the agent was smarter in any
+ 
+because the agent was smarter in any
+given cycle, but because it ran a 100
+ 
+given cycle, but because it ran a 100
+cycles and remembered them. This is
+ 
+cycles and remembered them. This is
+really cool if you're into training LLMs
+ 
+really cool if you're into training LLMs
+to do stuff. And that's a great use case
+ 
+to do stuff. And that's a great use case
+on its own, but the principal scale,
+ 
+on its own, but the principal scale,
+even if you look at the idea of training
+ 
+even if you look at the idea of training
+an LLM and you're like, that is not for
+ 
+an LLM and you're like, that is not for
+me. Let's say you're tracking a
+ 
+me. Let's say you're tracking a
+competitor, you're researching a market,
+ 
+competitor, you're researching a market,
+you're monitoring regulatory changes in
+ 
+you're monitoring regulatory changes in
+your industry, you're following a
+ 
+your industry, you're following a
+technical domain like AI that moves
+ 
+technical domain like AI that moves
+really fast. Without memory, an agent
+ 
+really fast. Without memory, an agent
+checking on these things every morning
+ 
+checking on these things every morning
+gives you a snapshot. With memory, it
+ 
+gives you a snapshot. With memory, it
+works. And with memory plus tools, you
+ 
+works. And with memory plus tools, you
+can do really cool stuff. Now, if you're
+ 
+can do really cool stuff. Now, if you're
+really thinking, Nate, you're just
+ 
+really thinking, Nate, you're just
+describing OpenClaw, I am, but without
+ 
+describing OpenClaw, I am, but without
+the chaos. So, when I talked about
+ 
+the chaos. So, when I talked about
+OpenClaw, I had to talk about the fact
+ 
+OpenClaw, I had to talk about the fact
+that it was a security nightmare. That
+ 
+that it was a security nightmare. That
+people using OpenClaw were opening their
+ 
+people using OpenClaw were opening their
+networks to the wider internet, that
+ 
+networks to the wider internet, that
+they were giving their OpenClaw instance
+ 
+they were giving their OpenClaw instance
+access to data they shouldn't, they were
+ 
+access to data they shouldn't, they were
+downloading extensions for their
+ 
+downloading extensions for their
+OpenClaw that had severe security
+ 
+OpenClaw that had severe security
+vulnerabilities. And that is all really
+ 
+vulnerabilities. And that is all really
+true. Security researchers have called
+ 
+true. Security researchers have called
+OpenClaw a nightmare. And none of it has
+ 
+OpenClaw a nightmare. And none of it has
+slowed down the desire of people to have
+ 
+slowed down the desire of people to have
+agents. What's interesting is you can
+ 
+agents. What's interesting is you can
+get so many of the same capabilities
+ 
+get so many of the same capabilities
+just by stacking these primitives
+ 
+just by stacking these primitives
+together. And so you don't have to
+ 
+together. And so you don't have to
+specifically download the open claw
+ 
+specifically download the open claw
+instance to get an agent that has tools
+ 
+instance to get an agent that has tools
+and memory and proactivity. Now sloop
+ 
+and memory and proactivity. Now sloop
+gives you that capability. It gives you
+ 
+gives you that capability. It gives you
+the capability to have an autonomous
+ 
+the capability to have an autonomous
+agent plus a persistent memory with a
+ 
+agent plus a persistent memory with a
+little database like open brain or
+ 
+little database like open brain or
+something else plus tools that you can
+ 
+something else plus tools that you can
+act on. And so in this world, the
+ 
+act on. And so in this world, the
+heartbeat for this agent, the ability to
+ 
+heartbeat for this agent, the ability to
+do something on a rhythm comes directly
+ 
+do something on a rhythm comes directly
+from anthropic. It's a native command.
+ 
+from anthropic. It's a native command.
+It's not a bash script. It's not
+ 
+It's not a bash script. It's not
+something you download to run. The
+ 
+something you download to run. The
+memory lives in a database that you can
+ 
+memory lives in a database that you can
+control. It's accessed through a
+ 
+control. It's accessed through a
+standard protocol, not through an
+ 
+standard protocol, not through an
+orchestration layer with prompt
+ 
+orchestration layer with prompt
+injection vulnerabilities. So that
+ 
+injection vulnerabilities. So that
+allows you to get a lot of open claw-
+ 
+allows you to get a lot of open claw-
+like behavior without the open claw
+ 
+like behavior without the open claw
+software layer because the scheduling
+ 
+software layer because the scheduling
+belongs directly to enthropic. You can
+ 
+belongs directly to enthropic. You can
+have your own memory layer and you don't
+ 
+have your own memory layer and you don't
+have to touch the open claw protocol to
+ 
+have to touch the open claw protocol to
+get open claw like results. Now people
+ 
+get open claw like results. Now people
+will tell me but there's a lot more I
+ 
+will tell me but there's a lot more I
+can do with openclaw because it's a
+ 
+can do with openclaw because it's a
+fullyfledged out framework. undoubtedly
+ 
+fullyfledged out framework. undoubtedly
+true and I'll be direct about the gaps
+ 
+true and I'll be direct about the gaps
+because the point of this video has been
+ 
+because the point of this video has been
+to tell you why small changes like loop
+ 
+to tell you why small changes like loop
+are actually really big deals and you
+ 
+are actually really big deals and you
+should pay attention to them. So yes,
+ 
+should pay attention to them. So yes,
+there are gaps. For example, right now
+ 
+there are gaps. For example, right now
+there's no built-in done signal with
+ 
+there's no built-in done signal with
+/loop. It just runs until it expires or
+ 
+/loop. It just runs until it expires or
+you stop it. For goal directed work, you
+ 
+you stop it. For goal directed work, you
+will need to tell the agent to check the
+ 
+will need to tell the agent to check the
+brain for a completion state and stop
+ 
+brain for a completion state and stop
+when it finds one. Or you'll need to set
+ 
+when it finds one. Or you'll need to set
+up and run evals. And yes, I have a
+ 
+up and run evals. And yes, I have a
+little guide as a part of this video on
+ 
+little guide as a part of this video on
+Substack that helps you understand what
+ 
+Substack that helps you understand what
+an eval is without being scary. And so
+ 
+an eval is without being scary. And so
+there are absolutely ways that you can
+ 
+there are absolutely ways that you can
+do that. It's just going to take a
+ 
+do that. It's just going to take a
+little bit of extra work. And other
+ 
+little bit of extra work. And other
+limitations are real as well. Everything
+ 
+limitations are real as well. Everything
+is scoped to the active session you're
+ 
+is scoped to the active session you're
+in. If you close your laptop, this whole
+ 
+in. If you close your laptop, this whole
+proactive schedule doesn't work.
+ 
+proactive schedule doesn't work.
+Anthropic offers desktop level
+ 
+Anthropic offers desktop level
+scheduling, but really always on
+ 
+scheduling, but really always on
+operations across restarts. That's not
+ 
+operations across restarts. That's not
+an anthropic native capability and you'd
+ 
+an anthropic native capability and you'd
+have to build something for that
+ 
+have to build something for that
+differently. I will also admit that the
+ 
+differently. I will also admit that the
+skill ceiling is still real because
+ 
+skill ceiling is still real because
+slashloop is in cloud code and whether
+ 
+slashloop is in cloud code and whether
+we like it or not, even if some people
+ 
+we like it or not, even if some people
+who are non-technical like to use claude
+ 
+who are non-technical like to use claude
+code, it's still daunting. But one of
+ 
+code, it's still daunting. But one of
+the things I want you to recognize as
+ 
+the things I want you to recognize as
+you think about whether or not you want
+ 
+you think about whether or not you want
+to try something maybe scary like the
+ 
+to try something maybe scary like the
+terminal is that it's a way for you to
+ 
+terminal is that it's a way for you to
+time travel. Yes, the tools I'm talking
+ 
+time travel. Yes, the tools I'm talking
+about will eventually come through and
+ 
+about will eventually come through and
+be available in more user interface
+ 
+be available in more user interface
+friendly environments like co-work like
+ 
+friendly environments like co-work like
+Claude the chatbot like chat GPT it's
+ 
+Claude the chatbot like chat GPT it's
+going to happen but this is all coming
+ 
+going to happen but this is all coming
+to developers first because developers
+ 
+to developers first because developers
+in code are deliberate strategic beach
+ 
+in code are deliberate strategic beach
+heads for all of the hyperscalers right
+ 
+heads for all of the hyperscalers right
+now and I have separate videos on why
+ 
+now and I have separate videos on why
+that is and that means that the
+ 
+that is and that means that the
+developers get these agent capabilities
+ 
+developers get these agent capabilities
+before anybody else. And so if you're
+ 
+before anybody else. And so if you're
+willing to go to the terminal, you get
+ 
+willing to go to the terminal, you get
+free time travel. You get to go months
+ 
+free time travel. You get to go months
+and months ahead of everybody else just
+ 
+and months ahead of everybody else just
+by being willing to use a different
+ 
+by being willing to use a different
+window on your computer. If I told you
+ 
+window on your computer. If I told you
+you could time travel by using a
+ 
+you could time travel by using a
+different window on your computer, 99
+ 
+different window on your computer, 99
+out of 100 people would say, "I don't
+ 
+out of 100 people would say, "I don't
+believe you." And if they did believe
+ 
+believe you." And if they did believe
+me, they would immediately try it. Well,
+ 
+me, they would immediately try it. Well,
+that's what the terminal is right now.
+ 
+that's what the terminal is right now.
+If you're willing to jump in and just
+ 
+If you're willing to jump in and just
+dip a toe in, you can time travel. And
+ 
+dip a toe in, you can time travel. And
+you might wonder, why is Nate talking
+ 
+you might wonder, why is Nate talking
+about open brain? Is he trying to shill
+ 
+about open brain? Is he trying to shill
+something? I'm actually just trying to
+ 
+something? I'm actually just trying to
+build on what the community has built. A
+ 
+build on what the community has built. A
+bunch of you have built this thing
+ 
+bunch of you have built this thing
+already, so let's just use it. If you
+ 
+already, so let's just use it. If you
+have a memory system and it's doing a
+ 
+have a memory system and it's doing a
+job for you, why not take something like
+ 
+job for you, why not take something like
+/loop and give it a proactive heartbeat?
+ 
+/loop and give it a proactive heartbeat?
+That's super convenient. You don't have
+ 
+That's super convenient. You don't have
+to build the thing again. And if you're
+ 
+to build the thing again. And if you're
+like, what is open brain and want to
+ 
+like, what is open brain and want to
+build it, there's a guide out there for
+ 
+build it, there's a guide out there for
+that. No worries. The point is not that
+ 
+that. No worries. The point is not that
+you build my open brain, whatever that
+ 
+you build my open brain, whatever that
+is. that that was never a thing. It's
+ 
+is. that that was never a thing. It's
+just a SQL database on an MCP server.
+ 
+just a SQL database on an MCP server.
+The the point is that you give your
+ 
+The the point is that you give your
+agent a memory and you give it a tool
+ 
+agent a memory and you give it a tool
+set that it can act against. And then
+ 
+set that it can act against. And then
+you give it a proactive behavior loop,
+ 
+you give it a proactive behavior loop,
+which is what sloop is. And so it can go
+ 
+which is what sloop is. And so it can go
+and do things. As I've been saying, it's
+ 
+and do things. As I've been saying, it's
+not perfect. It can't do absolutely
+ 
+not perfect. It can't do absolutely
+everything open claw can do, but it can
+ 
+everything open claw can do, but it can
+do a lot. And depending on what you put
+ 
+do a lot. And depending on what you put
+in that memory, it will not have the
+ 
+in that memory, it will not have the
+same security issues. Now, as always,
+ 
+same security issues. Now, as always,
+this depends on common sense, right? If
+ 
+this depends on common sense, right? If
+you put hyperpersonal information into
+ 
+you put hyperpersonal information into
+your database and you give your agent a
+ 
+your database and you give your agent a
+tool like open access to the internet
+ 
+tool like open access to the internet
+and you don't constrain it properly, you
+ 
+and you don't constrain it properly, you
+could get in trouble. That's true. But
+ 
+could get in trouble. That's true. But
+if you build your database properly, if
+ 
+if you build your database properly, if
+you decide what the agent has access to
+ 
+you decide what the agent has access to
+and what it doesn't, and if you give
+ 
+and what it doesn't, and if you give
+them and if you give your agent proper
+ 
+them and if you give your agent proper
+tools, you're going to be in a place
+ 
+tools, you're going to be in a place
+where you can do actual useful work with
+ 
+where you can do actual useful work with
+the agent that accumulates in value over
+ 
+the agent that accumulates in value over
+time because of that /loop command. And
+ 
+time because of that /loop command. And
+that's going to be super powerful. And
+ 
+that's going to be super powerful. And
+you don't have to jump into the open
+ 
+you don't have to jump into the open
+claw environment if you don't feel like
+ 
+claw environment if you don't feel like
+you're ready. And Peter Steinberger
+ 
+you're ready. And Peter Steinberger
+himself who built OpenClaw has been very
+ 
+himself who built OpenClaw has been very
+clear that he does not see Open Claw as
+ 
+clear that he does not see Open Claw as
+being something that you should use if
+ 
+being something that you should use if
+you are not a very technically
+ 
+you are not a very technically
+sophisticated user because of the risks
+ 
+sophisticated user because of the risks
+associated with it. I think he's right.
+ 
+associated with it. I think he's right.
+Part of why he went to OpenAI is because
+ 
+Part of why he went to OpenAI is because
+he wants to build something eventually
+ 
+he wants to build something eventually
+that is like Open Claw but not as
+ 
+that is like Open Claw but not as
+technically challenging but still
+ 
+technically challenging but still
+secure. While he waits and builds that,
+ 
+secure. While he waits and builds that,
+you don't have to wait. you can use
+ 
+you don't have to wait. you can use
+these basic tools and you can set up
+ 
+these basic tools and you can set up
+your agent and get useful work done.
+ 
+your agent and get useful work done.
+Now, I hope this video has given you a
+ 
+Now, I hope this video has given you a
+sense of two things. First, why it's
+ 
+sense of two things. First, why it's
+important to strategically think about
+ 
+important to strategically think about
+these small releases that come out
+ 
+these small releases that come out
+like/loop.
+ 
+like/loop.
+And second, why it's important to think
+ 
+And second, why it's important to think
+about your agent in terms of the Lego
+ 
+about your agent in terms of the Lego
+bricks that make agents tick because
+ 
+bricks that make agents tick because
+that allows you to quickly grab onto a
+ 
+that allows you to quickly grab onto a
+piece of news and say, "Is this
+ 
+piece of news and say, "Is this
+something that helps my agent workflows
+ 
+something that helps my agent workflows
+work better?" Or maybe it doesn't
+ 
+work better?" Or maybe it doesn't
+matter. Like, is it a new tool for
+ 
+matter. Like, is it a new tool for
+something I care about? Maybe you care
+ 
+something I care about? Maybe you care
+about videos and my Remotion example
+ 
+about videos and my Remotion example
+really works for you. Maybe you care
+ 
+really works for you. Maybe you care
+about email and giving your agent an MCP
+ 
+about email and giving your agent an MCP
+server into your email account really
+ 
+server into your email account really
+matters. Regardless,
+ 
+matters. Regardless,
+understanding your goals and
+ 
+understanding your goals and
+understanding how to read the news in
+ 
+understanding how to read the news in
+terms of these basic components that
+ 
+terms of these basic components that
+make an agent tick is going to really
+ 
+make an agent tick is going to really
+help you feel like you can sort through
+ 
+help you feel like you can sort through
+things, make sense of them, and put
+ 
+things, make sense of them, and put
+something together that adds value.
+ 
+something together that adds value.
+Cheers.

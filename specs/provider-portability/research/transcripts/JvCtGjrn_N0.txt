@@ -1,0 +1,2315 @@
+ 
+your board, your boss, they want 10x
+ 
+your board, your boss, they want 10x
+results from AI, right? And the only
+ 
+results from AI, right? And the only
+approved tool is some kind of crap that
+ 
+approved tool is some kind of crap that
+can't do your actual job. You know it,
+ 
+can't do your actual job. You know it,
+probably your team knows it. A lot of
+ 
+probably your team knows it. A lot of
+people upstream may know it, but almost
+ 
+people upstream may know it, but almost
+nobody wants to say it out loud because
+ 
+nobody wants to say it out loud because
+the moment you say the tool is bad, you
+ 
+the moment you say the tool is bad, you
+stop sounding like the person trying to
+ 
+stop sounding like the person trying to
+get the work done and you start sounding
+ 
+get the work done and you start sounding
+like the problem. You're not alone.
+ 
+like the problem. You're not alone.
+You're not the problem for struggling
+ 
+You're not the problem for struggling
+with adopting the approved platform. I
+ 
+with adopting the approved platform. I
+know that they will say you're creating
+ 
+know that they will say you're creating
+shadow IT. They'll say you're asking for
+ 
+shadow IT. They'll say you're asking for
+an exception, that you're being
+ 
+an exception, that you're being
+difficult. And underneath all of this,
+ 
+difficult. And underneath all of this,
+there's a false assumption that AI tools
+ 
+there's a false assumption that AI tools
+are basically interchangeable. They are
+ 
+are basically interchangeable. They are
+not. A corporate default and a
+ 
+not. A corporate default and a
+specialist tool can both be AI tools in
+ 
+specialist tool can both be AI tools in
+the same way a spreadsheet and a data
+ 
+the same way a spreadsheet and a data
+warehouse are both places with numbers.
+ 
+warehouse are both places with numbers.
+But the category is so broad, it doesn't
+ 
+But the category is so broad, it doesn't
+really tell you whether the tool can do
+ 
+really tell you whether the tool can do
+a meaningful job. The hard part is
+ 
+a meaningful job. The hard part is
+explaining that difference in a way a
+ 
+explaining that difference in a way a
+company can act on. Copilot is bad.
+ 
+company can act on. Copilot is bad.
+That's not a statement that will do
+ 
+That's not a statement that will do
+anything, right? Gemini can't do my
+ 
+anything, right? Gemini can't do my
+work. Not a statement that will work. I
+ 
+work. Not a statement that will work. I
+need Claude. I need chat GPT. I need
+ 
+need Claude. I need chat GPT. I need
+Codex. Whatever. That won't work either.
+ 
+Codex. Whatever. That won't work either.
+Those all sound like preference. So,
+ 
+Those all sound like preference. So,
+here is what you will get from this
+ 
+here is what you will get from this
+video. By the end, you should have a way
+ 
+video. By the end, you should have a way
+to explain why the tools are not
+ 
+to explain why the tools are not
+equivalent. A test you can run without
+ 
+equivalent. A test you can run without
+turning it into a complicated project
+ 
+turning it into a complicated project
+and a manager safe ask that is small
+ 
+and a manager safe ask that is small
+enough to approve. That's it. First, why
+ 
+enough to approve. That's it. First, why
+is your current argument not getting
+ 
+is your current argument not getting
+heard? Why is it getting heard as
+ 
+heard? Why is it getting heard as
+preference? Second, we're going to talk
+ 
+preference? Second, we're going to talk
+about how to reframe the ask so you're
+ 
+about how to reframe the ask so you're
+not attacking the default. Third, we're
+ 
+not attacking the default. Third, we're
+going to talk about how to run the
+ 
+going to talk about how to run the
+actual test. Just a simple job, a couple
+ 
+actual test. Just a simple job, a couple
+of tools, and a week. Fourth, how the
+ 
+of tools, and a week. Fourth, how the
+ask changes when it moves from your
+ 
+ask changes when it moves from your
+manager to a director to an exec. And
+ 
+manager to a director to an exec. And
+fifth, how to answer objections you're
+ 
+fifth, how to answer objections you're
+almost certainly going to get. If you're
+ 
+almost certainly going to get. If you're
+the person who knows the approved tool
+ 
+the person who knows the approved tool
+is failing, but cannot say that without
+ 
+is failing, but cannot say that without
+sounding disloyal, this is for you.
+ 
+sounding disloyal, this is for you.
+Because the real problem is not that
+ 
+Because the real problem is not that
+your company picked a default AI tool.
+ 
+your company picked a default AI tool.
+The real problem is that the company is
+ 
+The real problem is that the company is
+expecting Frontier tool results from
+ 
+expecting Frontier tool results from
+default tool performance. And almost no
+ 
+default tool performance. And almost no
+one is really talking fluently about
+ 
+one is really talking fluently about
+that gap. This is something I keep
+ 
+that gap. This is something I keep
+hearing from real users. This is why I'm
+ 
+hearing from real users. This is why I'm
+making this video. Someone on your team
+ 
+making this video. Someone on your team
+is asking for claude. Someone else is
+ 
+is asking for claude. Someone else is
+running perplexity on a personal
+ 
+running perplexity on a personal
+account. Someone has chat GPT plus on an
+ 
+account. Someone has chat GPT plus on an
+expense report nobody wants to file. And
+ 
+expense report nobody wants to file. And
+everyone knows that the corporate
+ 
+everyone knows that the corporate
+default is not good at the specific work
+ 
+default is not good at the specific work
+they're being asked to do. All of the
+ 
+they're being asked to do. All of the
+individual contributors know it and the
+ 
+individual contributors know it and the
+reports are taking longer than they
+ 
+reports are taking longer than they
+should. The synthesis feels shallower
+ 
+should. The synthesis feels shallower
+than it should. The code review maybe
+ 
+than it should. The code review maybe
+misses things. The customer digest still
+ 
+misses things. The customer digest still
+needs like 30 minutes of cleanup before
+ 
+needs like 30 minutes of cleanup before
+anyone's willing to send it. At the same
+ 
+anyone's willing to send it. At the same
+time, leadership is talking about AI
+ 
+time, leadership is talking about AI
+transformation, right? Productivity step
+ 
+transformation, right? Productivity step
+changes, all the new capacity the
+ 
+changes, all the new capacity the
+organization is supposed to unlock with
+ 
+organization is supposed to unlock with
+these new tools. That's the trap. The
+ 
+these new tools. That's the trap. The
+people doing the work are being asked to
+ 
+people doing the work are being asked to
+produce the board's AI fantasy with a
+ 
+produce the board's AI fantasy with a
+tool they already know can't do the job.
+ 
+tool they already know can't do the job.
+But upstream that gets treated as a
+ 
+But upstream that gets treated as a
+preference problem. You like this tool.
+ 
+preference problem. You like this tool.
+It picked that tool. Everyone has
+ 
+It picked that tool. Everyone has
+opinions. Everyone wants exceptions. The
+ 
+opinions. Everyone wants exceptions. The
+company cannot run a procurement process
+ 
+company cannot run a procurement process
+every time one team wants a different
+ 
+every time one team wants a different
+interface. And from far away, the tools
+ 
+interface. And from far away, the tools
+look equivalent, right? Chat box, model,
+ 
+look equivalent, right? Chat box, model,
+enterprise plan, security review. Close
+ 
+enterprise plan, security review. Close
+enough. The difference between tools
+ 
+enough. The difference between tools
+only becomes obvious at the level of the
+ 
+only becomes obvious at the level of the
+work. And we're not used to talking
+ 
+work. And we're not used to talking
+about that. whether retrieval finds the
+ 
+about that. whether retrieval finds the
+right thing, whether reasoning works
+ 
+right thing, whether reasoning works
+across messy data, whether you can
+ 
+across messy data, whether you can
+output something without an hour of
+ 
+output something without an hour of
+cleanup. And I get it, the instinct to
+ 
+cleanup. And I get it, the instinct to
+homogenize, to get one tool, it's not a
+ 
+homogenize, to get one tool, it's not a
+crazy instinct. Otherwise, every team
+ 
+crazy instinct. Otherwise, every team
+gets to say, I like this better, and the
+ 
+gets to say, I like this better, and the
+stack just fragments. Security does have
+ 
+stack just fragments. Security does have
+to review stuff. Procurement has to
+ 
+to review stuff. Procurement has to
+negotiate. It has to support. Otherwise,
+ 
+negotiate. It has to support. Otherwise,
+the organization becomes incoherent. But
+ 
+the organization becomes incoherent. But
+before you ask for a better tool, you
+ 
+before you ask for a better tool, you
+have to understand why just
+ 
+have to understand why just
+acknowledging this is not enough. If
+ 
+acknowledging this is not enough. If
+your argument is the default tool is
+ 
+your argument is the default tool is
+bad, you're kind of walking into a
+ 
+bad, you're kind of walking into a
+category that the company knows how to
+ 
+category that the company knows how to
+ignore. It's not that you're wrong, it's
+ 
+ignore. It's not that you're wrong, it's
+that you're making the wrong kind of
+ 
+that you're making the wrong kind of
+claim. The claim that moves your IT
+ 
+claim. The claim that moves your IT
+administrator is not saying this tool is
+ 
+administrator is not saying this tool is
+bad. It's saying for this particular
+ 
+bad. It's saying for this particular
+job, the default costs us four extra
+ 
+job, the default costs us four extra
+hours a week compared with a specialist.
+ 
+hours a week compared with a specialist.
+I can prove it. That sentence travels
+ 
+I can prove it. That sentence travels
+through an org very differently than a
+ 
+through an org very differently than a
+complaint. So yes, we're going to talk
+ 
+complaint. So yes, we're going to talk
+about measurement because otherwise
+ 
+about measurement because otherwise
+you're not able to articulate the cost
+ 
+you're not able to articulate the cost
+of personal effort in a way the
+ 
+of personal effort in a way the
+organization can read. The report stays
+ 
+organization can read. The report stays
+longer and you stay late and no one
+ 
+longer and you stay late and no one
+notices, right? The synthesis is worse
+ 
+notices, right? The synthesis is worse
+so you rewrite it and no one notices.
+ 
+so you rewrite it and no one notices.
+The code review misses things so you
+ 
+The code review misses things so you
+manually check it and no one notices.
+ 
+manually check it and no one notices.
+That's the hidden tax of a bad AI
+ 
+That's the hidden tax of a bad AI
+default. It is paid in 30 minute chunks,
+ 
+default. It is paid in 30 minute chunks,
+five minute corrections,
+ 
+five minute corrections,
+double-checking, and that little
+ 
+double-checking, and that little
+internal flinch you feel when the
+ 
+internal flinch you feel when the
+corporate assistant gives you something
+ 
+corporate assistant gives you something
+that sounds plausible but isn't usable
+ 
+that sounds plausible but isn't usable
+because the cost is distributed across
+ 
+because the cost is distributed across
+individuals. It never shows up as a line
+ 
+individuals. It never shows up as a line
+item. The company doesn't see it. Your
+ 
+item. The company doesn't see it. Your
+manager might not see it. Procurement
+ 
+manager might not see it. Procurement
+definitely doesn't see it. So, the first
+ 
+definitely doesn't see it. So, the first
+move isn't to escalate. It's to measure.
+ 
+move isn't to escalate. It's to measure.
+And this is the part that changes the
+ 
+And this is the part that changes the
+conversation. When you run the same job
+ 
+conversation. When you run the same job
+through the default and through a
+ 
+through the default and through a
+specialist, the default stops being
+ 
+specialist, the default stops being
+invisible. You cannot unsee the delta.
+ 
+invisible. You cannot unsee the delta.
+Once you've seen the same input go into
+ 
+Once you've seen the same input go into
+two separate AI tools and one of them
+ 
+two separate AI tools and one of them
+gives you an output you can use right
+ 
+gives you an output you can use right
+away. The conversation is not about
+ 
+away. The conversation is not about
+taste anymore. It becomes about
+ 
+taste anymore. It becomes about
+performance. And that matters because
+ 
+performance. And that matters because
+companies can ignore your preference a
+ 
+companies can ignore your preference a
+lot. But they have to at least
+ 
+lot. But they have to at least
+acknowledge the performance gap.
+ 
+acknowledge the performance gap.
+Especially if what you are measuring is
+ 
+Especially if what you are measuring is
+something that you take the time to
+ 
+something that you take the time to
+extrapolate reasonably logically across
+ 
+extrapolate reasonably logically across
+your whole team in org. If you are
+ 
+your whole team in org. If you are
+getting interrupted for an hour a day as
+ 
+getting interrupted for an hour a day as
+a developer and you cannot figure out
+ 
+a developer and you cannot figure out
+how to get code reviews that are
+ 
+how to get code reviews that are
+actually useful and you keep going back
+ 
+actually useful and you keep going back
+and having to use this tool and it's not
+ 
+and having to use this tool and it's not
+helpful. You extrapolate that across
+ 
+helpful. You extrapolate that across
+your entire engineering team. Suddenly
+ 
+your entire engineering team. Suddenly
+you're you're looking at like an entire
+ 
+you're you're looking at like an entire
+engineering man year of time that's
+ 
+engineering man year of time that's
+being wasted, right? that suddenly
+ 
+being wasted, right? that suddenly
+becomes a relevant conversation in a way
+ 
+becomes a relevant conversation in a way
+that just complaining about the tool
+ 
+that just complaining about the tool
+doesn't get you. And if you're wondering
+ 
+doesn't get you. And if you're wondering
+if this is already happening, it is. The
+ 
+if this is already happening, it is. The
+public version of this story is already
+ 
+public version of this story is already
+out around engineering. In January,
+ 
+out around engineering. In January,
+Janna Dogen, a principal engineer at
+ 
+Janna Dogen, a principal engineer at
+Google working on the Gemini API, posted
+ 
+Google working on the Gemini API, posted
+that she had given Claude code a
+ 
+that she had given Claude code a
+description of a distributed agent
+ 
+description of a distributed agent
+orchestrator problem her team had been
+ 
+orchestrator problem her team had been
+working through. And Claude produced in
+ 
+working through. And Claude produced in
+about an hour something close to what
+ 
+about an hour something close to what
+they had built over the previous year.
+ 
+they had built over the previous year.
+The visible count on that post was
+ 
+The visible count on that post was
+roughly 9 million views. It went viral.
+ 
+roughly 9 million views. It went viral.
+Now, the the the precise version does
+ 
+Now, the the the precise version does
+matter here. This was not claude shipped
+ 
+matter here. This was not claude shipped
+Google's production system in an hour.
+ 
+Google's production system in an hour.
+It was closer to a prototype version
+ 
+It was closer to a prototype version
+based on a condensed description from
+ 
+based on a condensed description from
+someone who already understood the
+ 
+someone who already understood the
+problem very very well. But that's kind
+ 
+problem very very well. But that's kind
+of the point. An expert could see the
+ 
+of the point. An expert could see the
+delta right away because she knows how
+ 
+delta right away because she knows how
+to judge the output. That's the
+ 
+to judge the output. That's the
+measurement you need inside a company.
+ 
+measurement you need inside a company.
+When a person who knows the work gives
+ 
+When a person who knows the work gives
+the same job to the default, in this
+ 
+the same job to the default, in this
+case it was Gemini and to the
+ 
+case it was Gemini and to the
+specialist, which one produces something
+ 
+specialist, which one produces something
+they can actually use. So the quieter
+ 
+they can actually use. So the quieter
+version of that story is everywhere.
+ 
+version of that story is everywhere.
+Engineers using cursor or clawed code on
+ 
+Engineers using cursor or clawed code on
+personal accounts, analysts paying for
+ 
+personal accounts, analysts paying for
+perplexity because the default search
+ 
+perplexity because the default search
+experience is weak. Sales ops teams
+ 
+experience is weak. Sales ops teams
+running pipeline work through chat GPT
+ 
+running pipeline work through chat GPT
+because the corporate default can't
+ 
+because the corporate default can't
+handle the shape of the data. The
+ 
+handle the shape of the data. The
+workaround is not the issue. The
+ 
+workaround is not the issue. The
+workaround is evidence. And the job to
+ 
+workaround is evidence. And the job to
+turn that evidence into a form the
+ 
+turn that evidence into a form the
+company can act on is yours. If you're
+ 
+company can act on is yours. If you're
+feeling the pain, that's your job. Your
+ 
+feeling the pain, that's your job. Your
+argument is not failing because the tool
+ 
+argument is not failing because the tool
+is secretly good. It's failing because
+ 
+is secretly good. It's failing because
+the company hears it the wrong way. So,
+ 
+the company hears it the wrong way. So,
+let's reframe it. And this is where most
+ 
+let's reframe it. And this is where most
+people accidentally make the ass too
+ 
+people accidentally make the ass too
+big. The push back that works here is
+ 
+big. The push back that works here is
+not let's rip out the default. That
+ 
+not let's rip out the default. That
+version loses almost every time. It lost
+ 
+version loses almost every time. It lost
+at Google because the company probably
+ 
+at Google because the company probably
+has legitimate reasons for picking the
+ 
+has legitimate reasons for picking the
+default. Vendor consolidation is real.
+ 
+default. Vendor consolidation is real.
+Volume discounts are real. Compliance
+ 
+Volume discounts are real. Compliance
+review is real. Integration work that
+ 
+review is real. Integration work that
+has already been paid for is real. If
+ 
+has already been paid for is real. If
+your company picked Copilot because it
+ 
+your company picked Copilot because it
+was already deep in the Microsoft
+ 
+was already deep in the Microsoft
+ecosystem, that was not necessarily an
+ 
+ecosystem, that was not necessarily an
+incorrect decision. If your company
+ 
+incorrect decision. If your company
+picked Gemini because it's already a
+ 
+picked Gemini because it's already a
+Google shop, same thing. Your team's
+ 
+Google shop, same thing. Your team's
+work may not fit the default, but that
+ 
+work may not fit the default, but that
+doesn't make the original decision
+ 
+doesn't make the original decision
+irrational. So don't ask the company to
+ 
+irrational. So don't ask the company to
+admit the whole decision was wrong. Ask
+ 
+admit the whole decision was wrong. Ask
+a smaller and sharper question. within
+ 
+a smaller and sharper question. within
+our commitment to the default, what
+ 
+our commitment to the default, what
+specific subset of work is the default
+ 
+specific subset of work is the default
+doing worse than a specialist? And that
+ 
+doing worse than a specialist? And that
+question keeps the company's prior
+ 
+question keeps the company's prior
+commitment intact. It doesn't threaten
+ 
+commitment intact. It doesn't threaten
+the stack and it gives everyone a way to
+ 
+the stack and it gives everyone a way to
+say yes without reversing themselves,
+ 
+say yes without reversing themselves,
+which is politically important in many
+ 
+which is politically important in many
+cases. Then the second question is, what
+ 
+cases. Then the second question is, what
+would it cost us to add the specialist
+ 
+would it cost us to add the specialist
+only for that subset? Now, that's a
+ 
+only for that subset? Now, that's a
+different conversation. It's not claude
+ 
+different conversation. It's not claude
+versus co-pilot. It is this job costs us
+ 
+versus co-pilot. It is this job costs us
+x hours a week under the default and a
+ 
+x hours a week under the default and a
+specialist appears to reclaim most of
+ 
+specialist appears to reclaim most of
+that time. I can prove it. If your team
+ 
+that time. I can prove it. If your team
+does seven things, the default handles
+ 
+does seven things, the default handles
+five of them, okay? Then don't switch
+ 
+five of them, okay? Then don't switch
+everything. Keep the default for the
+ 
+everything. Keep the default for the
+five and add a specialist for the two.
+ 
+five and add a specialist for the two.
+The correct answer in the agent layer is
+ 
+The correct answer in the agent layer is
+almost never one tool for everything.
+ 
+almost never one tool for everything.
+It's routing. Default where the default
+ 
+It's routing. Default where the default
+wins. Specialist where the job demands
+ 
+wins. Specialist where the job demands
+it. That's not a violation of
+ 
+it. That's not a violation of
+standardization. It's a better
+ 
+standardization. It's a better
+standardization policy. Now, some people
+ 
+standardization policy. Now, some people
+will now say, I'm choosing a default.
+ 
+will now say, I'm choosing a default.
+Which one should I choose? And I will
+ 
+Which one should I choose? And I will
+say you should be choosing a default
+ 
+say you should be choosing a default
+that reflects the best value you can get
+ 
+that reflects the best value you can get
+for the dominant use cases in your
+ 
+for the dominant use cases in your
+company. Are you primarily an
+ 
+company. Are you primarily an
+engineering shop? Look at the models
+ 
+engineering shop? Look at the models
+that are strong at engineering. That's
+ 
+that are strong at engineering. That's
+really at this point going to be Claude
+ 
+really at this point going to be Claude
+or it's going to be chat GPT. You're
+ 
+or it's going to be chat GPT. You're
+going to be looking at codeex or claude
+ 
+going to be looking at codeex or claude
+code at this point. If you are a
+ 
+code at this point. If you are a
+knowledge workshop, you have to look
+ 
+knowledge workshop, you have to look
+more broadly because you have to look at
+ 
+more broadly because you have to look at
+the degree to which you want research
+ 
+the degree to which you want research
+involved, the degree to which you want a
+ 
+involved, the degree to which you want a
+finished polished artifact involved.
+ 
+finished polished artifact involved.
+It's it's a more complex search, but
+ 
+It's it's a more complex search, but
+fundamentally that's the question set
+ 
+fundamentally that's the question set
+you ask if you want to set a good
+ 
+you ask if you want to set a good
+standard. And it's a question set I wish
+ 
+standard. And it's a question set I wish
+it would ask more often because so often
+ 
+it would ask more often because so often
+IT departments setting standards are
+ 
+IT departments setting standards are
+doing so based strictly on an assumption
+ 
+doing so based strictly on an assumption
+of interchangeability that is incorrect.
+ 
+of interchangeability that is incorrect.
+And instead they should be looking at
+ 
+And instead they should be looking at
+where is their differential value. And I
+ 
+where is their differential value. And I
+would encourage you to think not just
+ 
+would encourage you to think not just
+about differential value today, but look
+ 
+about differential value today, but look
+at the trajectory of these companies.
+ 
+at the trajectory of these companies.
+Part of why I mentioned Claude and Chad
+ 
+Part of why I mentioned Claude and Chad
+GPT by name is both of them are shipping
+ 
+GPT by name is both of them are shipping
+fast today. They're shipping quickly.
+ 
+fast today. They're shipping quickly.
+They're responding to their customers.
+ 
+They're responding to their customers.
+They're evolving fast. And there really
+ 
+They're evolving fast. And there really
+isn't any other company that's extremely
+ 
+isn't any other company that's extremely
+well capitalized on the books that is
+ 
+well capitalized on the books that is
+shipping that fast. And yes, that that
+ 
+shipping that fast. And yes, that that
+does include Gemini. Gemini has been out
+ 
+does include Gemini. Gemini has been out
+for a while with a strong model, but has
+ 
+for a while with a strong model, but has
+not shipped a strong harness for that
+ 
+not shipped a strong harness for that
+model that allows Gemini to effectively
+ 
+model that allows Gemini to effectively
+do the range of things the model might
+ 
+do the range of things the model might
+be capable of otherwise. It's so
+ 
+be capable of otherwise. It's so
+important to have a shop that
+ 
+important to have a shop that
+understands how to scale both model and
+ 
+understands how to scale both model and
+harness in 2026. And if you want capital
+ 
+harness in 2026. And if you want capital
+behind that and you need to scale it and
+ 
+behind that and you need to scale it and
+you want to believe that that model will
+ 
+you want to believe that that model will
+ship frequently and update, well,
+ 
+ship frequently and update, well,
+really, you're talking about Clott GPT.
+ 
+really, you're talking about Clott GPT.
+There's not really a lot of other
+ 
+There's not really a lot of other
+choices out there. So that's the story
+ 
+choices out there. So that's the story
+if you're trying to pick a better
+ 
+if you're trying to pick a better
+standard. Now if you are trying to
+ 
+standard. Now if you are trying to
+understand how to win the conversation,
+ 
+understand how to win the conversation,
+let's say you've got the measurement,
+ 
+let's say you've got the measurement,
+you understand what you're doing, you
+ 
+you understand what you're doing, you
+understand how to not to make the
+ 
+understand how to not to make the
+conversation too broad. The next step is
+ 
+conversation too broad. The next step is
+to identify the actual move that you're
+ 
+to identify the actual move that you're
+going to make to prove that you are
+ 
+going to make to prove that you are
+correct. So you've done initial
+ 
+correct. So you've done initial
+measurements on the baseline. What's
+ 
+measurements on the baseline. What's
+your test going to be? Pick a job your
+ 
+your test going to be? Pick a job your
+team does every week. Not three jobs,
+ 
+team does every week. Not three jobs,
+right? Not your whole workflow, just a
+ 
+right? Not your whole workflow, just a
+job. It should meet four criteria. It
+ 
+job. It should meet four criteria. It
+runs at least weekly, so you get
+ 
+runs at least weekly, so you get
+multiple data points quickly. It takes
+ 
+multiple data points quickly. It takes
+at least 30 minutes. That delta is going
+ 
+at least 30 minutes. That delta is going
+to matter. You have done it by hand long
+ 
+to matter. You have done it by hand long
+enough to recognize good output
+ 
+enough to recognize good output
+instantly. And the output has a real
+ 
+instantly. And the output has a real
+audience. It matters. A team channel, a
+ 
+audience. It matters. A team channel, a
+customer, a manager, somebody. That
+ 
+customer, a manager, somebody. That
+fourth criterion matters a lot. If
+ 
+fourth criterion matters a lot. If
+nobody ever sees it, the company can
+ 
+nobody ever sees it, the company can
+dismiss it as a personal workflow
+ 
+dismiss it as a personal workflow
+preference. If the output goes to a real
+ 
+preference. If the output goes to a real
+audience, the quality has a reference.
+ 
+audience, the quality has a reference.
+These are usually the jobs you're
+ 
+These are usually the jobs you're
+already most frustrated by. That's not a
+ 
+already most frustrated by. That's not a
+coincidence, right? that frustration
+ 
+coincidence, right? that frustration
+you're feeling as a signal. Now run that
+ 
+you're feeling as a signal. Now run that
+same job through the corporate default
+ 
+same job through the corporate default
+and one of your challenger AI tools with
+ 
+and one of your challenger AI tools with
+the same input and the same success
+ 
+the same input and the same success
+criteria. Just check how much time was
+ 
+criteria. Just check how much time was
+spent, how much rework was required,
+ 
+spent, how much rework was required,
+what is the quality score, and who did
+ 
+what is the quality score, and who did
+you send the result to. You don't really
+ 
+you send the result to. You don't really
+need a dashboard for this. Don't make it
+ 
+need a dashboard for this. Don't make it
+complicated. You don't need a whole
+ 
+complicated. You don't need a whole
+productivity study. By the end of the
+ 
+productivity study. By the end of the
+week, you have somewhere between five
+ 
+week, you have somewhere between five
+and 15 rows of this data, depending on
+ 
+and 15 rows of this data, depending on
+how often the job runs. And that's
+ 
+how often the job runs. And that's
+probably more real evidence about your
+ 
+probably more real evidence about your
+work than anything produced during the
+ 
+work than anything produced during the
+original procurement decision. The
+ 
+original procurement decision. The
+vendor demo didn't measure your work. It
+ 
+vendor demo didn't measure your work. It
+eval probably did not measure your work.
+ 
+eval probably did not measure your work.
+You were producing missing data for the
+ 
+You were producing missing data for the
+business. The next step is then to
+ 
+business. The next step is then to
+extrapolate that across similar work
+ 
+extrapolate that across similar work
+done at team and org scale. And that
+ 
+done at team and org scale. And that
+requires you to talk to and understand
+ 
+requires you to talk to and understand
+others in your org. So you really
+ 
+others in your org. So you really
+responsibly know how much your work is
+ 
+responsibly know how much your work is
+being done or similar type tasks are
+ 
+being done or similar type tasks are
+being done across the org. And then when
+ 
+being done across the org. And then when
+you report to it, you're not just
+ 
+you report to it, you're not just
+saying, "Oh, this is my opinion." You're
+ 
+saying, "Oh, this is my opinion." You're
+saying, "I did the work for you. Here's
+ 
+saying, "I did the work for you. Here's
+direct data. I talked to these six
+ 
+direct data. I talked to these six
+people. This is a sample size of the 60
+ 
+people. This is a sample size of the 60
+people in the org. They're all
+ 
+people in the org. They're all
+corroborating this. Therefore, in total,
+ 
+corroborating this. Therefore, in total,
+it's X. Now, it's serious." Now, this
+ 
+it's X. Now, it's serious." Now, this
+test only works if the success criteria
+ 
+test only works if the success criteria
+is real. This is where people tend to
+ 
+is real. This is where people tend to
+mess up. They measure what the vendors
+ 
+mess up. They measure what the vendors
+measure instead of what the team cares
+ 
+measure instead of what the team cares
+about. Let's say the job is a weekly
+ 
+about. Let's say the job is a weekly
+customer digest. The success criteria is
+ 
+customer digest. The success criteria is
+not output length. It's not tokens per
+ 
+not output length. It's not tokens per
+dollar. It's not whether the formatting
+ 
+dollar. It's not whether the formatting
+looks nice. The question is, did this
+ 
+looks nice. The question is, did this
+save me the 30 minutes I used to spend
+ 
+save me the 30 minutes I used to spend
+scrolling Slack. If the job is a code
+ 
+scrolling Slack. If the job is a code
+review, the question is not how many
+ 
+review, the question is not how many
+comments the agent left. It is would I
+ 
+comments the agent left. It is would I
+have merged this PR based on the agents
+ 
+have merged this PR based on the agents
+review. If the job is pipeline hygiene,
+ 
+review. If the job is pipeline hygiene,
+the question is not whether the summary
+ 
+the question is not whether the summary
+sounds like sales operations. It's did
+ 
+sounds like sales operations. It's did
+it correctly identify the deals without
+ 
+it correctly identify the deals without
+next steps, the close dates that
+ 
+next steps, the close dates that
+slipped, and the risks the revenue team
+ 
+slipped, and the risks the revenue team
+actually needs to see. The question is
+ 
+actually needs to see. The question is
+always whether the agent did the job
+ 
+always whether the agent did the job
+well enough to substitute for the work
+ 
+well enough to substitute for the work
+you were going to do anyway. And the
+ 
+you were going to do anyway. And the
+person who can answer that is you. And
+ 
+person who can answer that is you. And
+that is why measurement must start with
+ 
+that is why measurement must start with
+the individual contributor. Exacts can
+ 
+the individual contributor. Exacts can
+commission a bigger version of this
+ 
+commission a bigger version of this
+later if they want. Procurement can
+ 
+later if they want. Procurement can
+negotiate the seats later. It can define
+ 
+negotiate the seats later. It can define
+the governance. But the really useful
+ 
+the governance. But the really useful
+measurement I strongly believe comes
+ 
+measurement I strongly believe comes
+from the individual contributors who
+ 
+from the individual contributors who
+know the job well enough to know when
+ 
+know the job well enough to know when
+the output is fake. That is the
+ 
+the output is fake. That is the
+advantage you have as an individual
+ 
+advantage you have as an individual
+contributor. You know what good looks
+ 
+contributor. You know what good looks
+like, so make it real. Imagine a sales
+ 
+like, so make it real. Imagine a sales
+ops lead inside a company that defaulted
+ 
+ops lead inside a company that defaulted
+to co-pilot. Every Monday morning, she
+ 
+to co-pilot. Every Monday morning, she
+produces a pipeline hygiene report,
+ 
+produces a pipeline hygiene report,
+deals without next steps, close dates
+ 
+deals without next steps, close dates
+that slipped more than twice, risk
+ 
+that slipped more than twice, risk
+summaries, and a brief for the revenue
+ 
+summaries, and a brief for the revenue
+leadership Slack channel. Under the
+ 
+leadership Slack channel. Under the
+default tool, she spends about 90
+ 
+default tool, she spends about 90
+minutes getting the report to a standard
+ 
+minutes getting the report to a standard
+she's willing to send. The model writes
+ 
+she's willing to send. The model writes
+fine sentences, but it struggles with
+ 
+fine sentences, but it struggles with
+the deal history structure, and it keeps
+ 
+the deal history structure, and it keeps
+surfacing the wrong slip dates. So, for
+ 
+surfacing the wrong slip dates. So, for
+a couple of weeks, she runs the same job
+ 
+a couple of weeks, she runs the same job
+through a specialist agent wired to the
+ 
+through a specialist agent wired to the
+same sources. The first week, the
+ 
+same sources. The first week, the
+specialist draft needs maybe 20 minutes
+ 
+specialist draft needs maybe 20 minutes
+of work. The second week, it needs just
+ 
+of work. The second week, it needs just
+10 minutes because she's getting better
+ 
+10 minutes because she's getting better
+at working with it. Co-pilot still
+ 
+at working with it. Co-pilot still
+averages 90 minutes, and let's say the
+ 
+averages 90 minutes, and let's say the
+quality score is just okay, like a two
+ 
+quality score is just okay, like a two
+or three out of five. The specialist
+ 
+or three out of five. The specialist
+averages 15 minutes and a quality score
+ 
+averages 15 minutes and a quality score
+of four out of five. And so, the would
+ 
+of four out of five. And so, the would
+you send it column flips from a no to a
+ 
+you send it column flips from a no to a
+yes on most of those runs. And and
+ 
+yes on most of those runs. And and
+that's really the evidence. Right now,
+ 
+that's really the evidence. Right now,
+she just needs to look at how many times
+ 
+she just needs to look at how many times
+people are using this kind of process
+ 
+people are using this kind of process
+across the org, multiply it out, and
+ 
+across the org, multiply it out, and
+send in the ask. And that is a version
+ 
+send in the ask. And that is a version
+of the argument that can win because
+ 
+of the argument that can win because
+it's a version that is evidence-based.
+ 
+it's a version that is evidence-based.
+If the evidence supports one job class,
+ 
+If the evidence supports one job class,
+ask for that job class. If it supports a
+ 
+ask for that job class. If it supports a
+seat, ask for the seat. Align to the
+ 
+seat, ask for the seat. Align to the
+evidence. When people skip that
+ 
+evidence. When people skip that
+discipline, they tend to regret that.
+ 
+discipline, they tend to regret that.
+They tend to sort of overwalk the data.
+ 
+They tend to sort of overwalk the data.
+They'll walk in with five weeks of
+ 
+They'll walk in with five weeks of
+measurement and use it to vent and they
+ 
+measurement and use it to vent and they
+relitigate the decision and they try and
+ 
+relitigate the decision and they try and
+make it a big conversation and the
+ 
+make it a big conversation and the
+manager just hears frustration instead
+ 
+manager just hears frustration instead
+of evidence. Don't use measurement to
+ 
+of evidence. Don't use measurement to
+vent. Use it to make a concrete ask.
+ 
+vent. Use it to make a concrete ask.
+Now, at this point, think about it. You
+ 
+Now, at this point, think about it. You
+no longer have a complaint. You have a
+ 
+no longer have a complaint. You have a
+real artifact with a log and a job class
+ 
+real artifact with a log and a job class
+and a delta and the smallest ask that
+ 
+and a delta and the smallest ask that
+the evidence will reasonably support.
+ 
+the evidence will reasonably support.
+Now, if you're wondering if this is
+ 
+Now, if you're wondering if this is
+real, this is exactly how the larger
+ 
+real, this is exactly how the larger
+enterprise stories are moving. Gurgley
+ 
+enterprise stories are moving. Gurgley
+Oros at the pragmatic engineer reported
+ 
+Oros at the pragmatic engineer reported
+on wealth simple the Canadian fintech
+ 
+on wealth simple the Canadian fintech
+with about 600 engineers and how their
+ 
+with about 600 engineers and how their
+CTO Dedric Vanlier approached AI
+ 
+CTO Dedric Vanlier approached AI
+developer tools. The code review
+ 
+developer tools. The code review
+decision had a structured shootout.
+ 
+decision had a structured shootout.
+Right? Their coding tool decision was
+ 
+Right? Their coding tool decision was
+more conviction driven but still backed
+ 
+more conviction driven but still backed
+by usage data from jellyfish showing
+ 
+by usage data from jellyfish showing
+which tools engineers were actually
+ 
+which tools engineers were actually
+using or abandoning. That distinction is
+ 
+using or abandoning. That distinction is
+useful because nobody has perfectly
+ 
+useful because nobody has perfectly
+solved AI productivity measurement.
+ 
+solved AI productivity measurement.
+Lines of AI generated code can be a
+ 
+Lines of AI generated code can be a
+vanity metric. Tool activity can show
+ 
+vanity metric. Tool activity can show
+adoption without proving impact.
+ 
+adoption without proving impact.
+Velocity can move for reasons that
+ 
+Velocity can move for reasons that
+aren't related to AI, but that doesn't
+ 
+aren't related to AI, but that doesn't
+mean you don't measure. It means you
+ 
+mean you don't measure. It means you
+measure closer to the work. What did the
+ 
+measure closer to the work. What did the
+agent produce? How much rework did it
+ 
+agent produce? How much rework did it
+need? Would the person doing the job of
+ 
+need? Would the person doing the job of
+use the output? That informal
+ 
+use the output? That informal
+measurement creates a very good shape
+ 
+measurement creates a very good shape
+for the answer. And then if you're a CTO
+ 
+for the answer. And then if you're a CTO
+like Dedric is, you can make a formal
+ 
+like Dedric is, you can make a formal
+measure that measures behaviorally or
+ 
+measure that measures behaviorally or
+surveys or whatever you want to decide
+ 
+surveys or whatever you want to decide
+the larger conversation. And then you
+ 
+the larger conversation. And then you
+have a story that looks a little bit
+ 
+have a story that looks a little bit
+more like the wealth simple story. Okay,
+ 
+more like the wealth simple story. Okay,
+so so far we've covered why your opinion
+ 
+so so far we've covered why your opinion
+is bouncing off the org, how to reframe
+ 
+is bouncing off the org, how to reframe
+your ask, how to create an artifact that
+ 
+your ask, how to create an artifact that
+is really clear about what your ask is
+ 
+is really clear about what your ask is
+and has evidence. The next piece of the
+ 
+and has evidence. The next piece of the
+story here is essentially the altitude
+ 
+story here is essentially the altitude
+of your ask. The same evidence has to be
+ 
+of your ask. The same evidence has to be
+translated differently depending on
+ 
+translated differently depending on
+who's hearing it. At the IC to manager
+ 
+who's hearing it. At the IC to manager
+level, you can keep it small. I run our
+ 
+level, you can keep it small. I run our
+weekly customer digest through the
+ 
+weekly customer digest through the
+default and I ran it through Claude.
+ 
+default and I ran it through Claude.
+Here's the log. Claude saved me four
+ 
+Here's the log. Claude saved me four
+hours. Can I get an approved license for
+ 
+hours. Can I get an approved license for
+this? A lot of managers will engage with
+ 
+this? A lot of managers will engage with
+that? And if they say no, they'll
+ 
+that? And if they say no, they'll
+usually give you a specific blocker.
+ 
+usually give you a specific blocker.
+Maybe it's procurement or security
+ 
+Maybe it's procurement or security
+review or team precedent or budget
+ 
+review or team precedent or budget
+timing. But a specific no just gives you
+ 
+timing. But a specific no just gives you
+the next problem to solve. At the
+ 
+the next problem to solve. At the
+manager to director level, the ask
+ 
+manager to director level, the ask
+becomes much more about a pilot, right?
+ 
+becomes much more about a pilot, right?
+Three people ran this measurement. Two
+ 
+Three people ran this measurement. Two
+show the same pattern. I want to pilot
+ 
+show the same pattern. I want to pilot
+the specialists for those job classes
+ 
+the specialists for those job classes
+for a quarter and report back. At the
+ 
+for a quarter and report back. At the
+director to exec level, you're no longer
+ 
+director to exec level, you're no longer
+asking for a tool. You're asking the
+ 
+asking for a tool. You're asking the
+company to commission measurement. The
+ 
+company to commission measurement. The
+exact question is how would we know if
+ 
+exact question is how would we know if
+our AI default is costing us? And the
+ 
+our AI default is costing us? And the
+honest answer is we would only find out
+ 
+honest answer is we would only find out
+if our best people quietly leave for
+ 
+if our best people quietly leave for
+companies that give them better tools.
+ 
+companies that give them better tools.
+So we need to measure something and
+ 
+So we need to measure something and
+that's often how that goes. And yes,
+ 
+that's often how that goes. And yes,
+I've been in rooms where people worry
+ 
+I've been in rooms where people worry
+about their best people leaving because
+ 
+about their best people leaving because
+of better tools because guess what?
+ 
+of better tools because guess what?
+People tell me that they're leaving
+ 
+People tell me that they're leaving
+because of tool issues. So if you don't
+ 
+because of tool issues. So if you don't
+believe that's happening, it is. It is.
+ 
+believe that's happening, it is. It is.
+Your tools can determine your retention
+ 
+Your tools can determine your retention
+in the age of AI. Okay. How do you
+ 
+in the age of AI. Okay. How do you
+handle objections? There are four
+ 
+handle objections? There are four
+objections you should expect as you walk
+ 
+objections you should expect as you walk
+this sort of push back on default
+ 
+this sort of push back on default
+tooling path. The first objection is we
+ 
+tooling path. The first objection is we
+already paid for it, right? And the
+ 
+already paid for it, right? And the
+response is look the license fee is a
+ 
+response is look the license fee is a
+sunk cost. The question is whether an
+ 
+sunk cost. The question is whether an
+incremental specialist license for a
+ 
+incremental specialist license for a
+bounded job returns more in reclaimed
+ 
+bounded job returns more in reclaimed
+time than it costs. If it's 4 hours a
+ 
+time than it costs. If it's 4 hours a
+week per person, you can multiply that
+ 
+week per person, you can multiply that
+out and make the case. The second
+ 
+out and make the case. The second
+objection is, well, this is shadow IT.
+ 
+objection is, well, this is shadow IT.
+Well, no. Shadow IT is adopting a tool
+ 
+Well, no. Shadow IT is adopting a tool
+without disclosure and without review.
+ 
+without disclosure and without review.
+This is actually the opposite is putting
+ 
+This is actually the opposite is putting
+it in front of the company and saying
+ 
+it in front of the company and saying
+let's do a better job of solving this
+ 
+let's do a better job of solving this
+together. The third objection is well we
+ 
+together. The third objection is well we
+need to standardize. I I get it. You can
+ 
+need to standardize. I I get it. You can
+verbally honor the value of
+ 
+verbally honor the value of
+standardization. There is some cost
+ 
+standardization. There is some cost
+reduction. There's some simplification
+ 
+reduction. There's some simplification
+etc. But in the age of AI it is a
+ 
+etc. But in the age of AI it is a
+mistake to treat one tool for every job
+ 
+mistake to treat one tool for every job
+as the only form of standardization.
+ 
+as the only form of standardization.
+Companies already know this for other
+ 
+Companies already know this for other
+categories. They use Excel and Tableau
+ 
+categories. They use Excel and Tableau
+and Looker for different analytics jobs.
+ 
+and Looker for different analytics jobs.
+The agent layer is the same. Standardize
+ 
+The agent layer is the same. Standardize
+on a default where it wins, but use
+ 
+on a default where it wins, but use
+specialists where the work demands them
+ 
+specialists where the work demands them
+and measure the boundary. The fourth
+ 
+and measure the boundary. The fourth
+objection is it will not approve another
+ 
+objection is it will not approve another
+vendor. Like they just won't. Sometimes
+ 
+vendor. Like they just won't. Sometimes
+that's true, but sometimes it's just a
+ 
+that's true, but sometimes it's just a
+reflex. The way to tell is to actually
+ 
+reflex. The way to tell is to actually
+push on it, right? Ask what's going on.
+ 
+push on it, right? Ask what's going on.
+What is the block? Is it data residency?
+ 
+What is the block? Is it data residency?
+Is it admin controls? It's a contract
+ 
+Is it admin controls? It's a contract
+min. What's going on? The only version
+ 
+min. What's going on? The only version
+that is unworkable is no because no. If
+ 
+that is unworkable is no because no. If
+that's the answer, there's probably
+ 
+that's the answer, there's probably
+going to be a retention problem at that
+ 
+going to be a retention problem at that
+business. and then you just have to keep
+ 
+business. and then you just have to keep
+pushing the data. The other thing I will
+ 
+pushing the data. The other thing I will
+call out and this is an Easter egg for
+ 
+call out and this is an Easter egg for
+those of you who have watched this video
+ 
+those of you who have watched this video
+so far. This entire video is about
+ 
+so far. This entire video is about
+companies who are struggling to come to
+ 
+companies who are struggling to come to
+terms with the AI revolution and there's
+ 
+terms with the AI revolution and there's
+tons of them out there. For companies
+ 
+tons of them out there. For companies
+that are AI native, this is not a
+ 
+that are AI native, this is not a
+problem. I have never run into a truly
+ 
+problem. I have never run into a truly
+AI native company where this whole
+ 
+AI native company where this whole
+argument has to be run like this because
+ 
+argument has to be run like this because
+they are defaulting to say, "Yes, please
+ 
+they are defaulting to say, "Yes, please
+use tools. We want you to be productive.
+ 
+use tools. We want you to be productive.
+We're not going to put gates in your
+ 
+We're not going to put gates in your
+way. We're just going to try and make
+ 
+way. We're just going to try and make
+sure that what you're doing is data
+ 
+sure that what you're doing is data
+responsible, that you are using it on
+ 
+responsible, that you are using it on
+our systems in a way that we can
+ 
+our systems in a way that we can
+actually respectably defend if we're
+ 
+actually respectably defend if we're
+audited, if we have compliance issues,
+ 
+audited, if we have compliance issues,
+etc. That's the only gate they're really
+ 
+etc. That's the only gate they're really
+putting up. And the reason I call that
+ 
+putting up. And the reason I call that
+out is because in AI native companies,
+ 
+out is because in AI native companies,
+that changes the whole conversation. You
+ 
+that changes the whole conversation. You
+don't have to make the case in most of
+ 
+don't have to make the case in most of
+these companies. You have a budget
+ 
+these companies. You have a budget
+already, maybe as an IC, to just get the
+ 
+already, maybe as an IC, to just get the
+tools you need to be productive. That is
+ 
+tools you need to be productive. That is
+a much better way to do it. If you are
+ 
+a much better way to do it. If you are
+able to change procurement at your org
+ 
+able to change procurement at your org
+to be more permissive to let IC's get
+ 
+to be more permissive to let IC's get
+aggressive about getting the tools they
+ 
+aggressive about getting the tools they
+need and then you standardize once you
+ 
+need and then you standardize once you
+see the behavior underneath, great. Do
+ 
+see the behavior underneath, great. Do
+it that way. That's a much more useful
+ 
+it that way. That's a much more useful
+way to get value from your AI tooling
+ 
+way to get value from your AI tooling
+because it aligns to how people actually
+ 
+because it aligns to how people actually
+use the tools versus some procurement
+ 
+use the tools versus some procurement
+process where everyone expects co-pilot
+ 
+process where everyone expects co-pilot
+to work a certain way. And I say
+ 
+to work a certain way. And I say
+co-pilot because I hear all the time
+ 
+co-pilot because I hear all the time
+from people who talk to me that they are
+ 
+from people who talk to me that they are
+having exactly this experience where
+ 
+having exactly this experience where
+co-pilot is the default and they're
+ 
+co-pilot is the default and they're
+frustrated. So I'm not just using that
+ 
+frustrated. So I'm not just using that
+as a as a paper example. It's it's the
+ 
+as a as a paper example. It's it's the
+dominant real example I hear in this
+ 
+dominant real example I hear in this
+category. So what do you do this week?
+ 
+category. So what do you do this week?
+Pick the one job. Right? If you're at
+ 
+Pick the one job. Right? If you're at
+one of these companies that is not AI
+ 
+one of these companies that is not AI
+native that you're trying to push back,
+ 
+native that you're trying to push back,
+pick the one job. Not the job that makes
+ 
+pick the one job. Not the job that makes
+the best philosophical point. Pick the
+ 
+the best philosophical point. Pick the
+job you can measure that is recurring
+ 
+job you can measure that is recurring
+and meaningful and easy for you to judge
+ 
+and meaningful and easy for you to judge
+and visible enough that quality matters.
+ 
+and visible enough that quality matters.
+Run it through the defaults and run it
+ 
+Run it through the defaults and run it
+through your challenger model and
+ 
+through your challenger model and
+measure it. Right? And then ask for what
+ 
+measure it. Right? And then ask for what
+the data supports and keep the tone
+ 
+the data supports and keep the tone
+focused on the data. The emotionally
+ 
+focused on the data. The emotionally
+satisfying version of this I I know it.
+ 
+satisfying version of this I I know it.
+I feel it. Right? Is to say you sort of
+ 
+I feel it. Right? Is to say you sort of
+pound the table and say I don't get the
+ 
+pound the table and say I don't get the
+tools I need. The AI revolution is
+ 
+tools I need. The AI revolution is
+proceeding without me. I get it. Ask for
+ 
+proceeding without me. I get it. Ask for
+what the data supports. It's going to go
+ 
+what the data supports. It's going to go
+way better than anything else.
+ 
+way better than anything else.
+especially in an org that is focused on
+ 
+especially in an org that is focused on
+traditional procurement practices, which
+ 
+traditional procurement practices, which
+to be honest with you, I'm making this
+ 
+to be honest with you, I'm making this
+video because 80% of orgs still work
+ 
+video because 80% of orgs still work
+this way, maybe more. Most orgs run on
+ 
+this way, maybe more. Most orgs run on
+traditional software procurement, and AI
+ 
+traditional software procurement, and AI
+is essentially breaking that procurement
+ 
+is essentially breaking that procurement
+process. It just doesn't work anymore.
+ 
+process. It just doesn't work anymore.
+And so, this is about how you start to
+ 
+And so, this is about how you start to
+put cracks in that procurement process
+ 
+put cracks in that procurement process
+in a responsible way that the org can
+ 
+in a responsible way that the org can
+actually handle and digest that allows
+ 
+actually handle and digest that allows
+you to get the tools you need to be
+ 
+you to get the tools you need to be
+productive. The agent layer is going to
+ 
+productive. The agent layer is going to
+keep fragmenting. New specialists are
+ 
+keep fragmenting. New specialists are
+going to keep emerging for specific job
+ 
+going to keep emerging for specific job
+classes. The best tool for code review
+ 
+classes. The best tool for code review
+might not be the best tool for
+ 
+might not be the best tool for
+exploratory coding or customer research
+ 
+exploratory coding or customer research
+or legal review or sales ops or product
+ 
+or legal review or sales ops or product
+strategy. Companies that learn to
+ 
+strategy. Companies that learn to
+measure real work against real tools
+ 
+measure real work against real tools
+will route work better as the landscape
+ 
+will route work better as the landscape
+changes. Companies that don't are going
+ 
+changes. Companies that don't are going
+to keep defaulting to whatever vendor
+ 
+to keep defaulting to whatever vendor
+they got two years ago and they will
+ 
+they got two years ago and they will
+call that discipline even though it's
+ 
+call that discipline even though it's
+really just inertia. The people doing
+ 
+really just inertia. The people doing
+the work will feel that difference
+ 
+the work will feel that difference
+first. They already feel it. They feel
+ 
+first. They already feel it. They feel
+it in the cleanup, the second pass, the
+ 
+it in the cleanup, the second pass, the
+moment a specialist gives them 15
+ 
+moment a specialist gives them 15
+minutes back in their day every single
+ 
+minutes back in their day every single
+day. So the question is how you get that
+ 
+day. So the question is how you get that
+data out of the org. How you get that
+ 
+data out of the org. How you get that
+frustration that people are feeling and
+ 
+frustration that people are feeling and
+turn it into data that you can use to
+ 
+turn it into data that you can use to
+get the right tools. That data is the
+ 
+get the right tools. That data is the
+argument. If you want this written out
+ 
+argument. If you want this written out
+so you can share it with your your
+ 
+so you can share it with your your
+manager, your IT department, I've got
+ 
+manager, your IT department, I've got
+that in the Substack or you can share
+ 
+that in the Substack or you can share
+the video, right? And you can just let
+ 
+the video, right? And you can just let
+me argue with them, right? The the key
+ 
+me argue with them, right? The the key
+thing to understand is that this is a
+ 
+thing to understand is that this is a
+real conversation that most traditional
+ 
+real conversation that most traditional
+procurement orgs are having. That AI
+ 
+procurement orgs are having. That AI
+native orgs don't even have this
+ 
+native orgs don't even have this
+conversation because they are AI native
+ 
+conversation because they are AI native
+from the get-go and they're actually
+ 
+from the get-go and they're actually
+greenlighting a lot more tech with much
+ 
+greenlighting a lot more tech with much
+lower decision gates. And that if you're
+ 
+lower decision gates. And that if you're
+in a traditional procurement situation,
+ 
+in a traditional procurement situation,
+the best thing you can do is to bring
+ 
+the best thing you can do is to bring
+data showing the specialist AI tool is
+ 
+data showing the specialist AI tool is
+actually saving you time. So that's my
+ 
+actually saving you time. So that's my
+best advice to you. Feel free to share
+ 
+best advice to you. Feel free to share
+this with your manager or your IT
+ 
+this with your manager or your IT
+department. I'm happy for them to watch
+ 
+department. I'm happy for them to watch
+this and let me know how it goes. I want
+ 
+this and let me know how it goes. I want
+to give you tools so that when you push
+ 
+to give you tools so that when you push
+back, you're actually going to get AI
+ 
+back, you're actually going to get AI
+tools that really help you do the job.
+ 
+tools that really help you do the job.
+And it's not just cuz I want you to do
+ 
+And it's not just cuz I want you to do
+the job for the company, right? Like,
+ 
+the job for the company, right? Like,
+you need to have fluency with these
+ 
+you need to have fluency with these
+tools at work for your career. And
+ 
+tools at work for your career. And
+that's exactly why not getting this
+ 
+that's exactly why not getting this
+right is going to end careers for people
+ 
+right is going to end careers for people
+who cannot figure it out. In other
+ 
+who cannot figure it out. In other
+words, if you're frustrated inventing
+ 
+words, if you're frustrated inventing
+all the time and can't make this case
+ 
+all the time and can't make this case
+and you stay at the company, you're in a
+ 
+and you stay at the company, you're in a
+position where you're kind of spiraling
+ 
+position where you're kind of spiraling
+in the middle of the AI revolution. I
+ 
+in the middle of the AI revolution. I
+don't want that for you. Similarly, if
+ 
+don't want that for you. Similarly, if
+you do figure it out and you run into a
+ 
+you do figure it out and you run into a
+stone wall, you're going to end up
+ 
+stone wall, you're going to end up
+moving to a different company that has
+ 
+moving to a different company that has
+more permissive AI tooling practices and
+ 
+more permissive AI tooling practices and
+that's a real thing and that's your
+ 
+that's a real thing and that's your
+company's loss, not your loss. And you
+ 
+company's loss, not your loss. And you
+should do that if they can't figure it
+ 
+should do that if they can't figure it
+out and can't give you AI native tools.
+ 
+out and can't give you AI native tools.
+Talent is already moving to places where
+ 
+Talent is already moving to places where
+AI native tooling is available. That is
+ 
+AI native tooling is available. That is
+one of the major themes of 2026 is that
+ 
+one of the major themes of 2026 is that
+talent is concentrating. Talent is
+ 
+talent is concentrating. Talent is
+concentrating in places where AI native
+ 
+concentrating in places where AI native
+tooling is excellent. Don't think of it
+ 
+tooling is excellent. Don't think of it
+as just a procurement problem. It is a
+ 
+as just a procurement problem. It is a
+talent retention issue to get this
+ 
+talent retention issue to get this
+right. All right, that's the best thing
+ 
+right. All right, that's the best thing
+I got for you. Subscribe for more. Have
+ 
+I got for you. Subscribe for more. Have
+fun pushing back. measure that data and
+ 
+fun pushing back. measure that data and
+I'll see you

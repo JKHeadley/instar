@@ -1,0 +1,2420 @@
+ 
+The next generation models is likely to
+ 
+The next generation models is likely to
+drop in the next one to two months. I'm
+ 
+drop in the next one to two months. I'm
+talking about Claude Mythos. I'm talking
+ 
+talking about Claude Mythos. I'm talking
+about whatever chat GPT drops next. I'm
+ 
+about whatever chat GPT drops next. I'm
+talking about the next Gemini model.
+ 
+talking about the next Gemini model.
+They will be more expensive, a lot more
+ 
+They will be more expensive, a lot more
+expensive cuz they're all trained on
+ 
+expensive cuz they're all trained on
+much more expensive chips, the GP300
+ 
+much more expensive chips, the GP300
+series from Nvidia. And it's just going
+ 
+series from Nvidia. And it's just going
+to get more expensive from there. The
+ 
+to get more expensive from there. The
+intelligence we're going to get, the
+ 
+intelligence we're going to get, the
+ambient compute all around us that is
+ 
+ambient compute all around us that is
+essentially free intelligence, is going
+ 
+essentially free intelligence, is going
+to be the dumber models. That's just how
+ 
+to be the dumber models. That's just how
+it is. If you want to use cutting-edge
+ 
+it is. If you want to use cutting-edge
+models, you have got to stop burning
+ 
+models, you have got to stop burning
+tokens and blaming the model. And that
+ 
+tokens and blaming the model. And that
+is the theme for this video. If you're
+ 
+is the theme for this video. If you're
+in a position where you're wondering how
+ 
+in a position where you're wondering how
+much token usage you have, or how
+ 
+much token usage you have, or how
+expensive your AI is, or whether you're
+ 
+expensive your AI is, or whether you're
+using too many tokens for your AI, or
+ 
+using too many tokens for your AI, or
+how you can even measure that, how you
+ 
+how you can even measure that, how you
+can get better at it, that is what this
+ 
+can get better at it, that is what this
+is. And that is going to be one of the
+ 
+is. And that is going to be one of the
+most valuable skills on the planet, by
+ 
+most valuable skills on the planet, by
+the way, because you do not want to be
+ 
+the way, because you do not want to be
+in a position where you are putting
+ 
+in a position where you are putting
+$250,000 a year, a real number that
+ 
+$250,000 a year, a real number that
+Jensen Huang gave in a real interview
+ 
+Jensen Huang gave in a real interview
+for what he expects an actual individual
+ 
+for what he expects an actual individual
+engineer to spend in a year on tokens.
+ 
+engineer to spend in a year on tokens.
+You don't want to be the person spending
+ 
+You don't want to be the person spending
+250 grand on tokens you don't have to be
+ 
+250 grand on tokens you don't have to be
+spending on. You want to be smart. And
+ 
+spending on. You want to be smart. And
+I'm going to give you a specific
+ 
+I'm going to give you a specific
+example. This is real-life example, a
+ 
+example. This is real-life example, a
+real person I know, gave me permission
+ 
+real person I know, gave me permission
+to use this. I recently saw a production
+ 
+to use this. I recently saw a production
+AI pipeline that ingests multiple
+ 
+AI pipeline that ingests multiple
+long-form conversations per user, runs
+ 
+long-form conversations per user, runs
+an analysis across dozens of dimensions,
+ 
+an analysis across dozens of dimensions,
+and generates a fully personalized
+ 
+and generates a fully personalized
+output, all on the most expensive models
+ 
+output, all on the most expensive models
+that money can buy. Not because the
+ 
+that money can buy. Not because the
+person wants to use expensive models,
+ 
+person wants to use expensive models,
+but because he tested it. And what he
+ 
+but because he tested it. And what he
+found was that the better models
+ 
+found was that the better models
+produced the results he needs for his
+ 
+produced the results he needs for his
+business.
+ 
+business.
+The cost per user, less than a quarter,
+ 
+The cost per user, less than a quarter,
+less than 25 cents per user for that.
+ 
+less than 25 cents per user for that.
+Most of us are spending more than we
+ 
+Most of us are spending more than we
+need to on AI. And this is a video about
+ 
+need to on AI. And this is a video about
+that. You can be really smart, use
+ 
+that. You can be really smart, use
+really good cutting-edge AI, and you can
+ 
+really good cutting-edge AI, and you can
+be intelligent with your token usage,
+ 
+be intelligent with your token usage,
+and not spend a ton of money. If you
+ 
+and not spend a ton of money. If you
+want to know what that's like, keep on
+ 
+want to know what that's like, keep on
+watching because we're going to get into
+ 
+watching because we're going to get into
+specific strategies, and I'm going to
+ 
+specific strategies, and I'm going to
+show you what I built so that we can
+ 
+show you what I built so that we can
+actually make this easier for everybody.
+ 
+actually make this easier for everybody.
+So it's not just a guessing game
+ 
+So it's not just a guessing game
+anymore. The takeaway is that frontier
+ 
+anymore. The takeaway is that frontier
+AI can be absurdly cheap when you know
+ 
+AI can be absurdly cheap when you know
+what you're doing. Essentially, the
+ 
+what you're doing. Essentially, the
+models are not expensive, it's your
+ 
+models are not expensive, it's your
+habits that cost a lot. And with Claude
+ 
+habits that cost a lot. And with Claude
+usage limits dominating everything in
+ 
+usage limits dominating everything in
+the last week, I think it's worth having
+ 
+the last week, I think it's worth having
+that conversation again. So let's get to
+ 
+that conversation again. So let's get to
+it. I've made the case we can use our
+ 
+it. I've made the case we can use our
+models better. What are the specific
+ 
+models better. What are the specific
+habits we can change? I want to name
+ 
+habits we can change? I want to name
+specific habits that I have seen in
+ 
+specific habits that I have seen in
+conversations with others, looking over
+ 
+conversations with others, looking over
+your shoulders, reading GitHub repos,
+ 
+your shoulders, reading GitHub repos,
+listening to conversations online. These
+ 
+listening to conversations online. These
+are specific examples that are patterns
+ 
+are specific examples that are patterns
+I see over and over again. And the first
+ 
+I see over and over again. And the first
+one is the rookies, the folks who are
+ 
+one is the rookies, the folks who are
+new to cutting-edge AI. You know what
+ 
+new to cutting-edge AI. You know what
+you bleed out on in tokens? You bleed
+ 
+you bleed out on in tokens? You bleed
+out on document ingestion. This one
+ 
+out on document ingestion. This one
+drives me crazy because it's so, so easy
+ 
+drives me crazy because it's so, so easy
+to fix. A brand new Claude desktop user
+ 
+to fix. A brand new Claude desktop user
+might drag in three PDFs into a
+ 
+might drag in three PDFs into a
+conversation that might be 1,500 words
+ 
+conversation that might be 1,500 words
+each, which is just 4,500 words of text.
+ 
+each, which is just 4,500 words of text.
+It's not that long. And they say,
+ 
+It's not that long. And they say,
+"Summarize these." And Claude processes
+ 
+"Summarize these." And Claude processes
+the raw PDFs with all the formatting
+ 
+the raw PDFs with all the formatting
+overhead that goes with that, the
+ 
+overhead that goes with that, the
+headers, the footers, the embedded
+ 
+headers, the footers, the embedded
+fonts, the layout metadata, and the
+ 
+fonts, the layout metadata, and the
+entire binary structure gets encoded as
+ 
+entire binary structure gets encoded as
+tokens. And so the 4,500 words of
+ 
+tokens. And so the 4,500 words of
+content can become 100-plus thousand
+ 
+content can become 100-plus thousand
+tokens if you're not careful. All you
+ 
+tokens if you're not careful. All you
+have to do to avoid that is just think
+ 
+have to do to avoid that is just think
+in terms of markdown. If you just asked
+ 
+in terms of markdown. If you just asked
+Claude, or frankly go to any of a number
+ 
+Claude, or frankly go to any of a number
+of services on the internet that are
+ 
+of services on the internet that are
+free, and say, "Please convert to
+ 
+free, and say, "Please convert to
+markdown." It will just do it, right? It
+ 
+markdown." It will just do it, right? It
+will just take 10 seconds and convert to
+ 
+will just take 10 seconds and convert to
+markdown, and then you have a very clean
+ 
+markdown, and then you have a very clean
+set of content that's between 4 and
+ 
+set of content that's between 4 and
+6,000 tokens, and that's like saving you
+ 
+6,000 tokens, and that's like saving you
+20x on the memory. And this waste just
+ 
+20x on the memory. And this waste just
+compounds, right? Because once those
+ 
+compounds, right? Because once those
+100,000 tokens are in your conversation
+ 
+100,000 tokens are in your conversation
+history, they bounce back and forth, and
+ 
+history, they bounce back and forth, and
+bounce back and forth, and this is how
+ 
+bounce back and forth, and this is how
+you fill up your token window, and you
+ 
+you fill up your token window, and you
+wonder how other people get so much
+ 
+wonder how other people get so much
+done. Please, please, please, if you're
+ 
+done. Please, please, please, if you're
+new to AI, or if you've never thought
+ 
+new to AI, or if you've never thought
+about it, think about the file formats
+ 
+about it, think about the file formats
+you're throwing, because so many of
+ 
+you're throwing, because so many of
+these file formats are designed to be
+ 
+these file formats are designed to be
+human readable. They're not designed to
+ 
+human readable. They're not designed to
+be AI readable. Think about the token
+ 
+be AI readable. Think about the token
+efficiency
+ 
+efficiency
+of these file formats. And if you're
+ 
+of these file formats. And if you're
+wondering, "Well, how do I convert to
+ 
+wondering, "Well, how do I convert to
+markdown?" I built something for you.
+ 
+markdown?" I built something for you.
+Because all you have to do is just
+ 
+Because all you have to do is just
+ingest a file, you you hit transform,
+ 
+ingest a file, you you hit transform,
+and it just converts it back into into
+ 
+and it just converts it back into into
+markdown. That's it. And we have a
+ 
+markdown. That's it. And we have a
+number of file types, we're adding more
+ 
+number of file types, we're adding more
+from the community all the time as part
+ 
+from the community all the time as part
+of the Open Brain ecosystem. It's just a
+ 
+of the Open Brain ecosystem. It's just a
+plugin you can put in, and it'll just
+ 
+plugin you can put in, and it'll just
+convert it to markdown. But that's not
+ 
+convert it to markdown. But that's not
+the only way. You can tell Claude to do
+ 
+the only way. You can tell Claude to do
+it directly. You can also just directly
+ 
+it directly. You can also just directly
+do it on the internet with any of a
+ 
+do it on the internet with any of a
+number of free web services. Markdown
+ 
+number of free web services. Markdown
+conversion should not be gated. It just
+ 
+conversion should not be gated. It just
+it's super easy to do. Tokens are
+ 
+it's super easy to do. Tokens are
+designed to preserve everything in an
+ 
+designed to preserve everything in an
+original text. If you wanted to reason
+ 
+original text. If you wanted to reason
+about the style of the PDF, fine, keep
+ 
+about the style of the PDF, fine, keep
+it. But 99% of the time, all you care
+ 
+it. But 99% of the time, all you care
+about is the text. You just want it in
+ 
+about is the text. You just want it in
+markdown. Please, please, please, think
+ 
+markdown. Please, please, please, think
+about your file formats. Next big
+ 
+about your file formats. Next big
+mistake that people make. And this one
+ 
+mistake that people make. And this one
+comes a little bit after people tend to
+ 
+comes a little bit after people tend to
+convert to markdown and start to
+ 
+convert to markdown and start to
+understand how some of these initial
+ 
+understand how some of these initial
+documents work. Please, do not sprawl
+ 
+documents work. Please, do not sprawl
+your conversations. If you were doing
+ 
+your conversations. If you were doing
+20, 30, 40 turns on a conversation, no
+ 
+20, 30, 40 turns on a conversation, no
+AI was reinforcement learned, trained,
+ 
+AI was reinforcement learned, trained,
+or designed to handle that kind of
+ 
+or designed to handle that kind of
+sprawl. All you're doing is compressing
+ 
+sprawl. All you're doing is compressing
+the ratio of the conversation where the
+ 
+the ratio of the conversation where the
+original instructions happened. And yes,
+ 
+original instructions happened. And yes,
+the models are getting better and better
+ 
+the models are getting better and better
+and better at anchoring on and
+ 
+and better at anchoring on and
+remembering those original instructions,
+ 
+remembering those original instructions,
+even when they go through compression.
+ 
+even when they go through compression.
+But why make them suffer? Why make
+ 
+But why make them suffer? Why make
+yourself suffer by filling up the
+ 
+yourself suffer by filling up the
+context window with croft? Why waste
+ 
+context window with croft? Why waste
+tokens? Why not just ask for what you
+ 
+tokens? Why not just ask for what you
+want up front? And if you're going to
+ 
+want up front? And if you're going to
+have an evolving exchange or evolving
+ 
+have an evolving exchange or evolving
+conversation, clearly mark it at the top
+ 
+conversation, clearly mark it at the top
+as our goal here is to evolve and reach
+ 
+as our goal here is to evolve and reach
+a conclusion together. And then you have
+ 
+a conclusion together. And then you have
+a light conversation that goes 20 or 30
+ 
+a light conversation that goes 20 or 30
+turns and say, "Thank you. I've got a
+ 
+turns and say, "Thank you. I've got a
+conclusion. Please summarize this." And
+ 
+conclusion. Please summarize this." And
+then you go and do real work. I see so
+ 
+then you go and do real work. I see so
+many people trying to mix together
+ 
+many people trying to mix together
+modes, but AI is really designed for
+ 
+modes, but AI is really designed for
+single turn, do a lot of heavy work more
+ 
+single turn, do a lot of heavy work more
+and more. And in that context, you need
+ 
+and more. And in that context, you need
+to do the thinking in advance and bring
+ 
+to do the thinking in advance and bring
+that to the table. And if you need to
+ 
+that to the table. And if you need to
+think with AI, that should be in a
+ 
+think with AI, that should be in a
+separate chat, separate conversation. It
+ 
+separate chat, separate conversation. It
+might even be a separate model. It might
+ 
+might even be a separate model. It might
+be three separate models, and you're
+ 
+be three separate models, and you're
+bringing all of that in. I do that all
+ 
+bringing all of that in. I do that all
+the time. I'm like, "Okay, I want to
+ 
+the time. I'm like, "Okay, I want to
+look through what communities are
+ 
+look through what communities are
+thinking about AI on X. I'm going to go
+ 
+thinking about AI on X. I'm going to go
+to Grok for that. Or I'm going to go
+ 
+to Grok for that. Or I'm going to go
+through and look at what earnings
+ 
+through and look at what earnings
+reports are saying about the state of AI
+ 
+reports are saying about the state of AI
+and capital investment. I'm going to go
+ 
+and capital investment. I'm going to go
+and pipe that through chat GPT thinking
+ 
+and pipe that through chat GPT thinking
+mode, and get a bunch of reports out on
+ 
+mode, and get a bunch of reports out on
+that. Or I'm going to go through
+ 
+that. Or I'm going to go through
+Perplexity research and get a bunch of
+ 
+Perplexity research and get a bunch of
+reports out on that. Now I'm going to go
+ 
+reports out on that. Now I'm going to go
+and have a look at what some major blog
+ 
+and have a look at what some major blog
+posts have to say about a particular AI
+ 
+posts have to say about a particular AI
+topic. I'll just go to Claude Opus 4.6.
+ 
+topic. I'll just go to Claude Opus 4.6.
+We'll do a targeted web search. We'll go
+ 
+We'll do a targeted web search. We'll go
+back through. We'll make sure we
+ 
+back through. We'll make sure we
+understand what we're looking at. None
+ 
+understand what we're looking at. None
+of that is intended to be a single
+ 
+of that is intended to be a single
+answer, right? These are all evolving
+ 
+answer, right? These are all evolving
+conversations. Once I get what I want
+ 
+conversations. Once I get what I want
+out of each of these individual threads,
+ 
+out of each of these individual threads,
+I can pull them together and say, "Okay,
+ 
+I can pull them together and say, "Okay,
+now I have a piece of work to do. Now I
+ 
+now I have a piece of work to do. Now I
+have something I actually need done, and
+ 
+have something I actually need done, and
+I have all the context needed." So you
+ 
+I have all the context needed." So you
+should have two modes here. You should
+ 
+should have two modes here. You should
+have a mode where you are trying to
+ 
+have a mode where you are trying to
+gather information, and a mode where you
+ 
+gather information, and a mode where you
+are trying to focus and get work done.
+ 
+are trying to focus and get work done.
+Do not mix the two together. That is how
+ 
+Do not mix the two together. That is how
+you burn tokens. That is how you confuse
+ 
+you burn tokens. That is how you confuse
+the AI. Your objective, when you want
+ 
+the AI. Your objective, when you want
+the AI to do real work, should be to be
+ 
+the AI to do real work, should be to be
+so clear that the AI needs to do nothing
+ 
+so clear that the AI needs to do nothing
+else, and it just goes and gets the work
+ 
+else, and it just goes and gets the work
+done, and comes back. It should be that
+ 
+done, and comes back. It should be that
+clear. If you were an intermediate user,
+ 
+clear. If you were an intermediate user,
+and you were like, "I know this stuff,
+ 
+and you were like, "I know this stuff,
+Nate." Well, let me give you another tip
+ 
+Nate." Well, let me give you another tip
+you may not know. The people who are
+ 
+you may not know. The people who are
+adding lots of plugins to their chat GPT
+ 
+adding lots of plugins to their chat GPT
+or their Claude instances, you are
+ 
+or their Claude instances, you are
+paying a tax every time you start a
+ 
+paying a tax every time you start a
+conversation, because in the background,
+ 
+conversation, because in the background,
+those are going to be loaded in, and
+ 
+those are going to be loaded in, and
+they're going to start to fill the
+ 
+they're going to start to fill the
+context window. I know someone who
+ 
+context window. I know someone who
+shared with me that they are over 50,000
+ 
+shared with me that they are over 50,000
+tokens in on a context window before
+ 
+tokens in on a context window before
+they type the first word, because they
+ 
+they type the first word, because they
+actually load that many plugins and
+ 
+actually load that many plugins and
+connectors. You don't need that much.
+ 
+connectors. You don't need that much.
+You know what that's like? That is like
+ 
+You know what that's like? That is like
+walking in to a fully functional tool
+ 
+walking in to a fully functional tool
+workshop, and the first thing you do,
+ 
+workshop, and the first thing you do,
+instead of leaving the tools on the
+ 
+instead of leaving the tools on the
+walls, is you go and get all the tools
+ 
+walls, is you go and get all the tools
+off, and you lay them out on the
+ 
+off, and you lay them out on the
+workbench, and you say, "Okay, now we're
+ 
+workbench, and you say, "Okay, now we're
+going to do I don't know, we're going to
+ 
+going to do I don't know, we're going to
+do something. We're going to make a
+ 
+do something. We're going to make a
+bench." Do you need all 200 tools in the
+ 
+bench." Do you need all 200 tools in the
+workshop to make the bench? No, you
+ 
+workshop to make the bench? No, you
+probably need the right five. Think
+ 
+probably need the right five. Think
+about that the next time you have an
+ 
+about that the next time you have an
+approach to tooling. Because so many
+ 
+approach to tooling. Because so many
+people, we we hear about this new
+ 
+people, we we hear about this new
+plugin, we hear about this new
+ 
+plugin, we hear about this new
+connector. Someone hypes it up. We say
+ 
+connector. Someone hypes it up. We say
+we need add it, and we don't realize
+ 
+we need add it, and we don't realize
+it's a silent tax for the rest of time
+ 
+it's a silent tax for the rest of time
+every time we have a conversation, and
+ 
+every time we have a conversation, and
+it just adds that little bit. It adds a
+ 
+it just adds that little bit. It adds a
+thousand tokens. It adds 2,000 tokens,
+ 
+thousand tokens. It adds 2,000 tokens,
+whatever it does. And it just adds it
+ 
+whatever it does. And it just adds it
+always. Do you want to pay that for the
+ 
+always. Do you want to pay that for the
+model? Maybe you should think more
+ 
+model? Maybe you should think more
+strategically about which plugins and
+ 
+strategically about which plugins and
+connectors are really adding value for
+ 
+connectors are really adding value for
+you, cuz they can. Like they can be
+ 
+you, cuz they can. Like they can be
+tremendously valuable, but make sure you
+ 
+tremendously valuable, but make sure you
+know which ones you really want. Because
+ 
+know which ones you really want. Because
+if you don't, then you're going to be
+ 
+if you don't, then you're going to be
+looking at dozens of plugins that you
+ 
+looking at dozens of plugins that you
+don't really need, that are supposed to
+ 
+don't really need, that are supposed to
+add value, but just add a bunch of
+ 
+add value, but just add a bunch of
+croft, a bunch of junk into your context
+ 
+croft, a bunch of junk into your context
+window, and confuse the model, and keep
+ 
+window, and confuse the model, and keep
+it from doing good work, and maybe
+ 
+it from doing good work, and maybe
+confuse it as to which tools it's
+ 
+confuse it as to which tools it's
+supposed to use. Now, I'm saving the
+ 
+supposed to use. Now, I'm saving the
+most expensive and the most advanced
+ 
+most expensive and the most advanced
+users for last, because this is where
+ 
+users for last, because this is where
+the leverage lies. If you are an
+ 
+the leverage lies. If you are an
+advanced user, if you are someone who's
+ 
+advanced user, if you are someone who's
+like, "Send me to the GitHub repo. I can
+ 
+like, "Send me to the GitHub repo. I can
+just do this myself. Let me install Open
+ 
+just do this myself. Let me install Open
+Claude on my Mac mini. I'm okay managing
+ 
+Claude on my Mac mini. I'm okay managing
+the gateway. I can be secure." This is
+ 
+the gateway. I can be secure." This is
+for you.
+ 
+for you.
+You have the most leverage of anybody
+ 
+You have the most leverage of anybody
+out there in terms of how many tokens
+ 
+out there in terms of how many tokens
+you use. And typically speaking, your
+ 
+you use. And typically speaking, your
+mistakes are the most expensive ones,
+ 
+mistakes are the most expensive ones,
+because if you screw up, you're screwing
+ 
+because if you screw up, you're screwing
+up at a level of hundreds of thousands
+ 
+up at a level of hundreds of thousands
+or millions of tokens, maybe more. And
+ 
+or millions of tokens, maybe more. And
+the reason why is simple. You are doing
+ 
+the reason why is simple. You are doing
+bigger projects with AI. And when you do
+ 
+bigger projects with AI. And when you do
+big projects with AI, your ability to
+ 
+big projects with AI, your ability to
+leverage AI effectively becomes one of
+ 
+leverage AI effectively becomes one of
+the most critical things you can do to
+ 
+the most critical things you can do to
+manage ROI and cost on a particular
+ 
+manage ROI and cost on a particular
+project. It is a job skill at that
+ 
+project. It is a job skill at that
+level. If you're technical enough to go
+ 
+level. If you're technical enough to go
+to a GitHub, you have a job skill to
+ 
+to a GitHub, you have a job skill to
+manage tokens efficiently, and you
+ 
+manage tokens efficiently, and you
+cannot pass that off to somebody else.
+ 
+cannot pass that off to somebody else.
+That is not going to be somebody else's
+ 
+That is not going to be somebody else's
+full-time job at an org. All of us are
+ 
+full-time job at an org. All of us are
+going to have to learn to manage our
+ 
+going to have to learn to manage our
+tokens well. If you are sitting there
+ 
+tokens well. If you are sitting there
+and you are you are the person who is
+ 
+and you are you are the person who is
+responsible for the system prompt on an
+ 
+responsible for the system prompt on an
+agent, and you haven't pruned it in the
+ 
+agent, and you haven't pruned it in the
+last couple of weeks, what are you
+ 
+last couple of weeks, what are you
+doing? If you haven't sit there and gone
+ 
+doing? If you haven't sit there and gone
+line by line and said, "You know what? A
+ 
+line by line and said, "You know what? A
+hundred of these lines, I don't need
+ 
+hundred of these lines, I don't need
+anymore because they've been here since
+ 
+anymore because they've been here since
+3.5, and like I don't need them now." If
+ 
+3.5, and like I don't need them now." If
+you're sitting there and you're like, "I
+ 
+you're sitting there and you're like, "I
+don't know why we're loading this entire
+ 
+don't know why we're loading this entire
+repo into the context window. We just do
+ 
+repo into the context window. We just do
+it all the time, and it seemed to work
+ 
+it all the time, and it seemed to work
+two generations ago, but we never tested
+ 
+two generations ago, but we never tested
+it." That's just irresponsible. You need
+ 
+it." That's just irresponsible. You need
+to be in a position where you are
+ 
+to be in a position where you are
+actually allowing the gains in model
+ 
+actually allowing the gains in model
+intelligence to lean out your context
+ 
+intelligence to lean out your context
+window. If you want to look at the
+ 
+window. If you want to look at the
+larger trend that we see in AI today, it
+ 
+larger trend that we see in AI today, it
+is that we needed to front-load and be
+ 
+is that we needed to front-load and be
+really specific about a lot of context
+ 
+really specific about a lot of context
+for dumber models in 2025, and now that
+ 
+for dumber models in 2025, and now that
+it's 2026, as the models get more
+ 
+it's 2026, as the models get more
+intelligent, we can lean out the context
+ 
+intelligent, we can lean out the context
+window initially because we can trust
+ 
+window initially because we can trust
+the model to retrieve better. So, take
+ 
+the model to retrieve better. So, take
+that seriously. That is something you
+ 
+that seriously. That is something you
+can do that is practical to get ready
+ 
+can do that is practical to get ready
+for Claude Mythos. Don't sleep on it.
+ 
+for Claude Mythos. Don't sleep on it.
+This is again, if you're technical,
+ 
+This is again, if you're technical,
+these are million token decisions we're
+ 
+these are million token decisions we're
+talking about, especially if you're
+ 
+talking about, especially if you're
+running the agent over and over again,
+ 
+running the agent over and over again,
+it adds up. Let me give you a specific
+ 
+it adds up. Let me give you a specific
+example that is based on the original
+ 
+example that is based on the original
+beginner example with PDFs to show you
+ 
+beginner example with PDFs to show you
+the tangible difference in cost, right?
+ 
+the tangible difference in cost, right?
+And this is something that should
+ 
+And this is something that should
+cascade all the way across. If you don't
+ 
+cascade all the way across. If you don't
+believe me, this is real. Let's say you
+ 
+believe me, this is real. Let's say you
+feed raw PDFs into context. Let's say
+ 
+feed raw PDFs into context. Let's say
+it's a hundred thousand tokens versus 5K
+ 
+it's a hundred thousand tokens versus 5K
+like we talked about. Let's say it's a
+ 
+like we talked about. Let's say it's a
+conversation sprawl that takes 30 turns.
+ 
+conversation sprawl that takes 30 turns.
+I've seen these. Like this is very
+ 
+I've seen these. Like this is very
+realistic. And let's say you use Opus
+ 
+realistic. And let's say you use Opus
+4.6 for everything, including
+ 
+4.6 for everything, including
+formatting, including proofreading, and
+ 
+formatting, including proofreading, and
+you're making something. Over a
+ 
+you're making something. Over a
+five-hour session where you're talking
+ 
+five-hour session where you're talking
+back and forth, you might be spending
+ 
+back and forth, you might be spending
+roughly 800,000 to a million input
+ 
+roughly 800,000 to a million input
+tokens with maybe 150,000 to 200,000 of
+ 
+tokens with maybe 150,000 to 200,000 of
+output tokens, including thinking. $5 in
+ 
+output tokens, including thinking. $5 in
+and $25 out per million, you're spending
+ 
+and $25 out per million, you're spending
+eight to ten dollars worth of compute,
+ 
+eight to ten dollars worth of compute,
+which you might say, "You know what? I
+ 
+which you might say, "You know what? I
+can tolerate that, or I got the
+ 
+can tolerate that, or I got the
+unlimited plan, or I don't care,
+ 
+unlimited plan, or I don't care,
+whatever." But I want you to look at the
+ 
+whatever." But I want you to look at the
+difference because anytime you start to
+ 
+difference because anytime you start to
+get serious with AI, you need to see the
+ 
+get serious with AI, you need to see the
+difference. We talk about not being
+ 
+difference. We talk about not being
+wasteful with artificial intelligence,
+ 
+wasteful with artificial intelligence,
+this is being wasteful. You want to save
+ 
+this is being wasteful. You want to save
+water, you want to save energy, don't
+ 
+water, you want to save energy, don't
+waste your tokens. Clean session, same
+ 
+waste your tokens. Clean session, same
+work. Convert documents to markdown
+ 
+work. Convert documents to markdown
+first, start fresh conversations every
+ 
+first, start fresh conversations every
+10 to 15 turns, use Opus for reasoning
+ 
+10 to 15 turns, use Opus for reasoning
+and Sonnet for execution and Haiku for
+ 
+and Sonnet for execution and Haiku for
+polish, and scope the context to what's
+ 
+polish, and scope the context to what's
+needed. And over the same period of
+ 
+needed. And over the same period of
+time, you get the same result for 100 to
+ 
+time, you get the same result for 100 to
+150,000 input tokens, a lot less, and
+ 
+150,000 input tokens, a lot less, and
+maybe 50 to 80,000 output tokens. You
+ 
+maybe 50 to 80,000 output tokens. You
+blend that across both models, and
+ 
+blend that across both models, and
+instead of costing eight to ten dollars
+ 
+instead of costing eight to ten dollars
+in compute, you spend a buck, and you
+ 
+in compute, you spend a buck, and you
+got the same amount. In other words, you
+ 
+got the same amount. In other words, you
+got an eight to ten x reduction in cost.
+ 
+got an eight to ten x reduction in cost.
+Now, scale it, right? That sloppy user
+ 
+Now, scale it, right? That sloppy user
+is burning 40 to 50 bucks in compute a
+ 
+is burning 40 to 50 bucks in compute a
+week, and the clean user is burning five
+ 
+week, and the clean user is burning five
+to seven bucks a week. Across a
+ 
+to seven bucks a week. Across a
+ten-person team on an API, that's 2,000
+ 
+ten-person team on an API, that's 2,000
+bucks a month versus 250 bucks a month
+ 
+bucks a month versus 250 bucks a month
+for the exact same result. For
+ 
+for the exact same result. For
+subscription users, it's the difference
+ 
+subscription users, it's the difference
+between hitting your limit daily and
+ 
+between hitting your limit daily and
+then forgetting that limits exist
+ 
+then forgetting that limits exist
+because you just are so productive. Now,
+ 
+because you just are so productive. Now,
+if you think this isn't serious, I want
+ 
+if you think this isn't serious, I want
+you to think about the cost structure
+ 
+you to think about the cost structure
+for Mythos for a minute. Mythos is
+ 
+for Mythos for a minute. Mythos is
+rumored to be by far Anthropic's most
+ 
+rumored to be by far Anthropic's most
+expensive model. I think very strongly
+ 
+expensive model. I think very strongly
+by April or May, we are going to have a
+ 
+by April or May, we are going to have a
+new class of pricing, well above $5.25
+ 
+new class of pricing, well above $5.25
+range for tokens, into maybe 10x that,
+ 
+range for tokens, into maybe 10x that,
+right? Imagine a world where you are 10x
+ 
+right? Imagine a world where you are 10x
+what Opus costs now. $5 in, $25 out for
+ 
+what Opus costs now. $5 in, $25 out for
+Opus, what if it's $50 in, $250 out for
+ 
+Opus, what if it's $50 in, $250 out for
+Opus? Well, now things start to get
+ 
+Opus? Well, now things start to get
+serious. Now that eight or ten x
+ 
+serious. Now that eight or ten x
+reduction on individual work for a day
+ 
+reduction on individual work for a day
+becomes something that you can actually
+ 
+becomes something that you can actually
+measure and think about as a business.
+ 
+measure and think about as a business.
+And you imagine how big that gets when
+ 
+And you imagine how big that gets when
+you start to work across a dev team. The
+ 
+you start to work across a dev team. The
+mistakes you're making today were
+ 
+mistakes you're making today were
+tolerable because models were priced
+ 
+tolerable because models were priced
+cheaply. When cutting-edge intelligence
+ 
+cheaply. When cutting-edge intelligence
+that you want comes out more expensive,
+ 
+that you want comes out more expensive,
+and I don't know the exact price, right?
+ 
+and I don't know the exact price, right?
+I'm not saying it's 50 and 250, I'm
+ 
+I'm not saying it's 50 and 250, I'm
+giving you a thought exercise. It might
+ 
+giving you a thought exercise. It might
+be 10 and 50 instead. It's still the
+ 
+be 10 and 50 instead. It's still the
+same point. The point is the model that
+ 
+same point. The point is the model that
+you want is going to cost more, and as
+ 
+you want is going to cost more, and as
+models cost more, your mistakes scale.
+ 
+models cost more, your mistakes scale.
+Your mistakes scale with the price of
+ 
+Your mistakes scale with the price of
+intelligence. And make no mistake, the
+ 
+intelligence. And make no mistake, the
+models will keep getting better. Every
+ 
+models will keep getting better. Every
+quarter, every release, the trajectory
+ 
+quarter, every release, the trajectory
+is unambiguous. People who tell you the
+ 
+is unambiguous. People who tell you the
+models are plateauing are lying. They
+ 
+models are plateauing are lying. They
+are lying to you. The models are getting
+ 
+are lying to you. The models are getting
+much faster, and I do see that
+ 
+much faster, and I do see that
+occasionally that people are insisting
+ 
+occasionally that people are insisting
+that the models aren't getting better.
+ 
+that the models aren't getting better.
+It's not true by any measure out there.
+ 
+It's not true by any measure out there.
+And the people that I see insisting on
+ 
+And the people that I see insisting on
+it, I think they're insisting on it
+ 
+it, I think they're insisting on it
+partly
+ 
+partly
+because they don't want to face the
+ 
+because they don't want to face the
+world as it will exist when AI is this
+ 
+world as it will exist when AI is this
+good and continuing to accelerate this
+ 
+good and continuing to accelerate this
+fast. It's scary, right? We but we
+ 
+fast. It's scary, right? We but we
+should face it, and we can all work
+ 
+should face it, and we can all work
+through it together. All right. I have
+ 
+through it together. All right. I have
+built a stupid button. That is my
+ 
+built a stupid button. That is my
+contribution to this discourse. I am
+ 
+contribution to this discourse. I am
+building a stupid button so you can
+ 
+building a stupid button so you can
+check and see if you are using your
+ 
+check and see if you are using your
+context incorrectly. I want to save you
+ 
+context incorrectly. I want to save you
+money. I want to save you hundreds of
+ 
+money. I want to save you hundreds of
+dollars.
+ 
+dollars.
+Please do not be stupid with your
+ 
+Please do not be stupid with your
+tokens. You know, if if you care about
+ 
+tokens. You know, if if you care about
+it, don't waste the water, don't waste
+ 
+it, don't waste the water, don't waste
+the electricity. If you just care about
+ 
+the electricity. If you just care about
+the bottom line, also don't waste your
+ 
+the bottom line, also don't waste your
+bucks, right? We should probably care
+ 
+bucks, right? We should probably care
+about all of those things. If you want
+ 
+about all of those things. If you want
+to know like what's in Nate's stupid
+ 
+to know like what's in Nate's stupid
+button, it's really simple. There's six
+ 
+button, it's really simple. There's six
+questions that I'm helping you answer.
+ 
+questions that I'm helping you answer.
+Number one, do you feed Claude raw PDFs
+ 
+Number one, do you feed Claude raw PDFs
+and images when all you need is text? Is
+ 
+and images when all you need is text? Is
+there something you were doing that is
+ 
+there something you were doing that is
+grossly inefficient as far as tokens go?
+ 
+grossly inefficient as far as tokens go?
+By the way, screenshots, terribly
+ 
+By the way, screenshots, terribly
+inefficient. It would be much, much
+ 
+inefficient. It would be much, much
+better just to copy and paste text.
+ 
+better just to copy and paste text.
+Convert to markdown always. Claude can
+ 
+Convert to markdown always. Claude can
+do it really, really fast for you. Why
+ 
+do it really, really fast for you. Why
+not? Question two, when was the last
+ 
+not? Question two, when was the last
+time you started a fresh conversation?
+ 
+time you started a fresh conversation?
+Are you one of those people that keeps
+ 
+Are you one of those people that keeps
+the conversation going forever? I swear
+ 
+the conversation going forever? I swear
+the number of people who keep their
+ 
+the number of people who keep their
+conversations going forever is highly
+ 
+conversations going forever is highly
+correlated to the number of people who
+ 
+correlated to the number of people who
+start experiencing symptoms of LLM
+ 
+start experiencing symptoms of LLM
+psychosis. Why? Because models drift
+ 
+psychosis. Why? Because models drift
+over time. They were never intended for
+ 
+over time. They were never intended for
+that long a conversation. If you're
+ 
+that long a conversation. If you're
+having a long-running conversation,
+ 
+having a long-running conversation,
+you're just in strange territory. When
+ 
+you're just in strange territory. When
+was the last time you started a fresh
+ 
+was the last time you started a fresh
+conversation? And why is that? Again,
+ 
+conversation? And why is that? Again,
+every time you take a turn in a
+ 
+every time you take a turn in a
+conversation, you read it as sending one
+ 
+conversation, you read it as sending one
+line back, but Claude or ChatGPT or
+ 
+line back, but Claude or ChatGPT or
+Gemini reads it as sending the entire
+ 
+Gemini reads it as sending the entire
+conversation back. And if you're
+ 
+conversation back. And if you're
+wondering, is this something that's just
+ 
+wondering, is this something that's just
+for Claude Nate's talking about Claude a
+ 
+for Claude Nate's talking about Claude a
+lot? No, it's for ChatGPT, it's for
+ 
+lot? No, it's for ChatGPT, it's for
+Gemini, it's for Llama, it's for any LLM
+ 
+Gemini, it's for Llama, it's for any LLM
+you're using, it's for Qwen. This is how
+ 
+you're using, it's for Qwen. This is how
+LLMs work. Don't waste it. Question
+ 
+LLMs work. Don't waste it. Question
+three, are you using the most expensive
+ 
+three, are you using the most expensive
+model for everything? Are you using
+ 
+model for everything? Are you using
+Opus? Are you using 5.4 on pro mode?
+ 
+Opus? Are you using 5.4 on pro mode?
+Whatever your choice is, are you picking
+ 
+Whatever your choice is, are you picking
+the most expensive model and just
+ 
+the most expensive model and just
+blindly using it regardless when the
+ 
+blindly using it regardless when the
+cheaper model may work better? This is
+ 
+cheaper model may work better? This is
+especially important if you have
+ 
+especially important if you have
+production workloads, but it's also true
+ 
+production workloads, but it's also true
+for all of us. Like if you're doing
+ 
+for all of us. Like if you're doing
+something that's a simple formatting
+ 
+something that's a simple formatting
+task, don't depend on Opus for it. Don't
+ 
+task, don't depend on Opus for it. Don't
+depend on 5.4 for it. Use the models for
+ 
+depend on 5.4 for it. Use the models for
+what they're designed for. Don't bring a
+ 
+what they're designed for. Don't bring a
+Ferrari to the grocery store. Question
+ 
+Ferrari to the grocery store. Question
+four, do you know what's loading in
+ 
+four, do you know what's loading in
+context before you even type? You can
+ 
+context before you even type? You can
+actually find this out. You can run
+ 
+actually find this out. You can run
+{slash} context in Claude Code, by the
+ 
+{slash} context in Claude Code, by the
+way. You can look at the number of
+ 
+way. You can look at the number of
+things that are loading if you're in
+ 
+things that are loading if you're in
+Claude Code. If you don't know what that
+ 
+Claude Code. If you don't know what that
+means, you can go to your ChatGPT or
+ 
+means, you can go to your ChatGPT or
+your Claude, you can see how many
+ 
+your Claude, you can see how many
+connectors you have available, you can
+ 
+connectors you have available, you can
+see how many you've loaded up. You could
+ 
+see how many you've loaded up. You could
+be loading tens of thousands of tokens
+ 
+be loading tens of thousands of tokens
+that you're not really aware of and not
+ 
+that you're not really aware of and not
+really using. If you enable Google Drive
+ 
+really using. If you enable Google Drive
+months ago, and you never, never, ever
+ 
+months ago, and you never, never, ever
+use Google Drive, you just thought it
+ 
+use Google Drive, you just thought it
+was cool on the day it launched. Why?
+ 
+was cool on the day it launched. Why?
+Just drop it. There are so many examples
+ 
+Just drop it. There are so many examples
+like that where we see something cool,
+ 
+like that where we see something cool,
+we add it, and we forget it's there.
+ 
+we add it, and we forget it's there.
+It's like a barnacle on a ship. It's
+ 
+It's like a barnacle on a ship. It's
+going to slow you down. It's going to
+ 
+going to slow you down. It's going to
+burn tokens. You don't need to have it.
+ 
+burn tokens. You don't need to have it.
+Audit.
+ 
+Audit.
+Audit your plugins. It matters. Next
+ 
+Audit your plugins. It matters. Next
+question, API builders, are you caching
+ 
+question, API builders, are you caching
+stable context so you don't reuse it?
+ 
+stable context so you don't reuse it?
+Prompt caching can give you a 90%
+ 
+Prompt caching can give you a 90%
+discount on repeated content, right?
+ 
+discount on repeated content, right?
+Cache hits on Opus cost 50 cents per
+ 
+Cache hits on Opus cost 50 cents per
+million versus $5 per million standard.
+ 
+million versus $5 per million standard.
+It makes a difference. Do not sit there
+ 
+It makes a difference. Do not sit there
+and ignore prompt caching. Take it
+ 
+and ignore prompt caching. Take it
+seriously. If your system prompt, your
+ 
+seriously. If your system prompt, your
+tool definitions, your reference
+ 
+tool definitions, your reference
+documents aren't cached, what are you
+ 
+documents aren't cached, what are you
+doing? This is not advanced stuff in
+ 
+doing? This is not advanced stuff in
+2026. You should just be doing it. And
+ 
+2026. You should just be doing it. And
+the last question the stupid button
+ 
+the last question the stupid button
+tests for This is a real button, by the
+ 
+tests for This is a real button, by the
+way. I really built a stupid button. How
+ 
+way. I really built a stupid button. How
+are you handling web search? Are you
+ 
+are you handling web search? Are you
+letting Claude do web research the
+ 
+letting Claude do web research the
+expensive way? People don't realize
+ 
+expensive way? People don't realize
+this, but if you call Perplexity for a
+ 
+this, but if you call Perplexity for a
+search, it tends to be much more token
+ 
+search, it tends to be much more token
+cheap than using Claude natively. Now,
+ 
+cheap than using Claude natively. Now,
+Claude is addressing this. There are
+ 
+Claude is addressing this. There are
+lots of ways to do Claude search. You
+ 
+lots of ways to do Claude search. You
+can actually use Claude to navigate
+ 
+can actually use Claude to navigate
+through a browser. You can also directly
+ 
+through a browser. You can also directly
+search in the terminal, and it will spin
+ 
+search in the terminal, and it will spin
+up something in the background. This is
+ 
+up something in the background. This is
+a service, and you can call something in
+ 
+a service, and you can call something in
+like an MCP connector for Perplexity.
+ 
+like an MCP connector for Perplexity.
+All different options you can use. This
+ 
+All different options you can use. This
+is broadly true. It's not just true for
+ 
+is broadly true. It's not just true for
+Claude, it's true for ChatGPT, it's true
+ 
+Claude, it's true for ChatGPT, it's true
+for Gemini, etc. Because MCP is magic.
+ 
+for Gemini, etc. Because MCP is magic.
+But if you are trying to do search, the
+ 
+But if you are trying to do search, the
+larger point is that you should be doing
+ 
+larger point is that you should be doing
+search as cheaply as possible. If you
+ 
+search as cheaply as possible. If you
+just want quick results that are token
+ 
+just want quick results that are token
+efficient, it may be worth it to take
+ 
+efficient, it may be worth it to take
+the time to spin up an MCP and just have
+ 
+the time to spin up an MCP and just have
+a dedicated service that just returns
+ 
+a dedicated service that just returns
+the search results. That's what I have
+ 
+the search results. That's what I have
+found experimentally with Perplexity and
+ 
+found experimentally with Perplexity and
+Claude is that Perplexity tends to burn
+ 
+Claude is that Perplexity tends to burn
+something like 10 to 15,000 less tokens
+ 
+something like 10 to 15,000 less tokens
+per search, which is not a small number
+ 
+per search, which is not a small number
+if you're doing complex search, and it
+ 
+if you're doing complex search, and it
+tends to be five times faster, and it
+ 
+tends to be five times faster, and it
+has structured citations. So, this is
+ 
+has structured citations. So, this is
+not meant to be a Perplexity plug, it's
+ 
+not meant to be a Perplexity plug, it's
+just a token management plug. Try it for
+ 
+just a token management plug. Try it for
+yourself, but I got to say, I like
+ 
+yourself, but I got to say, I like
+faster, I like citations, I like less
+ 
+faster, I like citations, I like less
+tokens. Over a research-heavy session,
+ 
+tokens. Over a research-heavy session,
+like a plugin like that can save you a
+ 
+like a plugin like that can save you a
+lot on the token side. And that's a
+ 
+lot on the token side. And that's a
+larger callout. Like if you have ways to
+ 
+larger callout. Like if you have ways to
+look at your token usage and to diagnose
+ 
+look at your token usage and to diagnose
+it, you're going to be smarter about it.
+ 
+it, you're going to be smarter about it.
+And that's the whole point of the stupid
+ 
+And that's the whole point of the stupid
+button is like let's not fly blind here.
+ 
+button is like let's not fly blind here.
+Let's look at our actual token usage and
+ 
+Let's look at our actual token usage and
+let's actually make some good choices
+ 
+let's actually make some good choices
+and let's optimize it. Now, what's in
+ 
+and let's optimize it. Now, what's in
+the stupid button? Number one, there is
+ 
+the stupid button? Number one, there is
+a prompt. If you've never done this, if
+ 
+a prompt. If you've never done this, if
+you're like, "What is an MCP server?" We
+ 
+you're like, "What is an MCP server?" We
+got a prompt for you, right? A prompt
+ 
+got a prompt for you, right? A prompt
+you can run against your recent
+ 
+you can run against your recent
+conversations that actually identifies
+ 
+conversations that actually identifies
+the specific dumb things you
+ 
+the specific dumb things you
+specifically are doing. Like it will see
+ 
+specifically are doing. Like it will see
+which documents you're feeding raw. It
+ 
+which documents you're feeding raw. It
+will see your conversations raw. It will
+ 
+will see your conversations raw. It will
+look at model misuse. It will look at
+ 
+look at model misuse. It will look at
+redundant context loading. It looks at
+ 
+redundant context loading. It looks at
+your actual patterns and it will tell
+ 
+your actual patterns and it will tell
+you what to fix first. So, that's the
+ 
+you what to fix first. So, that's the
+easy version, right? Anyone can use it,
+ 
+easy version, right? Anyone can use it,
+any plan, no setup required. Number two,
+ 
+any plan, no setup required. Number two,
+a skill. This is an invocable skill that
+ 
+a skill. This is an invocable skill that
+audits your Claude code or your desktop
+ 
+audits your Claude code or your desktop
+environment or any other environment. It
+ 
+environment or any other environment. It
+could be It could be ChatGPT, etc.
+ 
+could be It could be ChatGPT, etc.
+Skills are also translatable. And it
+ 
+Skills are also translatable. And it
+measures your per session token
+ 
+measures your per session token
+overhead. It will flag system prompt
+ 
+overhead. It will flag system prompt
+bloat. It will check your plug-in and
+ 
+bloat. It will check your plug-in and
+your skill loading. It will give you a
+ 
+your skill loading. It will give you a
+before and after before you make
+ 
+before and after before you make
+changes. Think of it as like you kind of
+ 
+changes. Think of it as like you kind of
+need a gas tank for your tokens. And
+ 
+need a gas tank for your tokens. And
+gee, wouldn't it be nice to have one,
+ 
+gee, wouldn't it be nice to have one,
+right? So, it's like the gas tank skill.
+ 
+right? So, it's like the gas tank skill.
+Number three, we built some guardrails.
+ 
+Number three, we built some guardrails.
+So, guardrails will sit directly on your
+ 
+So, guardrails will sit directly on your
+knowledge store. So, if you're an open
+ 
+knowledge store. So, if you're an open
+brain person, which is something we've
+ 
+brain person, which is something we've
+been doing as a community, it will sit
+ 
+been doing as a community, it will sit
+right on your open brain and you will
+ 
+right on your open brain and you will
+stop burning tokens on input, which is a
+ 
+stop burning tokens on input, which is a
+nice touch, right? Automatic markdown
+ 
+nice touch, right? Automatic markdown
+conversion for documents that are
+ 
+conversion for documents that are
+hitting the store, index first retrieval
+ 
+hitting the store, index first retrieval
+instead of just dump and search, uh
+ 
+instead of just dump and search, uh
+context scoping that enables a sort of
+ 
+context scoping that enables a sort of
+minimum viable context for the query.
+ 
+minimum viable context for the query.
+This is where token management stops
+ 
+This is where token management stops
+just being a personal discipline and it
+ 
+just being a personal discipline and it
+becomes infrastructure that starts to
+ 
+becomes infrastructure that starts to
+maintain itself. And I think I'm really
+ 
+maintain itself. And I think I'm really
+excited to see how the community
+ 
+excited to see how the community
+continues to build on this because open
+ 
+continues to build on this because open
+brain is open source. We'll keep
+ 
+brain is open source. We'll keep
+evolving and improving it. But I wanted
+ 
+evolving and improving it. But I wanted
+to make sure that we had rails that
+ 
+to make sure that we had rails that
+ensured we have re- sponsible token
+ 
+ensured we have re- sponsible token
+usage for the open brain community. So,
+ 
+usage for the open brain community. So,
+look, I'm going to close by talking
+ 
+look, I'm going to close by talking
+briefly about agents and context because
+ 
+briefly about agents and context because
+agents burn hundreds of millions of
+ 
+agents burn hundreds of millions of
+tokens in some cases. We don't want to
+ 
+tokens in some cases. We don't want to
+leave them out. How do we think about
+ 
+leave them out. How do we think about
+context management for agents? And I'm
+ 
+context management for agents? And I'm
+going to give you five commandments. I
+ 
+going to give you five commandments. I
+call it the keep it simple stupid
+ 
+call it the keep it simple stupid
+commandments for agents. Number one,
+ 
+commandments for agents. Number one,
+index your references, right? If an
+ 
+index your references, right? If an
+agent is getting raw documents instead
+ 
+agent is getting raw documents instead
+of relevant chunks, you've already
+ 
+of relevant chunks, you've already
+failed. The entire point of retrieval is
+ 
+failed. The entire point of retrieval is
+to scope what the model sees to what it
+ 
+to scope what the model sees to what it
+needs. Dumping full document set into
+ 
+needs. Dumping full document set into
+the window on every agent call is wildly
+ 
+the window on every agent call is wildly
+irresponsible. You can't do that just to
+ 
+irresponsible. You can't do that just to
+give the agent context. Don't make the
+ 
+give the agent context. Don't make the
+agent do work it doesn't need to do.
+ 
+agent do work it doesn't need to do.
+Number two, please prepare your context
+ 
+Number two, please prepare your context
+for consumption. Pre-process,
+ 
+for consumption. Pre-process,
+pre-summarize, pre-chunk it. A reference
+ 
+pre-summarize, pre-chunk it. A reference
+document should arrive in an agent's
+ 
+document should arrive in an agent's
+context ready to be used, not ready to
+ 
+context ready to be used, not ready to
+be read or processed. If the model's
+ 
+be read or processed. If the model's
+first several thousand tokens of
+ 
+first several thousand tokens of
+reasoning are just spent dealing with
+ 
+reasoning are just spent dealing with
+the crappy pre-processing you did,
+ 
+the crappy pre-processing you did,
+you're not being a responsible agent
+ 
+you're not being a responsible agent
+builder. Number three, this is something
+ 
+builder. Number three, this is something
+we've mentioned before. I'm calling it
+ 
+we've mentioned before. I'm calling it
+out in the context of agents because
+ 
+out in the context of agents because
+it's so important for agent workflows.
+ 
+it's so important for agent workflows.
+Please, please, please cache your stable
+ 
+Please, please, please cache your stable
+context. System prompts, tool
+ 
+context. System prompts, tool
+definitions, persona instructions,
+ 
+definitions, persona instructions,
+reference material, anything that is
+ 
+reference material, anything that is
+stable all should be cached. And at a
+ 
+stable all should be cached. And at a
+90% discount on cache hits, this is the
+ 
+90% discount on cache hits, this is the
+lowest effort, highest impact
+ 
+lowest effort, highest impact
+optimization that you have on the table.
+ 
+optimization that you have on the table.
+If you're making thousands of agent
+ 
+If you're making thousands of agent
+calls a day and you're not caching, it's
+ 
+calls a day and you're not caching, it's
+just pouring money down the drain.
+ 
+just pouring money down the drain.
+Number four, scope every agent's context
+ 
+Number four, scope every agent's context
+to the minimum it needs, right? A
+ 
+to the minimum it needs, right? A
+planning agent does not need your full
+ 
+planning agent does not need your full
+code base. Don't give it the full code
+ 
+code base. Don't give it the full code
+base. An editing agent doesn't need your
+ 
+base. An editing agent doesn't need your
+project road map. Don't give it the
+ 
+project road map. Don't give it the
+project road map. You get the idea,
+ 
+project road map. You get the idea,
+right? Passing everything to every agent
+ 
+right? Passing everything to every agent
+is architectural laziness and it has
+ 
+is architectural laziness and it has
+real costs, both in tokens burned and
+ 
+real costs, both in tokens burned and
+frankly in degraded agent performance.
+ 
+frankly in degraded agent performance.
+Models perform worse when they're
+ 
+Models perform worse when they're
+drowning in irrelevant context. And by
+ 
+drowning in irrelevant context. And by
+the way, if you're like, "I'm not sure
+ 
+the way, if you're like, "I'm not sure
+what the agent will need. Aren't the
+ 
+what the agent will need. Aren't the
+smarter agents supposed to find it?" The
+ 
+smarter agents supposed to find it?" The
+answer is yes, but you will only do that
+ 
+answer is yes, but you will only do that
+efficiently if you give them a
+ 
+efficiently if you give them a
+searchable repo that is pre-processed so
+ 
+searchable repo that is pre-processed so
+they can go and get only the relevant
+ 
+they can go and get only the relevant
+slice of context. So, take the time to
+ 
+slice of context. So, take the time to
+do it right. Number five, measure what
+ 
+do it right. Number five, measure what
+you burn.
+ 
+you burn.
+If you don't know your per call token
+ 
+If you don't know your per call token
+cost, you're just optimizing without any
+ 
+cost, you're just optimizing without any
+information, right? Please instrument
+ 
+information, right? Please instrument
+your agent calls. Track your input
+ 
+your agent calls. Track your input
+tokens, track your output tokens, track
+ 
+tokens, track your output tokens, track
+your overall model mix and your cost
+ 
+your overall model mix and your cost
+ratio. You cannot improve what you do
+ 
+ratio. You cannot improve what you do
+not measure. And most teams building
+ 
+not measure. And most teams building
+agentic systems are thinking a lot about
+ 
+agentic systems are thinking a lot about
+whether they are semantically correct,
+ 
+whether they are semantically correct,
+not whether they're functionally
+ 
+not whether they're functionally
+correct. There's a big difference. And
+ 
+correct. There's a big difference. And
+they're thinking a lot about optimizing
+ 
+they're thinking a lot about optimizing
+their system prompt. They're not
+ 
+their system prompt. They're not
+thinking a ton about their model cost
+ 
+thinking a ton about their model cost
+because most of the time the model cost
+ 
+because most of the time the model cost
+is not what makes the project live or
+ 
+is not what makes the project live or
+die. And I get that. In this age, in
+ 
+die. And I get that. In this age, in
+2025, early 2026, with the cost we have
+ 
+2025, early 2026, with the cost we have
+today and the urgency from executives to
+ 
+today and the urgency from executives to
+build, the $12 per run cost or whatever
+ 
+build, the $12 per run cost or whatever
+it's going to be is not going to make or
+ 
+it's going to be is not going to make or
+break the ship. But plan for a world
+ 
+break the ship. But plan for a world
+where the models are more expensive.
+ 
+where the models are more expensive.
+Plan for a world where you have to scale
+ 
+Plan for a world where you have to scale
+up. Plan for a world where you have to
+ 
+up. Plan for a world where you have to
+be responsible and instrument now. And
+ 
+be responsible and instrument now. And
+stepping back, there's a cultural
+ 
+stepping back, there's a cultural
+problem we need to acknowledge behind
+ 
+problem we need to acknowledge behind
+all of this. At some point in the last
+ 
+all of this. At some point in the last
+few months, burning tokens has become a
+ 
+few months, burning tokens has become a
+badge of honor. And I get it. There is a
+ 
+badge of honor. And I get it. There is a
+degree to which you need to be burning
+ 
+degree to which you need to be burning
+tokens in order to do meaningful work in
+ 
+tokens in order to do meaningful work in
+the age of AI. None of this is to say
+ 
+the age of AI. None of this is to say
+that I expect token consumption to go
+ 
+that I expect token consumption to go
+down. It won't. You need to be ready to
+ 
+down. It won't. You need to be ready to
+burn those tokens. This is not an ask
+ 
+burn those tokens. This is not an ask
+that you not do that. This is an ask
+ 
+that you not do that. This is an ask
+that you do it efficiently. And so, when
+ 
+that you do it efficiently. And so, when
+Jensen sits there on stage and says
+ 
+Jensen sits there on stage and says
+$250,000 in token cost per developer and
+ 
+$250,000 in token cost per developer and
+everyone like is shocked or rolls their
+ 
+everyone like is shocked or rolls their
+eyes or whatever the reaction is, my
+ 
+eyes or whatever the reaction is, my
+reaction is I hope it's 250 grand in
+ 
+reaction is I hope it's 250 grand in
+smart token costs. It's not the
+ 
+smart token costs. It's not the
+individual dollar amount for Jensen cuz
+ 
+individual dollar amount for Jensen cuz
+he's got cash in the bank. It's whether
+ 
+he's got cash in the bank. It's whether
+the tokens were used well. It's whether
+ 
+the tokens were used well. It's whether
+it's smart tokens. So, begin to think to
+ 
+it's smart tokens. So, begin to think to
+yourself, "Yes, I need to be maxing out
+ 
+yourself, "Yes, I need to be maxing out
+my Claude." There are people who like go
+ 
+my Claude." There are people who like go
+into withdrawal when they don't get to
+ 
+into withdrawal when they don't get to
+use their Claude. I know people like
+ 
+use their Claude. I know people like
+that who are like, "Ah, I went to a
+ 
+that who are like, "Ah, I went to a
+movie and uh I couldn't use my Claude
+ 
+movie and uh I couldn't use my Claude
+for a few hours. I feel like I missed
+ 
+for a few hours. I feel like I missed
+out on my token limit."
+ 
+out on my token limit."
+Touch some grass. It's going to be okay.
+ 
+Touch some grass. It's going to be okay.
+But use your tokens well. Be efficient
+ 
+But use your tokens well. Be efficient
+with your token usage. Know what you're
+ 
+with your token usage. Know what you're
+spending it on. Don't spend it on silly
+ 
+spending it on. Don't spend it on silly
+stuff. Don't spend it on the PDFs that
+ 
+stuff. Don't spend it on the PDFs that
+you have to convert. Actually spend it
+ 
+you have to convert. Actually spend it
+on meaningful work. And that is
+ 
+on meaningful work. And that is
+something that is a human problem. We
+ 
+something that is a human problem. We
+need to be bold and audacious. These
+ 
+need to be bold and audacious. These
+models are really good at stuff. So,
+ 
+models are really good at stuff. So,
+let's get more bold, more audacious, and
+ 
+let's get more bold, more audacious, and
+think bigger about what we can aim them
+ 
+think bigger about what we can aim them
+at because if we can be more efficient,
+ 
+at because if we can be more efficient,
+we can do a whole lot more cool and
+ 
+we can do a whole lot more cool and
+creative stuff with those tokens. That's
+ 
+creative stuff with those tokens. That's
+why I built the Internet of Stupid
+ 
+why I built the Internet of Stupid
+Button. Cheers.

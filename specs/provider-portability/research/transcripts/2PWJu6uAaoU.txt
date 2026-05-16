@@ -1,0 +1,3452 @@
+ 
+Agents by themselves don't make you
+ 
+Agents by themselves don't make you
+productive. I'm just going to say it
+ 
+productive. I'm just going to say it
+straight out. So many people right now
+ 
+straight out. So many people right now
+are running to open claw with 250,000
+ 
+are running to open claw with 250,000
+GitHub stars or they are their VCs and
+ 
+GitHub stars or they are their VCs and
+their builders and all they can do is
+ 
+their builders and all they can do is
+they can build copycats of open claw and
+ 
+they can build copycats of open claw and
+everyone assumes that as soon as you get
+ 
+everyone assumes that as soon as you get
+the agent you'll know what to do with
+ 
+the agent you'll know what to do with
+it. And there's a massive gap between I
+ 
+it. And there's a massive gap between I
+can install an agent which everyone has
+ 
+can install an agent which everyone has
+now solved for. You can install an agent
+ 
+now solved for. You can install an agent
+in 10 seconds. By the time I have
+ 
+in 10 seconds. By the time I have
+finished saying this sentence you can
+ 
+finished saying this sentence you can
+have an agent up and going. That's how
+ 
+have an agent up and going. That's how
+fast these things are going now. That's
+ 
+fast these things are going now. That's
+not the point. Whether you can use it
+ 
+not the point. Whether you can use it
+productively is actually the question
+ 
+productively is actually the question
+that matters. And yes, all of those
+ 
+that matters. And yes, all of those
+people who are out there who are making
+ 
+people who are out there who are making
+lots of clickbait, who are saying I used
+ 
+lots of clickbait, who are saying I used
+my agent to do lots and lots of stuff. I
+ 
+my agent to do lots and lots of stuff. I
+have 10 agents that do this and that. I
+ 
+have 10 agents that do this and that. I
+have two agents that do this and that. I
+ 
+have two agents that do this and that. I
+managed my whole $5 billion company with
+ 
+managed my whole $5 billion company with
+agents. Those are all true stories.
+ 
+agents. Those are all true stories.
+But, they're only true stories because
+ 
+But, they're only true stories because
+someone figured out how to clarify
+ 
+someone figured out how to clarify
+enough of what they were looking to do
+ 
+enough of what they were looking to do
+to give it to an agent. And that turns
+ 
+to give it to an agent. And that turns
+out to be a very, very hard problem. And
+ 
+out to be a very, very hard problem. And
+it's funnily enough not a problem that
+ 
+it's funnily enough not a problem that
+most companies out there are interested
+ 
+most companies out there are interested
+in solving. And I know because I went
+ 
+in solving. And I know because I went
+through and I looked at all the
+ 
+through and I looked at all the
+products. And so in this video, we are
+ 
+products. And so in this video, we are
+going to go through and talk about the
+ 
+going to go through and talk about the
+real gap that's upstream of all of these
+ 
+real gap that's upstream of all of these
+open claw agent me twos. We're going to
+ 
+open claw agent me twos. We're going to
+go through and survey the different
+ 
+go through and survey the different
+approaches to building your agents, the
+ 
+approaches to building your agents, the
+different ways these products are
+ 
+different ways these products are
+handling open claw like implementations,
+ 
+handling open claw like implementations,
+and then we're going to talk about how
+ 
+and then we're going to talk about how
+you actually solve this problem. And
+ 
+you actually solve this problem. And
+yes, I built something to solve it. I
+ 
+yes, I built something to solve it. I
+want you to have an easier time using
+ 
+want you to have an easier time using
+your agent, right? Let's assume you have
+ 
+your agent, right? Let's assume you have
+an agent because now it's very easy to
+ 
+an agent because now it's very easy to
+get one. How do you use it? And so I
+ 
+get one. How do you use it? And so I
+built something to make that jump into
+ 
+built something to make that jump into
+using the agent much, much easier and
+ 
+using the agent much, much easier and
+we'll get to that. The most common
+ 
+we'll get to that. The most common
+message I've been able to find in most
+ 
+message I've been able to find in most
+open claw community forums is this: Now
+ 
+open claw community forums is this: Now
+what?
+ 
+what?
+It's really simple. Like I I did it, now
+ 
+It's really simple. Like I I did it, now
+what's next? How do I go from here?
+ 
+what's next? How do I go from here?
+Variants of that, right? Like, I have
+ 
+Variants of that, right? Like, I have
+installed the Open Claw, now what do I
+ 
+installed the Open Claw, now what do I
+do next? It's not really how do I fix
+ 
+do next? It's not really how do I fix
+this error? It's not which model do I
+ 
+this error? It's not which model do I
+use? Although there's a few of those.
+ 
+use? Although there's a few of those.
+It's just I got it to run, which is
+ 
+It's just I got it to run, which is
+great, and I don't know what to tell it,
+ 
+great, and I don't know what to tell it,
+right? Give me a recipe. Give me
+ 
+right? Give me a recipe. Give me
+something to do. And I think there's a
+ 
+something to do. And I think there's a
+structural reason this keeps happening,
+ 
+structural reason this keeps happening,
+and I don't think the correct fix is
+ 
+and I don't think the correct fix is
+just to hand out recipe cards for Open
+ 
+just to hand out recipe cards for Open
+Claw use cases, because that's not
+ 
+Claw use cases, because that's not
+really what you want an agent to do. The
+ 
+really what you want an agent to do. The
+whole reason we have an agent is because
+ 
+whole reason we have an agent is because
+it does many things well. It doesn't
+ 
+it does many things well. It doesn't
+just do one thing well. If you start
+ 
+just do one thing well. If you start
+telling your agent, "Hey, here's my, you
+ 
+telling your agent, "Hey, here's my, you
+know, expensive Mac Mini. Here's my
+ 
+know, expensive Mac Mini. Here's my
+expensive Cloud subscription. Now you
+ 
+expensive Cloud subscription. Now you
+triage my email." Is that really a good
+ 
+triage my email." Is that really a good
+use for your dollars? Yet a lot of
+ 
+use for your dollars? Yet a lot of
+people, the most common use of Open Claw
+ 
+people, the most common use of Open Claw
+is triaging your email. We need to
+ 
+is triaging your email. We need to
+understand why agent implementations are
+ 
+understand why agent implementations are
+not delivering the 10x ROI that have
+ 
+not delivering the 10x ROI that have
+been promised for so many people. We
+ 
+been promised for so many people. We
+need to be honest about it, or there's
+ 
+need to be honest about it, or there's
+going to be a lot of people who are a
+ 
+going to be a lot of people who are a
+little bit frustrated. There are going
+ 
+little bit frustrated. There are going
+to be people who are lining up to undo
+ 
+to be people who are lining up to undo
+Open Claw if we're not careful. And I
+ 
+Open Claw if we're not careful. And I
+say that because there actually have
+ 
+say that because there actually have
+been cases of lines in China where
+ 
+been cases of lines in China where
+people who had previously installed Open
+ 
+people who had previously installed Open
+Claw are going back and standing in line
+ 
+Claw are going back and standing in line
+to uninstall it because they didn't want
+ 
+to uninstall it because they didn't want
+it. I don't want that to happen. So,
+ 
+it. I don't want that to happen. So,
+here's what I'm going to dig into. I'm
+ 
+here's what I'm going to dig into. I'm
+going to dig into the common patterns
+ 
+going to dig into the common patterns
+across agent implementations that really
+ 
+across agent implementations that really
+work. I'm going to dig into the me-too
+ 
+work. I'm going to dig into the me-too
+landscape and why every Open Claw light
+ 
+landscape and why every Open Claw light
+product is kind of aiming at the same
+ 
+product is kind of aiming at the same
+target and kind of hitting the same wall
+ 
+target and kind of hitting the same wall
+when it comes to success.
+ 
+when it comes to success.
+And I'm going to dig into the structural
+ 
+And I'm going to dig into the structural
+reasons why it's really, really
+ 
+reasons why it's really, really
+difficult for us to actually explain
+ 
+difficult for us to actually explain
+what we need to do with these agents in
+ 
+what we need to do with these agents in
+a way that they can understand.
+ 
+a way that they can understand.
+I'm going to explain a little bit about
+ 
+I'm going to explain a little bit about
+why I think this is the larger problem.
+ 
+why I think this is the larger problem.
+It goes beyond agents. And then we're
+ 
+It goes beyond agents. And then we're
+going to get into what to do about it.
+ 
+going to get into what to do about it.
+How do we solve it? So, let's jump in.
+ 
+How do we solve it? So, let's jump in.
+All right, we're going to start with the
+ 
+All right, we're going to start with the
+story of Brad Mills. This is a real
+ 
+story of Brad Mills. This is a real
+story. Brad spent 40 hours building a
+ 
+story. Brad spent 40 hours building a
+delegation framework for his Open Claw
+ 
+delegation framework for his Open Claw
+agent. Not 40 hours installing. I want
+ 
+agent. Not 40 hours installing. I want
+to be very clear. The install took 10
+ 
+to be very clear. The install took 10
+minutes, he spent 40 hours writing
+ 
+minutes, he spent 40 hours writing
+standards, accountability rules, a
+ 
+standards, accountability rules, a
+definition of done for every single
+ 
+definition of done for every single
+project. He transcribed 200 hours of
+ 
+project. He transcribed 200 hours of
+videos into a searchable knowledge base.
+ 
+videos into a searchable knowledge base.
+40 hours of trying to describe what he
+ 
+40 hours of trying to describe what he
+wanted, right? I'm not making that up.
+ 
+wanted, right? I'm not making that up.
+That's like a week of work and it still
+ 
+That's like a week of work and it still
+did not work. And he wrote about it
+ 
+did not work. And he wrote about it
+publicly, right? Constant failure, he
+ 
+publicly, right? Constant failure, he
+wrote. Fail after fail after fail. Two
+ 
+wrote. Fail after fail after fail. Two
+steps forward, one step back. And he
+ 
+steps forward, one step back. And he
+ended up micromanaging the agent harder
+ 
+ended up micromanaging the agent harder
+than he'd ever had to micromanage a
+ 
+than he'd ever had to micromanage a
+human. And the autonomy that so many
+ 
+human. And the autonomy that so many
+other stories share felt in practice
+ 
+other stories share felt in practice
+like the second job of supervising
+ 
+like the second job of supervising
+something that confidently reports tasks
+ 
+something that confidently reports tasks
+complete when it's not really done.
+ 
+complete when it's not really done.
+Brad is not an outlier here. I would say
+ 
+Brad is not an outlier here. I would say
+Brad is closer to the median experience
+ 
+Brad is closer to the median experience
+than a lot of the folks who are
+ 
+than a lot of the folks who are
+promising 10x results.
+ 
+promising 10x results.
+One prominent open claw guide creator
+ 
+One prominent open claw guide creator
+reports getting flooded with DMs all the
+ 
+reports getting flooded with DMs all the
+time right after setup. The stuck point
+ 
+time right after setup. The stuck point
+is not installation anymore. We figured
+ 
+is not installation anymore. We figured
+that out. It's actually figuring out
+ 
+that out. It's actually figuring out
+what to do with the agent and how to
+ 
+what to do with the agent and how to
+make it understand your specific
+ 
+make it understand your specific
+context, right? Another user asked his
+ 
+context, right? Another user asked his
+agent to write five cold email variants.
+ 
+agent to write five cold email variants.
+The agent said done and wrote nothing.
+ 
+The agent said done and wrote nothing.
+And his solution was to build a second
+ 
+And his solution was to build a second
+adversarial auditor agent whose only job
+ 
+adversarial auditor agent whose only job
+was to verify the first agent completed
+ 
+was to verify the first agent completed
+the task. He needed a management layer
+ 
+the task. He needed a management layer
+because the worker couldn't be trusted
+ 
+because the worker couldn't be trusted
+to self report. And this became like a
+ 
+to self report. And this became like a
+nesting turtles problem. Like you just
+ 
+nesting turtles problem. Like you just
+have issues managing the agents because
+ 
+have issues managing the agents because
+you don't understand how agent
+ 
+you don't understand how agent
+architecture works if you've just spent
+ 
+architecture works if you've just spent
+10 minutes on an open claw installation
+ 
+10 minutes on an open claw installation
+and you've just heard about it on the
+ 
+and you've just heard about it on the
+internet a day ago.
+ 
+internet a day ago.
+Another user tried rolling out agents to
+ 
+Another user tried rolling out agents to
+a team and he gave everyone access and
+ 
+a team and he gave everyone access and
+just called it done. It technically
+ 
+just called it done. It technically
+worked, he pointed out, but it was
+ 
+worked, he pointed out, but it was
+completely useless because nobody had
+ 
+completely useless because nobody had
+mapped their workflows, their decisions,
+ 
+mapped their workflows, their decisions,
+their data needs in advance and no one
+ 
+their data needs in advance and no one
+knew what to give the agent as a task
+ 
+knew what to give the agent as a task
+that would be successful. Without all
+ 
+that would be successful. Without all
+that upstream work, the agent stayed so
+ 
+that upstream work, the agent stayed so
+generic it was useless. And a generic
+ 
+generic it was useless. And a generic
+agent with right access to your email is
+ 
+agent with right access to your email is
+actually worse than no agent at all.
+ 
+actually worse than no agent at all.
+It's a liability with a chat interface,
+ 
+It's a liability with a chat interface,
+right? There are whole business models
+ 
+right? There are whole business models
+emerging on places like X to fix this,
+ 
+emerging on places like X to fix this,
+right? That is how bad an issue it is.
+ 
+right? That is how bad an issue it is.
+There's a guy on X I saw selling a $49
+ 
+There's a guy on X I saw selling a $49
+pack of pre-written config files, a
+ 
+pack of pre-written config files, a
+soul.md file, a heartbeat.md file, a
+ 
+soul.md file, a heartbeat.md file, a
+user.md file, these core files for Open
+ 
+user.md file, these core files for Open
+Claw, the whole stack, specifically
+ 
+Claw, the whole stack, specifically
+marketed to quote "skip 40 hours of Open
+ 
+marketed to quote "skip 40 hours of Open
+Claw setup." You can build a small
+ 
+Claw setup." You can build a small
+business around the gap between
+ 
+business around the gap between
+installed and useful, and that tells you
+ 
+installed and useful, and that tells you
+something about where the agent market
+ 
+something about where the agent market
+is. But before we talk too much more
+ 
+is. But before we talk too much more
+about what's broken, let's talk about
+ 
+about what's broken, let's talk about
+what does work, because there's a
+ 
+what does work, because there's a
+pattern across hundreds of thousands of
+ 
+pattern across hundreds of thousands of
+Open Claw installations. The deployments
+ 
+Open Claw installations. The deployments
+that stick, the ones where people are
+ 
+that stick, the ones where people are
+still getting daily value weeks and
+ 
+still getting daily value weeks and
+months later, they share a particular
+ 
+months later, they share a particular
+architecture, and it has almost nothing
+ 
+architecture, and it has almost nothing
+to do with which model you end up
+ 
+to do with which model you end up
+picking. The successful setups all have
+ 
+picking. The successful setups all have
+a set of markdown files that function as
+ 
+a set of markdown files that function as
+the agent's operating system. If you
+ 
+the agent's operating system. If you
+open the .openclaw directory on anyone
+ 
+open the .openclaw directory on anyone
+running a working agent, you'll find the
+ 
+running a working agent, you'll find the
+same structure. There's a soul.md file
+ 
+same structure. There's a soul.md file
+that defines the agent's role, its job,
+ 
+that defines the agent's role, its job,
+its tone, its boundaries, basically a
+ 
+its tone, its boundaries, basically a
+job description. There's an identity.md
+ 
+job description. There's an identity.md
+which has its name, it has its
+ 
+which has its name, it has its
+personality constraints.
+ 
+personality constraints.
+There's a user.md with a detailed
+ 
+There's a user.md with a detailed
+profile of the human, including
+ 
+profile of the human, including
+preferences, schedule patterns,
+ 
+preferences, schedule patterns,
+communication style. And there's a
+ 
+communication style. And there's a
+heartbeat.md with a checklist that the
+ 
+heartbeat.md with a checklist that the
+agent reviews every half hour to decide
+ 
+agent reviews every half hour to decide
+if there's work to do.
+ 
+if there's work to do.
+And then there's a very simple cron job
+ 
+And then there's a very simple cron job
+that maps the human's actual operating
+ 
+that maps the human's actual operating
+rhythm.
+ 
+rhythm.
+None of this is particularly technically
+ 
+None of this is particularly technically
+difficult, and I want to underline this
+ 
+difficult, and I want to underline this
+three times. None of what I just
+ 
+three times. None of what I just
+described is artificial intelligence.
+ 
+described is artificial intelligence.
+It's just plain text, but the quality of
+ 
+It's just plain text, but the quality of
+those files determines whether your
+ 
+those files determines whether your
+artificial intelligence agent is
+ 
+artificial intelligence agent is
+actually any good at anything at all.
+ 
+actually any good at anything at all.
+So the people who run multiple
+ 
+So the people who run multiple
+specialized agents, the the not the one
+ 
+specialized agents, the the not the one
+do everything bot, right? But a a with
+ 
+do everything bot, right? But a a with
+clear roles and scoped access. You know
+ 
+clear roles and scoped access. You know
+how you've seen the clickbait, right?
+ 
+how you've seen the clickbait, right?
+Well, I have a marketing manager for
+ 
+Well, I have a marketing manager for
+this, and then I have my scheduler for
+ 
+this, and then I have my scheduler for
+this, and I have my CEO for this, and I
+ 
+this, and I have my CEO for this, and I
+have my chief of staff for this.
+ 
+have my chief of staff for this.
+Okay, fine. The only way that works is
+ 
+Okay, fine. The only way that works is
+if each agent has truly its own
+ 
+if each agent has truly its own
+identity, its own markdown files, its
+ 
+identity, its own markdown files, its
+own tool sets, its own workspace so it
+ 
+own tool sets, its own workspace so it
+can get jobs done, and it doesn't share
+ 
+can get jobs done, and it doesn't share
+context with other agents. They have
+ 
+context with other agents. They have
+clear jurisdictions. We would say they
+ 
+clear jurisdictions. We would say they
+have clear separation of concerns in
+ 
+have clear separation of concerns in
+engineering speak. And that same clarity
+ 
+engineering speak. And that same clarity
+shows up everywhere you see a
+ 
+shows up everywhere you see a
+multi-agent system working. So, people
+ 
+multi-agent system working. So, people
+running specialist bots in Slack that
+ 
+running specialist bots in Slack that
+delegate to each other like coworkers,
+ 
+delegate to each other like coworkers,
+which you've also seen demos of, I'm
+ 
+which you've also seen demos of, I'm
+sure, where someone asks a question and
+ 
+sure, where someone asks a question and
+the orchestrator agent decides that the
+ 
+the orchestrator agent decides that the
+specialist should handle it. There's a
+ 
+specialist should handle it. There's a
+whole flow, right? These are not toy
+ 
+whole flow, right? These are not toy
+demos. They're running daily. Those are
+ 
+demos. They're running daily. Those are
+real orchestration patterns. They really
+ 
+real orchestration patterns. They really
+work, and they and they only work
+ 
+work, and they and they only work
+because there's a clear separation of
+ 
+because there's a clear separation of
+concerns and a clear identity that's
+ 
+concerns and a clear identity that's
+separate for each of the agents
+ 
+separate for each of the agents
+involved.
+ 
+involved.
+Now, you can absolutely, in more
+ 
+Now, you can absolutely, in more
+sophisticated implementations, use your
+ 
+sophisticated implementations, use your
+Open Claw as a general planner and have
+ 
+Open Claw as a general planner and have
+it spin up executor agents on the fly to
+ 
+it spin up executor agents on the fly to
+help you get tasks done. That is one of
+ 
+help you get tasks done. That is one of
+the ways a general-purpose agent solves
+ 
+the ways a general-purpose agent solves
+problems, but it only does that
+ 
+problems, but it only does that
+successfully to the extent it has the
+ 
+successfully to the extent it has the
+tools, the identity, all of the context
+ 
+tools, the identity, all of the context
+to know how you want the problem solved,
+ 
+to know how you want the problem solved,
+and to do so successfully. And so, it
+ 
+and to do so successfully. And so, it
+still comes back to context in the end,
+ 
+still comes back to context in the end,
+even if you're doing a more
+ 
+even if you're doing a more
+sophisticated implementation. There's
+ 
+sophisticated implementation. There's
+another pattern worth naming. The people
+ 
+another pattern worth naming. The people
+who have Open Claw configured correctly
+ 
+who have Open Claw configured correctly
+have invested a lot in the memory side
+ 
+have invested a lot in the memory side
+of things. They either have a
+ 
+of things. They either have a
+memory.markdown file that accumulates
+ 
+memory.markdown file that accumulates
+insights over time, which is closer to
+ 
+insights over time, which is closer to
+the original vanilla Open Claw approach,
+ 
+the original vanilla Open Claw approach,
+or they've got closer to something like
+ 
+or they've got closer to something like
+the Open Brain approach that a lot of
+ 
+the Open Brain approach that a lot of
+folks in my community are building,
+ 
+folks in my community are building,
+where they have a database that the Open
+ 
+where they have a database that the Open
+Claw can search from and get back
+ 
+Claw can search from and get back
+insights on, and that ends up being sort
+ 
+insights on, and that ends up being sort
+of a richer, more multi-dimensional
+ 
+of a richer, more multi-dimensional
+repository over time. You can have a
+ 
+repository over time. You can have a
+hybrid, you can kind of work with both.
+ 
+hybrid, you can kind of work with both.
+The point is you have intent around
+ 
+The point is you have intent around
+memory. You know that your agent needs
+ 
+memory. You know that your agent needs
+to learn and get better over time and if
+ 
+to learn and get better over time and if
+it doesn't learn and get better over
+ 
+it doesn't learn and get better over
+time, it's not a very smart agent and
+ 
+time, it's not a very smart agent and
+it's not going to help you for very
+ 
+it's not going to help you for very
+long. And the common thread through the
+ 
+long. And the common thread through the
+context piece the separation of
+ 
+context piece the separation of
+concerns, the ability to set up memory
+ 
+concerns, the ability to set up memory
+correctly, the ability to write all
+ 
+correctly, the ability to write all
+those markdown files, right? The ability
+ 
+those markdown files, right? The ability
+to maybe configure a database so your
+ 
+to maybe configure a database so your
+agent can query for memory. All of that
+ 
+agent can query for memory. All of that
+means having clarity of intent around
+ 
+means having clarity of intent around
+what you want the agent to do and the
+ 
+what you want the agent to do and the
+ability to articulate at a pretty high
+ 
+ability to articulate at a pretty high
+degree of detail what you expect the
+ 
+degree of detail what you expect the
+agent to do in a series of steps, right?
+ 
+agent to do in a series of steps, right?
+The human has to sit down and describe
+ 
+The human has to sit down and describe
+in triggerable, verifiable language what
+ 
+in triggerable, verifiable language what
+you do all day to get an agent to do it,
+ 
+you do all day to get an agent to do it,
+right? Not I handle marketing, but these
+ 
+right? Not I handle marketing, but these
+are the different websites I check,
+ 
+are the different websites I check,
+these are the metrics I look at, this is
+ 
+these are the metrics I look at, this is
+the spend that I'm willing to budget
+ 
+the spend that I'm willing to budget
+for, this is how I know that spend is
+ 
+for, this is how I know that spend is
+correct, these are the equations I run
+ 
+correct, these are the equations I run
+and then finally these are the
+ 
+and then finally these are the
+optimization and leverage opportunities
+ 
+optimization and leverage opportunities
+I see. Now, people will say it's the
+ 
+I see. Now, people will say it's the
+agent's job to get better at marketing,
+ 
+agent's job to get better at marketing,
+why are we giving it that detail? And I
+ 
+why are we giving it that detail? And I
+will answer, you got to orient the agent
+ 
+will answer, you got to orient the agent
+toward the current context if you want
+ 
+toward the current context if you want
+to ask the agent to improve over time.
+ 
+to ask the agent to improve over time.
+You cannot just magically say, here's
+ 
+You cannot just magically say, here's
+marketing, you do it agent and it's just
+ 
+marketing, you do it agent and it's just
+going to magically know all of the
+ 
+going to magically know all of the
+nuances of your context for your product
+ 
+nuances of your context for your product
+and just randomly do it. That's just not
+ 
+and just randomly do it. That's just not
+how it works.
+ 
+how it works.
+And yet,
+ 
+And yet,
+that underlying assumption is lying
+ 
+that underlying assumption is lying
+behind so many of the me too products
+ 
+behind so many of the me too products
+that we see in the landscape. If we look
+ 
+that we see in the landscape. If we look
+across the landscape and I'm going to
+ 
+across the landscape and I'm going to
+profile them here and we look at how
+ 
+profile them here and we look at how
+agents are being built and sold right
+ 
+agents are being built and sold right
+now, so many of them are being built and
+ 
+now, so many of them are being built and
+sold as essentially magic boxes with
+ 
+sold as essentially magic boxes with
+arms and legs. Like here's the magic
+ 
+arms and legs. Like here's the magic
+box, type anything you want and the
+ 
+box, type anything you want and the
+magic box will fix it.
+ 
+magic box will fix it.
+And it turns out if you're selling magic
+ 
+And it turns out if you're selling magic
+boxes, they'll sell like hotcakes.
+ 
+boxes, they'll sell like hotcakes.
+But the problem is once you have a magic
+ 
+But the problem is once you have a magic
+box and it's not magical anymore, it's a
+ 
+box and it's not magical anymore, it's a
+disappointing experience. Let's go
+ 
+disappointing experience. Let's go
+through each of them in turn. Obviously,
+ 
+through each of them in turn. Obviously,
+Open Claw is the original. It's 250,000
+ 
+Open Claw is the original. It's 250,000
+or whatever the number of thousand
+ 
+or whatever the number of thousand
+GitHub stars it is now. It runs locally
+ 
+GitHub stars it is now. It runs locally
+on your hardware. It connects to any
+ 
+on your hardware. It connects to any
+LLM. You talk through it through any
+ 
+LLM. You talk through it through any
+channel, right? Telegram, WhatsApp,
+ 
+channel, right? Telegram, WhatsApp,
+iMessage, Slack. Now you can phone call
+ 
+iMessage, Slack. Now you can phone call
+it like it whatever you want. It's free.
+ 
+it like it whatever you want. It's free.
+It's infinitely configurable and the
+ 
+It's infinitely configurable and the
+cold start problem is entirely up to
+ 
+cold start problem is entirely up to
+you, which is appropriate because the
+ 
+you, which is appropriate because the
+original audience was developers. Peter
+ 
+original audience was developers. Peter
+Steinberger built this for developers
+ 
+Steinberger built this for developers
+and developers, quite reasonably, can be
+ 
+and developers, quite reasonably, can be
+expected to write markdown files and
+ 
+expected to write markdown files and
+configure their own tool set. And for so
+ 
+configure their own tool set. And for so
+many of them that was not an obstacle.
+ 
+many of them that was not an obstacle.
+And so so much of this conversation is
+ 
+And so so much of this conversation is
+basically Open Claw is out in the wild
+ 
+basically Open Claw is out in the wild
+now. Open Claw is on the loose. Open
+ 
+now. Open Claw is on the loose. Open
+Claw is the most copied product of 2026.
+ 
+Claw is the most copied product of 2026.
+What does it mean when everybody wants
+ 
+What does it mean when everybody wants
+an agent and they're not just developers
+ 
+an agent and they're not just developers
+and they're like, "What is a markdown
+ 
+and they're like, "What is a markdown
+file and why should I care?"
+ 
+file and why should I care?"
+Developers, to be fair, have a little
+ 
+Developers, to be fair, have a little
+bit of an advantage at writing
+ 
+bit of an advantage at writing
+specifics. If you've ever sat in the
+ 
+specifics. If you've ever sat in the
+product chair like I have and you've had
+ 
+product chair like I have and you've had
+conversations with engineers, you know
+ 
+conversations with engineers, you know
+the engineers tend to be the ones and
+ 
+the engineers tend to be the ones and
+should be the ones asking you for
+ 
+should be the ones asking you for
+specifics. Okay, fine. You say you want
+ 
+specifics. Okay, fine. You say you want
+the image to appear in that way on the
+ 
+the image to appear in that way on the
+webpage. Tell me why. Tell me what is
+ 
+webpage. Tell me why. Tell me what is
+the file size. Tell me how quickly you
+ 
+the file size. Tell me how quickly you
+expect it to load. Tell me how it goes
+ 
+expect it to load. Tell me how it goes
+with and overlays the rest of the web
+ 
+with and overlays the rest of the web
+experience. And that's just a very
+ 
+experience. And that's just a very
+simple presentation, right? They are so
+ 
+simple presentation, right? They are so
+love to get specific and I think that
+ 
+love to get specific and I think that
+mental habit has helped Open Claw take
+ 
+mental habit has helped Open Claw take
+off for so many in the engineering
+ 
+off for so many in the engineering
+community because it's actually very
+ 
+community because it's actually very
+clear to them that you need to describe
+ 
+clear to them that you need to describe
+a lot of what you do in high specifics
+ 
+a lot of what you do in high specifics
+to the agent to make it useful. That's
+ 
+to the agent to make it useful. That's
+not that unusual. For the rest of us,
+ 
+not that unusual. For the rest of us,
+it's a new step. Now a bunch of folks
+ 
+it's a new step. Now a bunch of folks
+have come into the space since Open Claw
+ 
+have come into the space since Open Claw
+and the thesis for most of them has
+ 
+and the thesis for most of them has
+been, correctly, Open Claw was hard to
+ 
+been, correctly, Open Claw was hard to
+install originally. Peter designed it
+ 
+install originally. Peter designed it
+that way on purpose. He did not want
+ 
+that way on purpose. He did not want
+non-developers using it because you can
+ 
+non-developers using it because you can
+easily configure your open claw to be a
+ 
+easily configure your open claw to be a
+security risk and that was the dominant
+ 
+security risk and that was the dominant
+headline for the first month or so of
+ 
+headline for the first month or so of
+open claws popularity. And so so many
+ 
+open claws popularity. And so so many
+players are in the space now basically
+ 
+players are in the space now basically
+saying, we took care of security, we
+ 
+saying, we took care of security, we
+took care of ease of install, you don't
+ 
+took care of ease of install, you don't
+have to worry about it. And I'm here
+ 
+have to worry about it. And I'm here
+saying, that's not the real problem.
+ 
+saying, that's not the real problem.
+That's just the first problem, right?
+ 
+That's just the first problem, right?
+Manas now owned by Meta is doing exactly
+ 
+Manas now owned by Meta is doing exactly
+that. You can either have a desktop app
+ 
+that. You can either have a desktop app
+which has local access or you have a
+ 
+which has local access or you have a
+cloud virtual app, but either way it's
+ 
+cloud virtual app, but either way it's
+more secure, it's got a little bit of
+ 
+more secure, it's got a little bit of
+structure, you type in your query, it
+ 
+structure, you type in your query, it
+automatically decomposes all of that
+ 
+automatically decomposes all of that
+work into its own sub-agents, and the
+ 
+work into its own sub-agents, and the
+idea is it's easier to use, it's more
+ 
+idea is it's easier to use, it's more
+secure, it can be locally if you feel
+ 
+secure, it can be locally if you feel
+comfortable with that or in the cloud,
+ 
+comfortable with that or in the cloud,
+and it's something that you can get up
+ 
+and it's something that you can get up
+and running on in 10 or 15 minutes. The
+ 
+and running on in 10 or 15 minutes. The
+problem is the Manas agent is really
+ 
+problem is the Manas agent is really
+going to be limited by the lack of
+ 
+going to be limited by the lack of
+initial context you give it. So it's
+ 
+initial context you give it. So it's
+optimizing for the cold start problem in
+ 
+optimizing for the cold start problem in
+the sense that it makes it easy to type
+ 
+the sense that it makes it easy to type
+the first word, but without the ability
+ 
+the first word, but without the ability
+to really deeply configure what the
+ 
+to really deeply configure what the
+agent knows about you and why it cares
+ 
+agent knows about you and why it cares
+about you and the workflows you're doing
+ 
+about you and the workflows you're doing
+and what you're trying to accomplish and
+ 
+and what you're trying to accomplish and
+what you're trying to delegate, it's
+ 
+what you're trying to delegate, it's
+going to be somewhat limited in its
+ 
+going to be somewhat limited in its
+ability to work with you. Now, I do know
+ 
+ability to work with you. Now, I do know
+Manas users who have deliberately put
+ 
+Manas users who have deliberately put
+intent into that platform and swear by
+ 
+intent into that platform and swear by
+it. They're like, this is incredible,
+ 
+it. They're like, this is incredible,
+the more intent I put in the better it
+ 
+the more intent I put in the better it
+gets. And that is kind of a universal
+ 
+gets. And that is kind of a universal
+law of AI. If you put more passion,
+ 
+law of AI. If you put more passion,
+heart, intent, clarity, and
+ 
+heart, intent, clarity, and
+communication into the tool, because
+ 
+communication into the tool, because
+these tools have memory systems, they
+ 
+these tools have memory systems, they
+start to learn over time and they're
+ 
+start to learn over time and they're
+more useful for you.
+ 
+more useful for you.
+But, that is not the experience of the
+ 
+But, that is not the experience of the
+majority of Manas users. And that brings
+ 
+majority of Manas users. And that brings
+me to the next tool, which is
+ 
+me to the next tool, which is
+Perplexity's personal computer.
+ 
+Perplexity's personal computer.
+Perplexity personal computer is in a
+ 
+Perplexity personal computer is in a
+sense the most audacious of these open
+ 
+sense the most audacious of these open
+claw plays. We know that we cannot get a
+ 
+claw plays. We know that we cannot get a
+hold of Mac Minis because Apple has sold
+ 
+hold of Mac Minis because Apple has sold
+out of them because so many people want
+ 
+out of them because so many people want
+to put open claws on them. Perplexity
+ 
+to put open claws on them. Perplexity
+saw that, said we're a corporate
+ 
+saw that, said we're a corporate
+account, we can get lots of Mac Minis,
+ 
+account, we can get lots of Mac Minis,
+and they literally offer you a dedicated
+ 
+and they literally offer you a dedicated
+Mac Mini. It's a real Mac mini connected
+ 
+Mac Mini. It's a real Mac mini connected
+to Perplexity's cloud merging local file
+ 
+to Perplexity's cloud merging local file
+access with their computer orchestrator,
+ 
+access with their computer orchestrator,
+and they give you a project manager AI
+ 
+and they give you a project manager AI
+that routes tasks across 20 frontier
+ 
+that routes tasks across 20 frontier
+models for that Mac mini. So, it takes
+ 
+models for that Mac mini. So, it takes
+away all of the pain of having a local
+ 
+away all of the pain of having a local
+Mac mini. You actually have a real Mac
+ 
+Mac mini. You actually have a real Mac
+mini that's yours. It has an
+ 
+mini that's yours. It has an
+orchestrator. It has 20 models. It's a
+ 
+orchestrator. It has 20 models. It's a
+very bold vision. CEO Arvind Srinivas
+ 
+very bold vision. CEO Arvind Srinivas
+framed it at the developer conference
+ 
+framed it at the developer conference
+like this. He said a traditional
+ 
+like this. He said a traditional
+operating system takes instructions, and
+ 
+operating system takes instructions, and
+an AI operating system takes objectives.
+ 
+an AI operating system takes objectives.
+I think he is right that Open Claw is
+ 
+I think he is right that Open Claw is
+popular because it is fundamentally an
+ 
+popular because it is fundamentally an
+operating system. That is a correct
+ 
+operating system. That is a correct
+insight. I think he's also correct in
+ 
+insight. I think he's also correct in
+saying that it is about optimizing for
+ 
+saying that it is about optimizing for
+objectives. But, the piece that is
+ 
+objectives. But, the piece that is
+challenging for most people is when you
+ 
+challenging for most people is when you
+have that firepower delivered for you.
+ 
+have that firepower delivered for you.
+All of that agentic power at your
+ 
+All of that agentic power at your
+fingertips,
+ 
+fingertips,
+what do you do with it, and how do you
+ 
+what do you do with it, and how do you
+communicate your intent in a way that
+ 
+communicate your intent in a way that
+actually gets across? The fundamental
+ 
+actually gets across? The fundamental
+bet is the same as all these other ones.
+ 
+bet is the same as all these other ones.
+You state the objective for Open Claw,
+ 
+You state the objective for Open Claw,
+and Open Claw will figure out the rest.
+ 
+and Open Claw will figure out the rest.
+In this case, you state the objective
+ 
+In this case, you state the objective
+for Perplexity personal computer, and
+ 
+for Perplexity personal computer, and
+you bet the personal computer will
+ 
+you bet the personal computer will
+figure out the rest. And, that works
+ 
+figure out the rest. And, that works
+well right until the objective requires
+ 
+well right until the objective requires
+knowledge about your life, your judgment
+ 
+knowledge about your life, your judgment
+patterns, your operating rhythm that no
+ 
+patterns, your operating rhythm that no
+system actually has because you never
+ 
+system actually has because you never
+wrote it down. And, you may not be aware
+ 
+wrote it down. And, you may not be aware
+you have it, but it's in your bar for
+ 
+you have it, but it's in your bar for
+PowerPoints. It's in your bar for
+ 
+PowerPoints. It's in your bar for
+financial products. It's in your bar for
+ 
+financial products. It's in your bar for
+everything, and you just never realized
+ 
+everything, and you just never realized
+it was written down. Let's have a look
+ 
+it was written down. Let's have a look
+at Nemo Claw next. Nemo Claw is Nvidia's
+ 
+at Nemo Claw next. Nemo Claw is Nvidia's
+enterprise security wrapper for Open
+ 
+enterprise security wrapper for Open
+Claw. It was launched at GTC by Jensen
+ 
+Claw. It was launched at GTC by Jensen
+Huang itself. It runs agents in sandbox
+ 
+Huang itself. It runs agents in sandbox
+environments using Open Shell for
+ 
+environments using Open Shell for
+privacy guardrails and Neumotron for
+ 
+privacy guardrails and Neumotron for
+advanced model output. Basically, it's a
+ 
+advanced model output. Basically, it's a
+it's a buttoned-up corporate-friendly
+ 
+it's a buttoned-up corporate-friendly
+Open Claw with lots of security
+ 
+Open Claw with lots of security
+guardrails,
+ 
+guardrails,
+and it solves the security problem
+ 
+and it solves the security problem
+really thoroughly. The real and serious
+ 
+really thoroughly. The real and serious
+risk of an agent with full access to
+ 
+risk of an agent with full access to
+your machine deleting stuff, like
+ 
+your machine deleting stuff, like
+they've taken care of that. It does not
+ 
+they've taken care of that. It does not
+solve the problem of what to put in the
+ 
+solve the problem of what to put in the
+agent's operating instructions, and it
+ 
+agent's operating instructions, and it
+effectively punts that to the
+ 
+effectively punts that to the
+enterprise, and the problem is most
+ 
+enterprise, and the problem is most
+enterprises also don't know how to solve
+ 
+enterprises also don't know how to solve
+that problem. I know cuz I talk with
+ 
+that problem. I know cuz I talk with
+them. They do not know out of the gate
+ 
+them. They do not know out of the gate
+how to solve the problem of what to do
+ 
+how to solve the problem of what to do
+with an email client. If you roll it out
+ 
+with an email client. If you roll it out
+to 10,000 people and only five of them
+ 
+to 10,000 people and only five of them
+have used open claw in a way that's
+ 
+have used open claw in a way that's
+productive, those five are going to be
+ 
+productive, those five are going to be
+perfectly happy and be able to use that.
+ 
+perfectly happy and be able to use that.
+The other 9,995,
+ 
+The other 9,995,
+they're not going to know what to do.
+ 
+they're not going to know what to do.
+They're not going to know what to do
+ 
+They're not going to know what to do
+because no one trained them. And that is
+ 
+because no one trained them. And that is
+absolutely a larger issue with AI, but
+ 
+absolutely a larger issue with AI, but
+it's especially bad with agents. And the
+ 
+it's especially bad with agents. And the
+reason it's especially bad with agents
+ 
+reason it's especially bad with agents
+and with the open claw phenomenon is
+ 
+and with the open claw phenomenon is
+that the open claw phenomenon gives you
+ 
+that the open claw phenomenon gives you
+so much power. It is really a story of
+ 
+so much power. It is really a story of
+transformation. It does really give you
+ 
+transformation. It does really give you
+that 10x potential on your work, and
+ 
+that 10x potential on your work, and
+they just do not tell you how much work
+ 
+they just do not tell you how much work
+you have to put in at the top to get
+ 
+you have to put in at the top to get
+that result.
+ 
+that result.
+And how much training you have to do if
+ 
+And how much training you have to do if
+you are rolling this out to a workforce.
+ 
+you are rolling this out to a workforce.
+It is not a plug-it-in-and-go solution,
+ 
+It is not a plug-it-in-and-go solution,
+and it never is going to be because it
+ 
+and it never is going to be because it
+takes context from you, right? I just
+ 
+takes context from you, right? I just
+want to be honest with you. All the
+ 
+want to be honest with you. All the
+people who are promising, and all of
+ 
+people who are promising, and all of
+these ones that I'm covering are
+ 
+these ones that I'm covering are
+promising this, all of them who are
+ 
+promising this, all of them who are
+promising 10 minutes to open claw are
+ 
+promising 10 minutes to open claw are
+right technically and wrong
+ 
+right technically and wrong
+functionally. They're correct.
+ 
+functionally. They're correct.
+Technically, you can get very, very
+ 
+Technically, you can get very, very
+quickly up and running with your open
+ 
+quickly up and running with your open
+claw. They are wrong in that you cannot
+ 
+claw. They are wrong in that you cannot
+get utility out of the open claw unless
+ 
+get utility out of the open claw unless
+you put a lot more work than that into
+ 
+you put a lot more work than that into
+getting it ready. Claude Dispatch is
+ 
+getting it ready. Claude Dispatch is
+part of Anthropic's answer, and
+ 
+part of Anthropic's answer, and
+Anthropic has been investing heavily and
+ 
+Anthropic has been investing heavily and
+essentially pivoting their Claude
+ 
+essentially pivoting their Claude
+product so it is open claw like over the
+ 
+product so it is open claw like over the
+last month. There's probably been 15
+ 
+last month. There's probably been 15
+ships around this. Dispatch is the most
+ 
+ships around this. Dispatch is the most
+obvious because it makes it so easy to
+ 
+obvious because it makes it so easy to
+pair your phone with your Mac, and it
+ 
+pair your phone with your Mac, and it
+makes it easy to send messages through
+ 
+makes it easy to send messages through
+whatever version of your messaging app
+ 
+whatever version of your messaging app
+that you want, and you can now control
+ 
+that you want, and you can now control
+your Claude from your phone, which is
+ 
+your Claude from your phone, which is
+one of the key benefits people called
+ 
+one of the key benefits people called
+out from open claw in in first place
+ 
+out from open claw in in first place
+because you can use your open claw
+ 
+because you can use your open claw
+wherever you are. You can be dropping
+ 
+wherever you are. You can be dropping
+the kids off to school. You can be out
+ 
+the kids off to school. You can be out
+looking at the beach. You can be working
+ 
+looking at the beach. You can be working
+in the kitchen, and you can be messaging
+ 
+in the kitchen, and you can be messaging
+your computer and getting work done.
+ 
+your computer and getting work done.
+People like the mobile friendliness.
+ 
+People like the mobile friendliness.
+It's one of the oldest bets in software.
+ 
+It's one of the oldest bets in software.
+We've had this bet since 2007, really
+ 
+We've had this bet since 2007, really
+earlier than that when we had the mobile
+ 
+earlier than that when we had the mobile
+phone revolution in 2007 with the
+ 
+phone revolution in 2007 with the
+iPhone. People like to be on the go with
+ 
+iPhone. People like to be on the go with
+computing. And this is just taking your
+ 
+computing. And this is just taking your
+agents on the go. It's one of the oldest
+ 
+agents on the go. It's one of the oldest
+and most reliable bets in software. It
+ 
+and most reliable bets in software. It
+turns out it works for agents, too.
+ 
+turns out it works for agents, too.
+But, you can't send, and I've tried
+ 
+But, you can't send, and I've tried
+this, by the way, with popular agents.
+ 
+this, by the way, with popular agents.
+You can't send a three-line or four-line
+ 
+You can't send a three-line or four-line
+text message to an agent and expect it
+ 
+text message to an agent and expect it
+to work well if the agent doesn't know
+ 
+to work well if the agent doesn't know
+you. And it turns out that a lot of
+ 
+you. And it turns out that a lot of
+these text message-first apps
+ 
+these text message-first apps
+do not work well if you are just
+ 
+do not work well if you are just
+introducing yourself by text, because
+ 
+introducing yourself by text, because
+guess what? I have done a 15-paragraph
+ 
+guess what? I have done a 15-paragraph
+introduction by text message to a
+ 
+introduction by text message to a
+popular open claw-like application, and
+ 
+popular open claw-like application, and
+it has completely failed, because it
+ 
+it has completely failed, because it
+still wasn't enough. 15 paragraphs of
+ 
+still wasn't enough. 15 paragraphs of
+text, that's a whole wall of text, and
+ 
+text, that's a whole wall of text, and
+it's still not enough to get the agent
+ 
+it's still not enough to get the agent
+to actually get it. And so, as much as
+ 
+to actually get it. And so, as much as
+it's really cool that Claude is pivoting
+ 
+it's really cool that Claude is pivoting
+to make it easier to message, there are
+ 
+to make it easier to message, there are
+a lot of developers that find it super
+ 
+a lot of developers that find it super
+useful, it does not by itself solve this
+ 
+useful, it does not by itself solve this
+problem. The issue here is that we need
+ 
+problem. The issue here is that we need
+to be able to say or speak what we
+ 
+to be able to say or speak what we
+really mean in a way that's clear enough
+ 
+really mean in a way that's clear enough
+that an agent can run with it, and we
+ 
+that an agent can run with it, and we
+can truly delegate that task. And that
+ 
+can truly delegate that task. And that
+is the problem none of these solutions
+ 
+is the problem none of these solutions
+are really solving. And that goes not
+ 
+are really solving. And that goes not
+just for these purpose-built solutions I
+ 
+just for these purpose-built solutions I
+profiled, like Perplexity Personal
+ 
+profiled, like Perplexity Personal
+Computer or like Nemo Claw,
+ 
+Computer or like Nemo Claw,
+but it also goes for the hosted
+ 
+but it also goes for the hosted
+wrappers, Start Claw, My Claw, Simple
+ 
+wrappers, Start Claw, My Claw, Simple
+Claw, Uni Claw, you name it, Claw. And
+ 
+Claw, Uni Claw, you name it, Claw. And
+And there's like dozens a week
+ 
+And there's like dozens a week
+launching. They're all trying to make
+ 
+launching. They're all trying to make
+open claw setup easier, right? One-click
+ 
+open claw setup easier, right? One-click
+deploy, preconfigured personas, managed
+ 
+deploy, preconfigured personas, managed
+infrastructure. They're solving all of
+ 
+infrastructure. They're solving all of
+that installation friction very
+ 
+that installation friction very
+successfully, which is a real UX
+ 
+successfully, which is a real UX
+problem. But the guy selling the $49
+ 
+problem. But the guy selling the $49
+pack of pre-written soul.out markdown
+ 
+pack of pre-written soul.out markdown
+files or the guy repackaging it and
+ 
+files or the guy repackaging it and
+calling it start.claw and having the
+ 
+calling it start.claw and having the
+exact same markdown files as a quote
+ 
+exact same markdown files as a quote
+persona,
+ 
+persona,
+they're not really solving that issue,
+ 
+they're not really solving that issue,
+right? They're giving you their generic
+ 
+right? They're giving you their generic
+version of what it is, not the thing
+ 
+version of what it is, not the thing
+that's going to be useful for you.
+ 
+that's going to be useful for you.
+Because the thing that makes agents
+ 
+Because the thing that makes agents
+useful is that they are particular. Is
+ 
+useful is that they are particular. Is
+that they are personal. And you can't
+ 
+that they are personal. And you can't
+take that away. The people who are
+ 
+take that away. The people who are
+having transformative impacts have
+ 
+having transformative impacts have
+realized they need to put the work in to
+ 
+realized they need to put the work in to
+make their agent personal. There is no
+ 
+make their agent personal. There is no
+substitute. So every product in this
+ 
+substitute. So every product in this
+landscape is fighting over installation,
+ 
+landscape is fighting over installation,
+over UI, over model selection, over
+ 
+over UI, over model selection, over
+security, over pricing, over cloud
+ 
+security, over pricing, over cloud
+versus local, and they're competing on
+ 
+versus local, and they're competing on
+this implementation layer and they're
+ 
+this implementation layer and they're
+trying to get us to care. Do I care
+ 
+trying to get us to care. Do I care
+about the fact that I want a Mac mini in
+ 
+about the fact that I want a Mac mini in
+the cloud from Perplexity? Is that
+ 
+the cloud from Perplexity? Is that
+better? I don't even know how to assess
+ 
+better? I don't even know how to assess
+that in most cases, right? Most people
+ 
+that in most cases, right? Most people
+don't. And every product in this
+ 
+don't. And every product in this
+landscape breaks against that same wall,
+ 
+landscape breaks against that same wall,
+right? The human on the other end has to
+ 
+right? The human on the other end has to
+understand what they need to do and
+ 
+understand what they need to do and
+produce a usable spec for the agent to
+ 
+produce a usable spec for the agent to
+do that task. And that is actually much
+ 
+do that task. And that is actually much
+more important to the long-term value of
+ 
+more important to the long-term value of
+the agent than just a particular kind of
+ 
+the agent than just a particular kind of
+installation, which is just a one-time
+ 
+installation, which is just a one-time
+problem. And so that wall, there's a
+ 
+problem. And so that wall, there's a
+reason why products are not going after
+ 
+reason why products are not going after
+that. It's a structural property of how
+ 
+that. It's a structural property of how
+expertise works, and it's actually a
+ 
+expertise works, and it's actually a
+really hard problem. It's not easy. You
+ 
+really hard problem. It's not easy. You
+can't solve it with UX. And here's where
+ 
+can't solve it with UX. And here's where
+it would be easy for me to hop off and
+ 
+it would be easy for me to hop off and
+say, "Well, it's really hard. We're
+ 
+say, "Well, it's really hard. We're
+done." But I want to go deeper. What it
+ 
+done." But I want to go deeper. What it
+makes it difficult for people to
+ 
+makes it difficult for people to
+describe what they do? Because that
+ 
+describe what they do? Because that
+observation, while true, doesn't explain
+ 
+observation, while true, doesn't explain
+why this is happening and why we find it
+ 
+why this is happening and why we find it
+hard. And there's a larger story there.
+ 
+hard. And there's a larger story there.
+If you don't understand the mechanism,
+ 
+If you don't understand the mechanism,
+you're going to waste time on solutions
+ 
+you're going to waste time on solutions
+that don't address the root cause.
+ 
+that don't address the root cause.
+Knowledge work has a structural property
+ 
+Knowledge work has a structural property
+that makes it uniquely resistant to
+ 
+that makes it uniquely resistant to
+delegation.
+ 
+delegation.
+Whether that's delegation to humans or
+ 
+Whether that's delegation to humans or
+delegation to machines. And that
+ 
+delegation to machines. And that
+property is this. The more senior and
+ 
+property is this. The more senior and
+valuable you become, the more your work
+ 
+valuable you become, the more your work
+migrates from explicit processes to
+ 
+migrates from explicit processes to
+tacit judgment, and the less visible
+ 
+tacit judgment, and the less visible
+your own operating system becomes to
+ 
+your own operating system becomes to
+you, the person using it.
+ 
+you, the person using it.
+And this is not a failure of good
+ 
+And this is not a failure of good
+intentions. This is not a failure of
+ 
+intentions. This is not a failure of
+self-awareness. It's the intended
+ 
+self-awareness. It's the intended
+outcome of how expertise actually
+ 
+outcome of how expertise actually
+develops. When you're a beginner,
+ 
+develops. When you're a beginner,
+everything is very conscious. It's very
+ 
+everything is very conscious. It's very
+deliberate. When I started to play
+ 
+deliberate. When I started to play
+basketball when I was in middle school,
+ 
+basketball when I was in middle school,
+I was focusing on dribbling so hard, and
+ 
+I was focusing on dribbling so hard, and
+eventually you start to get good at
+ 
+eventually you start to get good at
+dribbling the ball, you don't think
+ 
+dribbling the ball, you don't think
+about it as much. So, you follow the
+ 
+about it as much. So, you follow the
+checklist and knowledge work to begin as
+ 
+checklist and knowledge work to begin as
+an intern. You think through every step.
+ 
+an intern. You think through every step.
+As you gain expertise, all of those
+ 
+As you gain expertise, all of those
+steps compress into automatic patterns.
+ 
+steps compress into automatic patterns.
+Just as when you drive a car today, you
+ 
+Just as when you drive a car today, you
+don't think about turning right after 20
+ 
+don't think about turning right after 20
+years of driving a car, it just happens.
+ 
+years of driving a car, it just happens.
+You stop thinking about your knowledge
+ 
+You stop thinking about your knowledge
+work. You stop thinking about what to
+ 
+work. You stop thinking about what to
+check. You just check it. You stop
+ 
+check. You just check it. You stop
+reasoning through decisions and you just
+ 
+reasoning through decisions and you just
+make them, but the reasoning still
+ 
+make them, but the reasoning still
+happens. The thing that makes you fast
+ 
+happens. The thing that makes you fast
+and effective is the same thing that
+ 
+and effective is the same thing that
+makes your knowledge very inaccessible.
+ 
+makes your knowledge very inaccessible.
+It's been compiled from source code into
+ 
+It's been compiled from source code into
+machine code, metaphorically speaking,
+ 
+machine code, metaphorically speaking,
+and you no longer have the source code.
+ 
+and you no longer have the source code.
+Let's take an example of a really senior
+ 
+Let's take an example of a really senior
+product manager. They don't think, "I
+ 
+product manager. They don't think, "I
+should cross-reference the revenue
+ 
+should cross-reference the revenue
+dashboard with the churn data before
+ 
+dashboard with the churn data before
+forming an opinion." Instead, they'll
+ 
+forming an opinion." Instead, they'll
+open three tabs, they'll glance at the
+ 
+open three tabs, they'll glance at the
+numbers, and they just know. And if you
+ 
+numbers, and they just know. And if you
+ask, "What was checked and can you
+ 
+ask, "What was checked and can you
+reconstruct and explain what happened?"
+ 
+reconstruct and explain what happened?"
+they'll narrate backwards from the
+ 
+they'll narrate backwards from the
+conclusion, but they're not they're not
+ 
+conclusion, but they're not they're not
+really going to describe the actual
+ 
+really going to describe the actual
+process in most cases cuz it's so low
+ 
+process in most cases cuz it's so low
+level. The real decision often involved
+ 
+level. The real decision often involved
+a hundred micro-evaluations
+ 
+a hundred micro-evaluations
+that reflect thousands of hours of
+ 
+that reflect thousands of hours of
+patterns that that product manager has
+ 
+patterns that that product manager has
+seen over multiple startups, but but
+ 
+seen over multiple startups, but but
+that doesn't get articulated, right? The
+ 
+that doesn't get articulated, right? The
+magical pattern matching that allowed
+ 
+magical pattern matching that allowed
+the deep insight that they had about
+ 
+the deep insight that they had about
+churn is something that is a function of
+ 
+churn is something that is a function of
+all of those thousands of hours. It's
+ 
+all of those thousands of hours. It's
+not something you can substitute for
+ 
+not something you can substitute for
+with just an explicit intern checklist.
+ 
+with just an explicit intern checklist.
+It It doesn't work that way. Now, you
+ 
+It It doesn't work that way. Now, you
+might stop here and say, "Well, then
+ 
+might stop here and say, "Well, then
+there's no point in agents." And I will
+ 
+there's no point in agents." And I will
+come back and I'll say, "No, the stories
+ 
+come back and I'll say, "No, the stories
+of agents making you insanely productive
+ 
+of agents making you insanely productive
+are all true." And our goal is to make
+ 
+are all true." And our goal is to make
+more of those stories, and I am telling
+ 
+more of those stories, and I am telling
+you what it takes. And the first thing
+ 
+you what it takes. And the first thing
+we have to acknowledge is that knowledge
+ 
+we have to acknowledge is that knowledge
+work is really hard. A strong
+ 
+work is really hard. A strong
+salesperson doesn't consciously decide
+ 
+salesperson doesn't consciously decide
+to mirror their prospect's phrasing and
+ 
+to mirror their prospect's phrasing and
+slow their cadence when they when they
+ 
+slow their cadence when they when they
+detect defense. A strong salesperson,
+ 
+detect defense. A strong salesperson,
+they don't consciously decide to mirror
+ 
+they don't consciously decide to mirror
+the prospect's phrasing and slow down
+ 
+the prospect's phrasing and slow down
+their cadence when they detect that that
+ 
+their cadence when they detect that that
+they're just a little defensive. They
+ 
+they're just a little defensive. They
+just do that. A senior engineer doesn't
+ 
+just do that. A senior engineer doesn't
+think, "Well, this code has a
+ 
+think, "Well, this code has a
+concurrency issue that will surface
+ 
+concurrency issue that will surface
+under load on Tuesdays cuz we have a lot
+ 
+under load on Tuesdays cuz we have a lot
+of email traffic on Tuesdays, and when
+ 
+of email traffic on Tuesdays, and when
+the batch lot job overlaps with the peak
+ 
+the batch lot job overlaps with the peak
+traffic, we're going to have issues."
+ 
+traffic, we're going to have issues."
+They They may be able to get to that
+ 
+They They may be able to get to that
+point and tell you later, but initially
+ 
+point and tell you later, but initially
+they just feel it. They say, "Oh, that's
+ 
+they just feel it. They say, "Oh, that's
+bad." And then they go look, and then
+ 
+bad." And then they go look, and then
+they're right, and then everyone calls
+ 
+they're right, and then everyone calls
+it an experience.
+ 
+it an experience.
+This is worth digging into because it's
+ 
+This is worth digging into because it's
+the root cause of a product failure
+ 
+the root cause of a product failure
+happening at an absolutely massive scale
+ 
+happening at an absolutely massive scale
+across the industry. The entire agent
+ 
+across the industry. The entire agent
+ecosystem is built on a model where the
+ 
+ecosystem is built on a model where the
+human provides instructions, and the
+ 
+human provides instructions, and the
+machine executes them. That model works
+ 
+machine executes them. That model works
+when the instructions are really clear,
+ 
+when the instructions are really clear,
+like summarize the document, right?
+ 
+like summarize the document, right?
+Super easy. Reformat the spreadsheet.
+ 
+Super easy. Reformat the spreadsheet.
+But it breaks when the instructions
+ 
+But it breaks when the instructions
+require expertise that the human
+ 
+require expertise that the human
+genuinely has but struggles to
+ 
+genuinely has but struggles to
+articulate. And almost all of the most
+ 
+articulate. And almost all of the most
+valuable knowledge work that agents can
+ 
+valuable knowledge work that agents can
+tackle lies in that second category. In
+ 
+tackle lies in that second category. In
+other words, 2026, the year of these
+ 
+other words, 2026, the year of these
+long-running agents that do impactful
+ 
+long-running agents that do impactful
+knowledge work,
+ 
+knowledge work,
+only really delivers on that promise if
+ 
+only really delivers on that promise if
+we can get into the very hard problem of
+ 
+we can get into the very hard problem of
+explaining to these agents this tacit
+ 
+explaining to these agents this tacit
+knowledge work and judgment that makes
+ 
+knowledge work and judgment that makes
+us good at what we do.
+ 
+us good at what we do.
+We have to think through, what does it
+ 
+We have to think through, what does it
+mean to have deep insights about churn
+ 
+mean to have deep insights about churn
+and actually articulate enough of our
+ 
+and actually articulate enough of our
+personal experience to give the agent
+ 
+personal experience to give the agent
+something to work against, not because
+ 
+something to work against, not because
+the agent has to mimic us like a parrot,
+ 
+the agent has to mimic us like a parrot,
+but because the agent needs to orient
+ 
+but because the agent needs to orient
+enough in our local context that it can
+ 
+enough in our local context that it can
+then go beyond that and continue to
+ 
+then go beyond that and continue to
+optimize and deliver insights. Because
+ 
+optimize and deliver insights. Because
+the best agents do that, right? The best
+ 
+the best agents do that, right? The best
+agents know enough about your context
+ 
+agents know enough about your context
+and what you're trying to do that they
+ 
+and what you're trying to do that they
+can then go beyond that and deliver
+ 
+can then go beyond that and deliver
+really interesting novel insights you
+ 
+really interesting novel insights you
+wouldn't have expected. That's
+ 
+wouldn't have expected. That's
+fantastic. That's the dream. It does
+ 
+fantastic. That's the dream. It does
+really happen. But you've got to give
+ 
+really happen. But you've got to give
+them enough out of your tacit experience
+ 
+them enough out of your tacit experience
+to actually make that possible. Think
+ 
+to actually make that possible. Think
+about what a good soul.md file contains.
+ 
+about what a good soul.md file contains.
+It's not just a personality description.
+ 
+It's not just a personality description.
+It's It's a decision framework. When to
+ 
+It's It's a decision framework. When to
+escalate versus how you handle things
+ 
+escalate versus how you handle things
+autonomously, what what tone to use with
+ 
+autonomously, what what tone to use with
+different audiences, which data sources
+ 
+different audiences, which data sources
+are are you going to trust versus which
+ 
+are are you going to trust versus which
+ones are you skeptical of, what is good
+ 
+ones are you skeptical of, what is good
+enough at various task types.
+ 
+enough at various task types.
+That's the same thing a strong vice
+ 
+That's the same thing a strong vice
+presidents would put in an operating
+ 
+presidents would put in an operating
+memo for the team when he or she joins
+ 
+memo for the team when he or she joins
+the team for the first time. And most
+ 
+the team for the first time. And most
+VPs, honestly, they haven't written that
+ 
+VPs, honestly, they haven't written that
+down either. I've I've been under a
+ 
+down either. I've I've been under a
+number who have moved in new and most of
+ 
+number who have moved in new and most of
+them don't send an operating memo like
+ 
+them don't send an operating memo like
+that, even though they should. This is
+ 
+that, even though they should. This is
+also the same reason why senior
+ 
+also the same reason why senior
+engineers notoriously are pretty bad at
+ 
+engineers notoriously are pretty bad at
+writing onboarding docs. It's not
+ 
+writing onboarding docs. It's not
+laziness. It's that the knowledge that
+ 
+laziness. It's that the knowledge that
+would make the doc useful has been sort
+ 
+would make the doc useful has been sort
+of compressed into a form of automatic
+ 
+of compressed into a form of automatic
+behavior for them and the doc is going
+ 
+behavior for them and the doc is going
+to list steps but miss so much nuance
+ 
+to list steps but miss so much nuance
+that they have in their heads because it
+ 
+that they have in their heads because it
+just makes sense for them. It's like the
+ 
+just makes sense for them. It's like the
+person who's describing the way to a
+ 
+person who's describing the way to a
+friend's house down the road and they're
+ 
+friend's house down the road and they're
+giving you all of these landmarks that
+ 
+giving you all of these landmarks that
+are local to them that make sense. Like
+ 
+are local to them that make sense. Like
+there's the big tree and then you stop
+ 
+there's the big tree and then you stop
+by the the the store that has the
+ 
+by the the the store that has the
+broken-down sign and then you go over
+ 
+broken-down sign and then you go over
+it. This is No. Like as a stranger in
+ 
+it. This is No. Like as a stranger in
+these parts you don't understand it, but
+ 
+these parts you don't understand it, but
+they understand all of the nuances that
+ 
+they understand all of the nuances that
+help them get to their friend's house.
+ 
+help them get to their friend's house.
+And the structural trap is this. The
+ 
+And the structural trap is this. The
+people with the most to gain from agent
+ 
+people with the most to gain from agent
+delegation are exactly the people whose
+ 
+delegation are exactly the people whose
+work is hardest to delegate. The most
+ 
+work is hardest to delegate. The most
+senior, most overloaded knowledge
+ 
+senior, most overloaded knowledge
+workers carry the highest ratio of tacit
+ 
+workers carry the highest ratio of tacit
+to explicit knowledge. Their work is the
+ 
+to explicit knowledge. Their work is the
+most compressed. It's the most invisible
+ 
+most compressed. It's the most invisible
+to themselves. They need the leverage
+ 
+to themselves. They need the leverage
+most, and the cold start problem hits
+ 
+most, and the cold start problem hits
+them the hardest. Ironically, beginners
+ 
+them the hardest. Ironically, beginners
+just getting started in their careers,
+ 
+just getting started in their careers,
+folks who are your 1 year, 2 years out
+ 
+folks who are your 1 year, 2 years out
+of college, and all of this is stuff
+ 
+of college, and all of this is stuff
+that you are still doing intentionally,
+ 
+that you are still doing intentionally,
+explicitly in your head. You haven't
+ 
+explicitly in your head. You haven't
+compressed it yet. You may have a much
+ 
+compressed it yet. You may have a much
+easier time with agents and delegating
+ 
+easier time with agents and delegating
+to Open Claw than the seniors. And the
+ 
+to Open Claw than the seniors. And the
+reason I say that is because you have
+ 
+reason I say that is because you have
+not gone through that automation process
+ 
+not gone through that automation process
+in your head yet.
+ 
+in your head yet.
+And that's actually fantastic, and it's
+ 
+And that's actually fantastic, and it's
+one of the reasons why firms like
+ 
+one of the reasons why firms like
+Shopify intentionally hire juniors,
+ 
+Shopify intentionally hire juniors,
+because there are things that you can go
+ 
+because there are things that you can go
+much faster at than seniors. And
+ 
+much faster at than seniors. And
+ironically, this inability to sort of
+ 
+ironically, this inability to sort of
+get our operational knowledge, our tacit
+ 
+get our operational knowledge, our tacit
+knowledge out of our heads is at the
+ 
+knowledge out of our heads is at the
+root of at least three big chronic
+ 
+root of at least three big chronic
+people problems that plague most
+ 
+people problems that plague most
+organizations. Delegation fails. That's
+ 
+organizations. Delegation fails. That's
+That's one of them, right? Managers will
+ 
+That's one of them, right? Managers will
+cite that as a key challenge, and the
+ 
+cite that as a key challenge, and the
+standard explanation is that they're
+ 
+standard explanation is that they're
+control freaks, but the real explanation
+ 
+control freaks, but the real explanation
+is that they don't know how to delegate
+ 
+is that they don't know how to delegate
+cuz they don't know how to express what
+ 
+cuz they don't know how to express what
+they've got in their heads. It's It's a
+ 
+they've got in their heads. It's It's a
+real challenge for new managers. Another
+ 
+real challenge for new managers. Another
+related one, people not getting
+ 
+related one, people not getting
+promoted. The most common reason strong
+ 
+promoted. The most common reason strong
+ICs plateau is that they cannot be
+ 
+ICs plateau is that they cannot be
+replaced. Their knowledge work is locked
+ 
+replaced. Their knowledge work is locked
+in their head. And so, even if they are
+ 
+in their head. And so, even if they are
+qualified for the next level, nobody
+ 
+qualified for the next level, nobody
+wants to risk losing their expertise on
+ 
+wants to risk losing their expertise on
+their current job, and that becomes a
+ 
+their current job, and that becomes a
+trap for them. And then, of course, the
+ 
+trap for them. And then, of course, the
+third one is obvious. People leave.
+ 
+third one is obvious. People leave.
+Institutional knowledge evaporates. It
+ 
+Institutional knowledge evaporates. It
+walks out the door in someone's head,
+ 
+walks out the door in someone's head,
+and and it's just gone.
+ 
+and and it's just gone.
+So, I would argue agents did not create
+ 
+So, I would argue agents did not create
+these problems, but agents create the
+ 
+these problems, but agents create the
+first universal selfish incentive for
+ 
+first universal selfish incentive for
+every single one of us in knowledge work
+ 
+every single one of us in knowledge work
+to actually fix these problems. Not
+ 
+to actually fix these problems. Not
+because HR launched a knowledge
+ 
+because HR launched a knowledge
+management initiative, right? It's not
+ 
+management initiative, right? It's not
+because a consultant ran a workshop.
+ 
+because a consultant ran a workshop.
+It's because you personally want a robot
+ 
+It's because you personally want a robot
+to stop asking you to confirm calendar
+ 
+to stop asking you to confirm calendar
+entries that you already freaking
+ 
+entries that you already freaking
+approved, and the robot needs you to
+ 
+approved, and the robot needs you to
+describe your calendar rules first.
+ 
+describe your calendar rules first.
+That's new. Look, we've had decades of
+ 
+That's new. Look, we've had decades of
+top-down pressure to externalize our
+ 
+top-down pressure to externalize our
+knowledge. It never worked at scale
+ 
+knowledge. It never worked at scale
+because there was no direct personal
+ 
+because there was no direct personal
+upside for any of us. The benefit
+ 
+upside for any of us. The benefit
+accrued entirely to the organization
+ 
+accrued entirely to the organization
+when you wrote the wiki, right? And
+ 
+when you wrote the wiki, right? And
+traditionally, the person who documents
+ 
+traditionally, the person who documents
+their expertise is the person who loses.
+ 
+their expertise is the person who loses.
+In this case, agents flip that incentive
+ 
+In this case, agents flip that incentive
+structure on its head. The person who
+ 
+structure on its head. The person who
+documents their expertise is the person
+ 
+documents their expertise is the person
+who gets the leverage in the world of
+ 
+who gets the leverage in the world of
+agents. The organization might benefit
+ 
+agents. The organization might benefit
+secondarily. It's actually a bottom's-up
+ 
+secondarily. It's actually a bottom's-up
+knowledge management revolution
+ 
+knowledge management revolution
+disguised as a consumer AI product. And
+ 
+disguised as a consumer AI product. And
+I don't think that anyone, including the
+ 
+I don't think that anyone, including the
+people building these products, really
+ 
+people building these products, really
+appreciates that because if they did
+ 
+appreciates that because if they did
+appreciate it, I feel like they would
+ 
+appreciate it, I feel like they would
+put more into onboarding. I have been
+ 
+put more into onboarding. I have been
+through the onboarding flows for like
+ 
+through the onboarding flows for like
+half a dozen of these, and they all feel
+ 
+half a dozen of these, and they all feel
+really, really light.
+ 
+really, really light.
+Really light for what you're expecting
+ 
+Really light for what you're expecting
+this agent to do, for what you're hoping
+ 
+this agent to do, for what you're hoping
+it will do for you if you want it to
+ 
+it will do for you if you want it to
+really lift up leverage two, three, or
+ 
+really lift up leverage two, three, or
+more X your work. And that And that
+ 
+more X your work. And that And that
+leads us to a very uncomfortable
+ 
+leads us to a very uncomfortable
+corollary that's worth naming
+ 
+corollary that's worth naming
+explicitly. If the value of agents
+ 
+explicitly. If the value of agents
+depends on your ability to articulate
+ 
+depends on your ability to articulate
+your work, agents are about to create an
+ 
+your work, agents are about to create an
+extremely visible divide in the
+ 
+extremely visible divide in the
+workforce. Right now, tacit knowledge is
+ 
+workforce. Right now, tacit knowledge is
+invisible, right? Nobody knows that you
+ 
+invisible, right? Nobody knows that you
+can't describe your own process because
+ 
+can't describe your own process because
+nobody's ever asked you.
+ 
+nobody's ever asked you.
+Performance reviews tend to measure your
+ 
+Performance reviews tend to measure your
+outputs, not your self-knowledge. You
+ 
+outputs, not your self-knowledge. You
+might be a phenomenal operator with zero
+ 
+might be a phenomenal operator with zero
+ability to explain how you operate, and
+ 
+ability to explain how you operate, and
+the system just never penalizes you. And
+ 
+the system just never penalizes you. And
+agents are about to change that. In a
+ 
+agents are about to change that. In a
+world where everyone has access to the
+ 
+world where everyone has access to the
+same tooling, the differentiator is not
+ 
+same tooling, the differentiator is not
+which model you use or how many Mac
+ 
+which model you use or how many Mac
+minis you can put your open claws on,
+ 
+minis you can put your open claws on,
+it's whether you can feed the thing well
+ 
+it's whether you can feed the thing well
+enough to actually get leverage. The
+ 
+enough to actually get leverage. The
+people who invest that time, who can
+ 
+people who invest that time, who can
+decompose their expertise into explicit,
+ 
+decompose their expertise into explicit,
+delegatable components, will get
+ 
+delegatable components, will get
+compounding returns. That's where the
+ 
+compounding returns. That's where the
+value is. Their agents improve because
+ 
+value is. Their agents improve because
+their specs improve. The second agent
+ 
+their specs improve. The second agent
+deploys faster than the first, the 10th
+ 
+deploys faster than the first, the 10th
+deploys in a few minutes, and they
+ 
+deploys in a few minutes, and they
+actually build on all of that knowledge,
+ 
+actually build on all of that knowledge,
+so it doesn't even take them a ton of
+ 
+so it doesn't even take them a ton of
+time to provision it because they
+ 
+time to provision it because they
+understand the memory system so well.
+ 
+understand the memory system so well.
+The people who skip all of that will
+ 
+The people who skip all of that will
+install, play for a weekend, hit the
+ 
+install, play for a weekend, hit the
+wall, and conclude agents are all hype.
+ 
+wall, and conclude agents are all hype.
+And they will be wrong. The agent worked
+ 
+And they will be wrong. The agent worked
+fine. The problem was never the agent.
+ 
+fine. The problem was never the agent.
+So, I want to propose a solution. I've
+ 
+So, I want to propose a solution. I've
+gone through the problem, you understand
+ 
+gone through the problem, you understand
+the problem.
+ 
+the problem.
+The solution I have is this. The first
+ 
+The solution I have is this. The first
+agent you run should not be your open
+ 
+agent you run should not be your open
+claw assistant. The first agent you run
+ 
+claw assistant. The first agent you run
+should be a tool to prepare you to run
+ 
+should be a tool to prepare you to run
+agents the way you want. And no one
+ 
+agents the way you want. And no one
+seems to be thinking this way, so I'm
+ 
+seems to be thinking this way, so I'm
+just going to say it out loud. The first
+ 
+just going to say it out loud. The first
+agent worth deploying, it's not your
+ 
+agent worth deploying, it's not your
+personal assistant, it's not your chief
+ 
+personal assistant, it's not your chief
+of staff, it's not your scheduler, it's
+ 
+of staff, it's not your scheduler, it's
+not your email uh guy, it's not your
+ 
+not your email uh guy, it's not your
+briefing bot. It's just an interviewer.
+ 
+briefing bot. It's just an interviewer.
+It is one designed to do what expertise
+ 
+It is one designed to do what expertise
+elicitation researchers do. Yes, that's
+ 
+elicitation researchers do. Yes, that's
+a real job. Ask you the right questions
+ 
+a real job. Ask you the right questions
+in the right order with the right
+ 
+in the right order with the right
+follow-ups to extract the operational
+ 
+follow-ups to extract the operational
+knowledge you carry but cannot access on
+ 
+knowledge you carry but cannot access on
+your own. And no, this is not the same
+ 
+your own. And no, this is not the same
+as asking you three questions on
+ 
+as asking you three questions on
+install. I know that open claw asked
+ 
+install. I know that open claw asked
+you, "Who am I? Who are you? And what is
+ 
+you, "Who am I? Who are you? And what is
+my job?" I get that. This is a lot
+ 
+my job?" I get that. This is a lot
+deeper than that. And of course, I've
+ 
+deeper than that. And of course, I've
+been building this. I've been digging in
+ 
+been building this. I've been digging in
+because I want to build a demo that
+ 
+because I want to build a demo that
+actually allows you to immediately use
+ 
+actually allows you to immediately use
+this, so that if you have trouble
+ 
+this, so that if you have trouble
+actually using your agent and making it
+ 
+actually using your agent and making it
+valuable, you have a tool now to get
+ 
+valuable, you have a tool now to get
+your agent going.
+ 
+your agent going.
+It's a structured elicitation workflow.
+ 
+It's a structured elicitation workflow.
+I know it's a $10 word, but it basically
+ 
+I know it's a $10 word, but it basically
+means getting that information out of
+ 
+means getting that information out of
+your head. Uh it's a structured
+ 
+your head. Uh it's a structured
+elicitation workflow that walks you
+ 
+elicitation workflow that walks you
+through five specific layers. Your
+ 
+through five specific layers. Your
+operating rhythms, what are your days,
+ 
+operating rhythms, what are your days,
+your weeks, and your months actually
+ 
+your weeks, and your months actually
+like in detail, not the calendar
+ 
+like in detail, not the calendar
+version, the real one. Your actual
+ 
+version, the real one. Your actual
+recurring decisions, what judgment calls
+ 
+recurring decisions, what judgment calls
+you make, what are the easy calls, the
+ 
+you make, what are the easy calls, the
+hard calls, what inputs that you
+ 
+hard calls, what inputs that you
+actually need. Your dependency, who do
+ 
+actually need. Your dependency, who do
+you need things from and when? Nobody's
+ 
+you need things from and when? Nobody's
+asking that, right? I've been through
+ 
+asking that, right? I've been through
+these flows. Your friction, the
+ 
+these flows. Your friction, the
+recurring annoyances that eat your time.
+ 
+recurring annoyances that eat your time.
+Most of them don't ask that, either. It
+ 
+Most of them don't ask that, either. It
+takes time. I'm not going to pretend
+ 
+takes time. I'm not going to pretend
+this doesn't take time, right? Like I've
+ 
+this doesn't take time, right? Like I've
+gone through it, at best it takes 45
+ 
+gone through it, at best it takes 45
+minutes, it might take you longer. And
+ 
+minutes, it might take you longer. And
+and I think that time is worth it if
+ 
+and I think that time is worth it if
+you're going to actually save time on
+ 
+you're going to actually save time on
+your agent, right? The output is
+ 
+your agent, right? The output is
+structured data and you can plug it
+ 
+structured data and you can plug it
+right into your open brain if you've
+ 
+right into your open brain if you've
+built that, that's just a simple
+ 
+built that, that's just a simple
+personal knowledge store uh that's quick
+ 
+personal knowledge store uh that's quick
+to set up and runs for like 10 cents a
+ 
+to set up and runs for like 10 cents a
+month. Uh and then it becomes durable,
+ 
+month. Uh and then it becomes durable,
+right? It becomes searchable knowledge
+ 
+right? It becomes searchable knowledge
+and it's available to any agent that
+ 
+and it's available to any agent that
+interacts with an MCP, which all of
+ 
+interacts with an MCP, which all of
+these open claw agents do, by the way.
+ 
+these open claw agents do, by the way.
+And from that output, I built a
+ 
+And from that output, I built a
+configuration file generator that will
+ 
+configuration file generator that will
+automatically produce soul.markdown,
+ 
+automatically produce soul.markdown,
+heartbeat.markdown, user.markdown files
+ 
+heartbeat.markdown, user.markdown files
+that you can use to provision an open
+ 
+that you can use to provision an open
+claw. And that solves the gap, that
+ 
+claw. And that solves the gap, that
+solves the gap that Manas isn't building
+ 
+solves the gap that Manas isn't building
+for, Perplexity isn't building for, Nemo
+ 
+for, Perplexity isn't building for, Nemo
+Claw isn't building for, uh Dispatch
+ 
+Claw isn't building for, uh Dispatch
+skips over this. A- And to be honest
+ 
+skips over this. A- And to be honest
+with you, the configuration files that I
+ 
+with you, the configuration files that I
+can output
+ 
+can output
+T- And to be honest with you, the
+ 
+T- And to be honest with you, the
+configuration files you get at the end
+ 
+configuration files you get at the end
+of this process are in some ways the
+ 
+of this process are in some ways the
+least interesting output. The more
+ 
+least interesting output. The more
+valuable output is the conversation
+ 
+valuable output is the conversation
+itself and the way it creates a
+ 
+itself and the way it creates a
+structured database, a structured map of
+ 
+structured database, a structured map of
+how you work, what you know, where your
+ 
+how you work, what you know, where your
+leverage points are.
+ 
+leverage points are.
+And that makes you so much better at
+ 
+And that makes you so much better at
+delegating to agents, yes, but also
+ 
+delegating to agents, yes, but also
+talking about it means you're better at
+ 
+talking about it means you're better at
+delegating to people. It makes you
+ 
+delegating to people. It makes you
+easier to promote. It makes your
+ 
+easier to promote. It makes your
+expertise survivable. All of this stuff
+ 
+expertise survivable. All of this stuff
+that was locked in your head, you had an
+ 
+that was locked in your head, you had an
+AI agent help you get it out. And that's
+ 
+AI agent help you get it out. And that's
+what I focused on building, the AI agent
+ 
+what I focused on building, the AI agent
+that helps you get it out.
+ 
+that helps you get it out.
+And yes, it does help you make your
+ 
+And yes, it does help you make your
+agents work, which is kind of the whole
+ 
+agents work, which is kind of the whole
+reason you'd have agents. I know that
+ 
+reason you'd have agents. I know that
+every agent product in the market today
+ 
+every agent product in the market today
+is competing on the implementation
+ 
+is competing on the implementation
+layer. How easy is it to set up from
+ 
+layer. How easy is it to set up from
+scratch with your open claw? Fine.
+ 
+scratch with your open claw? Fine.
+The question I have is once you have it
+ 
+The question I have is once you have it
+set up, can you actually use it to do
+ 
+set up, can you actually use it to do
+interesting stuff? Can you actually use
+ 
+interesting stuff? Can you actually use
+it in ways that help your workflow? And
+ 
+it in ways that help your workflow? And
+the only way it will ever do that is if
+ 
+the only way it will ever do that is if
+it gets into your brain and gets the
+ 
+it gets into your brain and gets the
+stuff out that you don't think about
+ 
+stuff out that you don't think about
+every day. And that's why I built an
+ 
+every day. And that's why I built an
+open brain interview agent to help you
+ 
+open brain interview agent to help you
+get that knowledge out so that you can
+ 
+get that knowledge out so that you can
+provision whatever open claw you choose
+ 
+provision whatever open claw you choose
+in whatever way you choose, confident
+ 
+in whatever way you choose, confident
+that it actually knows the details, the
+ 
+that it actually knows the details, the
+nuance, the depth of your work in a way
+ 
+nuance, the depth of your work in a way
+that will make it effective. Because
+ 
+that will make it effective. Because
+that depth is where you get the
+ 
+that depth is where you get the
+disproportionate returns. That's how the
+ 
+disproportionate returns. That's how the
+people who are getting these three,
+ 
+people who are getting these three,
+four, five x returns are doing it. So,
+ 
+four, five x returns are doing it. So,
+don't make your first agent the agent
+ 
+don't make your first agent the agent
+that is your personal assistant.
+ 
+that is your personal assistant.
+Instead, make your first agent the one
+ 
+Instead, make your first agent the one
+that prepares you to have a personal
+ 
+that prepares you to have a personal
+assistant agent. The extra work is worth
+ 
+assistant agent. The extra work is worth
+it, I promise.
+ 
+it, I promise.
+Cheers.

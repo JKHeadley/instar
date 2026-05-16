@@ -1,0 +1,2279 @@
+ 
+Open Claw is the most consequential
+ 
+Open Claw is the most consequential
+MeToo moment in the history of AI all
+ 
+MeToo moment in the history of AI all
+the way since Chat GPT, which in the
+ 
+the way since Chat GPT, which in the
+history of AI is a long time, but in
+ 
+history of AI is a long time, but in
+real life is like two years. And all of
+ 
+real life is like two years. And all of
+the coverage of Open Claw has either
+ 
+the coverage of Open Claw has either
+been about, "Oh, it's a horse race
+ 
+been about, "Oh, it's a horse race
+between these other people who are
+ 
+between these other people who are
+copying Open Claw, etc." or it's been
+ 
+copying Open Claw, etc." or it's been
+about, "Oh my gosh, what a terrible,
+ 
+about, "Oh my gosh, what a terrible,
+terrible dumpster fire of a security
+ 
+terrible dumpster fire of a security
+issue Open Claw is and how do we fix
+ 
+issue Open Claw is and how do we fix
+it?" Both of those stories are real and
+ 
+it?" Both of those stories are real and
+important, but they're really hiding
+ 
+important, but they're really hiding
+what's underneath the Open Claw
+ 
+what's underneath the Open Claw
+phenomenon. And I want to talk about the
+ 
+phenomenon. And I want to talk about the
+real story here. The real story is that
+ 
+real story here. The real story is that
+every major company responding to Open
+ 
+every major company responding to Open
+Claw has actually made a different bet.
+ 
+Claw has actually made a different bet.
+They've made a different bet with some
+ 
+They've made a different bet with some
+different tradeoffs based on their
+ 
+different tradeoffs based on their
+positions on the board. And if you
+ 
+positions on the board. And if you
+understand those bets, and you can, you
+ 
+understand those bets, and you can, you
+can do something that most people cannot
+ 
+can do something that most people cannot
+right now, which is to look at any new
+ 
+right now, which is to look at any new
+agent product out there and figure out
+ 
+agent product out there and figure out
+what it's actually for, whether it works
+ 
+what it's actually for, whether it works
+for you, and why you should care. So,
+ 
+for you, and why you should care. So,
+instead of reacting to every
+ 
+instead of reacting to every
+announcement and saying, "Oh my gosh, is
+ 
+announcement and saying, "Oh my gosh, is
+this another Open Claw I have to pay
+ 
+this another Open Claw I have to pay
+attention to it? What did Claude launch,
+ 
+attention to it? What did Claude launch,
+etc.?" You can see the strategic logic
+ 
+etc.?" You can see the strategic logic
+underneath, and you can see whether or
+ 
+underneath, and you can see whether or
+not it really matters. And this is not
+ 
+not it really matters. And this is not
+optional to understand, partly because
+ 
+optional to understand, partly because
+we are living in a world that is
+ 
+we are living in a world that is
+avalanched with Open Claw competitors,
+ 
+avalanched with Open Claw competitors,
+right? Nvidia built Nemo Claw, and
+ 
+right? Nvidia built Nemo Claw, and
+Jensen decided to compare Open Claw to
+ 
+Jensen decided to compare Open Claw to
+Linux. OpenAI has acquired Peter and is
+ 
+Linux. OpenAI has acquired Peter and is
+actively planning a launch very soon.
+ 
+actively planning a launch very soon.
+Meta spent $2 billion on Manas and
+ 
+Meta spent $2 billion on Manas and
+immediately pivoted it to Open Claw.
+ 
+immediately pivoted it to Open Claw.
+Even lovable, which was the most copied
+ 
+Even lovable, which was the most copied
+product of 2025 in AI, is now becoming
+ 
+product of 2025 in AI, is now becoming
+the copier by trying to launch something
+ 
+the copier by trying to launch something
+like Open Claw. How the tables have
+ 
+like Open Claw. How the tables have
+turned. And part of what makes this
+ 
+turned. And part of what makes this
+impossible to follow is the sheer number
+ 
+impossible to follow is the sheer number
+of projects that are coming out. It's
+ 
+of projects that are coming out. It's
+not just these big companies, right?
+ 
+not just these big companies, right?
+This is an open source project, and
+ 
+This is an open source project, and
+there are lots of open source forks,
+ 
+there are lots of open source forks,
+right? Zero Claw rewrote Open Claw in
+ 
+right? Zero Claw rewrote Open Claw in
+Rust. Multus targeted enterprise Rust
+ 
+Rust. Multus targeted enterprise Rust
+deployments. Open Fang pitched itself as
+ 
+deployments. Open Fang pitched itself as
+an agent operating system. Nano bought
+ 
+an agent operating system. Nano bought
+from Hong Kong stripped OpenClaw down to
+ 
+from Hong Kong stripped OpenClaw down to
+just 4,000 lines of code. All of these
+ 
+just 4,000 lines of code. All of these
+attacked what they perceived as a
+ 
+attacked what they perceived as a
+weakness in the original implementation
+ 
+weakness in the original implementation
+and tried to put their own spin on it.
+ 
+and tried to put their own spin on it.
+This is what happens when a product
+ 
+This is what happens when a product
+defines a category so clearly that every
+ 
+defines a category so clearly that every
+single weakness in that product becomes
+ 
+single weakness in that product becomes
+a thesis for an individual startup.
+ 
+a thesis for an individual startup.
+Linux had the same dynamic. So did
+ 
+Linux had the same dynamic. So did
+Android. The original is messy and is
+ 
+Android. The original is messy and is
+powerful and it's big and it's precisely
+ 
+powerful and it's big and it's precisely
+because of how big and wild it is that
+ 
+because of how big and wild it is that
+it's so widely adopted. And the entire
+ 
+it's so widely adopted. And the entire
+ecosystem is then about, well, what is
+ 
+ecosystem is then about, well, what is
+the next OpenClaw? What is the next
+ 
+the next OpenClaw? What is the next
+Linux? What is the next thing that is
+ 
+Linux? What is the next thing that is
+built on a gap in this ecosystem? And
+ 
+built on a gap in this ecosystem? And
+the problem is that all of these
+ 
+the problem is that all of these
+products blur together because they're
+ 
+products blur together because they're
+all built off of forks of this product.
+ 
+all built off of forks of this product.
+So it's hard to tell. But if you peel
+ 
+So it's hard to tell. But if you peel
+back that onion, if you have the
+ 
+back that onion, if you have the
+discipline to look underneath, you're
+ 
+discipline to look underneath, you're
+going to see that these products are
+ 
+going to see that these products are
+making distinct bets on the future and
+ 
+making distinct bets on the future and
+they're worth thinking about because as
+ 
+they're worth thinking about because as
+Peter himself says, OpenClaw isn't for
+ 
+Peter himself says, OpenClaw isn't for
+everyone. I've said that too. Like
+ 
+everyone. I've said that too. Like
+OpenClaw is not something that is easy
+ 
+OpenClaw is not something that is easy
+to install. Peter's talked about the
+ 
+to install. Peter's talked about the
+fact that like he went to OpenAI because
+ 
+fact that like he went to OpenAI because
+he wants his mother to be able to use an
+ 
+he wants his mother to be able to use an
+OpenClaw style agent. And OpenClaw
+ 
+OpenClaw style agent. And OpenClaw
+itself is far too technical for his mom
+ 
+itself is far too technical for his mom
+to use. Typical media narrative tends to
+ 
+to use. Typical media narrative tends to
+frame this as a spectrum of control. And
+ 
+frame this as a spectrum of control. And
+so they'll say, well, OpenClaw gives you
+ 
+so they'll say, well, OpenClaw gives you
+the most control because it's roll your
+ 
+the most control because it's roll your
+own and you can swap out any component
+ 
+own and you can swap out any component
+and other products give you less and
+ 
+and other products give you less and
+less control from there. It's not wrong.
+ 
+less control from there. It's not wrong.
+It's just incomplete in a way that leads
+ 
+It's just incomplete in a way that leads
+you and me to bad decisions if we're
+ 
+you and me to bad decisions if we're
+trying to figure out what to build. So
+ 
+trying to figure out what to build. So
+let's actually talk about what are the
+ 
+let's actually talk about what are the
+axes that matter in the OpenClaw
+ 
+axes that matter in the OpenClaw
+universe so that you can figure out what
+ 
+universe so that you can figure out what
+of all these variants and forks actually
+ 
+of all these variants and forks actually
+make sense for you. Number one, where
+ 
+make sense for you. Number one, where
+does your agent run? Is your agent
+ 
+does your agent run? Is your agent
+local? Is it cloud-based? Is it hybrid?
+ 
+local? Is it cloud-based? Is it hybrid?
+That matters because that tells you the
+ 
+That matters because that tells you the
+data privacy posture. It tells you your
+ 
+data privacy posture. It tells you your
+security surface area. It tells you
+ 
+security surface area. It tells you
+who's responsible when the agent deletes
+ 
+who's responsible when the agent deletes
+your inbox, all of that. Number two, who
+ 
+your inbox, all of that. Number two, who
+is going to orchestrate the
+ 
+is going to orchestrate the
+intelligence? Who organizes and lets the
+ 
+intelligence? Who organizes and lets the
+intelligence spin up sub agents or not?
+ 
+intelligence spin up sub agents or not?
+Is it one model that does everything? Is
+ 
+Is it one model that does everything? Is
+it a multi-model where there's a harness
+ 
+it a multi-model where there's a harness
+that selects the model for a particular
+ 
+that selects the model for a particular
+task? Is it somehow model agnostic and
+ 
+task? Is it somehow model agnostic and
+you plug in your own model? This
+ 
+you plug in your own model? This
+determines cost. It determines the
+ 
+determines cost. It determines the
+quality of the work your agent can do.
+ 
+quality of the work your agent can do.
+It determines whether you feel locked
+ 
+It determines whether you feel locked
+into a vendor. Number three, what's the
+ 
+into a vendor. Number three, what's the
+interface contract? Do you interact
+ 
+interface contract? Do you interact
+through a messaging app that you already
+ 
+through a messaging app that you already
+use? Do you have a dedicated desktop
+ 
+use? Do you have a dedicated desktop
+app? Do you have a phone? What is the
+ 
+app? Do you have a phone? What is the
+way you message this agent and how
+ 
+way you message this agent and how
+flexible is it? Again, it determines the
+ 
+flexible is it? Again, it determines the
+product experience. It's not something
+ 
+product experience. It's not something
+like It's not a small thing. If you look
+ 
+like It's not a small thing. If you look
+at where your agent lives, if you look
+ 
+at where your agent lives, if you look
+at how your agent orchestrates
+ 
+at how your agent orchestrates
+intelligence, and if you look at how you
+ 
+intelligence, and if you look at how you
+message your agent, you have the three
+ 
+message your agent, you have the three
+axes that will tell you whether a
+ 
+axes that will tell you whether a
+particular agent play in this open claw
+ 
+particular agent play in this open claw
+ecosystem, writ large, and I'm including
+ 
+ecosystem, writ large, and I'm including
+all of the corporate spin-offs here,
+ 
+all of the corporate spin-offs here,
+whether one of those is right for you or
+ 
+whether one of those is right for you or
+not. And you can kind of pick your
+ 
+not. And you can kind of pick your
+flavor cuz you can pick where you are on
+ 
+flavor cuz you can pick where you are on
+that spectrum. Now, the first and most
+ 
+that spectrum. Now, the first and most
+obvious one is to profile open claw
+ 
+obvious one is to profile open claw
+itself. And I'll do it really simply cuz
+ 
+itself. And I'll do it really simply cuz
+we've talked about it a lot. Open claw
+ 
+we've talked about it a lot. Open claw
+runs locally. It runs on your machine
+ 
+runs locally. It runs on your machine
+with your API keys and your data. It is
+ 
+with your API keys and your data. It is
+a data sovereignty play, right? You can
+ 
+a data sovereignty play, right? You can
+plug any LLM you want. That's a
+ 
+plug any LLM you want. That's a
+composable plug-in for the open claw. In
+ 
+composable plug-in for the open claw. In
+fact, you can plug in most of the
+ 
+fact, you can plug in most of the
+modules to open claw. It's designed to
+ 
+modules to open claw. It's designed to
+be interoperable, and that's part of
+ 
+be interoperable, and that's part of
+what's made it so powerful as a
+ 
+what's made it so powerful as a
+framework, and that's also part of what
+ 
+framework, and that's also part of what
+makes it technical. And yes, that means
+ 
+makes it technical. And yes, that means
+you can plug any messaging platform you
+ 
+you can plug any messaging platform you
+want into it, right? Telegram, WhatsApp,
+ 
+want into it, right? Telegram, WhatsApp,
+Signal, etc., Slack. You can plug
+ 
+Signal, etc., Slack. You can plug
+anything you want because it's modular.
+ 
+anything you want because it's modular.
+The whole idea is that open claw belongs
+ 
+The whole idea is that open claw belongs
+to the user, full stop, and that is part
+ 
+to the user, full stop, and that is part
+of why open claw's presence has shaken
+ 
+of why open claw's presence has shaken
+up corporate so much. Because corporate
+ 
+up corporate so much. Because corporate
+has assumed that any given product,
+ 
+has assumed that any given product,
+whether it's a messaging application
+ 
+whether it's a messaging application
+like WhatsApp or whether it's a product
+ 
+like WhatsApp or whether it's a product
+like Amazon that is available on the
+ 
+like Amazon that is available on the
+web, should by default be whatever the
+ 
+web, should by default be whatever the
+company wants it to be and however they
+ 
+company wants it to be and however they
+want to position it to humans. An Open
+ 
+want to position it to humans. An Open
+Claw whole thesis is you bring and mix
+ 
+Claw whole thesis is you bring and mix
+and match your own stuff. You bring your
+ 
+and match your own stuff. You bring your
+own LLM and then you figure out from
+ 
+own LLM and then you figure out from
+there what you want to do with it. And
+ 
+there what you want to do with it. And
+so if you want to bring your own
+ 
+so if you want to bring your own
+Telegram approach, you can roll that
+ 
+Telegram approach, you can roll that
+into Open Claw really easily and then
+ 
+into Open Claw really easily and then
+you can tell your LLM to go search
+ 
+you can tell your LLM to go search
+Amazon and you should be able to do
+ 
+Amazon and you should be able to do
+that. Similarly, you shouldn't have to
+ 
+that. Similarly, you shouldn't have to
+pick an LLM that's only open source. You
+ 
+pick an LLM that's only open source. You
+should be able to bring in ChatGPT. You
+ 
+should be able to bring in ChatGPT. You
+should be able to bring in Claw, etc.
+ 
+should be able to bring in Claw, etc.
+The whole play is to disintermediate all
+ 
+The whole play is to disintermediate all
+of these companies and let you be in
+ 
+of these companies and let you be in
+charge of what your intelligence should
+ 
+charge of what your intelligence should
+be. And that's part of why people I
+ 
+be. And that's part of why people I
+think have responded to Open Claw
+ 
+think have responded to Open Claw
+because they want to be in charge of
+ 
+because they want to be in charge of
+their AI and their future. But as we've
+ 
+their AI and their future. But as we've
+discussed, the security surface area is
+ 
+discussed, the security surface area is
+a real issue. Researchers have found
+ 
+a real issue. Researchers have found
+over 30,000 publicly exposed instances
+ 
+over 30,000 publicly exposed instances
+of weak or missing authentication in
+ 
+of weak or missing authentication in
+Open Claw plugins. The skills registry
+ 
+Open Claw plugins. The skills registry
+has been hit with a supply chain attack
+ 
+has been hit with a supply chain attack
+with over 800 compromised skills
+ 
+with over 800 compromised skills
+documented. I could go on and on. You
+ 
+documented. I could go on and on. You
+name the security researcher, they have
+ 
+name the security researcher, they have
+put out a statement on Open Claw and
+ 
+put out a statement on Open Claw and
+they are very worried about it. Now,
+ 
+they are very worried about it. Now,
+that doesn't mean it's not popular,
+ 
+that doesn't mean it's not popular,
+right? As we've discussed, 250,000
+ 
+right? As we've discussed, 250,000
+users, they have opinions. Developers
+ 
+users, they have opinions. Developers
+and technical power users who want
+ 
+and technical power users who want
+maximum control, this is who Open Claw
+ 
+maximum control, this is who Open Claw
+is for. You want your own
+ 
+is for. You want your own
+infrastructure. You want to control
+ 
+infrastructure. You want to control
+where the model lives. You want to make
+ 
+where the model lives. You want to make
+it as interoperable and changeable as
+ 
+it as interoperable and changeable as
+possible. You can swap those Lego bricks
+ 
+possible. You can swap those Lego bricks
+in and out. Great. But this is not for
+ 
+in and out. Great. But this is not for
+non-technical users, right? This is not
+ 
+non-technical users, right? This is not
+for users who are not comfortable with
+ 
+for users who are not comfortable with
+that degree of control over their
+ 
+that degree of control over their
+infrastructure and who don't want to
+ 
+infrastructure and who don't want to
+wade into the security mess and make
+ 
+wade into the security mess and make
+good decisions to have a strong security
+ 
+good decisions to have a strong security
+stance on Open Claw. And that brings us
+ 
+stance on Open Claw. And that brings us
+to Perplexity. Because really what
+ 
+to Perplexity. Because really what
+Perplexity has done is take that
+ 
+Perplexity has done is take that
+weakness for non-technical users and
+ 
+weakness for non-technical users and
+turn it into their whole product.
+ 
+turn it into their whole product.
+Perplexity computer is the delegation
+ 
+Perplexity computer is the delegation
+play for open claw. It runs entirely in
+ 
+play for open claw. It runs entirely in
+the cloud. You describe the outcome. The
+ 
+the cloud. You describe the outcome. The
+system will independently decompose it
+ 
+system will independently decompose it
+into subtasks and run agents against it
+ 
+into subtasks and run agents against it
+and do the entire computation in the
+ 
+and do the entire computation in the
+cloud to get you the result you want,
+ 
+cloud to get you the result you want,
+whether that's a website or an analysis
+ 
+whether that's a website or an analysis
+or an ongoing dashboard. And Perplexity
+ 
+or an ongoing dashboard. And Perplexity
+claims that it can do very long-running
+ 
+claims that it can do very long-running
+tasks, including tasks that last for
+ 
+tasks, including tasks that last for
+months, which I have yet to see because
+ 
+months, which I have yet to see because
+it hasn't been months since it released,
+ 
+it hasn't been months since it released,
+but we'll find out. The strategic bet
+ 
+but we'll find out. The strategic bet
+here is really, really different from
+ 
+here is really, really different from
+open claw. Where open claw says your
+ 
+open claw. Where open claw says your
+data is yours and you are sovereign and
+ 
+data is yours and you are sovereign and
+you have to make all of these decisions
+ 
+you have to make all of these decisions
+and that includes the risks of security
+ 
+and that includes the risks of security
+that come with making all of those
+ 
+that come with making all of those
+decisions. Perplexity says, "We'll take
+ 
+decisions. Perplexity says, "We'll take
+that weight off you. We'll ensure it's
+ 
+that weight off you. We'll ensure it's
+safe. It runs in a virtual box in the
+ 
+safe. It runs in a virtual box in the
+cloud. You don't have to worry about the
+ 
+cloud. You don't have to worry about the
+security." But the trade-off is you're
+ 
+security." But the trade-off is you're
+paying for a cloud service, right? This
+ 
+paying for a cloud service, right? This
+comes at 200 bucks a month. You have to
+ 
+comes at 200 bucks a month. You have to
+be committed to using it. You have to
+ 
+be committed to using it. You have to
+plug in all of your data. You have to
+ 
+plug in all of your data. You have to
+trust Perplexity with all of your data.
+ 
+trust Perplexity with all of your data.
+You have to trust the way they'll evolve
+ 
+You have to trust the way they'll evolve
+the product. They own the orchestration.
+ 
+the product. They own the orchestration.
+They decide what model they're using.
+ 
+They decide what model they're using.
+They say, "Trust us." And what's funny
+ 
+They say, "Trust us." And what's funny
+about all of this is that the gravity
+ 
+about all of this is that the gravity
+well of open claw is so strong that even
+ 
+well of open claw is so strong that even
+though they started as a cloud play,
+ 
+though they started as a cloud play,
+they know that people who use open claw,
+ 
+they know that people who use open claw,
+by definition, care about their personal
+ 
+by definition, care about their personal
+data and they do want to reach them. And
+ 
+data and they do want to reach them. And
+so, as much as they want to say,
+ 
+so, as much as they want to say,
+"Delegate, trust us. That's the core of
+ 
+"Delegate, trust us. That's the core of
+our product." Open claw, the phenomenon,
+ 
+our product." Open claw, the phenomenon,
+is such a big deal that they're like,
+ 
+is such a big deal that they're like,
+"Okay, but actually really we're also
+ 
+"Okay, but actually really we're also
+going to launch personal computer for
+ 
+going to launch personal computer for
+your hard drive, where you can have a
+ 
+your hard drive, where you can have a
+delegated secure container on the
+ 
+delegated secure container on the
+computer that you run that Perplexity
+ 
+computer that you run that Perplexity
+will run and still, please pay us for
+ 
+will run and still, please pay us for
+that, but your data will be more secure,
+ 
+that, but your data will be more secure,
+etc., etc." In other words, they want to
+ 
+etc., etc." In other words, they want to
+keep you paying, but also enable you to
+ 
+keep you paying, but also enable you to
+have your data securely because they
+ 
+have your data securely because they
+assume that's what people who like open
+ 
+assume that's what people who like open
+claw want to do. But also, if you don't
+ 
+claw want to do. But also, if you don't
+want that, you can do the cloud. And I
+ 
+want that, you can do the cloud. And I
+kid around a little bit. I've tried
+ 
+kid around a little bit. I've tried
+Perplexity computer. Don't take away
+ 
+Perplexity computer. Don't take away
+from this that it's not good. It's
+ 
+from this that it's not good. It's
+actually a really solid product. The
+ 
+actually a really solid product. The
+reason I'm kidding around is because
+ 
+reason I'm kidding around is because
+this is the agony of positioning that
+ 
+this is the agony of positioning that
+you go through when you were not the
+ 
+you go through when you were not the
+first in the door for product market
+ 
+first in the door for product market
+fit. Open Claw has product market fit.
+ 
+fit. Open Claw has product market fit.
+Perplexity computer is trying to get
+ 
+Perplexity computer is trying to get
+product market fit after the fact in the
+ 
+product market fit after the fact in the
+same category and it has to go through
+ 
+same category and it has to go through
+all these twists and turns on the value
+ 
+all these twists and turns on the value
+proposition to try and persuade people
+ 
+proposition to try and persuade people
+it's the thing for them that's also not
+ 
+it's the thing for them that's also not
+Open Claw. And so that's where it's some
+ 
+Open Claw. And so that's where it's some
+humorous sort of limitations and twists
+ 
+humorous sort of limitations and twists
+and turns on messaging come out. But
+ 
+and turns on messaging come out. But
+that being said, if you are a knowledge
+ 
+that being said, if you are a knowledge
+worker, if you are an enterprise team
+ 
+worker, if you are an enterprise team
+who wants outcome level work out of
+ 
+who wants outcome level work out of
+Perplexity and you want to have
+ 
+Perplexity and you want to have
+Perplexity handle some of the
+ 
+Perplexity handle some of the
+infrastructure, it is quite seriously a
+ 
+infrastructure, it is quite seriously a
+thing to look at. You should be
+ 
+thing to look at. You should be
+considering Perplexity computer. It
+ 
+considering Perplexity computer. It
+would be irresponsible not to. Now, if
+ 
+would be irresponsible not to. Now, if
+you want to tinker with the underlying
+ 
+you want to tinker with the underlying
+models, if you want full data
+ 
+models, if you want full data
+sovereignty and control, if you don't
+ 
+sovereignty and control, if you don't
+want to pay 200 bucks a month, or if
+ 
+want to pay 200 bucks a month, or if
+you're not interested in enterprise
+ 
+you're not interested in enterprise
+scale rollouts, this is not the thing
+ 
+scale rollouts, this is not the thing
+for you. So, at least that's a clear yes
+ 
+for you. So, at least that's a clear yes
+no rationale and I think that we can
+ 
+no rationale and I think that we can
+move on. Now, let's get to Manas. Manas
+ 
+move on. Now, let's get to Manas. Manas
+is the distribution play, right? In this
+ 
+is the distribution play, right? In this
+world of Open Claw, you can look at
+ 
+world of Open Claw, you can look at
+sovereignty, which is Open Claw
+ 
+sovereignty, which is Open Claw
+original, you can look at delegation,
+ 
+original, you can look at delegation,
+which is sort of how Perplexity chooses
+ 
+which is sort of how Perplexity chooses
+to handle things, and you can look at
+ 
+to handle things, and you can look at
+distribution, which is how Manas is
+ 
+distribution, which is how Manas is
+choosing. Now, Manas, the original
+ 
+choosing. Now, Manas, the original
+web-based tool, is already a massive
+ 
+web-based tool, is already a massive
+win, right? It was the fastest zero to
+ 
+win, right? It was the fastest zero to
+100 million dollar company at the time
+ 
+100 million dollar company at the time
+and that was before Meta bought it. Now,
+ 
+and that was before Meta bought it. Now,
+this launch is the first one since Meta
+ 
+this launch is the first one since Meta
+bought Manas. And you might think, well,
+ 
+bought Manas. And you might think, well,
+they're going to go for ads. You might
+ 
+they're going to go for ads. You might
+think, well, they're going to go for an
+ 
+think, well, they're going to go for an
+internal tool that people can use to
+ 
+internal tool that people can use to
+make ad creative automatically. When
+ 
+make ad creative automatically. When
+people say, "Please launch my ads." I
+ 
+people say, "Please launch my ads." I
+still think that is a plausible play for
+ 
+still think that is a plausible play for
+Manas internally. But, I think that Zuck
+ 
+Manas internally. But, I think that Zuck
+saw the Open Claw moment and he was
+ 
+saw the Open Claw moment and he was
+like, "Wait a minute, we need something
+ 
+like, "Wait a minute, we need something
+that plays in this space." What Zuck
+ 
+that plays in this space." What Zuck
+really needs is a product that captures
+ 
+really needs is a product that captures
+this moment, that captures the attention
+ 
+this moment, that captures the attention
+that would otherwise go other places
+ 
+that would otherwise go other places
+that his 3 billion customers are
+ 
+that his 3 billion customers are
+currently spending on Facebook. If you
+ 
+currently spending on Facebook. If you
+think of the world in terms of how Zuck
+ 
+think of the world in terms of how Zuck
+sees it, Zuck sees it as a series of
+ 
+sees it, Zuck sees it as a series of
+hours in the day with eyeballs, right?
+ 
+hours in the day with eyeballs, right?
+Where are people's eyeballs right now?
+ 
+Where are people's eyeballs right now?
+Are they on a Meta product or are they
+ 
+Are they on a Meta product or are they
+not on a Meta product? And so, if the
+ 
+not on a Meta product? And so, if the
+open claw moment is viral and real, part
+ 
+open claw moment is viral and real, part
+of what he wants is people who are
+ 
+of what he wants is people who are
+spending time on agents, spending time
+ 
+spending time on agents, spending time
+in the Meta ecosystem. That is a very
+ 
+in the Meta ecosystem. That is a very
+simple explanation for what Manas is
+ 
+simple explanation for what Manas is
+doing. It is a agent to capture the
+ 
+doing. It is a agent to capture the
+agent moment that he can run at scale
+ 
+agent moment that he can run at scale
+and enable people to spend that time
+ 
+and enable people to spend that time
+within the Meta ecosystem and at his
+ 
+within the Meta ecosystem and at his
+scale he can worry about ads and
+ 
+scale he can worry about ads and
+monetization in that world much, much
+ 
+monetization in that world much, much
+down the road. It doesn't mean he has to
+ 
+down the road. It doesn't mean he has to
+jump to monetization right away.
+ 
+jump to monetization right away.
+Now, Manas is, unlike Perplexity, not
+ 
+Now, Manas is, unlike Perplexity, not
+making an enterprise quality argument
+ 
+making an enterprise quality argument
+with this launch. They are making a we
+ 
+with this launch. They are making a we
+can serve customers at scale argument.
+ 
+can serve customers at scale argument.
+And the rumor is that they are serving
+ 
+And the rumor is that they are serving
+this with a mix of local Meta models and
+ 
+this with a mix of local Meta models and
+other models that they choose to bring
+ 
+other models that they choose to bring
+in. They're keeping that a little bit
+ 
+in. They're keeping that a little bit
+dark. And really what you should do is
+ 
+dark. And really what you should do is
+sort of look at the agent as this is an
+ 
+sort of look at the agent as this is an
+agent that if I trust Zuck with my data,
+ 
+agent that if I trust Zuck with my data,
+I can get a lot of stuff done with as a
+ 
+I can get a lot of stuff done with as a
+customer. And that's really the
+ 
+customer. And that's really the
+question, right? Because before Meta
+ 
+question, right? Because before Meta
+bought Manas, the question was whether
+ 
+bought Manas, the question was whether
+you trusted a company that had Chinese
+ 
+you trusted a company that had Chinese
+roots with your data if you lived in the
+ 
+roots with your data if you lived in the
+US. And now the question is do you trust
+ 
+US. And now the question is do you trust
+a company that is owned by Meta with
+ 
+a company that is owned by Meta with
+your data? And for a lot of people I
+ 
+your data? And for a lot of people I
+talked to, the answer is no. Now, that
+ 
+talked to, the answer is no. Now, that
+doesn't mean that that's the majority of
+ 
+doesn't mean that that's the majority of
+people, right? I have no illusions.
+ 
+people, right? I have no illusions.
+There's a reason Zuck has 3 billion
+ 
+There's a reason Zuck has 3 billion
+users. I think this is actually for
+ 
+users. I think this is actually for
+consumers and small businesses who want
+ 
+consumers and small businesses who want
+AI agent capability, but who are a
+ 
+AI agent capability, but who are a
+little bit nervous about the terminal
+ 
+little bit nervous about the terminal
+and just want the idea of an agent on
+ 
+and just want the idea of an agent on
+their computer. And Manas just fits that
+ 
+their computer. And Manas just fits that
+perfectly. And it captures their
+ 
+perfectly. And it captures their
+attention and keeps them in the Meta
+ 
+attention and keeps them in the Meta
+ecosystem. Now, developers who want
+ 
+ecosystem. Now, developers who want
+model flexibility, enterprises that care
+ 
+model flexibility, enterprises that care
+about data, even individuals that care
+ 
+about data, even individuals that care
+about data and privacy, they're not
+ 
+about data and privacy, they're not
+going to go for this because ultimately
+ 
+going to go for this because ultimately
+you're trading off your data privacy for
+ 
+you're trading off your data privacy for
+the distribution play. Now, what about
+ 
+the distribution play. Now, what about
+Anthropic? Anthropic has launched
+ 
+Anthropic? Anthropic has launched
+Dispatch, which is basically the ability
+ 
+Dispatch, which is basically the ability
+to message in from your phone and drive
+ 
+to message in from your phone and drive
+Anthropic on your computer. The whole
+ 
+Anthropic on your computer. The whole
+core of the argument that Anthropic is
+ 
+core of the argument that Anthropic is
+making in this open Claude ecosystem
+ 
+making in this open Claude ecosystem
+world is, we all had safety concerns
+ 
+world is, we all had safety concerns
+about open Claude, use the save option,
+ 
+about open Claude, use the save option,
+use Anthropic, use Claude, it's safer.
+ 
+use Anthropic, use Claude, it's safer.
+Now, the Anthropic model is quite simple
+ 
+Now, the Anthropic model is quite simple
+and really quite primitive right now.
+ 
+and really quite primitive right now.
+You're not managing multiple
+ 
+You're not managing multiple
+conversations, you're not starting
+ 
+conversations, you're not starting
+multiple instances with Claude. All you
+ 
+multiple instances with Claude. All you
+are doing is saying, "Hey, I'm messaging
+ 
+are doing is saying, "Hey, I'm messaging
+through Dispatch into co-work, which has
+ 
+through Dispatch into co-work, which has
+a special Dispatch terminal, and you're
+ 
+a special Dispatch terminal, and you're
+doing one instance that you're working
+ 
+doing one instance that you're working
+with Claude on in co-work from your
+ 
+with Claude on in co-work from your
+phone." You can also do, as I am
+ 
+phone." You can also do, as I am
+recording this, a Telegram option for
+ 
+recording this, a Telegram option for
+Claude code, which is designed to be
+ 
+Claude code, which is designed to be
+more developer-friendly. I would
+ 
+more developer-friendly. I would
+anticipate that by the time you see
+ 
+anticipate that by the time you see
+this, Anthropic would ship I think every
+ 
+this, Anthropic would ship I think every
+8 hours at this point, it's absolutely
+ 
+8 hours at this point, it's absolutely
+insane. They've probably launched more
+ 
+insane. They've probably launched more
+messaging options. They are clearly
+ 
+messaging options. They are clearly
+going for, "Messaging is not the issue,
+ 
+going for, "Messaging is not the issue,
+we just want you to have a secure
+ 
+we just want you to have a secure
+single-threaded option through Claude,
+ 
+single-threaded option through Claude,
+please trust us, and you can get what
+ 
+please trust us, and you can get what
+you want done." And to be fair, because
+ 
+you want done." And to be fair, because
+Claude is agentic on the computer,
+ 
+Claude is agentic on the computer,
+because they've built that foundation
+ 
+because they've built that foundation
+over the last three or four months, you
+ 
+over the last three or four months, you
+can really get a lot of stuff done. You
+ 
+can really get a lot of stuff done. You
+can let Claude browse for you on your
+ 
+can let Claude browse for you on your
+computer while you're on your phone
+ 
+computer while you're on your phone
+messaging it. You can let Claude make a
+ 
+messaging it. You can let Claude make a
+PowerPoint, etc. You can let Claude run
+ 
+PowerPoint, etc. You can let Claude run
+your calendar, you can let Claude look
+ 
+your calendar, you can let Claude look
+at your email, you get the idea. But,
+ 
+at your email, you get the idea. But,
+the thing is you don't get the
+ 
+the thing is you don't get the
+flexibility that comes from a true
+ 
+flexibility that comes from a true
+multi-model routing option, which you
+ 
+multi-model routing option, which you
+could do using multi-model orchestration
+ 
+could do using multi-model orchestration
+in open Claude. So, if you want a more
+ 
+in open Claude. So, if you want a more
+complex harness where you say, "I want a
+ 
+complex harness where you say, "I want a
+simpler model for my easier queries, I
+ 
+simpler model for my easier queries, I
+want a more complex model to handle my
+ 
+want a more complex model to handle my
+harder agentic queries," that's not for
+ 
+harder agentic queries," that's not for
+you, right? Like, this is just not the
+ 
+you, right? Like, this is just not the
+story that you're going to have with
+ 
+story that you're going to have with
+Claude. But, if you're a non-tech
+ 
+Claude. But, if you're a non-tech
+professional and you want to do the work
+ 
+professional and you want to do the work
+you've been doing with Claude, it is
+ 
+you've been doing with Claude, it is
+way, way easier to just message Claude
+ 
+way, way easier to just message Claude
+from your phone than to go through all
+ 
+from your phone than to go through all
+the hassle of setting up an open Claude.
+ 
+the hassle of setting up an open Claude.
+And I know a lot of people who had
+ 
+And I know a lot of people who had
+exactly that conclusion as soon as this
+ 
+exactly that conclusion as soon as this
+launched. And so this reflects the idea
+ 
+launched. And so this reflects the idea
+that where some companies are seeing
+ 
+that where some companies are seeing
+disintermediation and worrying about it
+ 
+disintermediation and worrying about it
+like Google is, Anthropic is saying, "We
+ 
+like Google is, Anthropic is saying, "We
+actually see this as a way to reinforce
+ 
+actually see this as a way to reinforce
+our brand and say that Claude is a way
+ 
+our brand and say that Claude is a way
+that you can work anywhere you want."
+ 
+that you can work anywhere you want."
+And so they're deciding that they can
+ 
+And so they're deciding that they can
+trust people to remember what Claude is
+ 
+trust people to remember what Claude is
+if they reinforce that Claude is the
+ 
+if they reinforce that Claude is the
+secure and safe option, which has been
+ 
+secure and safe option, which has been
+their brand stance all along. And now we
+ 
+their brand stance all along. And now we
+come to the irony of Lovable. I I swear
+ 
+come to the irony of Lovable. I I swear
+this should be a case study taught in
+ 
+this should be a case study taught in
+business schools because Lovable has
+ 
+business schools because Lovable has
+been the most imitated product in AI
+ 
+been the most imitated product in AI
+until the last couple of months. It's a
+ 
+until the last couple of months. It's a
+vibe coding tool that has soared past
+ 
+vibe coding tool that has soared past
+$300 million in ARR. I cannot give you
+ 
+$300 million in ARR. I cannot give you
+enough superlatives about how excited
+ 
+enough superlatives about how excited
+people have been about it in 2025
+ 
+people have been about it in 2025
+because really what it did was it took
+ 
+because really what it did was it took
+the idea of vibe coding and made it
+ 
+the idea of vibe coding and made it
+something everybody could do. It was
+ 
+something everybody could do. It was
+intuitive. It was an easy interface. It
+ 
+intuitive. It was an easy interface. It
+actually built complete working products
+ 
+actually built complete working products
+that worked well. I know real people who
+ 
+that worked well. I know real people who
+built real businesses off of Lovable.
+ 
+built real businesses off of Lovable.
+And on March 19, 2026, just a couple of
+ 
+And on March 19, 2026, just a couple of
+days after Mantis launched, after
+ 
+days after Mantis launched, after
+Anthropic launched their messaging, what
+ 
+Anthropic launched their messaging, what
+did Lovable do? They decided to announce
+ 
+did Lovable do? They decided to announce
+they're expanding beyond building
+ 
+they're expanding beyond building
+websites and they were now more of an
+ 
+websites and they were now more of an
+everything tool for complex execution.
+ 
+everything tool for complex execution.
+In other words, they said, "Being
+ 
+In other words, they said, "Being
+Lovable, being one of the fastest
+ 
+Lovable, being one of the fastest
+growing products in history, that's not
+ 
+growing products in history, that's not
+enough. We're going into open Claude's
+ 
+enough. We're going into open Claude's
+world. We're a general purpose agent,
+ 
+world. We're a general purpose agent,
+executor, and builder now." Life comes
+ 
+executor, and builder now." Life comes
+at you fast in the world of AI. You
+ 
+at you fast in the world of AI. You
+might think you have a structural
+ 
+might think you have a structural
+advantage in 2025 if you are the most
+ 
+advantage in 2025 if you are the most
+copied product and nobody can come close
+ 
+copied product and nobody can come close
+to your growth and product market fit
+ 
+to your growth and product market fit
+because they did have product market fit
+ 
+because they did have product market fit
+and they do. But
+ 
+and they do. But
+because agents are coming for the world,
+ 
+because agents are coming for the world,
+because they're eating the rest of
+ 
+because they're eating the rest of
+commerce so fast, Lovable has to adapt.
+ 
+commerce so fast, Lovable has to adapt.
+Lovable has to recognize that their
+ 
+Lovable has to recognize that their
+entire interface was structured around
+ 
+entire interface was structured around
+the idea that a human would type a
+ 
+the idea that a human would type a
+prompt and now we're in a world where
+ 
+prompt and now we're in a world where
+people want agents to do complex tasks
+ 
+people want agents to do complex tasks
+for them. Agents have gotten better and
+ 
+for them. Agents have gotten better and
+people have evolved what they want. Even
+ 
+people have evolved what they want. Even
+Lovable has to think about how they go
+ 
+Lovable has to think about how they go
+from being a really powerful AI tool
+ 
+from being a really powerful AI tool
+that was human mediated to being a
+ 
+that was human mediated to being a
+really powerful AI tool that is agent
+ 
+really powerful AI tool that is agent
+first and humans can kick off agentic
+ 
+first and humans can kick off agentic
+workflows. That is a level of
+ 
+workflows. That is a level of
+abstraction higher and it's a difficult
+ 
+abstraction higher and it's a difficult
+position for Lovable to walk given the
+ 
+position for Lovable to walk given the
+fact that they have many many many
+ 
+fact that they have many many many
+millions of devoted fans who like
+ 
+millions of devoted fans who like
+Lovable the way it is. That's just the
+ 
+Lovable the way it is. That's just the
+reality of being a product that people
+ 
+reality of being a product that people
+know and love. Like you have to figure
+ 
+know and love. Like you have to figure
+out how to walk the tightrope toward
+ 
+out how to walk the tightrope toward
+change if you want to keep growing. And
+ 
+change if you want to keep growing. And
+this really leads to one of my core
+ 
+this really leads to one of my core
+thesis for 2026, relentless
+ 
+thesis for 2026, relentless
+simplification. Agents are compressing
+ 
+simplification. Agents are compressing
+the interface layer. Every vertical
+ 
+the interface layer. Every vertical
+tool, whether it's an app builder or
+ 
+tool, whether it's an app builder or
+whether it's an analytics platform or or
+ 
+whether it's an analytics platform or or
+a document generator, all of them are
+ 
+a document generator, all of them are
+under pressure to collapse into a single
+ 
+under pressure to collapse into a single
+conversational agent that handles all of
+ 
+conversational agent that handles all of
+it. That handles everything. And the
+ 
+it. That handles everything. And the
+products that survive this compression
+ 
+products that survive this compression
+are going to be the ones that either go
+ 
+are going to be the ones that either go
+deep enough to have specific capability
+ 
+deep enough to have specific capability
+that doesn't exist anywhere else or they
+ 
+that doesn't exist anywhere else or they
+have general enough execution that they
+ 
+have general enough execution that they
+become a default delegation layer. And
+ 
+become a default delegation layer. And
+ironically, you can see in these
+ 
+ironically, you can see in these
+competitors different place. Like
+ 
+competitors different place. Like
+Lovable is arguably a go deep play.
+ 
+Lovable is arguably a go deep play.
+Perplexity computer is clearly a broad
+ 
+Perplexity computer is clearly a broad
+play. Open Claw is also a broad play.
+ 
+play. Open Claw is also a broad play.
+The middle is where you go to die,
+ 
+The middle is where you go to die,
+right? The tools that are good but not
+ 
+right? The tools that are good but not
+best in class, the tools that are not
+ 
+best in class, the tools that are not
+general enough to be general purpose
+ 
+general enough to be general purpose
+agents, those are recipes for product
+ 
+agents, those are recipes for product
+death in 2026. And that gets me to how
+ 
+death in 2026. And that gets me to how
+to evaluate the next Open Claw launch,
+ 
+to evaluate the next Open Claw launch,
+which I am sure, as you are watching
+ 
+which I am sure, as you are watching
+this, there will be one that drops right
+ 
+this, there will be one that drops right
+after this video within 24 hours. It's
+ 
+after this video within 24 hours. It's
+just that's how fast this is going. So,
+ 
+just that's how fast this is going. So,
+what do you ask yourself when you want
+ 
+what do you ask yourself when you want
+to decide if you should pay attention?
+ 
+to decide if you should pay attention?
+Number one, ask yourself where it runs.
+ 
+Number one, ask yourself where it runs.
+We come come to that framework.
+ 
+We come come to that framework.
+Understand, do you care about having it
+ 
+Understand, do you care about having it
+run locally? Do you want it to run
+ 
+run locally? Do you want it to run
+securely in the cloud? Where does your
+ 
+securely in the cloud? Where does your
+agent live and why does that matter to
+ 
+agent live and why does that matter to
+you? And that is often a security and
+ 
+you? And that is often a security and
+privacy answer. It is sometimes a
+ 
+privacy answer. It is sometimes a
+convenience answer. Second, ask
+ 
+convenience answer. Second, ask
+yourself, do I care about who picks the
+ 
+yourself, do I care about who picks the
+model? Do I want to pick the model? Do I
+ 
+model? Do I want to pick the model? Do I
+trust the company that is picking the
+ 
+trust the company that is picking the
+model to pick the model on my best
+ 
+model to pick the model on my best
+interest, not because of what it wants
+ 
+interest, not because of what it wants
+to get done and the agenda that that
+ 
+to get done and the agenda that that
+company has. If you care about the model
+ 
+company has. If you care about the model
+quality, I tend to care about model
+ 
+quality, I tend to care about model
+quality. If you care about which model
+ 
+quality. If you care about which model
+you're using, you should probably think
+ 
+you're using, you should probably think
+about finding a solution that lets you
+ 
+about finding a solution that lets you
+do that. Third, ask yourself, what does
+ 
+do that. Third, ask yourself, what does
+this interface assume about me? Is this
+ 
+this interface assume about me? Is this
+interface something that I am
+ 
+interface something that I am
+comfortable with? Am I already in Slack?
+ 
+comfortable with? Am I already in Slack?
+Am I already in Telegram? Am I already
+ 
+Am I already in Telegram? Am I already
+in Signal? The way these products frame
+ 
+in Signal? The way these products frame
+themselves assumes that you have an
+ 
+themselves assumes that you have an
+opinion. Open Claw lets you configure,
+ 
+opinion. Open Claw lets you configure,
+dispatch. The Claw launch assumes that
+ 
+dispatch. The Claw launch assumes that
+you have the Claw app and you're willing
+ 
+you have the Claw app and you're willing
+to use the Claw app on your phone to
+ 
+to use the Claw app on your phone to
+message the Claw app on your desktop. It
+ 
+message the Claw app on your desktop. It
+essentially assumes you're a super fan
+ 
+essentially assumes you're a super fan
+of Claw. You need to think about what
+ 
+of Claw. You need to think about what
+these products assume about your
+ 
+these products assume about your
+behavior and you need to be honest
+ 
+behavior and you need to be honest
+enough with yourself to say, I'm
+ 
+enough with yourself to say, I'm
+probably not changing my behavior here,
+ 
+probably not changing my behavior here,
+so I should probably pick a messaging
+ 
+so I should probably pick a messaging
+solution that works for me already. And
+ 
+solution that works for me already. And
+don't worry, if you're using a weird
+ 
+don't worry, if you're using a weird
+messaging solution, you're like, well,
+ 
+messaging solution, you're like, well,
+there's no open Claw for me. If you wait
+ 
+there's no open Claw for me. If you wait
+like a week, there will be one. That's
+ 
+like a week, there will be one. That's
+how big this is. Open Claw owns the top
+ 
+how big this is. Open Claw owns the top
+right, right? You have maximum this,
+ 
+right, right? You have maximum this,
+that, and the other thing, right? You
+ 
+that, and the other thing, right? You
+have maximum flexibility, maximum
+ 
+have maximum flexibility, maximum
+technical control, maximum risk that
+ 
+technical control, maximum risk that
+you're managing, maximum security
+ 
+you're managing, maximum security
+postures that you have to sort out. It's
+ 
+postures that you have to sort out. It's
+basically taking the maximum on both
+ 
+basically taking the maximum on both
+axes. If you have technical complexity
+ 
+axes. If you have technical complexity
+and risk on one axis and you have user
+ 
+and risk on one axis and you have user
+control on the other axis, Open Claw
+ 
+control on the other axis, Open Claw
+maxes out both. But now let's look at
+ 
+maxes out both. But now let's look at
+some of the other plays, right? If your
+ 
+some of the other plays, right? If your
+Perplexity, really you're minimum on
+ 
+Perplexity, really you're minimum on
+both. You're lower left on both. You
+ 
+both. You're lower left on both. You
+have very, very little technical risk
+ 
+have very, very little technical risk
+here and you also have very, very little
+ 
+here and you also have very, very little
+user control. You're trading that away
+ 
+user control. You're trading that away
+for the enterprise to be able to manage
+ 
+for the enterprise to be able to manage
+its risk, right? You're trading that
+ 
+its risk, right? You're trading that
+away for a professional grade solution.
+ 
+away for a professional grade solution.
+Madness is kind of in between, right?
+ 
+Madness is kind of in between, right?
+Like it gives you a little bit more
+ 
+Like it gives you a little bit more
+configurability, it gives you a little
+ 
+configurability, it gives you a little
+bit more user control. It's certainly
+ 
+bit more user control. It's certainly
+not where Open Claw is and you're
+ 
+not where Open Claw is and you're
+trading away the data side, which is
+ 
+trading away the data side, which is
+probably a Z axis. Dispatch is
+ 
+probably a Z axis. Dispatch is
+absolutely sort of a professional grade
+ 
+absolutely sort of a professional grade
+middle of the road, right? You're
+ 
+middle of the road, right? You're
+definitely trading down the technical
+ 
+definitely trading down the technical
+complexity. It's pretty low there, but
+ 
+complexity. It's pretty low there, but
+you're getting a little bit more control
+ 
+you're getting a little bit more control
+out of it because frankly, Claw is for
+ 
+out of it because frankly, Claw is for
+more technical people and they're going
+ 
+more technical people and they're going
+to continue to give you more messaging
+ 
+to continue to give you more messaging
+options. Lovable is almost on its own
+ 
+options. Lovable is almost on its own
+island here. Lovable is very, very low
+ 
+island here. Lovable is very, very low
+on the technical complexity side, but
+ 
+on the technical complexity side, but
+it's going to give you as a user a ton
+ 
+it's going to give you as a user a ton
+of control because that is what Lovable
+ 
+of control because that is what Lovable
+is known for. So, we're just going to
+ 
+is known for. So, we're just going to
+have to see where that evolves and gets
+ 
+have to see where that evolves and gets
+to. The point here is not where exactly
+ 
+to. The point here is not where exactly
+are these products today. The point is
+ 
+are these products today. The point is
+to understand that Open Claw set the
+ 
+to understand that Open Claw set the
+terms of the debate by saying, "These
+ 
+terms of the debate by saying, "These
+are the verticals that matter for
+ 
+are the verticals that matter for
+customers. We are going to make a
+ 
+customers. We are going to make a
+sovereignty play to make the strongest
+ 
+sovereignty play to make the strongest
+possible case for agentic primitives
+ 
+possible case for agentic primitives
+that give users control over agents in
+ 
+that give users control over agents in
+the future." And people responded to
+ 
+the future." And people responded to
+that in droves. Now, everyone else is
+ 
+that in droves. Now, everyone else is
+playing on their terms. Everyone else is
+ 
+playing on their terms. Everyone else is
+playing on this graph that Open Claw
+ 
+playing on this graph that Open Claw
+defined and said, "We are up into the
+ 
+defined and said, "We are up into the
+right." And the question of 2026 is
+ 
+right." And the question of 2026 is
+going to be how many niches are there in
+ 
+going to be how many niches are there in
+this Open Claw ecosystem that other
+ 
+this Open Claw ecosystem that other
+people can thrive in. And which of these
+ 
+people can thrive in. And which of these
+bets is going to win by making a case to
+ 
+bets is going to win by making a case to
+a subset of users that wants an agent
+ 
+a subset of users that wants an agent
+experience like Open Claw, but isn't
+ 
+experience like Open Claw, but isn't
+satisfied with something. Maybe it's the
+ 
+satisfied with something. Maybe it's the
+delegation. Maybe it's the
+ 
+delegation. Maybe it's the
+responsibility for safety. Maybe it's
+ 
+responsibility for safety. Maybe it's
+the level of control you have and they
+ 
+the level of control you have and they
+don't want that. Not everyone wants all
+ 
+don't want that. Not everyone wants all
+that control. And so, you're thinking
+ 
+that control. And so, you're thinking
+about the Open Claw Me 2 universe that
+ 
+about the Open Claw Me 2 universe that
+is going to keep exploding and building,
+ 
+is going to keep exploding and building,
+I would encourage you to think about it
+ 
+I would encourage you to think about it
+in these terms. Think about it with this
+ 
+in these terms. Think about it with this
+frame in mind because if you don't,
+ 
+frame in mind because if you don't,
+every single drop is just going to
+ 
+every single drop is just going to
+confuse you. Oh my gosh, there's this,
+ 
+confuse you. Oh my gosh, there's this,
+there's that, you know, another drop
+ 
+there's that, you know, another drop
+comes along in 8 hours. And if you have
+ 
+comes along in 8 hours. And if you have
+a framework, if you understand the bets
+ 
+a framework, if you understand the bets
+people are making, you're going to have
+ 
+people are making, you're going to have
+a classic case study in business
+ 
+a classic case study in business
+strategy, and you're going to see it
+ 
+strategy, and you're going to see it
+play out over the course of 2026. And
+ 
+play out over the course of 2026. And
+really, this is one of the big ones,
+ 
+really, this is one of the big ones,
+because how agents evolve in 2026 is
+ 
+because how agents evolve in 2026 is
+going to shape the way we all do
+ 
+going to shape the way we all do
+business for the next 10 or 20 years.
+ 
+business for the next 10 or 20 years.
+And so, the open claw moment is the
+ 
+And so, the open claw moment is the
+moment when the tidal wave of agentic
+ 
+moment when the tidal wave of agentic
+commerce started. And we have to see
+ 
+commerce started. And we have to see
+which ones redefine the niches inside
+ 
+which ones redefine the niches inside
+the open claw universe and actually
+ 
+the open claw universe and actually
+carve out little markets for themselves
+ 
+carve out little markets for themselves
+that tell us where customers are willing
+ 
+that tell us where customers are willing
+to trade down and trade up in order to
+ 
+to trade down and trade up in order to
+get more of what they want out of their
+ 
+get more of what they want out of their
+agents. The one thing I'm certain about,
+ 
+agents. The one thing I'm certain about,
+the one thing those 250,000
+ 
+the one thing those 250,000
+GitHub stars for open claw assure me of
+ 
+GitHub stars for open claw assure me of
+is that this is not going anywhere. The
+ 
+is that this is not going anywhere. The
+agent universe is here to stay. This is
+ 
+agent universe is here to stay. This is
+an ecosystem play that's very stable and
+ 
+an ecosystem play that's very stable and
+dependable, even if it's new. And we
+ 
+dependable, even if it's new. And we
+should be assuming that there is going
+ 
+should be assuming that there is going
+to be more activity around agents rather
+ 
+to be more activity around agents rather
+than less for the foreseeable future.
+ 
+than less for the foreseeable future.
+And I mean like three, four, five, 10
+ 
+And I mean like three, four, five, 10
+years down the road, agents are how
+ 
+years down the road, agents are how
+commerce is going to be done. And so, I
+ 
+commerce is going to be done. And so, I
+am really curious to see, as we start to
+ 
+am really curious to see, as we start to
+go forward, how all of us start to shape
+ 
+go forward, how all of us start to shape
+that world. How does your choice of
+ 
+that world. How does your choice of
+which agent you'll use start to shape
+ 
+which agent you'll use start to shape
+how markets behave? And you might think,
+ 
+how markets behave? And you might think,
+"Oh, I can't choose it by myself." Or or
+ 
+"Oh, I can't choose it by myself." Or or
+me by myself, it doesn't really matter.
+ 
+me by myself, it doesn't really matter.
+Well, look, all of us together
+ 
+Well, look, all of us together
+collectively are choosing how we want to
+ 
+collectively are choosing how we want to
+make agents work in the future.
+ 
+make agents work in the future.
+Thousands of you ended up building open
+ 
+Thousands of you ended up building open
+brand because you decided that you
+ 
+brand because you decided that you
+wanted to control your data. People are
+ 
+wanted to control your data. People are
+using open claw cuz they want to control
+ 
+using open claw cuz they want to control
+their agents. And people who are
+ 
+their agents. And people who are
+choosing not to have that level of
+ 
+choosing not to have that level of
+control are intentionally choosing
+ 
+control are intentionally choosing
+companies that they trust to do business
+ 
+companies that they trust to do business
+with. How we delegate agentic trust is
+ 
+with. How we delegate agentic trust is
+the question of 2026. And we should be
+ 
+the question of 2026. And we should be
+asking ourselves that. That is the lens
+ 
+asking ourselves that. That is the lens
+we should be using to read and
+ 
+we should be using to read and
+understand all of this agent news. It is
+ 
+understand all of this agent news. It is
+a much more useful and practical lens
+ 
+a much more useful and practical lens
+than all of the horse race hype, all of
+ 
+than all of the horse race hype, all of
+the safety hype. Let's read past that
+ 
+the safety hype. Let's read past that
+and let's look at the real story. Good
+ 
+and let's look at the real story. Good
+luck picking an agent.

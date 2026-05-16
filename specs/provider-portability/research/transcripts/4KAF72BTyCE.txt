@@ -1,0 +1,2609 @@
+ 
+Right now all of us are building the
+ 
+Right now all of us are building the
+most important asset of our careers in
+ 
+most important asset of our careers in
+AI systems all over the place and we're
+ 
+AI systems all over the place and we're
+not owning any of it and it's fragmented
+ 
+not owning any of it and it's fragmented
+right we are building it in chat GPT
+ 
+right we are building it in chat GPT
+we're building it in perplexity we're
+ 
+we're building it in perplexity we're
+building it in claude and we are putting
+ 
+building it in claude and we are putting
+in our own context our own thoughts our
+ 
+in our own context our own thoughts our
+own ideas our own documents and this is
+ 
+own ideas our own documents and this is
+all a massive problem of fragmentation
+ 
+all a massive problem of fragmentation
+that nobody has an answer for. We need a
+ 
+that nobody has an answer for. We need a
+bring your own context, a BYOC system
+ 
+bring your own context, a BYOC system
+for the enterprise worker in 2026. And
+ 
+for the enterprise worker in 2026. And
+we have none. Right now, all we have are
+ 
+we have none. Right now, all we have are
+IT departments that say do not bring
+ 
+IT departments that say do not bring
+your personal AI in the door. We hate
+ 
+your personal AI in the door. We hate
+that. And we have corporate IT rollouts
+ 
+that. And we have corporate IT rollouts
+for tools that are supposed to be
+ 
+for tools that are supposed to be
+equivalent to what we use at home, but
+ 
+equivalent to what we use at home, but
+they're not. And the reason they're not
+ 
+they're not. And the reason they're not
+is context. The reason they're not is
+ 
+is context. The reason they're not is
+they don't know us like we have our
+ 
+they don't know us like we have our
+personal AIs that know us. In other
+ 
+personal AIs that know us. In other
+words, the bet that Sam and Daario have
+ 
+words, the bet that Sam and Daario have
+been making worked. The fact that we
+ 
+been making worked. The fact that we
+care about which AI instance we use is a
+ 
+care about which AI instance we use is a
+function of their ability to build
+ 
+function of their ability to build
+memory systems. And I don't just mean
+ 
+memory systems. And I don't just mean
+them, right? If you use perplexity
+ 
+them, right? If you use perplexity
+enough, you have this effect. I call it
+ 
+enough, you have this effect. I call it
+a honing effect. The system hones to you
+ 
+a honing effect. The system hones to you
+and your cognitive behavioral pathways
+ 
+and your cognitive behavioral pathways
+the more you use it. There is really an
+ 
+the more you use it. There is really an
+intelligence at work here and it adapts
+ 
+intelligence at work here and it adapts
+to you because it can look at previous
+ 
+to you because it can look at previous
+context depending on how the
+ 
+context depending on how the
+orchestrators of these systems have
+ 
+orchestrators of these systems have
+designed them and they are deliberately
+ 
+designed them and they are deliberately
+designing them to make them sticky. This
+ 
+designing them to make them sticky. This
+is as old as Silicon Valley consumer
+ 
+is as old as Silicon Valley consumer
+habit loops. You build a product, you
+ 
+habit loops. You build a product, you
+want it to be sticky so you design
+ 
+want it to be sticky so you design
+things that sustain engagement. This is
+ 
+things that sustain engagement. This is
+how Facebook is addictive. This is how
+ 
+how Facebook is addictive. This is how
+Instagram is addictive. This is why
+ 
+Instagram is addictive. This is why
+people make big speeches on the floors
+ 
+people make big speeches on the floors
+of Congress about Tik Tok. Consumer
+ 
+of Congress about Tik Tok. Consumer
+products are designed to be addictive
+ 
+products are designed to be addictive
+and memory helps us make AI addictive.
+ 
+and memory helps us make AI addictive.
+And so we have memory that helps us to
+ 
+And so we have memory that helps us to
+do this work. And it turns out that when
+ 
+do this work. And it turns out that when
+you make a product for consumers that's
+ 
+you make a product for consumers that's
+addictive because you use memory, you
+ 
+addictive because you use memory, you
+provide a really big side benefit to all
+ 
+provide a really big side benefit to all
+of us workers. Because when we use it
+ 
+of us workers. Because when we use it
+professionally, we benefit from all the
+ 
+professionally, we benefit from all the
+previous work that we did. And so I
+ 
+previous work that we did. And so I
+don't say that just to sort of score
+ 
+don't say that just to sort of score
+cheap points. I'm not saying it's bad
+ 
+cheap points. I'm not saying it's bad
+that memory exists in these tools. It's
+ 
+that memory exists in these tools. It's
+actually really helpful. It has the side
+ 
+actually really helpful. It has the side
+effect for us of also making them very
+ 
+effect for us of also making them very
+difficult to leave. And that is exactly
+ 
+difficult to leave. And that is exactly
+why they're sticky and it's why we need
+ 
+why they're sticky and it's why we need
+a way to bring our own context elsewhere
+ 
+a way to bring our own context elsewhere
+with us between tools into the
+ 
+with us between tools into the
+workplace. You name it. Our context
+ 
+workplace. You name it. Our context
+needs to be much more mobile than it is.
+ 
+needs to be much more mobile than it is.
+So in this video, I'm going to break
+ 
+So in this video, I'm going to break
+down why that's a hard problem, what we
+ 
+down why that's a hard problem, what we
+can do about it, and how I'm building
+ 
+can do about it, and how I'm building
+something to help make that easier. But
+ 
+something to help make that easier. But
+first, let me be specific about what
+ 
+first, let me be specific about what
+we're accumulating. because it's very
+ 
+we're accumulating. because it's very
+easy to just gesture at AI context and
+ 
+easy to just gesture at AI context and
+say, "Oh, it's a bunch of stuff. It has
+ 
+say, "Oh, it's a bunch of stuff. It has
+some economic value, etc." There are
+ 
+some economic value, etc." There are
+four specific layers of context. And I
+ 
+four specific layers of context. And I
+think if we don't understand what we
+ 
+think if we don't understand what we
+mean by AI context, particularly in a
+ 
+mean by AI context, particularly in a
+professional capacity, we're going to
+ 
+professional capacity, we're going to
+misunderstand the problem. And the
+ 
+misunderstand the problem. And the
+reason I'm emphasizing a professional
+ 
+reason I'm emphasizing a professional
+capacity is because this is where the
+ 
+capacity is because this is where the
+conflict is the sharpest. If I want to
+ 
+conflict is the sharpest. If I want to
+migrate between my personal chat GPT and
+ 
+migrate between my personal chat GPT and
+my personal claude, it's a little bit of
+ 
+my personal claude, it's a little bit of
+a hassle because the company you're
+ 
+a hassle because the company you're
+taking data out from doesn't want you to
+ 
+taking data out from doesn't want you to
+do that and doesn't make it super easy.
+ 
+do that and doesn't make it super easy.
+Uh, but that's it, right? There's no
+ 
+Uh, but that's it, right? There's no
+policies in the way. The larger, more
+ 
+policies in the way. The larger, more
+complicated question is how you actually
+ 
+complicated question is how you actually
+separate out the elements of your
+ 
+separate out the elements of your
+professional context from everything
+ 
+professional context from everything
+else you're doing so that you can make
+ 
+else you're doing so that you can make
+that portable. That is a hard problem
+ 
+that portable. That is a hard problem
+and no one is addressing it well today.
+ 
+and no one is addressing it well today.
+So, what are those elements? We have to
+ 
+So, what are those elements? We have to
+understand them in order to get into the
+ 
+understand them in order to get into the
+problem space. Number one, domain
+ 
+problem space. Number one, domain
+encoding. Over months of daily use, you
+ 
+encoding. Over months of daily use, you
+have probably taught your AI, your
+ 
+have probably taught your AI, your
+industry vocabulary, the company's
+ 
+industry vocabulary, the company's
+products that you use, your market
+ 
+products that you use, your market
+dynamics, your competitive landscape,
+ 
+dynamics, your competitive landscape,
+the regulatory environment you operate
+ 
+the regulatory environment you operate
+in, the internal acronyms your team
+ 
+in, the internal acronyms your team
+uses, the way your organization thinks
+ 
+uses, the way your organization thinks
+about strategy. And if you're sitting
+ 
+about strategy. And if you're sitting
+there and saying, "I don't do that. I
+ 
+there and saying, "I don't do that. I
+don't ever use my personal AI for
+ 
+don't ever use my personal AI for
+company stuff." You are in the minority.
+ 
+company stuff." You are in the minority.
+More than 60% of workers surveyed say
+ 
+More than 60% of workers surveyed say
+they use their personal AI at work. Most
+ 
+they use their personal AI at work. Most
+people do whether or not the IT
+ 
+people do whether or not the IT
+department approves and they do partly
+ 
+department approves and they do partly
+because of the context problem. And I
+ 
+because of the context problem. And I
+think we need to acknowledge that. And I
+ 
+think we need to acknowledge that. And I
+rarely rarely rarely see people
+ 
+rarely rarely rarely see people
+recognize it for the issue that it is.
+ 
+recognize it for the issue that it is.
+Most people misunderstand AI. They
+ 
+Most people misunderstand AI. They
+think, "Oh, it's just a random
+ 
+think, "Oh, it's just a random
+interchangeable tool. You get clawed on
+ 
+interchangeable tool. You get clawed on
+this computer. You get clawed on this
+ 
+this computer. You get clawed on this
+computer. They're going to be the same."
+ 
+computer. They're going to be the same."
+they're not going to be the same because
+ 
+they're not going to be the same because
+of the context and domain encoding is a
+ 
+of the context and domain encoding is a
+part of that context. And part of what
+ 
+part of that context. And part of what
+makes it hard to move and recognize is
+ 
+makes it hard to move and recognize is
+that you didn't give all of that domain
+ 
+that you didn't give all of that domain
+information to your AI by sitting there
+ 
+information to your AI by sitting there
+and writing it a briefing document.
+ 
+and writing it a briefing document.
+Instead, you gave it that information
+ 
+Instead, you gave it that information
+daily in little bits and pieces over the
+ 
+daily in little bits and pieces over the
+course of hundreds or thousands of
+ 
+course of hundreds or thousands of
+conversations. And that means you may
+ 
+conversations. And that means you may
+not fully realize all the stuff you
+ 
+not fully realize all the stuff you
+gave. And that is part of what makes it
+ 
+gave. And that is part of what makes it
+hard is because if we were to sit down
+ 
+hard is because if we were to sit down
+and to write out this is all the context
+ 
+and to write out this is all the context
+that we have laid out over months and
+ 
+that we have laid out over months and
+months and months of AI, we couldn't do
+ 
+months and months of AI, we couldn't do
+it. I couldn't do it. You couldn't do
+ 
+it. I couldn't do it. You couldn't do
+it. It's too hard and too complicated.
+ 
+it. It's too hard and too complicated.
+We don't know the context we know. And
+ 
+We don't know the context we know. And
+that is part of what makes it hard to
+ 
+that is part of what makes it hard to
+move. This is functionally equivalent to
+ 
+move. This is functionally equivalent to
+the institutional knowledge that used to
+ 
+the institutional knowledge that used to
+live in a senior employees head. It took
+ 
+live in a senior employees head. It took
+years to build in the old model. You
+ 
+years to build in the old model. You
+learned your industry through
+ 
+learned your industry through
+experience, through osmosis, through
+ 
+experience, through osmosis, through
+mentorship, through hanging out with the
+ 
+mentorship, through hanging out with the
+senior engineer at the water cooler.
+ 
+senior engineer at the water cooler.
+That was the only way to learn. With AI,
+ 
+That was the only way to learn. With AI,
+that encoding is happening faster
+ 
+that encoding is happening faster
+because the only way we can interact is
+ 
+because the only way we can interact is
+by writing things down explicitly in
+ 
+by writing things down explicitly in
+conversation. So that is faster. You get
+ 
+conversation. So that is faster. You get
+years of progress in months if you're
+ 
+years of progress in months if you're
+intentionally writing things down.
+ 
+intentionally writing things down.
+That's part of how we see people make
+ 
+That's part of how we see people make
+progress quickly. But if you start out
+ 
+progress quickly. But if you start out
+fresh with a new AI, anybody will tell
+ 
+fresh with a new AI, anybody will tell
+you it feels like you're talking to a
+ 
+you it feels like you're talking to a
+stranger. you still don't have that
+ 
+stranger. you still don't have that
+domain information. And even if you
+ 
+domain information. And even if you
+could accumulate it quickly because it's
+ 
+could accumulate it quickly because it's
+entirely a verbal pattern, it still
+ 
+entirely a verbal pattern, it still
+takes a long time. It still sucks. And
+ 
+takes a long time. It still sucks. And
+the more it sucks to use a new AI,
+ 
+the more it sucks to use a new AI,
+that's a sign to you that you've done a
+ 
+that's a sign to you that you've done a
+great job encoding that domain knowledge
+ 
+great job encoding that domain knowledge
+into your existing AI. Right? Good job.
+ 
+into your existing AI. Right? Good job.
+Now, it's hard to move. So, let's make
+ 
+Now, it's hard to move. So, let's make
+that easier. The second layer of context
+ 
+that easier. The second layer of context
+is workflow calibration. Beyond knowing
+ 
+is workflow calibration. Beyond knowing
+your domain, your AI has also learned
+ 
+your domain, your AI has also learned
+how you work, how you like your research
+ 
+how you work, how you like your research
+structured, how you want your code
+ 
+structured, how you want your code
+reviewed, what a good first draft looks
+ 
+reviewed, what a good first draft looks
+like for your documents, the sequence of
+ 
+like for your documents, the sequence of
+steps you follow when analyzing a new
+ 
+steps you follow when analyzing a new
+problem, a new market, the format you
+ 
+problem, a new market, the format you
+want your internal memos to be in, how
+ 
+want your internal memos to be in, how
+you like your Slack summaries published.
+ 
+you like your Slack summaries published.
+You've established these patterns
+ 
+You've established these patterns
+through a lot of repetition, through a
+ 
+through a lot of repetition, through a
+lot of edits you've given, through the
+ 
+lot of edits you've given, through the
+way you've held a high bar. This is why,
+ 
+way you've held a high bar. This is why,
+by the way, I emphasize holding a high
+ 
+by the way, I emphasize holding a high
+bar when you talk to AI. The higher the
+ 
+bar when you talk to AI. The higher the
+bar, the more you are encoding that bar,
+ 
+bar, the more you are encoding that bar,
+so it's easier to hold it over time.
+ 
+so it's easier to hold it over time.
+When you open a new conversation with an
+ 
+When you open a new conversation with an
+AI, you know, the AI already knows the
+ 
+AI, you know, the AI already knows the
+shape of what you're going to ask based
+ 
+shape of what you're going to ask based
+on previous conversations. It just does.
+ 
+on previous conversations. It just does.
+And we don't realize how much of a help
+ 
+And we don't realize how much of a help
+that is till we try a new AI. And it
+ 
+that is till we try a new AI. And it
+feels like we're grinding in first gear
+ 
+feels like we're grinding in first gear
+on the car. And yes, that really saves
+ 
+on the car. And yes, that really saves
+you time. A calibration can save you
+ 
+you time. A calibration can save you
+five, six, seven, eight turns of
+ 
+five, six, seven, eight turns of
+conversation because the AI is more
+ 
+conversation because the AI is more
+likely to get it right the first time
+ 
+likely to get it right the first time
+because it knows what you want. Now, the
+ 
+because it knows what you want. Now, the
+third layer is the behavioral
+ 
+third layer is the behavioral
+relationship, and that's the one that
+ 
+relationship, and that's the one that
+matters the most, but I think it's also
+ 
+matters the most, but I think it's also
+the hardest to articulate. So, I'm going
+ 
+the hardest to articulate. So, I'm going
+to try to be very precise here. This is
+ 
+to try to be very precise here. This is
+the emergent understanding your AI
+ 
+the emergent understanding your AI
+develops about how to work with you
+ 
+develops about how to work with you
+specifically, not your stated
+ 
+specifically, not your stated
+preferences. Those are very easy to
+ 
+preferences. Those are very easy to
+write down. the unstated preferences.
+ 
+write down. the unstated preferences.
+When you need to be challenged versus
+ 
+When you need to be challenged versus
+when you need to just execute and get
+ 
+when you need to just execute and get
+stuff done, how technical to go, when
+ 
+stuff done, how technical to go, when
+you the prompter did not specify a
+ 
+you the prompter did not specify a
+level, whether a question that you ask
+ 
+level, whether a question that you ask
+is an invitation to talk or whether it's
+ 
+is an invitation to talk or whether it's
+just rhetorical, how much preamble you
+ 
+just rhetorical, how much preamble you
+tolerate before you want to get to the
+ 
+tolerate before you want to get to the
+point. These are things where the AI is
+ 
+point. These are things where the AI is
+inferring how you want it to behave
+ 
+inferring how you want it to behave
+based on your response to its responses.
+ 
+based on your response to its responses.
+And this happens very subtly. It is
+ 
+And this happens very subtly. It is
+almost never explicitly instructed
+ 
+almost never explicitly instructed
+despite what people may tell you and
+ 
+despite what people may tell you and
+it's very very difficult for you to see
+ 
+it's very very difficult for you to see
+yourself doing it. It's one of those
+ 
+yourself doing it. It's one of those
+things like your nose. You don't see
+ 
+things like your nose. You don't see
+your nose. Your nose is right in front
+ 
+your nose. Your nose is right in front
+of your eyes. Your eyes block it out.
+ 
+of your eyes. Your eyes block it out.
+Same thing. You don't see the way the
+ 
+Same thing. You don't see the way the
+LLM is shaping itself to your patterns
+ 
+LLM is shaping itself to your patterns
+of response, but it is. This layer is
+ 
+of response, but it is. This layer is
+built through hundreds and hundreds of
+ 
+built through hundreds and hundreds of
+microcorrections, right? the times you
+ 
+microcorrections, right? the times you
+rephrased a prompt because the first
+ 
+rephrased a prompt because the first
+output missed the point. Uh the times
+ 
+output missed the point. Uh the times
+you said no no no more like this and
+ 
+you said no no no more like this and
+provided an example. The times the AI
+ 
+provided an example. The times the AI
+did get it right and you kept going and
+ 
+did get it right and you kept going and
+you didn't give it a comment. It's like
+ 
+you didn't give it a comment. It's like
+the compound interest on a relationship
+ 
+the compound interest on a relationship
+except in this case it is the compound
+ 
+except in this case it is the compound
+behavioral difference the LLM learns
+ 
+behavioral difference the LLM learns
+from interacting with you over time. And
+ 
+from interacting with you over time. And
+so this is like the difference between
+ 
+so this is like the difference between
+working with a colleague you've known
+ 
+working with a colleague you've known
+for a year and working with a brand new
+ 
+for a year and working with a brand new
+colleague. Right? that the colleague
+ 
+colleague. Right? that the colleague
+you've known for a year knows exactly
+ 
+you've known for a year knows exactly
+how you are going to respond when faced
+ 
+how you are going to respond when faced
+with a particular situation. That is not
+ 
+with a particular situation. That is not
+true of your new colleagues. They have
+ 
+true of your new colleagues. They have
+to learn that. Same with AI. The fourth
+ 
+to learn that. Same with AI. The fourth
+layer is the artifact layer or the
+ 
+layer is the artifact layer or the
+demonstrated capability layer and it
+ 
+demonstrated capability layer and it
+doesn't really exist today. So right now
+ 
+doesn't really exist today. So right now
+when we do work with AI and we produce
+ 
+when we do work with AI and we produce
+artifacts, right? We produce documents,
+ 
+artifacts, right? We produce documents,
+we produce spreadsheets, we produce
+ 
+we produce spreadsheets, we produce
+powerpoints, we produce code, all of it
+ 
+powerpoints, we produce code, all of it
+ends up as artifacts we copy, paste and
+ 
+ends up as artifacts we copy, paste and
+move somewhere else. And frankly, who
+ 
+move somewhere else. And frankly, who
+knows where it all gets to. What we are
+ 
+knows where it all gets to. What we are
+missing if you are a professional is a
+ 
+missing if you are a professional is a
+way to say this is an artifact that I
+ 
+way to say this is an artifact that I
+made. This is how I made it and this is
+ 
+made. This is how I made it and this is
+how I know it was good. And you want to
+ 
+how I know it was good. And you want to
+bring the context around that artifact,
+ 
+bring the context around that artifact,
+around your intent over with you to your
+ 
+around your intent over with you to your
+next role. Not because you want to steal
+ 
+next role. Not because you want to steal
+trade secrets, not because you want to
+ 
+trade secrets, not because you want to
+take information, not because you want
+ 
+take information, not because you want
+to copy it verbatim, but because you
+ 
+to copy it verbatim, but because you
+want to take the encoded thinking, the
+ 
+want to take the encoded thinking, the
+encoded rationale, the way you taught
+ 
+encoded rationale, the way you taught
+the AI to think through pros and cons,
+ 
+the AI to think through pros and cons,
+which you can take and move to a new
+ 
+which you can take and move to a new
+role, and you want to bring that with
+ 
+role, and you want to bring that with
+you. That is how you demonstrate
+ 
+you. That is how you demonstrate
+capability, right? And and one of the
+ 
+capability, right? And and one of the
+things that we look for when we're
+ 
+things that we look for when we're
+interviewing is this demonstrated
+ 
+interviewing is this demonstrated
+capability. We don't care if someone
+ 
+capability. We don't care if someone
+brings their exact strategy over from
+ 
+brings their exact strategy over from
+the previous company. In fact, we don't
+ 
+the previous company. In fact, we don't
+want them to. That would be
+ 
+want them to. That would be
+inappropriate. What we want them to do
+ 
+inappropriate. What we want them to do
+is show us they can build that, that
+ 
+is show us they can build that, that
+they understand how to build trade-offs
+ 
+they understand how to build trade-offs
+into that strategy, and then they can do
+ 
+into that strategy, and then they can do
+a competent job with us. That's the
+ 
+a competent job with us. That's the
+whole point of interviewing. Well,
+ 
+whole point of interviewing. Well,
+increasingly, we do that work in AI, and
+ 
+increasingly, we do that work in AI, and
+when we want to talk about how we did
+ 
+when we want to talk about how we did
+it, it's buried in some chat somewhere.
+ 
+it, it's buried in some chat somewhere.
+So, good luck finding it, right? Like,
+ 
+So, good luck finding it, right? Like,
+it's hard to explain what you did
+ 
+it's hard to explain what you did
+because it's all emergent in a series of
+ 
+because it's all emergent in a series of
+like 800 chats and you have to go back
+ 
+like 800 chats and you have to go back
+and find it and oh no, did they store
+ 
+and find it and oh no, did they store
+the document? Where did you put the
+ 
+the document? Where did you put the
+document? It's a mess. So there you have
+ 
+document? It's a mess. So there you have
+it. The four layers of the problem we
+ 
+it. The four layers of the problem we
+have to solve. Domain encoding is one.
+ 
+have to solve. Domain encoding is one.
+Behavioral change is another. How you
+ 
+Behavioral change is another. How you
+coordinate workflows is another. And
+ 
+coordinate workflows is another. And
+then finally, understanding how to
+ 
+then finally, understanding how to
+communicate your thinking process around
+ 
+communicate your thinking process around
+artifacts is a fourth. These are all
+ 
+artifacts is a fourth. These are all
+really important pieces, but because we
+ 
+really important pieces, but because we
+don't break apart the problem, I think
+ 
+don't break apart the problem, I think
+we look at as just general context. And
+ 
+we look at as just general context. And
+that makes it really hard to be specific
+ 
+that makes it really hard to be specific
+about a solution. If you're sitting here
+ 
+about a solution. If you're sitting here
+wondering, is this a real issue? Is this
+ 
+wondering, is this a real issue? Is this
+only for people walking into specific
+ 
+only for people walking into specific
+companies? It is an almost universal
+ 
+companies? It is an almost universal
+issue and it will affect all of us in
+ 
+issue and it will affect all of us in
+the next couple years. Not because
+ 
+the next couple years. Not because
+there's some magical wave that's coming
+ 
+there's some magical wave that's coming
+for all of us at the same time, but
+ 
+for all of us at the same time, but
+because on average over the next two
+ 
+because on average over the next two
+years, are you likely to look for
+ 
+years, are you likely to look for
+another job at some point? Are you
+ 
+another job at some point? Are you
+likely to be on the hiring market at
+ 
+likely to be on the hiring market at
+some point? Are you likely to switch AIs
+ 
+some point? Are you likely to switch AIs
+or need to add a new AI at some point?
+ 
+or need to add a new AI at some point?
+The answer to one of those is probably
+ 
+The answer to one of those is probably
+yes. Sometimes it's an unforced job
+ 
+yes. Sometimes it's an unforced job
+change. Sometimes it's a job change
+ 
+change. Sometimes it's a job change
+where we're looking for more. Sometimes,
+ 
+where we're looking for more. Sometimes,
+frankly, the company brings in a new AI
+ 
+frankly, the company brings in a new AI
+and it wasn't a job change, but we have
+ 
+and it wasn't a job change, but we have
+a responsibility change. You moved over
+ 
+a responsibility change. You moved over
+now you have a new AI regime. A new
+ 
+now you have a new AI regime. A new
+agreement was signed with Anthropic and
+ 
+agreement was signed with Anthropic and
+not OpenAI. The company AI changes. All
+ 
+not OpenAI. The company AI changes. All
+of these things trigger this problem.
+ 
+of these things trigger this problem.
+This is a problem that I would bet you a
+ 
+This is a problem that I would bet you a
+lunch affects 90% of us in the next two
+ 
+lunch affects 90% of us in the next two
+years if we're in the professional
+ 
+years if we're in the professional
+workforce. one way or another. Whether
+ 
+workforce. one way or another. Whether
+we are switching AI at work because the
+ 
+we are switching AI at work because the
+company told us to and its policy,
+ 
+company told us to and its policy,
+whether we're doing it on purpose
+ 
+whether we're doing it on purpose
+because we got permission to use a new
+ 
+because we got permission to use a new
+tool, whether we're switching roles and
+ 
+tool, whether we're switching roles and
+that led to an AI change, whether we are
+ 
+that led to an AI change, whether we are
+switching to a new company and there's a
+ 
+switching to a new company and there's a
+new AI regime, whether we got fired and
+ 
+new AI regime, whether we got fired and
+have to use our personal AI tools, but
+ 
+have to use our personal AI tools, but
+we want to bring our work context or
+ 
+we want to bring our work context or
+vice versa. All of us are in this boat
+ 
+vice versa. All of us are in this boat
+together. And to be clear, this is a
+ 
+together. And to be clear, this is a
+genuine market failure. I don't want to
+ 
+genuine market failure. I don't want to
+put this on us as individuals. Employers
+ 
+put this on us as individuals. Employers
+want to hire AI capable people and have
+ 
+want to hire AI capable people and have
+no reliable way to evaluate that
+ 
+no reliable way to evaluate that
+capability or understand what they
+ 
+capability or understand what they
+bring. Candidates want to demonstrate AI
+ 
+bring. Candidates want to demonstrate AI
+capability and have no structured way to
+ 
+capability and have no structured way to
+talk about that or show it or bring that
+ 
+talk about that or show it or bring that
+context in with them. And the credential
+ 
+context in with them. And the credential
+gap is kind of being filled by vibes,
+ 
+gap is kind of being filled by vibes,
+right? Like you say, "Oh, I can do all
+ 
+right? Like you say, "Oh, I can do all
+of this stuff, but how do we know you
+ 
+of this stuff, but how do we know you
+can do all of this stuff?" At this
+ 
+can do all of this stuff?" At this
+point, there are major companies,
+ 
+point, there are major companies,
+including Meta, that are resorting to
+ 
+including Meta, that are resorting to
+flying you in on their dime and locking
+ 
+flying you in on their dime and locking
+you in a room with their laptop and
+ 
+you in a room with their laptop and
+their tools to see what you can do. And
+ 
+their tools to see what you can do. And
+we are going to see more of that because
+ 
+we are going to see more of that because
+we just don't understand how to use AI
+ 
+we just don't understand how to use AI
+because bringing context with us is so
+ 
+because bringing context with us is so
+hard. And by the way, in that example,
+ 
+hard. And by the way, in that example,
+you don't bring your context with you.
+ 
+you don't bring your context with you.
+And so we're just assuming that you can
+ 
+And so we're just assuming that you can
+use these new tools from scratch to
+ 
+use these new tools from scratch to
+generate extraordinary results when
+ 
+generate extraordinary results when
+really you would want to say, I've
+ 
+really you would want to say, I've
+generated these results partly because
+ 
+generated these results partly because
+I've honed this tool as a working
+ 
+I've honed this tool as a working
+companion and now I'm going to have to
+ 
+companion and now I'm going to have to
+switch companions and it's going to feel
+ 
+switch companions and it's going to feel
+like I lost a leg for a few months. If I
+ 
+like I lost a leg for a few months. If I
+were there and I had to switch AI tools,
+ 
+were there and I had to switch AI tools,
+even if I knew Claude code well, which I
+ 
+even if I knew Claude code well, which I
+do, and I had to move into a new
+ 
+do, and I had to move into a new
+environment and it was a brand new cloud
+ 
+environment and it was a brand new cloud
+code and I had to do magical things with
+ 
+code and I had to do magical things with
+it, it would take me longer, I would
+ 
+it, it would take me longer, I would
+underperform relative to where I
+ 
+underperform relative to where I
+actually am because I don't have that
+ 
+actually am because I don't have that
+context. Why has nobody solved it on the
+ 
+context. Why has nobody solved it on the
+platform side? I think the reason nobody
+ 
+platform side? I think the reason nobody
+has solved it is pretty simple. It's
+ 
+has solved it is pretty simple. It's
+incentives, right? None of the model
+ 
+incentives, right? None of the model
+makers has an incentive to solve this
+ 
+makers has an incentive to solve this
+problem. They all want to keep you
+ 
+problem. They all want to keep you
+inside, right? None of them want to lose
+ 
+inside, right? None of them want to lose
+you. Every single platform makes it easy
+ 
+you. Every single platform makes it easy
+to get context in and relatively hard to
+ 
+to get context in and relatively hard to
+get context out. And none of them are
+ 
+get context out. And none of them are
+doing any kind of a job at helping you
+ 
+doing any kind of a job at helping you
+separate personal and professional
+ 
+separate personal and professional
+context out or helping you separate
+ 
+context out or helping you separate
+professional context from trade secrets
+ 
+professional context from trade secrets
+and things that are inappropriate to
+ 
+and things that are inappropriate to
+bring to a new workplace. Now, you might
+ 
+bring to a new workplace. Now, you might
+think, well, this is ripe for a
+ 
+think, well, this is ripe for a
+third-party build and there are
+ 
+third-party build and there are
+well-funded VC startups going after
+ 
+well-funded VC startups going after
+this. And so, the answer here, the
+ 
+this. And so, the answer here, the
+reason why we haven't broken through, I
+ 
+reason why we haven't broken through, I
+think it's more interesting, right? It's
+ 
+think it's more interesting, right? It's
+not a cash problem. I think it's that
+ 
+not a cash problem. I think it's that
+memory layer startups are failing to
+ 
+memory layer startups are failing to
+capture people where they feel the pain
+ 
+capture people where they feel the pain
+[clears throat] point. Right? This is a
+ 
+[clears throat] point. Right? This is a
+diffuse painoint from a product strategy
+ 
+diffuse painoint from a product strategy
+perspective. You feel it all the time.
+ 
+perspective. You feel it all the time.
+It hurts, but it doesn't hurt in the
+ 
+It hurts, but it doesn't hurt in the
+dramatic FOMO, my tire is out on my car
+ 
+dramatic FOMO, my tire is out on my car
+kind of way, right? It is the kind of
+ 
+kind of way, right? It is the kind of
+there's a funky sound in the car kind of
+ 
+there's a funky sound in the car kind of
+a painoint. And it might be your engine
+ 
+a painoint. And it might be your engine
+giving out and costing you 20,000 miles,
+ 
+giving out and costing you 20,000 miles,
+but you don't really think of it that
+ 
+but you don't really think of it that
+way. You think of it as I'll drive it as
+ 
+way. You think of it as I'll drive it as
+long as I can until I have to take it to
+ 
+long as I can until I have to take it to
+the shop. It is a diffuse painoint.
+ 
+the shop. It is a diffuse painoint.
+Memory and how we use memory sucks when
+ 
+Memory and how we use memory sucks when
+we have a new AI to use. It sucks all
+ 
+we have a new AI to use. It sucks all
+the time. It sucks every chat. It may
+ 
+the time. It sucks every chat. It may
+affect how often we use it. It certainly
+ 
+affect how often we use it. It certainly
+affects our performance, but it is duse
+ 
+affects our performance, but it is duse
+enough that are we really going to go
+ 
+enough that are we really going to go
+and seek out a third party tool? If the
+ 
+and seek out a third party tool? If the
+third party tool exists, does it provide
+ 
+third party tool exists, does it provide
+the linkages we need between the major
+ 
+the linkages we need between the major
+platforms? Does it bring our personal
+ 
+platforms? Does it bring our personal
+context with us? Is it going to diverge
+ 
+context with us? Is it going to diverge
+trade secrets I don't want to take to
+ 
+trade secrets I don't want to take to
+the new place? Like there are all of
+ 
+the new place? Like there are all of
+these questions that none of these
+ 
+these questions that none of these
+memory providers are really answering.
+ 
+memory providers are really answering.
+Plus the fact that it's not a specific
+ 
+Plus the fact that it's not a specific
+highly painful moment in a single point
+ 
+highly painful moment in a single point
+in time, which is usually the sign for a
+ 
+in time, which is usually the sign for a
+good product. Like we talk in product
+ 
+good product. Like we talk in product
+strategy about like candy products and
+ 
+strategy about like candy products and
+opium products. This kind of third party
+ 
+opium products. This kind of third party
+memory tool is very much a candy
+ 
+memory tool is very much a candy
+product. And what I mean by that is it's
+ 
+product. And what I mean by that is it's
+great. It's nice to have. We like it.
+ 
+great. It's nice to have. We like it.
+We're glad we have it. we're not going
+ 
+We're glad we have it. we're not going
+to go out and seek it because it doesn't
+ 
+to go out and seek it because it doesn't
+immediately solve the thing that makes
+ 
+immediately solve the thing that makes
+us really suffer. Whereas an opium
+ 
+us really suffer. Whereas an opium
+product, pardon the crassness, is the
+ 
+product, pardon the crassness, is the
+kind of product that we must take to cut
+ 
+kind of product that we must take to cut
+pain off because it's so so so painful.
+ 
+pain off because it's so so so painful.
+It's acutely painful. This is not an
+ 
+It's acutely painful. This is not an
+acutely painful product problem. And so
+ 
+acutely painful product problem. And so
+memory startups are struggling to solve
+ 
+memory startups are struggling to solve
+it. So given all of this, given the
+ 
+it. So given all of this, given the
+platform hostility, given the injection
+ 
+platform hostility, given the injection
+challenges, given the calibration gap,
+ 
+challenges, given the calibration gap,
+the diffuse pain, what would it actually
+ 
+the diffuse pain, what would it actually
+mean to own your own AI working
+ 
+mean to own your own AI working
+intelligence over time to treat your
+ 
+intelligence over time to treat your
+professional context like an asset?
+ 
+professional context like an asset?
+That's the question I'm asking. That's
+ 
+That's the question I'm asking. That's
+the thing I'm building against. That's
+ 
+the thing I'm building against. That's
+the thing I want to challenge you to
+ 
+the thing I want to challenge you to
+think about. I think it starts with a
+ 
+think about. I think it starts with a
+shift in mindset. We need to treat our
+ 
+shift in mindset. We need to treat our
+AI context as a professional working
+ 
+AI context as a professional working
+asset that we will nurture for the rest
+ 
+asset that we will nurture for the rest
+of our careers. Period. End of sentence.
+ 
+of our careers. Period. End of sentence.
+It's not something that happens to you
+ 
+It's not something that happens to you
+inside platforms. It's not something
+ 
+inside platforms. It's not something
+platforms should own. It's something you
+ 
+platforms should own. It's something you
+should build and carry. And at a
+ 
+should build and carry. And at a
+practical level, this means your working
+ 
+practical level, this means your working
+identity does need to live somewhere
+ 
+identity does need to live somewhere
+that you can control. The simplest
+ 
+that you can control. The simplest
+version and the one available to you
+ 
+version and the one available to you
+today is a structured document. Right? A
+ 
+today is a structured document. Right? A
+markdown file is the very simplest
+ 
+markdown file is the very simplest
+version of this. It's not probably good
+ 
+version of this. It's not probably good
+enough to get the job done, but a
+ 
+enough to get the job done, but a
+well-crafted markdown file put together
+ 
+well-crafted markdown file put together
+properly can capture a fair bit of
+ 
+properly can capture a fair bit of
+domain context, communication
+ 
+domain context, communication
+preferences, workflow patterns,
+ 
+preferences, workflow patterns,
+recurring projects, style, and you can
+ 
+recurring projects, style, and you can
+audit it and make sure it doesn't
+ 
+audit it and make sure it doesn't
+include any uh inappropriate detailed
+ 
+include any uh inappropriate detailed
+information from your previous work. And
+ 
+information from your previous work. And
+you can generate that with help from an
+ 
+you can generate that with help from an
+AI that knows you best, right? And you
+ 
+AI that knows you best, right? And you
+can review it and you can edit it and
+ 
+can review it and you can edit it and
+you can paste it wherever you need to
+ 
+you can paste it wherever you need to
+go. And it's sort of a band-aid. It
+ 
+go. And it's sort of a band-aid. It
+helps you to close the gap a little bit
+ 
+helps you to close the gap a little bit
+and it's certainly positive ROI if
+ 
+and it's certainly positive ROI if
+you're willing to spend 30 minutes on it
+ 
+you're willing to spend 30 minutes on it
+and it's probably the simplest fix out
+ 
+and it's probably the simplest fix out
+there. I would say the stronger version
+ 
+there. I would say the stronger version
+of this is a personal context server,
+ 
+of this is a personal context server,
+right? An MCP native memory store that
+ 
+right? An MCP native memory store that
+any compliant AI agent can discover and
+ 
+any compliant AI agent can discover and
+query against on demand. This flips the
+ 
+query against on demand. This flips the
+architecture from pushbased where you
+ 
+architecture from pushbased where you
+paste a document in to pullbased. The AI
+ 
+paste a document in to pullbased. The AI
+retrieves what it needs for the current
+ 
+retrieves what it needs for the current
+task. The AI can query your context
+ 
+task. The AI can query your context
+selectively. It can pull in your B2B
+ 
+selectively. It can pull in your B2B
+pricing heristics for example uh or your
+ 
+pricing heristics for example uh or your
+editorial preferences or whatever it is
+ 
+editorial preferences or whatever it is
+and it doesn't just dump the entire
+ 
+and it doesn't just dump the entire
+profile into every single conversation
+ 
+profile into every single conversation
+window which is very tokenheavy. And
+ 
+window which is very tokenheavy. And
+critically the AI can also if it's
+ 
+critically the AI can also if it's
+constructed properly write back. It can
+ 
+constructed properly write back. It can
+say you know the user prefers this
+ 
+say you know the user prefers this
+format for strategy docs as you yourself
+ 
+format for strategy docs as you yourself
+evolve over the course of your working
+ 
+evolve over the course of your working
+career. Because isn't that the point of
+ 
+career. Because isn't that the point of
+a professional asset is that if it if
+ 
+a professional asset is that if it if
+this is an asset that records our
+ 
+this is an asset that records our
+professional growth, it should grow with
+ 
+professional growth, it should grow with
+us. And I think a database does a better
+ 
+us. And I think a database does a better
+job of that than just a working
+ 
+job of that than just a working
+document. And if you're wondering, am I
+ 
+document. And if you're wondering, am I
+building both? You got that right. I am
+ 
+building both? You got that right. I am
+100% building and launching prompts that
+ 
+100% building and launching prompts that
+help you to elicit the right working
+ 
+help you to elicit the right working
+information from the AI that knows you
+ 
+information from the AI that knows you
+best. I am building a structured output
+ 
+best. I am building a structured output
+format so you can get them into a
+ 
+format so you can get them into a
+markdown if that's the bandaid that you
+ 
+markdown if that's the bandaid that you
+think you can use. And I'm also building
+ 
+think you can use. And I'm also building
+a solution that plugs into OpenBrain
+ 
+a solution that plugs into OpenBrain
+that lets you pull together your
+ 
+that lets you pull together your
+professional working context into a
+ 
+professional working context into a
+single database that an MCP server can
+ 
+single database that an MCP server can
+hit because I want you to have options,
+ 
+hit because I want you to have options,
+right? And if you want to listen to this
+ 
+right? And if you want to listen to this
+and paste this transcript into AI and
+ 
+and paste this transcript into AI and
+say, "Screw open brain, I can do it
+ 
+say, "Screw open brain, I can do it
+myself." More power to you. I want you
+ 
+myself." More power to you. I want you
+to have this as an asset that helps you
+ 
+to have this as an asset that helps you
+to build your career over time. And
+ 
+to build your career over time. And
+shout out to MCP. Part of why this whole
+ 
+shout out to MCP. Part of why this whole
+idea is viable is because the model
+ 
+idea is viable is because the model
+context profile is effectively the USBC
+ 
+context profile is effectively the USBC
+connector for AI. Everything plugs into
+ 
+connector for AI. Everything plugs into
+it. It is a universal connector and that
+ 
+it. It is a universal connector and that
+means even your work AI can plug into
+ 
+means even your work AI can plug into
+it. Now I know that there are some work
+ 
+it. Now I know that there are some work
+AIs that shut off those external MCPs as
+ 
+AIs that shut off those external MCPs as
+part of their special security policies.
+ 
+part of their special security policies.
+One, I think that most AIs to do their
+ 
+One, I think that most AIs to do their
+work need to be a little bit less shut
+ 
+work need to be a little bit less shut
+down than that and that's a policy
+ 
+down than that and that's a policy
+conversation. And two, if it is that
+ 
+conversation. And two, if it is that
+shutdown, you can still use a markdown
+ 
+shutdown, you can still use a markdown
+file and get a little way with that. So,
+ 
+file and get a little way with that. So,
+if you want to make this yourself or if
+ 
+if you want to make this yourself or if
+you want to follow my guide to making
+ 
+you want to follow my guide to making
+this, I'm going to give you a really
+ 
+this, I'm going to give you a really
+clear rundown here. Start with
+ 
+clear rundown here. Start with
+extraction. The AI that knows you best
+ 
+extraction. The AI that knows you best
+already has a rich model for how you
+ 
+already has a rich model for how you
+work. You can ask it to articulate that
+ 
+work. You can ask it to articulate that
+model through a series of structured
+ 
+model through a series of structured
+prompts. Your domain context can be
+ 
+prompts. Your domain context can be
+extracted. your communication
+ 
+extracted. your communication
+preferences, ditto, workflow patterns,
+ 
+preferences, ditto, workflow patterns,
+style, recurring projects, behavioral
+ 
+style, recurring projects, behavioral
+patterns that it's observed about you.
+ 
+patterns that it's observed about you.
+Maybe you've never asked them. Run a
+ 
+Maybe you've never asked them. Run a
+structured extraction prompt. I can
+ 
+structured extraction prompt. I can
+provide you with one against your
+ 
+provide you with one against your
+primary AI. Review and edit the output
+ 
+primary AI. Review and edit the output
+and you have a portable representation
+ 
+and you have a portable representation
+of your entire working identity. It's
+ 
+of your entire working identity. It's
+not perfect. It's not a full behavior
+ 
+not perfect. It's not a full behavior
+calibration. Think of it as a 720 pixel
+ 
+calibration. Think of it as a 720 pixel
+video. Like, it's pretty good. It's not
+ 
+video. Like, it's pretty good. It's not
+4K, but the capturable layers, right?
+ 
+4K, but the capturable layers, right?
+They can all be there, right? It can
+ 
+They can all be there, right? It can
+capture the domain encoding you do. It
+ 
+capture the domain encoding you do. It
+can capture the workflow calibration you
+ 
+can capture the workflow calibration you
+do. It can capture both stated and
+ 
+do. It can capture both stated and
+observed preferences. And that's
+ 
+observed preferences. And that's
+substantial. Having them in a document
+ 
+substantial. Having them in a document
+you own is a fundamentally better
+ 
+you own is a fundamentally better
+position to be in than having them
+ 
+position to be in than having them
+locked in a platform's memory system. It
+ 
+locked in a platform's memory system. It
+is a win by itself. The second big
+ 
+is a win by itself. The second big
+piece, and I think this one's really
+ 
+piece, and I think this one's really
+important, is to not be satisfied with a
+ 
+important, is to not be satisfied with a
+document, but instead insist on writing
+ 
+document, but instead insist on writing
+to evolvable infrastructure you control.
+ 
+to evolvable infrastructure you control.
+You know how we had personal websites in
+ 
+You know how we had personal websites in
+the 2010s and that was the thing like
+ 
+the 2010s and that was the thing like
+you have to own your own domain name and
+ 
+you have to own your own domain name and
+your domain name is your front door to
+ 
+your domain name is your front door to
+the internet and we'll all link it on
+ 
+the internet and we'll all link it on
+our LinkedIn profiles etc. Well, your
+ 
+our LinkedIn profiles etc. Well, your
+personal database is kind of going to be
+ 
+personal database is kind of going to be
+that for the 2020s because data is what
+ 
+that for the 2020s because data is what
+allows you to bring this context with
+ 
+allows you to bring this context with
+you reliably. You need to write to
+ 
+you reliably. You need to write to
+infrastructure you manage. And so write
+ 
+infrastructure you manage. And so write
+your extracted profile to a persistent
+ 
+your extracted profile to a persistent
+database. And yes, I have a plugin for
+ 
+database. And yes, I have a plugin for
+this. I'll show you how to do it with
+ 
+this. I'll show you how to do it with
+embeddings that you can own and a
+ 
+embeddings that you can own and a
+retrieval system you can host. This can
+ 
+retrieval system you can host. This can
+be a local Postgress instance. It can be
+ 
+be a local Postgress instance. It can be
+a superbase project. It can be a VPS.
+ 
+a superbase project. It can be a VPS.
+It's whatever you want to run, right?
+ 
+It's whatever you want to run, right?
+The point is that your canonical working
+ 
+The point is that your canonical working
+identity is important enough to put in a
+ 
+identity is important enough to put in a
+database now because guess what? This is
+ 
+database now because guess what? This is
+the way the web is going and it should
+ 
+the way the web is going and it should
+live with you, not inside a platform a
+ 
+live with you, not inside a platform a
+company owns. And if you're wondering,
+ 
+company owns. And if you're wondering,
+is it that difficult? I have had
+ 
+is it that difficult? I have had
+thousands of people build the open brain
+ 
+thousands of people build the open brain
+system. This is based on including many
+ 
+system. This is based on including many
+non-technical people. It is not that
+ 
+non-technical people. It is not that
+hard. You can totally do it even if
+ 
+hard. You can totally do it even if
+you're nontechnical. I think the larger
+ 
+you're nontechnical. I think the larger
+point is really simple. Your assets are
+ 
+point is really simple. Your assets are
+now complex enough to justify a database
+ 
+now complex enough to justify a database
+from a digital perspective. Your assets
+ 
+from a digital perspective. Your assets
+in the digital space are not just a thin
+ 
+in the digital space are not just a thin
+paper resume. It is actually the
+ 
+paper resume. It is actually the
+accumulated rich pattern of working that
+ 
+accumulated rich pattern of working that
+you bring to the table whenever you do a
+ 
+you bring to the table whenever you do a
+job. And that has had no hope. And then
+ 
+job. And that has had no hope. And then
+of course the next piece is exposing it
+ 
+of course the next piece is exposing it
+via MCP. It needs an outbound, right?
+ 
+via MCP. It needs an outbound, right?
+And this is the part that makes
+ 
+And this is the part that makes
+everything else compound, right? Because
+ 
+everything else compound, right? Because
+MCP is not just a deacto open standard
+ 
+MCP is not just a deacto open standard
+by which AI operates. It's also a read
+ 
+by which AI operates. It's also a read
+write standard. So, it allows you once
+ 
+write standard. So, it allows you once
+you expose it via MCP to plug it into
+ 
+you expose it via MCP to plug it into
+any AI you're using and to start to both
+ 
+any AI you're using and to start to both
+read and pull in the stuff you need and
+ 
+read and pull in the stuff you need and
+also write and evolve the database over
+ 
+also write and evolve the database over
+time, which allows you to have an
+ 
+time, which allows you to have an
+evolvable, portable working memory for
+ 
+evolvable, portable working memory for
+your professional life. And that's kind
+ 
+your professional life. And that's kind
+of a big deal because the next time you
+ 
+of a big deal because the next time you
+get stuck with a new AI and they're
+ 
+get stuck with a new AI and they're
+like, "Good luck with your new claude.
+ 
+like, "Good luck with your new claude.
+Bless you. Off you go. Be just as
+ 
+Bless you. Off you go. Be just as
+productive as with the old Chad GPT that
+ 
+productive as with the old Chad GPT that
+knew six months of history about you."
+ 
+knew six months of history about you."
+You actually have an answer for that.
+ 
+You actually have an answer for that.
+And this this happens so much. It's so
+ 
+And this this happens so much. It's so
+painful. And I don't know why we have
+ 
+painful. And I don't know why we have
+not had a larger conversation about it.
+ 
+not had a larger conversation about it.
+I've looked around and most of the
+ 
+I've looked around and most of the
+conversations that we have had have been
+ 
+conversations that we have had have been
+focused on either switching between chat
+ 
+focused on either switching between chat
+GPT and claude or have focused on the
+ 
+GPT and claude or have focused on the
+idea that to solve this problem you need
+ 
+idea that to solve this problem you need
+to have an eagle eye on the screen on
+ 
+to have an eagle eye on the screen on
+your personal computer or your work
+ 
+your personal computer or your work
+computer all the time. In other words,
+ 
+computer all the time. In other words,
+the only way to solve it is to have some
+ 
+the only way to solve it is to have some
+sort of all-seeing photographic memory
+ 
+sort of all-seeing photographic memory
+that screenshots your screen every 10
+ 
+that screenshots your screen every 10
+seconds and that's how it knows what
+ 
+seconds and that's how it knows what
+you're working on and that's how it
+ 
+you're working on and that's how it
+brings the context layer in. I find that
+ 
+brings the context layer in. I find that
+a little creepy. I don't know about you.
+ 
+a little creepy. I don't know about you.
+I don't think that's the solution that I
+ 
+I don't think that's the solution that I
+would go for. I understand why people
+ 
+would go for. I understand why people
+think that's the beall endall solution
+ 
+think that's the beall endall solution
+because it feels complete. But I don't
+ 
+because it feels complete. But I don't
+think it's correct. I think the more
+ 
+think it's correct. I think the more
+correct solution is to go back to the
+ 
+correct solution is to go back to the
+behavior we use to express these
+ 
+behavior we use to express these
+preferences in the first place, which is
+ 
+preferences in the first place, which is
+in chat with our AI, and to actually
+ 
+in chat with our AI, and to actually
+extract it from there in a reliable way.
+ 
+extract it from there in a reliable way.
+basically pull back from the AI you're
+ 
+basically pull back from the AI you're
+used to working with the preferences you
+ 
+used to working with the preferences you
+have implicitly encoded and get those
+ 
+have implicitly encoded and get those
+into a a space and a format that allows
+ 
+into a a space and a format that allows
+you to be in control and I think that's
+ 
+you to be in control and I think that's
+a much more reliable way to do things
+ 
+a much more reliable way to do things
+and I think MCP allows us as individuals
+ 
+and I think MCP allows us as individuals
+to propose a solution to the industry
+ 
+to propose a solution to the industry
+that doesn't force us to wait on some
+ 
+that doesn't force us to wait on some
+startup doesn't force us to wait on the
+ 
+startup doesn't force us to wait on the
+big players to make memory
+ 
+big players to make memory
+interchangeable which I don't think they
+ 
+interchangeable which I don't think they
+will do absent a congressional ruling,
+ 
+will do absent a congressional ruling,
+right? They just have no incentive to do
+ 
+right? They just have no incentive to do
+so. It also critically allows us to not
+ 
+so. It also critically allows us to not
+wait on IT departments because if I had
+ 
+wait on IT departments because if I had
+to say one corner of most companies that
+ 
+to say one corner of most companies that
+tends to be most cautious about AI, it's
+ 
+tends to be most cautious about AI, it's
+the IT department. They have a lot to
+ 
+the IT department. They have a lot to
+lose. And they have a lot to lose partly
+ 
+lose. And they have a lot to lose partly
+because the burden for mistakes in
+ 
+because the burden for mistakes in
+security falls on the IT department.
+ 
+security falls on the IT department.
+They're the ones at risk. They're the
+ 
+They're the ones at risk. They're the
+ones with their necks on the line. And
+ 
+ones with their necks on the line. And
+there's a lot of risks that go with AI
+ 
+there's a lot of risks that go with AI
+deployment. So, it's really natural for
+ 
+deployment. So, it's really natural for
+them to say, "No, you can't bring your
+ 
+them to say, "No, you can't bring your
+AI. That's too risky. Use ours." But I
+ 
+AI. That's too risky. Use ours." But I
+don't think most of them really realize
+ 
+don't think most of them really realize
+the difference in performance you get
+ 
+the difference in performance you get
+when you work with an AI that knows you
+ 
+when you work with an AI that knows you
+well. People who work with AI a lot and
+ 
+well. People who work with AI a lot and
+who have an AI that knows them well will
+ 
+who have an AI that knows them well will
+tell you they're two, three, four, five
+ 
+tell you they're two, three, four, five
+times more productive working with the
+ 
+times more productive working with the
+exact same AI. Claude if it's cla
+ 
+exact same AI. Claude if it's cla
+but it's the instance that knows them.
+ 
+but it's the instance that knows them.
+And all of those encoded preferences
+ 
+And all of those encoded preferences
+help them be that much faster. And I
+ 
+help them be that much faster. And I
+think companies don't realize that that
+ 
+think companies don't realize that that
+has real work implications and they
+ 
+has real work implications and they
+should. And I think something like this,
+ 
+should. And I think something like this,
+having a responsible solution like this
+ 
+having a responsible solution like this
+where we say we're not trying to port
+ 
+where we say we're not trying to port
+over company secrets. We are trying to
+ 
+over company secrets. We are trying to
+just bring the working context that
+ 
+just bring the working context that
+helps us understand how a particular
+ 
+helps us understand how a particular
+employee works with a particular AI and
+ 
+employee works with a particular AI and
+bring that working style over in a
+ 
+bring that working style over in a
+responsible way so that they can work
+ 
+responsible way so that they can work
+effectively. that feels like a really
+ 
+effectively. that feels like a really
+productive response to that, right?
+ 
+productive response to that, right?
+That's that's a grownup response to that
+ 
+That's that's a grownup response to that
+reasonable concern. And I think it opens
+ 
+reasonable concern. And I think it opens
+the door to a more permissive IT policy.
+ 
+the door to a more permissive IT policy.
+So that's it. That's the architecture.
+ 
+So that's it. That's the architecture.
+You can you can generate it with a
+ 
+You can you can generate it with a
+prompt, which I'll give you. You can
+ 
+prompt, which I'll give you. You can
+write it to a database you can control.
+ 
+write it to a database you can control.
+You can expose it via MCP and you're
+ 
+You can expose it via MCP and you're
+kind of off to the races. And yes, I'm
+ 
+kind of off to the races. And yes, I'm
+building tooling to make this easier.
+ 
+building tooling to make this easier.
+I'm building extraction prompts. I'm
+ 
+I'm building extraction prompts. I'm
+building profile specs. building
+ 
+building profile specs. building
+implementation guides because I think
+ 
+implementation guides because I think
+the faster this practice spreads, the
+ 
+the faster this practice spreads, the
+stronger the pressure will grow on
+ 
+stronger the pressure will grow on
+platforms and on companies to take the
+ 
+platforms and on companies to take the
+idea that you deserve to bring your
+ 
+idea that you deserve to bring your
+professional context with you seriously.
+ 
+professional context with you seriously.
+And I really get on my soap box about
+ 
+And I really get on my soap box about
+this because I think that this is one of
+ 
+this because I think that this is one of
+those things where we are effectively
+ 
+those things where we are effectively
+taking away a large part of our
+ 
+taking away a large part of our
+professional lives and making it
+ 
+professional lives and making it
+difficult for us to continue a seamless
+ 
+difficult for us to continue a seamless
+path of growth in the AI age when we
+ 
+path of growth in the AI age when we
+really need to be growing fast. That's
+ 
+really need to be growing fast. That's
+what everybody tells us and it's harder
+ 
+what everybody tells us and it's harder
+now. And so we need to have solutions
+ 
+now. And so we need to have solutions
+that allow us to bring our own context
+ 
+that allow us to bring our own context
+with us. Look, if I step back, I think
+ 
+with us. Look, if I step back, I think
+we're in the early years of a shift in
+ 
+we're in the early years of a shift in
+what professional capital really means.
+ 
+what professional capital really means.
+And I don't think most of us have
+ 
+And I don't think most of us have
+absorbed the implications, including
+ 
+absorbed the implications, including
+companies, right? For decades, your
+ 
+companies, right? For decades, your
+value as a knowledge worker came from
+ 
+value as a knowledge worker came from
+four things, just four. What you knew,
+ 
+four things, just four. What you knew,
+what you could do, who you knew, and
+ 
+what you could do, who you knew, and
+what you could prove that you'd done,
+ 
+what you could prove that you'd done,
+right? Skills, abilities, network, and
+ 
+right? Skills, abilities, network, and
+track record. All of it accumulated over
+ 
+track record. All of it accumulated over
+the years. All of it was portable in the
+ 
+the years. All of it was portable in the
+sense that it lived in your head, in
+ 
+sense that it lived in your head, in
+your relationships, and in your
+ 
+your relationships, and in your
+reputation. Employers could benefit from
+ 
+reputation. Employers could benefit from
+your professional capital while you were
+ 
+your professional capital while you were
+there, and they could not really keep it
+ 
+there, and they could not really keep it
+when you left. AI is creating a fifth
+ 
+when you left. AI is creating a fifth
+category of professional capital, right?
+ 
+category of professional capital, right?
+Your working intelligence, the
+ 
+Your working intelligence, the
+accumulated context in the calibration
+ 
+accumulated context in the calibration
+that makes you effective with AI tools.
+ 
+that makes you effective with AI tools.
+And this category has a property that
+ 
+And this category has a property that
+the others did not. It occurs outside
+ 
+the others did not. It occurs outside
+your head, inside systems controlled by
+ 
+your head, inside systems controlled by
+third parties who have a direct
+ 
+third parties who have a direct
+financial interest in keeping it there.
+ 
+financial interest in keeping it there.
+Your skills live in your head. Nobody
+ 
+Your skills live in your head. Nobody
+can lock them up. Your network lives in
+ 
+can lock them up. Your network lives in
+your relationships. LinkedIn can make it
+ 
+your relationships. LinkedIn can make it
+easier to maintain, but it can prevent
+ 
+easier to maintain, but it can prevent
+you from knowing people. Your track
+ 
+you from knowing people. Your track
+record lives in your reputation, in your
+ 
+record lives in your reputation, in your
+references, in the memory of the people
+ 
+references, in the memory of the people
+you've worked with. Your AI working
+ 
+you've worked with. Your AI working
+intelligence though that lives on
+ 
+intelligence though that lives on
+servers that belong to Anthropic, to
+ 
+servers that belong to Anthropic, to
+OpenAI, to Google, to Microsoft,
+ 
+OpenAI, to Google, to Microsoft,
+fragmented across accounts that cannot
+ 
+fragmented across accounts that cannot
+talk to each other, governed by terms of
+ 
+talk to each other, governed by terms of
+service you did not negotiate and
+ 
+service you did not negotiate and
+subject to change at any time. This is
+ 
+subject to change at any time. This is
+new and the newness of it is why most of
+ 
+new and the newness of it is why most of
+us haven't really reacted yet. I think
+ 
+us haven't really reacted yet. I think
+we don't have the instinct for this that
+ 
+we don't have the instinct for this that
+we have for the others. When you build a
+ 
+we have for the others. When you build a
+skill, you know you own it, right? When
+ 
+skill, you know you own it, right? When
+you build an AI context, the ownership
+ 
+you build an AI context, the ownership
+question seems sort of unsettled. It may
+ 
+question seems sort of unsettled. It may
+not even occur to you that it's an asset
+ 
+not even occur to you that it's an asset
+you should own until you try and take it
+ 
+you should own until you try and take it
+somewhere or wish that it was there and
+ 
+somewhere or wish that it was there and
+it's not anymore. I think the
+ 
+it's not anymore. I think the
+professionals who recognize this now and
+ 
+professionals who recognize this now and
+act on it, building their own portable
+ 
+act on it, building their own portable
+context, maintaining their working
+ 
+context, maintaining their working
+identity deliberately as if it was a
+ 
+identity deliberately as if it was a
+career asset because it is, you're going
+ 
+career asset because it is, you're going
+to have a meaningful and compounding
+ 
+to have a meaningful and compounding
+advantage as AI keeps getting better.
+ 
+advantage as AI keeps getting better.
+Not because the tooling is perfect
+ 
+Not because the tooling is perfect
+today. It's definitely not, but because
+ 
+today. It's definitely not, but because
+the habit of ownership itself is a
+ 
+the habit of ownership itself is a
+valuable recurring skill to have. The
+ 
+valuable recurring skill to have. The
+person who maintains a portable AI
+ 
+person who maintains a portable AI
+working identity moves between tools
+ 
+working identity moves between tools
+with less friction, switches jobs with
+ 
+with less friction, switches jobs with
+less context loss, and compounds their
+ 
+less context loss, and compounds their
+AI effectiveness across platforms as
+ 
+AI effectiveness across platforms as
+they grow in their skills instead of
+ 
+they grow in their skills instead of
+starting over every time they cross a
+ 
+starting over every time they cross a
+boundary. Ultimately, I think memory has
+ 
+boundary. Ultimately, I think memory has
+replaced models as the moat of 2026. The
+ 
+replaced models as the moat of 2026. The
+platforms that built their retention
+ 
+platforms that built their retention
+around your accumulated context are
+ 
+around your accumulated context are
+winning right now. The question is
+ 
+winning right now. The question is
+whether you keep pouring that context
+ 
+whether you keep pouring that context
+into walled gardens and hoping for the
+ 
+into walled gardens and hoping for the
+best or whether you start building the
+ 
+best or whether you start building the
+professional asset that travels with you
+ 
+professional asset that travels with you
+regardless of which AI, which account or
+ 
+regardless of which AI, which account or
+which employer you're working with next
+ 
+which employer you're working with next
+year. I know which bet I'm making. Best
+ 
+year. I know which bet I'm making. Best
+of luck.

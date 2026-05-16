@@ -1,0 +1,2453 @@
+ 
+The agents are getting better. The
+ 
+The agents are getting better. The
+people deploying them are not. And that
+ 
+people deploying them are not. And that
+is the whole story right now in agent
+ 
+is the whole story right now in agent
+deployments at enterprise, at small
+ 
+deployments at enterprise, at small
+medium business level, and even with
+ 
+medium business level, and even with
+individuals. Because the truth is AI
+ 
+individuals. Because the truth is AI
+agents are getting really, really good
+ 
+agents are getting really, really good
+at doing their work. They can write
+ 
+at doing their work. They can write
+code, they can generate designs, they
+ 
+code, they can generate designs, they
+can close tickets. We've all heard that
+ 
+can close tickets. We've all heard that
+story. I've told that story a lot. So,
+ 
+story. I've told that story a lot. So,
+the capability trajectory is real and
+ 
+the capability trajectory is real and
+it's getting faster. But, but, but, but,
+ 
+it's getting faster. But, but, but, but,
+there is a memory wall. They still have
+ 
+there is a memory wall. They still have
+short-term memories, especially when you
+ 
+short-term memories, especially when you
+think about the arc of a real job. Look,
+ 
+think about the arc of a real job. Look,
+software jobs in tech are as short as
+ 
+software jobs in tech are as short as
+they've ever been on average. They're
+ 
+they've ever been on average. They're
+somewhere between 18 months and 2 years
+ 
+somewhere between 18 months and 2 years
+if you average it out across tiny
+ 
+if you average it out across tiny
+startups and big companies as well. The
+ 
+startups and big companies as well. The
+problem is AI agents are measured in
+ 
+problem is AI agents are measured in
+weeks at best, and for most runs it's
+ 
+weeks at best, and for most runs it's
+like an hour or two. And so, when you
+ 
+like an hour or two. And so, when you
+compare the time, even if we lament that
+ 
+compare the time, even if we lament that
+it's short, and it's like, "Wow, this is
+ 
+it's short, and it's like, "Wow, this is
+a 20-month job." It's not even
+ 
+a 20-month job." It's not even
+comparable. Let alone the people who
+ 
+comparable. Let alone the people who
+really hold institutional context and
+ 
+really hold institutional context and
+keep a business going, who often stay
+ 
+keep a business going, who often stay
+four, five, six, seven, eight years,
+ 
+four, five, six, seven, eight years,
+maybe longer. And I am convinced that
+ 
+maybe longer. And I am convinced that
+that gap is one of the hardest problems
+ 
+that gap is one of the hardest problems
+in tech, and it's leading a lot of
+ 
+in tech, and it's leading a lot of
+over-optimistic people astray on AI
+ 
+over-optimistic people astray on AI
+right now. Because AI still lacks common
+ 
+right now. Because AI still lacks common
+sense in very weird and unpredictable
+ 
+sense in very weird and unpredictable
+ways. Yes, AI is getting better. Yes,
+ 
+ways. Yes, AI is getting better. Yes,
+the frontier is getting smoother in the
+ 
+the frontier is getting smoother in the
+sense that AI capabilities are starting
+ 
+sense that AI capabilities are starting
+to even out some, but the combination of
+ 
+to even out some, but the combination of
+AI skills with AI context, with AI
+ 
+AI skills with AI context, with AI
+tools, with AI resources, with AI
+ 
+tools, with AI resources, with AI
+workloads, with AI prompts is still
+ 
+workloads, with AI prompts is still
+brittle. It still is somewhat difficult
+ 
+brittle. It still is somewhat difficult
+to predict what changing one thing will
+ 
+to predict what changing one thing will
+do. And this really matters because AI
+ 
+do. And this really matters because AI
+tools are getting more powerful even as
+ 
+tools are getting more powerful even as
+they're still brittle. And they're
+ 
+they're still brittle. And they're
+getting more powerful very, very
+ 
+getting more powerful very, very
+quickly. And so, So means net net, if
+ 
+quickly. And so, So means net net, if
+you improperly deploy them, they are
+ 
+you improperly deploy them, they are
+getting more destructive, not less,
+ 
+getting more destructive, not less,
+especially when they aren't managed
+ 
+especially when they aren't managed
+well. A mediocre tool that fails really
+ 
+well. A mediocre tool that fails really
+obviously is just annoying. A power tool
+ 
+obviously is just annoying. A power tool
+that fails silently is very dangerous,
+ 
+that fails silently is very dangerous,
+and that is a world we are headed to.
+ 
+and that is a world we are headed to.
+The best tools we have for managing that
+ 
+The best tools we have for managing that
+danger. I want to say this very very
+ 
+danger. I want to say this very very
+plainly, are human brains and human
+ 
+plainly, are human brains and human
+brains crafting evaluations. Not better
+ 
+brains crafting evaluations. Not better
+prompts, not bigger context windows per
+ 
+prompts, not bigger context windows per
+se, but human judgment about what
+ 
+se, but human judgment about what
+matters, what's fragile, and what the AI
+ 
+matters, what's fragile, and what the AI
+doesn't know it doesn't know. And yes,
+ 
+doesn't know it doesn't know. And yes,
+evals help to encode that judgment, but
+ 
+evals help to encode that judgment, but
+in the vast majority of cases, the
+ 
+in the vast majority of cases, the
+correct solution is really really good
+ 
+correct solution is really really good
+human judgment plus really really good
+ 
+human judgment plus really really good
+evals. And I don't see enough of that
+ 
+evals. And I don't see enough of that
+investment, and this video is about the
+ 
+investment, and this video is about the
+enormous risk that real experienced
+ 
+enormous risk that real experienced
+developers run into when they don't pay
+ 
+developers run into when they don't pay
+attention to that. Yes, I have a killer
+ 
+attention to that. Yes, I have a killer
+story for you on this, and they also
+ 
+story for you on this, and they also
+have a paper that nobody is paying
+ 
+have a paper that nobody is paying
+attention to that actually measures the
+ 
+attention to that actually measures the
+ability of agents to do long long
+ 
+ability of agents to do long long
+long-term work, like maintain a code
+ 
+long-term work, like maintain a code
+base for most of a year. And we have
+ 
+base for most of a year. And we have
+results on that, and yes, I'll be
+ 
+results on that, and yes, I'll be
+telling you all about it. But first, two
+ 
+telling you all about it. But first, two
+weeks ago, an AI coding agent wiped out
+ 
+weeks ago, an AI coding agent wiped out
+a production database. 1.9 million rows
+ 
+a production database. 1.9 million rows
+of student data gone in seconds. The
+ 
+of student data gone in seconds. The
+backups disappeared, too. The agent
+ 
+backups disappeared, too. The agent
+never ever made a technical error. Every
+ 
+never ever made a technical error. Every
+action was logically correct. It simply
+ 
+action was logically correct. It simply
+had no idea it was demolishing a live
+ 
+had no idea it was demolishing a live
+system because the knowledge that
+ 
+system because the knowledge that
+distinguished real infrastructure from
+ 
+distinguished real infrastructure from
+temporary copies existed only in the
+ 
+temporary copies existed only in the
+engineer's head. And new studies that
+ 
+engineer's head. And new studies that
+have come out show that's not a fluke.
+ 
+have come out show that's not a fluke.
+It's actually a really reliable pattern
+ 
+It's actually a really reliable pattern
+with the way agents work today. And the
+ 
+with the way agents work today. And the
+thing that enables you to deploy an
+ 
+thing that enables you to deploy an
+agent safely in that context is a very,
+ 
+agent safely in that context is a very,
+very thoughtful human brain that is
+ 
+very thoughtful human brain that is
+very, very good at giving correct
+ 
+very, very good at giving correct
+instructions against a correct eval. I
+ 
+instructions against a correct eval. I
+sound like a parrot talking about evals,
+ 
+sound like a parrot talking about evals,
+but it's what's stopping us from having
+ 
+but it's what's stopping us from having
+dangerous agent deployments. So, I'm
+ 
+dangerous agent deployments. So, I'm
+going to keep talking about it and
+ 
+going to keep talking about it and
+telling the horror stories. So, Alexey
+ 
+telling the horror stories. So, Alexey
+Grigorev runs the datatalks.club course
+ 
+Grigorev runs the datatalks.club course
+platform. It's a system that manages
+ 
+platform. It's a system that manages
+homework submissions, projects, and
+ 
+homework submissions, projects, and
+leaderboard entries across multiple
+ 
+leaderboard entries across multiple
+courses spanning 2 and 1/2 years. He was
+ 
+courses spanning 2 and 1/2 years. He was
+migrating a separate website to the
+ 
+migrating a separate website to the
+cloud and decided to reuse his existing
+ 
+cloud and decided to reuse his existing
+infrastructure setup to save a few bucks
+ 
+infrastructure setup to save a few bucks
+a month. Sure, sounds good. His AI
+ 
+a month. Sure, sounds good. His AI
+coding agent was running the deployment
+ 
+coding agent was running the deployment
+for him. The first warning sign is that
+ 
+for him. The first warning sign is that
+the agent started creating a long list
+ 
+the agent started creating a long list
+of cloud resources that should not have
+ 
+of cloud resources that should not have
+existed. Now, Alexey had recently moved
+ 
+existed. Now, Alexey had recently moved
+to a new computer and hadn't transferred
+ 
+to a new computer and hadn't transferred
+his infrastructure configuration. We all
+ 
+his infrastructure configuration. We all
+do that. The agent looked at the cloud,
+ 
+do that. The agent looked at the cloud,
+saw nothing it recognized, and assumed
+ 
+saw nothing it recognized, and assumed
+it was building from scratch. Pretty
+ 
+it was building from scratch. Pretty
+logical. So, Alexey stopped the process,
+ 
+logical. So, Alexey stopped the process,
+but some duplicate resources along the
+ 
+but some duplicate resources along the
+way had already been created. Next step,
+ 
+way had already been created. Next step,
+he asked the agent to identify the
+ 
+he asked the agent to identify the
+duplicate files and remove them. Very,
+ 
+duplicate files and remove them. Very,
+very reasonable ask. But, the agent
+ 
+very reasonable ask. But, the agent
+decided on its own that instead of
+ 
+decided on its own that instead of
+removing resources one at a time, it
+ 
+removing resources one at a time, it
+would be {quote} cleaner and simpler,
+ 
+would be {quote} cleaner and simpler,
+the agent's words, to demolish
+ 
+the agent's words, to demolish
+everything it had created in one shot.
+ 
+everything it had created in one shot.
+Also reasonable in isolation, but what
+ 
+Also reasonable in isolation, but what
+Alexey didn't realize was that the agent
+ 
+Alexey didn't realize was that the agent
+had quietly unpacked an archived
+ 
+had quietly unpacked an archived
+configuration file from his old
+ 
+configuration file from his old
+computer. Inside that archive were the
+ 
+computer. Inside that archive were the
+definitions of his real production
+ 
+definitions of his real production
+infrastructure. So, when the agent ran a
+ 
+infrastructure. So, when the agent ran a
+demolition command, it wasn't clearing
+ 
+demolition command, it wasn't clearing
+out temporary duplicates, it was
+ 
+out temporary duplicates, it was
+destroying the production database, the
+ 
+destroying the production database, the
+networking layer, the application
+ 
+networking layer, the application
+cluster, the load balancers, the host,
+ 
+cluster, the load balancers, the host,
+everything. So, eventually the story
+ 
+everything. So, eventually the story
+does have a good ending. It took 24
+ 
+does have a good ending. It took 24
+hours, an emergency support upgrade to
+ 
+hours, an emergency support upgrade to
+Amazon, and a significant amount of luck
+ 
+Amazon, and a significant amount of luck
+to recover the data. Alexey immediately
+ 
+to recover the data. Alexey immediately
+stripped the agent of all execution
+ 
+stripped the agent of all execution
+permissions. I would have done that,
+ 
+permissions. I would have done that,
+too. And he now reviews every
+ 
+too. And he now reviews every
+infrastructure change personally. The
+ 
+infrastructure change personally. The
+agent was competent, the agent was
+ 
+agent was competent, the agent was
+confident, and I also want to call out
+ 
+confident, and I also want to call out
+that Alexey made a lot of reasonable
+ 
+that Alexey made a lot of reasonable
+asks. This is not a piece where I'm
+ 
+asks. This is not a piece where I'm
+saying Alexey is not making good
+ 
+saying Alexey is not making good
+engineering decisions. He made a lot of
+ 
+engineering decisions. He made a lot of
+asks that a lot of us would have made in
+ 
+asks that a lot of us would have made in
+this situation, and he just got unlucky.
+ 
+this situation, and he just got unlucky.
+And that's the point. Because the agent
+ 
+And that's the point. Because the agent
+was wrong about which world it was
+ 
+was wrong about which world it was
+operating in, production or not
+ 
+operating in, production or not
+production, and it did not have the
+ 
+production, and it did not have the
+self-awareness
+ 
+self-awareness
+to ask. The only thing here that could
+ 
+to ask. The only thing here that could
+have prevented this disaster was a human
+ 
+have prevented this disaster was a human
+who understood the organizational
+ 
+who understood the organizational
+context, or an evaluation that encoded
+ 
+context, or an evaluation that encoded
+that context into a guardrail before the
+ 
+that context into a guardrail before the
+agent ever got as far as running that
+ 
+agent ever got as far as running that
+command. But neither existed in this
+ 
+command. But neither existed in this
+case, and Alexey had a really rough 24
+ 
+case, and Alexey had a really rough 24
+hours as a result. This, by the way, is
+ 
+hours as a result. This, by the way, is
+the reason why 11 Labs is pushing AI
+ 
+the reason why 11 Labs is pushing AI
+insurance. Their agents are insured. We
+ 
+insurance. Their agents are insured. We
+are going to see a lot more of that.
+ 
+are going to see a lot more of that.
+Now, Alexey's story is vivid, but you
+ 
+Now, Alexey's story is vivid, but you
+might be like, "Nate, you're
+ 
+might be like, "Nate, you're
+cherry-picking. A lot of agents do good
+ 
+cherry-picking. A lot of agents do good
+stuff." Yeah, they absolutely do. I
+ 
+stuff." Yeah, they absolutely do. I
+spend a lot of other videos talking
+ 
+spend a lot of other videos talking
+about them. But I want to tell you about
+ 
+about them. But I want to tell you about
+some data that we aren't paying
+ 
+some data that we aren't paying
+attention to that underlies this idea
+ 
+attention to that underlies this idea
+that we have a persistent agent memory
+ 
+that we have a persistent agent memory
+wall issue that is undercutting our
+ 
+wall issue that is undercutting our
+ability to manage long-running agentic
+ 
+ability to manage long-running agentic
+tasks well without an extraordinary
+ 
+tasks well without an extraordinary
+amount of human judgment that helps us
+ 
+amount of human judgment that helps us
+build that infrastructure competently.
+ 
+build that infrastructure competently.
+So, study number one, the Remote Labor
+ 
+So, study number one, the Remote Labor
+Index. So, Scale AI and the Center for
+ 
+Index. So, Scale AI and the Center for
+AI Safety tested frontier AI agents on
+ 
+AI Safety tested frontier AI agents on
+240 real freelance projects from Upwork.
+ 
+240 real freelance projects from Upwork.
+So, this is like video production work,
+ 
+So, this is like video production work,
+architecture work, 3D modeling work,
+ 
+architecture work, 3D modeling work,
+game development work, data analysis
+ 
+game development work, data analysis
+work. And this was end-to-end, right?
+ 
+work. And this was end-to-end, right?
+The average project cost about $630.
+ 
+The average project cost about $630.
+The average human completion time was 29
+ 
+The average human completion time was 29
+hours. Which is, I hasten to call out,
+ 
+hours. Which is, I hasten to call out,
+something that is not out of the realm
+ 
+something that is not out of the realm
+of possibility for today's long-running
+ 
+of possibility for today's long-running
+agent carnices. When you have companies
+ 
+agent carnices. When you have companies
+like Cursor bragging about multi-week
+ 
+like Cursor bragging about multi-week
+agent deployments that can build
+ 
+agent deployments that can build
+extremely complicated pieces of
+ 
+extremely complicated pieces of
+software, it does seem reasonable to
+ 
+software, it does seem reasonable to
+say, well, the human took 29 hours, the
+ 
+say, well, the human took 29 hours, the
+agent might be able to do it in many
+ 
+agent might be able to do it in many
+fewer hours than that, we should give it
+ 
+fewer hours than that, we should give it
+a shot. Guys, the best agent completed
+ 
+a shot. Guys, the best agent completed
+2.5%
+ 
+2.5%
+of projects at a quality a paying client
+ 
+of projects at a quality a paying client
+would accept. 97.5%
+ 
+would accept. 97.5%
+failure rate on real work.
+ 
+failure rate on real work.
+97.5.
+ 
+97.5.
+Now, here's the confusing part. A
+ 
+Now, here's the confusing part. A
+different benchmark, GDP val built by
+ 
+different benchmark, GDP val built by
+OpenAI, shows the exact same class of
+ 
+OpenAI, shows the exact same class of
+models approaching expert-level quality
+ 
+models approaching expert-level quality
+and completing tasks a hundred times
+ 
+and completing tasks a hundred times
+faster than humans. Both numbers are
+ 
+faster than humans. Both numbers are
+real. Both studies are real. The
+ 
+real. Both studies are real. The
+difference is that GDP val gives the
+ 
+difference is that GDP val gives the
+model all the context it needs, on
+ 
+model all the context it needs, on
+purpose. Here is the brief. Here is the
+ 
+purpose. Here is the brief. Here is the
+deliverable format. Here is what good
+ 
+deliverable format. Here is what good
+looks like. The remote labor index,
+ 
+looks like. The remote labor index,
+which is the one that studied Upwork,
+ 
+which is the one that studied Upwork,
+gives the model a client brief and some
+ 
+gives the model a client brief and some
+files and says, "Figure it out." That
+ 
+files and says, "Figure it out." That
+sounds more like a real job to me. The
+ 
+sounds more like a real job to me. The
+gap between these two benchmarks is the
+ 
+gap between these two benchmarks is the
+gap between can AI do this task and can
+ 
+gap between can AI do this task and can
+AI do a job. Tasks come with context
+ 
+AI do a job. Tasks come with context
+provided. AI is pretty good at them now.
+ 
+provided. AI is pretty good at them now.
+Jobs require you to bring your own. AI
+ 
+Jobs require you to bring your own. AI
+is not super good at that yet. And if
+ 
+is not super good at that yet. And if
+you think, by the way, that we started
+ 
+you think, by the way, that we started
+talking about AI agents at Memory Wall
+ 
+talking about AI agents at Memory Wall
+and we ended up in jobs, and you're
+ 
+and we ended up in jobs, and you're
+wondering, "How do we get to jobs?" It's
+ 
+wondering, "How do we get to jobs?" It's
+pretty simple. If AI agents cannot
+ 
+pretty simple. If AI agents cannot
+figure out an Upwork task with any
+ 
+figure out an Upwork task with any
+degree of reliability, there is no way
+ 
+degree of reliability, there is no way
+that we are rationally putting them in
+ 
+that we are rationally putting them in
+charge of entire jobs. There will be
+ 
+charge of entire jobs. There will be
+entire classes of human jobs that are
+ 
+entire classes of human jobs that are
+invested in building infrastructure to
+ 
+invested in building infrastructure to
+support long-running agents. That's
+ 
+support long-running agents. That's
+happening now. You can do it. There are
+ 
+happening now. You can do it. There are
+examples I have discussed in previous
+ 
+examples I have discussed in previous
+videos like the dark factory example
+ 
+videos like the dark factory example
+where it is possible. You get tremendous
+ 
+where it is possible. You get tremendous
+speed-ups, but that only happens when
+ 
+speed-ups, but that only happens when
+humans with really good brains spend a
+ 
+humans with really good brains spend a
+lot of time very thoughtfully figuring
+ 
+lot of time very thoughtfully figuring
+out how to do it. It does not happen
+ 
+out how to do it. It does not happen
+magically when the CEO finds a LinkedIn
+ 
+magically when the CEO finds a LinkedIn
+post. Second study, SWE-CI or SWE-CI. A
+ 
+post. Second study, SWE-CI or SWE-CI. A
+team out of Alibaba built the first
+ 
+team out of Alibaba built the first
+benchmark that measures what happens
+ 
+benchmark that measures what happens
+when AI maintains software over time
+ 
+when AI maintains software over time
+instead of writing it fresh. Yes, this
+ 
+instead of writing it fresh. Yes, this
+is the long software study that I told
+ 
+is the long software study that I told
+you about at the top of the video. This
+ 
+you about at the top of the video. This
+one is amazing. 100 real codebases, each
+ 
+one is amazing. 100 real codebases, each
+spanning an average of 233 days and 71
+ 
+spanning an average of 233 days and 71
+consecutive updates of actual
+ 
+consecutive updates of actual
+development history. The agent has to
+ 
+development history. The agent has to
+evolve the codebase forward, adding
+ 
+evolve the codebase forward, adding
+features, fixing bugs, adapting to new
+ 
+features, fixing bugs, adapting to new
+requirements, the way real software gets
+ 
+requirements, the way real software gets
+built over months and years.
+ 
+built over months and years.
+75%
+ 
+75%
+of models tested break previously
+ 
+of models tested break previously
+working features during maintenance.
+ 
+working features during maintenance.
+Three out of four frontier models asked
+ 
+Three out of four frontier models asked
+to maintain code over time actively make
+ 
+to maintain code over time actively make
+things worse. The benchmark punishes
+ 
+things worse. The benchmark punishes
+agents whose early decisions compound
+ 
+agents whose early decisions compound
+into technical debt later, and almost
+ 
+into technical debt later, and almost
+all of them do. Writing code and
+ 
+all of them do. Writing code and
+maintaining code are fundamentally
+ 
+maintaining code are fundamentally
+different skills. AI is really good at
+ 
+different skills. AI is really good at
+the former now. AI is not very good at
+ 
+the former now. AI is not very good at
+the latter. We only benchmark the first
+ 
+the latter. We only benchmark the first
+one right now, and the first one is the
+ 
+one right now, and the first one is the
+basis for the dramatic statements by
+ 
+basis for the dramatic statements by
+Dario Amodei and others basically saying
+ 
+Dario Amodei and others basically saying
+jobs are over or half of jobs are gone.
+ 
+jobs are over or half of jobs are gone.
+But I'm going to ask you, if you got to
+ 
+But I'm going to ask you, if you got to
+have a person maintain the code, what
+ 
+have a person maintain the code, what
+are we doing here? And as much as I love
+ 
+are we doing here? And as much as I love
+AI agents and as much as I've seen
+ 
+AI agents and as much as I've seen
+incredible use cases for AI agents, what
+ 
+incredible use cases for AI agents, what
+I see AI agents actually doing in
+ 
+I see AI agents actually doing in
+production is depending on humans to
+ 
+production is depending on humans to
+build the infrastructure around them to
+ 
+build the infrastructure around them to
+build effective deployments. And humans
+ 
+build effective deployments. And humans
+have to also remember over time what the
+ 
+have to also remember over time what the
+long-term goal of the project is so they
+ 
+long-term goal of the project is so they
+can set this up. When the Cursor team
+ 
+can set this up. When the Cursor team
+set up their AI agent to write these big
+ 
+set up their AI agent to write these big
+projects like recreating Excel and and
+ 
+projects like recreating Excel and and
+writing a browser and this and that,
+ 
+writing a browser and this and that,
+they had to set that intent. They had to
+ 
+they had to set that intent. They had to
+tell the AI agent, "This is what we're
+ 
+tell the AI agent, "This is what we're
+going to do." And they furthermore had
+ 
+going to do." And they furthermore had
+to deliberately experiment on the AI
+ 
+to deliberately experiment on the AI
+agent harness so that the AI agent
+ 
+agent harness so that the AI agent
+harness could work with the agent and
+ 
+harness could work with the agent and
+effectively deploy the feature. A
+ 
+effectively deploy the feature. A
+harness is just the context, the tools,
+ 
+harness is just the context, the tools,
+the sub-agents, the agent reporting
+ 
+the sub-agents, the agent reporting
+structure, all of the stuff that goes
+ 
+structure, all of the stuff that goes
+into a long-running task. All of that
+ 
+into a long-running task. All of that
+was human-designed at Cursor. And yeah,
+ 
+was human-designed at Cursor. And yeah,
+the agent gets the credit for doing
+ 
+the agent gets the credit for doing
+great work, but the humans should get
+ 
+great work, but the humans should get
+some credit for setting it up. And the
+ 
+some credit for setting it up. And the
+people reading the post should remember
+ 
+people reading the post should remember
+that smart humans have to deploy and
+ 
+that smart humans have to deploy and
+maintain this stuff. Last study, the
+ 
+maintain this stuff. Last study, the
+Harvard seniority paper. Hosseini Ma'sum
+ 
+Harvard seniority paper. Hosseini Ma'sum
+and Lichtman are studied 62 million
+ 
+and Lichtman are studied 62 million
+American workers across 285,000
+ 
+American workers across 285,000
+firms from 2015 to 2025. Companies that
+ 
+firms from 2015 to 2025. Companies that
+adopted generative AI saw junior
+ 
+adopted generative AI saw junior
+employment drop roughly 8% relative to
+ 
+employment drop roughly 8% relative to
+non-adopters within a year and a half.
+ 
+non-adopters within a year and a half.
+Senior employment kept rising. The
+ 
+Senior employment kept rising. The
+decline hit hardest in AI-exposed
+ 
+decline hit hardest in AI-exposed
+occupation and critically, despite the
+ 
+occupation and critically, despite the
+headlines, was driven by slower hiring,
+ 
+headlines, was driven by slower hiring,
+not more firing. The conventional read
+ 
+not more firing. The conventional read
+here is that AI replaces junior workers.
+ 
+here is that AI replaces junior workers.
+We've all seen a thousand headlines to
+ 
+We've all seen a thousand headlines to
+say that. The better read is that AI
+ 
+say that. The better read is that AI
+replaces task execution. Juniors are
+ 
+replaces task execution. Juniors are
+hired for tasks, debugging, document
+ 
+hired for tasks, debugging, document
+reviews, first drafts, at least they
+ 
+reviews, first drafts, at least they
+used to be. They shouldn't be anymore.
+ 
+used to be. They shouldn't be anymore.
+You should find better jobs for juniors
+ 
+You should find better jobs for juniors
+and I have suggested a number of them in
+ 
+and I have suggested a number of them in
+recent videos. But AI does these tasks
+ 
+recent videos. But AI does these tasks
+adequately in isolation. Seniors survive
+ 
+adequately in isolation. Seniors survive
+because they provide something
+ 
+because they provide something
+different. They hold the mental model of
+ 
+different. They hold the mental model of
+the system, and we actually need that
+ 
+the system, and we actually need that
+more than ever. They know which parts
+ 
+more than ever. They know which parts
+are load-bearing. They know the decision
+ 
+are load-bearing. They know the decision
+history. They know the things nobody
+ 
+history. They know the things nobody
+wrote down. The Harvard data is showing
+ 
+wrote down. The Harvard data is showing
+a labor market that is learning in real
+ 
+a labor market that is learning in real
+time that context is the scarce
+ 
+time that context is the scarce
+resource, not agent coding execution.
+ 
+resource, not agent coding execution.
+And we should talk about that. But
+ 
+And we should talk about that. But
+here's the part where it gets really,
+ 
+here's the part where it gets really,
+really spicy. This whole story so far
+ 
+really spicy. This whole story so far
+has been about engineering, but this
+ 
+has been about engineering, but this
+story is not an engineering story per
+ 
+story is not an engineering story per
+se. It just happens to start that way,
+ 
+se. It just happens to start that way,
+just as the AI revolution has started
+ 
+just as the AI revolution has started
+with engineering, frankly, because
+ 
+with engineering, frankly, because
+engineering is easy to verify. Yes,
+ 
+engineering is easy to verify. Yes,
+maybe the agent can't maintain code for
+ 
+maybe the agent can't maintain code for
+8 months, but it can pass a few soft
+ 
+8 months, but it can pass a few soft
+evals and submit a PR. And it can pass
+ 
+evals and submit a PR. And it can pass
+hard ones, too, to be fair, if you write
+ 
+hard ones, too, to be fair, if you write
+them. Now, make the jump with me from
+ 
+them. Now, make the jump with me from
+engineering to a wider view. Alex is
+ 
+engineering to a wider view. Alex is
+disaster, where he had a technically
+ 
+disaster, where he had a technically
+capable agent that was blind to the
+ 
+capable agent that was blind to the
+larger context of the problem, is not a
+ 
+larger context of the problem, is not a
+software problem. It's a pattern that's
+ 
+software problem. It's a pattern that's
+about to repeat in every single
+ 
+about to repeat in every single
+knowledge work domain where agents get
+ 
+knowledge work domain where agents get
+deployed. And agents are getting
+ 
+deployed. And agents are getting
+deployed everywhere. There is no place
+ 
+deployed everywhere. There is no place
+that agents are not getting deployed in
+ 
+that agents are not getting deployed in
+2026. It is coming. If it's not come to
+ 
+2026. It is coming. If it's not come to
+your work yet, it's going to come soon.
+ 
+your work yet, it's going to come soon.
+Picture a legal team that gives an agent
+ 
+Picture a legal team that gives an agent
+the job of reviewing contracts. The
+ 
+the job of reviewing contracts. The
+agent can parse clauses, can flag risks,
+ 
+agent can parse clauses, can flag risks,
+can compare against templates. What it
+ 
+can compare against templates. What it
+cannot know is that this particular
+ 
+cannot know is that this particular
+vendor has an informal understanding
+ 
+vendor has an informal understanding
+about payment terms that was negotiated
+ 
+about payment terms that was negotiated
+over dinner 3 years ago. It cannot know
+ 
+over dinner 3 years ago. It cannot know
+the company is in quiet acquisition
+ 
+the company is in quiet acquisition
+talks in certain intellectual property
+ 
+talks in certain intellectual property
+clauses are suddenly existential. The
+ 
+clauses are suddenly existential. The
+agent will review the contract
+ 
+agent will review the contract
+competently and miss what matters,
+ 
+competently and miss what matters,
+because the thing that matters lives in
+ 
+because the thing that matters lives in
+the general counsel's head, not in a
+ 
+the general counsel's head, not in a
+document. Or think about a marketing
+ 
+document. Or think about a marketing
+team running agents on campaign
+ 
+team running agents on campaign
+operations. The agents can build
+ 
+operations. The agents can build
+audiences, they can draft copy, they can
+ 
+audiences, they can draft copy, they can
+allocate budget. They cannot know the
+ 
+allocate budget. They cannot know the
+brand had a crisis in that market
+ 
+brand had a crisis in that market
+segment 8 months ago and the tone needs
+ 
+segment 8 months ago and the tone needs
+to be completely different there. They
+ 
+to be completely different there. They
+cannot know the CMO made a promise to
+ 
+cannot know the CMO made a promise to
+the CEO about a positioning shift that
+ 
+the CEO about a positioning shift that
+hasn't been written down anywhere. The
+ 
+hasn't been written down anywhere. The
+agents will execute a technically strong
+ 
+agents will execute a technically strong
+campaign that reopens a wound the
+ 
+campaign that reopens a wound the
+organization spent months healing. Or
+ 
+organization spent months healing. Or
+finance, agents can build technically
+ 
+finance, agents can build technically
+perfect projections. They cannot know
+ 
+perfect projections. They cannot know
+that certain numbers are politically
+ 
+that certain numbers are politically
+dangerous internally even if they are
+ 
+dangerous internally even if they are
+technically correct. They can't read the
+ 
+technically correct. They can't read the
+room. They don't know what the board
+ 
+room. They don't know what the board
+cares about this quarter versus last
+ 
+cares about this quarter versus last
+unless you tell them.
+ 
+unless you tell them.
+In every case, the agent does the task
+ 
+In every case, the agent does the task
+well. It's not the issue. In every case,
+ 
+well. It's not the issue. In every case,
+the agent cannot know whether this is
+ 
+the agent cannot know whether this is
+the right task done the right way at
+ 
+the right task done the right way at
+this moment in this organizational
+ 
+this moment in this organizational
+context unless a whole lot more is being
+ 
+context unless a whole lot more is being
+given to it. And in every case, the
+ 
+given to it. And in every case, the
+human who holds that context is the
+ 
+human who holds that context is the
+difference between the agent creating
+ 
+difference between the agent creating
+value and the agent creating damage. In
+ 
+value and the agent creating damage. In
+some cases, existential damage. The
+ 
+some cases, existential damage. The
+market is really confused about this. On
+ 
+market is really confused about this. On
+the one hand, we have the SaaS
+ 
+the one hand, we have the SaaS
+apocalypse. On the other hand, we have
+ 
+apocalypse. On the other hand, we have
+Gartner predicting in February that by
+ 
+Gartner predicting in February that by
+2027, half the companies that cut staff
+ 
+2027, half the companies that cut staff
+for AI will rehire workers to perform
+ 
+for AI will rehire workers to perform
+similar functions, often under different
+ 
+similar functions, often under different
+job titles. Their survey of over 300
+ 
+job titles. Their survey of over 300
+customer service leaders found only 20%
+ 
+customer service leaders found only 20%
+had actually reduced headcount because
+ 
+had actually reduced headcount because
+of AI and Forrester's data is even
+ 
+of AI and Forrester's data is even
+sharper. 55% of employers say they
+ 
+sharper. 55% of employers say they
+regret AI-driven layoffs. Do you see
+ 
+regret AI-driven layoffs. Do you see
+that talked about? We should probably
+ 
+that talked about? We should probably
+talk about it. And yes, there are very
+ 
+talk about it. And yes, there are very
+public case studies where companies have
+ 
+public case studies where companies have
+regretted laying off their employees and
+ 
+regretted laying off their employees and
+rehiring them subsequently. I've done
+ 
+rehiring them subsequently. I've done
+whole videos on that one as well. So,
+ 
+whole videos on that one as well. So,
+where does this leave all of us? I think
+ 
+where does this leave all of us? I think
+this leaves us in a world where we are
+ 
+this leaves us in a world where we are
+all playing a game of high-stakes
+ 
+all playing a game of high-stakes
+telephone. Right now, CEOs are hearing
+ 
+telephone. Right now, CEOs are hearing
+that AI can do a lot of things and it
+ 
+that AI can do a lot of things and it
+can and that is true. It is absolutely
+ 
+can and that is true. It is absolutely
+transformative to the business. What
+ 
+transformative to the business. What
+they are not hearing soon enough is that
+ 
+they are not hearing soon enough is that
+really good humans are needed to make
+ 
+really good humans are needed to make
+that happen and that AI being incredibly
+ 
+that happen and that AI being incredibly
+great doesn't mean that you don't need
+ 
+great doesn't mean that you don't need
+good people in the enterprise in those
+ 
+good people in the enterprise in those
+job functions. And there's a lot of
+ 
+job functions. And there's a lot of
+evidence now starting to mount that
+ 
+evidence now starting to mount that
+there are some regrets about that. In
+ 
+there are some regrets about that. In
+fact, there are CEOs who are publicly
+ 
+fact, there are CEOs who are publicly
+stating they have regrets about that.
+ 
+stating they have regrets about that.
+I've made videos about that recently.
+ 
+I've made videos about that recently.
+And this keeps coming back to the same
+ 
+And this keeps coming back to the same
+agent problem. If you want to know why
+ 
+agent problem. If you want to know why
+is this thing, it is because AI agents
+ 
+is this thing, it is because AI agents
+can write code, but they can't sustain
+ 
+can write code, but they can't sustain
+code for 8 months. It's the memory wall
+ 
+code for 8 months. It's the memory wall
+all over again, but now you extend it
+ 
+all over again, but now you extend it
+across the enterprise to customer
+ 
+across the enterprise to customer
+service and to marketing and to legal
+ 
+service and to marketing and to legal
+and to product and you have the same
+ 
+and to product and you have the same
+memory wall issue. The AI is really,
+ 
+memory wall issue. The AI is really,
+really good at doing a thing, a task, a
+ 
+really good at doing a thing, a task, a
+specific thing, like it does on GDP
+ 
+specific thing, like it does on GDP
+eval, and really, really bad at doing
+ 
+eval, and really, really bad at doing
+the complete job, like supporting
+ 
+the complete job, like supporting
+software, like the Upwork study. That is
+ 
+software, like the Upwork study. That is
+a common pattern. It is not a solved
+ 
+a common pattern. It is not a solved
+problem. And it is a big, big deal that
+ 
+problem. And it is a big, big deal that
+we should pay more attention to. So now,
+ 
+we should pay more attention to. So now,
+let's circle around to the biggest jobs
+ 
+let's circle around to the biggest jobs
+we humans have besides maintaining the
+ 
+we humans have besides maintaining the
+long-running context. And that is giving
+ 
+long-running context. And that is giving
+the AI an idea at the end of the job of
+ 
+the AI an idea at the end of the job of
+whether it did a good job. And the fancy
+ 
+whether it did a good job. And the fancy
+word for that is just an eval. Right
+ 
+word for that is just an eval. Right
+now, human judgment is our critical
+ 
+now, human judgment is our critical
+safeguard. And yes, we use it to prompt.
+ 
+safeguard. And yes, we use it to prompt.
+I've talked about prompting a ton on
+ 
+I've talked about prompting a ton on
+this channel and that's very important.
+ 
+this channel and that's very important.
+It's also important at the end of the
+ 
+It's also important at the end of the
+process to figure out whether it was
+ 
+process to figure out whether it was
+good or not. You can sniff check it. You
+ 
+good or not. You can sniff check it. You
+can just look at it, check it, but if
+ 
+can just look at it, check it, but if
+you want to do automated work, you also
+ 
+you want to do automated work, you also
+have to put some rules in place to see
+ 
+have to put some rules in place to see
+if the agent can pass the definitional
+ 
+if the agent can pass the definitional
+quality that you give it. And the
+ 
+quality that you give it. And the
+industry is really, really struggling
+ 
+industry is really, really struggling
+with this. I'll be really honest with
+ 
+with this. I'll be really honest with
+you. Whenever I make a video about
+ 
+you. Whenever I make a video about
+evals, it does badly. And I think that
+ 
+evals, it does badly. And I think that
+is so, so concerning. And I'm not going
+ 
+is so, so concerning. And I'm not going
+to stop talking about it. I'm not here
+ 
+to stop talking about it. I'm not here
+for that. I am here to tell the truth
+ 
+for that. I am here to tell the truth
+about what is going on in AI. And the
+ 
+about what is going on in AI. And the
+truth is that evals at core are a way of
+ 
+truth is that evals at core are a way of
+encoding human judgment into a test that
+ 
+encoding human judgment into a test that
+runs before, during, and after an agent
+ 
+runs before, during, and after an agent
+acts. It's the bridge between what the
+ 
+acts. It's the bridge between what the
+human knows and what the machine does.
+ 
+human knows and what the machine does.
+And a good eval would have caught
+ 
+And a good eval would have caught
+Alexi's disaster. Something as simple as
+ 
+Alexi's disaster. Something as simple as
+before destroying any cloud resource,
+ 
+before destroying any cloud resource,
+verify it is not tagged as production.
+ 
+verify it is not tagged as production.
+Or maybe before any bulk infrastructure
+ 
+Or maybe before any bulk infrastructure
+change, compare the current state file
+ 
+change, compare the current state file
+against the known production manifest.
+ 
+against the known production manifest.
+These are important to prioritize, even
+ 
+These are important to prioritize, even
+if they feel like they're not glamorous.
+ 
+if they feel like they're not glamorous.
+They're the kind of thing a senior
+ 
+They're the kind of thing a senior
+engineer knows how to check, and an AI
+ 
+engineer knows how to check, and an AI
+agent will never think to check on its
+ 
+agent will never think to check on its
+own, at least not at current
+ 
+own, at least not at current
+intelligence levels. But here's the
+ 
+intelligence levels. But here's the
+problem. Most companies deploying AI
+ 
+problem. Most companies deploying AI
+agents don't write evals at all. And if
+ 
+agents don't write evals at all. And if
+they do write evals, they're vibes-based
+ 
+they do write evals, they're vibes-based
+evals. They have someone junior in the
+ 
+evals. They have someone junior in the
+organization whose job it is to sit
+ 
+organization whose job it is to sit
+there in front of an Excel spreadsheet
+ 
+there in front of an Excel spreadsheet
+and write a bunch of things that in a
+ 
+and write a bunch of things that in a
+list together, the junior person thinks
+ 
+list together, the junior person thinks
+are a good test set. And nobody ever
+ 
+are a good test set. And nobody ever
+asked about methodology. Nobody ever
+ 
+asked about methodology. Nobody ever
+asked if they're actually good evals,
+ 
+asked if they're actually good evals,
+and nobody ever asked if they can
+ 
+and nobody ever asked if they can
+actually prevent real-world use cases
+ 
+actually prevent real-world use cases
+from occurring until it's too late.
+ 
+from occurring until it's too late.
+Because most evals don't test whether an
+ 
+Because most evals don't test whether an
+output is safe for a specific
+ 
+output is safe for a specific
+environment. They don't test if it's
+ 
+environment. They don't test if it's
+appropriate for this organizational
+ 
+appropriate for this organizational
+context. They don't test if you're
+ 
+context. They don't test if you're
+aligned with really important decisions
+ 
+aligned with really important decisions
+that were made six months ago. The ones
+ 
+that were made six months ago. The ones
+who do write evals are usually only
+ 
+who do write evals are usually only
+testing surface-level correctness, and
+ 
+testing surface-level correctness, and
+they mistakenly think that this is
+ 
+they mistakenly think that this is
+formal correctness, complete
+ 
+formal correctness, complete
+correctness. And I think it's not an
+ 
+correctness. And I think it's not an
+accident that we often think of evals as
+ 
+accident that we often think of evals as
+a chore and devolve them to junior team
+ 
+a chore and devolve them to junior team
+members. Junior team members don't have
+ 
+members. Junior team members don't have
+the context here. You actually need the
+ 
+the context here. You actually need the
+senior people writing the evals. So
+ 
+senior people writing the evals. So
+don't get an eval into a production
+ 
+don't get an eval into a production
+environment where it's testing agentic
+ 
+environment where it's testing agentic
+work, and the eval says, "Did the code
+ 
+work, and the eval says, "Did the code
+compile?" Like, ask something better.
+ 
+compile?" Like, ask something better.
+Like, "Does this change break something
+ 
+Like, "Does this change break something
+downstream that the test suite didn't
+ 
+downstream that the test suite didn't
+cover?" Here's 16 examples. Or here's
+ 
+cover?" Here's 16 examples. Or here's
+three examples, two counterexamples, and
+ 
+three examples, two counterexamples, and
+here's a repo to go look at. The skill
+ 
+here's a repo to go look at. The skill
+of writing great evaluations is the
+ 
+of writing great evaluations is the
+exact same skill that makes senior
+ 
+exact same skill that makes senior
+people valuable. It is not a chore. You
+ 
+people valuable. It is not a chore. You
+have to know what right looks like in
+ 
+have to know what right looks like in
+your situation, not just in general. You
+ 
+your situation, not just in general. You
+have to understand the system well
+ 
+have to understand the system well
+enough to anticipate where an agent will
+ 
+enough to anticipate where an agent will
+go wrong in ways the agent can
+ 
+go wrong in ways the agent can
+anticipate for itself. That is
+ 
+anticipate for itself. That is
+contextual judgment seniors have encoded
+ 
+contextual judgment seniors have encoded
+into infrastructure in ways that enable
+ 
+into infrastructure in ways that enable
+agents to succeed. And I can hear, in
+ 
+agents to succeed. And I can hear, in
+fact, I've talked to engineers. I've
+ 
+fact, I've talked to engineers. I've
+talked to other senior people who say,
+ 
+talked to other senior people who say,
+"I do not want to do this work because
+ 
+"I do not want to do this work because
+if I do this work, I think they will
+ 
+if I do this work, I think they will
+fire me." I have got news for you. I
+ 
+fire me." I have got news for you. I
+want you to go back to the number of
+ 
+want you to go back to the number of
+CEOs in the Forrester surveys regretting
+ 
+CEOs in the Forrester surveys regretting
+their AI firings. Yes, there are leaders
+ 
+their AI firings. Yes, there are leaders
+who make stupid decisions. It's true,
+ 
+who make stupid decisions. It's true,
+and maybe your leader is one of them. I
+ 
+and maybe your leader is one of them. I
+hope not, but maybe they are. But, any
+ 
+hope not, but maybe they are. But, any
+leader, and you can show this video to a
+ 
+leader, and you can show this video to a
+leader. By the way, if you would like to
+ 
+leader. By the way, if you would like to
+show this video to a leader and say,
+ 
+show this video to a leader and say,
+"Hey, man, it says this, that's fine.
+ 
+"Hey, man, it says this, that's fine.
+I'll take it. Make me the bad guy." Any
+ 
+I'll take it. Make me the bad guy." Any
+leader
+ 
+leader
+who is
+ 
+who is
+worth their salt
+ 
+worth their salt
+needs to understand that the ability to
+ 
+needs to understand that the ability to
+write evals is an evolving skill based
+ 
+write evals is an evolving skill based
+on evolving context. If you think for a
+ 
+on evolving context. If you think for a
+second as a senior that you can write an
+ 
+second as a senior that you can write an
+eval for an agent in marketing, in
+ 
+eval for an agent in marketing, in
+product, in customer success, in
+ 
+product, in customer success, in
+engineering, and it's done, and then
+ 
+engineering, and it's done, and then
+someone could get rid of you, and then
+ 
+someone could get rid of you, and then
+it would magically work, it's going to
+ 
+it would magically work, it's going to
+magically burn up, and it's going to be
+ 
+magically burn up, and it's going to be
+a complete disaster, and you're going to
+ 
+a complete disaster, and you're going to
+get something like what happened to
+ 
+get something like what happened to
+Alexey. Except, it's going to be even
+ 
+Alexey. Except, it's going to be even
+more impactful cuz it's be at like
+ 
+more impactful cuz it's be at like
+corporation scale.
+ 
+corporation scale.
+It's going to be really bad. The
+ 
+It's going to be really bad. The
+companies that win the next few years
+ 
+companies that win the next few years
+will be the ones that treat eval design
+ 
+will be the ones that treat eval design
+as a core competency for seniors, not as
+ 
+as a core competency for seniors, not as
+a developer task, not as an
+ 
+a developer task, not as an
+afterthought, not as a chore, not as
+ 
+afterthought, not as a chore, not as
+something to throw at juniors, not as
+ 
+something to throw at juniors, not as
+something to do before you fire people,
+ 
+something to do before you fire people,
+but as a primary expression of ongoing
+ 
+but as a primary expression of ongoing
+institutional knowledge. If you're
+ 
+institutional knowledge. If you're
+deploying agents without investing
+ 
+deploying agents without investing
+equally in evaluation infrastructure,
+ 
+equally in evaluation infrastructure,
+which is basically a way of giving them
+ 
+which is basically a way of giving them
+a kind of memory that works, you're
+ 
+a kind of memory that works, you're
+handing a powerful tool to a system that
+ 
+handing a powerful tool to a system that
+has no idea what it's not supposed to
+ 
+has no idea what it's not supposed to
+destroy. So, it's going to destroy
+ 
+destroy. So, it's going to destroy
+stuff. Ultimately, the human role in an
+ 
+stuff. Ultimately, the human role in an
+agentic world is what I've started
+ 
+agentic world is what I've started
+calling contextual stewardship,
+ 
+calling contextual stewardship,
+maintaining the mental model of your
+ 
+maintaining the mental model of your
+system, representing what you know in
+ 
+system, representing what you know in
+ways machines can use, and exercising
+ 
+ways machines can use, and exercising
+judgments about when technically correct
+ 
+judgments about when technically correct
+output is organizationally wrong. This
+ 
+output is organizationally wrong. This
+is not a technical skill. It's actually
+ 
+is not a technical skill. It's actually
+not about learning to code at all, or
+ 
+not about learning to code at all, or
+even mastering a particular AI tool.
+ 
+even mastering a particular AI tool.
+It's about becoming the person in your
+ 
+It's about becoming the person in your
+organization who holds the context that
+ 
+organization who holds the context that
+keeps the machines from going sideways.
+ 
+keeps the machines from going sideways.
+And yes, that's a skill that can be
+ 
+And yes, that's a skill that can be
+developed deliberately. You can start
+ 
+developed deliberately. You can start
+documenting decisions, not just
+ 
+documenting decisions, not just
+outcomes. Most organizations track what
+ 
+outcomes. Most organizations track what
+happened, and they never capture why
+ 
+happened, and they never capture why
+very well. They don't capture the
+ 
+very well. They don't capture the
+constraints, the tradeoffs, the context
+ 
+constraints, the tradeoffs, the context
+that made one choice better than another
+ 
+that made one choice better than another
+at that specific moment, let alone
+ 
+at that specific moment, let alone
+capturing that in a useful way that's
+ 
+capturing that in a useful way that's
+repeatable.
+ 
+repeatable.
+The decision context is the raw material
+ 
+The decision context is the raw material
+that makes agents effective. Its absence
+ 
+that makes agents effective. Its absence
+is also what makes them dangerous. When
+ 
+is also what makes them dangerous. When
+Alexey's agent destroyed his database,
+ 
+Alexey's agent destroyed his database,
+the critical missing piece wasn't a
+ 
+the critical missing piece wasn't a
+fancier model. It was a record of which
+ 
+fancier model. It was a record of which
+infrastructure was production and why.
+ 
+infrastructure was production and why.
+Develop system-level thinking, not just
+ 
+Develop system-level thinking, not just
+for engineers, for everyone operating in
+ 
+for engineers, for everyone operating in
+a complex environment, which is
+ 
+a complex environment, which is
+increasingly all of us at work.
+ 
+increasingly all of us at work.
+Understand how the pieces of your
+ 
+Understand how the pieces of your
+organization connect. Know second-order
+ 
+organization connect. Know second-order
+consequences. It's a really big deal
+ 
+consequences. It's a really big deal
+now. Build a mental model that lets you
+ 
+now. Build a mental model that lets you
+evaluate whether an agent's output is
+ 
+evaluate whether an agent's output is
+appropriate for this specific moment,
+ 
+appropriate for this specific moment,
+not just correct in isolation. The
+ 
+not just correct in isolation. The
+marketing lead who knows the brand's
+ 
+marketing lead who knows the brand's
+wound history is doing system-level
+ 
+wound history is doing system-level
+thinking. The general counsel who knows
+ 
+thinking. The general counsel who knows
+the unwritten relationship terms is
+ 
+the unwritten relationship terms is
+doing system-level thinking. This is the
+ 
+doing system-level thinking. This is the
+senior skill the Harvard data says the
+ 
+senior skill the Harvard data says the
+market is paying for, so we should
+ 
+market is paying for, so we should
+probably be using it. And invest in your
+ 
+probably be using it. And invest in your
+ability to write evaluations, even if it
+ 
+ability to write evaluations, even if it
+feels like a chore at first. This is the
+ 
+feels like a chore at first. This is the
+highest leverage thing that most people
+ 
+highest leverage thing that most people
+are not doing. You don't need to be an
+ 
+are not doing. You don't need to be an
+engineer, you need to know your domain
+ 
+engineer, you need to know your domain
+well enough to articulate, here are the
+ 
+well enough to articulate, here are the
+things that must be true for this output
+ 
+things that must be true for this output
+to be safe and useful in our world. And
+ 
+to be safe and useful in our world. And
+if you think to yourself, I don't have
+ 
+if you think to yourself, I don't have
+agents, why do I need to do this? If you
+ 
+agents, why do I need to do this? If you
+have Claude in your browser, you have an
+ 
+have Claude in your browser, you have an
+agent. If you have Claude in Excel, you
+ 
+agent. If you have Claude in Excel, you
+have an agent. If you have chat GPT and
+ 
+have an agent. If you have chat GPT and
+it's using your computer, you have an
+ 
+it's using your computer, you have an
+agent. You got agents, but you don't
+ 
+agent. You got agents, but you don't
+need to be an engineer. You just need to
+ 
+need to be an engineer. You just need to
+think, what are the checks that might
+ 
+think, what are the checks that might
+catch a bad disaster before it happens?
+ 
+catch a bad disaster before it happens?
+How can I communicate that context to
+ 
+How can I communicate that context to
+the agent in a way that matters? And the
+ 
+the agent in a way that matters? And the
+ability to write an eval is an ability
+ 
+ability to write an eval is an ability
+to scale your judgment across every
+ 
+to scale your judgment across every
+agent your organization deploys. And
+ 
+agent your organization deploys. And
+yes, they will get fancier and yes,
+ 
+yes, they will get fancier and yes,
+there will be central ones and this and
+ 
+there will be central ones and this and
+that, but that skill will scale.
+ 
+that, but that skill will scale.
+Remember, yes, AI capabilities are
+ 
+Remember, yes, AI capabilities are
+advancing quickly. Yes, the trajectory
+ 
+advancing quickly. Yes, the trajectory
+is real. Don't walk away from this and
+ 
+is real. Don't walk away from this and
+think it's not, cuz it is. But the
+ 
+think it's not, cuz it is. But the
+capabilities are advancing in ways that
+ 
+capabilities are advancing in ways that
+don't reflect long-term memory. So, task
+ 
+don't reflect long-term memory. So, task
+execution, writing code, generating
+ 
+execution, writing code, generating
+content, building models, that's
+ 
+content, building models, that's
+improving at a pace that is really,
+ 
+improving at a pace that is really,
+really, really terrifying sometimes.
+ 
+really, really terrifying sometimes.
+Contextual understanding, the kind that
+ 
+Contextual understanding, the kind that
+prevents an agent from obliterating your
+ 
+prevents an agent from obliterating your
+database, is improving much more slowly.
+ 
+database, is improving much more slowly.
+And that is part of why I made a whole
+ 
+And that is part of why I made a whole
+video about OpenAI making a bet on this
+ 
+video about OpenAI making a bet on this
+with the frontier system with AWS. But
+ 
+with the frontier system with AWS. But
+that is a bet. That is not solved. It is
+ 
+that is a bet. That is not solved. It is
+not clear how it will be solved, and
+ 
+not clear how it will be solved, and
+when it is solved, it is not clear
+ 
+when it is solved, it is not clear
+everyone's going to want to give this
+ 
+everyone's going to want to give this
+kind of long-running context to OpenAI
+ 
+kind of long-running context to OpenAI
+or really to any private company.
+ 
+or really to any private company.
+Because what we are talking about here
+ 
+Because what we are talking about here
+is the story of your company inside
+ 
+is the story of your company inside
+people's heads. Do you want to give it
+ 
+people's heads. Do you want to give it
+away? So, asymmetry here is the story.
+ 
+away? So, asymmetry here is the story.
+It's not AI is overhyped. It's not. It
+ 
+It's not AI is overhyped. It's not. It
+might be underhyped, to be honest. It's
+ 
+might be underhyped, to be honest. It's
+not AI will replace everyone because I
+ 
+not AI will replace everyone because I
+think what you're starting to see is
+ 
+think what you're starting to see is
+that there's some real gaps here. The
+ 
+that there's some real gaps here. The
+story is that the gap between what
+ 
+story is that the gap between what
+agents can do and what agents understand
+ 
+agents can do and what agents understand
+is actually getting wider because agents
+ 
+is actually getting wider because agents
+are getting more intelligent without
+ 
+are getting more intelligent without
+getting better at memory. And the humans
+ 
+getting better at memory. And the humans
+who have to stretch to close that gap
+ 
+who have to stretch to close that gap
+through judgment, through context,
+ 
+through judgment, through context,
+through evals will become the most
+ 
+through evals will become the most
+valuable people in their organizations.
+ 
+valuable people in their organizations.
+The humans who don't, who choose to say,
+ 
+The humans who don't, who choose to say,
+"Nope, not for me." will find themselves
+ 
+"Nope, not for me." will find themselves
+competing with machines on the only
+ 
+competing with machines on the only
+dimensions where machines are improving
+ 
+dimensions where machines are improving
+the fastest. Gartner's re-hiring
+ 
+the fastest. Gartner's re-hiring
+prediction is not about AI failing. It's
+ 
+prediction is not about AI failing. It's
+about organizations discovering too late
+ 
+about organizations discovering too late
+what their humans were actually
+ 
+what their humans were actually
+providing. The task execution was super
+ 
+providing. The task execution was super
+visible, the CEO could see it. The
+ 
+visible, the CEO could see it. The
+contextual stewardship was invisible.
+ 
+contextual stewardship was invisible.
+You don't realize invisible
+ 
+You don't realize invisible
+infrastructure is load-bearing until you
+ 
+infrastructure is load-bearing until you
+remove it and something collapses. So,
+ 
+remove it and something collapses. So,
+yeah, the agents are here, they work,
+ 
+yeah, the agents are here, they work,
+they're improving all the time, and
+ 
+they're improving all the time, and
+that's what makes it scary because every
+ 
+that's what makes it scary because every
+single one of them that keeps getting
+ 
+single one of them that keeps getting
+better is not automatically going to be
+ 
+better is not automatically going to be
+aware of the context that keeps your
+ 
+aware of the context that keeps your
+business alive. In fact, it's going to
+ 
+business alive. In fact, it's going to
+be automatically unaware, automatically
+ 
+be automatically unaware, automatically
+blind to the context that keeps your
+ 
+blind to the context that keeps your
+organization going. Your job, whatever
+ 
+organization going. Your job, whatever
+your title, whatever your domain, is to
+ 
+your title, whatever your domain, is to
+be the one who sees what they can't and
+ 
+be the one who sees what they can't and
+then to write an eval that makes sure
+ 
+then to write an eval that makes sure
+they never have to. And if you think
+ 
+they never have to. And if you think
+that's work for the agent, I hope you
+ 
+that's work for the agent, I hope you
+heard that last 30 seconds and replay it
+ 
+heard that last 30 seconds and replay it
+again because you know what? This is
+ 
+again because you know what? This is
+about making your contextual stewardship
+ 
+about making your contextual stewardship
+visible. And if you make it visible
+ 
+visible. And if you make it visible
+through evals and you point out, "Hey,
+ 
+through evals and you point out, "Hey,
+this is ongoing contextual stewardship.
+ 
+this is ongoing contextual stewardship.
+I added three more evals and this is why
+ 
+I added three more evals and this is why
+and this is what we prevented happening
+ 
+and this is what we prevented happening
+this week, etc., etc." you are reminding
+ 
+this week, etc., etc." you are reminding
+leadership that there is a lot of value
+ 
+leadership that there is a lot of value
+in good context to make sure all of this
+ 
+in good context to make sure all of this
+fancy AI execution doesn't go off the
+ 
+fancy AI execution doesn't go off the
+rails like what happened to poor Alexey.
+ 
+rails like what happened to poor Alexey.
+And I'm so glad Alexey that you got your
+ 
+And I'm so glad Alexey that you got your
+database back. I have been the person
+ 
+database back. I have been the person
+that horrifically deleted something in
+ 
+that horrifically deleted something in
+prod. It was earlier in my career, I
+ 
+prod. It was earlier in my career, I
+deleted half an Oracle I store instance
+ 
+deleted half an Oracle I store instance
+thanks to a terrible UX inside Oracle at
+ 
+thanks to a terrible UX inside Oracle at
+that time several several several years
+ 
+that time several several several years
+ago. And the feeling in the pit of my
+ 
+ago. And the feeling in the pit of my
+stomach at that time is one I will never
+ 
+stomach at that time is one I will never
+ever forget. So, I'm so glad you got
+ 
+ever forget. So, I'm so glad you got
+your database back Alexey and let's all
+ 
+your database back Alexey and let's all
+make better choices when it comes to AI
+ 
+make better choices when it comes to AI
+agents and how we assign them tasks and
+ 
+agents and how we assign them tasks and
+how we make sure that their memory
+ 
+how we make sure that their memory
+constraints are not going to be actively
+ 
+constraints are not going to be actively
+destructive to our business, to our
+ 
+destructive to our business, to our
+product, to our lives. Cheers.

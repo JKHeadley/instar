@@ -1,0 +1,2426 @@
+ 
+On March 8th, Andre Karpathy released a
+ 
+On March 8th, Andre Karpathy released a
+630-line Python script that created an
+ 
+630-line Python script that created an
+entirely new paradigm for AI
+ 
+entirely new paradigm for AI
+development. He pointed an AI agent at
+ 
+development. He pointed an AI agent at
+his own training code, gave it a single
+ 
+his own training code, gave it a single
+metric to optimize, and went to sleep.
+ 
+metric to optimize, and went to sleep.
+Two days later, the agent had run 700
+ 
+Two days later, the agent had run 700
+experiments, discovered 20 genuine
+ 
+experiments, discovered 20 genuine
+improvements, and cut training time by
+ 
+improvements, and cut training time by
+11% on a codebase that one of the best
+ 
+11% on a codebase that one of the best
+ML researchers alive had already
+ 
+ML researchers alive had already
+optimized for months. It found a bug in
+ 
+optimized for months. It found a bug in
+his attention implementation that
+ 
+his attention implementation that
+Karpathy had missed. Not because the
+ 
+Karpathy had missed. Not because the
+agent was smarter, but because it tried
+ 
+agent was smarter, but because it tried
+more things faster without getting bored
+ 
+more things faster without getting bored
+after the 15th fail attempt. On April
+ 
+after the 15th fail attempt. On April
+2nd, a small YC startup called Third
+ 
+2nd, a small YC startup called Third
+Layer took the same pattern and applied
+ 
+Layer took the same pattern and applied
+it to Agenta harnesses. The prompts, the
+ 
+it to Agenta harnesses. The prompts, the
+tools, the orchestration logic that
+ 
+tools, the orchestration logic that
+determine how agents behave. A meta
+ 
+determine how agents behave. A meta
+agent rewrote the task agent's entire
+ 
+agent rewrote the task agent's entire
+scaffolding overnight and claims to have
+ 
+scaffolding overnight and claims to have
+hit first place on two major benchmarks.
+ 
+hit first place on two major benchmarks.
+Every other entry on those leaderboards
+ 
+Every other entry on those leaderboards
+was hand-engineered by humans. The
+ 
+was hand-engineered by humans. The
+pattern is called the Karpathy loop, and
+ 
+pattern is called the Karpathy loop, and
+it changes how you should think about AI
+ 
+it changes how you should think about AI
+in your organization. So, I'm going to
+ 
+in your organization. So, I'm going to
+walk you through exactly how that works,
+ 
+walk you through exactly how that works,
+what the constraints are, and how you
+ 
+what the constraints are, and how you
+can implement it in your org, and how
+ 
+can implement it in your org, and how
+this Karpathy loop escalated us from
+ 
+this Karpathy loop escalated us from
+optimizing training code to optimizing
+ 
+optimizing training code to optimizing
+agent behavior. We're also going to talk
+ 
+agent behavior. We're also going to talk
+about what local hard takeoff means in
+ 
+about what local hard takeoff means in
+practical business terms, and why you
+ 
+practical business terms, and why you
+need to care about it now. And we're
+ 
+need to care about it now. And we're
+going to talk finally about why most
+ 
+going to talk finally about why most
+orgs will fail to take advantage of that
+ 
+orgs will fail to take advantage of that
+auto-optimized loop, and what a real
+ 
+auto-optimized loop, and what a real
+path looks like for teams that want to
+ 
+path looks like for teams that want to
+get auto-optimizing agents going in
+ 
+get auto-optimizing agents going in
+2026. Now, if you watched my initial
+ 
+2026. Now, if you watched my initial
+video on this in March, this is the
+ 
+video on this in March, this is the
+sequel to that. That piece defined auto
+ 
+sequel to that. That piece defined auto
+research as one of four distinct
+ 
+research as one of four distinct
+architectures. This piece explores what
+ 
+architectures. This piece explores what
+happens when auto research grows up and
+ 
+happens when auto research grows up and
+gets implemented in your org. First, I
+ 
+gets implemented in your org. First, I
+want to spend a minute on why auto
+ 
+want to spend a minute on why auto
+research works, because the mechanism is
+ 
+research works, because the mechanism is
+the thing that most people are getting
+ 
+the thing that most people are getting
+wrong about it. They see the idea that
+ 
+wrong about it. They see the idea that
+AI does research while you sleep, and
+ 
+AI does research while you sleep, and
+they assume that there's magic in the
+ 
+they assume that there's magic in the
+agent's intelligence. But that's not it.
+ 
+agent's intelligence. But that's not it.
+The magic is actually in the
+ 
+The magic is actually in the
+constraints. Karpathy's setup is
+ 
+constraints. Karpathy's setup is
+deliberately minimal. There are just
+ 
+deliberately minimal. There are just
+three files. One of them, train.py, is
+ 
+three files. One of them, train.py, is
+the only file the agent can touch. So
+ 
+the only file the agent can touch. So
+the agent proposes an edit, runs a
+ 
+the agent proposes an edit, runs a
+5-minute training experiment, checks a
+ 
+5-minute training experiment, checks a
+single metric, it validates it, and it
+ 
+single metric, it validates it, and it
+either commits the change or it reverts
+ 
+either commits the change or it reverts
+it and says, "No, that didn't work."
+ 
+it and says, "No, that didn't work."
+That is the entire loop. I just
+ 
+That is the entire loop. I just
+described it for you. It is one file, it
+ 
+described it for you. It is one file, it
+is one metric, it is one fixed time
+ 
+is one metric, it is one fixed time
+budget. That is it. The human's job is
+ 
+budget. That is it. The human's job is
+just to write a plain English
+ 
+just to write a plain English
+instruction file that tells the agent
+ 
+instruction file that tells the agent
+what to explore and what constraints
+ 
+what to explore and what constraints
+that it must respect. And so the human
+ 
+that it must respect. And so the human
+needs to aim the research direction
+ 
+needs to aim the research direction
+while the agent executes the search. And
+ 
+while the agent executes the search. And
+that's the bones of the Karpathy loop
+ 
+that's the bones of the Karpathy loop
+right there. It just has three
+ 
+right there. It just has three
+components: an agent with access to one
+ 
+components: an agent with access to one
+editable file, a single objectively
+ 
+editable file, a single objectively
+testable metric, and a very fixed time
+ 
+testable metric, and a very fixed time
+limit per experiment. That's the whole
+ 
+limit per experiment. That's the whole
+architecture. The minimalism isn't a
+ 
+architecture. The minimalism isn't a
+limitation, it's the entire point. By
+ 
+limitation, it's the entire point. By
+constraining the search space to one
+ 
+constraining the search space to one
+file and one metric, Karpathy made the
+ 
+file and one metric, Karpathy made the
+problem tractable for an agent in a way
+ 
+problem tractable for an agent in a way
+that a very sprawling multi-file system
+ 
+that a very sprawling multi-file system
+wouldn't be. Because the agent can read
+ 
+wouldn't be. Because the agent can read
+the entire code base or whatever you're
+ 
+the entire code base or whatever you're
+trying to optimize in a single pass and
+ 
+trying to optimize in a single pass and
+it can understand the full context of
+ 
+it can understand the full context of
+any change. It can evaluate whether the
+ 
+any change. It can evaluate whether the
+change worked within just a few minutes
+ 
+change worked within just a few minutes
+and it can do this hundreds and hundreds
+ 
+and it can do this hundreds and hundreds
+of times over and over again without
+ 
+of times over and over again without
+fatigue, without distraction, without
+ 
+fatigue, without distraction, without
+the sunk cost bias that makes human
+ 
+the sunk cost bias that makes human
+researchers really cling to ideas that
+ 
+researchers really cling to ideas that
+aren't working anymore. In the first
+ 
+aren't working anymore. In the first
+run, the agent executed about 12
+ 
+run, the agent executed about 12
+experiments an hour or roughly 100
+ 
+experiments an hour or roughly 100
+overnight. Of those, maybe 20 produced
+ 
+overnight. Of those, maybe 20 produced
+genuine improvements that stacked into
+ 
+genuine improvements that stacked into
+an 11% speed up in total. So the hit
+ 
+an 11% speed up in total. So the hit
+rate, that's not high, but the iteration
+ 
+rate, that's not high, but the iteration
+rate is absolutely inhuman. A productive
+ 
+rate is absolutely inhuman. A productive
+human researcher might manage eight to
+ 
+human researcher might manage eight to
+10 of those experiment cycles in a
+ 
+10 of those experiment cycles in a
+working day, and most of that time would
+ 
+working day, and most of that time would
+be waiting for the GPU, not actually
+ 
+be waiting for the GPU, not actually
+thinking. The agent doesn't have to
+ 
+thinking. The agent doesn't have to
+wait, it doesn't have to context switch,
+ 
+wait, it doesn't have to context switch,
+it doesn't go to lunch. When Shopify CEO
+ 
+it doesn't go to lunch. When Shopify CEO
+Tobi Lutke tried the same pattern on
+ 
+Tobi Lutke tried the same pattern on
+internal company data, he got a 19%
+ 
+internal company data, he got a 19%
+performance gain from 37 experiments in
+ 
+performance gain from 37 experiments in
+8 hours. When Skypilot pointed it at a
+ 
+8 hours. When Skypilot pointed it at a
+16 GPU Kubernetes cluster, the agent ran
+ 
+16 GPU Kubernetes cluster, the agent ran
+910 experiments in 8 hours, discovered
+ 
+910 experiments in 8 hours, discovered
+that scaling model width mattered more
+ 
+that scaling model width mattered more
+than any single parameter, and
+ 
+than any single parameter, and
+spontaneously taught itself to use
+ 
+spontaneously taught itself to use
+faster GPUs for validation. Total
+ 
+faster GPUs for validation. Total
+compute cost to figure that out under
+ 
+compute cost to figure that out under
+$300. And that detail matters, and we're
+ 
+$300. And that detail matters, and we're
+going to come back to it because so much
+ 
+going to come back to it because so much
+of what we're talking about in 2026 is
+ 
+of what we're talking about in 2026 is
+can you do this kind of adjunctive work
+ 
+can you do this kind of adjunctive work
+efficiently? Now, auto research will
+ 
+efficiently? Now, auto research will
+optimize training code for you, and
+ 
+optimize training code for you, and
+that's important, but it's a very narrow
+ 
+that's important, but it's a very narrow
+domain. The thing that happened more
+ 
+domain. The thing that happened more
+recently in the first week of April is
+ 
+recently in the first week of April is
+much more consequential. Kevin Goose's
+ 
+much more consequential. Kevin Goose's
+auto agent took the same loop, the edit,
+ 
+auto agent took the same loop, the edit,
+run, measure, keeper, discard loop, and
+ 
+run, measure, keeper, discard loop, and
+applied it to harness engineering. So,
+ 
+applied it to harness engineering. So,
+instead of optimizing a model's weights
+ 
+instead of optimizing a model's weights
+or its hyper parameters, this loop
+ 
+or its hyper parameters, this loop
+optimizes the scaffolding around the
+ 
+optimizes the scaffolding around the
+model, the system prompt, the tool
+ 
+model, the system prompt, the tool
+definitions, the routing logic, the
+ 
+definitions, the routing logic, the
+orchestration strategy. The meta agent
+ 
+orchestration strategy. The meta agent
+reads failure traces from the task agent
+ 
+reads failure traces from the task agent
+and diagnoses what went wrong and
+ 
+and diagnoses what went wrong and
+modifies the harness and runs that
+ 
+modifies the harness and runs that
+benchmark again. Essentially, they've
+ 
+benchmark again. Essentially, they've
+turned the problem of harness
+ 
+turned the problem of harness
+engineering into just trying to optimize
+ 
+engineering into just trying to optimize
+for a single score. And funnily enough,
+ 
+for a single score. And funnily enough,
+the claimed results are striking. Goose
+ 
+the claimed results are striking. Goose
+says auto agent hit 96.5%
+ 
+says auto agent hit 96.5%
+on spreadsheet bench and 55.1% on
+ 
+on spreadsheet bench and 55.1% on
+terminal bench, first place on both.
+ 
+terminal bench, first place on both.
+Now, I want to be very transparent. As
+ 
+Now, I want to be very transparent. As
+of this writing, those scores haven't
+ 
+of this writing, those scores haven't
+appeared on the official leaderboards,
+ 
+appeared on the official leaderboards,
+and it's just a claim, right? The
+ 
+and it's just a claim, right? The
+highest verified spreadsheet bench entry
+ 
+highest verified spreadsheet bench entry
+is Opus 4.6 at 34 something percent. So,
+ 
+is Opus 4.6 at 34 something percent. So,
+the gap between the claimed score and
+ 
+the gap between the claimed score and
+the verified state of the art is quite
+ 
+the verified state of the art is quite
+big, and it's possible the claims are
+ 
+big, and it's possible the claims are
+real but unverified, but I want to
+ 
+real but unverified, but I want to
+emphasize instead of looking at a
+ 
+emphasize instead of looking at a
+particular benchmark score, which I talk
+ 
+particular benchmark score, which I talk
+a lot about not taking benchmarks too
+ 
+a lot about not taking benchmarks too
+seriously, look at the direction you can
+ 
+seriously, look at the direction you can
+go when you kick off an auto agent work
+ 
+go when you kick off an auto agent work
+loop like this. Those are the findings
+ 
+loop like this. Those are the findings
+that matter more. So, let's dig into
+ 
+that matter more. So, let's dig into
+what are the principles here that help
+ 
+what are the principles here that help
+us to understand how to scale your
+ 
+us to understand how to scale your
+agent. First, the meta agent task agent
+ 
+agent. First, the meta agent task agent
+split. Goose team tried having a single
+ 
+split. Goose team tried having a single
+agent improve itself didn't work very
+ 
+agent improve itself didn't work very
+well. Being good at a domain and being
+ 
+well. Being good at a domain and being
+good at improving at that domain are
+ 
+good at improving at that domain are
+actually very different capabilities.
+ 
+actually very different capabilities.
+That separation lets each agent
+ 
+That separation lets each agent
+specialize. So, the meta agent becomes a
+ 
+specialize. So, the meta agent becomes a
+harness engineer and the task agent
+ 
+harness engineer and the task agent
+becomes a domain specialist. This is a
+ 
+becomes a domain specialist. This is a
+really interesting design insight that
+ 
+really interesting design insight that
+we can transfer directly into a bunch of
+ 
+we can transfer directly into a bunch of
+business applications. The second piece
+ 
+business applications. The second piece
+is model empathy. So, same model
+ 
+is model empathy. So, same model
+pairings dramatically outperform cross
+ 
+pairings dramatically outperform cross
+model pairings. In other words, a Claude
+ 
+model pairings. In other words, a Claude
+meta agent writes better harnesses for a
+ 
+meta agent writes better harnesses for a
+Claude task agent than a chat GPT task
+ 
+Claude task agent than a chat GPT task
+agent and vice versa. Goose team
+ 
+agent and vice versa. Goose team
+explains this as the meta agent having
+ 
+explains this as the meta agent having
+implicit understanding of how the inner
+ 
+implicit understanding of how the inner
+model reasons, its tendencies, its
+ 
+model reasons, its tendencies, its
+failure modes, and its preferences. So,
+ 
+failure modes, and its preferences. So,
+the meta agent shares the same weights,
+ 
+the meta agent shares the same weights,
+so when it reads a failure trace showing
+ 
+so when it reads a failure trace showing
+the task agent lost direction at step
+ 
+the task agent lost direction at step
+14, it kind of understands that failure
+ 
+14, it kind of understands that failure
+from the inside. This is a non-obvious
+ 
+from the inside. This is a non-obvious
+constraint that matters for anyone who's
+ 
+constraint that matters for anyone who's
+designing these kind of self-improvement
+ 
+designing these kind of self-improvement
+systems. Third, there were emergent
+ 
+systems. Third, there were emergent
+behaviors that the team did not program
+ 
+behaviors that the team did not program
+that we should pay attention to. The
+ 
+that we should pay attention to. The
+meta agent independently invented spot
+ 
+meta agent independently invented spot
+checking, running individual tasks
+ 
+checking, running individual tasks
+instead of the full benchmark suite for
+ 
+instead of the full benchmark suite for
+small edits and saving compute. It built
+ 
+small edits and saving compute. It built
+forced verification loops and formatting
+ 
+forced verification loops and formatting
+validators. It steered the task agent to
+ 
+validators. It steered the task agent to
+write its own unit tests. It invented
+ 
+write its own unit tests. It invented
+progressive disclosure, dumping long
+ 
+progressive disclosure, dumping long
+context to files when results overflowed
+ 
+context to files when results overflowed
+the context window, and it built
+ 
+the context window, and it built
+task-specific sub-agents and handoff
+ 
+task-specific sub-agents and handoff
+logic when the domain required it. None
+ 
+logic when the domain required it. None
+of this was specified in the directive.
+ 
+of this was specified in the directive.
+The meta agent discovered these
+ 
+The meta agent discovered these
+strategies by analyzing its own failure
+ 
+strategies by analyzing its own failure
+traces and reasoning about what would
+ 
+traces and reasoning about what would
+help. This is the escalation that
+ 
+help. This is the escalation that
+matters for business. Optimizing
+ 
+matters for business. Optimizing
+training code, that's kind of useful,
+ 
+training code, that's kind of useful,
+but it's also, to be honest, kind of
+ 
+but it's also, to be honest, kind of
+niche. But, if we're getting into a
+ 
+niche. But, if we're getting into a
+world where we are optimizing the
+ 
+world where we are optimizing the
+harness, the prompts, the tools, the
+ 
+harness, the prompts, the tools, the
+routing, the orchestration that
+ 
+routing, the orchestration that
+determine how an agent behaves, well,
+ 
+determine how an agent behaves, well,
+now we're talking. That's universal.
+ 
+now we're talking. That's universal.
+Every company deploying agents has to
+ 
+Every company deploying agents has to
+have a harness, and most of those
+ 
+have a harness, and most of those
+harnesses right now, they're designed by
+ 
+harnesses right now, they're designed by
+we humans who are doing our very best
+ 
+we humans who are doing our very best
+with the knowledge we have. The auto
+ 
+with the knowledge we have. The auto
+agent pattern suggests those harnesses
+ 
+agent pattern suggests those harnesses
+can be systematically optimized by a
+ 
+can be systematically optimized by a
+meta agent that understands the inner
+ 
+meta agent that understands the inner
+model better than a human engineer
+ 
+model better than a human engineer
+would. And this is just from the
+ 
+would. And this is just from the
+open-source community. Inside the
+ 
+open-source community. Inside the
+frontier labs, the ambition is even
+ 
+frontier labs, the ambition is even
+bigger. Anthropic has publicly stated
+ 
+bigger. Anthropic has publicly stated
+that it wants Claude N to build Claude N
+ 
+that it wants Claude N to build Claude N
+plus 1. In other words, it wants to
+ 
+plus 1. In other words, it wants to
+start a fully recursive loop, auto
+ 
+start a fully recursive loop, auto
+research. OpenAI has announced it's
+ 
+research. OpenAI has announced it's
+aiming for a fully automated AI
+ 
+aiming for a fully automated AI
+researcher by 2028 with an AI research
+ 
+researcher by 2028 with an AI research
+intern by 2026. At Davos in January,
+ 
+intern by 2026. At Davos in January,
+Demis Hassabis said the self-improvement
+ 
+Demis Hassabis said the self-improvement
+loop is something all major labs are
+ 
+loop is something all major labs are
+pursuing. The difference between what
+ 
+pursuing. The difference between what
+the labs are doing and what auto
+ 
+the labs are doing and what auto
+research demonstrates is just in scale
+ 
+research demonstrates is just in scale
+and scope. It's not in kind. This is the
+ 
+and scope. It's not in kind. This is the
+same kind of thing. The loop is the
+ 
+same kind of thing. The loop is the
+same. You propose a change, you run an
+ 
+same. You propose a change, you run an
+experiment, you evaluate, and you keep
+ 
+experiment, you evaluate, and you keep
+it or you discard it. The open-source
+ 
+it or you discard it. The open-source
+versions just operate on smaller systems
+ 
+versions just operate on smaller systems
+with much narrower objectives. The labs
+ 
+with much narrower objectives. The labs
+are running the exact same loop I just
+ 
+are running the exact same loop I just
+described with big ambition. So, that
+ 
+described with big ambition. So, that
+pattern has been validated now. The
+ 
+pattern has been validated now. The
+question to me is how far it scales and
+ 
+question to me is how far it scales and
+how fast, and that leads us to a new
+ 
+how fast, and that leads us to a new
+concept, the concept of a local hard
+ 
+concept, the concept of a local hard
+takeoff. I want to be very careful with
+ 
+takeoff. I want to be very careful with
+my language here because hard takeoff is
+ 
+my language here because hard takeoff is
+a very loaded term in AI safety circles.
+ 
+a very loaded term in AI safety circles.
+It usually refers to a hypothetical
+ 
+It usually refers to a hypothetical
+intelligence explosion, an AI that
+ 
+intelligence explosion, an AI that
+improves itself so rapidly that it
+ 
+improves itself so rapidly that it
+surpasses human control. That is not
+ 
+surpasses human control. That is not
+what I am describing. What I'm
+ 
+what I am describing. What I'm
+describing is something much more
+ 
+describing is something much more
+mundane, in a lot of ways more
+ 
+mundane, in a lot of ways more
+immediately useful. A local hard takeoff
+ 
+immediately useful. A local hard takeoff
+is what happens when an optimization
+ 
+is what happens when an optimization
+loop closes on a specific business
+ 
+loop closes on a specific business
+system and compounds improvements faster
+ 
+system and compounds improvements faster
+than the surrounding organization can
+ 
+than the surrounding organization can
+necessarily track it. So, your pricing
+ 
+necessarily track it. So, your pricing
+engine spends the weekend rewriting its
+ 
+engine spends the weekend rewriting its
+own heuristics and comes back 30% more
+ 
+own heuristics and comes back 30% more
+accurate. Your fraud detection model
+ 
+accurate. Your fraud detection model
+discovers patterns that a human analyst
+ 
+discovers patterns that a human analyst
+wouldn't try. Your customer service
+ 
+wouldn't try. Your customer service
+agent autonomously builds verification
+ 
+agent autonomously builds verification
+loops and escalation logic that cut
+ 
+loops and escalation logic that cut
+resolution time in half. Each of these
+ 
+resolution time in half. Each of these
+is a hard takeoff in the sense that the
+ 
+is a hard takeoff in the sense that the
+improvement trajectory is steep, sudden,
+ 
+improvement trajectory is steep, sudden,
+compounding, and largely autonomous.
+ 
+compounding, and largely autonomous.
+But, it's also local. It's bounded to a
+ 
+But, it's also local. It's bounded to a
+very specific domain. It's a specific
+ 
+very specific domain. It's a specific
+metric. It's a specific sandbox. It
+ 
+metric. It's a specific sandbox. It
+doesn't escape. It doesn't generalize.
+ 
+doesn't escape. It doesn't generalize.
+We're not talking about Terminator here.
+ 
+We're not talking about Terminator here.
+It just gets really, really good at one
+ 
+It just gets really, really good at one
+thing really fast. And this is what that
+ 
+thing really fast. And this is what that
+auto research pattern looks like when
+ 
+auto research pattern looks like when
+applied to business. And I think that
+ 
+applied to business. And I think that
+this is why it's so important to think
+ 
+this is why it's so important to think
+about it deliberately. And yes, it's
+ 
+about it deliberately. And yes, it's
+happening in miniature already. A Reddit
+ 
+happening in miniature already. A Reddit
+post from a couple of weeks ago about
+ 
+post from a couple of weeks ago about
+adapting auto research for agentic
+ 
+adapting auto research for agentic
+coding skills described exactly the loop
+ 
+coding skills described exactly the loop
+I just laid out. You analyze the current
+ 
+I just laid out. You analyze the current
+skill configuration. You apply a scope
+ 
+skill configuration. You apply a scope
+change. You run deterministic test
+ 
+change. You run deterministic test
+cases. You evaluate on correctness. And
+ 
+cases. You evaluate on correctness. And
+you commit or revert. It's the same
+ 
+you commit or revert. It's the same
+pattern. It's just applied to a
+ 
+pattern. It's just applied to a
+different domain. There's a subtlety
+ 
+different domain. There's a subtlety
+here that the auto agent work surface,
+ 
+here that the auto agent work surface,
+and I think that this is very
+ 
+and I think that this is very
+underappreciated but critical when we
+ 
+underappreciated but critical when we
+understand it for business applications.
+ 
+understand it for business applications.
+Traces are everything. When Google's
+ 
+Traces are everything. When Google's
+team only gave the meta agent scores
+ 
+team only gave the meta agent scores
+without reasoning trajectories, the
+ 
+without reasoning trajectories, the
+improvement rate dropped really fast.
+ 
+improvement rate dropped really fast.
+Understanding why something improved
+ 
+Understanding why something improved
+seems to matter as much as knowing that
+ 
+seems to matter as much as knowing that
+it improved. Traces give the meta agent
+ 
+it improved. Traces give the meta agent
+interpretability over the task agent's
+ 
+interpretability over the task agent's
+reasoning, and that interpretability is
+ 
+reasoning, and that interpretability is
+what makes targeted edits possible
+ 
+what makes targeted edits possible
+rather than just random mutations. This
+ 
+rather than just random mutations. This
+has a direct business analog. An
+ 
+has a direct business analog. An
+optimization loop that only sees
+ 
+optimization loop that only sees
+outcomes like revenue go up, churn go
+ 
+outcomes like revenue go up, churn go
+down, it's going to produce somewhat
+ 
+down, it's going to produce somewhat
+random improvements. An optimization
+ 
+random improvements. An optimization
+loop that sees the full reasoning chain,
+ 
+loop that sees the full reasoning chain,
+like here's why the agent recommended
+ 
+like here's why the agent recommended
+the pricing tier, that's going to make
+ 
+the pricing tier, that's going to make
+much more surgical, logical edits. So,
+ 
+much more surgical, logical edits. So,
+the quality of your trace infrastructure
+ 
+the quality of your trace infrastructure
+as a business determines the quality of
+ 
+as a business determines the quality of
+your auto improvement. And this is
+ 
+your auto improvement. And this is
+another reason why basic agent
+ 
+another reason why basic agent
+deployment infrastructure must comes
+ 
+deployment infrastructure must comes
+first. If you're not capturing detailed
+ 
+first. If you're not capturing detailed
+traces from your agents, you have
+ 
+traces from your agents, you have
+literally nothing for meta agent to work
+ 
+literally nothing for meta agent to work
+on. Companies that can define scorable
+ 
+on. Companies that can define scorable
+metrics, that can build eval harnesses,
+ 
+metrics, that can build eval harnesses,
+that can run optimization loops will
+ 
+that can run optimization loops will
+compound improvements much faster, and
+ 
+compound improvements much faster, and
+companies that cannot do so are stuck at
+ 
+companies that cannot do so are stuck at
+human speed and quarterly planning
+ 
+human speed and quarterly planning
+cycles with monthly reviews. We've all
+ 
+cycles with monthly reviews. We've all
+been there. So, the gap between these
+ 
+been there. So, the gap between these
+two rates of improvement is what local
+ 
+two rates of improvement is what local
+hard takeoff feels like, and it will
+ 
+hard takeoff feels like, and it will
+create asymmetric competitive advantage
+ 
+create asymmetric competitive advantage
+for the organizations that figure it out
+ 
+for the organizations that figure it out
+first. Here's where I have to be honest
+ 
+first. Here's where I have to be honest
+about something that's somewhat
+ 
+about something that's somewhat
+uncomfortable to a lot of people.
+ 
+uncomfortable to a lot of people.
+Everything that I've just spent a few
+ 
+Everything that I've just spent a few
+minutes describing here, the overnight
+ 
+minutes describing here, the overnight
+optimization loops, the emergent agent
+ 
+optimization loops, the emergent agent
+behaviors, the compounding improvement
+ 
+behaviors, the compounding improvement
+trajectories, all of that supposes your
+ 
+trajectories, all of that supposes your
+organization can deploy agents at all.
+ 
+organization can deploy agents at all.
+And if you've been listening to this
+ 
+And if you've been listening to this
+channel, you know how I feel about how
+ 
+channel, you know how I feel about how
+most orgs handle that. I have spent the
+ 
+most orgs handle that. I have spent the
+last year documenting why so many org
+ 
+last year documenting why so many org
+agent deployments fail. And I've
+ 
+agent deployments fail. And I've
+cataloged multiple distinct failure
+ 
+cataloged multiple distinct failure
+patterns, right? If you listen to this
+ 
+patterns, right? If you listen to this
+channel, you understand many different
+ 
+channel, you understand many different
+reasons, like scale, endless loops, bad
+ 
+reasons, like scale, endless loops, bad
+context layers, specific issues that
+ 
+context layers, specific issues that
+orgs run into when they fail to scale
+ 
+orgs run into when they fail to scale
+agents. AI does not create those
+ 
+agents. AI does not create those
+problems, it just makes them expensive
+ 
+problems, it just makes them expensive
+faster. And auto improvement amplifies
+ 
+faster. And auto improvement amplifies
+all of the failure modes that I've spent
+ 
+all of the failure modes that I've spent
+a lot of time discussing on this channel
+ 
+a lot of time discussing on this channel
+previously. Let's just look briefly at
+ 
+previously. Let's just look briefly at
+some of the failure patterns that matter
+ 
+some of the failure patterns that matter
+the most because I don't want someone to
+ 
+the most because I don't want someone to
+hear this and say I can do auto agents
+ 
+hear this and say I can do auto agents
+if they haven't done agents in the first
+ 
+if they haven't done agents in the first
+place. The context layer problem is the
+ 
+place. The context layer problem is the
+most foundational. I've talked at length
+ 
+most foundational. I've talked at length
+about why agents fail when they lack
+ 
+about why agents fail when they lack
+structured external memory, persistent
+ 
+structured external memory, persistent
+representation of goals, of state, of
+ 
+representation of goals, of state, of
+constraints that survive across
+ 
+constraints that survive across
+sessions. Without domain memory, every
+ 
+sessions. Without domain memory, every
+agent session ends up reinventing a
+ 
+agent session ends up reinventing a
+definition of done. Every session just
+ 
+definition of done. Every session just
+sort of guesses at what happened before.
+ 
+sort of guesses at what happened before.
+Every session discovers a different
+ 
+Every session discovers a different
+sense of what success means. The
+ 
+sense of what success means. The
+research on context windows just makes
+ 
+research on context windows just makes
+this worse. The work I've done talking
+ 
+this worse. The work I've done talking
+about lost in the middle context windows
+ 
+about lost in the middle context windows
+is also a big issue because context rot
+ 
+is also a big issue because context rot
+is not solved by auto research. Instead,
+ 
+is not solved by auto research. Instead,
+auto research just would introduce new
+ 
+auto research just would introduce new
+failure modes to a bad context router
+ 
+failure modes to a bad context router
+memory problem. Imagine if you layered
+ 
+memory problem. Imagine if you layered
+auto improvement on top of a bad set of
+ 
+auto improvement on top of a bad set of
+memory architectures. A meta agent
+ 
+memory architectures. A meta agent
+optimizing a task agent would have no
+ 
+optimizing a task agent would have no
+persistent memory. It would have no
+ 
+persistent memory. It would have no
+structured state. It would have no idea
+ 
+structured state. It would have no idea
+what it's tried before. It would be
+ 
+what it's tried before. It would be
+optimizing in the dark. And it would not
+ 
+optimizing in the dark. And it would not
+be able to distinguish between this
+ 
+be able to distinguish between this
+change improved the harness and this
+ 
+change improved the harness and this
+change happened to work on three tasks
+ 
+change happened to work on three tasks
+that ran before the context window got
+ 
+that ran before the context window got
+polluted. So really, the optimization
+ 
+polluted. So really, the optimization
+loop is only as good as the
+ 
+loop is only as good as the
+infrastructure that runs underneath it.
+ 
+infrastructure that runs underneath it.
+And for most orgs, that infrastructure
+ 
+And for most orgs, that infrastructure
+is held together with conversation
+ 
+is held together with conversation
+history and hope, at least right now.
+ 
+history and hope, at least right now.
+The technical know-how gap is severe.
+ 
+The technical know-how gap is severe.
+Auto improvement requires us to get
+ 
+Auto improvement requires us to get
+serious about eval harnesses, about
+ 
+serious about eval harnesses, about
+sandbox environments where hundreds of
+ 
+sandbox environments where hundreds of
+experiments can run without a human,
+ 
+experiments can run without a human,
+about scoring functions that accurately
+ 
+about scoring functions that accurately
+reflect business value. Most teams that
+ 
+reflect business value. Most teams that
+I talk to, they have trouble writing a
+ 
+I talk to, they have trouble writing a
+reliable eval suite today even with
+ 
+reliable eval suite today even with
+their current agent deployment. They're
+ 
+their current agent deployment. They're
+measuring activity instead of outcome
+ 
+measuring activity instead of outcome
+sort of by default or they're using
+ 
+sort of by default or they're using
+metrics that don't actually correlate
+ 
+metrics that don't actually correlate
+with the business result they care
+ 
+with the business result they care
+about. Or maybe they haven't even
+ 
+about. Or maybe they haven't even
+invested in the testing infrastructure
+ 
+invested in the testing infrastructure
+to begin with. On top of all of that,
+ 
+to begin with. On top of all of that,
+the governance vacuum remains a massive
+ 
+the governance vacuum remains a massive
+issue with auto improvement. Who owns
+ 
+issue with auto improvement. Who owns
+the output of an auto improvement loop?
+ 
+the output of an auto improvement loop?
+How do we make it useful? Who reviews
+ 
+How do we make it useful? Who reviews
+the 47th experiment at 3:00 a.m.? Who
+ 
+the 47th experiment at 3:00 a.m.? Who
+decides which optimizations get promoted
+ 
+decides which optimizations get promoted
+to production? The organizations that
+ 
+to production? The organizations that
+struggle with who gets fired if AI makes
+ 
+struggle with who gets fired if AI makes
+a bad decision aren't going to suddenly
+ 
+a bad decision aren't going to suddenly
+develop clear ownership structures just
+ 
+develop clear ownership structures just
+because agents can now edit their own
+ 
+because agents can now edit their own
+code. Auto improvement is like a
+ 
+code. Auto improvement is like a
+graduate-level capability when most orgs
+ 
+graduate-level capability when most orgs
+are struggling with agents one-on-one.
+ 
+are struggling with agents one-on-one.
+It requires that you've already solved
+ 
+It requires that you've already solved
+agent deployment, and I don't think most
+ 
+agent deployment, and I don't think most
+orgs recognize that when Andre makes a
+ 
+orgs recognize that when Andre makes a
+cute tweet. You need to have your
+ 
+cute tweet. You need to have your
+context layer figured out, your domain
+ 
+context layer figured out, your domain
+figured out, the eval infrastructure,
+ 
+figured out, the eval infrastructure,
+the governance, the technical depth to
+ 
+the governance, the technical depth to
+build and maintain these systems, and
+ 
+build and maintain these systems, and
+most orgs are still stuck trying to
+ 
+most orgs are still stuck trying to
+figure out what a context layer means
+ 
+figure out what a context layer means
+for them. And so, the flip side of this
+ 
+for them. And so, the flip side of this
+enterprise readiness gap that I'm seeing
+ 
+enterprise readiness gap that I'm seeing
+as I look at where these small orgs are
+ 
+as I look at where these small orgs are
+going is that small agile teams are able
+ 
+going is that small agile teams are able
+to take advantage of these kinds of
+ 
+to take advantage of these kinds of
+improvements at the frontier very
+ 
+improvements at the frontier very
+quickly. So, I mean, Karpathy's an
+ 
+quickly. So, I mean, Karpathy's an
+example, right? Karpathy's auto research
+ 
+example, right? Karpathy's auto research
+was built by one person, Andre Karpathy.
+ 
+was built by one person, Andre Karpathy.
+Auto agent was built by a tiny YC
+ 
+Auto agent was built by a tiny YC
+startup. Skypilot scaled auto research
+ 
+startup. Skypilot scaled auto research
+for under 300 bucks in compute, and it's
+ 
+for under 300 bucks in compute, and it's
+a tiny startup as well. Basically, a
+ 
+a tiny startup as well. Basically, a
+three-person team with 500 bucks in
+ 
+three-person team with 500 bucks in
+compute can now run the same
+ 
+compute can now run the same
+optimization loop that would take a
+ 
+optimization loop that would take a
+20-person enterprise team months to spec
+ 
+20-person enterprise team months to spec
+and approve and procure infrastructure
+ 
+and approve and procure infrastructure
+for and then execute. The iteration
+ 
+for and then execute. The iteration
+speed advantage when you get this right
+ 
+speed advantage when you get this right
+is not marginal. It's multiple orders of
+ 
+is not marginal. It's multiple orders of
+magnitude, and all of that value is
+ 
+magnitude, and all of that value is
+leaning on the side of small teams right
+ 
+leaning on the side of small teams right
+now because small teams are able to
+ 
+now because small teams are able to
+process the speed at which the space is
+ 
+process the speed at which the space is
+moving today. They're able to experiment
+ 
+moving today. They're able to experiment
+rapidly. They're able to wrap in these
+ 
+rapidly. They're able to wrap in these
+new changes without heartburn and many,
+ 
+new changes without heartburn and many,
+many quarterly meetings. An enterprise
+ 
+many quarterly meetings. An enterprise
+team running the same experiments would
+ 
+team running the same experiments would
+take months to process and make this
+ 
+take months to process and make this
+change normally. Now, this doesn't mean
+ 
+change normally. Now, this doesn't mean
+small teams will beat enterprises at
+ 
+small teams will beat enterprises at
+everything. It means that on the
+ 
+everything. It means that on the
+specific dimension of rapid iterative
+ 
+specific dimension of rapid iterative
+optimization, small teams have a really
+ 
+optimization, small teams have a really
+clear structural advantage that
+ 
+clear structural advantage that
+enterprise scale can't overcome by
+ 
+enterprise scale can't overcome by
+default. You would have to deal with
+ 
+default. You would have to deal with
+approval gates, procurement cycles. The
+ 
+approval gates, procurement cycles. The
+only way enterprise gets through this is
+ 
+only way enterprise gets through this is
+if you are cutting the red tape really
+ 
+if you are cutting the red tape really
+intentionally as a leader and saying, I
+ 
+intentionally as a leader and saying, I
+will get literally everything out of the
+ 
+will get literally everything out of the
+way to empower small teams within my
+ 
+way to empower small teams within my
+enterprise to move quickly to get this
+ 
+enterprise to move quickly to get this
+done. Because the failure patterns I've
+ 
+done. Because the failure patterns I've
+talked about with agents in the past are
+ 
+talked about with agents in the past are
+largely diseases of organizational
+ 
+largely diseases of organizational
+complexity, and auto research rewards
+ 
+complexity, and auto research rewards
+teams that have simplicity at core, not
+ 
+teams that have simplicity at core, not
+complexity. Just define the metric,
+ 
+complexity. Just define the metric,
+build the harness, and let the loop run.
+ 
+build the harness, and let the loop run.
+This is really a practitioner's domain,
+ 
+This is really a practitioner's domain,
+right? The computer's cheap, the pattern
+ 
+right? The computer's cheap, the pattern
+is learnable. It's something you can do
+ 
+is learnable. It's something you can do
+very, very quickly. Now, I would be
+ 
+very, very quickly. Now, I would be
+remiss if I didn't address safety
+ 
+remiss if I didn't address safety
+scenarios at this point, because
+ 
+scenarios at this point, because
+everyone thinks of doomsday when they
+ 
+everyone thinks of doomsday when they
+think of auto research. But, I think the
+ 
+think of auto research. But, I think the
+relevant safety concerns when we're
+ 
+relevant safety concerns when we're
+talking about auto improving agents in
+ 
+talking about auto improving agents in
+the business context are not really
+ 
+the business context are not really
+intelligence explosions. They're about
+ 
+intelligence explosions. They're about
+failure modes that are quiet and
+ 
+failure modes that are quiet and
+specific and very easy to miss. The auto
+ 
+specific and very easy to miss. The auto
+agent team observed the most important
+ 
+agent team observed the most important
+one very directly. Agents overfit. The
+ 
+one very directly. Agents overfit. The
+meta agent gets lazy, go writes, and
+ 
+meta agent gets lazy, go writes, and
+inserts rubric-specific prompting so the
+ 
+inserts rubric-specific prompting so the
+task agent can game the metrics. In a
+ 
+task agent can game the metrics. In a
+benchmark context, that means inflated
+ 
+benchmark context, that means inflated
+scores that don't reflect real
+ 
+scores that don't reflect real
+capability. In a business context, it
+ 
+capability. In a business context, it
+means your agent is optimizing your
+ 
+means your agent is optimizing your
+fraud model to look really good in test,
+ 
+fraud model to look really good in test,
+and it's going to miss actual fraud. Or
+ 
+and it's going to miss actual fraud. Or
+a pricing agent will maximize the metric
+ 
+a pricing agent will maximize the metric
+you defined while kind of killing
+ 
+you defined while kind of killing
+customer trust in ways the metric won't
+ 
+customer trust in ways the metric won't
+capture. Or the compliance agent will
+ 
+capture. Or the compliance agent will
+technically satisfy your test cases
+ 
+technically satisfy your test cases
+while finding creative interpretations
+ 
+while finding creative interpretations
+of the rules that a human reviewer would
+ 
+of the rules that a human reviewer would
+obviously flag as terrible. So, the
+ 
+obviously flag as terrible. So, the
+broader safety landscape needs to take
+ 
+broader safety landscape needs to take
+account of this. For businesses, the
+ 
+account of this. For businesses, the
+practical safety concerns break into
+ 
+practical safety concerns break into
+several categories. Metric gaming is
+ 
+several categories. Metric gaming is
+obviously the most immediate and agent
+ 
+obviously the most immediate and agent
+optimizing a proxy metric that diverges
+ 
+optimizing a proxy metric that diverges
+from actual business value, but there's
+ 
+from actual business value, but there's
+also other issues. Silent degradation is
+ 
+also other issues. Silent degradation is
+the most insidious. You have subtle
+ 
+the most insidious. You have subtle
+policy drift, you have quality erosion
+ 
+policy drift, you have quality erosion
+that persists undetected because your
+ 
+that persists undetected because your
+monitoring infrastructure wasn't
+ 
+monitoring infrastructure wasn't
+designed for autonomous edits.
+ 
+designed for autonomous edits.
+Contamination is another issue where the
+ 
+Contamination is another issue where the
+agent's optimization loop can influence
+ 
+agent's optimization loop can influence
+the data it's evaluated against and the
+ 
+the data it's evaluated against and the
+entire mechanism becomes unreliable.
+ 
+entire mechanism becomes unreliable.
+Compounding errors also occur because a
+ 
+Compounding errors also occur because a
+bad optimization in one system can
+ 
+bad optimization in one system can
+cascade into a bunch of interconnected
+ 
+cascade into a bunch of interconnected
+business processes. The auto research
+ 
+business processes. The auto research
+patterns own designs provides the best
+ 
+patterns own designs provides the best
+mitigation framework we have. We need
+ 
+mitigation framework we have. We need
+tight loops, clear baselines, version
+ 
+tight loops, clear baselines, version
+control, and the ability to revert any
+ 
+control, and the ability to revert any
+change. The agent should only be able to
+ 
+change. The agent should only be able to
+touch one file, the metric is fixed, the
+ 
+touch one file, the metric is fixed, the
+evaluation function is locked, and a
+ 
+evaluation function is locked, and a
+human does need to inspect the results.
+ 
+human does need to inspect the results.
+These constraints take the optimization
+ 
+These constraints take the optimization
+loop from being something that you can
+ 
+loop from being something that you can
+write a Reddit post about to something
+ 
+write a Reddit post about to something
+that you might actually use in business.
+ 
+that you might actually use in business.
+Because the truth is, it is very, very
+ 
+Because the truth is, it is very, very
+difficult these results to production
+ 
+difficult these results to production
+business systems if you're not thinking
+ 
+business systems if you're not thinking
+systematically about how to plug in a
+ 
+systematically about how to plug in a
+fancy auto research loop to your actual
+ 
+fancy auto research loop to your actual
+business processes. Let's cut to the
+ 
+business processes. Let's cut to the
+chase here. I don't think auto improving
+ 
+chase here. I don't think auto improving
+agents are optional in H2 of 2026.
+ 
+agents are optional in H2 of 2026.
+They're coming. I think they're the next
+ 
+They're coming. I think they're the next
+major capability jump in how AI creates
+ 
+major capability jump in how AI creates
+business value, and I think the
+ 
+business value, and I think the
+organizations that figure them out in
+ 
+organizations that figure them out in
+the second half of this year in 2027
+ 
+the second half of this year in 2027
+will build advantages that are genuinely
+ 
+will build advantages that are genuinely
+difficult to reverse. But I also really
+ 
+difficult to reverse. But I also really
+believe the jump from basic agent
+ 
+believe the jump from basic agent
+deployment to agents that optimize
+ 
+deployment to agents that optimize
+themselves is so big that most orgs will
+ 
+themselves is so big that most orgs will
+try to skip the prerequisites and fail
+ 
+try to skip the prerequisites and fail
+spectacularly. So, let's start with a
+ 
+spectacularly. So, let's start with a
+more honest path to deployment. Let's
+ 
+more honest path to deployment. Let's
+start with picking one business system,
+ 
+start with picking one business system,
+your most measurable one, and try to
+ 
+your most measurable one, and try to
+define what I'm calling the Carperthic
+ 
+define what I'm calling the Carperthic
+Triplet. One editable surface, the thing
+ 
+Triplet. One editable surface, the thing
+the agent would modify, one metric, what
+ 
+the agent would modify, one metric, what
+you'd optimize for, and one time budget,
+ 
+you'd optimize for, and one time budget,
+how long the experiment will run. If you
+ 
+how long the experiment will run. If you
+can't define those three clearly, well,
+ 
+can't define those three clearly, well,
+that's the first project you have.
+ 
+that's the first project you have.
+You've just got to get to that point.
+ 
+You've just got to get to that point.
+And then, once you have that, think
+ 
+And then, once you have that, think
+about how you build the infrastructure
+ 
+about how you build the infrastructure
+to enable the optimization loop to run,
+ 
+to enable the optimization loop to run,
+and then how you plug in the results in
+ 
+and then how you plug in the results in
+a way that works for your business. I
+ 
+a way that works for your business. I
+know that building the agent pipeline
+ 
+know that building the agent pipeline
+and the eval harness is not the most
+ 
+and the eval harness is not the most
+exciting part to most people, but it's
+ 
+exciting part to most people, but it's
+absolutely foundational. You need a
+ 
+absolutely foundational. You need a
+scoring function that accurately
+ 
+scoring function that accurately
+reflects your business value. You need a
+ 
+reflects your business value. You need a
+test suite that covers the failure modes
+ 
+test suite that covers the failure modes
+you care about. And you need a sandboxed
+ 
+you care about. And you need a sandboxed
+execution environment where experiments
+ 
+execution environment where experiments
+can run without killing production. Most
+ 
+can run without killing production. Most
+orgs will underinvest in evaluation
+ 
+orgs will underinvest in evaluation
+infrastructure because it does not
+ 
+infrastructure because it does not
+produce visible outputs. But for auto
+ 
+produce visible outputs. But for auto
+improvement, it is the entire ballgame.
+ 
+improvement, it is the entire ballgame.
+You cannot automate what you cannot
+ 
+You cannot automate what you cannot
+score. So, please focus on writing
+ 
+score. So, please focus on writing
+excellent evaluations for your systems.
+ 
+excellent evaluations for your systems.
+In this case, I would recommend not
+ 
+In this case, I would recommend not
+starting with customer-facing systems or
+ 
+starting with customer-facing systems or
+compliance workflows. Earn the right to
+ 
+compliance workflows. Earn the right to
+auto-optimize by proving the loop works
+ 
+auto-optimize by proving the loop works
+on systems where failure is cheap. You
+ 
+on systems where failure is cheap. You
+want to design for auditability from day
+ 
+want to design for auditability from day
+one. You want to make sure you're
+ 
+one. You want to make sure you're
+logging your experiments carefully. You
+ 
+logging your experiments carefully. You
+want to make sure you're logging all of
+ 
+want to make sure you're logging all of
+the edits you make, and you're logging
+ 
+the edits you make, and you're logging
+the metric trajectory over time. Make
+ 
+the metric trajectory over time. Make
+sure that you can revert if something
+ 
+sure that you can revert if something
+goes wrong. When an auto-improvement
+ 
+goes wrong. When an auto-improvement
+loop produces a gain, you want to be
+ 
+loop produces a gain, you want to be
+able to explain why, right? Not just
+ 
+able to explain why, right? Not just
+that it worked, but why. This is both a
+ 
+that it worked, but why. This is both a
+governance requirement also key to
+ 
+governance requirement also key to
+actually taking what the agent is
+ 
+actually taking what the agent is
+learning and transferring it into your
+ 
+learning and transferring it into your
+actual human heads, so we all learn as
+ 
+actual human heads, so we all learn as
+an organization. The experiment log ends
+ 
+an organization. The experiment log ends
+up being how your organization builds
+ 
+up being how your organization builds
+institutional knowledge about what kinds
+ 
+institutional knowledge about what kinds
+of optimizations work in your domain.
+ 
+of optimizations work in your domain.
+So, we should heavily invest in the
+ 
+So, we should heavily invest in the
+human judgment layer if we want
+ 
+human judgment layer if we want
+auto-optimization to work. People who
+ 
+auto-optimization to work. People who
+tell you the Karpathy loop eliminates
+ 
+tell you the Karpathy loop eliminates
+the need for human judgment are flat
+ 
+the need for human judgment are flat
+wrong. It actually concentrates the need
+ 
+wrong. It actually concentrates the need
+for human judgment. The human's job
+ 
+for human judgment. The human's job
+shifts from executing experiments to
+ 
+shifts from executing experiments to
+designing the experimental framework,
+ 
+designing the experimental framework,
+writing the program.md file that sets
+ 
+writing the program.md file that sets
+direction and constraints, and you end
+ 
+direction and constraints, and you end
+up deciding ultimately what is worth
+ 
+up deciding ultimately what is worth
+going to production with and what to
+ 
+going to production with and what to
+investigate further. That is a much
+ 
+investigate further. That is a much
+higher-leverage role than manually
+ 
+higher-leverage role than manually
+optimizing something. It's not
+ 
+optimizing something. It's not
+lower-skill at all. It requires deep
+ 
+lower-skill at all. It requires deep
+domain knowledge, clear thinking about
+ 
+domain knowledge, clear thinking about
+metrics, and the ability to spot when an
+ 
+metrics, and the ability to spot when an
+agent is going off the rails and just
+ 
+agent is going off the rails and just
+gaming the system. To do that well, as
+ 
+gaming the system. To do that well, as
+I've been calling out, you need to take
+ 
+I've been calling out, you need to take
+small team agility seriously. I don't
+ 
+small team agility seriously. I don't
+care what the size of the overall
+ 
+care what the size of the overall
+company is, you need to think about a
+ 
+company is, you need to think about a
+team of three to five people that can do
+ 
+team of three to five people that can do
+this. That's not aspirational. That's
+ 
+this. That's not aspirational. That's
+That's That's a concrete statement about
+ 
+That's That's a concrete statement about
+how hard it is to set this up if you are
+ 
+how hard it is to set this up if you are
+trying to share context across a wide
+ 
+trying to share context across a wide
+team. Auto research and auto agent are
+ 
+team. Auto research and auto agent are
+available MIT-licensed open source.
+ 
+available MIT-licensed open source.
+They're all something you can roll out
+ 
+They're all something you can roll out
+today. The issue is you need to have
+ 
+today. The issue is you need to have
+your eye on internal metrics and targets
+ 
+your eye on internal metrics and targets
+that you can genuinely auto-optimize
+ 
+that you can genuinely auto-optimize
+against, and you need to have people in
+ 
+against, and you need to have people in
+your org who know how to read what that
+ 
+your org who know how to read what that
+is and implement the open-source
+ 
+is and implement the open-source
+architecture in a way that actually
+ 
+architecture in a way that actually
+works for your organization. You will
+ 
+works for your organization. You will
+probably not be able to run overnight
+ 
+probably not be able to run overnight
+optimization loops on production systems
+ 
+optimization loops on production systems
+right out of the gate. But you can start
+ 
+right out of the gate. But you can start
+building the infrastructure that makes
+ 
+building the infrastructure that makes
+it possible. You can build eval
+ 
+it possible. You can build eval
+harnesses, you can sandbox execution
+ 
+harnesses, you can sandbox execution
+environments, you can have metric
+ 
+environments, you can have metric
+definitions that reflect real business
+ 
+definitions that reflect real business
+value, and you can have the
+ 
+value, and you can have the
+organizational muscle to version, audit,
+ 
+organizational muscle to version, audit,
+and review the changes. These
+ 
+and review the changes. These
+investments, critically, will pay off
+ 
+investments, critically, will pay off
+regardless of whether you ever run the
+ 
+regardless of whether you ever run the
+full auto-improvement loop because they
+ 
+full auto-improvement loop because they
+make your basic agent deployments
+ 
+make your basic agent deployments
+better, too. Carpathia was right. This
+ 
+better, too. Carpathia was right. This
+auto-improve pattern will be everywhere.
+ 
+auto-improve pattern will be everywhere.
+It's just too simple, too cheap, and too
+ 
+It's just too simple, too cheap, and too
+effective to stay confined to machine
+ 
+effective to stay confined to machine
+learning training. And that's why auto
+ 
+learning training. And that's why auto
+agent already extended it to agent
+ 
+agent already extended it to agent
+harness engineering, and we're going to
+ 
+harness engineering, and we're going to
+see lots more extensions in the coming
+ 
+see lots more extensions in the coming
+months. The next extensions feel really
+ 
+months. The next extensions feel really
+obvious to me, right? Business process
+ 
+obvious to me, right? Business process
+automation, workflow automation,
+ 
+automation, workflow automation,
+operational systems. It's a matter of
+ 
+operational systems. It's a matter of
+when, not if. But, the distance between
+ 
+when, not if. But, the distance between
+this works on a single file training
+ 
+this works on a single file training
+script and this works on our enterprise
+ 
+script and this works on our enterprise
+pricing engine is not straight line.
+ 
+pricing engine is not straight line.
+It's a series of hard infrastructure
+ 
+It's a series of hard infrastructure
+problems, governance decisions, and
+ 
+problems, governance decisions, and
+organizational design challenges that an
+ 
+organizational design challenges that an
+overnight optimization loop will not
+ 
+overnight optimization loop will not
+solve for you. The organizations that
+ 
+solve for you. The organizations that
+win this transition will not be the ones
+ 
+win this transition will not be the ones
+that move the fastest. They'll be the
+ 
+that move the fastest. They'll be the
+ones that build the foundations, eval
+ 
+ones that build the foundations, eval
+harnesses, sandboxed execution, clear
+ 
+harnesses, sandboxed execution, clear
+metrics, auditability, human oversight,
+ 
+metrics, auditability, human oversight,
+that make the auto improvement
+ 
+that make the auto improvement
+worthwhile. So, yes, speed really
+ 
+worthwhile. So, yes, speed really
+matters, but speed without
+ 
+matters, but speed without
+infrastructure is running your Ferrari
+ 
+infrastructure is running your Ferrari
+into a ditch. Auto improving agents are
+ 
+into a ditch. Auto improving agents are
+the hard takeoff that we're not watching
+ 
+the hard takeoff that we're not watching
+because it's happening locally and
+ 
+because it's happening locally and
+quietly inside really individuals'
+ 
+quietly inside really individuals'
+computers and small teams. But, it
+ 
+computers and small teams. But, it
+matters enormously. And the orgs that
+ 
+matters enormously. And the orgs that
+can get ahead and start to build the
+ 
+can get ahead and start to build the
+hard infrastructure that takes advantage
+ 
+hard infrastructure that takes advantage
+of auto improvement have a tremendous
+ 
+of auto improvement have a tremendous
+advantage in the next 6 months. The
+ 
+advantage in the next 6 months. The
+question is not whether auto research is
+ 
+question is not whether auto research is
+coming. It's whether your organization
+ 
+coming. It's whether your organization
+can define what better means clearly
+ 
+can define what better means clearly
+enough to hand it to a machine. And
+ 
+enough to hand it to a machine. And
+that's really a question we're all going
+ 
+that's really a question we're all going
+to have to face because if you think
+ 
+to have to face because if you think
+that this is just about what orgs can
+ 
+that this is just about what orgs can
+optimize for, I want you to imagine how
+ 
+optimize for, I want you to imagine how
+you apply this to your individual role.
+ 
+you apply this to your individual role.
+Within 6 months, we are going to have
+ 
+Within 6 months, we are going to have
+harnesses and open-source kits that
+ 
+harnesses and open-source kits that
+allow you to take this exact auto
+ 
+allow you to take this exact auto
+research loop, define a metric within
+ 
+research loop, define a metric within
+your individual role, and auto optimize
+ 
+your individual role, and auto optimize
+that. What does that look like? Be ready
+ 
+that. What does that look like? Be ready
+to build the pipeline that enables a
+ 
+to build the pipeline that enables a
+machine to auto optimize pieces of your
+ 
+machine to auto optimize pieces of your
+role, and be ready to recognize that
+ 
+role, and be ready to recognize that
+that requires more human talent and more
+ 
+that requires more human talent and more
+judgment from you, not less. You are
+ 
+judgment from you, not less. You are
+being given the keys to a Ferrari, and
+ 
+being given the keys to a Ferrari, and
+you need to learn the rules of the road.
+ 
+you need to learn the rules of the road.
+If you're not sure where to get started,
+ 
+If you're not sure where to get started,
+I built a bunch of stuff to make this
+ 
+I built a bunch of stuff to make this
+easier, including an audit plugin that
+ 
+easier, including an audit plugin that
+helps you to understand your current
+ 
+helps you to understand your current
+situation, whether you're in an org or
+ 
+situation, whether you're in an org or
+whether you're an individual, and also a
+ 
+whether you're an individual, and also a
+Harness skill that you can run that
+ 
+Harness skill that you can run that
+helps you to understand how your
+ 
+helps you to understand how your
+existing Harness architecture works for
+ 
+existing Harness architecture works for
+an agent. I want you to have the tools
+ 
+an agent. I want you to have the tools
+so that if you want to kick off auto
+ 
+so that if you want to kick off auto
+research, you know you're prepared.
+ 
+research, you know you're prepared.
+That's really the most critical thing
+ 
+That's really the most critical thing
+cuz the last thing you want to do is
+ 
+cuz the last thing you want to do is
+start something and not know how it
+ 
+start something and not know how it
+works, not know how to plug it in, and
+ 
+works, not know how to plug it in, and
+really run a complex process without a
+ 
+really run a complex process without a
+clear outcome or piece of business value
+ 
+clear outcome or piece of business value
+at the end of it. Best of luck. We're
+ 
+at the end of it. Best of luck. We're
+all running into this future together.
+ 
+all running into this future together.
+Cheers.

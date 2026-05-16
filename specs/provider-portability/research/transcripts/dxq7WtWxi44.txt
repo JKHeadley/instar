@@ -1,0 +1,3518 @@
+ 
+Everybody is going nuts about the Wiki
+ 
+Everybody is going nuts about the Wiki
+idea that Andre Karpathy posted a couple
+ 
+idea that Andre Karpathy posted a couple
+of days ago. 41,000 people have
+ 
+of days ago. 41,000 people have
+bookmarked it and on the surface it
+ 
+bookmarked it and on the surface it
+sounds ridiculously simple. You use your
+ 
+sounds ridiculously simple. You use your
+AI to build and maintain a personal
+ 
+AI to build and maintain a personal
+Wiki. As someone who launched something
+ 
+Wiki. As someone who launched something
+somewhat similar with Open Brain, I have
+ 
+somewhat similar with Open Brain, I have
+gotten hundreds of DMs and emails saying
+ 
+gotten hundreds of DMs and emails saying
+Nate, is this the same thing? Nate, is
+ 
+Nate, is this the same thing? Nate, is
+this different? Nate, does this make
+ 
+this different? Nate, does this make
+Open Brain obsolete? Nate, is the Wiki
+ 
+Open Brain obsolete? Nate, is the Wiki
+better? I want to actually step back and
+ 
+better? I want to actually step back and
+give you a different answer than you
+ 
+give you a different answer than you
+expected. We are going to go through. We
+ 
+expected. We are going to go through. We
+are going to talk about what the Wiki
+ 
+are going to talk about what the Wiki
+approach gets right. Why Andre put it
+ 
+approach gets right. Why Andre put it
+together, the principles underlying this
+ 
+together, the principles underlying this
+Wiki approach versus the Open Brain
+ 
+Wiki approach versus the Open Brain
+approach, and I want to be honest about
+ 
+approach, and I want to be honest about
+why we're doing that. We're not doing
+ 
+why we're doing that. We're not doing
+that just for giggles. We're doing that
+ 
+that just for giggles. We're doing that
+because deciding how you organize your
+ 
+because deciding how you organize your
+context layer is one of the single most
+ 
+context layer is one of the single most
+important things you can do in 2026. It
+ 
+important things you can do in 2026. It
+is a really big deal. And Karpathy's
+ 
+is a really big deal. And Karpathy's
+approach is really different from Open
+ 
+approach is really different from Open
+Brain. It's not the same thing at all.
+ 
+Brain. It's not the same thing at all.
+And there are specific reasons why he
+ 
+And there are specific reasons why he
+went with his decision and why I went
+ 
+went with his decision and why I went
+with the decisions that I made to
+ 
+with the decisions that I made to
+construct Open Brain. And I'm going to
+ 
+construct Open Brain. And I'm going to
+be really open about both. I'm not going
+ 
+be really open about both. I'm not going
+to give you a steel man. I'm not going
+ 
+to give you a steel man. I'm not going
+to say one is better than the other, so
+ 
+to say one is better than the other, so
+just get that out of your head. We're
+ 
+just get that out of your head. We're
+going to talk about where each one
+ 
+going to talk about where each one
+breaks, the scale issues that each have,
+ 
+breaks, the scale issues that each have,
+and where each one is strong. And then,
+ 
+and where each one is strong. And then,
+I promise you, I am going to help you
+ 
+I promise you, I am going to help you
+solve the problem because I know that
+ 
+solve the problem because I know that
+what most of you are going to say is I
+ 
+what most of you are going to say is I
+want the best of both worlds. We are
+ 
+want the best of both worlds. We are
+going to get there. I put a plugin into
+ 
+going to get there. I put a plugin into
+Open Brain that will help you have the
+ 
+Open Brain that will help you have the
+best of both worlds. So, you can have
+ 
+best of both worlds. So, you can have
+the Wiki approach Karpathy takes with
+ 
+the Wiki approach Karpathy takes with
+the structured data that Open Brain
+ 
+the structured data that Open Brain
+brings. And by the end of this video,
+ 
+brings. And by the end of this video,
+you'll understand why it matters to be
+ 
+you'll understand why it matters to be
+able to do both and you'll feel equipped
+ 
+able to do both and you'll feel equipped
+to make that decision. So, let me
+ 
+to make that decision. So, let me
+explain a little bit about what's under
+ 
+explain a little bit about what's under
+the surface that is a little bit more
+ 
+the surface that is a little bit more
+complex than it might appear at first
+ 
+complex than it might appear at first
+glance. Because on the surface
+ 
+glance. Because on the surface
+Karpathy's implementation is very
+ 
+Karpathy's implementation is very
+simple. It's just folders and it's text
+ 
+simple. It's just folders and it's text
+files. That is the big idea for him. And
+ 
+files. That is the big idea for him. And
+you might wonder, why did he go so
+ 
+you might wonder, why did he go so
+simple? Well, his insight is the idea
+ 
+simple? Well, his insight is the idea
+that everybody uses AI with their
+ 
+that everybody uses AI with their
+documents today all day, right? You
+ 
+documents today all day, right? You
+upload files to chat GPT, you use
+ 
+upload files to chat GPT, you use
+Notebook LM, you use Claude, and you
+ 
+Notebook LM, you use Claude, and you
+always end up in a place where you have
+ 
+always end up in a place where you have
+bunches of documents everywhere. And
+ 
+bunches of documents everywhere. And
+then you ask a question and the AI has
+ 
+then you ask a question and the AI has
+to go and find relevant chunks of
+ 
+to go and find relevant chunks of
+documents, previous chats, reads them,
+ 
+documents, previous chats, reads them,
+gives you an answer. It's all hyper
+ 
+gives you an answer. It's all hyper
+fragmented all over. This works okay,
+ 
+fragmented all over. This works okay,
+but it's actually not ideal because
+ 
+but it's actually not ideal because
+what's happening under the hood is that
+ 
+what's happening under the hood is that
+AI is effectively rediscovering your
+ 
+AI is effectively rediscovering your
+knowledge from scratch every single time
+ 
+knowledge from scratch every single time
+you ask a question. So, if you ask a
+ 
+you ask a question. So, if you ask a
+question that requires connecting five
+ 
+question that requires connecting five
+different documents across six different
+ 
+different documents across six different
+chats, the AI has to find all five, read
+ 
+chats, the AI has to find all five, read
+the six chats, figure out how they
+ 
+the six chats, figure out how they
+relate, and produce some kind of a
+ 
+relate, and produce some kind of a
+synthesis. If you ask a similar question
+ 
+synthesis. If you ask a similar question
+tomorrow, it does the whole thing over
+ 
+tomorrow, it does the whole thing over
+again. Nothing was saved about that
+ 
+again. Nothing was saved about that
+synthesis. It doesn't inherently
+ 
+synthesis. It doesn't inherently
+preserve connections between documents,
+ 
+preserve connections between documents,
+even if you're in the same chat
+ 
+even if you're in the same chat
+application, let alone if you're in two
+ 
+application, let alone if you're in two
+or three different AIs like so many of
+ 
+or three different AIs like so many of
+us are. In other words, the AI did real
+ 
+us are. In other words, the AI did real
+cognitive work and then threw it all
+ 
+cognitive work and then threw it all
+away. And that is what bothered Karpathy
+ 
+away. And that is what bothered Karpathy
+enough to put together a different
+ 
+enough to put together a different
+solution. What he asked is, what if
+ 
+solution. What he asked is, what if
+instead of just finding relevant chunks
+ 
+instead of just finding relevant chunks
+and answering questions, the AI actually
+ 
+and answering questions, the AI actually
+wrote down what it learned? What if
+ 
+wrote down what it learned? What if
+every time you added a new source, the
+ 
+every time you added a new source, the
+AI read that source, figured out what
+ 
+AI read that source, figured out what
+mattered, and updated a set of organized
+ 
+mattered, and updated a set of organized
+notes that already contained everything
+ 
+notes that already contained everything
+it learned from the previous source? In
+ 
+it learned from the previous source? In
+other words, what if it started to
+ 
+other words, what if it started to
+auto-update based on its own synthesis?
+ 
+auto-update based on its own synthesis?
+What if those notes already included
+ 
+What if those notes already included
+cross-references, flagged
+ 
+cross-references, flagged
+contradictions, tracked how your
+ 
+contradictions, tracked how your
+understanding evolved? If you're trying
+ 
+understanding evolved? If you're trying
+to learn how you think and evolve over
+ 
+to learn how you think and evolve over
+time, that's what this Wiki idea is for.
+ 
+time, that's what this Wiki idea is for.
+It essentially becomes not just a clever
+ 
+It essentially becomes not just a clever
+file organization system, but actually a
+ 
+file organization system, but actually a
+persistent artifact as a whole where
+ 
+persistent artifact as a whole where
+you're capturing the AI's evolving
+ 
+you're capturing the AI's evolving
+understanding
+ 
+understanding
+of your thinking over time. So, the AI
+ 
+of your thinking over time. So, the AI
+might read a paper you give it on
+ 
+might read a paper you give it on
+Monday, write up what it learned, and
+ 
+Monday, write up what it learned, and
+link back to it what it learned the
+ 
+link back to it what it learned the
+previous week from some other thread
+ 
+previous week from some other thread
+that you were working on. The next
+ 
+that you were working on. The next
+Friday, when you ask a question, the AI
+ 
+Friday, when you ask a question, the AI
+doesn't have to reread everything from
+ 
+doesn't have to reread everything from
+scratch. Instead, it looks at the
+ 
+scratch. Instead, it looks at the
+synthesis that is already sitting there,
+ 
+synthesis that is already sitting there,
+the cross-references that are already
+ 
+the cross-references that are already
+built, the contradictions that have been
+ 
+built, the contradictions that have been
+flagged. And in Karpathy's own words,
+ 
+flagged. And in Karpathy's own words,
+the knowledge is compiled once and then
+ 
+the knowledge is compiled once and then
+kept current. It's not re-derived on
+ 
+kept current. It's not re-derived on
+every query. And that is really the key
+ 
+every query. And that is really the key
+here. Most AI knowledge tools spend
+ 
+here. Most AI knowledge tools spend
+compute and tokens to re-derive, whereas
+ 
+compute and tokens to re-derive, whereas
+his Wiki compiles. That's a
+ 
+his Wiki compiles. That's a
+fundamentally different relationship
+ 
+fundamentally different relationship
+between AI and your information, and it
+ 
+between AI and your information, and it
+has different strengths and weaknesses
+ 
+has different strengths and weaknesses
+than a lot of other predominant memory
+ 
+than a lot of other predominant memory
+paradigms, including Open Brain. He
+ 
+paradigms, including Open Brain. He
+described his working setup as having
+ 
+described his working setup as having
+the AI agent on one side and Obsidian,
+ 
+the AI agent on one side and Obsidian,
+which is just a note-viewing app, on the
+ 
+which is just a note-viewing app, on the
+other side. And so, that allows the AI
+ 
+other side. And so, that allows the AI
+to make edits based on their
+ 
+to make edits based on their
+conversation, and he can browse the
+ 
+conversation, and he can browse the
+results in real time and follow links
+ 
+results in real time and follow links
+and check the graph view and read the
+ 
+and check the graph view and read the
+updated pages and kind of have an
+ 
+updated pages and kind of have an
+evolving conversation with the agent.
+ 
+evolving conversation with the agent.
+And of course, being a programmer, the
+ 
+And of course, being a programmer, the
+way he talks about it is the LLM is sort
+ 
+way he talks about it is the LLM is sort
+of the programmer for the code base of
+ 
+of the programmer for the code base of
+the Wiki, which means in plain English,
+ 
+the Wiki, which means in plain English,
+the note app is where he actually reads
+ 
+the note app is where he actually reads
+and the AI is the one writing in the
+ 
+and the AI is the one writing in the
+notes app based on a collected series of
+ 
+notes app based on a collected series of
+built documents. Some of them are raw
+ 
+built documents. Some of them are raw
+source that he inputs from previous
+ 
+source that he inputs from previous
+chats, some of them are docs, some of
+ 
+chats, some of them are docs, some of
+them are synthesis the AI puts together.
+ 
+them are synthesis the AI puts together.
+Think of it like most AI tools are like
+ 
+Think of it like most AI tools are like
+having a brilliant research assistant
+ 
+having a brilliant research assistant
+who reads your entire filing cabinet
+ 
+who reads your entire filing cabinet
+every time you ask a question, and then
+ 
+every time you ask a question, and then
+it gives you a really great answer, and
+ 
+it gives you a really great answer, and
+then immediately forgets everything that
+ 
+then immediately forgets everything that
+it figured out. Andre Karpathy's Wiki is
+ 
+it figured out. Andre Karpathy's Wiki is
+like that same assistant keeping a
+ 
+like that same assistant keeping a
+running set of notes that are organized
+ 
+running set of notes that are organized
+and cross-referenced and updated so that
+ 
+and cross-referenced and updated so that
+each question builds on the last one
+ 
+each question builds on the last one
+instead of starting over. I think that
+ 
+instead of starting over. I think that
+idea of being able to build on your
+ 
+idea of being able to build on your
+learnings is why 41,000 people jumped on
+ 
+learnings is why 41,000 people jumped on
+it and bookmarked the post, right? It's
+ 
+it and bookmarked the post, right? It's
+not because the folders and the text
+ 
+not because the folders and the text
+files themselves are exciting. It's
+ 
+files themselves are exciting. It's
+because an AI that builds understanding
+ 
+because an AI that builds understanding
+over time instead of starting from zero
+ 
+over time instead of starting from zero
+is something we're all hungry for right
+ 
+is something we're all hungry for right
+now. It's the thing everyone's been
+ 
+now. It's the thing everyone's been
+waiting for. It's what made people
+ 
+waiting for. It's what made people
+really excited about Open Brain. But
+ 
+really excited about Open Brain. But
+there's a catch that almost nobody in
+ 
+there's a catch that almost nobody in
+these 41,000 bookmarks is thinking about
+ 
+these 41,000 bookmarks is thinking about
+yet. Every time the AI turns a raw
+ 
+yet. Every time the AI turns a raw
+source into a Wiki page, it is making
+ 
+source into a Wiki page, it is making
+editorial decisions. It's making
+ 
+editorial decisions. It's making
+decisions about how to frame the
+ 
+decisions about how to frame the
+connections between ideas that may be
+ 
+connections between ideas that may be
+right or wrong, but those are the AI's
+ 
+right or wrong, but those are the AI's
+choices, right? They're not the humans'
+ 
+choices, right? They're not the humans'
+choices. It's making synthesis choices
+ 
+choices. It's making synthesis choices
+somewhat independently of what you may
+ 
+somewhat independently of what you may
+or may not think. And so, important
+ 
+or may not think. And so, important
+nuance could get dropped that might
+ 
+nuance could get dropped that might
+matter a few months from now, and you
+ 
+matter a few months from now, and you
+would literally never know. You wouldn't
+ 
+would literally never know. You wouldn't
+know what's missing because the Wiki
+ 
+know what's missing because the Wiki
+reads so cleanly. This is sort of the
+ 
+reads so cleanly. This is sort of the
+same trap as dashboards and analytics. A
+ 
+same trap as dashboards and analytics. A
+dashboard is so much easier to read than
+ 
+dashboard is so much easier to read than
+a spreadsheet, but it is a condensation
+ 
+a spreadsheet, but it is a condensation
+of data, right? It can hide exactly the
+ 
+of data, right? It can hide exactly the
+thing you need to see because it just
+ 
+thing you need to see because it just
+shows only the thing that it thinks you
+ 
+shows only the thing that it thinks you
+want to see in the moment. And to his
+ 
+want to see in the moment. And to his
+credit, Andre Karpathy's been very
+ 
+credit, Andre Karpathy's been very
+honest about this, right? His
+ 
+honest about this, right? His
+architecture keeps all the raw sources
+ 
+architecture keeps all the raw sources
+untouched in their own folders so he can
+ 
+untouched in their own folders so he can
+always go back to the originals, which
+ 
+always go back to the originals, which
+is a really smart design. But to be
+ 
+is a really smart design. But to be
+honest, most people building on his
+ 
+honest, most people building on his
+pattern are not going to maintain the
+ 
+pattern are not going to maintain the
+discipline to go back to raw sources. In
+ 
+discipline to go back to raw sources. In
+practice, I think the Wiki will become
+ 
+practice, I think the Wiki will become
+the thing that is trusted as this
+ 
+the thing that is trusted as this
+open-source project rolls out. And the
+ 
+open-source project rolls out. And the
+source of truth is quietly going to
+ 
+source of truth is quietly going to
+shift from raw material to an AI summary
+ 
+shift from raw material to an AI summary
+of that material, which may be correct
+ 
+of that material, which may be correct
+80% of the time, maybe 90% of the time,
+ 
+80% of the time, maybe 90% of the time,
+but where it misses something or where
+ 
+but where it misses something or where
+it frames something slightly wrong,
+ 
+it frames something slightly wrong,
+there are going to be issues that arise.
+ 
+there are going to be issues that arise.
+And that errors will now be baked into
+ 
+And that errors will now be baked into
+our understanding if that is the only
+ 
+our understanding if that is the only
+way we're approaching memory. And you
+ 
+way we're approaching memory. And you
+won't get in the habit of questioning it
+ 
+won't get in the habit of questioning it
+because the whole premise of this, when
+ 
+because the whole premise of this, when
+I started this video, is that we are
+ 
+I started this video, is that we are
+lazy people. It's really nice to have a
+ 
+lazy people. It's really nice to have a
+Wiki where you can just chuck stuff in
+ 
+Wiki where you can just chuck stuff in
+and it sort of automatically organizes,
+ 
+and it sort of automatically organizes,
+learns, and comes back with written
+ 
+learns, and comes back with written
+artifacts. And so, this is where Open
+ 
+artifacts. And so, this is where Open
+Brain enters the picture and things get
+ 
+Brain enters the picture and things get
+really, really interesting. Every
+ 
+really, really interesting. Every
+knowledge system with an AI at its core
+ 
+knowledge system with an AI at its core
+has to answer one question. When does
+ 
+has to answer one question. When does
+the AI do the hard thinking? Is it when
+ 
+the AI do the hard thinking? Is it when
+information comes in or is it when you
+ 
+information comes in or is it when you
+ask about that information? You got to
+ 
+ask about that information? You got to
+pick. That's the fork. Everything else
+ 
+pick. That's the fork. Everything else
+follows from that. Karpathy's Wiki is a
+ 
+follows from that. Karpathy's Wiki is a
+right time system. So, when a new source
+ 
+right time system. So, when a new source
+arrives, like an article, a paper, a set
+ 
+arrives, like an article, a paper, a set
+of notes, the AI does not just store it.
+ 
+of notes, the AI does not just store it.
+The AI actually actively works against
+ 
+The AI actually actively works against
+it. It reads the source, it extracts
+ 
+it. It reads the source, it extracts
+what matters, and it writes that
+ 
+what matters, and it writes that
+understanding into the Wiki. It will
+ 
+understanding into the Wiki. It will
+update topic pages for you. It will
+ 
+update topic pages for you. It will
+write relevant summaries for you. You
+ 
+write relevant summaries for you. You
+get the idea, right? It's going to
+ 
+get the idea, right? It's going to
+actively work to add links between
+ 
+actively work to add links between
+related ideas, develop concepts, note
+ 
+related ideas, develop concepts, note
+where new data contradicts something
+ 
+where new data contradicts something
+that was filed last week. It will do a
+ 
+that was filed last week. It will do a
+lot of that thinking at input, right?
+ 
+lot of that thinking at input, right?
+The hard work then happens one time at
+ 
+The hard work then happens one time at
+the beginning, the moment the
+ 
+the beginning, the moment the
+information comes in the door. After
+ 
+information comes in the door. After
+that, you can browse the Wiki and get
+ 
+that, you can browse the Wiki and get
+pre-built understanding without the AI
+ 
+pre-built understanding without the AI
+doing virtually any work at all. It's
+ 
+doing virtually any work at all. It's
+just retrieving. Open Brain is
+ 
+just retrieving. Open Brain is
+different. It is a query time system.
+ 
+different. It is a query time system.
+When new information arrives, Open Brain
+ 
+When new information arrives, Open Brain
+is designed to store it faithfully. It
+ 
+is designed to store it faithfully. It
+tags it, it categorizes it, it makes it
+ 
+tags it, it categorizes it, it makes it
+searchable, but we're not assuming that
+ 
+searchable, but we're not assuming that
+you need to synthesize that information
+ 
+you need to synthesize that information
+yet. Nobody's synthesizing. Nobody's
+ 
+yet. Nobody's synthesizing. Nobody's
+doing work. The data is sitting in
+ 
+doing work. The data is sitting in
+structured tables waiting. When you or
+ 
+structured tables waiting. When you or
+your AI agent asks a question, that's
+ 
+your AI agent asks a question, that's
+when the AI goes to work. It reads the
+ 
+when the AI goes to work. It reads the
+relevant entries at that point, at query
+ 
+relevant entries at that point, at query
+time. It does the thinking fresh and it
+ 
+time. It does the thinking fresh and it
+produces an answer on the fly. So, the
+ 
+produces an answer on the fly. So, the
+hard work happens at the moment you need
+ 
+hard work happens at the moment you need
+it, not before you need it. So, think of
+ 
+it, not before you need it. So, think of
+it this way. Carpathy's Wiki is like a
+ 
+it this way. Carpathy's Wiki is like a
+study guide that a really good tutor
+ 
+study guide that a really good tutor
+writes for you as you learn the subject.
+ 
+writes for you as you learn the subject.
+Every time you cover new material, the
+ 
+Every time you cover new material, the
+tutor will update the guide for you so
+ 
+tutor will update the guide for you so
+you don't get lost along the way. The
+ 
+you don't get lost along the way. The
+tutor will add new sections, revise old
+ 
+tutor will add new sections, revise old
+sections, connect ideas across chapters,
+ 
+sections, connect ideas across chapters,
+and really help you dig in so that when
+ 
+and really help you dig in so that when
+exam day comes, you just read the guide
+ 
+exam day comes, you just read the guide
+and you're good to go. Which is exactly
+ 
+and you're good to go. Which is exactly
+kind of how that Wiki's supposed to work
+ 
+kind of how that Wiki's supposed to work
+ideally. The thinking has been done for
+ 
+ideally. The thinking has been done for
+you. The tutor has prepared everything
+ 
+you. The tutor has prepared everything
+so perfectly you can't fail. Open Brain
+ 
+so perfectly you can't fail. Open Brain
+is like a perfectly organized filing
+ 
+is like a perfectly organized filing
+cabinet with a brilliant librarian
+ 
+cabinet with a brilliant librarian
+standing next to that filing cabinet for
+ 
+standing next to that filing cabinet for
+you. Every document is filed, it's
+ 
+you. Every document is filed, it's
+indexed, it's searchable so that when
+ 
+indexed, it's searchable so that when
+you need an answer, the librarian can
+ 
+you need an answer, the librarian can
+very quickly pull the relevant file,
+ 
+very quickly pull the relevant file,
+read through that relevant file for you,
+ 
+read through that relevant file for you,
+and then pinpoint exactly what you need
+ 
+and then pinpoint exactly what you need
+to find in that file. It will tell you
+ 
+to find in that file. It will tell you
+what you're looking for. The filing is
+ 
+what you're looking for. The filing is
+really clean and pristine and that
+ 
+really clean and pristine and that
+enables the metaphorical librarian to do
+ 
+enables the metaphorical librarian to do
+the thinking fresh in a very efficient
+ 
+the thinking fresh in a very efficient
+way every time you ask so you get
+ 
+way every time you ask so you get
+exactly the synthesis you're looking
+ 
+exactly the synthesis you're looking
+for. To be honest with you, I'm not here
+ 
+for. To be honest with you, I'm not here
+to compare and contrast and give you an
+ 
+to compare and contrast and give you an
+easy winner. Study guides and filing
+ 
+easy winner. Study guides and filing
+cabinets can both be useful, but they're
+ 
+cabinets can both be useful, but they're
+good at different things and I don't
+ 
+good at different things and I don't
+want them compared inaccurately. And
+ 
+want them compared inaccurately. And
+that's really important. So, why does
+ 
+that's really important. So, why does
+this matter for you? This is the way to
+ 
+this matter for you? This is the way to
+think about it that's not about
+ 
+think about it that's not about
+architecture. If you only store stuff,
+ 
+architecture. If you only store stuff,
+your AI has to figure out what it all
+ 
+your AI has to figure out what it all
+means every time you ask. You've been
+ 
+means every time you ask. You've been
+feeding it articles, meeting notes, and
+ 
+feeding it articles, meeting notes, and
+research for months and months and
+ 
+research for months and months and
+months and months. You ask a question
+ 
+months and months. You ask a question
+that requires connecting a bunch of
+ 
+that requires connecting a bunch of
+different sources together and the AI
+ 
+different sources together and the AI
+has to go and burn tokens. It has to
+ 
+has to go and burn tokens. It has to
+find those sources, it has to make sense
+ 
+find those sources, it has to make sense
+of them, it has to read them, it has to
+ 
+of them, it has to read them, it has to
+think through them, it has to understand
+ 
+think through them, it has to understand
+what's going on, figure out how they
+ 
+what's going on, figure out how they
+relate together. And ultimately, it has
+ 
+relate together. And ultimately, it has
+to produce a synthesis that actually
+ 
+to produce a synthesis that actually
+works from scratch. And it has to do
+ 
+works from scratch. And it has to do
+that every single time. Nothing has been
+ 
+that every single time. Nothing has been
+pre-built. Now, here's the other side.
+ 
+pre-built. Now, here's the other side.
+If you only build a Wiki, your AI can
+ 
+If you only build a Wiki, your AI can
+read the summary, but it cannot do
+ 
+read the summary, but it cannot do
+anything precise with the raw data
+ 
+anything precise with the raw data
+underneath. You want to pull every deal
+ 
+underneath. You want to pull every deal
+over $50,000 from the last quarter? You
+ 
+over $50,000 from the last quarter? You
+want to filter all your meetings by
+ 
+want to filter all your meetings by
+client name? You want to have three
+ 
+client name? You want to have three
+different AI tools that query your
+ 
+different AI tools that query your
+knowledge base at the same time? A
+ 
+knowledge base at the same time? A
+folder of text files cannot answer
+ 
+folder of text files cannot answer
+complex questions like that. The
+ 
+complex questions like that. The
+understanding is there in synthesized
+ 
+understanding is there in synthesized
+form, but the detailed structured data
+ 
+form, but the detailed structured data
+to make meaningful decisions just isn't
+ 
+to make meaningful decisions just isn't
+there and it isn't there by design. It's
+ 
+there and it isn't there by design. It's
+just not going to be there. In addition,
+ 
+just not going to be there. In addition,
+if you have three or more agents, that's
+ 
+if you have three or more agents, that's
+just going to break when they're all
+ 
+just going to break when they're all
+trying to write markdown files at once.
+ 
+trying to write markdown files at once.
+The Wiki structure presupposes a single
+ 
+The Wiki structure presupposes a single
+agent working for you that just writes
+ 
+agent working for you that just writes
+in one place, whereas the Open Brain
+ 
+in one place, whereas the Open Brain
+structure assumes you may want to hook
+ 
+structure assumes you may want to hook
+in multiple agents at multiple points to
+ 
+in multiple agents at multiple points to
+contribute to or pull from a structured
+ 
+contribute to or pull from a structured
+database. Let's move on from structured
+ 
+database. Let's move on from structured
+data to talk about a different kind of
+ 
+data to talk about a different kind of
+challenge with AI. It is difficult right
+ 
+challenge with AI. It is difficult right
+now to actually trace how an AI learns
+ 
+now to actually trace how an AI learns
+or improves over time when there is no
+ 
+or improves over time when there is no
+memory architecture under the system.
+ 
+memory architecture under the system.
+And I want to talk about a distinction
+ 
+And I want to talk about a distinction
+between remembering detailed facts,
+ 
+between remembering detailed facts,
+which Open Brain is designed to do, and
+ 
+which Open Brain is designed to do, and
+remembering narrative or synthesis,
+ 
+remembering narrative or synthesis,
+which the Wiki is designed to do. And I
+ 
+which the Wiki is designed to do. And I
+want to help you understand how that
+ 
+want to help you understand how that
+plays out for a team because it's really
+ 
+plays out for a team because it's really
+important to understand that our storage
+ 
+important to understand that our storage
+architectures shape the futures that we
+ 
+architectures shape the futures that we
+are unlocking for teams because they're
+ 
+are unlocking for teams because they're
+were effectively choosing a context
+ 
+were effectively choosing a context
+layer that you need to make sense of,
+ 
+layer that you need to make sense of,
+use, input information into, believe,
+ 
+use, input information into, believe,
+trust, and depend on for decisions. The
+ 
+trust, and depend on for decisions. The
+stakes could not be higher. Most
+ 
+stakes could not be higher. Most
+organizations are generating enormous
+ 
+organizations are generating enormous
+volumes of AI touched knowledge right
+ 
+volumes of AI touched knowledge right
+now. We're generating meeting summaries,
+ 
+now. We're generating meeting summaries,
+we're generating strategy documents
+ 
+we're generating strategy documents
+touched by AI, we're generating research
+ 
+touched by AI, we're generating research
+outputs, we're generating Slack threads,
+ 
+outputs, we're generating Slack threads,
+and almost all of it is right once, read
+ 
+and almost all of it is right once, read
+never because nobody is maintaining any
+ 
+never because nobody is maintaining any
+of it. Nobody is synthesizing across any
+ 
+of it. Nobody is synthesizing across any
+of those documents. Nobody is flagging
+ 
+of those documents. Nobody is flagging
+that the Q2 strategy deck contradicts
+ 
+that the Q2 strategy deck contradicts
+what the CEO said in last week's
+ 
+what the CEO said in last week's
+all-hands. Your company's AI generated
+ 
+all-hands. Your company's AI generated
+knowledge right now is either a
+ 
+knowledge right now is either a
+compounding asset or it's just a growing
+ 
+compounding asset or it's just a growing
+pile of noise. And so, the choice
+ 
+pile of noise. And so, the choice
+between the two memory structures here
+ 
+between the two memory structures here
+is a lot more than a design decision.
+ 
+is a lot more than a design decision.
+It's actually the thing that most teams
+ 
+It's actually the thing that most teams
+are making by accident that determines
+ 
+are making by accident that determines
+how reliable their North Star compass in
+ 
+how reliable their North Star compass in
+product decisioning is. And the subtlety
+ 
+product decisioning is. And the subtlety
+that matters here is that sometimes
+ 
+that matters here is that sometimes
+contradictions are the most valuable
+ 
+contradictions are the most valuable
+thing in your knowledge base and one of
+ 
+thing in your knowledge base and one of
+the things that you worry about is that
+ 
+the things that you worry about is that
+you're going to lose the distinction
+ 
+you're going to lose the distinction
+that you need to make good decisions in
+ 
+that you need to make good decisions in
+a Wiki format. So, engineering might
+ 
+a Wiki format. So, engineering might
+think the timeline for the build is 12
+ 
+think the timeline for the build is 12
+weeks and sales promised the client
+ 
+weeks and sales promised the client
+eight and something like a smart Wiki
+ 
+eight and something like a smart Wiki
+might resolve that contradiction into
+ 
+might resolve that contradiction into
+one coherent narrative rather than
+ 
+one coherent narrative rather than
+flagging that you have a fundamental
+ 
+flagging that you have a fundamental
+misalignment. And that is a strategic
+ 
+misalignment. And that is a strategic
+signal in the system that you would not
+ 
+signal in the system that you would not
+want to synthesize across with an
+ 
+want to synthesize across with an
+estimate of 10 weeks. The gap between
+ 
+estimate of 10 weeks. The gap between
+what engineering knows and what sales
+ 
+what engineering knows and what sales
+promised is exactly the problem your
+ 
+promised is exactly the problem your
+leadership would need to see in that
+ 
+leadership would need to see in that
+situation. A database that stores both
+ 
+situation. A database that stores both
+views without resolving them preserves
+ 
+views without resolving them preserves
+that tension and a well-meaning Wiki
+ 
+that tension and a well-meaning Wiki
+might smooth those all away. So, those
+ 
+might smooth those all away. So, those
+are some of the structural differences,
+ 
+are some of the structural differences,
+but if we go past the structural
+ 
+but if we go past the structural
+differences in these two memory systems,
+ 
+differences in these two memory systems,
+the Open Brain system and the Wiki
+ 
+the Open Brain system and the Wiki
+system, I want to talk a little bit
+ 
+system, I want to talk a little bit
+about the job that the AI does in each
+ 
+about the job that the AI does in each
+system and why it's important to name
+ 
+system and why it's important to name
+the AI job description really clearly.
+ 
+the AI job description really clearly.
+One of the sharpest practical
+ 
+One of the sharpest practical
+differences between these approaches is
+ 
+differences between these approaches is
+what the AI will spend its time doing
+ 
+what the AI will spend its time doing
+and you need to decide where do you want
+ 
+and you need to decide where do you want
+to invest in your AI? In Carpathy's
+ 
+to invest in your AI? In Carpathy's
+system, the AI is primarily a writer.
+ 
+system, the AI is primarily a writer.
+The job is to maintain a document and
+ 
+The job is to maintain a document and
+when you add a new source, you have to
+ 
+when you add a new source, you have to
+write to that, right? You have to read
+ 
+write to that, right? You have to read
+the raw material, synthesize it, write
+ 
+the raw material, synthesize it, write
+what you think about it, update Wiki
+ 
+what you think about it, update Wiki
+pages, connect new links, make sense of
+ 
+pages, connect new links, make sense of
+it, add concept explanations,
+ 
+it, add concept explanations,
+cross-reference it, create an index.
+ 
+cross-reference it, create an index.
+There's a ton to do. It's effectively
+ 
+There's a ton to do. It's effectively
+doing editorial work. It's making
+ 
+doing editorial work. It's making
+judgment calls about what's important,
+ 
+judgment calls about what's important,
+about what connects to what, and where
+ 
+about what connects to what, and where
+those contradictions might lie. Whereas
+ 
+those contradictions might lie. Whereas
+in Open Brain, we think of the AI as
+ 
+in Open Brain, we think of the AI as
+primarily a reader. Its job is to answer
+ 
+primarily a reader. Its job is to answer
+questions by pulling from the structured
+ 
+questions by pulling from the structured
+data and when you or an agent will ask
+ 
+data and when you or an agent will ask
+something, the AI will just search the
+ 
+something, the AI will just search the
+database that has been carefully read
+ 
+database that has been carefully read
+and carefully organized, read the
+ 
+and carefully organized, read the
+relevant entries, and come back with a
+ 
+relevant entries, and come back with a
+precise, fresh synthesis based on all of
+ 
+precise, fresh synthesis based on all of
+the available data. So, effectively, it
+ 
+the available data. So, effectively, it
+is doing the analytical work on the fly,
+ 
+is doing the analytical work on the fly,
+but it's able to produce more detailed
+ 
+but it's able to produce more detailed
+results because all of the detail is
+ 
+results because all of the detail is
+immediately available in the database.
+ 
+immediately available in the database.
+And so, those different job descriptions
+ 
+And so, those different job descriptions
+have real consequences. When the AI is a
+ 
+have real consequences. When the AI is a
+writer, you interact with it intensively
+ 
+writer, you interact with it intensively
+when new information comes in. Is that a
+ 
+when new information comes in. Is that a
+job that you want to do? Do you want to
+ 
+job that you want to do? Do you want to
+interact with it a lot when the new
+ 
+interact with it a lot when the new
+information comes in? It does adding a
+ 
+information comes in? It does adding a
+single research paper trigger updates
+ 
+single research paper trigger updates
+across a dozen Wiki pages and is that
+ 
+across a dozen Wiki pages and is that
+something you're comfortable doing as
+ 
+something you're comfortable doing as
+you think through and and figure out the
+ 
+you think through and and figure out the
+connections? It's a somewhat heavy
+ 
+connections? It's a somewhat heavy
+operation on the front end, but
+ 
+operation on the front end, but
+afterward, you end up getting answers
+ 
+afterward, you end up getting answers
+that are very cheap because all of your
+ 
+that are very cheap because all of your
+thinking is captured in that Wiki. The
+ 
+thinking is captured in that Wiki. The
+thinking has been done. When the AI is
+ 
+thinking has been done. When the AI is
+more of a reader as in Open Brain, what
+ 
+more of a reader as in Open Brain, what
+you get is adding new information is
+ 
+you get is adding new information is
+lazy and cheap. That's sort of why I did
+ 
+lazy and cheap. That's sort of why I did
+it because I'm a lazy person and I want
+ 
+it because I'm a lazy person and I want
+my stuff auto-categorized as cheaply and
+ 
+my stuff auto-categorized as cheaply and
+easily as possible. We just write a row,
+ 
+easily as possible. We just write a row,
+we tag it, and we're done. The heavy
+ 
+we tag it, and we're done. The heavy
+operation is when you ask a question
+ 
+operation is when you ask a question
+because the AI has to reconstruct
+ 
+because the AI has to reconstruct
+understanding from the data each time.
+ 
+understanding from the data each time.
+So, simple lookups can be fast and
+ 
+So, simple lookups can be fast and
+complex lookups will take time as the AI
+ 
+complex lookups will take time as the AI
+does deep synthesis because it's
+ 
+does deep synthesis because it's
+actually interrogating the raw data.
+ 
+actually interrogating the raw data.
+That cost is going to recur every time
+ 
+That cost is going to recur every time
+if you ask something similar, but on the
+ 
+if you ask something similar, but on the
+other hand, you are not going to lose
+ 
+other hand, you are not going to lose
+detail if you need to get into the
+ 
+detail if you need to get into the
+grounds and really understand what is
+ 
+grounds and really understand what is
+going on. The difference between these
+ 
+going on. The difference between these
+approaches raises a question that I that
+ 
+approaches raises a question that I that
+I think most of us aren't asking yet.
+ 
+I think most of us aren't asking yet.
+Whose understanding matters here? When
+ 
+Whose understanding matters here? When
+your AI maintains a Wiki, what you are
+ 
+your AI maintains a Wiki, what you are
+effectively saying is that when a
+ 
+effectively saying is that when a
+colleague asks you about a topic, you
+ 
+colleague asks you about a topic, you
+are willing to check the Wiki and trust
+ 
+are willing to check the Wiki and trust
+what the AI says before answering. And
+ 
+what the AI says before answering. And
+you're trusting that the AI's capture of
+ 
+you're trusting that the AI's capture of
+your understanding or your thinking or
+ 
+your understanding or your thinking or
+the article you gave it is good enough
+ 
+the article you gave it is good enough
+to share with your colleagues as yours.
+ 
+to share with your colleagues as yours.
+Whereas if you have an Open Brain style
+ 
+Whereas if you have an Open Brain style
+database, the provenance is very clear.
+ 
+database, the provenance is very clear.
+These are facts from identified sources
+ 
+These are facts from identified sources
+with timestamps. You can trace any claim
+ 
+with timestamps. You can trace any claim
+back to where it came from. What you
+ 
+back to where it came from. What you
+know, you know, and you know why you
+ 
+know, you know, and you know why you
+know it. And you can come back with a
+ 
+know it. And you can come back with a
+fair bit of authority and say, "I'm not
+ 
+fair bit of authority and say, "I'm not
+just trusting the AI's ability to
+ 
+just trusting the AI's ability to
+synthesize information, I'm actually
+ 
+synthesize information, I'm actually
+saying this is the raw material I got,
+ 
+saying this is the raw material I got,
+this is the facts that I'm basing this
+ 
+this is the facts that I'm basing this
+on, and this is a considered opinion
+ 
+on, and this is a considered opinion
+based on a query across all of the data
+ 
+based on a query across all of the data
+that I've collected over the last few
+ 
+that I've collected over the last few
+months or the last few weeks or whatever
+ 
+months or the last few weeks or whatever
+it is for you." That is a deeper and
+ 
+it is for you." That is a deeper and
+more consequential kind of trust. It
+ 
+more consequential kind of trust. It
+also means the instructions you give the
+ 
+also means the instructions you give the
+AI that tells it how to organize your
+ 
+AI that tells it how to organize your
+Wiki becomes the highest leverage
+ 
+Wiki becomes the highest leverage
+document in the whole system. Because if
+ 
+document in the whole system. Because if
+you're building a Wiki, I want you to
+ 
+you're building a Wiki, I want you to
+think about this for a second. If you're
+ 
+think about this for a second. If you're
+building a Wiki, you basically are
+ 
+building a Wiki, you basically are
+telling in one markdown file the AI to
+ 
+telling in one markdown file the AI to
+organize and synthesize in a way that's
+ 
+organize and synthesize in a way that's
+profoundly useful to you and profoundly
+ 
+profoundly useful to you and profoundly
+accurate and you're betting your career
+ 
+accurate and you're betting your career
+that it will get it right or you're
+ 
+that it will get it right or you're
+going to invest time on every single
+ 
+going to invest time on every single
+ingest to make sure it's correct and to
+ 
+ingest to make sure it's correct and to
+double-check it. Most people will
+ 
+double-check it. Most people will
+under-invest in that and the wiki will
+ 
+under-invest in that and the wiki will
+be worse than it should be as a result.
+ 
+be worse than it should be as a result.
+Not because it can't be good, but
+ 
+Not because it can't be good, but
+because we're lazy. If we were to talk
+ 
+because we're lazy. If we were to talk
+about what each approach is good at and
+ 
+about what each approach is good at and
+where the advantages are, I would say
+ 
+where the advantages are, I would say
+that Karpathy's wiki wins when you're
+ 
+that Karpathy's wiki wins when you're
+deep in research mode, when you're
+ 
+deep in research mode, when you're
+reading 10 papers on a topic over a
+ 
+reading 10 papers on a topic over a
+couple of weeks, which sounds a lot like
+ 
+couple of weeks, which sounds a lot like
+what Andre does, right? Like it's
+ 
+what Andre does, right? Like it's
+written for him, you can tell, right?
+ 
+written for him, you can tell, right?
+And each one might build on, it might
+ 
+And each one might build on, it might
+contradict the last. It's a thinking
+ 
+contradict the last. It's a thinking
+person's tool. The wiki approach is
+ 
+person's tool. The wiki approach is
+going to be dramatically better in that
+ 
+going to be dramatically better in that
+situation because by paper five, you're
+ 
+situation because by paper five, you're
+continuing to wrestle with it, you're
+ 
+continuing to wrestle with it, you're
+continuing to read, you're giving input,
+ 
+continuing to read, you're giving input,
+the wiki contains a synthesis of the
+ 
+the wiki contains a synthesis of the
+first four. You've read all of the
+ 
+first four. You've read all of the
+primary sources, you have them in your
+ 
+primary sources, you have them in your
+head as well, and paper five can get
+ 
+head as well, and paper five can get
+integrated into that existing picture
+ 
+integrated into that existing picture
+and help you evolve your thinking.
+ 
+and help you evolve your thinking.
+Contradictions get flagged at the moment
+ 
+Contradictions get flagged at the moment
+of in-gest and you can see them really
+ 
+of in-gest and you can see them really
+quickly. Cross-references get built
+ 
+quickly. Cross-references get built
+automatically. It's basically an
+ 
+automatically. It's basically an
+academic researcher's dream. And so by
+ 
+academic researcher's dream. And so by
+paper 10, you have a really rich,
+ 
+paper 10, you have a really rich,
+navigable artifact that represents the
+ 
+navigable artifact that represents the
+current state of your understanding of a
+ 
+current state of your understanding of a
+very difficult subject. It's sort of
+ 
+very difficult subject. It's sort of
+like notebook LM on steroid. It's not
+ 
+like notebook LM on steroid. It's not
+just the current state of your files, it
+ 
+just the current state of your files, it
+also wins because your personal
+ 
+also wins because your personal
+knowledge evolves over months and you
+ 
+knowledge evolves over months and you
+can actually see it grow, right? So if
+ 
+can actually see it grow, right? So if
+you're thinking about your health over
+ 
+you're thinking about your health over
+months, about self-improvement, about
+ 
+months, about self-improvement, about
+competitive analysis, for any domain
+ 
+competitive analysis, for any domain
+where the value is in the connections
+ 
+where the value is in the connections
+between the sources rather than in any
+ 
+between the sources rather than in any
+single source alone, then that's where
+ 
+single source alone, then that's where
+Karpathy's approach is going to win,
+ 
+Karpathy's approach is going to win,
+right? Because you're really looking at
+ 
+right? Because you're really looking at
+how it can help you understand a complex
+ 
+how it can help you understand a complex
+synthesis problem. But OpenBrain wins
+ 
+synthesis problem. But OpenBrain wins
+when you need precise, structured
+ 
+when you need precise, structured
+operations across your knowledge base.
+ 
+operations across your knowledge base.
+If you want to ask, "Show me every
+ 
+If you want to ask, "Show me every
+meeting note from Q1 where pricing was
+ 
+meeting note from Q1 where pricing was
+discussed," that's an OpenBrain type
+ 
+discussed," that's an OpenBrain type
+question. If you want to pull the three
+ 
+question. If you want to pull the three
+most recent competitor updates and
+ 
+most recent competitor updates and
+compare them, that's an OpenBrain
+ 
+compare them, that's an OpenBrain
+question. Or find all actionable items
+ 
+question. Or find all actionable items
+assigned to me in the last 2 weeks,
+ 
+assigned to me in the last 2 weeks,
+OpenBrain again. These are database
+ 
+OpenBrain again. These are database
+queries, right? You are digging in for
+ 
+queries, right? You are digging in for
+specific facts, they return exact,
+ 
+specific facts, they return exact,
+filterable results. A folder of text
+ 
+filterable results. A folder of text
+files can approximate this with some
+ 
+files can approximate this with some
+keyword search, but it's not going to be
+ 
+keyword search, but it's not going to be
+perfect, right? It's going to miss
+ 
+perfect, right? It's going to miss
+stuff, it's going to break fast, and
+ 
+stuff, it's going to break fast, and
+it's not really what that whole wiki
+ 
+it's not really what that whole wiki
+system was designed for, especially when
+ 
+system was designed for, especially when
+you need to combine filters, sort by
+ 
+you need to combine filters, sort by
+date, or work across hundreds of
+ 
+date, or work across hundreds of
+entries. OpenBrain also wins for
+ 
+entries. OpenBrain also wins for
+multi-agent access. When you have Claude
+ 
+multi-agent access. When you have Claude
+Code and ChatGPT and Cursor and a
+ 
+Code and ChatGPT and Cursor and a
+scheduled automation all working against
+ 
+scheduled automation all working against
+the same data source at once, all
+ 
+the same data source at once, all
+needing to read from and write to the
+ 
+needing to read from and write to the
+same knowledge store at the same time,
+ 
+same knowledge store at the same time,
+well, you need a database that handles
+ 
+well, you need a database that handles
+simultaneous access in that situation,
+ 
+simultaneous access in that situation,
+not a directory of files where two
+ 
+not a directory of files where two
+agents editing the same page creates a
+ 
+agents editing the same page creates a
+complete mess. And OpenBrain wins on
+ 
+complete mess. And OpenBrain wins on
+volume, too, right? OpenBrain can handle
+ 
+volume, too, right? OpenBrain can handle
+thousands of entries across dozens of
+ 
+thousands of entries across dozens of
+categories with search, with metadata,
+ 
+categories with search, with metadata,
+with relational queries. And and
+ 
+with relational queries. And and
+Karpathy absolutely acknowledges this.
+ 
+Karpathy absolutely acknowledges this.
+It works best at roughly 100 to 10,000
+ 
+It works best at roughly 100 to 10,000
+high-signal documents. It is not
+ 
+high-signal documents. It is not
+corporate-level memory. And I hear
+ 
+corporate-level memory. And I hear
+corporations saying, "We should just use
+ 
+corporations saying, "We should just use
+this for for our company-level context
+ 
+this for for our company-level context
+layer and that will not work." And at
+ 
+layer and that will not work." And at
+the upper end, 10,000 documents, you
+ 
+the upper end, 10,000 documents, you
+already need extra search tooling just
+ 
+already need extra search tooling just
+to stay manageable. And so when you're
+ 
+to stay manageable. And so when you're
+dealing with thousands of contacts and
+ 
+dealing with thousands of contacts and
+transactions and events and tasks and
+ 
+transactions and events and tasks and
+documents on top of all of that,
+ 
+documents on top of all of that,
+structured storage is the only sane
+ 
+structured storage is the only sane
+option that scales. But to be fair, we
+ 
+option that scales. But to be fair, we
+should look at where both systems break,
+ 
+should look at where both systems break,
+right? Every system has a load where it
+ 
+right? Every system has a load where it
+starts to break, they just tend to break
+ 
+starts to break, they just tend to break
+in different ways. So, as I've called
+ 
+in different ways. So, as I've called
+out, the wiki approach tends to break at
+ 
+out, the wiki approach tends to break at
+scale. So if you have a team that's
+ 
+scale. So if you have a team that's
+using it where you are starting to hit
+ 
+using it where you are starting to hit
+that wiki structure from multiple
+ 
+that wiki structure from multiple
+directions, well, now the wiki doesn't
+ 
+directions, well, now the wiki doesn't
+know how to auto-optimize, right? If
+ 
+know how to auto-optimize, right? If
+person A has an understanding that's
+ 
+person A has an understanding that's
+evolving differently than person B or or
+ 
+evolving differently than person B or or
+agent A and agent B all have different
+ 
+agent A and agent B all have different
+approaches and they're trying to update
+ 
+approaches and they're trying to update
+the same wiki page, one, you have a
+ 
+the same wiki page, one, you have a
+conflict and that's going to be a
+ 
+conflict and that's going to be a
+problem, but two, the wiki is going to
+ 
+problem, but two, the wiki is going to
+look like a weird merge of these
+ 
+look like a weird merge of these
+different approaches that doesn't
+ 
+different approaches that doesn't
+reflect understanding. Fundamentally,
+ 
+reflect understanding. Fundamentally,
+the semantic understanding that you're
+ 
+the semantic understanding that you're
+evolving with the wiki is designed for a
+ 
+evolving with the wiki is designed for a
+world that's kind of like Andre's world
+ 
+world that's kind of like Andre's world
+where he's a researcher and he's
+ 
+where he's a researcher and he's
+thinking deeply about a problem and it's
+ 
+thinking deeply about a problem and it's
+for him and it's his evolving
+ 
+for him and it's his evolving
+understanding with the agent. So for a
+ 
+understanding with the agent. So for a
+solo practitioner, you don't get issues
+ 
+solo practitioner, you don't get issues
+here, but for a team, this becomes a
+ 
+here, but for a team, this becomes a
+really serious problem. If your
+ 
+really serious problem. If your
+knowledge changes daily, if you are in
+ 
+knowledge changes daily, if you are in
+operation where you have project status,
+ 
+operation where you have project status,
+you have competitive positioning, you
+ 
+you have competitive positioning, you
+have live deal flow, the cost of
+ 
+have live deal flow, the cost of
+re-synthesizing the wiki every time
+ 
+re-synthesizing the wiki every time
+something comes in becomes really
+ 
+something comes in becomes really
+punishing because every change
+ 
+punishing because every change
+potentially ripples across multiple
+ 
+potentially ripples across multiple
+pages in ways that you can't control.
+ 
+pages in ways that you can't control.
+And it should not, right? It should just
+ 
+And it should not, right? It should just
+be another data point in the row. And so
+ 
+be another data point in the row. And so
+think of the wiki system as being
+ 
+think of the wiki system as being
+optimized for like papers and articles
+ 
+optimized for like papers and articles
+speed, not Slack message and ticket
+ 
+speed, not Slack message and ticket
+update speed. And that's the thing that
+ 
+update speed. And that's the thing that
+worries me the most is that people don't
+ 
+worries me the most is that people don't
+recognize that a particular knowledge
+ 
+recognize that a particular knowledge
+system is designed to work at a
+ 
+system is designed to work at a
+particular speed of business and if you
+ 
+particular speed of business and if you
+don't think about it that way, you might
+ 
+don't think about it that way, you might
+implement the wrong one. A neglected
+ 
+implement the wrong one. A neglected
+database has gaps, but the old facts are
+ 
+database has gaps, but the old facts are
+still true as opposed to a wiki. A
+ 
+still true as opposed to a wiki. A
+neglected wiki tends to drift because
+ 
+neglected wiki tends to drift because
+old syntheses become increasingly wrong
+ 
+old syntheses become increasingly wrong
+as new information is not integrated,
+ 
+as new information is not integrated,
+but they still read with the confidence
+ 
+but they still read with the confidence
+that comes from well-written prose. And
+ 
+that comes from well-written prose. And
+so database staleness can look like
+ 
+so database staleness can look like
+ignorance, it can look like you're
+ 
+ignorance, it can look like you're
+missing something, I forgot to put stuff
+ 
+missing something, I forgot to put stuff
+into my OpenBrain, but wiki staleness
+ 
+into my OpenBrain, but wiki staleness
+looks differently. It actually looks
+ 
+looks differently. It actually looks
+like active misinformation because you
+ 
+like active misinformation because you
+don't know that you're wrong because the
+ 
+don't know that you're wrong because the
+page reads like it knows what it's
+ 
+page reads like it knows what it's
+talking about because that is the entire
+ 
+talking about because that is the entire
+purpose. It's supposed to synthesize
+ 
+purpose. It's supposed to synthesize
+stuff and write confident prose that
+ 
+stuff and write confident prose that
+helps you understand a situation. And
+ 
+helps you understand a situation. And
+you might not question the gap that you
+ 
+you might not question the gap that you
+do not see. Now, let's get at some of
+ 
+do not see. Now, let's get at some of
+the scale break points for OpenBrain.
+ 
+the scale break points for OpenBrain.
+And by the way, yes, I am launching
+ 
+And by the way, yes, I am launching
+fixes for these because that's what
+ 
+fixes for these because that's what
+we're all about with AI. We make things
+ 
+we're all about with AI. We make things
+better over time. In the past, OpenBrain
+ 
+better over time. In the past, OpenBrain
+has really cracked around deep synthesis
+ 
+has really cracked around deep synthesis
+quality. If you try to synthesize 15
+ 
+quality. If you try to synthesize 15
+different facts at once, the AI can do
+ 
+different facts at once, the AI can do
+it, but it tends to do it in slightly
+ 
+it, but it tends to do it in slightly
+unpredictable ways because it has no
+ 
+unpredictable ways because it has no
+previous map of how that worked in the
+ 
+previous map of how that worked in the
+past to do it well. It's essentially
+ 
+past to do it well. It's essentially
+searching the shelves of the database
+ 
+searching the shelves of the database
+every single time from scratch. Now, the
+ 
+every single time from scratch. Now, the
+answer is usually good because the AI is
+ 
+answer is usually good because the AI is
+good, but it's rarely as good as a
+ 
+good, but it's rarely as good as a
+pre-built synthesis that had the time to
+ 
+pre-built synthesis that had the time to
+integrate everything deliberately from
+ 
+integrate everything deliberately from
+the beginning. And that is something
+ 
+the beginning. And that is something
+that we're addressing. Browsability is
+ 
+that we're addressing. Browsability is
+another area that we can think about
+ 
+another area that we can think about
+here. OpenBrain is deliberately
+ 
+here. OpenBrain is deliberately
+headless. There's no artifact you open
+ 
+headless. There's no artifact you open
+and wander through. And I built it that
+ 
+and wander through. And I built it that
+way because it gives you the flexibility
+ 
+way because it gives you the flexibility
+to decide how you want to access it.
+ 
+to decide how you want to access it.
+Now, the nice thing is it's very, very
+ 
+Now, the nice thing is it's very, very
+easy to build the right head over the
+ 
+easy to build the right head over the
+top. There are people who have added
+ 
+top. There are people who have added
+Obsidian to OpenBrain. There's a plugin
+ 
+Obsidian to OpenBrain. There's a plugin
+for that already. So if that's something
+ 
+for that already. So if that's something
+where you're like, "I just I just can't
+ 
+where you're like, "I just I just can't
+browse a database," you're absolutely
+ 
+browse a database," you're absolutely
+right. Just pick the plugin of your
+ 
+right. Just pick the plugin of your
+choice and you can browse it, whether
+ 
+choice and you can browse it, whether
+that's Obsidian or something else.
+ 
+that's Obsidian or something else.
+Here's another one we're building to
+ 
+Here's another one we're building to
+improve. In the wiki, contradictions
+ 
+improve. In the wiki, contradictions
+surface when new information comes in as
+ 
+surface when new information comes in as
+long as your initial markdown file
+ 
+long as your initial markdown file
+deliberately says, "Look for
+ 
+deliberately says, "Look for
+contradiction." Because the AI is
+ 
+contradiction." Because the AI is
+actively integrating against existing
+ 
+actively integrating against existing
+pages following your prompt. But in a
+ 
+pages following your prompt. But in a
+database environment, the contradiction
+ 
+database environment, the contradiction
+might just sit silently in adjacent rows
+ 
+might just sit silently in adjacent rows
+unless you specifically ask the right
+ 
+unless you specifically ask the right
+question to expose that contradiction.
+ 
+question to expose that contradiction.
+I'm building a plugin that helps with
+ 
+I'm building a plugin that helps with
+that. If you are interested in
+ 
+that. If you are interested in
+essentially running audits that check
+ 
+essentially running audits that check
+for contradictions in your data set,
+ 
+for contradictions in your data set,
+we're launching a plugin that helps you
+ 
+we're launching a plugin that helps you
+use OpenBrain as a contradiction
+ 
+use OpenBrain as a contradiction
+surfacing tool. You can actually build
+ 
+surfacing tool. You can actually build
+out and understand a map of the
+ 
+out and understand a map of the
+contradictions in your team or your org
+ 
+contradictions in your team or your org
+data sets really, really easily because
+ 
+data sets really, really easily because
+you can look through the raw material
+ 
+you can look through the raw material
+and see it right away. Yes, databases
+ 
+and see it right away. Yes, databases
+store facts, they're not contradiction
+ 
+store facts, they're not contradiction
+aware by default, but it's relatively
+ 
+aware by default, but it's relatively
+easy in the age of AI to extend
+ 
+easy in the age of AI to extend
+something like OpenBrain and make it
+ 
+something like OpenBrain and make it
+aware of those contradictions. And
+ 
+aware of those contradictions. And
+that's what I did. And I know I've spent
+ 
+that's what I did. And I know I've spent
+a lot of time talking about differences,
+ 
+a lot of time talking about differences,
+but one of the things I want to call out
+ 
+but one of the things I want to call out
+is that there are a lot of common
+ 
+is that there are a lot of common
+principles that these systems share.
+ 
+principles that these systems share.
+They might disagree on implementation
+ 
+They might disagree on implementation
+details, but a lot of the underlying
+ 
+details, but a lot of the underlying
+thesis or principles about AI and about
+ 
+thesis or principles about AI and about
+data, they agree on. They agree that you
+ 
+data, they agree on. They agree that you
+own the artifact, not the tool. So
+ 
+own the artifact, not the tool. So
+Karpathy's files are text in a folder
+ 
+Karpathy's files are text in a folder
+you control, OpenBrain's data is in a
+ 
+you control, OpenBrain's data is in a
+database you own, it's the same
+ 
+database you own, it's the same
+principle. Neither system hands your
+ 
+principle. Neither system hands your
+knowledge to a platform that can reprice
+ 
+knowledge to a platform that can reprice
+or lock you in. Karpathy calls this file
+ 
+or lock you in. Karpathy calls this file
+over app, I've called it building with
+ 
+over app, I've called it building with
+no SaaS middlemen. It's a very similar
+ 
+no SaaS middlemen. It's a very similar
+mindset. It's the same conviction at
+ 
+mindset. It's the same conviction at
+root. In the age of AI, we should own
+ 
+root. In the age of AI, we should own
+our own context layer, right? There
+ 
+our own context layer, right? There
+should not be someone who is out there
+ 
+should not be someone who is out there
+whom we are paying just to own our
+ 
+whom we are paying just to own our
+context layer. Also, in both systems,
+ 
+context layer. Also, in both systems,
+the human's job is curation and
+ 
+the human's job is curation and
+questioning. We have to ask what sources
+ 
+questioning. We have to ask what sources
+go in, we have to figure out what
+ 
+go in, we have to figure out what
+questions to ask. We humans retain a big
+ 
+questions to ask. We humans retain a big
+job in both cases. There's no substitute
+ 
+job in both cases. There's no substitute
+for thinking carefully about how to
+ 
+for thinking carefully about how to
+organize your personal context layer.
+ 
+organize your personal context layer.
+And yes, the AI has lots of work to do.
+ 
+And yes, the AI has lots of work to do.
+It has to understand the facts that you
+ 
+It has to understand the facts that you
+put in in OpenBrain and has to be able
+ 
+put in in OpenBrain and has to be able
+to effectively synthesize on the wiki
+ 
+to effectively synthesize on the wiki
+side. It's effectively a similar
+ 
+side. It's effectively a similar
+division of labor, it's just timing that
+ 
+division of labor, it's just timing that
+work differently because on the Karpathy
+ 
+work differently because on the Karpathy
+wiki approach, it's doing all of that up
+ 
+wiki approach, it's doing all of that up
+front. And on the OpenBrain approach,
+ 
+front. And on the OpenBrain approach,
+it's doing all of that at query time
+ 
+it's doing all of that at query time
+when you ask. In both cases, memory
+ 
+when you ask. In both cases, memory
+compounds through intentional structure,
+ 
+compounds through intentional structure,
+not just through random accumulation.
+ 
+not just through random accumulation.
+The only difference is how that
+ 
+The only difference is how that
+structure is positioned and where that
+ 
+structure is positioned and where that
+structure lives. So it might live in a
+ 
+structure lives. So it might live in a
+wiki in Karpathy's case and it lives in
+ 
+wiki in Karpathy's case and it lives in
+a SQL database in OpenBrain's case, but
+ 
+a SQL database in OpenBrain's case, but
+in both cases, the structure is
+ 
+in both cases, the structure is
+intentionally framed to enable a certain
+ 
+intentionally framed to enable a certain
+kind of connection to occur. And so for
+ 
+kind of connection to occur. And so for
+wiki work where you might want the
+ 
+wiki work where you might want the
+connections to be between documents,
+ 
+connections to be between documents,
+that makes a ton of sense, right? You
+ 
+that makes a ton of sense, right? You
+want all of the documents there, you
+ 
+want all of the documents there, you
+want the AI thinking it through, and
+ 
+want the AI thinking it through, and
+that's an intentional structure. Whereas
+ 
+that's an intentional structure. Whereas
+for OpenBrain, the intentional structure
+ 
+for OpenBrain, the intentional structure
+is a SQL database that you know can
+ 
+is a SQL database that you know can
+scale and that is designed to hold
+ 
+scale and that is designed to hold
+operational facts and make sure that
+ 
+operational facts and make sure that
+they are in a neat place where you can
+ 
+they are in a neat place where you can
+reason against them and get audit-ready
+ 
+reason against them and get audit-ready
+results from day one. Both systems
+ 
+results from day one. Both systems
+assume that the primary user of the
+ 
+assume that the primary user of the
+knowledge base isn't you reading in a
+ 
+knowledge base isn't you reading in a
+browser, it's an AI agent working on
+ 
+browser, it's an AI agent working on
+your behalf. And I think increasingly
+ 
+your behalf. And I think increasingly
+that's going to be the assumption of all
+ 
+that's going to be the assumption of all
+of these memory systems. Human
+ 
+of these memory systems. Human
+readability is a bonus. Agent
+ 
+readability is a bonus. Agent
+accessibility is actually the
+ 
+accessibility is actually the
+requirement. So, now we come to what
+ 
+requirement. So, now we come to what
+I've built. Because let's be honest, we
+ 
+I've built. Because let's be honest, we
+want a mature system that gives us the
+ 
+want a mature system that gives us the
+strength of both approaches. It's not
+ 
+strength of both approaches. It's not
+either of those alone.
+ 
+either of those alone.
+And so, the specific architecture that
+ 
+And so, the specific architecture that
+I'm putting together and proposing is
+ 
+I'm putting together and proposing is
+the next major OpenBrain extension.
+ 
+the next major OpenBrain extension.
+You want to keep OpenBrain as your
+ 
+You want to keep OpenBrain as your
+permanent store. Don't change that. It's
+ 
+permanent store. Don't change that. It's
+a great spot for facts, everything goes
+ 
+a great spot for facts, everything goes
+in there. That's fantastic. Every
+ 
+in there. That's fantastic. Every
+meeting note, every article clip, every
+ 
+meeting note, every article clip, every
+research finding, every task, every
+ 
+research finding, every task, every
+contact, it's all tagged, it's all
+ 
+contact, it's all tagged, it's all
+searchable, it's all queryable. That
+ 
+searchable, it's all queryable. That
+makes sense. That is your durable memory
+ 
+makes sense. That is your durable memory
+layer right there. And it can handle
+ 
+layer right there. And it can handle
+high volumes. It can handle precise
+ 
+high volumes. It can handle precise
+query. It can recall across multiple
+ 
+query. It can recall across multiple
+domains in your life. It can be the
+ 
+domains in your life. It can be the
+source of truth. And a wiki layer can
+ 
+source of truth. And a wiki layer can
+act as a compiled view on demand. And
+ 
+act as a compiled view on demand. And
+And so, I'm launching a new process, a
+ 
+And so, I'm launching a new process, a
+new plugin where a compilation agent can
+ 
+new plugin where a compilation agent can
+run on a schedule, daily, weekly, on
+ 
+run on a schedule, daily, weekly, on
+demand, and the agent can read from
+ 
+demand, and the agent can read from
+OpenBrain structured data. Effectively,
+ 
+OpenBrain structured data. Effectively,
+it becomes an OpenBrain graph. It can
+ 
+it becomes an OpenBrain graph. It can
+synthesize across entries. It can
+ 
+synthesize across entries. It can
+produce wiki pages on demand. It can
+ 
+produce wiki pages on demand. It can
+produce topic summaries. All driven by
+ 
+produce topic summaries. All driven by
+the idea that if you form a graph of
+ 
+the idea that if you form a graph of
+your knowledge base, you can get the
+ 
+your knowledge base, you can get the
+advantages of the wiki approach with the
+ 
+advantages of the wiki approach with the
+solidity and the factuality that comes
+ 
+solidity and the factuality that comes
+from an OpenBrain SQL database. And so,
+ 
+from an OpenBrain SQL database. And so,
+these pages can be generated artifacts
+ 
+these pages can be generated artifacts
+for you. Think of them like a daily
+ 
+for you. Think of them like a daily
+briefing that a really good chief of
+ 
+briefing that a really good chief of
+staff writes. By reading everything in
+ 
+staff writes. By reading everything in
+your files and distilling it into
+ 
+your files and distilling it into
+something you can browse, the graph
+ 
+something you can browse, the graph
+approach allows you to follow Karpathy's
+ 
+approach allows you to follow Karpathy's
+patterns for synthesis, to
+ 
+patterns for synthesis, to
+cross-reference, to link related topics,
+ 
+cross-reference, to link related topics,
+to flag contradictions, to maintain an
+ 
+to flag contradictions, to maintain an
+evolving synthesis, but it works from
+ 
+evolving synthesis, but it works from
+structured data,
+ 
+structured data,
+not raw files. And that means it can do
+ 
+not raw files. And that means it can do
+things Karpathy's ingest can't, like
+ 
+things Karpathy's ingest can't, like
+filter entries by date or category
+ 
+filter entries by date or category
+before synthesizing. It can wait by
+ 
+before synthesizing. It can wait by
+confidence. It can exclude outdated
+ 
+confidence. It can exclude outdated
+items. In other words, the synthesis is
+ 
+items. In other words, the synthesis is
+richer because the underlying data is
+ 
+richer because the underlying data is
+more detailed. The wiki pages are an
+ 
+more detailed. The wiki pages are an
+easy-to-read layer, and you can browse
+ 
+easy-to-read layer, and you can browse
+them in Obsidian, you can browse them in
+ 
+them in Obsidian, you can browse them in
+a note app, but they're all powered by a
+ 
+a note app, but they're all powered by a
+pre-built context graph that lives on
+ 
+pre-built context graph that lives on
+your structured data. They would not
+ 
+your structured data. They would not
+exist without your structured data. They
+ 
+exist without your structured data. They
+end up being your hot reference for when
+ 
+end up being your hot reference for when
+you're actively working on a topic, and
+ 
+you're actively working on a topic, and
+the structured data ends up being like
+ 
+the structured data ends up being like
+the raw files that Karpathy uses when he
+ 
+the raw files that Karpathy uses when he
+wants to look at the raw material in his
+ 
+wants to look at the raw material in his
+wiki, but unlike the raw files, these
+ 
+wiki, but unlike the raw files, these
+are easily queryable and organized in a
+ 
+are easily queryable and organized in a
+SQL database, so you can scale them in a
+ 
+SQL database, so you can scale them in a
+way that you can't with raw files. You
+ 
+way that you can't with raw files. You
+do not have a 10,000 file limit with
+ 
+do not have a 10,000 file limit with
+OpenBrain in the same way. So, the
+ 
+OpenBrain in the same way. So, the
+database stays the single source of
+ 
+database stays the single source of
+truth. New information always goes into
+ 
+truth. New information always goes into
+the core SQL OpenBrain first. The wiki
+ 
+the core SQL OpenBrain first. The wiki
+is never edited directly, and this
+ 
+is never edited directly, and this
+prevents the error-compounding problem
+ 
+prevents the error-compounding problem
+that several commenters on Karpathy's
+ 
+that several commenters on Karpathy's
+post flagged. If the AI writes something
+ 
+post flagged. If the AI writes something
+slightly wrong into the wiki and it
+ 
+slightly wrong into the wiki and it
+stays there, the next answer will build
+ 
+stays there, the next answer will build
+on that wrong thing, and you start to
+ 
+on that wrong thing, and you start to
+get drift, and errors start to
+ 
+get drift, and errors start to
+accumulate. Whereas in the hybrid model
+ 
+accumulate. Whereas in the hybrid model
+that I'm proposing with OpenBrain, the
+ 
+that I'm proposing with OpenBrain, the
+database is always authoritative. The
+ 
+database is always authoritative. The
+wiki is generated from a graph built off
+ 
+wiki is generated from a graph built off
+of that database. So, if the wiki has an
+ 
+of that database. So, if the wiki has an
+error,
+ 
+error,
+well,
+ 
+well,
+you fix the source data and you
+ 
+you fix the source data and you
+regenerate. You're not dependent on the
+ 
+regenerate. You're not dependent on the
+wiki as a source of truth. The wiki
+ 
+wiki as a source of truth. The wiki
+never drifts from reality because it's
+ 
+never drifts from reality because it's
+always rebuilt from ground reality in
+ 
+always rebuilt from ground reality in
+the SQL database. In OpenBrain terms,
+ 
+the SQL database. In OpenBrain terms,
+this is like a recipe. It's a composable
+ 
+this is like a recipe. It's a composable
+workflow that reads from the database
+ 
+workflow that reads from the database
+and produces an output based on a graph.
+ 
+and produces an output based on a graph.
+A wiki compiler recipe
+ 
+A wiki compiler recipe
+can query relevant tables, synthesize
+ 
+can query relevant tables, synthesize
+pages through AI, and effectively
+ 
+pages through AI, and effectively
+develop a network of relationships and
+ 
+develop a network of relationships and
+write that output to a wiki directory.
+ 
+write that output to a wiki directory.
+And if you're wondering, yes, it can run
+ 
+And if you're wondering, yes, it can run
+on an automated schedule. It can get
+ 
+on an automated schedule. It can get
+better every cycle because the
+ 
+better every cycle because the
+underlying data, hopefully, if you're
+ 
+underlying data, hopefully, if you're
+committing to it, grew since last time.
+ 
+committing to it, grew since last time.
+It becomes a compounding loop as long as
+ 
+It becomes a compounding loop as long as
+you are good at putting data in. And so,
+ 
+you are good at putting data in. And so,
+what you end up with is OpenBrain for
+ 
+what you end up with is OpenBrain for
+structured storage and agent access, and
+ 
+structured storage and agent access, and
+a Karpathy-style wiki over the top for
+ 
+a Karpathy-style wiki over the top for
+compiled understanding and human
+ 
+compiled understanding and human
+browsability. The database ends up
+ 
+browsability. The database ends up
+feeding the wiki, and the wiki never
+ 
+feeding the wiki, and the wiki never
+contradicts the database. You can query
+ 
+contradicts the database. You can query
+either one depending on what you need,
+ 
+either one depending on what you need,
+whether it's a precise fact or a
+ 
+whether it's a precise fact or a
+synthesized narrative, and you can
+ 
+synthesized narrative, and you can
+decide which you want to go for
+ 
+decide which you want to go for
+depending on the kind of problem that
+ 
+depending on the kind of problem that
+you're solving. And so, just to be
+ 
+you're solving. And so, just to be
+really, really blunt about which of
+ 
+really, really blunt about which of
+these, cuz I know I'm going to get
+ 
+these, cuz I know I'm going to get
+asked, which do I build? If you are
+ 
+asked, which do I build? If you are
+going deep on a single research topic,
+ 
+going deep on a single research topic,
+if you're a solo user, if you don't need
+ 
+if you're a solo user, if you don't need
+precise queries, if you don't need
+ 
+precise queries, if you don't need
+multi-agent access, if you want to think
+ 
+multi-agent access, if you want to think
+by reading and by browsing, you want
+ 
+by reading and by browsing, you want
+something running in 30 minutes with
+ 
+something running in 30 minutes with
+zero infrastructure. In those
+ 
+zero infrastructure. In those
+situations, then it absolutely makes
+ 
+situations, then it absolutely makes
+sense to use straight-up Karpathy's wiki
+ 
+sense to use straight-up Karpathy's wiki
+that he posted on the GitHub. Because
+ 
+that he posted on the GitHub. Because
+the AI will build the whole system for
+ 
+the AI will build the whole system for
+you, and it's designed for exactly that
+ 
+you, and it's designed for exactly that
+kind of solo use case. But you should
+ 
+kind of solo use case. But you should
+build with OpenBrain if you need
+ 
+build with OpenBrain if you need
+multiple AI tools accessing the same
+ 
+multiple AI tools accessing the same
+memory, if you are assuming that you
+ 
+memory, if you are assuming that you
+have a team working with this
+ 
+have a team working with this
+information, if you're capturing
+ 
+information, if you're capturing
+high-volume information across many
+ 
+high-volume information across many
+categories, if that information is not
+ 
+categories, if that information is not
+necessarily narrative-based, if it's
+ 
+necessarily narrative-based, if it's
+numbers-based.
+ 
+numbers-based.
+If you need structured queries, if
+ 
+If you need structured queries, if
+you're building automated agent
+ 
+you're building automated agent
+workflows off of this, if you're
+ 
+workflows off of this, if you're
+thinking about this as infrastructure
+ 
+thinking about this as infrastructure
+that lasts for a long time and needs to
+ 
+that lasts for a long time and needs to
+scale, and not just for a single
+ 
+scale, and not just for a single
+project. In a sense, a lot of what the
+ 
+project. In a sense, a lot of what the
+wiki feels like is a better, cooler
+ 
+wiki feels like is a better, cooler
+version of Notebook LM, which is an
+ 
+version of Notebook LM, which is an
+amazing tool, but not a tool that you
+ 
+amazing tool, but not a tool that you
+can use for an entire team. And so,
+ 
+can use for an entire team. And so,
+right now, I tend to say,
+ 
+right now, I tend to say,
+have it both ways. Have your OpenBrain
+ 
+have it both ways. Have your OpenBrain
+running, and if you want a browsable,
+ 
+running, and if you want a browsable,
+pre-synthesized understanding layer,
+ 
+pre-synthesized understanding layer,
+just grab the graph plugin and add that
+ 
+just grab the graph plugin and add that
+over the top. And then neither replaces
+ 
+over the top. And then neither replaces
+the other, and you get the benefits of
+ 
+the other, and you get the benefits of
+both. None of this is to say that Andrej
+ 
+both. None of this is to say that Andrej
+Karpathy isn't right about what he
+ 
+Karpathy isn't right about what he
+built. He built a phenomenal tool for
+ 
+built. He built a phenomenal tool for
+himself and for other researchers in a
+ 
+himself and for other researchers in a
+similar position, and regardless of
+ 
+similar position, and regardless of
+which system you end up going with,
+ 
+which system you end up going with,
+there are two ideas from Karpathy's post
+ 
+there are two ideas from Karpathy's post
+that are worth adopting right away.
+ 
+that are worth adopting right away.
+The idea file as a publishing format is
+ 
+The idea file as a publishing format is
+one of those. And one of those is really
+ 
+one of those. And one of those is really
+simple, it's the way he shared it. The
+ 
+simple, it's the way he shared it. The
+idea file is his publishing format.
+ 
+idea file is his publishing format.
+Karpathy didn't ship a tool, he
+ 
+Karpathy didn't ship a tool, he
+published a high-level description of an
+ 
+published a high-level description of an
+idea that was designed to be pasted into
+ 
+idea that was designed to be pasted into
+an AI agent that would build the
+ 
+an AI agent that would build the
+specifics with you. This is what I have
+ 
+specifics with you. This is what I have
+been saying when I tell you to take my
+ 
+been saying when I tell you to take my
+YouTube transcript and feed it to an AI.
+ 
+YouTube transcript and feed it to an AI.
+It is a genuinely new way to share
+ 
+It is a genuinely new way to share
+technical knowledge. It is a great
+ 
+technical knowledge. It is a great
+blueprint for an AI to execute, and I
+ 
+blueprint for an AI to execute, and I
+think we're going to see more of it
+ 
+think we're going to see more of it
+because it's much simpler than just
+ 
+because it's much simpler than just
+having to give an exhaustive,
+ 
+having to give an exhaustive,
+step-by-step that a human has to follow.
+ 
+step-by-step that a human has to follow.
+It ends up respecting the reader's
+ 
+It ends up respecting the reader's
+agency because they can give their own
+ 
+agency because they can give their own
+commentary on the idea, and then them
+ 
+commentary on the idea, and then them
+and the agent can decide the details
+ 
+and the agent can decide the details
+together while giving them a proven
+ 
+together while giving them a proven
+pattern to start from. And yes, if
+ 
+pattern to start from. And yes, if
+you're wondering, you can absolutely
+ 
+you're wondering, you can absolutely
+take the transcript from this YouTube
+ 
+take the transcript from this YouTube
+video and get started on your own memory
+ 
+video and get started on your own memory
+project as we've been going through this
+ 
+project as we've been going through this
+video together. Just plug it into your
+ 
+video together. Just plug it into your
+agent and go. But the deepest insight
+ 
+agent and go. But the deepest insight
+here is that Karpathy is moving the AI
+ 
+here is that Karpathy is moving the AI
+from Oracle to maintainer. The role AI
+ 
+from Oracle to maintainer. The role AI
+plays is starting to change. Most of us
+ 
+plays is starting to change. Most of us
+have treated AI as something you ask
+ 
+have treated AI as something you ask
+questions to, whereas Karpathy correctly
+ 
+questions to, whereas Karpathy correctly
+treats it as something that has an
+ 
+treats it as something that has an
+ongoing job, maintaining a knowledge
+ 
+ongoing job, maintaining a knowledge
+artifact that gets better over time. The
+ 
+artifact that gets better over time. The
+AI isn't here for magical,
+ 
+AI isn't here for magical,
+pie-in-the-sky, one-off answers from the
+ 
+pie-in-the-sky, one-off answers from the
+clouds, it's here for building sustained
+ 
+clouds, it's here for building sustained
+work that compounds. And the question
+ 
+work that compounds. And the question
+that we're all facing is just, is this
+ 
+that we're all facing is just, is this
+the right interface for that maintenance
+ 
+the right interface for that maintenance
+role, right? I don't want to lose the
+ 
+role, right? I don't want to lose the
+fact that underneath that, there is a
+ 
+fact that underneath that, there is a
+profound insight here about moving from
+ 
+profound insight here about moving from
+an answer engine mindset to moving to a
+ 
+an answer engine mindset to moving to a
+mindset where AI is a maintainer of
+ 
+mindset where AI is a maintainer of
+thinking systems that allow you to think
+ 
+thinking systems that allow you to think
+deliberately and do your work better. I
+ 
+deliberately and do your work better. I
+think that's a profound insight. Because
+ 
+think that's a profound insight. Because
+it allows us to be the ones who curate,
+ 
+it allows us to be the ones who curate,
+who think, who select, who explore,
+ 
+who think, who select, who explore,
+and it allows the AI to support us,
+ 
+and it allows the AI to support us,
+right? As we ask the right questions,
+ 
+right? As we ask the right questions,
+the AI can help us by doing so much of
+ 
+the AI can help us by doing so much of
+the grunt work. And isn't that what we
+ 
+the grunt work. And isn't that what we
+wanted in the first place? Didn't we
+ 
+wanted in the first place? Didn't we
+want that division of labor in the AI
+ 
+want that division of labor in the AI
+dream world to be the AI doing more of
+ 
+dream world to be the AI doing more of
+the grunt work and human judgment being
+ 
+the grunt work and human judgment being
+relevant?
+ 
+relevant?
+That's the dream. What Andrej Karpathy
+ 
+That's the dream. What Andrej Karpathy
+is describing is one way to get there,
+ 
+is describing is one way to get there,
+especially if you are in a deep solo
+ 
+especially if you are in a deep solo
+research project. And OpenBrain
+ 
+research project. And OpenBrain
+describes another way to do the same
+ 
+describes another way to do the same
+thing, it's just focused on more
+ 
+thing, it's just focused on more
+scalable structured data. And yes, you
+ 
+scalable structured data. And yes, you
+can have the best of both worlds because
+ 
+can have the best of both worlds because
+we can build a graph over the top of
+ 
+we can build a graph over the top of
+OpenBrain. This is exactly why I built
+ 
+OpenBrain. This is exactly why I built
+it extensible, because I knew that we
+ 
+it extensible, because I knew that we
+would have more stuff coming out around
+ 
+would have more stuff coming out around
+memory in 2026, and I wanted to build a
+ 
+memory in 2026, and I wanted to build a
+foundation we could build on. So, here
+ 
+foundation we could build on. So, here
+we are. It's our first major test, and
+ 
+we are. It's our first major test, and
+we can build something over the top that
+ 
+we can build something over the top that
+allows us to have the best of this wiki
+ 
+allows us to have the best of this wiki
+approach as well as the best of the
+ 
+approach as well as the best of the
+structured data that OpenBrain gives us.
+ 
+structured data that OpenBrain gives us.
+Ultimately, I think the lesson that we
+ 
+Ultimately, I think the lesson that we
+get from Karpathy's wiki
+ 
+get from Karpathy's wiki
+is that we need to become thinkers about
+ 
+is that we need to become thinkers about
+how we want our memory and our context
+ 
+how we want our memory and our context
+layers to work in order to be effective
+ 
+layers to work in order to be effective
+builders of agents and effective
+ 
+builders of agents and effective
+partners with AI over the second half of
+ 
+partners with AI over the second half of
+2026 and into 2027. None of what I am
+ 
+2026 and into 2027. None of what I am
+describing excuses us from doing that
+ 
+describing excuses us from doing that
+thinking. In fact, it's the opposite.
+ 
+thinking. In fact, it's the opposite.
+What I've been spending time telling you
+ 
+What I've been spending time telling you
+in this video is that there is no
+ 
+in this video is that there is no
+substitute for making really clear
+ 
+substitute for making really clear
+distinctions and really clear decisions
+ 
+distinctions and really clear decisions
+about the way you want your knowledge
+ 
+about the way you want your knowledge
+structured. Whether that's just you in
+ 
+structured. Whether that's just you in
+your room with a laptop and it's your
+ 
+your room with a laptop and it's your
+personal knowledge base or whether it's
+ 
+personal knowledge base or whether it's
+for your team or whether it's for your
+ 
+for your team or whether it's for your
+org. It is up to you to say, I want
+ 
+org. It is up to you to say, I want
+structured data because I know that I
+ 
+structured data because I know that I
+need to query against structured data
+ 
+need to query against structured data
+and get reliable results above 10,000
+ 
+and get reliable results above 10,000
+artifacts. Or it's up to you to say, you
+ 
+artifacts. Or it's up to you to say, you
+know what? I want the best of both
+ 
+know what? I want the best of both
+worlds. There's going to be some stuff
+ 
+worlds. There's going to be some stuff
+where I'm going to actually want to
+ 
+where I'm going to actually want to
+query with multiple agents and get
+ 
+query with multiple agents and get
+structured results for three different
+ 
+structured results for three different
+reports at the same time, but over the
+ 
+reports at the same time, but over the
+top of that I want a graph database that
+ 
+top of that I want a graph database that
+allows me to think in connections
+ 
+allows me to think in connections
+between materials that would be a little
+ 
+between materials that would be a little
+bit more difficult to do if I was just
+ 
+bit more difficult to do if I was just
+querying structured data by itself. It's
+ 
+querying structured data by itself. It's
+up to you. It is not up to me. We all
+ 
+up to you. It is not up to me. We all
+have to wrestle with this. And if you
+ 
+have to wrestle with this. And if you
+are an engineer thinking about this or a
+ 
+are an engineer thinking about this or a
+product manager thinking about this in
+ 
+product manager thinking about this in
+an org, you cannot substitute for that
+ 
+an org, you cannot substitute for that
+level of thoughtfulness. I'm sorry, you
+ 
+level of thoughtfulness. I'm sorry, you
+got to do the thinking. And so I hope
+ 
+got to do the thinking. And so I hope
+that this video has helped give you the
+ 
+that this video has helped give you the
+tools to make that decision clearly.
