@@ -75,7 +75,6 @@ function createGate(overrides?: Partial<ResponseReviewConfig>): CoherenceGate {
   return new CoherenceGate({
     config: createFullConfig(overrides),
     stateDir: tmpDir,
-    apiKey: 'test-api-key',
   });
 }
 

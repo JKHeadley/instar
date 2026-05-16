@@ -60,8 +60,8 @@ const AUTONOMY_GUIDANCE: Record<AutonomyLevel, string> = {
 // ---------------------------------------------------------------------------
 
 export class EscalationResolutionReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('escalation-resolution', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('escalation-resolution', options);
   }
 
   /**

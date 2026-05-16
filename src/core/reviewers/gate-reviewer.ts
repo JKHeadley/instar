@@ -17,8 +17,8 @@ export interface GateResult {
 }
 
 export class GateReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('gate', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('gate', options);
   }
 
   async review(context: ReviewContext): Promise<ReviewResult> {

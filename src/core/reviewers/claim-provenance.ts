@@ -10,8 +10,8 @@ import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
 
 export class ClaimProvenanceReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('claim-provenance', apiKey, {
+  constructor(options?: ReviewerOptions) {
+    super('claim-provenance', {
       ...options,
       model: options?.model ?? 'sonnet',
     });

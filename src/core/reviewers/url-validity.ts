@@ -13,8 +13,8 @@ import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
 const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
 
 export class UrlValidityReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('url-validity', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('url-validity', options);
   }
 
   protected buildPrompt(context: ReviewContext): string {

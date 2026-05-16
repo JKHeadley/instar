@@ -9,8 +9,8 @@ import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
 
 export class SettlingDetectionReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('settling-detection', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('settling-detection', options);
   }
 
   protected buildPrompt(context: ReviewContext): string {

@@ -13,8 +13,8 @@ import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewResult, ReviewerOptions } from '../CoherenceReviewer.js';
 
 export class InformationLeakageReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('information-leakage', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('information-leakage', options);
   }
 
   /**

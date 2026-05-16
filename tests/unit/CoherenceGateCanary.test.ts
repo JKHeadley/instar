@@ -34,7 +34,6 @@ function createGate(overrides?: Partial<ResponseReviewConfig>): CoherenceGate {
       ...overrides,
     },
     stateDir: tmpDir,
-    apiKey: 'test-api-key',
   });
 }
 

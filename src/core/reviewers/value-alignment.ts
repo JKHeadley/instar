@@ -10,8 +10,8 @@ import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
 
 export class ValueAlignmentReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('value-alignment', apiKey, {
+  constructor(options?: ReviewerOptions) {
+    super('value-alignment', {
       ...options,
       model: options?.model ?? 'sonnet',
     });

@@ -1,3 +1,10 @@
+---
+review-convergence: "2026-05-15T00:00:00Z"
+approved: true
+approved-by: "Justin (JKHeadley)"
+approved-date: "2026-05-15"
+---
+
 # Anthropic Path Constraints — Foundational Rules
 
 **Status:** Active, locked 2026-05-15 by Justin

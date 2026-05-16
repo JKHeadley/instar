@@ -84,7 +84,6 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 export abstract class CoherenceReviewer {
   readonly name: string;
-  protected readonly apiKey: string;
   protected readonly intelligence: IntelligenceProvider | null;
   protected readonly options: ReviewerOptions;
   readonly metrics: ReviewerHealthMetrics = {
@@ -95,9 +94,8 @@ export abstract class CoherenceReviewer {
     jsonParseErrors: 0,
   };
 
-  constructor(name: string, apiKey: string, options?: ReviewerOptions) {
+  constructor(name: string, options?: ReviewerOptions) {
     this.name = name;
-    this.apiKey = apiKey;
     this.options = options ?? {};
     this.intelligence = options?.intelligence ?? null;
   }

@@ -9,8 +9,8 @@ import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
 
 export class ContextCompletenessReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('context-completeness', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('context-completeness', options);
   }
 
   protected buildPrompt(context: ReviewContext): string {

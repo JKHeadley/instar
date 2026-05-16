@@ -1,3 +1,4 @@
+// safe-git-allow: test-helper-cleanup — resetSignatureForTests() removes a single signature file owned by the canary; migration to SafeFsExecutor tracked separately.
 /**
  * Empty-prompt detector signature store with optional disk persistence.
  *

@@ -64,8 +64,8 @@ function mockApiError(status: number, body: string) {
 class TestReviewer extends CoherenceReviewer {
   lastPrompt = '';
 
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('test-reviewer', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('test-reviewer', options);
   }
 
   protected buildPrompt(context: ReviewContext): string {
@@ -102,7 +102,7 @@ describe('CoherenceReviewer base class', () => {
   let reviewer: TestReviewer;
 
   beforeEach(() => {
-    reviewer = new TestReviewer(FAKE_API_KEY);
+    reviewer = new TestReviewer();
     vi.restoreAllMocks();
   });
 
@@ -249,7 +249,7 @@ describe('CoherenceReviewer base class', () => {
     });
 
     it('fails open on timeout', async () => {
-      const slowReviewer = new TestReviewer(FAKE_API_KEY, { timeoutMs: 50 });
+      const slowReviewer = new TestReviewer({ timeoutMs: 50 });
       vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
         () => new Promise((resolve) => setTimeout(() => resolve(mockApiResponse('{}')), 5000)),
       );
@@ -320,7 +320,7 @@ describe('GateReviewer', () => {
     const gateResponse = '{"needsReview": true, "reason": "contains URLs"}';
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(mockApiResponse(gateResponse));
 
-    const reviewer = new GateReviewer(FAKE_API_KEY);
+    const reviewer = new GateReviewer();
     const result = await reviewer.reviewAsGate(makeContext());
 
     expect(result.needsReview).toBe(true);
@@ -332,7 +332,7 @@ describe('GateReviewer', () => {
       mockApiResponse('{"needsReview": false, "reason": "simple ack"}'),
     );
 
-    const reviewer = new GateReviewer(FAKE_API_KEY);
+    const reviewer = new GateReviewer();
     const result = await reviewer.review(makeContext());
 
     expect(result.pass).toBe(true);
@@ -341,7 +341,7 @@ describe('GateReviewer', () => {
   it('defaults to needing review on error (conservative fail-open)', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('API down'));
 
-    const reviewer = new GateReviewer(FAKE_API_KEY);
+    const reviewer = new GateReviewer();
     const result = await reviewer.review(makeContext());
 
     // Gate fails conservative: assume review IS needed
@@ -354,7 +354,7 @@ describe('GateReviewer', () => {
       mockApiResponse('{"needsReview": false, "reason": "ok"}'),
     );
 
-    const reviewer = new GateReviewer(FAKE_API_KEY);
+    const reviewer = new GateReviewer();
     await reviewer.review(makeContext({ channel: 'telegram', isExternalFacing: true }));
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -377,7 +377,7 @@ describe('ConversationalToneReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ConversationalToneReviewer(FAKE_API_KEY);
+    const reviewer = new ConversationalToneReviewer();
     await reviewer.review(makeContext({ channel: 'telegram' }));
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -393,7 +393,7 @@ describe('ConversationalToneReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ConversationalToneReviewer(FAKE_API_KEY);
+    const reviewer = new ConversationalToneReviewer();
     await reviewer.review(
       makeContext({
         relationshipContext: { communicationStyle: 'casual', formality: 'low' },
@@ -419,7 +419,7 @@ describe('ClaimProvenanceReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ClaimProvenanceReviewer(FAKE_API_KEY);
+    const reviewer = new ClaimProvenanceReviewer();
     await reviewer.review(makeContext());
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -431,7 +431,7 @@ describe('ClaimProvenanceReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ClaimProvenanceReviewer(FAKE_API_KEY);
+    const reviewer = new ClaimProvenanceReviewer();
     await reviewer.review(makeContext({ toolOutputContext: 'curl returned 200 OK' }));
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -445,7 +445,7 @@ describe('ClaimProvenanceReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ClaimProvenanceReviewer(FAKE_API_KEY, { model: 'haiku' });
+    const reviewer = new ClaimProvenanceReviewer({ model: 'haiku' });
     await reviewer.review(makeContext());
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -465,7 +465,7 @@ describe('SettlingDetectionReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new SettlingDetectionReviewer(FAKE_API_KEY);
+    const reviewer = new SettlingDetectionReviewer();
     await reviewer.review(makeContext());
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -487,7 +487,7 @@ describe('ContextCompletenessReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ContextCompletenessReviewer(FAKE_API_KEY);
+    const reviewer = new ContextCompletenessReviewer();
     await reviewer.review(makeContext());
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -501,7 +501,7 @@ describe('ContextCompletenessReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ContextCompletenessReviewer(FAKE_API_KEY);
+    const reviewer = new ContextCompletenessReviewer();
     await reviewer.review(makeContext({ relationshipContext: { themes: ['security', 'performance'] } }));
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -523,7 +523,7 @@ describe('CapabilityAccuracyReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new CapabilityAccuracyReviewer(FAKE_API_KEY);
+    const reviewer = new CapabilityAccuracyReviewer();
     await reviewer.review(makeContext());
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -546,7 +546,7 @@ describe('UrlValidityReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new UrlValidityReviewer(FAKE_API_KEY);
+    const reviewer = new UrlValidityReviewer();
     await reviewer.review(makeContext({ message: 'Check https://example.com/dashboard' }));
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -560,7 +560,7 @@ describe('UrlValidityReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new UrlValidityReviewer(FAKE_API_KEY);
+    const reviewer = new UrlValidityReviewer();
     await reviewer.review(
       makeContext({
         message: 'Visit the dashboard',
@@ -604,7 +604,7 @@ describe('ValueAlignmentReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ValueAlignmentReviewer(FAKE_API_KEY);
+    const reviewer = new ValueAlignmentReviewer();
     await reviewer.review(makeContext());
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
@@ -616,7 +616,7 @@ describe('ValueAlignmentReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new ValueAlignmentReviewer(FAKE_API_KEY);
+    const reviewer = new ValueAlignmentReviewer();
     await reviewer.review(
       makeContext({
         agentValues: 'Be thorough, never settle.',
@@ -648,7 +648,7 @@ describe('InformationLeakageReviewer', () => {
     // Should NOT call fetch at all
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
-    const reviewer = new InformationLeakageReviewer(FAKE_API_KEY);
+    const reviewer = new InformationLeakageReviewer();
     const result = await reviewer.review(makeContext({ recipientType: 'primary-user' }));
 
     expect(result.pass).toBe(true);
@@ -661,7 +661,7 @@ describe('InformationLeakageReviewer', () => {
       mockApiResponse('{"pass": false, "severity": "block", "issue": "leaks user name", "suggestion": "remove PII"}'),
     );
 
-    const reviewer = new InformationLeakageReviewer(FAKE_API_KEY);
+    const reviewer = new InformationLeakageReviewer();
     const result = await reviewer.review(
       makeContext({ recipientType: 'agent', trustLevel: 'verified' }),
     );
@@ -682,7 +682,7 @@ describe('InformationLeakageReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new InformationLeakageReviewer(FAKE_API_KEY);
+    const reviewer = new InformationLeakageReviewer();
     const result = await reviewer.review(
       makeContext({ recipientType: 'secondary-user', trustLevel: 'trusted' }),
     );
@@ -695,7 +695,7 @@ describe('InformationLeakageReviewer', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new InformationLeakageReviewer(FAKE_API_KEY);
+    const reviewer = new InformationLeakageReviewer();
     const result = await reviewer.review(
       makeContext({ recipientType: 'external-contact', trustLevel: 'untrusted' }),
     );
@@ -720,7 +720,7 @@ describe('CoherenceReviewer with IntelligenceProvider', () => {
     );
     const intelligence = { evaluate };
 
-    const reviewer = new TestReviewer(FAKE_API_KEY, { intelligence });
+    const reviewer = new TestReviewer({ intelligence });
     const result = await reviewer.review(makeContext());
 
     expect(result.pass).toBe(true);
@@ -736,7 +736,7 @@ describe('CoherenceReviewer with IntelligenceProvider', () => {
       mockApiResponse('{"pass": true, "severity": "warn", "issue": "", "suggestion": ""}'),
     );
 
-    const reviewer = new TestReviewer(FAKE_API_KEY);
+    const reviewer = new TestReviewer();
     const result = await reviewer.review(makeContext());
 
     expect(result.pass).toBe(true);
@@ -749,7 +749,7 @@ describe('CoherenceReviewer with IntelligenceProvider', () => {
     });
     const intelligence = { evaluate };
 
-    const reviewer = new TestReviewer(FAKE_API_KEY, { intelligence });
+    const reviewer = new TestReviewer({ intelligence });
     const result = await reviewer.review(makeContext());
 
     expect(result.pass).toBe(true);
@@ -762,9 +762,9 @@ describe('CoherenceReviewer with IntelligenceProvider', () => {
     );
     const intelligence = { evaluate };
 
-    const haikuReviewer = new TestReviewer(FAKE_API_KEY, { intelligence, model: 'haiku' });
-    const sonnetReviewer = new TestReviewer(FAKE_API_KEY, { intelligence, model: 'sonnet' });
-    const opusReviewer = new TestReviewer(FAKE_API_KEY, { intelligence, model: 'opus' });
+    const haikuReviewer = new TestReviewer({ intelligence, model: 'haiku' });
+    const sonnetReviewer = new TestReviewer({ intelligence, model: 'sonnet' });
+    const opusReviewer = new TestReviewer({ intelligence, model: 'opus' });
 
     await haikuReviewer.review(makeContext());
     await sonnetReviewer.review(makeContext());

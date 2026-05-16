@@ -8,8 +8,11 @@
 
 ## What Changed
 
-<!-- Describe what changed technically. What new features, APIs, behavioral changes? -->
-<!-- Write this for the AGENT — they need to understand the system deeply. -->
+CoherenceReviewer subclasses and CoherenceGate dropped the unused `apiKey` constructor parameter — dead since the Rule 2 path-constraint lockdown removed the direct-Anthropic-API fallback. Reviewer LLM calls already route exclusively through the IntelligenceProvider; the key was being stored but never read.
+
+CoherenceGate now requires an IntelligenceProvider. When none is wired, the response review pipeline is disabled with a warning instead of attempting a raw API fallback.
+
+Internal-only API change: external code that constructs CoherenceGate directly must drop `apiKey` from the options bag and supply `intelligence`.
 
 ## What to Tell Your User
 

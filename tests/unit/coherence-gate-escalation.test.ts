@@ -136,7 +136,6 @@ describe('CoherenceGate — escalation context wiring', () => {
 
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
       });
 
@@ -151,7 +150,6 @@ describe('CoherenceGate — escalation context wiring', () => {
 
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {
           reviewers: {
             'escalation-resolution': { enabled: false },
@@ -196,7 +194,6 @@ describe('CoherenceGate — escalation context wiring', () => {
 
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
       });
 
@@ -257,7 +254,6 @@ describe('CoherenceGate — escalation context wiring', () => {
 
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
       });
 
@@ -302,7 +298,6 @@ describe('CoherenceGate — escalation context wiring', () => {
 
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
       });
 
@@ -345,7 +340,6 @@ describe('CoherenceGate — escalation context wiring', () => {
 
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
       });
 
@@ -483,7 +477,6 @@ describe('CoherenceGate — escalation context wiring', () => {
       const researchCalls: any[] = [];
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
         onResearchTriggered: (ctx) => { researchCalls.push(ctx); },
       });
@@ -529,7 +522,6 @@ describe('CoherenceGate — escalation context wiring', () => {
       const researchCalls: any[] = [];
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
         onResearchTriggered: (ctx) => { researchCalls.push(ctx); },
       });
@@ -564,7 +556,6 @@ describe('CoherenceGate — escalation context wiring', () => {
       // No onResearchTriggered callback — should not crash
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
       });
 
@@ -617,7 +608,6 @@ describe('CoherenceGate — escalation context wiring', () => {
       const researchCalls: any[] = [];
       const gate = new CoherenceGate({
         stateDir: tmpDir,
-        apiKey: FAKE_API_KEY,
         config: {},
         onResearchTriggered: (ctx) => { researchCalls.push(ctx); },
       });

@@ -99,7 +99,6 @@ function createGate(config?: Partial<ResponseReviewConfig>): CoherenceGate {
   return new CoherenceGate({
     config: createTestConfig(config),
     stateDir: tmpDir,
-    apiKey: 'test-api-key',
   });
 }
 

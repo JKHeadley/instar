@@ -1,3 +1,4 @@
+// safe-git-allow: test-tmpdir-cleanup — afterEach removes the per-test mkdtempSync tmpdir; SafeFsExecutor migration tracked separately.
 /**
  * Persistence tests for the empty-prompt signature store.
  *

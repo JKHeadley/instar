@@ -5325,6 +5325,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       stateDir: config.stateDir,
       getActiveSessions: () => sessionManager.listRunningSessions(),
       captureOutput: (tmuxSession: string) => {
+        // RULE 3: EXEMPT — this is raw byte capture (the whole pane), not state parsing.
+        // The output is handed verbatim to the SummarySentinel (LLM-backed) which is the
+        // authority that interprets it. No structural format is parsed here; per
+        // signal-vs-authority, this is a signal producer with no blocking authority.
         try {
           const tmuxBin = detectTmuxPath();
           if (!tmuxBin) return null;
@@ -5814,23 +5818,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     // and no intelligence is available.
     let responseReviewGate: import('../core/CoherenceGate.js').CoherenceGate | undefined;
     if (config.responseReview?.enabled) {
-      const anthropicKey = process.env['ANTHROPIC_API_KEY']?.trim() ?? '';
-      if (sharedIntelligence || anthropicKey) {
+      if (sharedIntelligence) {
         const { CoherenceGate } = await import('../core/CoherenceGate.js');
         responseReviewGate = new CoherenceGate({
           config: config.responseReview,
           stateDir: config.stateDir,
-          apiKey: anthropicKey,
           intelligence: sharedIntelligence,
           relationships: relationships ?? undefined,
           adaptiveTrust: adaptiveTrust ?? undefined,
         });
-        const backend = sharedIntelligence
-          ? 'via shared IntelligenceProvider'
-          : 'via Anthropic API (direct)';
-        console.log(pc.green(`  Response review pipeline: enabled ${backend} (${Object.keys(config.responseReview.reviewers ?? {}).length} reviewers configured)`));
+        console.log(pc.green(`  Response review pipeline: enabled via shared IntelligenceProvider (${Object.keys(config.responseReview.reviewers ?? {}).length} reviewers configured)`));
       } else {
-        console.warn(pc.yellow(`  Response review pipeline: configured but no IntelligenceProvider or ANTHROPIC_API_KEY available`));
+        console.warn(pc.yellow(`  Response review pipeline: configured but no IntelligenceProvider available (path-constraints.md Rule 2 forbids direct API path)`));
       }
     }
 

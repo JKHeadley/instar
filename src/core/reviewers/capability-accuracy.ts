@@ -9,8 +9,8 @@ import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
 
 export class CapabilityAccuracyReviewer extends CoherenceReviewer {
-  constructor(apiKey: string, options?: ReviewerOptions) {
-    super('capability-accuracy', apiKey, options);
+  constructor(options?: ReviewerOptions) {
+    super('capability-accuracy', options);
   }
 
   protected buildPrompt(context: ReviewContext): string {

@@ -1,3 +1,4 @@
+// safe-git-allow: test-fixture-git — tests spin up a throwaway tmp git repo (git init + git add + git commit + tmpdir cleanup) to drive the rule3 script under controlled state; SafeGitExecutor migration tracked separately.
 /**
  * Tests for the Rule 3 coverage gate script.
  *

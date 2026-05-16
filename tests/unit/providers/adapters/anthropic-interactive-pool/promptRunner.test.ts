@@ -9,12 +9,23 @@
  * reproduce via real API.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { statusBarHasIdleMarker } from '../../../../../src/providers/adapters/anthropic-interactive-pool/promptRunner.js';
+import { resetSignatureForTests } from '../../../../../src/providers/adapters/anthropic-interactive-pool/canary/emptyPromptSignature.js';
 
 const MARKERS = ['? for shortcuts', 'bypass permissions on', 'shift+tab to cycle'];
 
 describe('statusBarHasIdleMarker (empty-prompt detection)', () => {
+  // Sibling tests (notably emptyPromptSignaturePersistence) mutate module-level
+  // signature state in `canary/emptyPromptSignature.ts`. Without a reset here,
+  // running the full tests/unit/providers/ suite produces order-dependent
+  // failures: this file passes alone but fails when sibling tests have run
+  // first. Reset before each case so we're always operating against the
+  // default signature.
+  beforeEach(() => {
+    resetSignatureForTests();
+  });
+
   it('detects completion when an empty ❯ prompt is in the bottom zone', () => {
     // Claude Code's structural "ready for next prompt" signal: an empty `❯`
     // line above the status bar.

@@ -25,8 +25,6 @@ import type { CapabilityRegistry, CommonBlocker } from '../../src/core/types.js'
 // Helpers
 // ---------------------------------------------------------------------------
 
-const FAKE_API_KEY = 'test-api-key-000';
-
 function makeContext(overrides?: Partial<EscalationReviewContext>): EscalationReviewContext {
   return {
     message: overrides?.message ?? 'Got it, working on that now.',
@@ -118,7 +116,7 @@ describe('EscalationResolutionReviewer', () => {
   let reviewer: EscalationResolutionReviewer;
 
   beforeEach(() => {
-    reviewer = new EscalationResolutionReviewer(FAKE_API_KEY);
+    reviewer = new EscalationResolutionReviewer();
     vi.restoreAllMocks();
   });
 
@@ -134,7 +132,7 @@ describe('EscalationResolutionReviewer', () => {
     });
 
     it('accepts custom options', () => {
-      const custom = new EscalationResolutionReviewer(FAKE_API_KEY, { model: 'sonnet', timeoutMs: 5000 });
+      const custom = new EscalationResolutionReviewer({ model: 'sonnet', timeoutMs: 5000 });
       expect(custom.name).toBe('escalation-resolution');
     });
   });
@@ -383,7 +381,7 @@ describe('EscalationResolutionReviewer', () => {
     });
 
     it('fails open on timeout', async () => {
-      const slowReviewer = new EscalationResolutionReviewer(FAKE_API_KEY, { timeoutMs: 50 });
+      const slowReviewer = new EscalationResolutionReviewer({ timeoutMs: 50 });
       vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
         () => new Promise((resolve) => setTimeout(() => resolve(mockApiResponse('{}')), 5000)),
       );

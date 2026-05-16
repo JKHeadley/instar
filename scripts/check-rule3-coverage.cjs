@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// safe-git-allow: pre-commit-bootstrap — read-only `git diff --cached` and `git show :path` to scan staged content; runs before TS compile so cannot use SafeGitExecutor funnel.
 /**
  * Rule 3 coverage gate — pre-commit check.
  *
