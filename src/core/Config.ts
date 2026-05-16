@@ -264,6 +264,17 @@ export function loadConfig(projectDir?: string): InstarConfig {
     port: (fileConfig.port as number | undefined) ?? 4040,
     anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
     anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
+    ...((() => {
+      const rawProviders = (fileConfig.sessions as Record<string, unknown> | undefined)?.providers;
+      if (rawProviders !== undefined) {
+        if (typeof rawProviders !== 'object' || rawProviders === null || Array.isArray(rawProviders)) {
+          console.warn('[Config] sessions.providers is not an object — ignoring');
+          return {};
+        }
+        return { providers: rawProviders as Record<string, import('./types.js').ProviderConfig> };
+      }
+      return {};
+    })()),
   };
 
   const scheduler: JobSchedulerConfig = {

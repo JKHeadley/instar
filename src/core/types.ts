@@ -35,6 +35,16 @@ export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'k
 
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 
+/** Per-provider session-launch configuration (Anthropic native, Ollama wrapper, etc.). */
+export interface ProviderConfig {
+  /** Path to the claude binary or wrapper script for this provider. Overrides SessionManagerConfig.claudePath when this provider is selected. */
+  claudePath: string;
+  /** Environment variables to set on the spawned session. Merges over the base env; values are written verbatim (empty string = empty value, not "unset"). */
+  env?: Record<string, string>;
+  /** Mapping from job ModelTier (opus|sonnet|haiku) to the provider's actual model identifier. Passed via --model. If the requested tier is not in the map, the tier name is passed through unchanged (current behavior). */
+  modelTiers?: Partial<Record<ModelTier, string>>;
+}
+
 export interface SessionManagerConfig {
   /** Path to tmux binary */
   tmuxPath: string;
@@ -69,6 +79,11 @@ export interface SessionManagerConfig {
   /** Absolute maximum session duration in minutes — safety net for sessions
    *  without an explicit timeout (default: 240) */
   defaultMaxDurationMinutes?: number;
+  /** Named provider configurations keyed by provider name (e.g., "anthropic", "ollama").
+   *  When a job specifies provider: "ollama", the matching entry here overrides claudePath,
+   *  merges env, and translates model tiers. Jobs that omit provider use the global
+   *  claudePath and env unchanged (full back-compat). */
+  providers?: Record<string, ProviderConfig>;
 }
 
 // ── Job Scheduling ──────────────────────────────────────────────────
@@ -85,6 +100,9 @@ export interface JobDefinition {
   expectedDurationMinutes: number;
   /** Model tier to use */
   model: ModelTier;
+  /** Optional provider key — when set, picks the matching entry from SessionManagerConfig.providers.
+   *  When unset, the global claudePath and existing env are used (current behavior, fully back-compat). */
+  provider?: string;
   /** Whether this job is currently enabled */
   enabled: boolean;
   /** The skill or prompt to execute */
