@@ -42,14 +42,16 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   });
 
   describe('codex-cli', () => {
-    it('passes --sandbox danger-full-access by default (agentic equivalent of --dangerously-skip-permissions)', () => {
+    it('passes --sandbox workspace-write + --ask-for-approval never by default (agentic equivalent of --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
       });
       expect(spec.argv).toEqual([
         '/usr/local/bin/codex',
         '--sandbox',
-        'danger-full-access',
+        'workspace-write',
+        '--ask-for-approval',
+        'never',
       ]);
     });
 
@@ -58,25 +60,21 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
         binaryPath: '/usr/local/bin/codex',
         codexSandboxMode: 'read-only',
       });
-      expect(spec.argv).toEqual([
-        '/usr/local/bin/codex',
-        '--sandbox',
-        'read-only',
-      ]);
+      expect(spec.argv).toContain('--sandbox');
+      expect(spec.argv).toContain('read-only');
+      expect(spec.argv).toContain('--ask-for-approval');
+      expect(spec.argv).toContain('never');
     });
 
-    it('appends --resume <id> when a resumeSessionId is provided', () => {
+    it('does NOT pass a --resume flag — Codex resume is a subcommand and is not yet supported on this path', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
         resumeSessionId: 'sess-42',
       });
-      expect(spec.argv).toEqual([
-        '/usr/local/bin/codex',
-        '--sandbox',
-        'danger-full-access',
-        '--resume',
-        'sess-42',
-      ]);
+      // Codex's --resume is a SUBCOMMAND (codex resume <id>), not a flag.
+      // Until TopicResumeMap learns the subcommand form, the launch path
+      // starts fresh and emits a console warning.
+      expect(spec.argv).not.toContain('--resume');
     });
 
     it('emits CLAUDECODE= override as defense-in-depth', () => {

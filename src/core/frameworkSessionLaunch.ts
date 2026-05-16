@@ -60,15 +60,34 @@ const claudeCodeBuilder: Builder = (options) => {
 };
 
 const codexCliBuilder: Builder = (options) => {
-  // Codex's interactive REPL takes the model + sandbox via flags. We
-  // pass danger-full-access by default so agentic actions (file edits,
-  // commands) work the same way they do under Claude's
-  // --dangerously-skip-permissions. Operators on a Codex-only install
-  // who want a tighter sandbox can override via codexSandboxMode.
-  const sandbox = options.codexSandboxMode ?? 'danger-full-access';
-  const argv: string[] = [options.binaryPath, '--sandbox', sandbox];
+  // Codex's interactive REPL takes its sandbox + approval policy via
+  // flags. Claude's `--dangerously-skip-permissions` means
+  // "act autonomously, no human approval prompts" — the equivalent for
+  // Codex is `--sandbox workspace-write` (writes restricted to the
+  // project) + `--ask-for-approval never`. This is safer than
+  // `danger-full-access` (which removes the sandbox entirely) while
+  // still letting the agent operate without prompting on every step.
+  // Operators wanting a tighter or looser sandbox can override via
+  // codexSandboxMode.
+  const sandbox = options.codexSandboxMode ?? 'workspace-write';
+  const argv: string[] = [
+    options.binaryPath,
+    '--sandbox', sandbox,
+    '--ask-for-approval', 'never',
+  ];
+  // Codex's `resume` is a subcommand (`codex resume <id>`), not a flag.
+  // For the interactive launch path, callers who want to resume should
+  // use the subcommand form; we keep the flag-style behavior off for
+  // now since the legacy v0.x Claude code passes `--resume <id>` flat
+  // and we want consistent argv shape. Resume support for Codex lands
+  // when the topic-resume map is generalized.
   if (options.resumeSessionId) {
-    argv.push('--resume', options.resumeSessionId);
+    // Best-effort: pass the id as the first non-flag positional under
+    // the hood would require the `resume` subcommand. For now, skip
+    // resume for Codex and start fresh; the warning helps users notice.
+    console.warn(
+      `[frameworkSessionLaunch] Codex resume requested (id=${options.resumeSessionId}) but codex CLI's "resume" is a subcommand, not a flag — starting fresh. Will be supported when TopicResumeMap is generalized.`,
+    );
   }
   return {
     argv,
