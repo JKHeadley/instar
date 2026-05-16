@@ -191,16 +191,111 @@ We assess models on these axes. The selection layer maps incoming task descripti
 
 ---
 
-## Open-source / local models
+## Open-source / open-weight frontier models
+
+The Chinese open-source frontier (DeepSeek, Qwen, Kimi) shipped major releases in April 2026. Nate B Jones's transcripts (last 250 videos) have ZERO coverage of these families — his beat is the Western frontier. Entries below are sourced from official model cards, HuggingFace, third-party benchmark sites (LiveCodeBench, Codeforces, SWE-bench), and recent analyses from buildfastwithai, miraflow, the-decoder, Verdent. Each entry's confidence is MEDIUM (third-party benchmark, no first-hand empirical from Instar yet) — meaningfully better than the LOW single-analyst Nate B Jones signal, but still requires Phase 5d empirical verification before load-bearing routing decisions.
+
+### DeepSeek V4 (V4-Pro, V4-Flash, V4-Pro-Max)
+
+**Provider.** DeepSeek (Chinese). Released 2026-04-24. MIT license. Available via DeepSeek API, HuggingFace, OpenRouter, vLLM, Ollama.
+
+**Architecture.** V4-Pro: 1.6T-parameter MoE with 49B active. V4-Flash: 284B MoE with 13B active. 1M-token context window. V4-Pro-Max is the "max effort" variant.
+
+**Best fit.**
+- `code-generation` at the frontier: LiveCodeBench Pass@1 of 93.5 — HIGHEST among all models in this catalog `[BenchLM 2026-04 confidence:MEDIUM]`. Codeforces rating 3206 ahead of GPT-5.4 xHigh (3168) and Gemini 3.1 Pro (3052) `[BenchLM confidence:MEDIUM]`.
+- `agentic-execution` involving code: SWE-bench Verified 80.6% — trails Claude Opus 4.6 by only 0.2 points `[BenchLM confidence:MEDIUM]`. Terminal-Bench 2.0 67.9% vs Claude 65.4% `[buildfastwithai confidence:MEDIUM]`.
+- Direct Claude Code / OpenCode integration: "DeepSeek-V4 is seamlessly integrated with leading AI agents like Claude Code, OpenClaw & OpenCode" `[buildfastwithai confidence:MEDIUM]`.
+- Cost-sensitive workloads at frontier-adjacent quality: V4-Flash $0.14/M input + $0.28/M output, undercutting GPT-5.4 Nano, Gemini 3.1 Flash, GPT-5.4 Mini, and Claude Haiku 4.5 `[Morph confidence:MEDIUM]`.
+
+**Avoid for.**
+- Pure reasoning at the absolute frontier: HLE 37.7% trails Claude's 40.0% `[BenchLM confidence:MEDIUM]`.
+- Pure math: HMMT 2026 95.2% trails Claude's 96.2% `[BenchLM confidence:MEDIUM]`.
+- Mission-critical work where 3-6 month state-of-the-art lag matters: "developmental trajectory that trails state-of-the-art frontier models by approximately 3 to 6 months" `[TechCrunch 2026-04-24 confidence:MEDIUM]`.
+
+**Operational notes.**
+- 1M context is the largest in our catalog — strong for repository-scale code work.
+- NIST published a CAISI evaluation `[NIST 2026-05 confidence:HIGH]` — first government-grade benchmark of a Chinese open-source frontier model. Result not summarized in my searches; worth fetching for the full picture before any production routing rule depends on V4.
+
+**Confidence overall.** MEDIUM.
+
+---
+
+### Qwen 3.6 family (Qwen3.6-27B, Qwen3.6-Plus, Qwen3.6-Max-Preview, Qwen3-Coder-Next)
+
+**Provider.** Alibaba Cloud / Qwen team. April 2026 releases. Available via HuggingFace, Ollama, Alibaba Cloud, OpenRouter, vLLM. Apache-2.0 weights for the open variants.
+
+**Architecture variants.**
+- Qwen3.6-27B: dense 27B parameter multimodal.
+- Qwen3.6-Plus: 1M context preview.
+- Qwen3.6-Max-Preview (April 20): the flagship; 260K context.
+- Qwen3-Coder-Next (April 8): 3B active params; smallest viable agentic coder.
+
+**Best fit.**
+- `code-generation` on local hardware: Qwen3.6-27B at 27B params outperforms its own predecessor Qwen3.5-397B-A17B on every major coding benchmark — SWE-bench Verified 77.2 vs 76.2, SWE-bench Pro 53.5 vs 50.9, Terminal-Bench 2.0 59.3 vs 52.5 `[Qwen blog 2026 confidence:MEDIUM]`. Within 3.7 points of Claude Opus 4.6 on SWE-bench Verified `[buildfastwithai 2026 confidence:MEDIUM]`.
+- `agentic-execution` with extreme parameter efficiency: Qwen3-Coder-Next achieves >70% on SWE-Bench Verified with the SWE-Agent scaffold using only 3B active params; matches "10-20x larger" models on SWE-Bench Pro `[Qwen blog confidence:MEDIUM]`.
+- `code-generation` at the absolute frontier: Qwen3.6-Max-Preview claims #1 on six major coding benchmarks (SWE-bench Pro, SkillsBench, SciCode, others) as of April 20 release `[buildfastwithai 2026 confidence:MEDIUM]`.
+- The Apache-2.0 open path that matters: Qwen3.6-27B at 27B params runs reasonably on a single high-end consumer GPU — only frontier-tier model in this catalog with that property.
+
+**Avoid for.**
+- Workflows that need verified vendor-grade reliability — Qwen's hosted API is Alibaba Cloud-based with different uptime characteristics than the Western frontier providers. Self-hosting via Ollama/vLLM is the more predictable path.
+
+**Operational notes.**
+- Terminal-Bench 2.0 at 59.3 on the 27B variant "matches Claude 4.5 Opus exactly" — the stat driving the most community excitement `[buildfastwithai confidence:MEDIUM]`.
+- Available natively in Ollama under the `qwen3` namespace `[ollama.com/library/qwen3 confidence:HIGH]`.
+
+**Confidence overall.** MEDIUM. Numbers are from Alibaba's own benchmark publishing — cross-verify before load-bearing routing.
+
+---
+
+### Kimi K2.6 (and K2.5)
+
+**Provider.** Moonshot AI (Beijing). K2.6 released 2026-04-20. Modified MIT license, open-weight. Available via Moonshot API, HuggingFace, OpenRouter.
+
+**Architecture.** 1-trillion-parameter Mixture-of-Experts, 32B active per token. 262,144 token context. Ships natively in INT4 quantization.
+
+**Best fit.**
+- `agentic-execution` at the absolute frontier: SWE-Bench Pro 58.6 — TIES or BEATS GPT-5.5 `[miraflow 2026-04 confidence:MEDIUM]`. Leads GPT-5.4 (52.1), Claude Opus 4.6 (53.0), Gemini 3.1 Pro (51.4) on the same benchmark `[Verdent confidence:MEDIUM]`.
+- `web-research`: BrowseComp 83.2 `[buildfastwithai confidence:MEDIUM]` — between Claude 4.6 (83) and GPT-5.4 Pro (89).
+- `tool-use` heavy work: Humanity's Last Exam WITH TOOLS 54.0 — open-source SOTA `[miraflow confidence:MEDIUM]`. Leads ALL models in that benchmark (open or closed).
+- Cost-sensitive agentic loops: ~80% cheaper per million tokens than the Western frontier `[Medium / Ewan Mak 2026-04 confidence:MEDIUM]`.
+- Long-context coding: 262K window covers most non-monorepo projects in a single prompt.
+
+**Avoid for.**
+- Pure competition math: AIME 2026 96.4% trails GPT-5.4's 99.2% `[buildfastwithai confidence:MEDIUM]`.
+- `long-context-reasoning` requiring 1M+ tokens: trails DeepSeek V4 (1M) and Qwen3.6-Plus (1M) on context.
+- GPQA-Diamond pure-reasoning ceilings: 90.5% vs GPT-5.4's 92.8% `[buildfastwithai confidence:MEDIUM]`.
+
+**Operational notes.**
+- "Open-source just beat GPT-5.5 at coding" framing from multiple analyses `[buildfastwithai title confidence:MEDIUM]` — read as marketing-tinged but with real benchmark backing.
+- Leads on 5 of 8 major agentic and coding benchmarks while remaining the only open-weight model in the comparison `[Verdent confidence:MEDIUM]`.
+- INT4 native quantization makes self-hosting on consumer GPU clusters meaningfully more accessible than its 1T parameter count suggests.
+
+**Confidence overall.** MEDIUM.
+
+---
 
 ### Gemma 4
 
 **Provider.** Google (open-source, Apache 2.0).
 
 **Best fit.**
-- Air-gapped or licensing-strict deployments — the only model in this catalog that survives without provider lock `[85Q9htV2CBE confidence:LOW (availability noted, no fitness numbers in research)]`.
+- Air-gapped or licensing-strict deployments — one of several Apache-2.0 options that survive without provider lock `[85Q9htV2CBE confidence:LOW (availability noted, no fitness numbers in research)]`.
 
-**Confidence overall.** PROVISIONAL. Need empirical numbers.
+**Confidence overall.** PROVISIONAL. Need empirical numbers. Per the Chinese open-source landscape above, Qwen 3.6 likely dominates Gemma 4 on most task types at similar parameter counts — verify before routing to Gemma over Qwen.
+
+---
+
+### Cross-cutting: the Chinese open-source frontier story
+
+The April 2026 release cluster (DeepSeek V4 on the 24th, Qwen3.6-Max-Preview on the 20th, Kimi K2.6 on the 20th) collectively closed the gap with the Western frontier on coding and agentic benchmarks. Three observations relevant to Instar's routing layer:
+
+1. **The frontier is no longer Western-only.** For pure coding, DeepSeek V4-Pro-Max leads on LiveCodeBench. For agentic tool-use, Kimi K2.6 leads on HLE-with-Tools and SWE-Bench Pro. For parameter-efficient self-hosting, Qwen 3.6 dominates. The catalog's "capable" tier needs entries from all three families.
+
+2. **The cost cliff is real.** All three are 70-80%+ cheaper than the Western frontier at comparable benchmark scores. For volume routing decisions, this changes the math meaningfully. Phase 5c cost-routing should incorporate.
+
+3. **Self-hosting is now a serious option.** Qwen3.6-27B at 27B params + Apache-2.0 + competitive coding scores means Instar's "local-model" Phase 6 work has real candidates — not theoretical ones. The benchmark framework (Phase 5d) should profile Qwen 3.6 on Justin's M-class hardware before Phase 6 builds.
+
+These three families are NOT covered by Nate B Jones's analysis — his Western-frontier focus has this as an explicit blind spot. The catalog records this gap honestly: future research passes should source from non-Western analysts (e.g., the AkitaOnRails LLM coding benchmark series, NIST's CAISI evaluations, the Artificial Analysis leaderboard) to keep coverage balanced.
 
 ---
 
@@ -208,12 +303,16 @@ We assess models on these axes. The selection layer maps incoming task descripti
 
 These are the routing intuitions that emerge from the per-model assessments. The selection layer (Phase 5b) implements them; the benchmark layer (Phase 5d) validates them.
 
-1. **Coding default → Opus 4.7** when subscription quota allows; **Sonnet 4.7** for the same task type at lower cost; **GPT-5.4** when terminal/CLI work dominates.
-2. **Web research default → GPT-5.4 Pro** when subscription-available, **Claude 4.6** as Anthropic-path fallback (NOT 4.7), **Gemini 3.1 Pro** as third option.
-3. **Long-running autonomous loops → GPT-5.5 / 5.4** for reliability advantage on retries, UNLESS the task hits a capability Anthropic-only path (e.g., a tool surface Codex doesn't have).
-4. **Classification / routing decisions → Haiku-class** (still PROVISIONAL until fitness numbers verified).
-5. **Security / defense-domain work → Mythos** (with Max-plan constraint).
-6. **Local-model fallback → Gemma 4** until better numbers exist.
+1. **Coding default → Opus 4.7** when Anthropic subscription quota allows; **Sonnet 4.7** for the same task type at lower cost; **GPT-5.4** when terminal/CLI work dominates; **DeepSeek V4-Pro** when LiveCodeBench-shape problems dominate (leads at 93.5).
+2. **Code at scale on a budget → Kimi K2.6** (SWE-Bench Pro leader at ~80% lower cost than the Western frontier) OR **DeepSeek V4-Flash** ($0.14/$0.28 per M tokens).
+3. **Web research default → GPT-5.4 Pro** when subscription-available, **Claude 4.6** as Anthropic-path fallback (NOT 4.7), **Gemini 3.1 Pro** as third option; **Kimi K2.6** is competitive at 83.2 BrowseComp.
+4. **Long-running autonomous loops → GPT-5.5 / 5.4** for reliability advantage on retries, UNLESS the task hits a capability Anthropic-only path (e.g., a tool surface Codex doesn't have).
+5. **Tool-heavy agentic loops → Kimi K2.6** — HLE-with-Tools leader at 54.0, open-source SOTA; routing-policy candidate when the task description names explicit tool sequences.
+6. **Classification / routing decisions → Haiku-class** (still PROVISIONAL until fitness numbers verified).
+7. **Security / defense-domain work → Mythos** (with Max-plan constraint).
+8. **Self-hosted / air-gapped path → Qwen3.6-27B** (27B params + Apache-2.0 + Terminal-Bench 59.3 matching Claude 4.5 Opus). **Gemma 4** demoted to last-resort until empirical numbers prove it.
+9. **Long-context (>262K tokens) → DeepSeek V4 (1M) or Qwen3.6-Plus (1M)** — both lead the catalog on context window.
+10. **Pure math at the frontier → GPT-5.4** (AIME 99.2%) — the only category where the Western frontier still leads the Chinese open-source frontier cleanly.
 
 ---
 
@@ -228,14 +327,18 @@ Per Rule 3 in `05-state-detection-robustness.md`: this catalog drifts every time
 
 ---
 
-## Research source
+## Research sources
 
-`research/synthesis-nate-b-jones.md` — synthesized from 25 transcripts pulled 2026-05-15. Cited by video ID throughout this catalog.
+- **`research/synthesis-nate-b-jones.md`** — 25 transcripts pulled 2026-05-15. Source for Anthropic and OpenAI Western-frontier entries. Confidence LOW (single-analyst).
+- **Web research 2026-05-15** — official model cards (HuggingFace), vendor blogs (Qwen, DeepSeek API docs), third-party analyses (buildfastwithai, miraflow, the-decoder, Verdent, AkitaOnRails, BenchLM, Morph, llm-stats). Source for the Chinese open-source frontier entries (DeepSeek V4, Qwen 3.6, Kimi K2.6). Confidence MEDIUM (multi-source third-party but no first-hand empirical from Instar yet).
+- **Phase 4 empirical probes** — direct observations from building the Codex adapter. Source for the OpenAI model-availability and CLI-behavior notes. Confidence HIGH.
 
 Next research passes will add:
 - Official Anthropic model cards (Opus 4.7, Sonnet 4.6/4.7, Haiku 4.x)
 - OpenAI release notes for GPT-5.x line
-- Third-party verified leaderboards (live values for SWE-bench, GDPVal-A, BrowseComp, Terminal Bench)
-- Our own empirical probes from Phase 5d benchmarking
+- Third-party verified leaderboards (live values — re-pull SWE-bench, GDPVal-A, BrowseComp, Terminal Bench, LiveCodeBench, Codeforces)
+- NIST CAISI evaluation of DeepSeek V4 Pro (referenced but not fetched yet)
+- Artificial Analysis leaderboard (referenced as the canonical third-party board)
+- Our own empirical probes from Phase 5d benchmarking — especially Qwen 3.6 on Justin's M-class hardware for Phase 6 self-hosting decisions
 
-The catalog graduates from `v0.1` to `v0.2` when at least three entries have been upgraded from `LOW` to `MEDIUM`/`HIGH` confidence.
+The catalog graduates from `v0.1` to `v0.2` when at least three entries have been upgraded from `LOW`/`MEDIUM` to `HIGH` confidence via empirical verification.

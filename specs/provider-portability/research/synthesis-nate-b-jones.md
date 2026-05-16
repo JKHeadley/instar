@@ -216,6 +216,7 @@ Every numeric above comes from one analyst's measurement or anecdote. Before any
 - **Long-horizon (>1 hour) agent reliability.** Pavle Hurin 48-hour test (`3e7gmNPr5Vo`) is the only example for Anthropic; no comparable data for non-Anthropic providers.
 - **Memory-server portability spec.** `4KAF72BTyCE` proposes the personal-context-server-via-MCP pattern but doesn't name a portable schema.
 - **Conway impact on portability.** Not shipped publicly yet; re-evaluate when it ships.
+- **Chinese open-source frontier — explicit blind spot.** Nate B Jones's last 250 videos have ZERO coverage of DeepSeek (V3/V4), Qwen (3.x), or Kimi (K2.x). His beat is the Western frontier (OpenAI / Anthropic / Google). Per Justin's 2026-05-15 directive, the model fitness catalog now sources these families from official model cards, HuggingFace, third-party benchmark sites, and recent analyses (buildfastwithai, miraflow, the-decoder, Verdent, AkitaOnRails, BenchLM, NIST CAISI). Future research passes should pull from non-Western analysts to keep coverage balanced (suggested feeds: AkitaOnRails LLM benchmark series, Artificial Analysis, NIST evaluations, Hugging Face model card revisions).
 
 ---
 
