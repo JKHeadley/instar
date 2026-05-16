@@ -733,6 +733,7 @@ export class Remediator implements RegisteredRemediator {
       reason: {
         redacted: redactedReasonOverride ?? event.reason.redacted,
       },
+      errorCode: event.errorCode,
       timestamp: Date.now(),
       monotonicTs: process.hrtime.bigint(),
       auditToken,

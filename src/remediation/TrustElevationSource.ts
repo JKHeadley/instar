@@ -245,11 +245,17 @@ export class TrustElevationSource {
     return distinctKinds.size >= 2;
   }
 
-  // ── Internal ────────────────────────────────────────────────────────
-
-  private hasCollaborativeTrust(): boolean {
+  /**
+   * Public gate for non-runbook signal-suppression authorities (e.g.
+   * NovelFailureReviewer proposal dismissal per §A26). Returns true iff the
+   * configured profile is `collaborative` or higher. Callers attach their
+   * own audit-trail; this method is policy-only.
+   */
+  hasCollaborativeTrust(): boolean {
     return (TRUST_LEVEL_ORDER[this.profile] ?? -1) >= COLLABORATIVE_MIN;
   }
+
+  // ── Internal ────────────────────────────────────────────────────────
 
   private async evaluateRegisteredToLive(
     _runbookId: string,
