@@ -8,6 +8,39 @@
 
 ## What Changed
 
+Tier 4.C release blocker (Codex non-git directory fix): the `CodexCliIntelligenceProvider` was silently failing for every Codex-based agent whose state directory wasn't a git checkout. Codex CLI refused to run with `--cd <non-git-dir>` and the resulting error was masked downstream as `taskPattern: "unclassified"` (the classifier's catch-all). Added `--skip-git-repo-check` to the `codex exec` invocation; these reviewer/sentinel/canary calls don't depend on the cwd being a trusted git repo. Surfaced and verified via end-to-end smoke test (`INSTAR_FRAMEWORK=codex-cli node dist/cli.js route "refactor python helper"`) that previously produced `auto-defaulted-unclassified` in 0.8s; now produces `code-refactor-python` / `auto-defaulted-no-topic` in ~4s. 5 new regression tests use a fake codex script to assert the exact spawn-arg shape.
+
+## Evidence
+
+**Codex non-git directory fix** — reproduced and verified.
+
+Before (broken):
+```
+$ INSTAR_FRAMEWORK=codex-cli node dist/cli.js route "refactor this old python helper to use type hints" --dir /tmp/codex-smoke-2 --json
+{
+  "framework": "claude-code",
+  "model": "opus-4.7",
+  "taskPattern": "unclassified",
+  "source": "auto-defaulted-unclassified",
+  ...
+}
+# Internal Codex error visible only on direct provider call:
+#   Codex CLI error: Command failed: /Users/.../bin/codex exec --model gpt-5.2 --sandbox read-only --cd /tmp/codex-smoke-2/.instar ...
+#   Not inside a trusted directory and --skip-git-repo-check was not specified.
+```
+
+After:
+```
+$ INSTAR_FRAMEWORK=codex-cli node dist/cli.js route "refactor this old python helper to use type hints" --dir /tmp/codex-smoke-2 --json
+{
+  "framework": "claude-code",
+  "model": "opus-4.7",
+  "taskPattern": "code-refactor-python",
+  "source": "auto-defaulted-no-topic",
+  ...
+}
+```
+
 Tier 2.C (OrphanProcessReaper framework awareness) landed: the orphan-process sentinel no longer hardcodes Claude's binary patterns or its `grep -i '[c]laude'` prefilter. New `src/monitoring/frameworkProcessSignals.ts` exposes per-framework `psGrepNeedle`, `binaryPattern`, `nodePattern`, exclusion list, and display name; the reaper builds a single `ps … | egrep …` over every framework's needle and tags each process with the matched framework via `matchProcessSignal`. `FrameworkProcess` is the new canonical type (Claude/Codex/etc.); `ClaudeProcess` lives on as a deprecated alias for one release cycle. External-process Telegram alerts now group counts by framework display name. Orphan Codex processes are now detected and cleaned identically to orphan Claude processes. Also rewrote one orphaned `StallTriageNurse` test that asserted on the Rule-2-removed direct-API fallback; the replacement asserts the actual post-Rule-2 heuristic-fallback contract. 24 new signal tests + 200 existing tests pass.
 
 Tier 2.B (StallTriageNurse framework awareness) landed: the stall-detection sentinel's heuristic pre-filter no longer hardcodes Claude Code's tool-call regex and spinner glyphs. New `src/monitoring/frameworkActivitySignals.ts` exposes per-framework activity signatures (`toolCallOrSpinner`, `escapeToInterrupt`, `runningIndicator`, plus a prompt-signatures line injected into the LLM system prompt). The nurse reads `config.framework` from `StallTriageConfig` (defaulting to claude-code for backwards-compat), and `server.ts` threads the resolved `INSTAR_FRAMEWORK` value into the construction site. Previously the shell-prompt restart heuristic would false-fire on a healthy Codex pane (no Claude tokens → "framework wrapper has exited"); now it correctly recognizes Codex tool tokens. 22 new tests (16 signal-module + 6 framework-aware heuristics).

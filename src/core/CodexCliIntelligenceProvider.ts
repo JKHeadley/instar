@@ -55,6 +55,15 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         '--model', model,
         '--sandbox', this.sandboxMode,
         '--cd', this.workingDirectory,
+        // Reviewer/sentinel/canary calls are deterministic short prompts
+        // that don't depend on the cwd being a trusted git repo. Codex
+        // CLI's default behavior is to refuse to run when --cd points at
+        // a non-git directory (it surfaces as
+        //   "Not inside a trusted directory and --skip-git-repo-check was not specified")
+        // which breaks every Codex-based agent whose state directory
+        // isn't a git checkout. Skip the check — these calls are bounded
+        // and never modify the cwd.
+        '--skip-git-repo-check',
         // Pass the prompt as a positional arg. Codex CLI reads stdin
         // for very long prompts but the positional path is fine for the
         // narrow prompts reviewers/sentinels send (a few hundred tokens
