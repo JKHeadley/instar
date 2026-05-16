@@ -50,6 +50,12 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
+import { BurnDetector } from '../monitoring/BurnDetector.js';
+import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
+import { BurnVerifier } from '../monitoring/BurnVerifier.js';
+import { LlmRateGate } from '../monitoring/LlmRateGate.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 
 export class AgentServer {
@@ -67,6 +73,17 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
+  // Burn-detection-and-self-heal system (six-phase umbrella spec at
+  // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
+  // after the TokenLedger comes up — burn detection without a ledger is
+  // a no-op.
+  private burnDetector: BurnDetector | null = null;
+  private burnThrottleRunbook: BurnThrottleRunbook | null = null;
+  private burnVerifier: BurnVerifier | null = null;
+  // Stored from constructor options for use in start()'s listen callback.
+  // The burn-detection system needs this to route alerts; no other
+  // AgentServer code reads it (the route handlers go through routeCtx).
+  private telegramAdapter: TelegramAdapter | null = null;
 
   constructor(options: {
     config: InstarConfig;
@@ -187,6 +204,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.telegramAdapter = options.telegram ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
     this.state = options.state;
@@ -564,6 +582,41 @@ export class AgentServer {
           } catch (err) {
             console.warn('[instar] token-ledger poller start failed:', err);
           }
+
+          // ── Burn-detection auto-heal system ──────────────────────────
+          // Wires the six phases together. Detector polls the ledger,
+          // emits degradation events; runbook subscribes via the existing
+          // DegradationReporter healer surface; verifier schedules the
+          // post-throttle re-sample. The full pipeline is signal-only on
+          // observation paths and Tier-2 Remediator authority on decision
+          // paths — see docs/specs/token-burn-detection-and-self-heal.md.
+          try {
+            const ledger = this.tokenLedger;
+            const reporter = DegradationReporter.getInstance();
+            const gate = LlmRateGate.instance();
+            const telegram = this.telegramAdapter;
+            const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
+              ? (topicId: number, text: string) => {
+                  // Fire-and-forget — the runbook and verifier do not block on
+                  // alert delivery; failed sends are logged elsewhere.
+                  const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
+                  void send.call(telegram, topicId, text).catch((err: unknown) => {
+                    console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
+                  });
+                }
+              : undefined;
+
+            this.burnThrottleRunbook = new BurnThrottleRunbook({ gate, sendTelegram });
+            this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
+            registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
+              this.burnVerifier!.scheduleVerification(outcome, event);
+            });
+            this.burnDetector = new BurnDetector({ ledger, reporter });
+            this.burnDetector.start();
+            console.log('[instar] burn-detection auto-heal system started');
+          } catch (err) {
+            console.warn('[instar] burn-detection start failed (non-fatal):', err);
+          }
         }
 
         // ── Layer 3 DeliveryFailureSentinel — default-OFF feature flag ──
@@ -678,6 +731,20 @@ export class AgentServer {
       }
       this.deliveryStore = null;
     }
+
+    // Stop the burn-detector before the ledger closes — the detector's tick
+    // would otherwise hit a closed DB handle.
+    if (this.burnDetector) {
+      try {
+        this.burnDetector.stop();
+      } catch {
+        // best-effort
+      }
+      this.burnDetector = null;
+    }
+    // Drop references so any pending verifier timers can no-op gracefully.
+    this.burnThrottleRunbook = null;
+    this.burnVerifier = null;
 
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
