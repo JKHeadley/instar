@@ -16,6 +16,8 @@
  * routes. The adapter doesn't need to discriminate at the call site.
  */
 
+import { detectCodexPath, detectTmuxPath } from '../../../core/Config.js';
+
 export interface OpenAiCodexConfig {
   /** Absolute path to the `codex` CLI binary. */
   codexPath: string;
@@ -58,11 +60,16 @@ export interface OpenAiCodexConfig {
 
 /**
  * Build a config from environment variables, with sensible defaults.
+ *
+ * Binary detection: when `CODEX_PATH` is not set, falls back to
+ * `detectCodexPath()` which searches standard install locations
+ * (npm global, Homebrew, nvm, PATH). NEVER hardcode developer-specific
+ * paths here — they leak across installs and break every other machine.
  */
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OpenAiCodexConfig {
   return {
-    codexPath: env['CODEX_PATH'] || '/Users/justin/.asdf/installs/nodejs/22.18.0/bin/codex',
-    tmuxPath: env['TMUX_PATH'] || '/opt/homebrew/bin/tmux',
+    codexPath: env['CODEX_PATH'] || detectCodexPath() || 'codex',
+    tmuxPath: env['TMUX_PATH'] || detectTmuxPath() || '/opt/homebrew/bin/tmux',
     // Default to undefined so resolveCliModelFlag picks the 'balanced' tier
     // (gpt-5.3-codex) — works on ChatGPT subscription auth. Codex CLI's own
     // default (gpt-5.2-codex) is API-only after the 2026-04-14 retirement.

@@ -101,42 +101,114 @@ export function detectTmuxPath(): string | null {
   return null;
 }
 
-export function detectClaudePath(): string | null {
-  const home = process.env.HOME || '';
-  const candidates = [
-    path.join(home, '.claude', 'local', 'claude'),
-    '/usr/local/bin/claude',
-    '/opt/homebrew/bin/claude',
-  ];
+/**
+ * Per-framework CLI binary identifiers.
+ *
+ * Provider-portability v1.0.0: every framework Instar can drive has its
+ * own CLI binary. `detectFrameworkBinary` locates it across the common
+ * install paths (npm-global, Homebrew, nvm/fnm, system PATH) without
+ * baking any single absolute path into the codebase. Add a framework
+ * here and detection works automatically.
+ */
+export type FrameworkBinary =
+  | 'claude'      // Claude Code CLI
+  | 'codex'       // OpenAI Codex CLI
+  | 'gemini'      // Gemini CLI
+  | 'aider'       // Aider
+  | 'goose'       // Block Goose
+  | 'cursor-cli'  // Cursor CLI
+  | 'opencode'    // OpenCode
+  | 'plandex';    // Plandex
 
-  // Also check npm global bin directory (where `npm install -g` puts things)
-  try {
-    const npmPrefix = execFileSync('npm', ['config', 'get', 'prefix'], { encoding: 'utf-8', stdio: 'pipe' }).trim();
-    if (npmPrefix) {
-      candidates.push(path.join(npmPrefix, 'bin', 'claude'));
-    }
-  } catch {
-    // @silent-fallback-ok — claude path detection loop
+/**
+ * Generic framework binary detection. Searches:
+ *   1. Framework-specific install location (e.g. `~/.claude/local/claude`)
+ *   2. Standard system paths (`/usr/local/bin`, `/opt/homebrew/bin`)
+ *   3. npm global bin (where `npm install -g` lands)
+ *   4. nvm-managed bin directories
+ *   5. System PATH (via `which`)
+ *
+ * Returns the absolute path or null if not found.
+ *
+ * Never hardcodes developer-specific install paths — the result depends
+ * on what's installed on THIS machine, not where the binary lives on
+ * the developer's machine.
+ */
+export function detectFrameworkBinary(name: FrameworkBinary): string | null {
+  const home = process.env.HOME || '';
+  const candidates: string[] = [];
+
+  // Framework-specific known locations.
+  switch (name) {
+    case 'claude':
+      candidates.push(path.join(home, '.claude', 'local', 'claude'));
+      break;
+    case 'codex':
+      candidates.push(path.join(home, '.codex', 'bin', 'codex'));
+      break;
+    case 'gemini':
+      candidates.push(path.join(home, '.gemini', 'bin', 'gemini'));
+      break;
+    default:
+      // No framework-specific path; falls through to system + PATH.
+      break;
   }
 
-  // Check nvm/fnm managed paths
+  // Standard system locations.
+  candidates.push(`/opt/homebrew/bin/${name}`); // macOS ARM
+  candidates.push(`/usr/local/bin/${name}`);    // macOS Intel / Linux
+  candidates.push(`/usr/bin/${name}`);           // Linux system
+
+  // npm global bin (where `npm install -g <pkg>` lands).
+  try {
+    const npmPrefix = execFileSync('npm', ['config', 'get', 'prefix'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+    if (npmPrefix) candidates.push(path.join(npmPrefix, 'bin', name));
+  } catch {
+    // @silent-fallback-ok — npm prefix detection
+  }
+
+  // nvm-managed bin.
   if (process.env.NVM_BIN) {
-    candidates.push(path.join(process.env.NVM_BIN, 'claude'));
+    candidates.push(path.join(process.env.NVM_BIN, name));
   }
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
 
-  // Fallback: check PATH
+  // Last resort: PATH lookup.
   try {
-    const result = execFileSync('which', ['claude'], { encoding: 'utf-8', stdio: 'pipe' }).trim();
+    const result = execFileSync('which', [name], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
     if (result && fs.existsSync(result)) return result;
   } catch {
-    // @silent-fallback-ok — claude path detection loop
+    // @silent-fallback-ok — which fallback
   }
 
   return null;
+}
+
+/**
+ * Detect the Claude Code CLI. Convenience wrapper preserved for
+ * backwards-compat with existing call sites. New code should use
+ * `detectFrameworkBinary('claude')` directly.
+ */
+export function detectClaudePath(): string | null {
+  return detectFrameworkBinary('claude');
+}
+
+/**
+ * Detect the OpenAI Codex CLI. Provider-portability v1.0.0 sibling of
+ * detectClaudePath. Replaces hardcoded developer-specific path that
+ * previously lived in `src/providers/adapters/openai-codex/config.ts`.
+ */
+export function detectCodexPath(): string | null {
+  return detectFrameworkBinary('codex');
 }
 
 export function detectProjectDir(startDir?: string): string {

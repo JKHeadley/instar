@@ -28,6 +28,8 @@ Phase 5b.4 shipped: `FrameworkModelRouter` — the composition root that ties ev
 
 Phase 5b.5.a shipped: `StaticCatalogProvider` — hand-curated CatalogProvider implementation. 20 task-pattern defaults derived from the Phase 5a catalogs (code-generation/refactor/debug → Opus 4.7; web-research → Sonnet 4.6; summarize/draft/shell → Haiku 4.5; etc.) plus per-(framework, model) confidence baselines and a `CATALOG_VERSION` string that drives Phase 5b's re-ask trigger. Hand-curated rather than markdown-parsed: deliberate updates when the catalog moves, not silent drift from regex breakage. 16 new tests; cumulative uxConfirm coverage 115 tests.
 
+Tier 0 release blocker fixed: stripped a hardcoded developer-specific path (`/Users/justin/.asdf/installs/nodejs/22.18.0/bin/codex`) from the Codex adapter default config. Replaced with a new framework-agnostic `detectFrameworkBinary(name)` helper that searches install locations, npm-global, nvm-managed, and PATH for any of eight known framework binaries (claude, codex, gemini, aider, goose, cursor-cli, opencode, plandex). Includes a source-level regression test that fails if any future commit re-introduces the asdf hardcode.
+
 ## What to Tell Your User
 
 <!-- Write talking points the agent should relay to their user. -->
