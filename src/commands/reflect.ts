@@ -342,8 +342,22 @@ interface ReflectRunOptions {
 /**
  * Resolve an IntelligenceProvider from the environment.
  * Subscription path only — Rule 2 forbids direct Anthropic API.
+ *
+ * Honors INSTAR_FRAMEWORK so reflection jobs run through Codex when
+ * the operator selected codex-cli. Falls back to the configured Claude
+ * binary path when no framework override is set, preserving v0.x
+ * behavior.
  */
 function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
+  // Lazy require — keeps the unit-test surface focused.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { buildIntelligenceProvider, frameworkFromEnv } = require('../core/intelligenceProviderFactory.js');
+  const framework = frameworkFromEnv() ?? 'claude-code';
+  const built = buildIntelligenceProvider({
+    framework,
+    binaryPath: framework === 'claude-code' ? claudePath : undefined,
+  });
+  if (built) return built;
   if (claudePath) return new ClaudeCliIntelligenceProvider(claudePath);
   return null;
 }

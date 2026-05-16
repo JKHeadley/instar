@@ -8,6 +8,8 @@
 
 ## What Changed
 
+Tier 2.E (subsystem framework-aware intelligence) landed: server-boot smoke test of `INSTAR_FRAMEWORK=codex-cli` revealed that three subsystems were still constructing their own `ClaudeCliIntelligenceProvider` rather than reusing the framework-aware `sharedIntelligence` singleton: RelationshipManager (identity resolution), TopicSummarizer (session-completion summaries), and JobReflector (via `instar reflect`). All three now consult `sharedIntelligence` first and fall back to a Claude provider only when sharedIntelligence couldn't be built. Boot log now reports `Relationships loaded: 0 tracked (LLM-supervised (Codex CLI))` instead of always claiming Claude. No interface changes, no new tests (call-site re-pointer to an already-tested singleton).
+
 Tier 4.C release blocker (Codex non-git directory fix): the `CodexCliIntelligenceProvider` was silently failing for every Codex-based agent whose state directory wasn't a git checkout. Codex CLI refused to run with `--cd <non-git-dir>` and the resulting error was masked downstream as `taskPattern: "unclassified"` (the classifier's catch-all). Added `--skip-git-repo-check` to the `codex exec` invocation; these reviewer/sentinel/canary calls don't depend on the cwd being a trusted git repo. Surfaced and verified via end-to-end smoke test (`INSTAR_FRAMEWORK=codex-cli node dist/cli.js route "refactor python helper"`) that previously produced `auto-defaulted-unclassified` in 0.8s; now produces `code-refactor-python` / `auto-defaulted-no-topic` in ~4s. 5 new regression tests use a fake codex script to assert the exact spawn-arg shape.
 
 ## Evidence

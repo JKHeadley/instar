@@ -2117,20 +2117,27 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (config.relationships) {
       // Wire LLM intelligence for identity resolution. Subscription path only —
       // direct Anthropic API is forbidden per Rule 2 of the path constraints.
-      const claudePath = config.sessions.claudePath;
+      // Reuse `sharedIntelligence` (already framework-aware: Claude or Codex
+      // per resolvedFramework) so a Codex-only install gets Codex-backed
+      // relationship resolution instead of falling back to heuristic-only.
       let intelligenceMode = 'heuristic-only';
 
       const staleRelApi = (config.relationships as unknown as { intelligenceProvider?: string }).intelligenceProvider === 'anthropic-api';
       if (staleRelApi) {
         console.log(pc.yellow(
-          '  relationships.intelligenceProvider: "anthropic-api" is no longer supported — using Claude CLI subscription instead.\n'
+          '  relationships.intelligenceProvider: "anthropic-api" is no longer supported — using the configured framework instead.\n'
           + '  Remove the field from config.json.'
         ));
       }
 
-      if (claudePath) {
-        config.relationships.intelligence = new ClaudeCliIntelligenceProvider(claudePath);
-        intelligenceMode = 'LLM-supervised (Claude CLI subscription)';
+      if (sharedIntelligence) {
+        config.relationships.intelligence = sharedIntelligence;
+        intelligenceMode = `LLM-supervised (${intelligenceSource})`;
+      } else if (config.sessions.claudePath) {
+        // Last-ditch fallback for installs where sharedIntelligence couldn't
+        // be built but a claude binary path is still configured.
+        config.relationships.intelligence = new ClaudeCliIntelligenceProvider(config.sessions.claudePath);
+        intelligenceMode = 'LLM-supervised (Claude CLI subscription, fallback)';
       }
 
       relationships = new RelationshipManager(config.relationships);
@@ -3474,8 +3481,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Uses Haiku for cost efficiency — summaries don't need deep reasoning.
     if (topicMemory && telegram) {
       const { TopicSummarizer } = await import('../memory/TopicSummarizer.js');
-      const { ClaudeCliIntelligenceProvider } = await import('../core/ClaudeCliIntelligenceProvider.js');
-      const summaryIntelligence = new ClaudeCliIntelligenceProvider(config.sessions.claudePath);
+      // Reuse the framework-aware sharedIntelligence so Codex installs
+      // get Codex-summarized topics. Last-ditch ClaudeCli fallback
+      // preserves v0.x behavior when sharedIntelligence couldn't be
+      // built but a claude binary is still on disk.
+      let summaryIntelligence: IntelligenceProvider;
+      if (sharedIntelligence) {
+        summaryIntelligence = sharedIntelligence;
+      } else {
+        const { ClaudeCliIntelligenceProvider } = await import('../core/ClaudeCliIntelligenceProvider.js');
+        summaryIntelligence = new ClaudeCliIntelligenceProvider(config.sessions.claudePath);
+      }
       const summarizer = new TopicSummarizer(summaryIntelligence, topicMemory);
 
       sessionManager.on('sessionComplete', (session) => {
