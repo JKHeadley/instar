@@ -561,7 +561,20 @@ export class SessionWatchdog extends EventEmitter {
 
   // --- Process utilities (self-contained, no shared module) ---
 
+  /**
+   * Resolve the framework-CLI PID inside the given tmux pane. Was
+   * Claude-only — generalized for v1.0.0 provider portability so the
+   * watchdog also finds Codex sessions (and future frameworks) running
+   * inside Instar-managed panes.
+   *
+   * @deprecated method name retained for v0.x compat — internal callers
+   * use the framework-generic shape.
+   */
   private getClaudePid(tmuxSession: string): number | null {
+    return this.getFrameworkPid(tmuxSession);
+  }
+
+  private getFrameworkPid(tmuxSession: string): number | null {
     try {
       // Get pane PID
       const panePidStr = shellExec(
@@ -571,21 +584,37 @@ export class SessionWatchdog extends EventEmitter {
       const panePid = parseInt(panePidStr, 10);
       if (isNaN(panePid)) return null;
 
-      // Instar typically spawns claude directly as the pane's root process,
-      // not as a child of a shell. Check the pane_pid's own command first —
-      // if it's claude, return it directly. Without this, pgrep -P finds no
-      // match (claude has no claude child) and the watchdog silently no-ops.
+      // Instar typically spawns the framework CLI directly as the pane's
+      // root process, not as a child of a shell. Check the pane_pid's
+      // own command first — if it matches a known framework binary,
+      // return it. Without this, pgrep -P finds no match and the
+      // watchdog silently no-ops.
       const paneCmd = shellExec(`ps -p ${panePid} -o comm= 2>/dev/null`).trim();
-      if (/^(-?)claude$/.test(paneCmd) || paneCmd.endsWith('/claude')) {
-        return panePid;
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { listProcessSignals } = require('./frameworkProcessSignals.js');
+      const signals = listProcessSignals();
+      for (const signal of signals) {
+        const bareName = signal.framework === 'claude-code' ? 'claude' : signal.framework === 'codex-cli' ? 'codex' : null;
+        if (!bareName) continue;
+        // Match either bare binary name (`claude`, `-claude`, `codex`,
+        // `-codex`) or a path tail (`/usr/local/bin/claude`).
+        if (
+          paneCmd === bareName
+          || paneCmd === `-${bareName}`
+          || paneCmd.endsWith(`/${bareName}`)
+        ) {
+          return panePid;
+        }
       }
 
-      // Fallback: pane runs a shell wrapper that has claude as a child
-      const claudePidStr = shellExec(
-        `pgrep -P ${panePid} -f claude 2>/dev/null | head -1`
+      // Fallback: pane runs a shell wrapper that has a framework CLI as
+      // a child. egrep alternation over every framework's bracket needle.
+      const needle = signals.map((s: { psGrepNeedle: string }) => s.psGrepNeedle).join('|');
+      const childPidStr = shellExec(
+        `pgrep -P ${panePid} 2>/dev/null | xargs -I@ ps -p @ -o pid=,command= 2>/dev/null | egrep -i '${needle}' | head -1 | awk '{print $1}'`
       ).trim();
-      if (!claudePidStr) return null;
-      const pid = parseInt(claudePidStr, 10);
+      if (!childPidStr) return null;
+      const pid = parseInt(childPidStr, 10);
       return isNaN(pid) ? null : pid;
     } catch {
       // @silent-fallback-ok — process detection returns null
