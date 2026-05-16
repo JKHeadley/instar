@@ -25,6 +25,7 @@ export interface AuditProjectionOptions {
 export class AuditProjection {
   private readonly projectionPath: string;
   private byRunbook: Map<string, AuditEntry[]> = new Map();
+  private unmatchedEntries: AuditEntry[] = [];
   private lastMtimeMs = 0;
   private lastSize = 0;
   private watcher?: fs.FSWatcher;
@@ -46,6 +47,16 @@ export class AuditProjection {
     const out = new Map<string, AuditEntry[]>();
     for (const [k, v] of this.byRunbook) out.set(k, [...v]);
     return out;
+  }
+
+  /**
+   * Snapshot of `no-matching-runbook` audit entries since projection start.
+   * Consumed by NovelFailureReviewer (Tier-3 S-1) for bottom-up cluster
+   * discovery. Order preserved — append order in the projection file.
+   */
+  unmatched(): AuditEntry[] {
+    this.reloadIfChanged();
+    return [...this.unmatchedEntries];
   }
 
   /** Stop watching the projection directory. Idempotent. */
@@ -102,6 +113,7 @@ export class AuditProjection {
       return;
     }
     const next = new Map<string, AuditEntry[]>();
+    const nextUnmatched: AuditEntry[] = [];
     for (const line of raw.split('\n')) {
       if (!line) continue;
       let entry: AuditEntry;
@@ -110,11 +122,16 @@ export class AuditProjection {
       } catch {
         continue;
       }
+      if (entry.outcome === 'no-matching-runbook') {
+        nextUnmatched.push(entry);
+        continue;
+      }
       if (!entry.runbookId) continue;
       const arr = next.get(entry.runbookId) ?? [];
       arr.push(entry);
       next.set(entry.runbookId, arr);
     }
     this.byRunbook = next;
+    this.unmatchedEntries = nextUnmatched;
   }
 }

@@ -36,6 +36,14 @@ export interface AuditEntry {
   runbookId?: string;
   subsystem: string;
   reason?: { redacted: string; full?: string };
+  /**
+   * Canonical errorCode of the event (when known). Populated by the
+   * Remediator's append path so consumers like NovelFailureReviewer
+   * (§A10, §A26, Tier-3 S-1) can cluster `no-matching-runbook` rows by
+   * subsystem + errorCode without re-extracting from `reason.redacted`.
+   * Optional for backwards compatibility with existing rows.
+   */
+  errorCode?: string;
   /** Wall-clock ms epoch. */
   timestamp: number;
   /** process.hrtime.bigint() at write-side declaration. */
@@ -152,7 +160,7 @@ export class AuditWriter {
 }
 
 function serializeEntryObj(e: AuditEntry): Record<string, unknown> {
-  return {
+  const obj: Record<string, unknown> = {
     entryId: e.entryId,
     attemptId: e.attemptId,
     outcome: e.outcome,
@@ -163,6 +171,8 @@ function serializeEntryObj(e: AuditEntry): Record<string, unknown> {
     monotonicTs: e.monotonicTs.toString(),
     auditToken: e.auditToken.toString('base64'),
   };
+  if (e.errorCode !== undefined) obj.errorCode = e.errorCode;
+  return obj;
 }
 
 function serializeEntry(e: AuditEntry): string {
@@ -178,6 +188,7 @@ export function deserializeAuditEntry(line: string): AuditEntry {
     runbookId: obj.runbookId ? String(obj.runbookId) : undefined,
     subsystem: String(obj.subsystem),
     reason: obj.reason,
+    errorCode: obj.errorCode ? String(obj.errorCode) : undefined,
     timestamp: Number(obj.timestamp),
     monotonicTs: BigInt(obj.monotonicTs),
     auditToken: Buffer.from(String(obj.auditToken), 'base64'),
