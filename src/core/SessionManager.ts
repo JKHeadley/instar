@@ -700,6 +700,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  When an empty array, no `--allowedTools` flag is emitted —
      *  callers must explicitly pass at least one tool name to scope. */
     allowedTools?: string[];
+    /** Optional provider key — when set, picks the matching entry from config.providers.
+     *  Overrides claudePath, merges env, and translates model tiers.
+     *  When unset, falls back to global config (current behavior, fully back-compat). */
+    provider?: string;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -757,6 +761,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Use -e CLAUDECODE= to unset the CLAUDECODE env var in spawned sessions,
     // preventing nested Claude Code detection when instar runs inside Claude Code.
     //
+    // ── Per-job provider routing ──────────────────────────────────────
+    // Resolve the provider config when options.provider is set. When unset
+    // (or the key doesn't exist in config.providers), fall through to global
+    // config — full back-compat for all existing code paths.
+    const providerName = options.provider;
+    const provider = providerName ? this.config.providers?.[providerName] : undefined;
+
+    // Resolve claudePath: provider wins over global config.
+    const claudePath = provider?.claudePath ?? this.config.claudePath;
+
+    // Translate model tier through provider's modelTiers map (if any).
+    // Falls through to the raw tier name when the map is absent or the tier
+    // is not listed — preserving the existing behavior exactly.
+    const actualModel: string | undefined = options.model
+      ? (provider?.modelTiers?.[options.model] ?? options.model)
+      : undefined;
+
     // Per-job tool allowlist (INSTAR-JOBS-AS-AGENTMD spec §5): when the
     // caller provides a non-empty `allowedTools` array, scope the spawned
     // session to that set via `--allowedTools <comma-separated>`. Omitting
@@ -766,14 +787,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.allowedTools && options.allowedTools.length > 0) {
       claudeArgs.push('--allowedTools', options.allowedTools.join(','));
     }
-    if (options.model) {
-      claudeArgs.push('--model', options.model);
+    if (actualModel) {
+      claudeArgs.push('--model', actualModel);
     }
     claudeArgs.push('-p', options.prompt);
 
     // K9: build PATH env with shim prepended (when shim was installed)
     const inheritedPath = process.env.PATH ?? '';
     const shimmedPath = shimDir ? `${shimDir}:${inheritedPath}` : inheritedPath;
+
+    // Build provider env overrides as tmux -e flags (provider env wins over base env).
+    const providerEnvFlags: string[] = provider?.env
+      ? Object.entries(provider.env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+      : [];
+
+    console.log(
+      `[SessionManager] Spawning ${tmuxSession} via provider="${providerName ?? 'default'}" claude="${claudePath}" model="${actualModel ?? 'default'}"`
+    );
 
     try {
       execFileSync(this.config.tmuxPath, [
@@ -802,7 +832,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
-        this.config.claudePath, ...claudeArgs,
+        // Provider env overrides go last so they win over any base-env values above.
+        ...providerEnvFlags,
+        claudePath, ...claudeArgs,
       ], { encoding: 'utf-8' });
 
       // Increase tmux scrollback buffer for dashboard history support

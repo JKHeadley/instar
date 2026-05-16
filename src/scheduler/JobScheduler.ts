@@ -694,6 +694,7 @@ export class JobScheduler {
       triggeredBy: `scheduler:${reason}`,
       maxDurationMinutes: job.expectedDurationMinutes,
       allowedTools: spawnAllowedTools,
+      provider: job.provider,
     }).then(() => {
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
