@@ -3,6 +3,12 @@
  * - rawInject retry logic (≤2 attempts before giving up)
  * - Failed message persistence to stateDir (not world-readable /tmp)
  * - cleanupStaleSessions hard cap prunes oldest completed sessions first
+ *
+ * Also tests the truthful delivery confirmation fix (this PR):
+ * - server.ts wireTelegramRouting checks injectTelegramMessage return value
+ * - On failure: saves message under <stateDir>/state/failed-messages/ (not /tmp)
+ * - On failure: sends user-visible warning via telegram.sendToTopic
+ * - On success: ✓ Delivered confirmation is preserved
  */
 
 import { describe, it, expect } from 'vitest';
@@ -11,6 +17,7 @@ import path from 'node:path';
 
 const SESSION_MANAGER_SRC = path.join(process.cwd(), 'src/core/SessionManager.ts');
 const ROUTES_SRC = path.join(process.cwd(), 'src/server/routes.ts');
+const SERVER_SRC = path.join(process.cwd(), 'src/commands/server.ts');
 
 describe('SessionManager — rawInject retry logic', () => {
   it('retries at most once (maxAttempts = 2)', () => {
@@ -64,6 +71,47 @@ describe('routes.ts — failed message persistence', () => {
   it('stores under state/failed-messages subdirectory', () => {
     const source = fs.readFileSync(ROUTES_SRC, 'utf-8');
     expect(source).toContain("'state', 'failed-messages'");
+  });
+});
+
+describe('server.ts — wireTelegramRouting truthful delivery confirmation', () => {
+  // Extract the injection block from wireTelegramRouting in server.ts.
+  // We anchor on the const injected = ... line and take a generous slice
+  // so we can assert the full failure and success branches.
+  function getInjectionBlock(source: string): string {
+    const anchor = source.indexOf('const injected = sessionManager.injectTelegramMessage(');
+    if (anchor === -1) throw new Error('Could not find injection anchor in server.ts');
+    // Grab enough characters to cover the if/else block that follows
+    return source.slice(anchor, anchor + 1600);
+  }
+
+  it('checks the return value of injectTelegramMessage (injected === false)', () => {
+    const source = fs.readFileSync(SERVER_SRC, 'utf-8');
+    const block = getInjectionBlock(source);
+    expect(block).toContain('injected === false');
+  });
+
+  it('on failure, saves message under state/failed-messages — not /tmp', () => {
+    const source = fs.readFileSync(SERVER_SRC, 'utf-8');
+    const block = getInjectionBlock(source);
+    // Must reference the stateDir parameter (not a hardcoded /tmp path)
+    expect(block).toContain("'state', 'failed-messages'");
+    expect(block).not.toContain("path.join('/tmp'");
+  });
+
+  it('on failure, sends user-visible warning via telegram.sendToTopic', () => {
+    const source = fs.readFileSync(SERVER_SRC, 'utf-8');
+    const block = getInjectionBlock(source);
+    // The failure branch must call sendToTopic with a warning (not ✓ Delivered)
+    expect(block).toContain('Message delivery failed');
+    expect(block).toContain('telegram.sendToTopic');
+  });
+
+  it('on success, preserves the ✓ Delivered confirmation', () => {
+    const source = fs.readFileSync(SERVER_SRC, 'utf-8');
+    const block = getInjectionBlock(source);
+    // The success (else) branch must still send ✓ Delivered
+    expect(block).toContain('✓ Delivered');
   });
 });
 
