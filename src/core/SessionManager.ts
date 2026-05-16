@@ -1999,7 +1999,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // sequence and buffer the content before Enter can submit it.
           // 500ms is conservative but prevents the "[Pasted text #1]" stuck state.
           execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 });
-          // Send Enter to submit
+          // Send Enter to submit.
+          // Belt-and-suspenders: on Claude Code v2.1.105+ the first Enter is
+          // occasionally eaten by the same race that's still consuming the
+          // paste-end (\e[201~) sequence. Sending a second Enter after a brief
+          // gap closes that race preemptively. If the first Enter submitted
+          // successfully, the second arrives at an empty input prompt and is a
+          // no-op in the Claude Code TUI. verifyInjection remains as the
+          // last-resort safety net for the rare case both Enters miss.
+          execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
+            encoding: 'utf-8', timeout: 5000,
+          });
+          execFileSync('/bin/sleep', ['0.1'], { timeout: 2000 });
           execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
             encoding: 'utf-8', timeout: 5000,
           });
@@ -2052,6 +2063,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * bracketed-paste-end is occasionally eaten by a race with the paste-end
    * sequence — and the recovery Enter can be eaten by the same race. Single-
    * shot verification leaves the user stuck when recovery also misses.
+   *
+   * The injection primary path already sends a belt-and-suspenders double-Enter
+   * (see rawInject), which collapses the race in the common case. This method
+   * remains as the last-resort safety net for the rare case both Enters miss.
    *
    * Polls at 500/1500/3500/6500ms from injection (markerCheckSchedule),
    * stops as soon as the marker is no longer at ❯, and escalates the

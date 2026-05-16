@@ -85,3 +85,35 @@ describe('SessionManager — cleanupStaleSessions hard cap', () => {
     expect(method).toContain('slice(0, completed.length - MAX_COMPLETED)');
   });
 });
+
+describe('SessionManager — paste-end Enter race preemption', () => {
+  it('sends a belt-and-suspenders second Enter after the bracketed paste', () => {
+    const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
+    const methodStart = source.indexOf('private rawInject(');
+    const methodEnd = source.indexOf('\n  /**', methodStart + 1);
+    const method = source.slice(methodStart, methodEnd > -1 ? methodEnd : undefined);
+
+    // Locate the bracketed-paste branch (multi-line text path)
+    const pasteBranch = method.slice(method.indexOf('\\x1b[200~'));
+
+    // The paste-end sequence must be followed by sleep, Enter, brief sleep, Enter.
+    const pasteEndIdx = pasteBranch.indexOf('\\x1b[201~');
+    expect(pasteEndIdx).toBeGreaterThan(-1);
+
+    const tail = pasteBranch.slice(pasteEndIdx);
+    // Two Enter send-keys after paste-end (the primary + the safety Enter)
+    const enterMatches = tail.match(/'send-keys', '-t', exactTarget, 'Enter'/g) ?? [];
+    expect(enterMatches.length).toBeGreaterThanOrEqual(2);
+
+    // A short sleep between the two Enters (closes the race window)
+    expect(tail).toMatch(/sleep['\s,\[]+0\.1/);
+  });
+
+  it('verifyInjection comment acknowledges the primary path now double-Enters', () => {
+    const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
+    const docStart = source.indexOf('Verify an injection actually submitted by polling');
+    const docEnd = source.indexOf('private verifyInjection(', docStart);
+    const doc = source.slice(docStart, docEnd);
+    expect(doc).toMatch(/double-Enter|belt-and-suspenders/i);
+  });
+});
