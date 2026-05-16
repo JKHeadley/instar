@@ -211,6 +211,90 @@ export function detectCodexPath(): string | null {
   return detectFrameworkBinary('codex');
 }
 
+// ── Framework Prerequisite Check ───────────────────────────────────────
+
+/**
+ * Inputs to the framework-prerequisite check. Pure-function shape so the
+ * check is unit-testable without spawning a real Config.load() against
+ * the host filesystem.
+ */
+export interface FrameworkPrerequisiteInput {
+  /** Framework selected by config or env. */
+  configuredFramework: 'claude-code' | 'codex-cli';
+  /** Path to claude binary if detected, else null. */
+  claudePathDetected: string | null;
+  /** Path to codex binary if detected, else null. */
+  codexPathDetected: string | null;
+}
+
+export interface FrameworkPrerequisiteResult {
+  /** True when the configured framework's binary is present. */
+  satisfied: boolean;
+  /**
+   * Human-readable error message when satisfied=false. Includes the
+   * install URL/command for the missing framework.
+   */
+  error?: string;
+}
+
+/**
+ * Check whether the configured framework's required binary is available.
+ *
+ * Provider-portability v1.0.0: this replaces the v0.x unconditional
+ * "Claude CLI not found" error that blocked every non-Claude install
+ * at startup. Now codex-cli installs only need the codex binary,
+ * claude-code installs only need the claude binary.
+ */
+export function checkFrameworkPrerequisite(
+  input: FrameworkPrerequisiteInput,
+): FrameworkPrerequisiteResult {
+  switch (input.configuredFramework) {
+    case 'claude-code':
+      if (!input.claudePathDetected) {
+        return {
+          satisfied: false,
+          error:
+            'Claude CLI not found. INSTAR_FRAMEWORK is set to claude-code (or unset, '
+            + 'which defaults to claude-code). Install from: https://docs.anthropic.com/en/docs/claude-code '
+            + 'or switch frameworks via INSTAR_FRAMEWORK=codex-cli.',
+        };
+      }
+      return { satisfied: true };
+    case 'codex-cli':
+      if (!input.codexPathDetected) {
+        return {
+          satisfied: false,
+          error:
+            'Codex CLI not found. INSTAR_FRAMEWORK is set to codex-cli. '
+            + 'Install with: npm install -g @openai/codex',
+        };
+      }
+      return { satisfied: true };
+    default: {
+      const _exhaustive: never = input.configuredFramework;
+      void _exhaustive;
+      return { satisfied: false, error: 'Unknown framework' };
+    }
+  }
+}
+
+/**
+ * Resolve the configured framework from a (possibly-undefined) config
+ * file value and the current environment. Pure function so callers can
+ * unit-test the resolution independently.
+ */
+export function resolveConfiguredFramework(
+  configValue: 'claude-code' | 'codex-cli' | undefined,
+  envValue: string | undefined,
+): 'claude-code' | 'codex-cli' {
+  if (configValue === 'claude-code' || configValue === 'codex-cli') {
+    return configValue;
+  }
+  const env = envValue?.trim().toLowerCase();
+  if (env === 'codex-cli' || env === 'codex') return 'codex-cli';
+  return 'claude-code';
+}
+
 // ── Provider Credentials ───────────────────────────────────────────────
 
 /**
@@ -458,14 +542,41 @@ export function loadConfig(projectDir?: string): InstarConfig {
   }
 
   const tmuxPath = fileConfig.sessions?.tmuxPath || detectTmuxPath();
-  const claudePath = fileConfig.sessions?.claudePath || detectClaudePath();
+  // Provider-portability v1.0.0: boot requires the configured framework's
+  // binary, not Claude unconditionally. resolveConfiguredFramework picks
+  // from (sessions.framework | INSTAR_FRAMEWORK | default claude-code).
+  // checkFrameworkPrerequisite gates startup — codex-cli installs no
+  // longer get rejected just because Claude isn't installed.
+  const configuredFramework = resolveConfiguredFramework(
+    (fileConfig.sessions as Record<string, unknown> | undefined)?.['framework'] as
+      | 'claude-code'
+      | 'codex-cli'
+      | undefined,
+    process.env['INSTAR_FRAMEWORK'],
+  );
+  const claudePathDetected = fileConfig.sessions?.claudePath || detectClaudePath();
+  const codexPathDetected = detectCodexPath();
 
   if (!tmuxPath) {
     throw new Error('tmux not found. Install with: brew install tmux (macOS) or apt install tmux (Linux)');
   }
-  if (!claudePath) {
-    throw new Error('Claude CLI not found. Install from: https://docs.anthropic.com/en/docs/claude-code');
+  const prereq = checkFrameworkPrerequisite({
+    configuredFramework,
+    claudePathDetected,
+    codexPathDetected,
+  });
+  if (!prereq.satisfied) {
+    throw new Error(prereq.error!);
   }
+
+  // The SessionManagerConfig's claudePath field is kept for backwards-compat
+  // with existing spawn paths; for codex-cli installs it carries the codex
+  // binary path. Spawn paths will be migrated to read `frameworkBinaryPath`
+  // (or similar) in a follow-up slice.
+  const claudePath =
+    configuredFramework === 'codex-cli'
+      ? (codexPathDetected ?? claudePathDetected ?? '')
+      : (claudePathDetected ?? '');
 
   const projectName = fileConfig.projectName || path.basename(resolvedProjectDir);
 

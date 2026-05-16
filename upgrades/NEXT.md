@@ -36,6 +36,8 @@ Tier 1.C (Codex intelligence provider) landed: new `CodexCliIntelligenceProvider
 
 Tier 1.D (identity-file rendering) landed: AGENT.md is now the canonical source of truth for an agent's identity. New `IdentityRenderer` module reads `.instar/AGENT.md` and writes framework-specific shadow files (CLAUDE.md for Claude Code, AGENTS.md for Codex, GEMINI.md for Gemini) with an auto-generation banner warning against hand-editing. ProjectMapper lookup priority flipped to AGENT.md first, CLAUDE.md fallback (existing installs keep working). Migration path: `bootstrapAgentMdFromShadow` reads legacy CLAUDE.md content, strips banner, writes canonical AGENT.md. 16 tests cover render, banner content, framework subset, source fallback, throw-on-missing, framework detection, and migration bootstrap.
 
+Tier 2.A (framework-aware boot prerequisite) landed: `Config.load()` no longer throws "Claude CLI not found" unconditionally. New pure helpers `resolveConfiguredFramework()` (picks active framework from config / INSTAR_FRAMEWORK env / default claude-code) and `checkFrameworkPrerequisite()` (validates the configured framework's binary is installed) decouple boot logic from Claude. Codex-cli installs now boot cleanly with only the codex binary present. Error messages are framework-specific with the right install command. New `sessions.framework` config field + `INSTAR_FRAMEWORK` env var (accepts claude-code/claude/codex-cli/codex). 11 tests cover every framework × binary-presence combination.
+
 ## What to Tell Your User
 
 <!-- Write talking points the agent should relay to their user. -->
