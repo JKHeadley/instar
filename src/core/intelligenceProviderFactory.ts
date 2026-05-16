@@ -24,25 +24,7 @@ import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js'
  * framework requires (a) extending this union and (b) wiring up a case
  * in `buildIntelligenceProvider`.
  */
-/**
- * Stable framework identifiers.
- *
- * `claude-code` — Claude Code CLI in interactive subscription mode
- *   (OAuth token from `claude login`; default).
- *
- * `claude-code-agent-sdk` — Same Claude Code CLI, but the spawn path
- *   forces `ANTHROPIC_API_KEY` auth (clearing OAuth) so usage bills
- *   against the separate Anthropic Agent SDK $200/mo Max 20x credit
- *   bucket per the June 2026 billing notice. Same binary, different
- *   billing pool.
- *
- * `codex-cli` — OpenAI Codex CLI.
- *
- * Adding a new framework requires (a) extending this union and
- * (b) wiring up a case in `buildIntelligenceProvider` AND in the
- * `frameworkSessionLaunch` builders.
- */
-export type IntelligenceFramework = 'claude-code' | 'claude-code-agent-sdk' | 'codex-cli';
+export type IntelligenceFramework = 'claude-code' | 'codex-cli';
 
 export interface BuildIntelligenceProviderOptions {
   /**
@@ -79,13 +61,7 @@ export function buildIntelligenceProvider(
   const framework = options.framework ?? 'claude-code';
 
   switch (framework) {
-    case 'claude-code':
-    case 'claude-code-agent-sdk': {
-      // Both Claude framework variants share the same IntelligenceProvider
-      // implementation — the variant only changes the SESSION SPAWN credential
-      // pathway (OAuth vs API key), not the reviewer/sentinel evaluator path.
-      // Reviewers always run through the local `claude` binary via subscription
-      // (cheap, fast, already cached).
+    case 'claude-code': {
       const path = options.binaryPath ?? detectClaudePath();
       if (!path) return null;
       return new ClaudeCliIntelligenceProvider(path);
@@ -117,7 +93,6 @@ export function frameworkFromEnv(env: NodeJS.ProcessEnv = process.env): Intellig
   const raw = env['INSTAR_FRAMEWORK']?.trim().toLowerCase();
   if (!raw) return null;
   if (raw === 'claude-code' || raw === 'claude') return 'claude-code';
-  if (raw === 'claude-code-agent-sdk' || raw === 'agent-sdk' || raw === 'claude-agent-sdk') return 'claude-code-agent-sdk';
   if (raw === 'codex-cli' || raw === 'codex') return 'codex-cli';
   return null;
 }

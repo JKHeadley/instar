@@ -105,10 +105,10 @@ describe('frameworkActivitySignals', () => {
   });
 
   describe('listActivitySignals', () => {
-    it('enumerates every supported framework', () => {
+    it('enumerates both supported frameworks', () => {
       const signals = listActivitySignals();
       const frameworks = signals.map(s => s.framework).sort();
-      expect(frameworks).toEqual(['claude-code', 'claude-code-agent-sdk', 'codex-cli']);
+      expect(frameworks).toEqual(['claude-code', 'codex-cli']);
     });
 
     it('each entry exposes the full signal shape', () => {

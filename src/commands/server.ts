@@ -305,14 +305,14 @@ let _fixDeps: FixCommandDeps | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
-/** Per-topic framework override. Populated from `config.topicFrameworks`
- *  at server boot; consulted by spawnSessionForTopic and
- *  respawnSessionForTopic when threading framework into spawnInteractiveSession. */
-let _topicFrameworks: Record<string, 'claude-code' | 'claude-code-agent-sdk' | 'codex-cli'> = {};
+/** Per-topic framework override (claude-code | codex-cli). Populated from
+ *  `config.topicFrameworks` at server boot; consulted by spawnSessionForTopic
+ *  and respawnSessionForTopic when threading framework into spawnInteractiveSession. */
+let _topicFrameworks: Record<string, 'claude-code' | 'codex-cli'> = {};
 /** Default framework for sessions when no per-topic override is set. */
-let _defaultFramework: 'claude-code' | 'claude-code-agent-sdk' | 'codex-cli' = 'claude-code';
+let _defaultFramework: 'claude-code' | 'codex-cli' = 'claude-code';
 
-function resolveTopicFramework(topicId: number | undefined): 'claude-code' | 'claude-code-agent-sdk' | 'codex-cli' {
+function resolveTopicFramework(topicId: number | undefined): 'claude-code' | 'codex-cli' {
   if (topicId !== undefined && _topicFrameworks[String(topicId)]) {
     return _topicFrameworks[String(topicId)]!;
   }
@@ -2058,7 +2058,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const framework = frameworkFromEnv() ?? 'claude-code';
       resolvedFramework = framework;
       _defaultFramework = framework;
-      _topicFrameworks = (config as { topicFrameworks?: Record<string, 'claude-code' | 'claude-code-agent-sdk' | 'codex-cli'> }).topicFrameworks ?? {};
+      _topicFrameworks = (config as { topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'> }).topicFrameworks ?? {};
       const built = buildIntelligenceProvider({
         framework,
         binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,

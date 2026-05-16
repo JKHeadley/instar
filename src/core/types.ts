@@ -82,7 +82,7 @@ export interface SessionManagerConfig {
    * without re-running detection. Missing keys mean that framework
    * isn't installed.
    */
-  frameworkBinaryPaths?: { 'claude-code'?: string; 'claude-code-agent-sdk'?: string; 'codex-cli'?: string };
+  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string };
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */
@@ -1483,7 +1483,7 @@ export interface InstarConfig {
    * Lets you flip a single topic to Codex without changing the whole
    * agent's framework.
    */
-  topicFrameworks?: Record<string, 'claude-code' | 'claude-code-agent-sdk' | 'codex-cli'>;
+  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'>;
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
   /** Registered users */

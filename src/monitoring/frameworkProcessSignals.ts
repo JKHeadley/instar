@@ -86,22 +86,8 @@ const CODEX_CLI_SIGNAL: FrameworkProcessSignal = {
   ],
 };
 
-// The Agent SDK variant runs the SAME Claude binary, so its process
-// signature (binary patterns, grep needles, exclusions) is identical.
-// We mint a distinct signal object that re-uses Claude's pattern data
-// but tags `framework: 'claude-code-agent-sdk'` so enumeration tools
-// see it as a separate framework. The OrphanProcessReaper's match
-// logic only consults pattern data, not the framework field, so a real
-// process is correctly identified as Claude-shape either way.
-const CLAUDE_CODE_AGENT_SDK_SIGNAL: FrameworkProcessSignal = {
-  ...CLAUDE_CODE_SIGNAL,
-  framework: 'claude-code-agent-sdk',
-  displayName: 'Claude (Agent SDK)',
-};
-
 const PROCESS_SIGNALS: Record<IntelligenceFramework, FrameworkProcessSignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
-  'claude-code-agent-sdk': CLAUDE_CODE_AGENT_SDK_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
 };
 

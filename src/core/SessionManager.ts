@@ -1277,27 +1277,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!binaryPath) {
       throw new Error(`No binary path available for framework "${framework}"`);
     }
-    // For the Agent SDK variant, the launch builder needs an
-    // ANTHROPIC_API_KEY to inject into the spawned env. Prefer a
-    // dedicated Agent-SDK credential slot; fall back to the legacy
-    // anthropicApiKey field only when it's an API key (not OAuth).
-    let agentSdkKey: string | undefined;
-    if (framework === 'claude-code-agent-sdk') {
-      const cred = this.config.credentials?.['anthropic-agent-sdk'];
-      if (cred?.kind === 'api-key' && cred.value) {
-        agentSdkKey = cred.value;
-      } else {
-        const legacy = this.config.anthropicApiKey ?? '';
-        // Treat as API key only if it does NOT look like an OAuth token.
-        if (legacy && !legacy.startsWith('sk-ant-oat')) {
-          agentSdkKey = legacy;
-        }
-      }
-    }
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
-      ...(agentSdkKey ? { anthropicApiKey: agentSdkKey } : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.

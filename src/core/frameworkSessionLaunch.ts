@@ -30,14 +30,6 @@ export interface InteractiveLaunchOptions {
    * permission scope Claude gets via `--dangerously-skip-permissions`.
    */
   codexSandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  /**
-   * For `claude-code-agent-sdk`: the Anthropic API key to inject as
-   * ANTHROPIC_API_KEY in the spawned session's env. The session uses
-   * this key to bill against the Agent SDK Max 20x credit bucket,
-   * not the operator's OAuth subscription. Required for the
-   * agent-sdk variant; otherwise the builder emits a warning.
-   */
-  anthropicApiKey?: string;
 }
 
 export interface InteractiveLaunchSpec {
@@ -65,37 +57,6 @@ const claudeCodeBuilder: Builder = (options) => {
       CLAUDECODE: '',
     },
   };
-};
-
-/**
- * claude-code-agent-sdk: same Claude Code CLI, same interactive flags,
- * but the env block forces ANTHROPIC_API_KEY auth (clears CLAUDE_CODE_OAUTH_TOKEN)
- * so this session bills against the Agent SDK $200/mo Max 20x credit bucket
- * separate from the operator's main subscription pool. Per the June 2026
- * Anthropic billing notice. Same Claude binary, different billing pool.
- */
-const claudeCodeAgentSdkBuilder: Builder = (options) => {
-  const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
-  if (options.resumeSessionId) {
-    argv.push('--resume', options.resumeSessionId);
-  }
-
-  if (!options.anthropicApiKey) {
-    console.warn(
-      '[frameworkSessionLaunch] claude-code-agent-sdk requested but no anthropicApiKey provided — the spawned session will read whatever ANTHROPIC_API_KEY is in the spawning environment. Provide one explicitly to make the billing path deterministic.',
-    );
-  }
-
-  // Force API-key auth: clear the OAuth token and set the API key.
-  // Claude Code respects whichever of these is non-empty.
-  const envOverrides: Record<string, string> = {
-    CLAUDECODE: '',
-    CLAUDE_CODE_OAUTH_TOKEN: '',
-  };
-  if (options.anthropicApiKey) {
-    envOverrides.ANTHROPIC_API_KEY = options.anthropicApiKey;
-  }
-  return { argv, envOverrides };
 };
 
 const codexCliBuilder: Builder = (options) => {
@@ -141,7 +102,6 @@ const codexCliBuilder: Builder = (options) => {
 
 const BUILDERS: Record<IntelligenceFramework, Builder> = {
   'claude-code': claudeCodeBuilder,
-  'claude-code-agent-sdk': claudeCodeAgentSdkBuilder,
   'codex-cli': codexCliBuilder,
 };
 

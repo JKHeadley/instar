@@ -75,9 +75,6 @@ const CODEX_CLI_SIGNAL: FrameworkActivitySignal = {
 
 const ACTIVITY_SIGNALS: Record<IntelligenceFramework, FrameworkActivitySignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
-  // The Agent SDK variant runs the SAME Claude Code binary, just with
-  // API-key credentials instead of OAuth. Same activity signature.
-  'claude-code-agent-sdk': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
 };
 

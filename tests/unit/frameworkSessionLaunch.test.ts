@@ -41,56 +41,6 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
     });
   });
 
-  describe('claude-code-agent-sdk', () => {
-    it('uses the same Claude argv shape as claude-code', () => {
-      const spec = buildInteractiveLaunch('claude-code-agent-sdk', {
-        binaryPath: '/usr/local/bin/claude',
-        anthropicApiKey: 'sk-ant-api-test',
-      });
-      expect(spec.argv).toEqual(['/usr/local/bin/claude', '--dangerously-skip-permissions']);
-    });
-
-    it('clears CLAUDE_CODE_OAUTH_TOKEN and sets ANTHROPIC_API_KEY', () => {
-      const spec = buildInteractiveLaunch('claude-code-agent-sdk', {
-        binaryPath: '/x/claude',
-        anthropicApiKey: 'sk-ant-api-xyz',
-      });
-      expect(spec.envOverrides.CLAUDE_CODE_OAUTH_TOKEN).toBe('');
-      expect(spec.envOverrides.ANTHROPIC_API_KEY).toBe('sk-ant-api-xyz');
-      expect(spec.envOverrides.CLAUDECODE).toBe('');
-    });
-
-    it('warns when no anthropicApiKey is provided but still emits a clean spec', () => {
-      const warns: string[] = [];
-      const orig = console.warn;
-      console.warn = (...a: unknown[]) => warns.push(a.map(String).join(' '));
-      try {
-        const spec = buildInteractiveLaunch('claude-code-agent-sdk', { binaryPath: '/x/claude' });
-        expect(spec.argv).toContain('--dangerously-skip-permissions');
-        // ANTHROPIC_API_KEY should NOT be set when no key was provided.
-        expect(spec.envOverrides.ANTHROPIC_API_KEY).toBeUndefined();
-        expect(spec.envOverrides.CLAUDE_CODE_OAUTH_TOKEN).toBe('');
-      } finally {
-        console.warn = orig;
-      }
-      expect(warns.some(w => w.includes('claude-code-agent-sdk'))).toBe(true);
-    });
-
-    it('appends --resume <id> like the subscription variant', () => {
-      const spec = buildInteractiveLaunch('claude-code-agent-sdk', {
-        binaryPath: '/x/claude',
-        anthropicApiKey: 'sk-ant-api-xyz',
-        resumeSessionId: 'abc-999',
-      });
-      expect(spec.argv).toEqual([
-        '/x/claude',
-        '--dangerously-skip-permissions',
-        '--resume',
-        'abc-999',
-      ]);
-    });
-  });
-
   describe('codex-cli', () => {
     it('passes --sandbox workspace-write + --ask-for-approval never by default (agentic equivalent of --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
