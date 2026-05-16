@@ -16,6 +16,8 @@ Internal-only API change: external code that constructs CoherenceGate directly m
 
 The anthropic-interactive-pool adapter now accepts an optional `llmFallback` in its config. The empty-prompt canary (Rule 3 detector for the pool's idle signal) had a tested LLM-fallback contract but no application-layer wiring — that's now plumbed end-to-end. Adapter clients can opt in by passing `buildCanaryLlmFallback(intelligence)`; omitting it preserves deterministic-only behavior.
 
+Phase 5c shipped: `CostAwareRoutingPolicy` and `CostStateTracker` in `src/providers/costAwareRouting.ts`. The policy implements the path-constraints "Routing default" (drain SDK credit pot while above the 10% safety margin, switch to subscription floor when at or below). The tracker emits `CostStateSnapshot` objects with a `isMaterialShift` helper Phase 5b consumes to decide when to re-ask the user. Pure additive infrastructure — not yet wired into the runtime; that wiring lands with Phase 5b implementation. 23 unit tests cover every row of the decision matrix and every material-shift category.
+
 ## What to Tell Your User
 
 <!-- Write talking points the agent should relay to their user. -->
