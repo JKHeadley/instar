@@ -906,6 +906,7 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
 function wireTelegramRouting(
   telegram: TelegramAdapter,
   sessionManager: SessionManager,
+  stateDir: string,
   quotaTracker?: QuotaTracker,
   topicMemory?: TopicMemory,
   userManager?: UserManager,
@@ -1009,13 +1010,25 @@ function wireTelegramRouting(
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        sessionManager.injectTelegramMessage(
+        const injected = sessionManager.injectTelegramMessage(
           targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
         );
-        // Delivery confirmation — only when WE own polling. When lifeline owns
-        // polling (--no-telegram / standby), it already sends its own confirmation.
-        if (telegram.isPolling) {
-          telegram.sendToTopic(topicId, `✓ Delivered`).catch(() => {});
+        if (injected === false) {
+          // Injection failed — save message under stateDir (not /tmp) to avoid world-readable exposure
+          const failDir = path.join(stateDir, 'state', 'failed-messages');
+          fs.mkdirSync(failDir, { recursive: true });
+          const failFile = path.join(failDir, `failed-${topicId}-${Date.now()}.txt`);
+          fs.writeFileSync(failFile, text);
+          console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}. Message saved to ${failFile}`);
+          if (telegram.isPolling) {
+            telegram.sendToTopic(topicId, `⚠️ Message delivery failed — your message did not reach the session. It has been saved and you can resend it. Try again in a moment.`).catch(() => {});
+          }
+        } else {
+          // Delivery confirmation — only when WE own polling. When lifeline owns
+          // polling (--no-telegram / standby), it already sends its own confirmation.
+          if (telegram.isPolling) {
+            telegram.sendToTopic(topicId, `✓ Delivered`).catch(() => {});
+          }
         }
         // Track for stall detection
         telegram.trackMessageInjection(topicId, targetSession, text);
@@ -2652,7 +2665,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       };
 
       // Wire up topic → session routing and session management callbacks
-      wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManager,
+      wireTelegramRouting(telegram, sessionManager, config.stateDir, quotaTracker, topicMemory, userManager,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
