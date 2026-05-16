@@ -20,6 +20,8 @@ Phase 5c shipped: `CostAwareRoutingPolicy` and `CostStateTracker` in `src/provid
 
 Phase 5b.1 shipped: `PreferenceStore` (sqlite-backed cache of framework+model picks keyed by user × task pattern) and `TriggerGate` (pure-function decision logic implementing Phase 5b's three-trigger rule with priority ordering). Both live under `src/providers/uxConfirm/`. The remaining Phase 5b components — TaskClassifier, TelegramConfirmer, OverrideDetector, and the FrameworkModelRouter composition root — land in subsequent slices.
 
+Phase 5b.2 shipped: `TaskClassifier` and `OverrideDetector` — both fast-tier IntelligenceProvider classifiers under `src/providers/uxConfirm/`. The classifier maps a task prompt to a stable kebab-case slug (the cache key for preferences). The detector spots routing overrides in free-text messages ("use Gemini for this one") via LLM, not regex, per the "intelligence over string matching" rule. Both fail-safe on errors — unclassified slug or no-override outcome — so the UX never silently auto-uses a wrong pick. 33 new unit tests pass (13 classifier + 20 detector, including the 8 phrasing variants the spec required).
+
 ## What to Tell Your User
 
 <!-- Write talking points the agent should relay to their user. -->
