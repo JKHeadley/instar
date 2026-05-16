@@ -34,6 +34,8 @@ Tier 1.B (multi-provider credentials) landed: new `ProviderCredentialKind` + `Pr
 
 Tier 1.C (Codex intelligence provider) landed: new `CodexCliIntelligenceProvider` sibling of `ClaudeCliIntelligenceProvider`. Routes evaluate() calls through `codex exec` with tier→model mapping reused from the Codex adapter. Plus a `buildIntelligenceProvider({ framework })` factory that picks the right implementation at startup, and a `frameworkFromEnv()` parser for the new `INSTAR_FRAMEWORK` env var (accepts `claude-code` / `claude` / `codex-cli` / `codex` case-insensitive). Until now `ClaudeCliIntelligenceProvider` was the ONLY implementation, so every reviewer/sentinel/canary ran `claude -p` exclusively — "supports Codex" was a promise we couldn't keep. 10 tests cover framework selection, binary detection fallback, env-var parsing.
 
+Tier 1.D (identity-file rendering) landed: AGENT.md is now the canonical source of truth for an agent's identity. New `IdentityRenderer` module reads `.instar/AGENT.md` and writes framework-specific shadow files (CLAUDE.md for Claude Code, AGENTS.md for Codex, GEMINI.md for Gemini) with an auto-generation banner warning against hand-editing. ProjectMapper lookup priority flipped to AGENT.md first, CLAUDE.md fallback (existing installs keep working). Migration path: `bootstrapAgentMdFromShadow` reads legacy CLAUDE.md content, strips banner, writes canonical AGENT.md. 16 tests cover render, banner content, framework subset, source fallback, throw-on-missing, framework detection, and migration bootstrap.
+
 ## What to Tell Your User
 
 <!-- Write talking points the agent should relay to their user. -->

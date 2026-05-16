@@ -76,7 +76,12 @@ const DEFAULT_SKIP_DIRS = new Set([
 ]);
 
 const KEY_FILE_PATTERNS = [
-  'package.json', 'tsconfig.json', 'CLAUDE.md', 'README.md',
+  'package.json', 'tsconfig.json',
+  // Identity files: AGENT.md is canonical (provider-portability v1.0.0);
+  // CLAUDE.md / AGENTS.md / GEMINI.md are framework-specific shadows
+  // rendered from AGENT.md but listed here so they show up in the map.
+  'AGENT.md', 'CLAUDE.md', 'AGENTS.md', 'GEMINI.md',
+  'README.md',
   'vercel.json', 'next.config.js', 'next.config.ts', 'next.config.mjs',
   'Dockerfile', 'docker-compose.yml', '.env.example',
   'prisma/schema.prisma', 'Makefile', 'Cargo.toml',
@@ -240,8 +245,10 @@ export class ProjectMapper {
       }
     } catch { /* ignore */ }
 
-    // Try CLAUDE.md or AGENT.md
-    for (const name of ['CLAUDE.md', '.instar/AGENT.md']) {
+    // Try AGENT.md first (canonical) then framework-specific shadows for backwards-compat.
+    // Provider-portability v1.0.0 made AGENT.md the source of truth; CLAUDE.md and
+    // AGENTS.md are rendered shadows. Legacy installs with only CLAUDE.md still work.
+    for (const name of ['.instar/AGENT.md', 'AGENT.md', 'CLAUDE.md', 'AGENTS.md']) {
       const filePath = path.join(this.config.projectDir, name);
       try {
         if (fs.existsSync(filePath)) {
