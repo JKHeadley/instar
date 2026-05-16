@@ -22,6 +22,8 @@ Phase 5b.1 shipped: `PreferenceStore` (sqlite-backed cache of framework+model pi
 
 Phase 5b.2 shipped: `TaskClassifier` and `OverrideDetector` — both fast-tier IntelligenceProvider classifiers under `src/providers/uxConfirm/`. The classifier maps a task prompt to a stable kebab-case slug (the cache key for preferences). The detector spots routing overrides in free-text messages ("use Gemini for this one") via LLM, not regex, per the "intelligence over string matching" rule. Both fail-safe on errors — unclassified slug or no-override outcome — so the UX never silently auto-uses a wrong pick. 33 new unit tests pass (13 classifier + 20 detector, including the 8 phrasing variants the spec required).
 
+Phase 5b.3 shipped: `TelegramConfirmer` — the blocking suggest-and-confirm round-trip. Sends the structured prompt via a thin `ConfirmationTransport` interface (testable without real Telegram), blocks on next reply with timeout, parses replies through four deterministic shorthand paths (`ok|c|👍|no|once|/route reset`) before falling through to the LLM-backed `OverrideDetector` for free-text. Returns a discriminated `ConfirmationResult` (`confirmed | overridden | reset | default-no-reply`). 30 new tests; cumulative uxConfirm coverage now 86 tests.
+
 ## What to Tell Your User
 
 <!-- Write talking points the agent should relay to their user. -->
