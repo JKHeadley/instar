@@ -1,0 +1,14 @@
+{
+  "phase": "complete",
+  "slug": "lifeline-shadow-install-self-heal-ci-fix",
+  "coveredFiles": [
+    "src/templates/scripts/instar-watchdog.sh",
+    "upgrades/side-effects/lifeline-shadow-install-self-heal.md"
+  ],
+  "artifactPath": "upgrades/side-effects/lifeline-shadow-install-self-heal.md",
+  "artifactSha256": "0136d34121d4681c526647a091b0dbdcbce63aae0502b000824fed50b109f6ae",
+  "specPath": "docs/specs/lifeline-shadow-install-self-heal.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "createdAt": "2026-05-17T22:23:16.000Z"
+}

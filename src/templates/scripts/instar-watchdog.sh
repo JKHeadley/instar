@@ -45,27 +45,63 @@ log() {
 }
 
 # Resolve an executable node binary. PATH is often empty under launchd, so
-# we cannot rely on `which` / `command -v` for the bootstrap. Absolute paths
-# only. Caches result via global var to avoid re-probing.
+# we cannot rely on `which` / `command -v` exclusively. Absolute paths first;
+# fall back to PATH lookup so the script works on Linux/CI/non-macOS hosts
+# where Homebrew paths don't exist. Caches result via global var to avoid
+# re-probing.
 RESOLVED_NODE=""
 resolve_node() {
   [ -n "$RESOLVED_NODE" ] && { echo "$RESOLVED_NODE"; return 0; }
-  for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
+  # Explicit override always wins (used by tests and unusual deployments).
+  if [ -n "${INSTAR_WATCHDOG_NODE_BIN:-}" ] && [ -x "${INSTAR_WATCHDOG_NODE_BIN}" ]; then
+    RESOLVED_NODE="${INSTAR_WATCHDOG_NODE_BIN}"; echo "$RESOLVED_NODE"; return 0
+  fi
+  for cand in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
     if [ -x "$cand" ]; then RESOLVED_NODE="$cand"; echo "$cand"; return 0; fi
   done
+  # Last resort: ask the shell. May find nvm/asdf/system node.
+  local p
+  p=$(command -v node 2>/dev/null || true)
+  if [ -n "$p" ] && [ -x "$p" ]; then RESOLVED_NODE="$p"; echo "$p"; return 0; fi
   return 1
 }
 
 # Resolve the npm-cli.js entry point so we can invoke it as `node npm-cli.js`,
 # bypassing npm's `#!/usr/bin/env node` shebang (which fails under empty PATH).
+# Same fallback order as resolve_node.
 RESOLVED_NPM=""
 resolve_npm() {
   [ -n "$RESOLVED_NPM" ] && { echo "$RESOLVED_NPM"; return 0; }
+  if [ -n "${INSTAR_WATCHDOG_NPM_CLI:-}" ] && [ -r "${INSTAR_WATCHDOG_NPM_CLI}" ]; then
+    RESOLVED_NPM="${INSTAR_WATCHDOG_NPM_CLI}"; echo "$RESOLVED_NPM"; return 0
+  fi
   for cand in \
       /opt/homebrew/lib/node_modules/npm/bin/npm-cli.js \
-      /usr/local/lib/node_modules/npm/bin/npm-cli.js; do
+      /usr/local/lib/node_modules/npm/bin/npm-cli.js \
+      /usr/lib/node_modules/npm/bin/npm-cli.js \
+      /usr/share/npm/bin/npm-cli.js; do
     if [ -r "$cand" ]; then RESOLVED_NPM="$cand"; echo "$cand"; return 0; fi
   done
+  # Last resort: derive from `which npm` (npm itself is a shell script that
+  # exec's its own npm-cli.js — find that path).
+  local p npm_real
+  p=$(command -v npm 2>/dev/null || true)
+  if [ -n "$p" ]; then
+    # npm is usually a symlink to ../lib/node_modules/npm/bin/npm-cli.js
+    npm_real=$(readlink -f "$p" 2>/dev/null || readlink "$p" 2>/dev/null || echo "$p")
+    case "$npm_real" in
+      *.js) [ -r "$npm_real" ] && RESOLVED_NPM="$npm_real" && echo "$npm_real" && return 0 ;;
+      *)
+        # npm wrapper points to a different script — try its sibling lib path.
+        local guess="$(dirname "$p")/../lib/node_modules/npm/bin/npm-cli.js"
+        if [ -r "$guess" ]; then
+          RESOLVED_NPM=$(cd "$(dirname "$guess")" 2>/dev/null && pwd)/$(basename "$guess")
+          echo "$RESOLVED_NPM"
+          return 0
+        fi
+        ;;
+    esac
+  fi
   return 1
 }
 

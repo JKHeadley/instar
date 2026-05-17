@@ -141,6 +141,14 @@ Nothing in this PR adds blocking authority over message flow, session lifecycle,
 
 ---
 
+## Addendum 2026-05-17 — Cross-platform node/npm resolution
+
+After the initial PR landed, CI shard 3/4 (Ubuntu) surfaced that the watchdog's `resolve_node` / `resolve_npm` only probed macOS Homebrew paths. On Linux those paths don't exist, so the integration test (which exercises `escalate_via_peer` against a mock peer) saw zero POSTs reach the peer.
+
+Fix: expanded candidate list to include Linux/system paths (`/usr/bin/node`, `/usr/lib/node_modules/npm/bin/npm-cli.js`, `/usr/share/npm/bin/npm-cli.js`) and added a `command -v` fallback for nvm/asdf/hosted-toolcache setups. Added explicit env overrides `INSTAR_WATCHDOG_NODE_BIN` and `INSTAR_WATCHDOG_NPM_CLI` for tests + unusual deployments. macOS launchd-PATH-empty production behavior is unchanged: the homebrew/usr-local paths are still tried first; new fallbacks only fire when those miss.
+
+No new decision-point surface introduced by the addendum. All checks remain structural (file-existence + accessibility). Signal-vs-authority compliance unchanged.
+
 ## Conclusion
 
 This PR closes the failure mode that took AI Guy offline for 4 days without alerting Justin. It does so by adding self-heal at the layer just below where today's heal stops (boot wrapper) and by routing the heal-failed signal through the existing tone-gate authority via a peer agent's `/attention` endpoint (the only viable Telegram path when the affected agent itself has no server). No new authority over message flow or agent intent. No interactions with PR #111 that overlap; this PR fills the layer ABOVE the supervisor (lifeline can't even start) and the layer BESIDE the supervisor (out-of-process cross-agent escalation). The v3 Remediator (approved 2026-05-13) explicitly owns the long-term absorption path; until Tier-3 ships, this is the minimum plumbing that removes the 4-day-outage class.
