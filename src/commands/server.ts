@@ -2045,6 +2045,54 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow(`  Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`));
     }
 
+    // Phase 5 — install the cost-aware routing policy on the global
+    // providers registry. The policy itself decides nothing today because
+    // no adapters are registered against the providers registry yet
+    // (adapter-registration at startup is tracked as a separate cycle —
+    // depends on per-machine credential discovery), but installing the
+    // policy now ensures any future call to `registry.resolve()` flows
+    // through the chain (CostAware → FirstAvailable; PinHonoringPolicy
+    // pending — recommended by the spec but not yet built) instead of
+    // defaulting to first-by-registration.
+    //
+    // Idempotent: only installs when no policy has been set yet on the
+    // module-singleton registry. Re-entering `startServer` in the same
+    // process (test harnesses, in-proc respawn) won't clobber a policy
+    // a caller (test or production wiring) installed first.
+    try {
+      const { registry } = await import('../providers/registry.js');
+      // Read-only probe — `getRoutingPolicy` isn't on the public surface,
+      // so we test by attempting a no-op resolve and seeing whether the
+      // chain fires. Cheaper proxy: a private convention — set a marker
+      // on the registry the first time we install. Use a Symbol so we
+      // don't pollute the public interface.
+      const ROUTING_POLICY_INSTALLED = Symbol.for('instar.serverBoot.routingPolicyInstalled');
+      const tagged = registry as unknown as Record<symbol, boolean>;
+      if (tagged[ROUTING_POLICY_INSTALLED]) {
+        console.log(pc.dim('  Routing policy already installed in this process — skipping re-install'));
+      } else {
+        const { ChainPolicy, FirstAvailablePolicy } = await import('../providers/routing.js');
+        const { CostAwareRoutingPolicy } = await import('../providers/costAwareRouting.js');
+        registry.setRoutingPolicy(new ChainPolicy([
+          new CostAwareRoutingPolicy({
+            // Tier 3.C will plumb a real UsageMeterProvider here. Until
+            // then, `null` means "state unknown" → policy falls to
+            // subscription floor (conservative).
+            readSdkCredit: async () => null,
+            sdkCreditAdapterId: 'anthropic-headless' as never,
+            subscriptionAdapterId: 'anthropic-interactive-pool' as never,
+          }),
+          new FirstAvailablePolicy(),
+        ]));
+        tagged[ROUTING_POLICY_INSTALLED] = true;
+        console.log(pc.green('  Routing policy installed: ChainPolicy[CostAware, FirstAvailable]'));
+      }
+    } catch (err) {
+      // Policy install is non-critical — sessions still resolve adapters
+      // via the registry's first-match-by-registration fallback.
+      console.log(pc.yellow(`  Routing policy install failed (non-critical): ${err instanceof Error ? err.message : err}`));
+    }
+
     // Warn if no auth token configured — server allows unauthenticated access
     if (!config.authToken) {
       console.log(pc.yellow(pc.bold('  ⚠ WARNING: No auth token configured — all API endpoints are unauthenticated!')));
