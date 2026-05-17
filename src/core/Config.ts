@@ -417,10 +417,30 @@ export function buildProviderEnvFlags(
       break;
 
     case 'openai':
-      // Codex CLI reads ~/.codex/auth.json for OAuth, OPENAI_API_KEY for api-key.
+      // Codex CLI reads ~/.codex/auth.json for OAuth — the subscription path
+      // requires no env vars on this side. The raw-API-key path is forbidden
+      // per Spec 12 Rule 1 ("OpenAI path constraints"): Codex must route via
+      // ChatGPT subscription OAuth; raw OPENAI_API_KEY is not an acceptable
+      // routine path. If a caller wires up an api-key credential for openai,
+      // that's a misconfiguration we refuse loudly rather than silently
+      // emitting the leak.
+      //
+      // RULE 3: EXEMPT — this OPENAI_API_KEY identifier is part of the
+      // refusal text in the spec-enforcement message, not an emission of
+      // the value as an env var.
       if (credential.kind === 'api-key') {
-        push('OPENAI_API_KEY', credential.value);
+        throw new Error(
+          'buildProviderEnvFlags refuses openai api-key credential: ' +
+            'Spec 12 Rule 1 forbids the raw OPENAI_API_KEY path. ' +
+            'Codex must route through ChatGPT subscription OAuth in ' +
+            '~/.codex/auth.json. See specs/provider-portability/' +
+            '12-openai-path-constraints.md for the migration path.',
+        );
       }
+      // OAuth path: no env vars to emit (Codex reads ~/.codex/auth.json).
+      // baseUrl override remains legitimate for user-installed Codex proxies
+      // (Spec 12 § "Scope clarification — user-installed proxies are
+      // user-owned compatibility").
       if (credential.baseUrl) {
         push('OPENAI_BASE_URL', credential.baseUrl);
       }

@@ -15,6 +15,7 @@
 import { execFile } from 'node:child_process';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
+import { buildCodexChildEnv } from '../providers/adapters/openai-codex/transport/codexSpawn.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -71,12 +72,18 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         prompt,
       ];
 
-      // Strip Claude Code env markers (defense-in-depth — codex doesn't
-      // care, but this matches ClaudeCliIntelligenceProvider's hygiene
-      // so nested-session weirdness can't leak across providers).
-      const childEnv = { ...process.env };
-      delete childEnv.CLAUDECODE;
-      delete childEnv.CLAUDE_SESSION_ID;
+      // Spec 12 Rule 1a — Codex spawns MUST use the allowlist-built env,
+      // never inherit `process.env` wholesale. The previous {...process.env}
+      // approach leaked OPENAI_API_KEY into the Codex child whenever any
+      // process in echo's env happened to set it (e.g., a sibling agent's
+      // test fixture), silently billing the wrong account. This callsite
+      // was missed in the cycle 1.1 audit (caught by the fresh second-pass
+      // reviewer); routing through buildCodexChildEnv closes it.
+      //
+      // CLAUDECODE / CLAUDE_SESSION_ID are not in the allowlist so they
+      // are dropped automatically — the prior explicit deletes are now
+      // redundant but the hygiene intent is preserved by the allowlist.
+      const childEnv = buildCodexChildEnv();
 
       const child = execFile(
         this.codexPath,

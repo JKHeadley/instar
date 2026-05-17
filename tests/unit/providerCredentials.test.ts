@@ -124,16 +124,40 @@ describe('buildProviderEnvFlags', () => {
     expect(flags).toContain('ANTHROPIC_BASE_URL=http://localhost:3456');
   });
 
-  it('emits OPENAI_API_KEY only for openai api-key', () => {
+  // Spec 12 Rule 1 — Codex must NOT use raw API key. The api-key path is
+  // refused at the env-flag boundary so misconfigurations surface loudly
+  // instead of silently leaking OPENAI_API_KEY via -e flags.
+  it('REFUSES openai api-key credential with a clear spec reference', () => {
     const cred: ProviderCredential = { kind: 'api-key', value: 'sk-openai-789' };
-    const flags = buildProviderEnvFlags('openai', cred);
-    expect(flags).toContain('OPENAI_API_KEY=sk-openai-789');
+    expect(() => buildProviderEnvFlags('openai', cred)).toThrowError(
+      /12-openai-path-constraints/,
+    );
   });
 
   it('emits no env vars for openai oauth-token (Codex uses auth.json)', () => {
     const cred: ProviderCredential = { kind: 'oauth-token', value: 'oauth' };
     const flags = buildProviderEnvFlags('openai', cred);
     expect(flags.find((f) => f.startsWith('OPENAI_API_KEY='))).toBeUndefined();
+  });
+
+  it('still emits OPENAI_BASE_URL for openai oauth-token with baseUrl', () => {
+    const cred: ProviderCredential = {
+      kind: 'oauth-token',
+      value: 'oauth',
+      baseUrl: 'https://proxy.example.com',
+    };
+    const flags = buildProviderEnvFlags('openai', cred);
+    expect(flags).toContain('OPENAI_BASE_URL=https://proxy.example.com');
+  });
+
+  it('does not leak OPENAI_API_KEY in the refusal error message', () => {
+    const cred: ProviderCredential = { kind: 'api-key', value: 'sk-SECRET-VALUE' };
+    try {
+      buildProviderEnvFlags('openai', cred);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect((err as Error).message).not.toContain('sk-SECRET-VALUE');
+    }
   });
 
   it('emits GOOGLE_API_KEY for google api-key', () => {

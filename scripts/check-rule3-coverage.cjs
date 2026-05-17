@@ -71,6 +71,43 @@ const STATE_DETECTION_PATTERNS = [
     name: 'class *Reader/Tailer/Observer/Receiver/Parser in src/',
     re: /^\s*(?:export\s+)?(?:abstract\s+)?class\s+\w+(?:Reader|Tailer|Observer|Receiver|Parser)\b/m,
   },
+  // Spec 12 (OpenAI / Codex path constraints) additions. These flag patterns
+  // that ship raw-OpenAI-API access — a Rule 1 violation. The "fetch() to
+  // OpenAI" pattern above covers direct HTTP; these cover the SDK-class
+  // surface (importing the published `openai` package, constructing an
+  // OpenAI client, calling the chat completions endpoint) and the env-var
+  // names that gate the forbidden path.
+  {
+    // Tightened from `\bOPENAI_API_KEY\b` (which false-positived on doc
+    // comments, type declarations like `OPENAI_API_KEY?: string`, and
+    // defensive `delete env.OPENAI_API_KEY` calls). The forms we want to
+    // catch are the ones that actually emit or write the value:
+    //   - property assignment: `env.OPENAI_API_KEY = ...`
+    //   - process env mutation: `process.env.OPENAI_API_KEY = ...`
+    //   - template-literal shell-style emission: `OPENAI_API_KEY=${...}`
+    //   - tmux/exec flag emission: `OPENAI_API_KEY=` followed by a value
+    // The `[^=\s]` tail trims `==` / `===` comparisons and trailing
+    // whitespace (which usually indicates a doc string), without dropping
+    // legitimate writes.
+    name: 'OPENAI_API_KEY LHS assignment / emission',
+    re: /\bOPENAI_API_KEY\b\s*=\s*[^=\s]/,
+  },
+  {
+    name: 'new OpenAI() — published SDK client',
+    re: /new\s+OpenAI\s*\(/,
+  },
+  {
+    name: 'openai.chat.completions.create — published SDK call',
+    re: /openai\.chat\.completions\.create\s*\(/,
+  },
+  {
+    name: 'import from "openai" package',
+    re: /(?:import|require)\s*(?:.*\s+from\s+)?\(?\s*['"]openai['"]/,
+  },
+  {
+    name: 'OPENAI_BASE_URL LHS assignment (Instar code must not set this)',
+    re: /\bOPENAI_BASE_URL\b\s*=/,
+  },
 ];
 
 const RULE3_EXEMPT_COMMENT_RE = /RULE\s*3\s*:\s*EXEMPT/i;
@@ -131,7 +168,14 @@ function hasMatchingCanary(stagedFiles, filepath) {
 function main() {
   const stagedFiles = getStagedFiles();
   const sourceFiles = stagedFiles.filter(
-    (f) => f.startsWith('src/') && f.endsWith('.ts') && !f.includes('/canary/') && !f.endsWith('.test.ts'),
+    (f) =>
+      f.startsWith('src/') &&
+      f.endsWith('.ts') &&
+      !f.includes('/canary/') &&
+      !f.endsWith('.test.ts') &&
+      // Smoketest tools are dev-only and routinely show env vars in usage
+      // strings. Not shipped state-detection code.
+      !f.endsWith('_smoketest.ts'),
   );
 
   if (sourceFiles.length === 0) {

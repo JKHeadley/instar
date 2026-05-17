@@ -19,6 +19,26 @@
  *   - `item.commandExecution.*` → tool-call / tool-result
  *   - `error` → error
  *   - `turn.failed` → error + session-lifecycle (ended)
+ *
+ * RULE 3.1 RATIONALE
+ *   Criticality: medium — tmux capture-pane format drift would degrade
+ *                event observability for headless Codex sessions; mirrors
+ *                liveOutputStream.ts's tmux-output dependence (also
+ *                registered in 06-state-detector-registry.md).
+ *   Frequency:   per-poll (500ms cadence while session alive) for the
+ *                capture-pane loop; per-session for the `new-session`
+ *                spawn boundary.
+ *   Stability:   stable — tmux CLI is OS-level, slow-drift.
+ *   Fallback:    none for capture-pane parsing (a format change would
+ *                surface as missing events, caught by the
+ *                openaiKeyLeakageCanary at adapter init via the env-scrub
+ *                contract it shares); code fix is remediation for any
+ *                real format change.
+ *   Verdict:     OS-level format stability + sibling canary coverage at
+ *                the spawn boundary (Rule 1a env-scrub via
+ *                openaiKeyLeakageCanary) is the structural coverage. The
+ *                tmux capture-pane loop reads from the pane the
+ *                env-scrubbed new-session spawn produced.
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -36,6 +56,7 @@ import { UnexpectedError } from '../../../errors.js';
 import { OPENAI_CODEX_ID } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
 import { normalizeCodexJsonlEvent } from '../observability/eventNormalizer.js';
+import { buildCodexChildEnv, buildCodexTmuxSessionEnv } from './codexSpawn.js';
 import type { OpenAiCodexConfig } from '../config.js';
 
 class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
@@ -63,21 +84,33 @@ class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
       options.prompt,
     ];
 
-    const sessionEnv: Array<[string, string]> = [
-      ['INSTAR_SESSION_ID', sessionId],
-    ];
-    if (this.config.apiKey) sessionEnv.push(['OPENAI_API_KEY', this.config.apiKey]);
-    if (this.config.codexHome) sessionEnv.push(['CODEX_HOME', this.config.codexHome]);
-    if (options.env) {
-      for (const [k, v] of Object.entries(options.env)) sessionEnv.push([k, v]);
-    }
+    // Spec 12 Rule 1a — sessionEnv is the explicit allowlist of vars layered
+    // onto the tmux session via `-e VAR=VAL`. OPENAI_API_KEY is NOT among
+    // them: Codex must route through the ChatGPT subscription OAuth token
+    // in ~/.codex/auth.json, not the raw-API-key path. The `this.config.apiKey`
+    // push that used to live here is removed by design.
+    const sessionEnv = buildCodexTmuxSessionEnv({
+      sessionId,
+      codexHome: this.config.codexHome,
+      extraEnv: options.env,
+    });
 
     const tmuxArgs = ['new-session', '-d', '-s', tmuxName, '-c', cwd];
     for (const [k, v] of sessionEnv) tmuxArgs.push('-e', `${k}=${v}`);
     tmuxArgs.push(this.config.codexPath, ...codexArgs);
 
+    // tmux itself inherits its parent's env unless we override it. Without
+    // an explicit `env:`, the OPENAI_API_KEY in process.env would flow into
+    // tmux and from tmux into the codex child — defeating the allowlist.
+    // Scrub via buildCodexChildEnv so tmux's own env is clean; the -e flags
+    // above then layer session-specific overrides on top.
+    const tmuxParentEnv = buildCodexChildEnv({ codexHome: this.config.codexHome });
+
     try {
-      execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' });
+      execFileSync(this.config.tmuxPath, tmuxArgs, {
+        encoding: 'utf-8',
+        env: tmuxParentEnv,
+      });
       try {
         execFileSync(
           this.config.tmuxPath,

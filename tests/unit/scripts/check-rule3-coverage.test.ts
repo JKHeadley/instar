@@ -178,4 +178,184 @@ const _useCapture = "capture-pane";`,
     const result = runCheck(repo);
     expect(result.exitCode).toBe(0);
   });
+
+  // ── Spec 12 (OpenAI / Codex path constraints) — new patterns ─────────
+
+  // Tightened pattern: only LHS assignments / emissions trip the gate.
+  // Plain reads (`process.env.OPENAI_API_KEY`) are legitimate and must not
+  // false-positive — otherwise every legacy file that reads the env var
+  // would block commits without an EXEMPT marker.
+
+  it('does NOT flag plain reads of process.env.OPENAI_API_KEY', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export function getKey() { return process.env.OPENAI_API_KEY; }`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('does NOT flag defensive deletes (delete env.OPENAI_API_KEY)', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export function scrub(env: any) { delete env.OPENAI_API_KEY; return env; }`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('does NOT flag type declarations like OPENAI_API_KEY?: string', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export interface Env { OPENAI_API_KEY?: string; }`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('does NOT flag === comparisons against OPENAI_API_KEY', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export function isLeaked(env: any) { return typeof env.OPENAI_API_KEY === 'string'; }`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('flags LHS assignment env.OPENAI_API_KEY = value as Rule 1 violation', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export function leak(env: any) { env.OPENAI_API_KEY = 'sk-leak'; }`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('OPENAI_API_KEY');
+  });
+
+  it('flags process.env.OPENAI_API_KEY = value (direct env mutation)', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export function setKey(k: string) { process.env.OPENAI_API_KEY = k; }`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('OPENAI_API_KEY');
+  });
+
+  it('flags template-literal shell-style emission `OPENAI_API_KEY=${...}`', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      'export const flag = (v: string) => `OPENAI_API_KEY=${v}`;',
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('OPENAI_API_KEY');
+  });
+
+  it('flags new OpenAI() — published SDK client construction', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `import OpenAI from 'openai';
+export const client = new OpenAI({ apiKey: 'sk-x' });`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    // Either "new OpenAI" or the import pattern can be the first to fire;
+    // the script reports one violation per file.
+    expect(result.stderr).toMatch(/new OpenAI|openai/);
+  });
+
+  it('flags openai.chat.completions.create — published SDK inference call', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `export function ask(client: any) {
+  return client.chat.completions.create({ model: 'gpt-4o', messages: [] });
+}
+const openai = {} as any;
+openai.chat.completions.create({});`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('openai.chat.completions.create');
+  });
+
+  it('flags import from "openai" package', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `import OpenAI from "openai";
+export const _x = OpenAI;`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('openai');
+  });
+
+  it('flags require("openai") — CJS import path', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `const OpenAI = require('openai');
+module.exports = OpenAI;`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('openai');
+  });
+
+  it('flags LHS assignment to OPENAI_BASE_URL (Instar code must not set this)', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `process.env.OPENAI_BASE_URL = 'http://attacker.example/v1';
+export const _x = 1;`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('OPENAI_BASE_URL');
+  });
+
+  it('passes when openai patterns appear with rationale + canary (legitimate adapter)', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `/**
+ * RULE 3.1 RATIONALE
+ * Criticality: high
+ * Frequency: per-prompt
+ * Stability: stable
+ * Fallback: none
+ * Verdict: deterministic
+ */
+export function readEnv() { return process.env.OPENAI_API_KEY; }`,
+    );
+    stage(
+      repo,
+      'src/providers/adapters/example/canary/fooCanary.ts',
+      '// canary',
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('passes when openai patterns are exempt-marked', () => {
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `// RULE 3: EXEMPT — adapter shims the package surface for testing only
+import OpenAI from 'openai';
+export const _x = OpenAI;`,
+    );
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(0);
+  });
 });

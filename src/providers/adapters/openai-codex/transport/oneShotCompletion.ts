@@ -20,7 +20,7 @@ import { AbortError } from '../../../errors.js';
 import type { OpenAiCodexConfig } from '../config.js';
 import { OPENAI_CODEX_ID, mapExecError } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
-import { spawnCodexAndWait } from './codexSpawn.js';
+import { buildCodexChildEnv, spawnCodexAndWait } from './codexSpawn.js';
 
 class OpenAiCodexOneShotCompletion implements OneShotCompletion {
   readonly capability = CapabilityFlag.OneShotCompletion;
@@ -63,13 +63,12 @@ class OpenAiCodexOneShotCompletion implements OneShotCompletion {
 
     args.push(prompt);
 
-    const childEnv: NodeJS.ProcessEnv = { ...process.env };
-    if (this.config.apiKey) {
-      childEnv['OPENAI_API_KEY'] = this.config.apiKey;
-    }
-    if (this.config.codexHome) {
-      childEnv['CODEX_HOME'] = this.config.codexHome;
-    }
+    // Rule 1a: env-scrubbing at exec time. See spec
+    // specs/provider-portability/12-openai-path-constraints.md.
+    const childEnv = buildCodexChildEnv({
+      apiKey: this.config.apiKey,
+      codexHome: this.config.codexHome,
+    });
 
     const abortSignal = options?.signal;
     if (abortSignal?.aborted) {
