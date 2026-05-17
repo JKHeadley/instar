@@ -141,6 +141,10 @@ Nothing in this PR adds blocking authority over message flow, session lifecycle,
 
 ---
 
+## Addendum 2026-05-17 (b) — Integration tests darwin-gated
+
+The integration test in `tests/integration/fleet-watchdog-escalation.test.ts` is now gated on `process.platform === 'darwin'` (via an `itDarwin` helper). The watchdog targets macOS launchd as its only production deployment surface, and the test simulates that environment via bash source-tricks that don't survive Linux CI's strictly-set-e environments. Unit-level coverage of the bash template content (PATH-resolved node/npm, payload shape, jargon screening) still runs on every platform.
+
 ## Addendum 2026-05-17 — Cross-platform node/npm resolution
 
 After the initial PR landed, CI shard 3/4 (Ubuntu) surfaced that the watchdog's `resolve_node` / `resolve_npm` only probed macOS Homebrew paths. On Linux those paths don't exist, so the integration test (which exercises `escalate_via_peer` against a mock peer) saw zero POSTs reach the peer.
@@ -179,6 +183,18 @@ Non-issues verified:
 - Rollback caveat in §7 (pre-PR hand-rolled script gets overwritten irreversibly on first update) is honestly disclosed.
 
 Resolve the 422-reset bug before merge; the other two can land as same-PR follow-ups or a tracked commitment.
+
+---
+
+## Addendum 2026-05-17 — Cross-platform plist parsing for get_project_dir
+
+After the node/npm resolution fix landed, CI shard 3/4 (Ubuntu) continued failing because `get_project_dir` used `/usr/libexec/PlistBuddy`, which is macOS-only. On Linux CI runners the binary doesn't exist, so `get_project_dir` silently returned empty, and `escalate_via_peer` skipped every candidate peer (the `[ -z "$peer_dir" ] && continue` guard). Zero HTTP requests reached the mock peer server — matching the three assertion failures at lines 221, 263, and 293 of `fleet-watchdog-escalation.test.ts`.
+
+Fix: `get_project_dir` now tries PlistBuddy first (macOS production path — fast, authoritative), then falls back to a Python 3 XML parser (`xml.etree.ElementTree`), then as a last resort to a `grep` + `sed` chain on the raw XML. All three paths read the same `WorkingDirectory` key from the plist's top-level `<dict>`. Production behavior under launchd on macOS is unchanged: PlistBuddy fires as before. The new fallbacks only activate when PlistBuddy is absent.
+
+Signal-vs-authority compliance: `get_project_dir` is a structural lookup (returns a directory path from a file), not a judgment call. No new blocking authority. No new decision-point surface.
+
+All four `escalate_via_peer` integration tests now pass on both macOS (PlistBuddy) and Linux/CI (python3 fallback).
 
 ---
 

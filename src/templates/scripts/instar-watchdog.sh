@@ -105,10 +105,29 @@ resolve_npm() {
   return 1
 }
 
-# Extract the WorkingDirectory (project dir) from a launchd plist
+# Extract the WorkingDirectory (project dir) from a launchd plist.
+# macOS: PlistBuddy is fast and authoritative.
+# Linux/CI: falls back to python3 XML parsing, then crude grep.
 get_project_dir() {
   local plist="$1"
-  /usr/libexec/PlistBuddy -c "Print :WorkingDirectory" "$plist" 2>/dev/null || true
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    /usr/libexec/PlistBuddy -c "Print :WorkingDirectory" "$plist" 2>/dev/null || true
+    return
+  fi
+  if command -v python3 &>/dev/null; then
+    python3 - "$plist" 2>/dev/null <<'PYEOF' || true
+import sys, xml.etree.ElementTree as ET
+d = ET.parse(sys.argv[1]).getroot().find('dict')
+els = list(d)
+for i, el in enumerate(els):
+    if el.tag == 'key' and el.text == 'WorkingDirectory' and i + 1 < len(els):
+        print(els[i + 1].text)
+        break
+PYEOF
+    return
+  fi
+  grep -A1 '<key>WorkingDirectory</key>' "$plist" 2>/dev/null \
+    | grep '<string>' | sed 's|.*<string>\(.*\)</string>.*|\1|' || true
 }
 
 # Try to fix common issues that prevent an agent from starting.
