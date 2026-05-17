@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Five Codex-specific defects surfaced when /route was exercised on a real Telegram topic and Codex tried to actually respond. Each silently no-op'd in a way that made spawn look successful but the agent unreachable.
+Six fixes (five Codex defects + one auto-scaffold) surfaced when /route was exercised on a real Telegram topic and Codex tried to actually respond. The first five silently no-op'd in a way that made spawn look successful but the agent unreachable; the sixth closes the legacy-install gap that required manually dropping AGENTS.md before Codex would know about the relay script.
 
 1. `respawnSessionForTopic` kills the existing tmux session before spawning a replacement (line ~605 of server.ts). `spawnInteractiveSession` no-ops when a tmux name is already taken — that's "reuse the running agent" semantics intentionally, but it silently defeats a framework swap. The kill makes respawn semantics explicit ("get me a fresh process"), idempotent on already-dead sessions.
 
@@ -18,6 +18,8 @@ Five Codex-specific defects surfaced when /route was exercised on a real Telegra
 4. Codex spawns use `--dangerously-bypass-approvals-and-sandbox` instead of the prior `--sandbox workspace-write --ask-for-approval never` pair. The flag-pair silenced approval prompts but left Codex's seatbelt sandbox active, which blocks localhost reach (where instar's server runs, where the relay script posts) and blocks writes outside the project (the relay's outbox). The bypass flag is the single-flag parity for Claude's `--dangerously-skip-permissions`. Callers passing `codexSandboxMode` explicitly still get the flag-pair form for the safer profile.
 
 5. `SessionManager.rawInject` is framework-aware. Codex's TUI takes longer than Claude's to commit a bracketed paste into its input state and silently discards a single Enter that lands during the commit window. The injector now reads the spawned session's `INSTAR_FRAMEWORK` from its tmux env (cached per tmux name), and for `codex-cli` waits 1.5s after the paste end (vs 0.5s for Claude) and presses Enter twice with a 300ms gap. The second Enter is a no-op against an empty buffer if the first one landed. `clearSessionFrameworkCache(name)` is exposed for callers that kill+respawn a tmux name under a different framework; `respawnSessionForTopic` calls it.
+
+6. `spawnSessionForTopic` now calls `ensureFrameworkIdentityFile` before every spawn. The new helper in `IdentityRenderer` is idempotent: no-op when the framework's shadow already exists; render from `.instar/AGENT.md` when missing; bootstrap AGENT.md from a legacy shadow (e.g., `CLAUDE.md` on installs that pre-date the IdentityRenderer) before rendering. Without this, legacy installs that author CLAUDE.md directly would have a fresh Codex spawn read no AGENTS.md and never learn about the relay script — the failure mode that required dropping AGENTS.md by hand for the deep-signal live test. The shadow is regenerated atomically per spawn so AGENT.md edits stay propagated. 6 new unit tests cover idempotency, legacy bootstrap, unknown-framework, no-source-available, and the regenerate-on-spawn smoke path.
 
 ## Decision-point inventory
 

@@ -542,6 +542,23 @@ async function spawnSessionForTopic(
   }
 
   const framework = resolveTopicFramework(topicId);
+
+  // Ensure the framework's identity shadow file exists at the project
+  // root before spawn — Codex reads AGENTS.md at session start; Claude
+  // reads CLAUDE.md. Legacy installs may have CLAUDE.md authored
+  // directly without an AGENT.md, so a fresh Codex spawn would miss
+  // the relay-script instructions and the agent would never know how
+  // to ship its output back to Telegram. ensureFrameworkIdentityFile
+  // bootstraps AGENT.md from any existing shadow and renders the
+  // framework's shadow if missing. Idempotent — no-op when the
+  // shadow already exists.
+  try {
+    const { ensureFrameworkIdentityFile } = await import('../core/IdentityRenderer.js');
+    ensureFrameworkIdentityFile(_projectDir, framework, { stateDir: path.join(_projectDir, '.instar') });
+  } catch (err) {
+    console.warn(`[spawnSessionForTopic] ensureFrameworkIdentityFile failed (non-fatal):`, err instanceof Error ? err.message : err);
+  }
+
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, { telegramTopicId: topicId, resumeSessionId, framework });
 
   // Clear the resume entry after successful spawn to prevent stale reuse

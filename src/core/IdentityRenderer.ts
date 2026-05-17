@@ -171,6 +171,57 @@ export function detectFrameworkFromShadowFiles(projectDir: string): string | nul
 }
 
 /**
+ * Ensure the shadow file a framework expects exists at the project root,
+ * bootstrapping the canonical AGENT.md from any legacy shadow first if
+ * needed.
+ *
+ * Lifecycle:
+ *   - If `<projectDir>/<framework-shadow>` already exists, no-op.
+ *   - If `.instar/AGENT.md` exists, render the requested framework's
+ *     shadow from it.
+ *   - If neither exists but a different shadow does (e.g., legacy
+ *     CLAUDE.md without AGENT.md), bootstrap AGENT.md from that shadow,
+ *     then render the requested shadow.
+ *   - If nothing exists, no-op — the project has no identity content
+ *     to seed from.
+ *
+ * Returns the path of the written shadow file, or null when the operation
+ * was a no-op.
+ *
+ * Idempotent. Safe to call before every spawn — checks file existence
+ * first and only writes when there's something useful to do.
+ */
+export function ensureFrameworkIdentityFile(
+  projectDir: string,
+  framework: string,
+  options: { stateDir?: string } = {},
+): string | null {
+  const filename = FRAMEWORK_SHADOW_FILES[framework];
+  if (!filename) return null;
+  const targetPath = path.join(projectDir, filename);
+  if (fs.existsSync(targetPath)) return null;
+
+  // Ensure AGENT.md exists as the canonical source. If it doesn't,
+  // try to bootstrap from a legacy shadow file (e.g., CLAUDE.md).
+  const sourcePath = resolveSource(projectDir, options.stateDir
+    ? path.join(options.stateDir, 'AGENT.md')
+    : undefined);
+  if (sourcePath === null) {
+    const bootstrapped = bootstrapAgentMdFromShadow(projectDir, options);
+    if (bootstrapped === null) return null;
+  }
+
+  const result = renderIdentity({
+    projectDir,
+    frameworks: [framework],
+    sourcePath: options.stateDir
+      ? path.join(options.stateDir, 'AGENT.md')
+      : undefined,
+  });
+  return result.shadowsWritten[0] ?? null;
+}
+
+/**
  * Bootstrap AGENT.md from a legacy CLAUDE.md (or other shadow file).
  *
  * Used during migration when a project has a CLAUDE.md but no AGENT.md.
