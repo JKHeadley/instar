@@ -1,0 +1,15 @@
+{
+  "phase": "complete",
+  "slug": "lifeline-shadow-install-self-heal-ci-skip",
+  "coveredFiles": [
+    "src/templates/scripts/instar-watchdog.sh",
+    "tests/integration/fleet-watchdog-escalation.test.ts",
+    "upgrades/side-effects/lifeline-shadow-install-self-heal.md"
+  ],
+  "artifactPath": "upgrades/side-effects/lifeline-shadow-install-self-heal.md",
+  "artifactSha256": "91c33e8b8ef39dfef7595dc60229f9778af07e4bb5ede9f5af51d7cf27a878e6",
+  "specPath": "docs/specs/lifeline-shadow-install-self-heal.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "createdAt": "2026-05-17T22:31:16.000Z"
+}

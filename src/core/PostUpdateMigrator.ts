@@ -21,6 +21,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { fileURLToPath } from 'node:url';
@@ -149,8 +151,122 @@ export class PostUpdateMigrator {
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
     this.migrateContextDeathAntiPattern(result);
+    this.migrateFleetWatchdog(result);
 
     return result;
+  }
+
+  // ── Fleet watchdog (lifeline-shadow-install-self-heal spec) ──────────
+  //
+  // The user-machine fleet watchdog supervises ALL instar agents on the host.
+  // It used to be a hand-rolled script at ~/.instar/instar-watchdog.sh with no
+  // source-of-truth or migration path. It now ships from
+  // `src/templates/scripts/instar-watchdog.sh` and is overwritten on every
+  // update so existing agents pick up improvements (PATH fixes, peer
+  // escalation, etc.).
+  //
+  // This migration runs in every agent's PostUpdateMigrator pass, but the
+  // installation it performs is per-machine (singleton). Multiple agents
+  // updating concurrently will produce identical writes — acceptable.
+  //
+  // Skipped on non-darwin (launchd plist is macOS-specific).
+  private migrateFleetWatchdog(result: MigrationResult): void {
+    if (process.platform !== 'darwin') {
+      result.skipped.push('fleet-watchdog: non-darwin platform');
+      return;
+    }
+
+    const scriptPath = path.join(os.homedir(), '.instar', 'instar-watchdog.sh');
+    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'ai.instar.watchdog.plist');
+
+    // Locate the template (dev: src/core/ → ../../src/templates/...
+    //                     dist: dist/core/ → ../templates/...)
+    const candidates = [
+      path.resolve(__dirname, '..', 'templates', 'scripts', 'instar-watchdog.sh'),
+      path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'instar-watchdog.sh'),
+    ];
+    let scriptBody = '';
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) { scriptBody = fs.readFileSync(cand, 'utf-8'); break; }
+    }
+    if (!scriptBody) {
+      result.skipped.push('fleet-watchdog: template not found in dist or src');
+      return;
+    }
+
+    const launchdPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
+    const stdoutPath = path.join(os.homedir(), '.instar', 'watchdog-launchd.log');
+    const stderrPath = path.join(os.homedir(), '.instar', 'watchdog-launchd.err');
+
+    const escapeXml = (s: string): string =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+       .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+    const plistBody = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.instar.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>${escapeXml(scriptPath)}</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${escapeXml(stdoutPath)}</string>
+    <key>StandardErrorPath</key>
+    <string>${escapeXml(stderrPath)}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${escapeXml(launchdPath)}</string>
+    </dict>
+</dict>
+</plist>`;
+
+    try {
+      // Compare against current contents to avoid noisy re-installs.
+      const scriptCurrent = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : '';
+      const plistCurrent = fs.existsSync(plistPath) ? fs.readFileSync(plistPath, 'utf-8') : '';
+      const scriptChanged = scriptCurrent !== scriptBody;
+      const plistChanged = plistCurrent !== plistBody;
+      if (!scriptChanged && !plistChanged) {
+        result.skipped.push('fleet-watchdog: already up to date');
+        return;
+      }
+
+      fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+      fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+      if (scriptChanged) fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
+      if (plistChanged) fs.writeFileSync(plistPath, plistBody);
+
+      // Validate plist before triggering launchd
+      try {
+        execFileSync('plutil', ['-lint', plistPath], { stdio: 'pipe' });
+      } catch (err) {
+        const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
+        result.errors.push(`fleet-watchdog: plist validation failed: ${stderr}`);
+        return;
+      }
+
+      // Reload only if plist changed (script-only changes don't need launchd touch).
+      if (plistChanged) {
+        const uid = process.getuid?.() ?? 501;
+        try { execFileSync('launchctl', ['bootout', `gui/${uid}`, plistPath], { stdio: 'ignore' }); } catch { /* not loaded */ }
+        try { execFileSync('launchctl', ['bootstrap', `gui/${uid}`, plistPath], { stdio: 'ignore' }); } catch { /* non-fatal */ }
+      }
+
+      result.upgraded.push(
+        `fleet-watchdog: updated (script=${scriptChanged}, plist=${plistChanged})`
+      );
+    } catch (err) {
+      result.errors.push(`fleet-watchdog: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── Context-death anti-pattern (PR1 — context-death-pitfall-

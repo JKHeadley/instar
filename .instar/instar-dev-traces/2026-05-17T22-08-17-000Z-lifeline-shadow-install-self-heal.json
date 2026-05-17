@@ -1,0 +1,22 @@
+{
+  "phase": "complete",
+  "slug": "lifeline-shadow-install-self-heal",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "src/templates/scripts/instar-watchdog.sh",
+    "tests/unit/lifeline-shadow-install-self-heal.test.ts",
+    "tests/unit/security.test.ts",
+    "tests/integration/fleet-watchdog-escalation.test.ts",
+    "docs/specs/lifeline-shadow-install-self-heal.md",
+    "docs/specs/lifeline-shadow-install-self-heal.eli16.md",
+    "upgrades/NEXT.md"
+  ],
+  "artifactPath": "upgrades/side-effects/lifeline-shadow-install-self-heal.md",
+  "artifactSha256": "48b01fccd01f6b95f2106f7584961f4a97248bbb423ea49b8044cb146f6377cf",
+  "specPath": "docs/specs/lifeline-shadow-install-self-heal.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "createdAt": "2026-05-17T22:08:17.000Z"
+}
