@@ -849,9 +849,64 @@ SHADOW_DIR="${shadowDir}"
 CRASH_FILE="${crashFile}"
 
 if [ ! -f "$SHADOW" ]; then
-  echo "ERROR: Shadow install not found at $SHADOW" >&2
-  echo "Run: npm install instar --prefix ${stateDir}/shadow-install" >&2
-  exit 1
+  # Attempt one-shot reinstall before giving up. Debounced via marker file so
+  # launchd KeepAlive throttling doesn't trigger 30+ reinstalls per minute.
+  HEAL_MARKER="\${SHADOW_DIR}.heal-attempted"
+  NOW=$(date -u +%s)
+  LAST=0
+  [ -r "$HEAL_MARKER" ] && LAST=$(cat "$HEAL_MARKER" 2>/dev/null || echo 0)
+  ELAPSED=$((NOW - LAST))
+
+  if [ "$ELAPSED" -gt 300 ]; then
+    mkdir -p "$(dirname "$HEAL_MARKER")" 2>/dev/null
+    echo "$NOW" > "$HEAL_MARKER"
+    echo "[instar-boot] Shadow install missing — attempting one-shot reinstall" >&2
+
+    # Resolve absolute node + npm (PATH may be empty under launchd).
+    NODE_BIN=""
+    for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
+      [ -x "$cand" ] && NODE_BIN="$cand" && break
+    done
+    NPM_BIN=""
+    if [ -n "$NODE_BIN" ]; then
+      cand="$(dirname "$NODE_BIN")/npm"
+      [ -r "$cand" ] && NPM_BIN="$cand"
+    fi
+    [ -z "$NPM_BIN" ] && [ -r /opt/homebrew/bin/npm ] && NPM_BIN=/opt/homebrew/bin/npm
+    [ -z "$NPM_BIN" ] && [ -r /usr/local/bin/npm ] && NPM_BIN=/usr/local/bin/npm
+
+    if [ -z "$NODE_BIN" ] || [ -z "$NPM_BIN" ]; then
+      echo "[instar-boot] Reinstall failed: no node/npm found" >&2
+      echo "Run manually: npm install instar --prefix $SHADOW_DIR" >&2
+      exit 1
+    fi
+
+    mkdir -p "$SHADOW_DIR" 2>/dev/null
+    if [ ! -f "$SHADOW_DIR/package.json" ]; then
+      cat > "$SHADOW_DIR/package.json" <<'PKGEOF'
+{
+  "name": "instar-shadow",
+  "private": true,
+  "dependencies": { "instar": "latest" }
+}
+PKGEOF
+    fi
+
+    if "$NODE_BIN" "$NPM_BIN" install --no-audit --no-fund --silent --prefix "$SHADOW_DIR" >&2; then
+      if [ -f "$SHADOW" ]; then
+        echo "[instar-boot] Reinstall succeeded — continuing boot" >&2
+      else
+        echo "[instar-boot] Reinstall ran but SHADOW still missing at $SHADOW" >&2
+        exit 1
+      fi
+    else
+      echo "[instar-boot] Reinstall failed (npm exit non-zero)" >&2
+      exit 1
+    fi
+  else
+    echo "[instar-boot] Shadow install missing; last heal attempt \${ELAPSED}s ago, skipping (5min debounce)" >&2
+    exit 1
+  fi
 fi
 
 # Strip extended attributes that may block launchd's restricted sandbox.
@@ -1007,11 +1062,73 @@ function selfHealNodeSymlink() {
 
 selfHealNodeSymlink();
 
-// Verify shadow install exists
+// Verify shadow install exists — attempt one-shot reinstall before giving up.
+// Debounced via marker file so launchd KeepAlive throttling doesn't trigger
+// ~30 reinstall attempts per minute (10s ThrottleInterval × 60s).
 if (!fs.existsSync(SHADOW)) {
-  process.stderr.write('ERROR: Shadow install not found at ' + SHADOW + '\\n');
-  process.stderr.write('Run: npm install instar --prefix ' + ${JSON.stringify(stateDir + '/shadow-install')} + '\\n');
-  process.exit(1);
+  const HEAL_MARKER = SHADOW_DIR + '.heal-attempted';
+  const now = Date.now();
+  let lastAttempt = 0;
+  try { lastAttempt = parseInt(fs.readFileSync(HEAL_MARKER, 'utf-8'), 10) || 0; } catch { /* no prior attempt */ }
+
+  if (now - lastAttempt > 5 * 60 * 1000) {
+    try { fs.mkdirSync(path.dirname(HEAL_MARKER), { recursive: true }); } catch { /* ignore */ }
+    fs.writeFileSync(HEAL_MARKER, String(now));
+    process.stderr.write('[instar-boot] Shadow install missing — attempting one-shot reinstall\\n');
+
+    try {
+      // npm's shebang is #!/usr/bin/env node, so we MUST invoke it via an absolute
+      // node path when PATH may be empty (launchd-spawned children).
+      const nodeCandidates = [process.execPath, '/opt/homebrew/bin/node', '/usr/local/bin/node'];
+      let nodeBin = '';
+      for (const c of nodeCandidates) {
+        try { fs.accessSync(c, fs.constants.X_OK); nodeBin = c; break; } catch { /* missing */ }
+      }
+      if (!nodeBin) throw new Error('no usable node binary found');
+
+      const npmCandidates = [
+        path.join(path.dirname(nodeBin), 'npm-cli.js'),
+        path.join(path.dirname(nodeBin), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+        '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js',
+        '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
+      ];
+      let npmCli = '';
+      for (const c of npmCandidates) {
+        try { fs.accessSync(c, fs.constants.R_OK); npmCli = c; break; } catch { /* missing */ }
+      }
+      if (!npmCli) throw new Error('no usable npm-cli.js found');
+
+      fs.mkdirSync(SHADOW_DIR, { recursive: true });
+      // Write a minimal package.json so npm has a project to install into.
+      const pkgPath = path.join(SHADOW_DIR, 'package.json');
+      if (!fs.existsSync(pkgPath)) {
+        fs.writeFileSync(pkgPath, JSON.stringify({
+          name: 'instar-shadow',
+          private: true,
+          dependencies: { instar: 'latest' },
+        }, null, 2));
+      }
+
+      execFileSync(nodeBin, [npmCli, 'install', '--no-audit', '--no-fund', '--silent'], {
+        cwd: SHADOW_DIR,
+        stdio: 'inherit',
+        timeout: 5 * 60 * 1000,
+      });
+
+      if (!fs.existsSync(SHADOW)) {
+        throw new Error('reinstall completed but SHADOW still missing at ' + SHADOW);
+      }
+      process.stderr.write('[instar-boot] Reinstall succeeded — continuing boot\\n');
+    } catch (err) {
+      process.stderr.write('[instar-boot] Reinstall failed: ' + (err && err.message ? err.message : String(err)) + '\\n');
+      process.stderr.write('Run manually: npm install instar --prefix ' + SHADOW_DIR + '\\n');
+      process.exit(1);
+    }
+  } else {
+    const ageSec = Math.floor((now - lastAttempt) / 1000);
+    process.stderr.write('[instar-boot] Shadow install missing; last heal attempt ' + ageSec + 's ago, skipping (5min debounce)\\n');
+    process.exit(1);
+  }
 }
 
 // Strip macOS extended attributes that may block launchd's restricted sandbox
@@ -1114,6 +1231,106 @@ export function ensureBootWrapper(projectDir: string): boolean {
   return true;
 }
 
+/**
+ * Install the user-level fleet watchdog (singleton per machine).
+ *
+ * The fleet watchdog supervises ALL instar agents on the machine. It runs every
+ * 5 minutes under launchd, detects crash-looping agents, attempts self-heal
+ * (shadow-install reinstall, node-symlink repair, stale-lock cleanup), and
+ * escalates to the user via a healthy peer agent's /attention endpoint when
+ * self-heal fails N cycles in a row.
+ *
+ * This is idempotent: writes the latest script + plist regardless of prior state,
+ * then reloads the launchd job. Safe to call from every agent setup — the script
+ * is per-machine and the launchd label `ai.instar.watchdog` is unique.
+ *
+ * Returns true if writes occurred, false if no-op.
+ */
+export function installFleetWatchdog(): boolean {
+  if (process.platform !== 'darwin') return false;
+
+  const scriptPath = path.join(os.homedir(), '.instar', 'instar-watchdog.sh');
+  const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'ai.instar.watchdog.plist');
+  const stdoutPath = path.join(os.homedir(), '.instar', 'watchdog-launchd.log');
+  const stderrPath = path.join(os.homedir(), '.instar', 'watchdog-launchd.err');
+
+  // Read the watchdog script from src/templates/scripts/
+  const candidates = [
+    path.resolve(__dirname, '..', 'templates', 'scripts', 'instar-watchdog.sh'),
+    path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'instar-watchdog.sh'),
+  ];
+  let scriptBody = '';
+  for (const cand of candidates) {
+    if (fs.existsSync(cand)) { scriptBody = fs.readFileSync(cand, 'utf-8'); break; }
+  }
+  if (!scriptBody) {
+    console.warn('[setup] installFleetWatchdog: template not found, skipping');
+    return false;
+  }
+
+  // PATH must include the locations where node/npm typically live, since launchd
+  // gives subprocesses an empty PATH by default. Belt-and-suspenders next to the
+  // absolute-path resolution inside the script itself.
+  const launchdPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
+
+  const plistBody = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.instar.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>${escapeXml(scriptPath)}</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${escapeXml(stdoutPath)}</string>
+    <key>StandardErrorPath</key>
+    <string>${escapeXml(stderrPath)}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${escapeXml(launchdPath)}</string>
+    </dict>
+</dict>
+</plist>`;
+
+  try {
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+    fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
+    fs.writeFileSync(plistPath, plistBody);
+
+    // Validate plist
+    try {
+      execFileSync('plutil', ['-lint', plistPath], { stdio: 'pipe' });
+    } catch (err) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
+      console.error(`[setup] CRITICAL: watchdog plist failed validation: ${stderr}`);
+      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:installFleetWatchdog' }); } catch { /* best effort */ }
+      return false;
+    }
+
+    // Reload (bootout if loaded; bootstrap fresh)
+    try {
+      execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+    } catch { /* not loaded — fine */ }
+    try {
+      execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+    } catch { /* bootstrap failure — non-fatal, will run on next login */ }
+
+    return true;
+  } catch (err) {
+    console.error(`[setup] installFleetWatchdog: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const label = `ai.instar.${projectName}`;
   const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
@@ -1202,6 +1419,12 @@ ${argsXml}
     } catch { /* not loaded yet — fine */ }
 
     execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+
+    // Ensure the user-machine fleet watchdog is installed alongside this agent.
+    // Singleton per machine — first agent setup creates it, subsequent setups
+    // refresh it from the latest template. Non-fatal if it fails (returns false).
+    try { installFleetWatchdog(); } catch { /* best effort — agent install must not fail because of watchdog */ }
+
     return true;
   } catch {
     return false;

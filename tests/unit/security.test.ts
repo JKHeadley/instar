@@ -169,7 +169,10 @@ describe('Security', () => {
         if (!String(file).endsWith('.ts')) continue;
         if (EXEC_SYNC_EXEMPTIONS.has(String(file))) continue;
         const content = fs.readFileSync(path.join(srcDir, String(file)), 'utf-8');
-        const calls = (content.match(/\bexecSync\(/g) || []).length;
+        // Match bare execSync calls only — calls on object members (e.g.
+        // SafeGitExecutor.execSync) are routed through the centralized safe
+        // primitive and are intentionally allowed.
+        const calls = (content.match(/(?<![.\w])execSync\(/g) || []).length;
         expect(calls, `execSync found in ${file}`).toBe(0);
       }
     });
