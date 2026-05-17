@@ -2404,7 +2404,7 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Process Telegram commands. Returns true if the message was a command.
    */
-  private async handleCommand(text: string, topicId: number, userId: number): Promise<boolean> {
+  public async handleCommand(text: string, topicId: number, userId: number): Promise<boolean> {
     // Phase 1a: Delegate to shared CommandRouter when flag is enabled
     if (this.sharedCommandRouter) {
       return this.sharedCommandRouter.route(

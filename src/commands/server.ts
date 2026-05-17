@@ -978,7 +978,15 @@ function wireTelegramRouting(
       ? userManager.resolveFromTelegramUserId(telegramUserId)
       : null;
 
-    // Most commands are handled inside TelegramAdapter.handleCommand().
+    // In lifeline-owned polling mode (deep-signal, echo) TelegramAdapter's
+    // own poll loop never runs, so its handleCommand() never fires on forwarded
+    // messages. Route slash-commands through it here so /route, /sessions, /claim,
+    // /flush, etc. behave identically whether the server polls or lifeline does.
+    if (text.startsWith('/')) {
+      const handled = await telegram.handleCommand(text, topicId, telegramUserId);
+      if (handled) return;
+    }
+
     // /new — create a new topic thread. Does NOT spawn a session immediately.
     // Sessions are spawned on-demand when the user sends their first real message
     // in the new topic (via the auto-spawn path below). This avoids premature

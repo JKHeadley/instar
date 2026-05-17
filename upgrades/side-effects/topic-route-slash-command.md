@@ -15,8 +15,8 @@ Files added:
 - `tests/unit/TopicFrameworksStore.test.ts` — 9 cases covering atomic writes, layer merge, clear/snapshot, corrupt-file tolerance, hostile-value rejection.
 
 Files modified:
-- `src/messaging/TelegramAdapter.ts` — new `onRouteCommand` callback hook; `/route` and `/route <framework>` parsing in `handleCommand` (uses the existing intercept-before-injection pattern that `/sessions`, `/claim`, `/flush` already follow).
-- `src/commands/server.ts` — initializes `TopicFrameworksStore` at boot; wires `telegram.onRouteCommand` in `wireTelegramCallbacks`. The handler persists the new framework via the store, then triggers a respawn via the existing `respawnSessionForTopic` flow so the change takes effect immediately. `resolveTopicFramework` consults the store first (overrides win), then the legacy in-memory `_topicFrameworks` (config defaults), then the agent-level default.
+- `src/messaging/TelegramAdapter.ts` — new `onRouteCommand` callback hook; `/route` and `/route <framework>` parsing in `handleCommand` (uses the existing intercept-before-injection pattern that `/sessions`, `/claim`, `/flush` already follow). `handleCommand` is now `public` (was `private`) so the lifeline-forward path in `server.ts` can invoke it directly.
+- `src/commands/server.ts` — initializes `TopicFrameworksStore` at boot; wires `telegram.onRouteCommand` in `wireTelegramCallbacks`. The handler persists the new framework via the store, then triggers a respawn via the existing `respawnSessionForTopic` flow so the change takes effect immediately. `resolveTopicFramework` consults the store first (overrides win), then the legacy in-memory `_topicFrameworks` (config defaults), then the agent-level default. Also added: at the top of `onTopicMessage`, call `telegram.handleCommand(text, topicId, telegramUserId)` for `/`-prefixed text and return early if handled. This is the lifeline-forward fix — in lifeline-owned polling mode (deep-signal, echo), TelegramAdapter's own poll loop never runs, so commands forwarded through `/internal/telegram-forward` previously bypassed `handleCommand` entirely and reached the spawned AI session as plain chat text. With this in place `/route`, `/sessions`, `/claim`, `/flush`, `/login`, `/quota`, `/interrupt`, etc. all behave identically whether the server polls Telegram directly or lifeline forwards.
 
 User-facing surface:
 - `/route` or `/route status` — show the framework currently active for this topic.
@@ -38,7 +38,7 @@ The `/route` command is user-authority — Justin (or an authorized user in the 
 
 ## Over-block / under-block analysis
 
-**Over-block:** None. The command is additive. Topics without `/route` use the existing config-default path unchanged.
+**Over-block:** None. The command is additive. Topics without `/route` use the existing config-default path unchanged. The new `handleCommand` call in `onTopicMessage` returns `false` for unrecognized `/`-prefixed text, so plain chat messages that happen to start with `/` fall through to the existing AI-session injection path. In polling mode, `onTopicMessage` is never called for commands at all (the adapter's own poll loop short-circuits at line 2899), so the new code is dead in that path — no double-handling risk.
 
 **Under-block:** A user with shell access to the state file could write any string value and the store would drop it silently. That's the right behavior (graceful degradation), but the user gets no feedback that their edit was rejected. Acceptable for v1.0.0 because the canonical edit path is the slash-command, not direct file edits.
 
