@@ -31,8 +31,8 @@ import {
 } from '../../src/core/Config.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-const claudePresent = detectClaudePath() !== '';
-const codexPresent = detectCodexPath() !== null;
+const claudePresent = detectClaudePath() !== null && detectClaudePath() !== '';
+const codexPresent = detectCodexPath() !== null && detectCodexPath() !== '';
 
 describe('loadConfig — framework routing (v1.0.0)', () => {
   let tmpDir: string;

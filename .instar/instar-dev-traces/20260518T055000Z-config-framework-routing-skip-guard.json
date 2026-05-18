@@ -1,0 +1,12 @@
+{
+  "phase": "complete",
+  "specPath": "specs/provider-portability/04-anthropic-path-constraints.md",
+  "artifactPath": "upgrades/side-effects/config-framework-routing-skip-guard.md",
+  "artifactSha256": "e71cde3963b7adf78245db9d9c14a1267ace2c65d98e09e2104662e40af036d1",
+  "coveredFiles": [
+    "tests/unit/config-framework-routing.test.ts"
+  ],
+  "writtenAt": "2026-05-18T05:50:00Z",
+  "agent": "echo",
+  "summary": "Fix skip-guard logic: detectClaudePath/detectCodexPath return null, not '', so the !== '' comparison was always true. Guard against both null and ''."
+}
