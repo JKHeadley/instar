@@ -9,9 +9,9 @@
 
 ---
 
-## Status (2026-05-14)
+## Status (2026-05-18)
 
-Pre-Phase-2 de-risking complete. Phase 2 (interface design) starting.
+**Release-ready.** All v1.0.0 work items complete except deployment/publishing.
 
 | Phase | Status | Output |
 |---|---|---|
@@ -21,15 +21,23 @@ Pre-Phase-2 de-risking complete. Phase 2 (interface design) starting.
 | Pre-2 Interactive-pool prototype | ✓ passed | [prototype/interactive-pool/findings.md](./prototype/interactive-pool/findings.md) |
 | Pre-2 Codex deep-dive | ✓ done | [02-codex-deep-dive.md](./02-codex-deep-dive.md) |
 | Pre-2 Phase 2 plan | ✓ done | [03-phase-2-plan.md](./03-phase-2-plan.md) |
-| 2 Interface design + conformance | in progress | `../../src/providers/` |
-| 3a Anthropic headless adapter | not started | |
-| 3b Anthropic interactive-pool adapter | not started | |
-| 3c Behavior parity test suite | not started | |
-| 4 OpenAI Codex adapter | not started | |
-| 5 Cost-aware routing policy | not started | |
-| 6 Open-source / local adapter | not started | |
-| 7 Migration design + local agent testing | not started | |
-| 8 v1.0.0 release | not started | |
+| 2 Interface design + conformance | ✓ done | `../../src/providers/` |
+| 3a Anthropic headless adapter | ✓ done | `src/providers/adapters/anthropic-headless/` |
+| 3b Anthropic interactive-pool adapter | ✓ done | `src/providers/adapters/anthropic-interactive-pool/` |
+| 3c Behavior parity test suite | ✓ done | `src/providers/parity/` |
+| 4 OpenAI Codex adapter | ✓ verified | `src/providers/adapters/openai-codex/` (acceptance/phase-4.json) |
+| 5a Framework-aware model router | ✓ done | `FrameworkModelRouter` + `PreferenceStore` + `TaskClassifier` |
+| 5b CostStateTracker | ✓ done | `src/providers/costAwareRouting.ts` |
+| 5c Cost-aware routing policy | ✓ done | `CostAwareRoutingPolicy` wired at server boot |
+| 6 Open-source / local adapter | ✓ done (passthrough) | Codex CLI `--oss --local-provider` via `frameworkSessionLaunch`; recipe at `docs/local-model-recipe.md` |
+| 7 Migration design + local agent testing | ✓ done | `PostUpdateMigrator.migrateProviderPortability`; verified on deep-signal |
+| 8 v1.0.0 release | release-ready (branch merge pending) | Final cycle 2026-05-18 |
+
+**Spec 12 (Codex Rule 1) enforcement status:**
+- Phase A (warning + telemetry) — DEFAULT in v1.0.0
+- Phase B (hard refuse) — OPT-IN via `INSTAR_RULE1_ENFORCE=hard` in v1.0.0; default in v1.1
+- Escape hatch (`INSTAR_DISABLE_RULE1_OPENAI=1`) — sunsets `2026-12-01`
+- Drift CI gate — active in `npm run lint`
 
 ---
 

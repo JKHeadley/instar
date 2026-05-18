@@ -240,3 +240,57 @@ Per `specs/provider-portability/README.md` the remaining phase sequence is:
 - **Phase 6 — Open-source / local adapter.** Evaluate Aider / Open-Interpreter / Continue.dev as the substrate for self-hosted models rather than building an Ollama adapter from scratch.
 - **Phase 7 — Migration design + local agent testing.** Migration script (`.claude/` → `.agent/anthropic/`, `claudeSessionId` → `providerSessionId`, `CLAUDE.md` → `AGENT.md` alias). Tested on multiple local agents before release: snapshot → migrate → snapshot → diff for unexpected losses → verify jobs + Telegram + threadline still work.
 - **Phase 8 — v1.0.0 release.** Cut once Phase 7 testing is clean across the test-agent set.
+
+---
+
+## 2026-05-18 — v1.0.0 release prep cycle (Phases A+B+6+7 closure + sentinel cross-port)
+
+This is the final cycle before v1.0.0 cuts. Closes the seven remaining work items called out in the prior regroup.
+
+### Track A+B — Codex Rule 1 (spec 12) enforcement
+
+- **Phase A defaults.** `OpenAiCodexConfig.apiKey` is now `@deprecated` + `@internal`. `configFromEnv` no longer reads `OPENAI_API_KEY` into config. Adapter init runs `credentials.checkAndWarn` which emits a structured warning + `.instar/security.jsonl` telemetry when API-key auth is detected (env var OR auth.json shape). Default behavior is warning-only — existing installs that have `OPENAI_API_KEY` set don't break the moment they upgrade.
+- **Phase B opt-in.** Setting `INSTAR_RULE1_ENFORCE=hard` makes adapter construction throw `AuthError` instead of warning. Lets deployments lock the rule down early.
+- **Escape hatch + sunset.** `INSTAR_DISABLE_RULE1_OPENAI=1` suppresses the warning until the hardcoded sunset `RULE1_KILLSWITCH_SUNSET_DATE = '2026-12-01'`. After that date the escape hatch is ignored regardless.
+- **Drift CI gate.** New `scripts/check-codex-rule1-drift.js` runs in `npm run lint`. Fails the build if `config.ts` regresses (stale "Agent SDK credit pot analog" comment, env-var read re-added, deprecation tags missing).
+- 23 new unit tests + existing test suite green.
+
+### Track C — Phase 6 local-model adapter via Codex CLI `--oss`
+
+- **Passthrough not adapter.** Codex CLI's built-in `--oss --local-provider <p>` flags route to local Ollama or LM Studio. `frameworkSessionLaunch` builders gain `codexLocalProvider` option that emits the flags. `SessionManager.spawnSession` and `spawnInteractiveSession` forward the option.
+- **Live verified** with `codex exec --oss --local-provider ollama --model llama3.2:latest --json --skip-git-repo-check -s read-only`. Same `thread.started` → `turn.started` → `item.completed` → `turn.completed` event sequence the existing event normalizer already consumes.
+- **Recipe doc** at `docs/local-model-recipe.md`. Fitness catalog entry at `specs/provider-portability/08-model-fitness-catalog.md` § "Local-model adapter via Codex CLI (Phase 6 path)".
+
+### Track D — Phase 7 migration entry
+
+- **`PostUpdateMigrator.migrateProviderPortability`** records `provider-portability-v1.0.0-<ISO>` in `_instar_migrations` on first `instar update` after v1.0.0 ships. Idempotent (re-runs are no-ops). Surfaces detected Codex CLI path in the upgrade message. Does NOT silently flip framework defaults — operators opt in via `/route` or `topicFrameworks` config.
+
+### Track E — Sentinel + monitoring cross-port
+
+- **InstructionsVerifier** — `framework?: 'claude-code' | 'codex-cli'` field. Default expected pattern resolves per-framework (CLAUDE.md vs AGENTS.md). When framework is unset, accepts either (migration-safe).
+- **PromptGate** — confirmation pattern now detects both `Esc to cancel` (Claude) and `Ctrl+C to cancel` / `Press Ctrl-C to cancel` (Codex). LLM gate prompt extended to mention Codex's UI tokens (`Update Plan`, `Step N`, `>` prompt, `Apply patch?`).
+- **Lifeline doctor session** — framework-aware refusal. For codex-cli framework, throws a typed error explaining the gap; recovery falls back to circuit-breaker reset. The doctor's Claude-specific `--message -` stdin + `--allowedTools` have no direct Codex equivalent; cross-port deferred to v1.1+.
+- **Setup wizard** — explicitly Claude-only by design. Claude Code's skill system is upstream territory; future Codex-only setup wizard requires its own design pass.
+
+### Track F — Verification on deep-signal
+
+- **Branch installed** to deep-signal's shadow-install. Server restarted on the new code (uptime baseline).
+- **12/12 v1.0.0 scenarios green** via injection mode against updated deep-signal.
+- **Live Codex spawn round-trip** verified — `/sessions/spawn` with `framework: codex-cli, model: balanced` succeeded end-to-end on deep-signal.
+- Real-Telegram-loop verification requires provisioning a separate driver bot (current `--via-telegram` mode requires a non-target bot in the target's chat). The polling-health scenario (#11) covers the network leg without that dependency.
+
+### What "v1.0.0" means in this release
+
+- All hot-path callsites work for both Claude Code and Codex CLI agents.
+- Local model adapter works via Codex CLI passthrough; Ollama smoke verified.
+- Existing installs upgrade safely (Phase A warning, no behavior change).
+- Lifecycle migrator records the version transition.
+- Sentinels detect both frameworks' UI patterns.
+- Drift CI gate prevents config regression.
+
+### What's NOT in v1.0.0 (documented residuals)
+
+- Lifeline doctor session under Codex (framework-guarded refusal, falls back to circuit-breaker reset).
+- Setup wizard under Codex (Claude Code skill system is upstream; documented as future work).
+- `OPENAI_BASE_URL` first-observation approval flow with HMAC binding per spec 12 § "First-observation user confirmation" (passthrough works; the structured-approval gate is a Phase A+ defensive feature for compromised-shell-rc scenarios).
+- Real-Telegram driver-bot provisioning (requires Justin to create a second Telegram bot account; documented in the test-driver README).
