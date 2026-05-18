@@ -1,14 +1,29 @@
 /**
  * ProviderScaffolder implementation for openai-codex.
  *
- * Installs Codex-flavor scaffolding under a project root:
- *   - `.agent/openai/AGENTS.md` (the canonical instructions file)
- *   - `.agent/openai/config.toml` (per-project codex overrides)
- *   - `.agent/openai/hooks.json` (hook script registrations)
- *   - `.agent/openai/skills/` (codex-format skill bundles)
+ * Installs Codex-flavor scaffolding under a project root.
  *
- * Idempotent. The `.agent/<provider>/` convention is the v1.0.0
- * standardization — replaces the `.claude/` direct layout.
+ * Two distinct on-disk locations are involved:
+ *
+ *   1. `.agent/openai/` — Instar's standardized per-provider config bucket.
+ *      Holds AGENTS.md (instruction file), config.toml (per-project codex
+ *      overrides), and hooks.json (hook script registrations).
+ *
+ *   2. `.agents/skills/` — Codex 0.130's documented project-scope skill
+ *      discovery path. Each skill is a directory at
+ *      `.agents/skills/<name>/` with:
+ *        - SKILL.md (required) — frontmatter (name, description) + body
+ *        - agents/openai.yaml (recommended) — UI-facing metadata
+ *          (display_name, short_description), per Codex's documented format.
+ *
+ * The two paths intentionally differ: `.agent/openai/` is the Instar
+ * provider-config convention; `.agents/skills/` is the Codex-defined project
+ * skill discovery path that Codex itself walks. Co-locating skills under
+ * `.agent/openai/` (the prior layout) silently fails — Codex does not look
+ * there.
+ *
+ * Idempotent. Re-installing leaves existing files untouched unless
+ * `options.force` is set.
  */
 
 import { promises as fs } from 'node:fs';
@@ -17,13 +32,76 @@ import type { CancellationOptions } from '../../../types.js';
 import type {
   ProviderScaffolder,
   ProviderScaffoldOptions,
+  ScaffoldAsset,
   ScaffoldResult,
   ScaffoldVerification,
 } from '../../../primitives/integration/providerScaffolder.js';
 import { CapabilityFlag } from '../../../capabilities.js';
 
 const PROVIDER_DIR = '.agent/openai';
+const SKILLS_DIR = '.agents/skills';
 const REQUIRED_FILES = ['AGENTS.md', 'config.toml', 'hooks.json'];
+
+interface SkillFrontmatter {
+  name?: string;
+  description?: string;
+  shortDescription?: string;
+}
+
+function parseSkillFrontmatter(content: string): SkillFrontmatter {
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return {};
+  const block = match[1];
+  const result: SkillFrontmatter = {};
+  for (const line of block.split('\n')) {
+    // Accept top-level keys (e.g. `name:`) and one-level-indented keys
+    // (e.g. `  short-description:` under a `metadata:` parent). The canonical
+    // skill format nests `short-description` under `metadata:`.
+    const m = line.match(/^\s*([a-zA-Z][\w-]*):\s*(.*)$/);
+    if (!m) continue;
+    const [, key, rawValue] = m;
+    if (!rawValue) continue;
+    const value = rawValue.replace(/^['"]|['"]$/g, '').trim();
+    if (key === 'name' && !result.name) result.name = value;
+    else if (key === 'description' && !result.description) result.description = value;
+    else if (key === 'short-description' || key === 'short_description') {
+      result.shortDescription = value;
+    }
+  }
+  return result;
+}
+
+function yamlEscape(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function deriveDisplayName(name: string): string {
+  return name
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function truncateForShortDescription(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= 64) return oneLine;
+  return oneLine.slice(0, 61).trimEnd() + '...';
+}
+
+function buildOpenAiYaml(asset: ScaffoldAsset): string {
+  const fm = parseSkillFrontmatter(asset.content);
+  const displayName = deriveDisplayName(fm.name ?? asset.name);
+  const shortDescription = truncateForShortDescription(
+    fm.shortDescription ?? fm.description ?? `${displayName} skill`,
+  );
+  return [
+    'interface:',
+    `  display_name: "${yamlEscape(displayName)}"`,
+    `  short_description: "${yamlEscape(shortDescription)}"`,
+    '',
+  ].join('\n');
+}
 
 class OpenAiCodexProviderScaffolder implements ProviderScaffolder {
   readonly capability = CapabilityFlag.ProviderScaffolder;
@@ -65,15 +143,26 @@ class OpenAiCodexProviderScaffolder implements ProviderScaffolder {
     }
 
     if (options?.bundledAssets) {
-      const skillsDir = path.join(baseDir, 'skills');
-      await fs.mkdir(skillsDir, { recursive: true });
+      const skillsDir = path.join(projectRoot, SKILLS_DIR);
+      let skillsDirCreated = false;
       for (const asset of options.bundledAssets) {
         if (asset.kind === 'skill') {
+          if (!skillsDirCreated) {
+            await fs.mkdir(skillsDir, { recursive: true });
+            skillsDirCreated = true;
+          }
           const skillDir = path.join(skillsDir, asset.name);
           await fs.mkdir(skillDir, { recursive: true });
-          const dest = path.join(skillDir, 'SKILL.md');
-          await fs.writeFile(dest, asset.content, 'utf-8');
-          created.push(dest);
+
+          const skillMd = path.join(skillDir, 'SKILL.md');
+          await fs.writeFile(skillMd, asset.content, 'utf-8');
+          created.push(skillMd);
+
+          const metaDir = path.join(skillDir, 'agents');
+          await fs.mkdir(metaDir, { recursive: true });
+          const yamlPath = path.join(metaDir, 'openai.yaml');
+          await fs.writeFile(yamlPath, buildOpenAiYaml(asset), 'utf-8');
+          created.push(yamlPath);
         } else if (asset.kind === 'instruction-file') {
           const dest = path.join(baseDir, asset.name);
           await fs.writeFile(dest, asset.content, 'utf-8');
@@ -106,6 +195,7 @@ class OpenAiCodexProviderScaffolder implements ProviderScaffolder {
 
   async uninstall(projectRoot: string, _options?: ProviderScaffoldOptions): Promise<void> {
     await fs.rm(path.join(projectRoot, PROVIDER_DIR), { recursive: true, force: true });
+    await fs.rm(path.join(projectRoot, SKILLS_DIR), { recursive: true, force: true });
   }
 }
 
