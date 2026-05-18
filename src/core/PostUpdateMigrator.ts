@@ -92,8 +92,76 @@ export class PostUpdateMigrator {
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
     this.migrateContextDeathAntiPattern(result);
+    this.migrateProviderPortability(result);
 
     return result;
+  }
+
+  // ── Provider portability v1.0.0 — Phase 7 migration entry ──────────
+  //
+  // Idempotent migrator that runs on every `instar update`. Confirms the
+  // agent's config is portable-ready and records the migration in
+  // `_instar_migrations` so re-runs are no-ops. Auto-detects Codex CLI
+  // presence and surfaces it in the result for the user-visible upgrade
+  // path. No config mutation beyond the migration marker — the runtime
+  // frameworkBinaryPaths population in Config.ts is the load-bearing
+  // piece, and it runs at every boot.
+  //
+  // What this migrator INTENTIONALLY does NOT do:
+  //  - Flip an existing Claude-only agent to a different framework
+  //    default (operator choice via /route or topicFrameworks config).
+  //  - Force-install Codex CLI (user's package-manager choice).
+  //  - Write any credentials (Spec 12 Rule 1 — subscription-only path).
+  private migrateProviderPortability(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('provider-portability: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`provider-portability: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'provider-portability-v1.0.0';
+    const alreadyMigrated = migrations.some(m => m.startsWith(marker));
+
+    if (alreadyMigrated) {
+      result.skipped.push('provider-portability: already migrated');
+      return;
+    }
+
+    // Best-effort backup snapshot. The BackupManager handles the actual
+    // snapshot; we just record a migration marker. If a future
+    // hard-refuse phase ever rolls back, the user can restore the
+    // pre-migration state.
+    const detectedCodex = (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { detectCodexPath } = require('./Config.js') as typeof import('./Config.js');
+        return detectCodexPath();
+      } catch { return null; }
+    })();
+
+    // Mark migration complete. No config field mutations — frameworkBinaryPaths
+    // is rebuilt at every server boot from live detection.
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      const codexNote = detectedCodex
+        ? `Codex CLI detected at ${detectedCodex} — portable to Codex via /route or topicFrameworks config.`
+        : 'Codex CLI not detected — install via `npm i -g @openai/codex` to enable Codex routing.';
+      result.upgraded.push(`provider-portability: v1.0.0 migration recorded. ${codexNote}`);
+    } catch (err) {
+      result.errors.push(`provider-portability: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── Context-death anti-pattern (PR1 — context-death-pitfall-

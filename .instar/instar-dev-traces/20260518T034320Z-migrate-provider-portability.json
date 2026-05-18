@@ -1,0 +1,13 @@
+{
+  "phase": "complete",
+  "specPath": "specs/provider-portability/04-anthropic-path-constraints.md",
+  "artifactPath": "upgrades/side-effects/migrate-provider-portability.md",
+  "artifactSha256": "f4e1080f503ff4279b3d29f3773878e0ca833888f55c416a79a8d25bc7ae1778",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/migrateProviderPortability.test.ts"
+  ],
+  "writtenAt": "2026-05-18T03:43:20Z",
+  "agent": "echo",
+  "summary": "Phase 7 migration: idempotent marker in _instar_migrations; surfaces Codex CLI detection in upgrade message; no silent framework-default flip. 5 new tests."
+}
