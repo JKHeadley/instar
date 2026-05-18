@@ -53,9 +53,13 @@ export interface Session {
   endedAt?: string;
   /** User who triggered the session, if any */
   triggeredBy?: string;
-  /** Model to use for this session */
-  model?: ModelTier;
-  /** The initial prompt/instruction sent to Claude */
+  /** Model tier (or raw model id) requested for this session.
+   *  May be a Claude tier ('opus'|'sonnet'|'haiku'), a generic
+   *  cross-framework tier ('fast'|'balanced'|'capable'), or a raw
+   *  model id. Per-framework resolution happens in the headless/
+   *  interactive launch builders, not at the session-state level. */
+  model?: ModelTier | string;
+  /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
   maxDurationMinutes?: number;
@@ -83,6 +87,15 @@ export interface SessionManagerConfig {
    * isn't installed.
    */
   frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string };
+  /**
+   * Per-framework default model override. Lets the agent's
+   * `instar.config.json` choose a specific Codex / Claude model id
+   * without code changes. Accepts generic tier names
+   * ('fast'|'balanced'|'capable'), framework-specific tier names, or
+   * raw model ids. Missing keys fall back to each builder's hardcoded
+   * subscription-safe default.
+   */
+  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string };
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */

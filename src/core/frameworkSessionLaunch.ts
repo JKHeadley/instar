@@ -15,6 +15,56 @@
 
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
+/**
+ * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
+ * StallTriage, etc.) should think in tiers, not in framework-specific
+ * names — each framework maps the tier to its own preferred model via
+ * `resolveModelForFramework`. The legacy Claude-only tier names
+ * ('haiku'|'sonnet'|'opus') still resolve correctly for back-compat.
+ */
+export type GenericModelTier = 'fast' | 'balanced' | 'capable';
+
+/**
+ * Map a generic tier or framework-specific name to the concrete model
+ * string that should be passed to the framework's CLI. Pass-through for
+ * anything that isn't a recognized generic tier (so callers can still
+ * provide a raw model id when needed).
+ *
+ * Claude tier names ('haiku'|'sonnet'|'opus') ARE generic to claude-code
+ * (the CLI accepts them as `--model` aliases) so we let them pass
+ * through verbatim there.
+ */
+export function resolveModelForFramework(
+  framework: IntelligenceFramework,
+  modelOrTier: string | undefined,
+): string | undefined {
+  if (!modelOrTier) return undefined;
+  const key = modelOrTier.toLowerCase();
+
+  if (framework === 'claude-code') {
+    // fast/balanced/capable → haiku/sonnet/opus for the Claude CLI's
+    // `--model` flag. Anything else (already-correct tier name or raw
+    // model id like 'claude-sonnet-4-6') passes straight through.
+    if (key === 'fast') return 'haiku';
+    if (key === 'balanced') return 'sonnet';
+    if (key === 'capable') return 'opus';
+    return modelOrTier;
+  }
+  if (framework === 'codex-cli') {
+    // Generic tiers map to the empirically-working subscription-path
+    // defaults from src/providers/adapters/openai-codex/models.ts.
+    // Claude-style tier names from legacy callers also map to a
+    // sensible Codex equivalent (haiku→fast, sonnet→balanced,
+    // opus→capable) so an unported call site doesn't immediately
+    // crash for a Codex agent.
+    if (key === 'fast' || key === 'haiku') return 'gpt-5.2';
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.3-codex';
+    if (key === 'capable' || key === 'opus') return 'gpt-5.4';
+    return modelOrTier;
+  }
+  return modelOrTier;
+}
+
 export interface InteractiveLaunchOptions {
   /** Absolute path to the CLI binary for the selected framework. */
   binaryPath: string;
@@ -30,6 +80,14 @@ export interface InteractiveLaunchOptions {
    * permission scope Claude gets via `--dangerously-skip-permissions`.
    */
   codexSandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  /**
+   * Optional model override for the launched session. Accepts a generic
+   * tier ('fast'|'balanced'|'capable'), a framework-specific tier name,
+   * or a raw model id. Resolution per-framework happens in the builder.
+   * When unset, each builder uses its own subscription-safe default
+   * ('balanced' for Codex; Claude inherits its CLI's account default).
+   */
+  defaultModel?: string;
 }
 
 export interface InteractiveLaunchSpec {
@@ -83,9 +141,14 @@ const codexCliBuilder: Builder = (options) => {
   // key users can still override by editing ~/.codex/config.toml or
   // setting CODEX_MODEL — passing the flag here only sets the default
   // for this session.
+  // Resolve via the shared tier-mapper so callers can pass a generic
+  // tier OR a raw model id from config. Default to the subscription-
+  // safe 'balanced' tier when nothing is specified — matches the prior
+  // hardcoded 'gpt-5.3-codex' behavior but now reads from config.
+  const resolvedModel = resolveModelForFramework('codex-cli', options.defaultModel) ?? 'gpt-5.3-codex';
   const argv: string[] = [
     options.binaryPath,
-    '--model', 'gpt-5.3-codex',
+    '--model', resolvedModel,
   ];
   if (options.codexSandboxMode) {
     argv.push('--sandbox', options.codexSandboxMode, '--ask-for-approval', 'never');
@@ -199,8 +262,9 @@ type HeadlessBuilder = (options: HeadlessLaunchOptions) => HeadlessLaunchSpec;
 
 const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
-  if (options.model) {
-    argv.push('--model', options.model);
+  const resolved = resolveModelForFramework('claude-code', options.model);
+  if (resolved) {
+    argv.push('--model', resolved);
   }
   argv.push('-p', options.prompt);
   return {
@@ -219,7 +283,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   // instead of TUI output — same data the agenticSessionHeadless path
   // already consumes for normalization.
   const sandbox = options.codexSandboxMode ?? 'workspace-write';
-  const model = options.model ?? 'gpt-5.3-codex';
+  const model = resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.3-codex';
   const argv: string[] = [
     options.binaryPath,
     'exec',

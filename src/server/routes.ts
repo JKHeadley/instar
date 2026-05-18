@@ -3614,7 +3614,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug } = req.body;
+    const { name, prompt, model, jobSlug, framework } = req.body;
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -3628,9 +3628,32 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"prompt" must be a string under 500KB' });
       return;
     }
-    if (model && !['opus', 'sonnet', 'haiku'].includes(model)) {
-      res.status(400).json({ error: '"model" must be one of: opus, sonnet, haiku' });
+    if (framework !== undefined && !['claude-code', 'codex-cli'].includes(framework)) {
+      res.status(400).json({ error: '"framework" must be one of: claude-code, codex-cli' });
       return;
+    }
+    // Provider-portability v1.0.0: model whitelist is framework-aware.
+    // Generic tiers ('fast'|'balanced'|'capable') are universally accepted
+    // and resolve per-framework inside buildHeadlessLaunch. Framework-
+    // specific names are accepted when they match the framework slot.
+    const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
+    const CLAUDE_TIERS = ['opus', 'sonnet', 'haiku'];
+    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4'];
+    if (model !== undefined) {
+      if (typeof model !== 'string') {
+        res.status(400).json({ error: '"model" must be a string' });
+        return;
+      }
+      const requestedFramework = framework ?? 'claude-code';
+      const allowed = requestedFramework === 'codex-cli'
+        ? [...GENERIC_TIERS, ...CODEX_MODELS_SUBSCRIPTION]
+        : [...GENERIC_TIERS, ...CLAUDE_TIERS];
+      if (!allowed.includes(model)) {
+        res.status(400).json({
+          error: `"model" must be one of: ${allowed.join(', ')} (framework: ${requestedFramework})`,
+        });
+        return;
+      }
     }
     if (jobSlug !== undefined && (typeof jobSlug !== 'string' || !JOB_SLUG_RE.test(jobSlug))) {
       res.status(400).json({ error: '"jobSlug" must contain only letters, numbers, hyphens, underscores' });
@@ -3638,7 +3661,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     try {
-      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug });
+      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework });
       res.status(201).json(session);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

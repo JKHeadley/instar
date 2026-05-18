@@ -135,6 +135,46 @@ describe('StallTriageNurse', () => {
 
   // ─── 1b. Framework-aware heuristics (Tier 2.B) ─────────────
 
+  describe('framework-aware model tier normalization', () => {
+    it('claude-code: tier name → canonical Anthropic model id', () => {
+      const nurse = new StallTriageNurse(deps, {
+        config: { ...TEST_CONFIG, framework: 'claude-code', model: 'sonnet' },
+      });
+      // Stored on the merged config; downstream tooling that greps the
+      // model id sees the canonical Anthropic name, not the tier alias.
+      expect((nurse as unknown as { config: { model: string } }).config.model)
+        .toBe('claude-sonnet-4-6');
+    });
+    it('claude-code: generic tier "balanced" resolves to sonnet → canonical Anthropic id', () => {
+      const nurse = new StallTriageNurse(deps, {
+        config: { ...TEST_CONFIG, framework: 'claude-code', model: 'balanced' },
+      });
+      expect((nurse as unknown as { config: { model: string } }).config.model)
+        .toBe('claude-sonnet-4-6');
+    });
+    it('codex-cli: generic tier "balanced" resolves to Codex model id (no Anthropic mapping)', () => {
+      const nurse = new StallTriageNurse(deps, {
+        config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'balanced' },
+      });
+      expect((nurse as unknown as { config: { model: string } }).config.model)
+        .toBe('gpt-5.3-codex');
+    });
+    it('codex-cli: legacy Claude tier name maps to Codex equivalent', () => {
+      const nurse = new StallTriageNurse(deps, {
+        config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'haiku' },
+      });
+      expect((nurse as unknown as { config: { model: string } }).config.model)
+        .toBe('gpt-5.2');
+    });
+    it('codex-cli: raw Codex model id passes through verbatim', () => {
+      const nurse = new StallTriageNurse(deps, {
+        config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'gpt-5.4-codex' },
+      });
+      expect((nurse as unknown as { config: { model: string } }).config.model)
+        .toBe('gpt-5.4-codex');
+    });
+  });
+
   describe('framework-aware heuristicDiagnose', () => {
     /** Build a TriageContext suitable for heuristicDiagnose calls. */
     function ctx(tmuxOutput: string, waitMinutes = 0): TriageContext {

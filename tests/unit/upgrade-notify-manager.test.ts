@@ -162,7 +162,7 @@ Added hybrid search and MEMORY.md export.
 
     await manager.notify();
 
-    expect(spawnCalls[0].model).toBe('haiku');
+    expect(spawnCalls[0].model).toBe('fast');
   });
 
   // 3. Escalates to sonnet on haiku failure
@@ -190,10 +190,10 @@ Added hybrid search and MEMORY.md export.
     const result = await manager.notify();
 
     expect(result.success).toBe(true);
-    expect(result.model).toBe('sonnet');
+    expect(result.model).toBe('balanced');
     expect(result.attempts).toBe(2);
-    expect(spawnCalls[0].model).toBe('haiku');
-    expect(spawnCalls[1].model).toBe('sonnet');
+    expect(spawnCalls[0].model).toBe('fast');
+    expect(spawnCalls[1].model).toBe('balanced');
   });
 
   // 4. Reports success when acknowledged
@@ -214,7 +214,7 @@ Added hybrid search and MEMORY.md export.
     const result = await manager.notify();
 
     expect(result.success).toBe(true);
-    expect(result.model).toBe('haiku');
+    expect(result.model).toBe('fast');
     expect(result.attempts).toBe(1);
   });
 
@@ -258,7 +258,7 @@ Added hybrid search and MEMORY.md export.
     const result = await manager.notify();
 
     expect(result.success).toBe(true);
-    expect(result.model).toBe('sonnet');
+    expect(result.model).toBe('balanced');
     expect(result.attempts).toBe(2);
   });
 

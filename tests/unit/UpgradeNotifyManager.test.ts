@@ -48,7 +48,7 @@ function makeSession(id: string): Session {
     status: 'running',
     tmuxSession: 'test-upgrade-notify',
     startedAt: new Date().toISOString(),
-    model: 'haiku',
+    model: 'fast',
     jobSlug: 'upgrade-notify',
     maxDurationMinutes: 5,
   };
@@ -104,10 +104,10 @@ describe('UpgradeNotifyManager', () => {
       const result = await manager.notify();
 
       expect(result.success).toBe(true);
-      expect(result.model).toBe('haiku');
+      expect(result.model).toBe('fast');
       expect(result.attempts).toBe(1);
       expect(spawnSession).toHaveBeenCalledTimes(1);
-      expect(spawnSession.mock.calls[0][0].model).toBe('haiku');
+      expect(spawnSession.mock.calls[0][0].model).toBe('fast');
     });
 
     it('logs success activity event', async () => {
@@ -150,11 +150,11 @@ describe('UpgradeNotifyManager', () => {
       const result = await manager.notify();
 
       expect(result.success).toBe(true);
-      expect(result.model).toBe('sonnet');
+      expect(result.model).toBe('balanced');
       expect(result.attempts).toBe(2);
       expect(spawnSession).toHaveBeenCalledTimes(2);
-      expect(spawnSession.mock.calls[0][0].model).toBe('haiku');
-      expect(spawnSession.mock.calls[1][0].model).toBe('sonnet');
+      expect(spawnSession.mock.calls[0][0].model).toBe('fast');
+      expect(spawnSession.mock.calls[1][0].model).toBe('balanced');
     });
   });
 

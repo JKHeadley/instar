@@ -18,6 +18,7 @@ import type { StateManager } from '../core/StateManager.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { ANTHROPIC_MODELS, resolveModelId } from '../core/models.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
+import { resolveModelForFramework } from '../core/frameworkSessionLaunch.js';
 import { getActivitySignal, type FrameworkActivitySignal } from './frameworkActivitySignals.js';
 import type {
   StallTriageConfig,
@@ -51,7 +52,12 @@ const DEFAULT_POST_INTERVENTION_DELAY_MS = 3000;
 const DEFAULT_CONFIG: Required<StallTriageConfig> = {
   framework: 'claude-code',
   enabled: true,
-  model: resolveModelId(process.env.STALL_TRIAGE_MODEL || 'sonnet'),
+  // Default tier stored as generic — the per-framework resolution
+  // happens in the constructor based on `framework` so Codex agents
+  // get a Codex model id instead of a Claude one. Legacy env var
+  // STALL_TRIAGE_MODEL keeps working but is now interpreted as a
+  // tier OR raw id, not specifically a Claude alias.
+  model: process.env.STALL_TRIAGE_MODEL || 'balanced',
   maxTokens: 2000,
   cooldownMs: 180000,
   verifyDelayMs: 10000,
@@ -133,11 +139,24 @@ export class StallTriageNurse extends EventEmitter {
     this.deps = deps;
     this.state = opts?.state ?? null;
     this.intelligence = opts?.intelligence ?? null;
+    const mergedFramework = opts?.config?.framework ?? DEFAULT_CONFIG.framework;
+    const rawModel = opts?.config?.model || DEFAULT_CONFIG.model;
+    // Per-framework tier resolution: 'balanced' → 'sonnet' for Claude,
+    // 'gpt-5.3-codex' for Codex. resolveModelForFramework passes raw
+    // model ids through verbatim so explicit configurations work too.
+    // For claude-code we still run through resolveModelId so legacy
+    // tier names get expanded to canonical ANTHROPIC_MODELS ids (e.g.
+    // 'sonnet' → 'claude-sonnet-4-6'), preserving the previous on-disk
+    // model-id format that downstream tooling may grep.
+    const tierResolved = resolveModelForFramework(mergedFramework, rawModel) ?? rawModel;
+    const finalModel = mergedFramework === 'claude-code'
+      ? resolveModelId(tierResolved)
+      : tierResolved;
     this.config = {
       ...DEFAULT_CONFIG,
       ...opts?.config,
-      // Resolve tier names in model config (e.g., 'sonnet' → 'claude-sonnet-4-6')
-      model: resolveModelId(opts?.config?.model || DEFAULT_CONFIG.model),
+      framework: mergedFramework,
+      model: finalModel,
     };
 
     // Load persisted state

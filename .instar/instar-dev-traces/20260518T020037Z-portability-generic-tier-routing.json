@@ -1,0 +1,21 @@
+{
+  "phase": "complete",
+  "specPath": "specs/provider-portability/04-anthropic-path-constraints.md",
+  "artifactPath": "upgrades/side-effects/portability-generic-tier-routing.md",
+  "artifactSha256": "39bc553fff66314f9340ee8d43d40c2835fd3118bfd562200336f347f0cdcfcd",
+  "coveredFiles": [
+    "src/core/frameworkSessionLaunch.ts",
+    "src/core/SessionManager.ts",
+    "src/core/UpgradeNotifyManager.ts",
+    "src/core/types.ts",
+    "src/monitoring/StallTriageNurse.ts",
+    "src/server/routes.ts",
+    "tests/unit/frameworkSessionLaunch.test.ts",
+    "tests/unit/StallTriageNurse.test.ts",
+    "tests/unit/UpgradeNotifyManager.test.ts",
+    "tests/unit/upgrade-notify-manager.test.ts"
+  ],
+  "writtenAt": "2026-05-18T02:00:37Z",
+  "agent": "echo",
+  "summary": "Generic tier routing (fast/balanced/capable) + framework-aware /sessions/spawn whitelist + StallTriageNurse model normalization per framework + frameworkDefaultModels config field for codex default. UpgradeNotifyManager MODEL_CHAIN now uses generic tiers. 197/197 unit tests green; typecheck clean."
+}

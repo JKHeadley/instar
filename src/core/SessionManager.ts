@@ -600,7 +600,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
   async spawnSession(options: {
     name: string;
     prompt: string;
-    model?: ModelTier;
+    /** Either a Claude tier name, a generic tier ('fast'|'balanced'|'capable'),
+     *  or a raw model id. Resolution happens inside the framework's headless
+     *  builder via resolveModelForFramework, so generic tiers work uniformly
+     *  across Claude and Codex. */
+    model?: ModelTier | string;
     jobSlug?: string;
     triggeredBy?: string;
     maxDurationMinutes?: number;
@@ -1350,9 +1354,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!binaryPath) {
       throw new Error(`No binary path available for framework "${framework}"`);
     }
+    const defaultModel = this.config.frameworkDefaultModels?.[framework];
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+      ...(defaultModel ? { defaultModel } : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.

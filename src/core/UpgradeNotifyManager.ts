@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ModelTier, Session } from './types.js';
+import type { GenericModelTier } from './frameworkSessionLaunch.js';
 
 export interface UpgradeNotifyConfig {
   /** Path to pending-upgrade-guide.md */
@@ -43,19 +44,21 @@ export interface UpgradeNotifyConfig {
 export interface UpgradeNotifyResult {
   /** Whether the upgrade guide was successfully acknowledged */
   success: boolean;
-  /** Model used for the successful attempt (or last attempted) */
-  model: ModelTier;
+  /** Generic tier used for the successful (or last attempted) escalation step */
+  model: GenericModelTier;
   /** Number of attempts made */
   attempts: number;
   /** Error message if failed */
   error?: string;
 }
 
-/** Callback to spawn a Claude session — injected for testability */
+/** Callback to spawn a session — injected for testability. Accepts a
+ *  generic tier OR a Claude tier name OR a raw model id; resolution
+ *  happens inside SessionManager's framework-aware launch builder. */
 export type SessionSpawner = (options: {
   name: string;
   prompt: string;
-  model: ModelTier;
+  model: GenericModelTier | ModelTier | string;
   jobSlug: string;
   maxDurationMinutes: number;
 }) => Promise<Session>;
@@ -70,8 +73,11 @@ export type ActivityLogger = (event: {
   metadata?: Record<string, unknown>;
 }) => void;
 
-/** Model escalation chain — try faster models first, escalate on failure */
-const MODEL_CHAIN: ModelTier[] = ['haiku', 'sonnet'];
+/** Model escalation chain — try faster models first, escalate on failure.
+ *  Uses generic tier names so the same chain works for Claude, Codex, and
+ *  any future framework. Each framework's headless launch builder maps
+ *  the tier to its own model id via resolveModelForFramework. */
+const MODEL_CHAIN: GenericModelTier[] = ['fast', 'balanced'];
 
 /** Default timing constants (overridable via UpgradeNotifyTiming for testing) */
 const DEFAULT_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -116,7 +122,7 @@ export class UpgradeNotifyManager {
   async notify(): Promise<UpgradeNotifyResult> {
     const guideContent = this.readPendingGuide();
     if (!guideContent) {
-      return { success: true, model: 'haiku', attempts: 0 }; // Nothing to do
+      return { success: true, model: 'fast', attempts: 0 }; // Nothing to do
     }
 
     let lastError: string | undefined;

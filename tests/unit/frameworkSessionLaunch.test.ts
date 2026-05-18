@@ -12,6 +12,7 @@ import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
+  resolveModelForFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
 
 describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
@@ -227,5 +228,54 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
         prompt: 'y',
       }),
     ).toThrowError(/No headless launch builder/);
+  });
+});
+
+describe('frameworkSessionLaunch.resolveModelForFramework', () => {
+  describe('claude-code', () => {
+    it('maps generic tiers to Claude CLI aliases', () => {
+      expect(resolveModelForFramework('claude-code', 'fast')).toBe('haiku');
+      expect(resolveModelForFramework('claude-code', 'balanced')).toBe('sonnet');
+      expect(resolveModelForFramework('claude-code', 'capable')).toBe('opus');
+    });
+    it('passes Claude tier names through verbatim', () => {
+      expect(resolveModelForFramework('claude-code', 'haiku')).toBe('haiku');
+      expect(resolveModelForFramework('claude-code', 'sonnet')).toBe('sonnet');
+      expect(resolveModelForFramework('claude-code', 'opus')).toBe('opus');
+    });
+    it('passes raw model ids through verbatim', () => {
+      expect(resolveModelForFramework('claude-code', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
+    });
+    it('returns undefined for undefined input', () => {
+      expect(resolveModelForFramework('claude-code', undefined)).toBeUndefined();
+    });
+  });
+
+  describe('codex-cli', () => {
+    it('maps generic tiers to subscription-safe Codex model ids', () => {
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.2');
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.3-codex');
+      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.4');
+    });
+    it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.2');
+      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.3-codex');
+      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.4');
+    });
+    it('passes raw Codex model ids through verbatim', () => {
+      expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
+    });
+  });
+
+  it('claude headless builder rewrites generic tier to haiku/sonnet/opus', () => {
+    const fast = buildHeadlessLaunch('claude-code', { binaryPath: '/x/claude', prompt: 'p', model: 'fast' });
+    expect(fast.argv).toContain('haiku');
+    expect(fast.argv).not.toContain('fast');
+  });
+
+  it('codex headless builder rewrites generic tier to gpt-5.x', () => {
+    const balanced = buildHeadlessLaunch('codex-cli', { binaryPath: '/x/codex', prompt: 'p', model: 'balanced' });
+    expect(balanced.argv).toContain('gpt-5.3-codex');
+    expect(balanced.argv).not.toContain('balanced');
   });
 });
