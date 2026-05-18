@@ -8305,20 +8305,15 @@ export function createRoutes(ctx: RouteContext): Router {
           `This session was auto-created because a Secret Drop was submitted.`,
           ``,
           systemMsg,
-          ``,
-          `CRITICAL: You MUST relay your response back to Telegram after responding.`,
-          `Use the relay script:`,
-          ``,
-          `cat <<'EOF' | .claude/scripts/telegram-reply.sh ${topicId}`,
-          `Your response text here`,
-          `EOF`,
         ];
         const tmpDir = '/tmp/instar-telegram';
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
         fs.writeFileSync(ctxPath, contextLines.join('\n'));
 
-        const bootstrapMessage = `[telegram:${topicId}] ${systemMsg} (IMPORTANT: Read ${ctxPath} for thread history and Telegram relay instructions — you MUST relay your response back.)`;
+        const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
+        const relayBlock = buildTelegramRelayBlock({ topicId, framework: 'claude-code' });
+        const bootstrapMessage = `[telegram:${topicId}] ${systemMsg} (Thread history at ${ctxPath} — read it before responding.)\n\n${relayBlock}`;
 
         const resumeSessionId = ctx.topicResumeMap?.get(topicId) ?? undefined;
         ctx.sessionManager.spawnInteractiveSession(bootstrapMessage, topicName, { telegramTopicId: topicId, resumeSessionId }).then((newSessionName) => {
@@ -8700,27 +8695,24 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
 
+        // Thread history goes to a side file (it can be long). The Telegram
+        // relay instruction is appended INLINE below so the agent processes
+        // it as a structural directive — Claude historically learned this
+        // from a SessionStart hook that Codex doesn't honor, so the inline
+        // copy is what closes that gap for Codex sessions.
         const contextLines = [
           ...historyLines,
           ``,
           `This session was auto-created for Telegram topic ${topicId}.`,
-          ``,
-          `CRITICAL: You MUST relay your response back to Telegram after responding.`,
-          `Use the relay script:`,
-          ``,
-          `cat <<'EOF' | .claude/scripts/telegram-reply.sh ${topicId}`,
-          `Your response text here`,
-          `EOF`,
-          ``,
-          `Strip the [telegram:${topicId}] prefix before interpreting the message.`,
-          `Only relay conversational text — not tool output or internal reasoning.`,
         ];
         const tmpDir = '/tmp/instar-telegram';
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
         fs.writeFileSync(ctxPath, contextLines.join('\n'));
 
-        const bootstrapMessage = `[telegram:${topicId}] ${text} (IMPORTANT: Read ${ctxPath} for thread history and Telegram relay instructions — you MUST relay your response back.)`;
+        const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
+        const relayBlock = buildTelegramRelayBlock({ topicId, framework: 'claude-code' });
+        const bootstrapMessage = `[telegram:${topicId}] ${text} (Thread history at ${ctxPath} — read it before responding.)\n\n${relayBlock}`;
 
         // Check for a resume UUID from a previously-killed session.
         // TopicResumeMap is authoritative — skip LLM validation for this source.

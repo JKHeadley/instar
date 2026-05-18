@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/provider-portability/04-anthropic-path-constraints.md",
+  "artifactPath": "upgrades/side-effects/codex-telegram-relay-bootstrap.md",
+  "artifactSha256": "7d3b02322065ced8fcc9accd4b8d57f4de633e0a3751eedf8a9453aa7561d261",
+  "coveredFiles": [
+    "src/messaging/shared/telegramRelayPrompt.ts",
+    "src/commands/server.ts",
+    "src/server/routes.ts",
+    "src/core/IdentityRenderer.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/telegramRelayPrompt.test.ts",
+    "tests/unit/IdentityRenderer.test.ts"
+  ],
+  "writtenAt": "2026-05-18T16:00:00Z",
+  "agent": "echo",
+  "summary": "Codex Telegram-reply gap closed: inline relay block in every bootstrap + AGENTS.md/CLAUDE.md appendix via IdentityRenderer + test-as-self sentinel-pattern exclusion + Codex/local-model roundtrip scenarios. 14/14 scenarios green on deep-signal end-to-end."
+}

@@ -251,4 +251,55 @@ describe('ensureFrameworkIdentityFile', () => {
     const second = ensureFrameworkIdentityFile(tmp, 'codex-cli');
     expect(second).toBeNull(); // shadow now exists, no-op
   });
+
+  describe('appendTelegramRelayBlock', () => {
+    it('appends the relay section to a freshly rendered AGENTS.md when requested', () => {
+      fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Agent\n\nBody.');
+      ensureFrameworkIdentityFile(tmp, 'codex-cli', { appendTelegramRelayBlock: true });
+      const out = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+      expect(out).toContain('## Telegram Relay (MANDATORY)');
+      expect(out).toContain("cat <<'EOF' | .claude/scripts/telegram-reply.sh N");
+      expect(out).toContain('Codex CLI specifically:');
+    });
+
+    it('appends a Claude-specific note when rendering CLAUDE.md', () => {
+      fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Agent\n\nBody.');
+      ensureFrameworkIdentityFile(tmp, 'claude-code', { appendTelegramRelayBlock: true });
+      const out = fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf-8');
+      expect(out).toContain('## Telegram Relay (MANDATORY)');
+      expect(out).toContain('Claude Code specifically:');
+    });
+
+    it('re-renders an existing shadow when the relay block is missing and the caller asks for it', () => {
+      fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Agent\n\nBody.');
+      ensureFrameworkIdentityFile(tmp, 'codex-cli');
+      const before = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+      expect(before).not.toContain('Telegram Relay');
+      ensureFrameworkIdentityFile(tmp, 'codex-cli', { appendTelegramRelayBlock: true });
+      const after = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+      expect(after).toContain('## Telegram Relay (MANDATORY)');
+    });
+
+    it('skips re-render when the existing shadow already has the relay appendix', () => {
+      fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Agent\n\nBody.');
+      ensureFrameworkIdentityFile(tmp, 'codex-cli', { appendTelegramRelayBlock: true });
+      const after1 = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+      const result = ensureFrameworkIdentityFile(tmp, 'codex-cli', { appendTelegramRelayBlock: true });
+      expect(result).toBeNull();
+      const after2 = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+      expect(after2).toBe(after1);
+    });
+
+    it('does NOT append the relay block when option is false (back-compat)', () => {
+      fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Agent\n\nBody.');
+      ensureFrameworkIdentityFile(tmp, 'codex-cli');
+      const out = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+      expect(out).not.toContain('Telegram Relay');
+    });
+  });
 });

@@ -530,6 +530,11 @@ async function spawnSessionForTopic(
     }
   }
 
+  // Resolve framework EARLY — needed for the inline Telegram-relay block
+  // (the block is the same for both frameworks today, but the helper accepts
+  // framework so future divergence stays structural rather than ad-hoc).
+  const framework = resolveTopicFramework(topicId);
+
   // Large bootstrap messages (e.g. CONTINUATION context with full thread history)
   // can exceed tmux send-keys limits. Write to a temp file and inject a reference,
   // same pattern as injectTelegramMessage's FILE_THRESHOLD.
@@ -542,6 +547,20 @@ async function spawnSessionForTopic(
     bootstrapMessage = `[IMPORTANT: Read ${bootstrapFilepath} — it contains your full session context, conversation history, and the user's latest message. You MUST read this file before responding.]`;
   }
 
+  // Telegram-relay instruction MUST be inline (not hidden behind a file
+  // reference) so the agent processes it as a structural directive rather
+  // than a skippable background note. Claude historically learned this from
+  // a SessionStart shell hook that Codex CLI doesn't honor — so we encode
+  // the instruction framework-agnostically here. Appended LAST so recency
+  // bias makes it the most salient part of the prompt.
+  try {
+    const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
+    const relayBlock = buildTelegramRelayBlock({ topicId, framework });
+    bootstrapMessage = `${bootstrapMessage}\n\n${relayBlock}`;
+  } catch (err) {
+    console.error('[spawnSessionForTopic] telegramRelayPrompt import failed (non-fatal):', err);
+  }
+
   // Check for a resume UUID from a previously-killed session on this topic.
   // TopicResumeMap is authoritative — it saved the UUID for this specific topic at kill time
   // or via the refresh heartbeat. Skip LLM validation (which was failing due to JSONL sampling
@@ -550,8 +569,6 @@ async function spawnSessionForTopic(
   if (resumeSessionId) {
     console.log(`[spawnSessionForTopic] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
   }
-
-  const framework = resolveTopicFramework(topicId);
 
   // Ensure the framework's identity shadow file exists at the project
   // root before spawn — Codex reads AGENTS.md at session start; Claude
@@ -564,7 +581,15 @@ async function spawnSessionForTopic(
   // shadow already exists.
   try {
     const { ensureFrameworkIdentityFile } = await import('../core/IdentityRenderer.js');
-    ensureFrameworkIdentityFile(_projectDir, framework, { stateDir: path.join(_projectDir, '.instar') });
+    // Telegram-relay appendix gets rendered into AGENTS.md/CLAUDE.md whenever
+    // we're spawning for a Telegram topic — topicId !== undefined is a safe
+    // proxy for "Telegram is configured" since spawnSessionForTopic only runs
+    // in that path. Codex CLI needs the appendix to remember the relay
+    // convention past turn 1 (no SessionStart hook coverage).
+    ensureFrameworkIdentityFile(_projectDir, framework, {
+      stateDir: path.join(_projectDir, '.instar'),
+      appendTelegramRelayBlock: true,
+    });
   } catch (err) {
     console.warn(`[spawnSessionForTopic] ensureFrameworkIdentityFile failed (non-fatal):`, err instanceof Error ? err.message : err);
   }

@@ -77,6 +77,16 @@ export interface RenderIdentityOptions {
    * fallback for installs that keep identity at the project root.
    */
   sourcePath?: string;
+  /**
+   * When true, append a framework-aware Telegram-relay reminder section to
+   * the rendered shadow. Codex CLI has no SessionStart-hook analog to the
+   * Claude Code shell hook that injects "MANDATORY: relay back" — so the
+   * reminder has to live in AGENTS.md to survive past the first message
+   * within a long-running session. Defaults to false; callers that know
+   * Telegram is configured should pass true. Detection logic stays in the
+   * caller — the renderer just emits the markdown.
+   */
+  appendTelegramRelayBlock?: boolean;
 }
 
 export interface RenderIdentityResult {
@@ -131,11 +141,53 @@ export function renderIdentity(options: RenderIdentityOptions): RenderIdentityRe
     }
     const target = path.join(options.projectDir, filename);
     const banner = bannerFor(framework, sourceRel);
-    fs.writeFileSync(target, banner + content, 'utf-8');
+    const relayAppendix = options.appendTelegramRelayBlock
+      ? '\n\n' + buildPersistentRelayAppendix(framework)
+      : '';
+    fs.writeFileSync(target, banner + content + relayAppendix, 'utf-8');
     shadowsWritten.push(target);
   }
 
   return { source, shadowsWritten, skipped };
+}
+
+/**
+ * Markdown appendix that lives at the bottom of AGENTS.md / CLAUDE.md when
+ * Telegram is configured. The wording mirrors the bootstrap-message helper
+ * (`buildTelegramRelayBlock`) but is phrased for the system-prompt context
+ * rather than the per-message turn.
+ *
+ * For Claude Code, the SessionStart shell hook already injects "MANDATORY:
+ * After EVERY response, relay…" — but rendering it into CLAUDE.md too is
+ * harmless redundancy that survives hook removal or misconfiguration.
+ *
+ * For Codex CLI, this is the ONLY persistent mechanism — Codex has no
+ * SessionStart hook system, so the AGENTS.md content has to carry the
+ * relay convention across every turn.
+ */
+function buildPersistentRelayAppendix(framework: string): string {
+  const isCodex = framework === 'codex-cli';
+  return [
+    `## Telegram Relay (MANDATORY)`,
+    ``,
+    `Every Telegram message you receive arrives prefixed \`[telegram:N "topic name" from User]\`. After responding, you MUST run this exact bash command to send the user your reply — without it, the user only sees sentinel messages and thinks you ignored them:`,
+    ``,
+    '```bash',
+    `cat <<'EOF' | .claude/scripts/telegram-reply.sh N`,
+    `Your conversational response text here.`,
+    `EOF`,
+    '```',
+    ``,
+    `(Replace \`N\` with the topic id from the prefix.)`,
+    ``,
+    `Rules:`,
+    `- Strip the \`[telegram:N]\` prefix before interpreting the message.`,
+    `- Relay ONLY conversational text — not tool output, raw logs, or internal reasoning.`,
+    `- Send a short ACK first ("Got it, looking into this…"), then do the work, then send the full reply.`,
+    isCodex
+      ? `- Codex CLI specifically: this convention applies to EVERY turn in a Telegram-spawned session, not just the first one. There's no per-turn reminder beyond this AGENTS.md section.`
+      : `- Claude Code specifically: the SessionStart hook reinforces this on session start; this section is the durable backup.`,
+  ].join('\n');
 }
 
 /**
@@ -194,12 +246,31 @@ export function detectFrameworkFromShadowFiles(projectDir: string): string | nul
 export function ensureFrameworkIdentityFile(
   projectDir: string,
   framework: string,
-  options: { stateDir?: string } = {},
+  options: { stateDir?: string; appendTelegramRelayBlock?: boolean } = {},
 ): string | null {
   const filename = FRAMEWORK_SHADOW_FILES[framework];
   if (!filename) return null;
   const targetPath = path.join(projectDir, filename);
-  if (fs.existsSync(targetPath)) return null;
+
+  // When the shadow exists, check whether the Telegram-relay appendix is
+  // missing. If callers asked for it (Telegram is configured) and the
+  // existing file predates the appendix, re-render so Codex sessions get
+  // the durable relay convention without requiring a manual edit.
+  if (fs.existsSync(targetPath)) {
+    if (options.appendTelegramRelayBlock) {
+      try {
+        const existing = fs.readFileSync(targetPath, 'utf-8');
+        if (existing.includes('## Telegram Relay (MANDATORY)')) {
+          return null; // already up to date
+        }
+      } catch {
+        // unreadable — fall through to re-render
+      }
+      // Fall through to render below
+    } else {
+      return null;
+    }
+  }
 
   // Ensure AGENT.md exists as the canonical source. If it doesn't,
   // try to bootstrap from a legacy shadow file (e.g., CLAUDE.md).
@@ -217,6 +288,7 @@ export function ensureFrameworkIdentityFile(
     sourcePath: options.stateDir
       ? path.join(options.stateDir, 'AGENT.md')
       : undefined,
+    appendTelegramRelayBlock: options.appendTelegramRelayBlock,
   });
   return result.shadowsWritten[0] ?? null;
 }
