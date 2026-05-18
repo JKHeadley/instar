@@ -46,7 +46,12 @@ import type { InputDetector } from '../monitoring/PromptGate.js';
 const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
-import { buildInteractiveLaunch } from './frameworkSessionLaunch.js';
+import {
+  buildInteractiveLaunch,
+  buildHeadlessLaunch,
+  resolveInteractiveFramework,
+} from './frameworkSessionLaunch.js';
+import { frameworkFromEnv } from './intelligenceProviderFactory.js';
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
@@ -602,6 +607,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     topicId?: number | 'platform';
     worktreeMode?: 'dev' | 'read-only' | 'doc-fix' | 'platform';
     worktreeSlug?: string;
+    /** Per-call framework override; falls back to INSTAR_FRAMEWORK env, then claude-code. */
+    framework?: IntelligenceFramework;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -653,40 +660,69 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     }
 
-    // Build Claude CLI arguments — no shell intermediary.
-    // tmux new-session executes the command directly (no bash -c needed)
-    // when given as separate arguments after the session options.
-    // Use -e CLAUDECODE= to unset the CLAUDECODE env var in spawned sessions,
-    // preventing nested Claude Code detection when instar runs inside Claude Code.
-    const claudeArgs = ['--dangerously-skip-permissions'];
-    if (options.model) {
-      claudeArgs.push('--model', options.model);
-    }
-    claudeArgs.push('-p', options.prompt);
+    // Build the CLI argv via the framework-aware headless-launch helper
+    // so Codex agents (and future frameworks) spawn correctly through
+    // this same path. The helper returns argv (binary + flags + prompt)
+    // and env overrides (CLAUDECODE clear, etc.) — caller merges the
+    // env overrides into the tmux -e block alongside the universal
+    // INSTAR_* / DATABASE_URL clears.
+    //
+    // Framework resolution: the per-call options.framework wins, falling
+    // back to the agent's configured sessions.framework and then to the
+    // INSTAR_FRAMEWORK env. Defaults to claude-code for back-compat.
+    const headlessFramework = resolveInteractiveFramework({
+      perCall: options.framework,
+      // SessionManagerConfig has no top-level framework field; agent-level
+      // default lives in INSTAR_FRAMEWORK env (set at server boot from
+      // the agent's intelligence config). Per-call wins; env is fallback.
+      configFramework: undefined,
+      envFramework: frameworkFromEnv(),
+    });
+    const headlessBinaryPath =
+      this.config.frameworkBinaryPaths?.[headlessFramework]
+      ?? this.config.claudePath;
+    const headlessSpec = buildHeadlessLaunch(headlessFramework, {
+      binaryPath: headlessBinaryPath,
+      prompt: options.prompt,
+      model: options.model,
+    });
 
     // K9: build PATH env with shim prepended (when shim was installed)
     const inheritedPath = process.env.PATH ?? '';
     const shimmedPath = shimDir ? `${shimDir}:${inheritedPath}` : inheritedPath;
+
+    // Merge the framework-specific env overrides into the tmux -e block.
+    // Anthropic-only env vars (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY,
+    // ANTHROPIC_BASE_URL) only apply when the framework is claude-code;
+    // for Codex, the env-allowlist enforcement happens inside Codex CLI's
+    // process tree via Spec 12 Rule 1a, not via tmux -e flags (which
+    // would be unscrubbed parent inheritance).
+    const frameworkEnvFlags: string[] = [];
+    for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
+      frameworkEnvFlags.push('-e', `${k}=${v}`);
+    }
+    const anthropicEnvFlags: string[] = headlessFramework === 'claude-code'
+      ? [
+          ...((this.config.anthropicApiKey ?? '').startsWith('sk-ant-oat')
+            ? ['-e', `CLAUDE_CODE_OAUTH_TOKEN=${this.config.anthropicApiKey}`, '-e', 'ANTHROPIC_API_KEY=']
+            : ['-e', `ANTHROPIC_API_KEY=${this.config.anthropicApiKey ?? ''}`, '-e', 'CLAUDE_CODE_OAUTH_TOKEN=']),
+          '-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`,
+        ]
+      : [];
 
     try {
       execFileSync(this.config.tmuxPath, [
         'new-session', '-d',
         '-s', tmuxSession,
         '-c', resolvedCwd,
-        '-e', 'CLAUDECODE=', // Prevent nested Claude Code detection
+        ...frameworkEnvFlags,
         '-e', `INSTAR_SESSION_ID=${sessionId}`, // Expose instar session ID to hook events
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
-        // OAuth tokens (sk-ant-oat01-...) go in CLAUDE_CODE_OAUTH_TOKEN to enable
-        // interactive mode auth via subscription. API keys (sk-ant-api03-...) go in
-        // ANTHROPIC_API_KEY for direct API billing.
-        ...((this.config.anthropicApiKey ?? '').startsWith('sk-ant-oat')
-          ? ['-e', `CLAUDE_CODE_OAUTH_TOKEN=${this.config.anthropicApiKey}`, '-e', 'ANTHROPIC_API_KEY=']
-          : ['-e', `ANTHROPIC_API_KEY=${this.config.anthropicApiKey ?? ''}`, '-e', 'CLAUDE_CODE_OAUTH_TOKEN=']),
-        '-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`,
+        ...anthropicEnvFlags,
         // Isolate database credentials — spawned sessions must never inherit production
         // database URLs from the parent shell. This prevents accidental schema changes
         // or data operations against the wrong database. (Learned from Portal incident 2026-02-22)
@@ -695,7 +731,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
-        this.config.claudePath, ...claudeArgs,
+        ...headlessSpec.argv,
       ], { encoding: 'utf-8' });
 
       // Increase tmux scrollback buffer for dashboard history support

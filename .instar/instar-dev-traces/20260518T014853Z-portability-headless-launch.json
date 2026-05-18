@@ -1,0 +1,17 @@
+{
+  "phase": "complete",
+  "specPath": "specs/provider-portability/04-anthropic-path-constraints.md",
+  "artifactPath": "upgrades/side-effects/portability-headless-launch-helper.md",
+  "artifactSha256": "f91ce0cc201f0f4ee29fe98079febd35ba5526be1d6c59d04c61b75c5ff95b09",
+  "coveredFiles": [
+    "src/core/frameworkSessionLaunch.ts",
+    "src/core/SessionManager.ts",
+    "src/threadline/PipeSessionSpawner.ts",
+    "src/commands/server.ts",
+    "tests/unit/frameworkSessionLaunch.test.ts",
+    "tests/unit/pipeSessionSpawnerFrameworkPortability.test.ts"
+  ],
+  "writtenAt": "2026-05-18T01:50:18Z",
+  "agent": "echo",
+  "summary": "Provider-portability cycle: add buildHeadlessLaunch helper; route SessionManager.spawnSession + PipeSessionSpawner (3 callsites) through framework dispatch + IntelligenceProvider. Codex agents now get full headless coverage. 74/74 unit tests green; typecheck clean."
+}

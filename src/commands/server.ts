@@ -5714,15 +5714,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       try {
         const { PipeSessionSpawner } = await import('../threadline/PipeSessionSpawner.js');
         const pipeConfig = config.threadline?.listener?.pipeMode;
+        // Provider-portability v1.0.0: pipe sessions route through the
+        // same framework the rest of this agent uses. Codex pipe-mode
+        // model defaults to gpt-5.3-codex; Claude defaults to sonnet.
+        const pipeFramework = resolvedFramework ?? 'claude-code';
+        const pipeBinaryPath = pipeFramework === 'claude-code'
+          ? config.sessions.claudePath
+          : (config.sessions.frameworkBinaryPaths?.['codex-cli'] ?? config.sessions.claudePath);
+        const pipeModelDefault = pipeFramework === 'claude-code' ? 'sonnet' : 'gpt-5.3-codex';
         pipeSpawner = new PipeSessionSpawner({
           stateDir: config.stateDir,
-          model: pipeConfig?.model ?? 'sonnet',
+          model: pipeConfig?.model ?? pipeModelDefault,
           timeoutMs: pipeConfig?.timeoutMs ?? 600_000,
           warningMs: pipeConfig?.warningMs ?? 480_000,
           maxConcurrent: pipeConfig?.maxConcurrent ?? 5,
           allowedTools: pipeConfig?.allowedTools ?? ['threadline_send', 'Read', 'Glob', 'Grep'],
           allowedPaths: pipeConfig?.allowedPaths ?? ['src/', 'docs/', 'specs/'],
           minIqsBand: pipeConfig?.minIqsBand ?? 70,
+          framework: pipeFramework,
+          binaryPath: pipeBinaryPath,
         });
         console.log(pc.dim(`  Pipe sessions: enabled (model: ${pipeConfig?.model ?? 'sonnet'}, max: ${pipeConfig?.maxConcurrent ?? 5})`));
       } catch (err) {
@@ -5949,7 +5959,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (pipeCheck.eligible) {
               try {
                 const { classifyIntent, summarizeThreadHistory } = await import('../threadline/PipeSessionSpawner.js');
-                const intent = await classifyIntent(textContent);
+                // Route classifier through the shared IntelligenceProvider so
+                // Codex agents can use pipe-mode too. When no provider is
+                // available (degraded mode) the classifier fails closed to
+                // 'interactive' — safer than missing a TASK message.
+                const intent = await classifyIntent(textContent, {
+                  intelligence: sharedIntelligence,
+                });
                 if (intent === 'pipe') {
                   const result = await pipeSpawner.spawn({
                     threadId: msg.threadId,

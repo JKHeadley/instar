@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildInteractiveLaunch,
+  buildHeadlessLaunch,
   resolveInteractiveFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
 
@@ -126,5 +127,105 @@ describe('frameworkSessionLaunch.resolveInteractiveFramework', () => {
 
   it('treats env null the same as unset', () => {
     expect(resolveInteractiveFramework({ envFramework: null })).toBe('claude-code');
+  });
+});
+
+describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
+  describe('claude-code', () => {
+    it('builds --dangerously-skip-permissions + -p prompt', () => {
+      const spec = buildHeadlessLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        prompt: 'hello world',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '-p',
+        'hello world',
+      ]);
+      expect(spec.envOverrides).toEqual({ CLAUDECODE: '' });
+    });
+
+    it('includes --model when specified', () => {
+      const spec = buildHeadlessLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        prompt: 'p',
+        model: 'sonnet',
+      });
+      expect(spec.argv).toContain('--model');
+      expect(spec.argv).toContain('sonnet');
+      expect(spec.argv[spec.argv.length - 1]).toBe('p');
+    });
+
+    it('clears CLAUDECODE in env overrides (nested-detection guard)', () => {
+      const spec = buildHeadlessLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        prompt: 'x',
+      });
+      expect(spec.envOverrides.CLAUDECODE).toBe('');
+    });
+  });
+
+  describe('codex-cli', () => {
+    it('builds codex exec --json with default sandbox + model', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'analyze this',
+      });
+      expect(spec.argv[0]).toBe('/usr/local/bin/codex');
+      expect(spec.argv).toContain('exec');
+      expect(spec.argv).toContain('--json');
+      expect(spec.argv).toContain('--skip-git-repo-check');
+      expect(spec.argv).toContain('-s');
+      expect(spec.argv).toContain('workspace-write');
+      expect(spec.argv).toContain('-m');
+      expect(spec.argv).toContain('gpt-5.3-codex');
+      expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
+    });
+
+    it('honors codexSandboxMode override', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'p',
+        codexSandboxMode: 'read-only',
+      });
+      expect(spec.argv).toContain('read-only');
+      expect(spec.argv).not.toContain('workspace-write');
+    });
+
+    it('honors model override', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'p',
+        model: 'gpt-5.4-codex',
+      });
+      expect(spec.argv).toContain('gpt-5.4-codex');
+      expect(spec.argv).not.toContain('gpt-5.3-codex');
+    });
+
+    it('prompt is the last positional arg', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'final-positional',
+      });
+      expect(spec.argv[spec.argv.length - 1]).toBe('final-positional');
+    });
+
+    it('clears CLAUDECODE for defense-in-depth', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'x',
+      });
+      expect(spec.envOverrides.CLAUDECODE).toBe('');
+    });
+  });
+
+  it('throws for unknown framework', () => {
+    expect(() =>
+      buildHeadlessLaunch('made-up-framework' as never, {
+        binaryPath: '/x',
+        prompt: 'y',
+      }),
+    ).toThrowError(/No headless launch builder/);
   });
 });

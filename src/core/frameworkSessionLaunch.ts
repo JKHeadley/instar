@@ -155,3 +155,122 @@ export function resolveInteractiveFramework(input: {
 }): IntelligenceFramework {
   return input.perCall ?? input.configFramework ?? input.envFramework ?? 'claude-code';
 }
+
+/**
+ * Options for a headless (prompt-and-exit) launch. Mirrors the shape
+ * SessionManager.spawnSession passes when invoking the CLI with a
+ * one-shot prompt — Claude uses `-p <prompt>`, Codex uses
+ * `exec --json <prompt>`.
+ */
+export interface HeadlessLaunchOptions {
+  /** Absolute path to the CLI binary for the selected framework. */
+  binaryPath: string;
+  /** The one-shot prompt to send. */
+  prompt: string;
+  /**
+   * Optional model identifier passed straight through to the CLI's
+   * model flag. For Claude this is a tier name (opus/sonnet/haiku) or
+   * a full id; for Codex this is a Codex model id (gpt-5.3-codex etc.).
+   * Caller is responsible for picking the right shape — see
+   * intelligenceProviderFactory's resolveModelId for tier-to-model
+   * mapping per framework.
+   */
+  model?: string;
+  /**
+   * Codex sandbox mode override. Defaults to
+   * `--dangerously-bypass-approvals-and-sandbox` (Claude's
+   * `--dangerously-skip-permissions` parity) when absent.
+   */
+  codexSandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
+}
+
+export interface HeadlessLaunchSpec {
+  /** Args to append after the tmux env-var block, starting with the binary path. */
+  argv: string[];
+  /**
+   * Framework-specific environment-variable additions/clears. Caller
+   * merges these into the tmux `-e` flags alongside the universal
+   * INSTAR_* / DATABASE_URL clearing block.
+   */
+  envOverrides: Record<string, string>;
+}
+
+type HeadlessBuilder = (options: HeadlessLaunchOptions) => HeadlessLaunchSpec;
+
+const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
+  const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
+  if (options.model) {
+    argv.push('--model', options.model);
+  }
+  argv.push('-p', options.prompt);
+  return {
+    argv,
+    envOverrides: {
+      // Same nested-detection prevention as interactive launches.
+      CLAUDECODE: '',
+    },
+  };
+};
+
+const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
+  // Mirror the openai-codex adapter's transport spawn shape:
+  //   `codex exec --json --skip-git-repo-check -s <sandbox> -m <model> <prompt>`
+  // The `--json` flag makes Codex emit a JSONL event stream on stdout
+  // instead of TUI output — same data the agenticSessionHeadless path
+  // already consumes for normalization.
+  const sandbox = options.codexSandboxMode ?? 'workspace-write';
+  const model = options.model ?? 'gpt-5.3-codex';
+  const argv: string[] = [
+    options.binaryPath,
+    'exec',
+    '--json',
+    '--skip-git-repo-check',
+    '-s', sandbox,
+    '-m', model,
+    options.prompt,
+  ];
+  return {
+    argv,
+    envOverrides: {
+      // Spec 12 Rule 1a is enforced inside Codex CLI's process tree via
+      // the env-allowlist helper. The tmux -e block here adds session-
+      // level overrides; the canonical OPENAI_API_KEY scrubbing happens
+      // when SessionManager merges these with the universal block AND
+      // the framework-specific provider-env logic.
+      CLAUDECODE: '',
+    },
+  };
+};
+
+const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {
+  'claude-code': claudeCodeHeadlessBuilder,
+  'codex-cli': codexCliHeadlessBuilder,
+};
+
+/**
+ * Build the argv + env overrides for a headless (one-shot prompt)
+ * session in the given framework. Companion to `buildInteractiveLaunch`
+ * for the prompt-and-exit path that backs SessionManager.spawnSession,
+ * UpgradeNotifyManager, PipeSessionSpawner, and any future code that
+ * needs an agent to handle a single prompt without staying interactive.
+ *
+ * @example
+ *   const spec = buildHeadlessLaunch('codex-cli', {
+ *     binaryPath: '/usr/local/bin/codex',
+ *     prompt: 'summarize this thread',
+ *     model: 'gpt-5.3-codex',
+ *   });
+ *   // → spec.argv = ['/usr/local/bin/codex', 'exec', '--json',
+ *   //                '--skip-git-repo-check', '-s', 'workspace-write',
+ *   //                '-m', 'gpt-5.3-codex', 'summarize this thread']
+ */
+export function buildHeadlessLaunch(
+  framework: IntelligenceFramework,
+  options: HeadlessLaunchOptions,
+): HeadlessLaunchSpec {
+  const builder = HEADLESS_BUILDERS[framework];
+  if (!builder) {
+    throw new Error(`No headless launch builder registered for framework "${framework}"`);
+  }
+  return builder(options);
+}
