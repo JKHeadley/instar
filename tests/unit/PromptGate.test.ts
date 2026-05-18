@@ -175,8 +175,24 @@ describe('InputDetector.pattern', () => {
   });
 
   describe('confirmation', () => {
-    it('detects "Esc to cancel" pattern', () => {
+    it('detects "Esc to cancel" pattern (Claude Code UI)', () => {
       const output = 'File changes:\n+ new line\n- old line\n\nEsc to cancel · Tab to amend\n';
+      const prompt = detectWithDebounce(detector, 'test', output);
+      expect(prompt).not.toBeNull();
+      expect(prompt!.type).toBe('confirmation');
+      expect(prompt!.summary).toContain('Esc to cancel');
+    });
+
+    it('detects "Ctrl+C to cancel" pattern (Codex CLI UI)', () => {
+      const output = 'Proposed shell command:\n  rm -rf /tmp/foo\n\nCtrl+C to cancel\n';
+      const prompt = detectWithDebounce(detector, 'test', output);
+      expect(prompt).not.toBeNull();
+      expect(prompt!.type).toBe('confirmation');
+      expect(prompt!.summary).toContain('Ctrl+C');
+    });
+
+    it('detects "Press Ctrl-C to cancel" pattern variant (Codex)', () => {
+      const output = 'Approving change...\n\nPress Ctrl-C to cancel\n';
       const prompt = detectWithDebounce(detector, 'test', output);
       expect(prompt).not.toBeNull();
       expect(prompt!.type).toBe('confirmation');

@@ -17,6 +17,15 @@
  *
  * This ensures the user always has a communication channel even when
  * the full server crashes, runs out of memory, or gets stuck.
+ *
+ * RULE 3: EXEMPT — this module is the legitimate Telegram Bot API
+ * client, not a state detector that parses ambient external state.
+ * The `fetch()` calls to api.telegram.org implement the documented
+ * Bot API contract (getUpdates, sendMessage, etc.); upstream evolution
+ * here is governed by Telegram's API versioning, not by silent
+ * format drift that Rule 3 canaries are designed to catch. The
+ * Telegram-side health is observed via the polling-alive scenario
+ * (.instar/scenarios/v1.0.0/11-telegram-polling-alive.scenario.json).
  */
 
 import crypto from 'node:crypto';
@@ -1740,13 +1749,34 @@ export class TelegramLifeline {
   }
 
   /**
-   * Spawn a Claude Code diagnostic session in tmux.
+   * Spawn a diagnostic session in tmux to triage a server crash.
+   *
+   * Framework-aware (provider-portability v1.0.0): currently routes
+   * only Claude Code agents — the diagnostic session uses Claude's
+   * `--message -` stdin prompt + `--allowedTools` tool-set restriction
+   * which have no direct Codex equivalent (Codex's `exec` takes a
+   * positional prompt; tool restriction is per-sandbox-mode, not a
+   * tool list). For Codex agents the recovery falls back to the
+   * existing circuit-breaker reset path without spawning a doctor.
+   *
    * Returns the session name and HMAC secret for restart authentication.
    */
   private async spawnDoctorSession(): Promise<{ sessionName: string; sessionSecret: string }> {
     const projectBase = path.basename(this.projectConfig.projectDir);
     const sessionName = `${projectBase}-doctor-${Date.now()}`;
     const stateDir = this.projectConfig.stateDir;
+
+    // Provider-portability: the doctor session is Claude-specific for
+    // v1.0.0. Codex agents fall back to passive recovery. Throw a typed
+    // error the caller surfaces as a degradation.
+    const framework = (process.env.INSTAR_FRAMEWORK ?? '').trim().toLowerCase();
+    if (framework === 'codex-cli' || framework === 'codex') {
+      throw new Error(
+        '[Lifeline] Doctor session is not supported under codex-cli (v1.0.0). ' +
+        'Recovery will fall back to circuit-breaker reset without diagnostic spawn. ' +
+        'Cross-port to Codex is tracked as a Phase 6+ residual.',
+      );
+    }
 
     const tmuxPath = detectTmuxPath();
     if (!tmuxPath) throw new Error('tmux not found');

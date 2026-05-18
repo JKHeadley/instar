@@ -358,4 +358,63 @@ describe('InstructionsVerifier', () => {
       expect(result.passed).toBe(true);
     });
   });
+
+  // ── Framework-aware defaults (provider-portability v1.0.0) ───────
+
+  describe('framework-aware defaults', () => {
+    it('claude-code framework default expects CLAUDE.md', () => {
+      const v = new InstructionsVerifier({ stateDir: tmpDir, framework: 'claude-code' });
+      v.recordLoad({ filePath: '/proj/CLAUDE.md', memoryType: 'Project', sessionId: 'c1' });
+      const r = v.verify('c1');
+      expect(r.passed).toBe(true);
+    });
+
+    it('claude-code framework fails when only AGENTS.md present', () => {
+      const v = new InstructionsVerifier({ stateDir: tmpDir, framework: 'claude-code' });
+      v.recordLoad({ filePath: '/proj/AGENTS.md', memoryType: 'Project', sessionId: 'c2' });
+      const r = v.verify('c2');
+      expect(r.passed).toBe(false);
+      expect(r.missing).toContain('CLAUDE.md');
+    });
+
+    it('codex-cli framework default expects AGENTS.md', () => {
+      const v = new InstructionsVerifier({ stateDir: tmpDir, framework: 'codex-cli' });
+      v.recordLoad({ filePath: '/proj/AGENTS.md', memoryType: 'Project', sessionId: 'x1' });
+      const r = v.verify('x1');
+      expect(r.passed).toBe(true);
+    });
+
+    it('codex-cli framework fails when only CLAUDE.md present', () => {
+      const v = new InstructionsVerifier({ stateDir: tmpDir, framework: 'codex-cli' });
+      v.recordLoad({ filePath: '/proj/CLAUDE.md', memoryType: 'Project', sessionId: 'x2' });
+      const r = v.verify('x2');
+      expect(r.passed).toBe(false);
+      expect(r.missing).toContain('AGENTS.md');
+    });
+
+    it('no framework hint passes when EITHER identity file present (migration-safe)', () => {
+      const v = new InstructionsVerifier({ stateDir: tmpDir });
+      v.recordLoad({ filePath: '/proj/CLAUDE.md', memoryType: 'Project', sessionId: 'm1' });
+      expect(v.verify('m1').passed).toBe(true);
+
+      v.recordLoad({ filePath: '/proj2/AGENTS.md', memoryType: 'Project', sessionId: 'm2' });
+      expect(v.verify('m2').passed).toBe(true);
+    });
+
+    it('no framework hint fails when NEITHER identity file present', () => {
+      const v = new InstructionsVerifier({ stateDir: tmpDir });
+      v.recordLoad({ filePath: '/proj/SOMETHING.md', memoryType: 'Project', sessionId: 'm3' });
+      expect(v.verify('m3').passed).toBe(false);
+    });
+
+    it('explicit expectedPatterns overrides framework default', () => {
+      const v = new InstructionsVerifier({
+        stateDir: tmpDir,
+        framework: 'codex-cli',
+        expectedPatterns: ['CUSTOM.md'],
+      });
+      v.recordLoad({ filePath: '/proj/CUSTOM.md', memoryType: 'Project', sessionId: 'o1' });
+      expect(v.verify('o1').passed).toBe(true);
+    });
+  });
 });

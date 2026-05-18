@@ -1,0 +1,16 @@
+{
+  "phase": "complete",
+  "specPath": "specs/provider-portability/04-anthropic-path-constraints.md",
+  "artifactPath": "upgrades/side-effects/sentinel-monitoring-cross-port.md",
+  "artifactSha256": "df6335eeb2d7520ece1d9b82355f8051d22e898d29dc725f9fd2247589eb8427",
+  "coveredFiles": [
+    "src/monitoring/InstructionsVerifier.ts",
+    "src/monitoring/PromptGate.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "tests/unit/instructions-verifier.test.ts",
+    "tests/unit/PromptGate.test.ts"
+  ],
+  "writtenAt": "2026-05-18T03:49:57Z",
+  "agent": "echo",
+  "summary": "Sentinel cross-port: InstructionsVerifier framework-aware default (CLAUDE.md vs AGENTS.md). PromptGate detects Codex Ctrl+C to cancel + extended LLM gate prompt. Lifeline doctor framework-guarded (refuses for codex-cli with typed error). Setup wizard documented Claude-only by design. 64 tests green across touched files."
+}

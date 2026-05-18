@@ -1,14 +1,20 @@
 /**
- * InstructionsVerifier — Tracks and verifies Claude Code instruction file loading.
+ * InstructionsVerifier — Tracks and verifies framework instruction file
+ * loading. Originally Claude-specific (CLAUDE.md), now framework-aware:
+ * Codex loads AGENTS.md; future frameworks may load other paths.
  *
- * When Claude Code starts, it loads CLAUDE.md files and fires InstructionsLoaded
- * for each one. This module:
+ * Provider-portability v1.0.0: the default expected pattern now resolves
+ * per-framework. Claude expects CLAUDE.md, Codex expects AGENTS.md.
+ * Callers without a framework hint expect either to satisfy the gate
+ * (so cross-framework migrations don't false-alarm during the swap).
+ *
+ * When the framework starts, it loads its instruction files and fires
+ * InstructionsLoaded for each one. This module:
  *   1. Records which files loaded (called from the InstructionsLoaded hook)
  *   2. Verifies that expected files were loaded (called from session-start hook)
  *   3. Alerts if critical identity context is missing
  *
- * Part of the Claude Code Feature Integration Audit:
- * - Item 3 (New Hook Events): InstructionsLoaded for identity verification (H4)
+ * Part of the Claude Code Feature Integration Audit (H4).
  *
  * Lifecycle:
  *   InstructionsLoaded fires (per file) -> recordLoad() appends to tracking file
@@ -49,16 +55,35 @@ export interface InstructionsVerifierConfig {
   /** State directory for persisting tracking data */
   stateDir: string;
   /**
+   * Framework this verifier is configured for. Affects the default
+   * expected pattern when `expectedPatterns` is unset:
+   *   - 'claude-code' → ['CLAUDE.md']
+   *   - 'codex-cli'   → ['AGENTS.md']
+   *   - undefined     → ['CLAUDE.md', 'AGENTS.md'] (either one passes)
+   */
+  framework?: 'claude-code' | 'codex-cli';
+  /**
    * Patterns that MUST match at least one loaded file path.
    * Uses substring matching (not regex) for simplicity.
-   * Default: ['CLAUDE.md'] — at minimum, the project CLAUDE.md should load.
+   * When unset, defaults to the framework-appropriate identity file.
    */
   expectedPatterns?: string[];
 }
 
 // ── Implementation ─────────────────────────────────────────────────
 
-const DEFAULT_EXPECTED = ['CLAUDE.md'];
+/**
+ * Default expected-file pattern per framework. Each framework loads
+ * its own identity file at session start (CLAUDE.md for Claude Code,
+ * AGENTS.md for Codex). Cross-framework default ('either passes')
+ * helps callers that don't know which framework is active — common
+ * during migration windows.
+ */
+const DEFAULT_EXPECTED_BY_FRAMEWORK: Record<string, string[]> = {
+  'claude-code': ['CLAUDE.md'],
+  'codex-cli': ['AGENTS.md'],
+};
+const DEFAULT_EXPECTED_FALLBACK = ['CLAUDE.md', 'AGENTS.md'];
 
 export class InstructionsVerifier {
   private config: InstructionsVerifierConfig;
@@ -108,24 +133,36 @@ export class InstructionsVerifier {
    */
   verify(sessionId?: string): VerificationResult {
     const loaded = this.getLoads(sessionId);
-    const expectedPatterns = this.config.expectedPatterns ?? DEFAULT_EXPECTED;
+    const expectedPatterns = this.config.expectedPatterns
+      ?? (this.config.framework
+            ? DEFAULT_EXPECTED_BY_FRAMEWORK[this.config.framework] ?? DEFAULT_EXPECTED_FALLBACK
+            : DEFAULT_EXPECTED_FALLBACK);
     const loadedPaths = loaded.map(r => r.filePath);
 
+    // Cross-framework default (when no framework hint): pass if ANY
+    // of the patterns matches. Single-framework defaults (CLAUDE.md OR
+    // AGENTS.md alone): require all patterns to match (current behavior).
+    const isCrossFrameworkDefault = !this.config.expectedPatterns
+      && !this.config.framework;
+
     const missing: string[] = [];
+    let anyMatched = false;
     for (const pattern of expectedPatterns) {
       const found = loadedPaths.some(p => p.includes(pattern));
-      if (!found) {
-        missing.push(pattern);
-      }
+      if (found) anyMatched = true;
+      if (!found) missing.push(pattern);
     }
 
-    const passed = missing.length === 0;
+    const passed = isCrossFrameworkDefault
+      ? anyMatched              // either framework's identity file is enough
+      : missing.length === 0;   // all expected patterns must match
+
     const summary = passed
       ? `All ${expectedPatterns.length} expected instruction file(s) loaded (${loaded.length} total files).`
       : `MISSING INSTRUCTIONS: ${missing.join(', ')} not found in ${loaded.length} loaded file(s). ` +
         `Loaded: ${loadedPaths.length > 0 ? loadedPaths.join(', ') : 'none'}`;
 
-    return { passed, missing, loaded, summary };
+    return { passed, missing: passed ? [] : missing, loaded, summary };
   }
 
   /**

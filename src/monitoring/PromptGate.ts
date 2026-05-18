@@ -111,18 +111,27 @@ const PROMPT_PATTERNS: Array<{
   // handled by the LLM-based InputDetector path (see llmDetect method).
   // Keeping the type in the catalog for classification/relay compatibility.
 
-  // Confirmation: "Esc to cancel · Tab to amend"
+  // Confirmation: "Esc to cancel · Tab to amend" (Claude Code UI)
+  //                "Ctrl+C to cancel" (Codex CLI UI)
+  // Provider-portability v1.0.0: both frameworks surface a cancel hint
+  // at the bottom of their interactive UI when waiting on user input.
+  // The escape key + Ctrl+C are both valid cancel signals across
+  // terminals, so the prompt-response options match either UI.
   {
     type: 'confirmation',
     test(lines) {
       const joined = lines.join('\n');
-      if (!/Esc to cancel/i.test(joined)) return null;
+      const isClaudeCancel = /Esc to cancel/i.test(joined);
+      const isCodexCancel = /Ctrl\+?C to cancel|Press Ctrl-C to cancel/i.test(joined);
+      if (!isClaudeCancel && !isCodexCancel) return null;
       return {
         type: 'confirmation',
-        summary: 'Confirmation prompt (Esc to cancel)',
+        summary: isCodexCancel
+          ? 'Confirmation prompt (Ctrl+C to cancel)'
+          : 'Confirmation prompt (Esc to cancel)',
         options: [
           { key: 'Enter', label: 'Confirm' },
-          { key: 'Escape', label: 'Cancel' },
+          { key: isCodexCancel ? 'Ctrl+C' : 'Escape', label: 'Cancel' },
         ],
       };
     },
@@ -347,7 +356,7 @@ export class InputDetector extends EventEmitter {
     // Sanitize: take last 20 lines, strip any remaining ANSI
     const context = lines.slice(-20).join('\n').slice(0, 3000);
 
-    const prompt = `You are analyzing terminal output from a Claude Code AI agent session. Your job is to determine if the session is BLOCKED at a system-level interactive prompt that prevents the agent from continuing.
+    const prompt = `You are analyzing terminal output from an AI agent session (Claude Code OR OpenAI Codex CLI). Your job is to determine if the session is BLOCKED at a system-level interactive prompt that prevents the agent from continuing.
 
 Terminal output (last 20 lines):
 <terminal>
@@ -355,10 +364,10 @@ ${context}
 </terminal>
 
 RESPOND NO_PROMPT for ALL of these (they are NOT blocking prompts):
-- Status bar elements: "bypass permissions on", "esc to interrupt", "shift+tab to cycle"
-- Agent working: "Scampering", "Thinking", "Reading N files", "Writing to", "Editing"
-- Empty prompt line (❯) — agent is idle, not blocked
-- Token counters, progress indicators
+- Status bar elements: "bypass permissions on", "esc to interrupt", "shift+tab to cycle", "Ctrl+C to interrupt"
+- Agent working: "Scampering", "Thinking", "Reading N files", "Writing to", "Editing", "Update Plan", "Step N"
+- Empty prompt line (❯ for Claude, > for Codex) — agent is idle, not blocked
+- Token counters, progress indicators, "tokens used"
 - CONVERSATIONAL QUESTIONS from the agent like "Want me to...", "Should I...", "Shall we...", "Would you like me to..." — these are the agent asking a follow-up in its response text. The user can reply normally via Telegram. These do NOT block the session.
 
 A REAL BLOCKING PROMPT looks like:
@@ -366,8 +375,10 @@ A REAL BLOCKING PROMPT looks like:
 - Plan approval: "Claude has written up a plan... Would you like to proceed?" with system-rendered numbered options (❯ 1. Yes  2. No)
 - A y/n prompt: "Do you want to proceed? (y/n)" at the very bottom of the terminal
 - "Esc to cancel · Tab to amend" — Claude Code's edit confirmation UI
+- Codex CLI's "Ctrl+C to cancel" hint at the bottom while it waits on a decision
+- Codex CLI's "Apply patch?" / "Run command?" approval prompt (when sandbox mode allows approvals)
 
-KEY DISTINCTION: If the question appears INSIDE the agent's conversational response text (alongside other paragraphs of explanation), it's conversational — NOT a blocking prompt. Blocking prompts are rendered by Claude Code's UI at the bottom of the terminal, often with special formatting (❯, numbered options, keyboard hints like shift+tab).
+KEY DISTINCTION: If the question appears INSIDE the agent's conversational response text (alongside other paragraphs of explanation), it's conversational — NOT a blocking prompt. Blocking prompts are rendered by the framework's UI at the bottom of the terminal, often with special formatting (❯, numbered options, keyboard hints like shift+tab or Ctrl+C).
 
 If NOT a blocking prompt, respond exactly: NO_PROMPT
 
