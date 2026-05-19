@@ -1,0 +1,23 @@
+{
+  "phase": "complete",
+  "specPath": "specs/instar-concepts/conversational-action-v02.md",
+  "artifactPath": "upgrades/side-effects/feat-conversational-action-v02.md",
+  "artifactSha256": "4eacaad8bdaceb2933e61a5182fabcd24d796ef792d1f471ac2137cd34a4aab6",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ContextHierarchy.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "src/templates/playbook/conversational-catalog-manifest.json",
+    "tests/unit/ContextHierarchy.test.ts",
+    "tests/unit/PostUpdateMigrator-conversationalCatalog.test.ts",
+    "specs/instar-concepts/conversational-action-v02.md",
+    "specs/instar-concepts/conversational-action-v02.eli16.md",
+    "docs/specs/reports/conversational-action-v02-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-conversational-action-v02.md"
+  ],
+  "writtenAt": "2026-05-19T17:30:00Z",
+  "agent": "echo",
+  "summary": "Conversational-action v0.2 — three on-demand catalog loaders. Wires the v0.1 catalog primitives through ContextHierarchy Tier 2 segment (dispatch instruction), SelfKnowledgeTree probe (live catalog renderer), and Playbook manifest item (relevance signal). All three load paths are on-demand by design; the catalog content lives only in the probe (dynamic, generated fresh per call). The segment and Playbook item are pointers, never the catalog body. Semantic correctness test asserts Tier 1 loadTier output does NOT contain the conversational-actions segment content — prevents future regression to AGENT.md inlining (L1 bloat lesson). Final v1.0 framework functional parity task."
+}
