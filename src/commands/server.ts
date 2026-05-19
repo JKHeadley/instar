@@ -2156,7 +2156,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           hasTelegram,
           projectName: config.projectName,
         });
-        const migration = migrator.migrate();
+        const migration = await migrator.migrateAsync();
         if (migration.upgraded.length > 0) {
           console.log(pc.green(`  Knowledge upgrade (v${lastMigrated || '?'} → v${installedVersion}): ${migration.upgraded.join(', ')}`));
         }

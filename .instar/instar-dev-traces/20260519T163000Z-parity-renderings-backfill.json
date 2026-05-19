@@ -1,0 +1,21 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/parity-renderings-backfill.md",
+  "artifactPath": "upgrades/side-effects/feat-parity-renderings-backfill.md",
+  "artifactSha256": "5d60e1e99386c85827cd1cd32d986b1b0a1efa675a954dda4bd658f3dd0a7567",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/cli.ts",
+    "src/core/UpdateChecker.ts",
+    "src/commands/server.ts",
+    "tests/unit/PostUpdateMigrator-parityRenderings.test.ts",
+    "specs/dev-infrastructure/parity-renderings-backfill.md",
+    "specs/dev-infrastructure/parity-renderings-backfill.eli16.md",
+    "docs/specs/reports/parity-renderings-backfill-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-parity-renderings-backfill.md"
+  ],
+  "writtenAt": "2026-05-19T16:30:00Z",
+  "agent": "echo",
+  "summary": "Migration Parity §5 backfill — PostUpdateMigrator now iterates parity rule registry and remediates each canonical instance × framework on update via new migrateAsync() async wrapper. Hook always-overwrites per §4; skill/memory refuse-on-conflict per §5. 11 unit tests cover registry iteration, framework filtering, error categorization, idempotency, marker recording, empty-canonical, continue-past-failure, migrateAsync contract."
+}

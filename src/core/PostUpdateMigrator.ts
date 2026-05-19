@@ -158,6 +158,127 @@ export class PostUpdateMigrator {
     return result;
   }
 
+  /**
+   * Async migration superset — runs the sync migrate() then performs the
+   * async parity-renderings backfill that needs rule.remediate() Promises.
+   * Callers in async contexts should prefer migrateAsync() to ensure all
+   * post-update side effects (including primitive-rendering backfill) are
+   * complete before returning.
+   *
+   * Sync callers can still use migrate() and rely on the next async pass to
+   * pick up the parity backfill. The marker in _instar_migrations ensures
+   * the backfill runs exactly once even across mixed sync/async callers.
+   */
+  async migrateAsync(): Promise<MigrationResult> {
+    const result = this.migrate();
+    try {
+      await this.migrateParityRenderings(result);
+    } catch (err) {
+      result.errors.push(`parity-renderings: backfill failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return result;
+  }
+
+  // ── Parity Rule Rendering Backfill ─────────────────────────────────
+  //
+  // For every registered parity rule (Layer-3 functional primitive), iterate
+  // its canonical instances and call remediate() for each enabled framework.
+  // This is the Migration Parity §5-style backfill for primitive-renderings
+  // that PRs #252 (Skill), #253 (Hook), #254 (Memory) deferred — existing
+  // deployed agents pick up the canonical→framework rendering on update.
+  //
+  // skillParityRule: refuse-on-conflict (per §5). User-edited skill files
+  //   are preserved with operator-action requirement.
+  // hookParityRule: alwaysOverwrite=true (per §4). Built-in hooks ALWAYS
+  //   re-render from canonical; user edits captured in audit event for
+  //   git-recovery.
+  // memoryParityRule: refuse-on-conflict (per §5). Memory canonical content
+  //   is operator-managed; system never clobbers.
+  //
+  // Idempotent via _instar_migrations marker AND each rule's verify-first
+  // pattern (no-op when rendering matches canonical).
+  private async migrateParityRenderings(result: MigrationResult): Promise<void> {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('parity-renderings: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`parity-renderings: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'parity-renderings-backfill-v1';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('parity-renderings: already migrated');
+      return;
+    }
+
+    // Lazy-import registry so PostUpdateMigrator doesn't pull the entire
+    // parity graph at startup for agents that never invoke migrate().
+    const { listParityRules } = await import('../providers/parity/registry.js');
+
+    // Determine enabled frameworks from config — default to claude-code+codex-cli
+    // for portable agents, claude-code-only as a safe fallback.
+    const frameworks = ((): ReadonlyArray<'claude-code' | 'codex-cli'> => {
+      const enabled = (config as { enabledFrameworks?: string[] }).enabledFrameworks;
+      if (Array.isArray(enabled) && enabled.length > 0) {
+        return enabled.filter(f => f === 'claude-code' || f === 'codex-cli') as ('claude-code' | 'codex-cli')[];
+      }
+      return ['claude-code'];
+    })();
+
+    const rules = listParityRules();
+    let renderedCount = 0;
+    let skippedCount = 0;
+    for (const rule of rules) {
+      let instances: string[];
+      try {
+        instances = await rule.listInstances(this.config.projectDir);
+      } catch (err) {
+        result.errors.push(`parity-renderings: ${rule.primitive} listInstances failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      for (const instance of instances) {
+        for (const framework of frameworks) {
+          if (!rule.frameworks.includes(framework)) continue;
+          try {
+            await rule.remediate(this.config.projectDir, instance, framework);
+            renderedCount += 1;
+            result.upgraded.push(`parity-renderings: ${rule.primitive}/${instance} → ${framework}`);
+          } catch (err) {
+            // refuse-on-conflict (mirror-trust without alwaysOverwrite) is
+            // expected for user-edited renderings — not an error, just a
+            // skip. Capture for visibility.
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('user-edit-conflict')) {
+              skippedCount += 1;
+              result.skipped.push(`parity-renderings: ${rule.primitive}/${instance} on ${framework} — ${msg}`);
+            } else {
+              result.errors.push(`parity-renderings: ${rule.primitive}/${instance} on ${framework} — ${msg}`);
+            }
+          }
+        }
+      }
+    }
+
+    // Mark migration complete regardless of per-instance skips — the marker
+    // means "this backfill pass ran successfully," not "every rendering
+    // succeeded." Operators resolve user-edit-conflicts via /spec-converge.
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+    if (renderedCount === 0 && skippedCount === 0) {
+      result.skipped.push('parity-renderings: no canonical instances found (new agent or no primitives shipped yet)');
+    }
+  }
+
   // ── Parity Sentinel trust profile seed ─────────────────────────────
   //
   // FrameworkParitySentinel.shouldRemediate now consults AdaptiveTrust on

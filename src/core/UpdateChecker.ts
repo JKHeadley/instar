@@ -354,7 +354,7 @@ export class UpdateChecker {
         // Fallback: run in-memory migrator (better than nothing)
         try {
           const migrator = new PostUpdateMigrator(this.migratorConfig);
-          const migration = migrator.migrate();
+          const migration = await migrator.migrateAsync();
           if (migration.upgraded.length > 0) {
             migrationSummary = ` Intelligence download (fallback): ${migration.upgraded.length} files upgraded (${migration.upgraded.join(', ')}).`;
           }

@@ -1789,7 +1789,7 @@ const migrateCmd = program
         hasTelegram,
         projectName: config.projectName,
       });
-      const result = migrator.migrate();
+      const result = await migrator.migrateAsync();
 
       // Read previously-migrated version so we only deliver guides for NEW versions
       let previousVersion: string | undefined;
