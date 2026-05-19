@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/lessons-aware-reviewer.md",
+  "artifactPath": "upgrades/side-effects/feat-lessons-aware-reviewer.md",
+  "artifactSha256": "8a6028b7718687f4ebbbb96d51658648c4966ce0929b6068ce249dab85073cd4",
+  "coveredFiles": [
+    "skills/spec-converge/templates/reviewer-lessons-aware.md",
+    "skills/spec-converge/SKILL.md",
+    "specs/dev-infrastructure/lessons-aware-reviewer.md",
+    "specs/dev-infrastructure/lessons-aware-reviewer.eli16.md",
+    "docs/specs/reports/lessons-aware-reviewer-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-lessons-aware-reviewer.md",
+    "package.json"
+  ],
+  "writtenAt": "2026-05-19T05:00:00Z",
+  "agent": "echo",
+  "summary": "Lessons-aware reviewer: 8th /spec-converge reviewer. Loads canonical principles+lessons index + agent .instar/memory/feedback_*.md, flags spec contradictions or unengaged-but-applicable lessons. Structural fix for the spec-converge-pre-auth-circular failure mode. Bootstrap exception applied (reviewer cannot run through itself) with manual lessons-check in the spec body."
+}
