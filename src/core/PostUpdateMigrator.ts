@@ -153,8 +153,108 @@ export class PostUpdateMigrator {
     this.migrateContextDeathAntiPattern(result);
     this.migrateProviderPortability(result);
     this.migrateFleetWatchdog(result);
+    this.migrateParitySentinelTrust(result);
 
     return result;
+  }
+
+  // ── Parity Sentinel trust profile seed ─────────────────────────────
+  //
+  // FrameworkParitySentinel.shouldRemediate now consults AdaptiveTrust on
+  // mirror-trust rules: trust level 'log' or 'autonomous' allows remediation,
+  // 'approve-*' or 'blocked' downgrades to flag-only. AdaptiveTrust's
+  // DEFAULT_TRUST for 'modify' is 'approve-always', which would silently turn
+  // every mirror-trust rule into flag-only for existing agents on update.
+  //
+  // This migration seeds state/trust-profile.json with a parity-sentinel
+  // service entry at level 'log' (auto-elevatable, never blocking by default)
+  // so existing agents preserve the v0.1 remediate-by-default behavior. New
+  // agents get the same seed via the natural AdaptiveTrust flow once the
+  // sentinel first calls getTrustLevel.
+  //
+  // Idempotent: re-runs are no-ops via the _instar_migrations marker AND a
+  // content-sniff (skip if parity-sentinel service entry already exists).
+  private migrateParitySentinelTrust(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    const trustProfilePath = path.join(this.config.stateDir, 'state', 'trust-profile.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('parity-sentinel-trust: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`parity-sentinel-trust: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'parity-sentinel-trust-seed';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('parity-sentinel-trust: already migrated');
+      return;
+    }
+
+    // Load existing trust profile (or create skeleton). Content-sniff: skip
+    // if a parity-sentinel service entry already exists (operator-set).
+    let profile: {
+      services: Record<string, {
+        service: string;
+        operations: Record<string, { level: string; source: string; changedAt: string }>;
+        history: { successCount: number; incidentCount: number; streakSinceIncident: number };
+      }>;
+      global: { maturity: number; lastEvent: string; lastEventAt: string; floor: string };
+    };
+    try {
+      if (fs.existsSync(trustProfilePath)) {
+        profile = JSON.parse(fs.readFileSync(trustProfilePath, 'utf-8'));
+      } else {
+        profile = {
+          services: {},
+          global: {
+            maturity: 0,
+            lastEvent: 'Profile created by parity-sentinel-trust-seed migration',
+            lastEventAt: new Date().toISOString(),
+            floor: 'collaborative',
+          },
+        };
+      }
+    } catch (err) {
+      result.errors.push(`parity-sentinel-trust: trust-profile.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (profile.services['parity-sentinel']) {
+      // Operator already configured it — never overwrite. Mark migration done.
+      migrations.push(`${marker}-${new Date().toISOString()}-existing-entry-preserved`);
+      config._instar_migrations = migrations;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      result.skipped.push('parity-sentinel-trust: existing entry preserved');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    profile.services['parity-sentinel'] = {
+      service: 'parity-sentinel',
+      operations: {
+        modify: { level: 'log', source: 'default', changedAt: now },
+      },
+      history: { successCount: 0, incidentCount: 0, streakSinceIncident: 0 },
+    };
+
+    // Ensure state dir exists before writing the profile.
+    const stateDir = path.dirname(trustProfilePath);
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+    fs.writeFileSync(trustProfilePath, JSON.stringify(profile, null, 2));
+
+    migrations.push(`${marker}-${now}`);
+    config._instar_migrations = migrations;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    result.upgraded.push('parity-sentinel-trust: seeded trust profile entry at level=log');
   }
 
   // ── Provider portability v1.0.0 — Phase 7 migration entry ──────────

@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/parity-sentinel-trust-wiring.md",
+  "artifactPath": "upgrades/side-effects/feat-parity-sentinel-trust-wiring.md",
+  "artifactSha256": "6cceb266f0a547d0e7aea7e644529ddc38c09d6f0ad3dc16764be2957000a41d",
+  "coveredFiles": [
+    "src/monitoring/FrameworkParitySentinel.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/monitoring/FrameworkParitySentinel.test.ts",
+    "tests/unit/PostUpdateMigrator-paritySentinelTrust.test.ts",
+    "specs/dev-infrastructure/parity-sentinel-trust-wiring.md",
+    "specs/dev-infrastructure/parity-sentinel-trust-wiring.eli16.md",
+    "docs/specs/reports/parity-sentinel-trust-wiring-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-parity-sentinel-trust-wiring.md"
+  ],
+  "writtenAt": "2026-05-19T16:00:00Z",
+  "agent": "echo",
+  "summary": "Mirror-trust wiring + PostUpdateMigrator backfill for FrameworkParitySentinel. Wires AdaptiveTrust.getTrustLevel('parity-sentinel', 'modify') into shouldRemediate; trust levels autonomous/log allow remediation, approve-*/blocked downgrade to flag-only. Migration seeds parity-sentinel entry at level=log so existing agents preserve v0.1 behavior. 11 new unit tests covering all four trust branches + 6 migration scenarios."
+}

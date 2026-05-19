@@ -446,6 +446,174 @@ describe('FrameworkParitySentinel', () => {
     });
   });
 
+  describe('mirror-trust via AdaptiveTrust integration', () => {
+    function makeFakeTrust(level: string) {
+      return {
+        getTrustLevel: () => ({ level, source: 'default', changedAt: '2026-05-19T00:00:00Z' }),
+        trustToAutonomy: (lvl: string) => {
+          switch (lvl) {
+            case 'autonomous': return 'proceed';
+            case 'log': return 'log';
+            case 'approve-always':
+            case 'approve-first': return 'approve';
+            case 'blocked': return 'block';
+            default: return 'approve';
+          }
+        },
+      } as any;
+    }
+
+    it('autonomous trust → remediate', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+        instances: ['foo'],
+        remediationPolicy: 'mirror-trust',
+        verifyResults: {
+          foo: {
+            ok: false,
+            mismatches: [{
+              primitive: 'skill',
+              instanceName: 'foo',
+              framework: 'claude-code',
+              reasonCode: 'missing-rendered-file',
+              detail: 'missing',
+            }],
+          },
+        },
+        remediateImpl: async (instance) => { remediateCalls.push(instance); },
+      }));
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot,
+        stateDir: projectRoot,
+        enabledFrameworks: ['claude-code'],
+        adaptiveTrust: makeFakeTrust('autonomous'),
+      });
+      const report = await sentinel.scan();
+      expect(remediateCalls).toEqual(['foo']);
+      expect(report.remediated).toBe(1);
+    });
+
+    it('log trust → remediate (auto-elevatable default)', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+        instances: ['foo'],
+        remediationPolicy: 'mirror-trust',
+        verifyResults: {
+          foo: {
+            ok: false,
+            mismatches: [{
+              primitive: 'skill',
+              instanceName: 'foo',
+              framework: 'claude-code',
+              reasonCode: 'missing-rendered-file',
+              detail: 'missing',
+            }],
+          },
+        },
+        remediateImpl: async (instance) => { remediateCalls.push(instance); },
+      }));
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot,
+        stateDir: projectRoot,
+        enabledFrameworks: ['claude-code'],
+        adaptiveTrust: makeFakeTrust('log'),
+      });
+      const report = await sentinel.scan();
+      expect(remediateCalls).toEqual(['foo']);
+      expect(report.remediated).toBe(1);
+    });
+
+    it('approve-always trust → flag-only (no remediation)', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+        instances: ['foo'],
+        remediationPolicy: 'mirror-trust',
+        verifyResults: {
+          foo: {
+            ok: false,
+            mismatches: [{
+              primitive: 'skill',
+              instanceName: 'foo',
+              framework: 'claude-code',
+              reasonCode: 'missing-rendered-file',
+              detail: 'missing',
+            }],
+          },
+        },
+        remediateImpl: async (instance) => { remediateCalls.push(instance); },
+      }));
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot,
+        stateDir: projectRoot,
+        enabledFrameworks: ['claude-code'],
+        adaptiveTrust: makeFakeTrust('approve-always'),
+      });
+      const report = await sentinel.scan();
+      expect(remediateCalls).toEqual([]);
+      expect(report.remediated).toBe(0);
+    });
+
+    it('blocked trust → flag-only (no remediation)', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+        instances: ['foo'],
+        remediationPolicy: 'mirror-trust',
+        verifyResults: {
+          foo: {
+            ok: false,
+            mismatches: [{
+              primitive: 'skill',
+              instanceName: 'foo',
+              framework: 'claude-code',
+              reasonCode: 'missing-rendered-file',
+              detail: 'missing',
+            }],
+          },
+        },
+        remediateImpl: async (instance) => { remediateCalls.push(instance); },
+      }));
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot,
+        stateDir: projectRoot,
+        enabledFrameworks: ['claude-code'],
+        adaptiveTrust: makeFakeTrust('blocked'),
+      });
+      const report = await sentinel.scan();
+      expect(remediateCalls).toEqual([]);
+      expect(report.remediated).toBe(0);
+    });
+
+    it('no adaptiveTrust → backward-compatible (remediate when policy is mirror-trust)', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+        instances: ['foo'],
+        remediationPolicy: 'mirror-trust',
+        verifyResults: {
+          foo: {
+            ok: false,
+            mismatches: [{
+              primitive: 'skill',
+              instanceName: 'foo',
+              framework: 'claude-code',
+              reasonCode: 'missing-rendered-file',
+              detail: 'missing',
+            }],
+          },
+        },
+        remediateImpl: async (instance) => { remediateCalls.push(instance); },
+      }));
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot,
+        stateDir: projectRoot,
+        enabledFrameworks: ['claude-code'],
+        // adaptiveTrust omitted on purpose
+      });
+      const report = await sentinel.scan();
+      expect(remediateCalls).toEqual(['foo']);
+      expect(report.remediated).toBe(1);
+    });
+  });
+
   describe('start/stop lifecycle', () => {
     it('start/stop are idempotent', async () => {
       const sentinel = new FrameworkParitySentinel({

@@ -34,6 +34,7 @@ import type {
 } from '../providers/parity/types.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import type { AdaptiveTrust } from '../core/AdaptiveTrust.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -50,6 +51,17 @@ export interface FrameworkParitySentinelConfig {
   initialScanDelayMs?: number;
   /** If true, mirror-trust rules call remediate(); if false, all rules are flag-only. */
   remediationEnabled?: boolean;
+  /**
+   * Optional AdaptiveTrust handle. When provided, mirror-trust rules consult
+   * the trust level for service='parity-sentinel', operation='modify':
+   *   - autonomous|log  → remediate
+   *   - approve-*|block → flag-only
+   * When omitted, mirror-trust rules fall through to remediationEnabled
+   * (preserves the v0.1 binary gate). PostUpdateMigrator seeds the
+   * parity-sentinel service entry at level=log on update so existing agents
+   * keep remediating once the wiring is enabled.
+   */
+  adaptiveTrust?: AdaptiveTrust;
 }
 
 interface PerInstanceCursor {
@@ -323,6 +335,17 @@ export class FrameworkParitySentinel extends EventEmitter {
   private shouldRemediate(rule: ParityRule): boolean {
     if (rule.remediationPolicy === 'flag-only') return false;
     if (this.config.remediationEnabled === false) return false;
+    // Mirror-trust: when AdaptiveTrust is wired, consult the trust level for
+    // the parity-sentinel service on 'modify' operations. The PostUpdateMigrator
+    // seeds this entry at level=log so existing agents keep remediating.
+    // Operators can downgrade to approve-* or block to flag-only without
+    // touching the sentinel config.
+    if (this.config.adaptiveTrust && rule.remediationPolicy === 'mirror-trust') {
+      const entry = this.config.adaptiveTrust.getTrustLevel('parity-sentinel', 'modify');
+      const autonomy = this.config.adaptiveTrust.trustToAutonomy(entry.level);
+      // 'proceed' (autonomous) and 'log' allow remediation; 'approve' and 'block' do not.
+      return autonomy === 'proceed' || autonomy === 'log';
+    }
     return true;
   }
 
