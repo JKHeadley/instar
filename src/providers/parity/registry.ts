@@ -14,9 +14,11 @@
 
 import type { ParityRule, FunctionalPrimitive } from './types.js';
 import { skillParityRule } from './rules/skillParityRule.js';
+import { hookParityRule } from './rules/hookParityRule.js';
 
 const RULES: Map<FunctionalPrimitive, ParityRule> = new Map([
   [skillParityRule.primitive, skillParityRule],
+  [hookParityRule.primitive, hookParityRule],
 ]);
 
 export function getParityRule(primitive: FunctionalPrimitive): ParityRule | undefined {
