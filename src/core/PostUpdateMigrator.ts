@@ -256,7 +256,14 @@ export class PostUpdateMigrator {
             // expected for user-edited renderings — not an error, just a
             // skip. Capture for visibility.
             const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes('user-edit-conflict')) {
+            // Per Migration Parity §5, rules may legitimately refuse to
+            // remediate. Two documented refuse patterns:
+            //   - 'user-edit-conflict' (skill rule per §5)
+            //   - 'refused to remediate' (memory rule — never auto-regenerates
+            //     identity/learning artifacts; see specs/instar-concepts/memory.md)
+            // Both are skips, not errors. Operator resolves manually.
+            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate');
+            if (isRefuse) {
               skippedCount += 1;
               result.skipped.push(`parity-renderings: ${rule.primitive}/${instance} on ${framework} — ${msg}`);
             } else {

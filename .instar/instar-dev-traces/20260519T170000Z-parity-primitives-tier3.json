@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/parity-primitives-tier3.md",
+  "artifactPath": "upgrades/side-effects/feat-parity-primitives-tier3.md",
+  "artifactSha256": "ced0a418b47b030d225d2fe6b65aff3b0152a5a11c0cf2b5c95d9cfb30be5165",
+  "coveredFiles": [
+    "tests/e2e/parity-primitives-lifecycle.test.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "specs/dev-infrastructure/parity-primitives-tier3.md",
+    "specs/dev-infrastructure/parity-primitives-tier3.eli16.md",
+    "docs/specs/reports/parity-primitives-tier3-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-parity-primitives-tier3.md"
+  ],
+  "writtenAt": "2026-05-19T17:00:00Z",
+  "agent": "echo",
+  "summary": "Tier-3 E2E lifecycle tests for Layer-3 parity primitives — 12 new tests in tests/e2e/parity-primitives-lifecycle.test.ts covering registry boot, rule contract surface, skill+hook end-to-end render, memory verify, migrator backfill, sentinel lifecycle. Plus migrator categorization tweak: 'refused to remediate' (memory rule) now recognized as a skip alongside 'user-edit-conflict' (skill rule)."
+}
