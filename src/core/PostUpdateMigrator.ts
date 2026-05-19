@@ -154,8 +154,69 @@ export class PostUpdateMigrator {
     this.migrateProviderPortability(result);
     this.migrateFleetWatchdog(result);
     this.migrateParitySentinelTrust(result);
+    this.migrateConversationalCatalogPlaybookManifest(result);
 
     return result;
+  }
+
+  // ── Conversational-action catalog Playbook manifest (v0.2) ─────────
+  //
+  // Ships the conversational-catalog Playbook manifest template into
+  // .instar/playbook/builtin-manifests/ so operators can mount it via
+  // `instar playbook mount`. The actual mount registration stays operator-
+  // initiated (per Playbook's design — mounts are explicit consent), but
+  // the template file is shipped so it's available without a separate
+  // download step.
+  //
+  // The Playbook item itself is a metadata pointer to the .instar/context/
+  // conversational-actions.md segment (always-overwritten on update by the
+  // ContextHierarchy initializer) and the `conversational-catalog`
+  // SelfKnowledgeTree probe. The catalog content lives in the probe; the
+  // Playbook item is the scoring/relevance signal.
+  //
+  // Idempotent via content-sniff (skip if existing file matches template).
+  private migrateConversationalCatalogPlaybookManifest(result: MigrationResult): void {
+    const builtinDir = path.join(this.config.stateDir, 'playbook', 'builtin-manifests');
+    const targetPath = path.join(builtinDir, 'conversational-catalog.json');
+    // Resolve template path via module-local __dirname (from
+    // fileURLToPath(import.meta.url)). Two candidates: dist install layout
+    // (dist/core/ → ../templates/...) and dev source layout
+    // (src/core/ → ../templates/... already, but tsc may resolve __dirname
+    // to dist; src fallback added for robustness in dev runs).
+    const candidates = [
+      path.resolve(__dirname, '..', 'templates', 'playbook', 'conversational-catalog-manifest.json'),
+      path.resolve(__dirname, '..', '..', 'src', 'templates', 'playbook', 'conversational-catalog-manifest.json'),
+    ];
+    let templatePath = '';
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) { templatePath = cand; break; }
+    }
+    if (!templatePath) {
+      // Built-in template missing — should never happen post-install, but
+      // don't error out the update; just skip.
+      result.skipped.push('conversational-catalog-playbook: template not found in package install');
+      return;
+    }
+
+    let templateContent: string;
+    try {
+      templateContent = fs.readFileSync(templatePath, 'utf-8');
+    } catch (err) {
+      result.errors.push(`conversational-catalog-playbook: template read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (fs.existsSync(targetPath)) {
+      const existing = fs.readFileSync(targetPath, 'utf-8');
+      if (existing === templateContent) {
+        result.skipped.push('conversational-catalog-playbook: manifest up to date');
+        return;
+      }
+    }
+
+    fs.mkdirSync(builtinDir, { recursive: true });
+    fs.writeFileSync(targetPath, templateContent);
+    result.upgraded.push('conversational-catalog-playbook: installed/updated manifest template');
   }
 
   /**

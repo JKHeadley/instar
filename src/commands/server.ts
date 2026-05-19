@@ -6625,6 +6625,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       }, { description: 'Feature discovery state and behavioral contract summary' });
     }
 
+    // Register conversational-catalog probe — Conversational-action v0.2.
+    // On-demand load of the catalog of invocable actions. Per the AGENT.md
+    // bloat lesson (L1) and Structure>Willpower (P1), the catalog is NEVER
+    // inlined into AGENT.md — agents probe for it during intent-interpretation
+    // moments (matched by the conversational-actions Tier 2 segment dispatch
+    // triggers).
+    if (selfKnowledgeTree) {
+      selfKnowledgeTree.probes.register('conversational-catalog', async () => {
+        const start = Date.now();
+        const { discoverActions, renderCatalogBlock } = await import('../providers/parity/conversationalActionCatalog.js');
+        const actions = await discoverActions(config.projectDir);
+        const catalog = renderCatalogBlock(actions);
+        return { content: catalog, truncated: false, elapsedMs: Date.now() - start };
+      }, { description: 'Catalog of invocable actions for conversational-intent matching. Fetched on-demand during interpretation moments — never inlined into AGENT.md.' });
+    }
+
     // ── Integrated-Being ledger (v1) ──────────────────────────────────
     // Spec: docs/specs/integrated-being-ledger-v1.md
     let sharedStateLedger: import('../core/SharedStateLedger.js').SharedStateLedger | undefined;

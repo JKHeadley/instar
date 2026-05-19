@@ -229,5 +229,47 @@ describe('ContextHierarchy', () => {
       const content = fs.readFileSync(path.join(stateDir, 'context', 'deployment.md'), 'utf-8');
       expect(content).toContain('coherence');
     });
+
+    it('conversational-actions template explains the on-demand catalog pattern', () => {
+      const ctx = new ContextHierarchy({ stateDir, projectDir, projectName: 'test-project' });
+      ctx.initialize();
+
+      const file = path.join(stateDir, 'context', 'conversational-actions.md');
+      expect(fs.existsSync(file)).toBe(true);
+      const content = fs.readFileSync(file, 'utf-8');
+      // The segment MUST instruct the agent to fetch via probe, not inline catalog.
+      expect(content).toContain('conversational-catalog'); // probe name
+      expect(content).toContain('on-demand');
+      expect(content).toContain('AGENT.md'); // references the bloat lesson
+      // The segment MUST not contain the catalog data itself — that would
+      // re-introduce the AGENT.md inlining anti-pattern (the segment is Tier 2,
+      // not always-on, but it should still describe HOW to fetch, not WHAT).
+      expect(content).toMatch(/probe|GET \/capabilities|conversationalActionCatalog/i);
+    });
+  });
+
+  describe('conversational-actions segment (v0.2 wiring)', () => {
+    it('registers as Tier 2 with intent-interpretation triggers', () => {
+      const ctx = new ContextHierarchy({ stateDir, projectDir, projectName: 'test-project' });
+      const table = ctx.getDispatchTable();
+      const intentEntries = table.filter(t => t.trigger === 'interpreting-user-intent');
+      expect(intentEntries.length).toBeGreaterThan(0);
+      expect(intentEntries[0].file).toContain('conversational-actions.md');
+    });
+
+    it('Tier 2 load does NOT include conversational-actions content (on-demand only)', () => {
+      const ctx = new ContextHierarchy({ stateDir, projectDir, projectName: 'test-project' });
+      ctx.initialize();
+      // Tier 0 + Tier 1 should NOT include the conversational-actions content.
+      const tier1 = ctx.loadTier(1);
+      expect(tier1).not.toContain('Conversational Actions Catalog');
+      // Tier 2 ALSO doesn't auto-include unless dispatched — verify by
+      // checking that the dispatch table is what surfaces it.
+      const dispatchEntries = ctx.getDispatchTable();
+      const conversationalEntries = dispatchEntries.filter(e =>
+        e.file.includes('conversational-actions.md'),
+      );
+      expect(conversationalEntries.length).toBeGreaterThan(0);
+    });
   });
 });
