@@ -468,6 +468,13 @@ export const hookParityRule: ParityRule = {
   primitive: 'hook',
   frameworks: ['claude-code', 'codex-cli'],
   remediationPolicy: 'mirror-trust',
+  // Per Migration Parity §4 (built-in hooks always overwritten on every
+  // migration run — never install-if-missing). The user-edit-conflict
+  // detection in verify() is a signal for the audit log, not blocking
+  // authority for remediation. Sentinel emits parity:user-edit-overwritten
+  // when overwriting a user-edited rendering so operators can recover via
+  // git history if needed.
+  alwaysOverwrite: true,
 
   async listInstances(projectRoot) {
     return listCanonicalHookInstances(projectRoot);
@@ -511,16 +518,12 @@ export const hookParityRule: ParityRule = {
 
   async remediate(projectRoot, instanceName, framework) {
     const hook = await readCanonicalHook(projectRoot, instanceName);
-    // Refuse on user-edit-conflict.
-    const issues = framework === 'claude-code'
-      ? await verifyClaudeHook(projectRoot, hook)
-      : await verifyCodexHook(projectRoot, hook);
-    const conflict = issues.find((i) => i.reasonCode === 'user-edit-conflict');
-    if (conflict) {
-      throw new CanonicalHookError(
-        `refused to remediate ${instanceName} on ${framework} due to user-edit-conflict: ${conflict.detail}`,
-      );
-    }
+    // Per Migration Parity §4: built-in hooks ALWAYS overwritten on every
+    // migration run. user-edit-conflict is a signal (recorded in verify()
+    // output and emitted by the sentinel as parity:user-edit-overwritten),
+    // not blocking authority. No refuse-on-conflict for canonical hooks —
+    // the install-if-missing wedge is what gets agents stuck on broken
+    // templates (see hook-event-reporter.js incident).
     if (framework === 'claude-code') {
       await renderClaudeHook(projectRoot, hook);
     } else {

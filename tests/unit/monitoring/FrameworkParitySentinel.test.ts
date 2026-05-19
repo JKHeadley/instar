@@ -47,6 +47,7 @@ function makeStubRule(opts: {
   instances?: string[];
   verifyResults?: Record<string, VerifyResult>;
   remediationPolicy?: 'mirror-trust' | 'flag-only';
+  alwaysOverwrite?: boolean;
   orphans?: ParityMismatch[];
   remediateImpl?: (instance: string, framework: string) => Promise<void>;
 }): ParityRule {
@@ -55,6 +56,7 @@ function makeStubRule(opts: {
     ...NOOP_RULE,
     primitive: 'skill',
     remediationPolicy: opts.remediationPolicy ?? 'mirror-trust',
+    alwaysOverwrite: opts.alwaysOverwrite,
     async verify(_root, instance) {
       return opts.verifyResults?.[instance] ?? { ok: true, mismatches: [] };
     },
@@ -235,6 +237,50 @@ describe('FrameworkParitySentinel', () => {
       const report = await sentinel.scan();
       expect(calls).toEqual([]);
       expect(report.remediated).toBe(0);
+    });
+
+    it('alwaysOverwrite=true rule REMEDIATES through user-edit-conflict and emits parity:user-edit-overwritten', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+          instances: ['foo'],
+          remediationPolicy: 'mirror-trust',
+          alwaysOverwrite: true,
+          verifyResults: {
+            foo: {
+              ok: false,
+              mismatches: [
+                {
+                  primitive: 'hook',
+                  instanceName: 'foo',
+                  framework: 'claude-code',
+                  reasonCode: 'user-edit-conflict',
+                  detail: 'user edited',
+                },
+              ],
+            },
+          },
+          remediateImpl: async (instance) => {
+            remediateCalls.push(instance);
+          },
+        }),
+      );
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot,
+        stateDir: projectRoot,
+        enabledFrameworks: ['claude-code'],
+      });
+      const overwritten: unknown[] = [];
+      const refused: unknown[] = [];
+      sentinel.on('parity:user-edit-overwritten', (m) => overwritten.push(m));
+      sentinel.on('parity:remediation-refused', (m) => refused.push(m));
+      const report = await sentinel.scan();
+      // Per Migration Parity §4: alwaysOverwrite=true rules remediate through
+      // the conflict and emit the audit signal.
+      expect(remediateCalls).toEqual(['foo']);
+      expect(overwritten.length).toBeGreaterThanOrEqual(1);
+      expect(refused.length).toBe(0);
+      expect(report.remediated).toBe(1);
+      expect(report.remediationRefused).toBe(0);
     });
 
     it('refuses remediation on user-edit-conflict and emits the event', async () => {

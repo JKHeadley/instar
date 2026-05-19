@@ -225,11 +225,19 @@ export class FrameworkParitySentinel extends EventEmitter {
           const hasConflict = verifyResult.mismatches.some(
             (m) => m.reasonCode === 'user-edit-conflict',
           );
-          result = hasConflict ? 'conflict' : 'drift';
+          // Per Migration Parity §4, rules with alwaysOverwrite=true (e.g.
+          // hookParityRule for built-in hooks) treat user-edit-conflict as a
+          // signal-only — remediation proceeds, and we emit
+          // parity:user-edit-overwritten so operators can recover via git.
+          const conflictBlocksRemediation = hasConflict && !rule.alwaysOverwrite;
+          result = conflictBlocksRemediation ? 'conflict' : 'drift';
           detail = verifyResult.mismatches.map((m) => `${m.framework}: ${m.detail}`).join('; ');
 
           for (const m of verifyResult.mismatches) {
             this.emit('parity:gap-found', m);
+            if (m.reasonCode === 'user-edit-conflict' && rule.alwaysOverwrite) {
+              this.emit('parity:user-edit-overwritten', m);
+            }
           }
 
           if (result === 'drift' && this.shouldRemediate(rule)) {

@@ -211,15 +211,33 @@ describe('hookParityRule', () => {
       expect(conflict).toBeDefined();
     });
 
-    it('remediate refuses on user-edit-conflict', async () => {
+    it('remediate ALWAYS OVERWRITES user-edits per Migration Parity §4', async () => {
+      // Built-in hooks (canonical) are always overwritten on every migration
+      // run — never install-if-missing. user-edit-conflict in verify() is a
+      // signal for audit (sentinel emits parity:user-edit-overwritten);
+      // remediate() proceeds regardless. Operator recovery is via git, not
+      // refusal-to-write.
       await writeCanonicalHook(projectRoot, 'session-start', 'inject.sh');
       await hookParityRule.remediate(projectRoot, 'session-start/inject.sh', 'claude-code');
       const scriptPath = path.join(projectRoot, '.claude/hooks/session-start/inject.sh');
       const raw = await fs.readFile(scriptPath, 'utf-8');
-      await fs.writeFile(scriptPath, raw + '\necho "user"\n');
-      await expect(
-        hookParityRule.remediate(projectRoot, 'session-start/inject.sh', 'claude-code'),
-      ).rejects.toThrow(/user-edit-conflict/);
+      const userEdited = raw + '\necho "user"\n';
+      await fs.writeFile(scriptPath, userEdited);
+      // Should NOT throw — alwaysOverwrite is true for hookParityRule.
+      await hookParityRule.remediate(projectRoot, 'session-start/inject.sh', 'claude-code');
+      const after = await fs.readFile(scriptPath, 'utf-8');
+      expect(after).not.toBe(userEdited); // user edit clobbered
+      expect(after).not.toContain('echo "user"'); // user line gone
+      // Subsequent verify on the claude side should be clean (no conflict,
+      // no body-mismatch). Codex side will be missing-rendered-file in this
+      // fixture (we never rendered codex), which is expected.
+      const r = await hookParityRule.verify(projectRoot, 'session-start/inject.sh');
+      const claudeIssues = r.mismatches.filter((m) => m.framework === 'claude-code');
+      expect(claudeIssues).toEqual([]);
+    });
+
+    it('hookParityRule advertises alwaysOverwrite=true per Migration Parity §4', () => {
+      expect(hookParityRule.alwaysOverwrite).toBe(true);
     });
   });
 

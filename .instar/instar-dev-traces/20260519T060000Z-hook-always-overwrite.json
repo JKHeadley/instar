@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/hook-always-overwrite.md",
+  "artifactPath": "upgrades/side-effects/fix-hook-stamp-migration-parity.md",
+  "artifactSha256": "25d47afa041deaf8275c29fc7099082ed4a508ef65b931408a14a6218b65a712",
+  "coveredFiles": [
+    "src/providers/parity/types.ts",
+    "src/providers/parity/rules/hookParityRule.ts",
+    "src/monitoring/FrameworkParitySentinel.ts",
+    "tests/unit/providers/parity/hookParityRule.test.ts",
+    "tests/unit/monitoring/FrameworkParitySentinel.test.ts",
+    "specs/dev-infrastructure/hook-always-overwrite.md",
+    "specs/dev-infrastructure/hook-always-overwrite.eli16.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-hook-stamp-migration-parity.md"
+  ],
+  "writtenAt": "2026-05-19T06:00:00Z",
+  "agent": "echo",
+  "summary": "Restore Migration Parity §4 (built-in hooks always overwritten) by adding alwaysOverwrite field to ParityRule, setting it true on hookParityRule, and routing the user-edit-conflict signal through a new parity:user-edit-overwritten audit event in FrameworkParitySentinel. Tests inverted and added. Audit-identified critical backtrack from PR #253."
+}

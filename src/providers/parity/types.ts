@@ -92,6 +92,17 @@ export interface ParityRule {
   readonly frameworks: ReadonlyArray<IntelligenceFramework>;
   /** How the sentinel handles detected drift. */
   readonly remediationPolicy: RemediationPolicy;
+  /**
+   * When true, user-edit-conflict is treated as a signal (not blocking
+   * authority) and remediate() always overwrites. Required for primitives
+   * covered by Migration Parity §4 (built-in hooks "always overwritten on
+   * every migration run — never install-if-missing"). The sentinel emits
+   * `parity:user-edit-overwritten` for any overwrite that clobbered a
+   * detected user edit so operators can recover via audit log + git.
+   *
+   * Default: false (refuse-on-conflict — operator-action required).
+   */
+  readonly alwaysOverwrite?: boolean;
 
   /**
    * Verify the rendering for ONE specific instance (e.g., one skill name)
@@ -114,8 +125,10 @@ export interface ParityRule {
    * (the verify() should return ok:true after remediation; calling again
    * doesn't break anything).
    *
-   * Throws if the current rendering has a `user-edit-conflict` — operator
-   * must resolve before automated remediation is allowed.
+   * Throws if the current rendering has a `user-edit-conflict` AND the rule
+   * is not marked `alwaysOverwrite: true`. Rules with `alwaysOverwrite: true`
+   * (e.g., hookParityRule per Migration Parity §4) overwrite unconditionally
+   * and the sentinel emits an audit event recording the clobber.
    */
   remediate(projectRoot: string, instanceName: string, framework: IntelligenceFramework): Promise<void>;
 
