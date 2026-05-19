@@ -88,6 +88,41 @@ export class PostUpdateMigrator {
   }
 
   /**
+   * Resolve the set of frameworks this install actively uses, read from
+   * the persisted `.instar/config.json` `enabledFrameworks` field.
+   *
+   * Default (unset / empty / unreadable): `['claude-code']` — the
+   * historical behavior, so existing and dual-framework installs are
+   * unaffected. A Codex-only install sets `enabledFrameworks:
+   * ['codex-cli']`, which makes framework-specific migration steps that
+   * scaffold `.claude/`-only artifacts skip cleanly instead of writing
+   * files that runtime will never read.
+   *
+   * Single source of truth for the migrator's framework gating — both
+   * the parity-renderings backfill and the legacy `.claude/`-specific
+   * steps consult this.
+   */
+  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli'> {
+    try {
+      const configPath = path.join(this.config.stateDir, 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        enabledFrameworks?: unknown;
+      };
+      const enabled = config.enabledFrameworks;
+      if (Array.isArray(enabled) && enabled.length > 0) {
+        const filtered = enabled.filter(
+          (f): f is 'claude-code' | 'codex-cli' =>
+            f === 'claude-code' || f === 'codex-cli',
+        );
+        if (filtered.length > 0) return filtered;
+      }
+    } catch {
+      // fall through to default
+    }
+    return ['claude-code'];
+  }
+
+  /**
    * F-7 atomic-step primitive: register a step that will run once on
    * the release boundary where `step.version <= toVersion`. Idempotent
    * across runs — the engine records every step's outcome in
@@ -284,15 +319,8 @@ export class PostUpdateMigrator {
     // parity graph at startup for agents that never invoke migrate().
     const { listParityRules } = await import('../providers/parity/registry.js');
 
-    // Determine enabled frameworks from config — default to claude-code+codex-cli
-    // for portable agents, claude-code-only as a safe fallback.
-    const frameworks = ((): ReadonlyArray<'claude-code' | 'codex-cli'> => {
-      const enabled = (config as { enabledFrameworks?: string[] }).enabledFrameworks;
-      if (Array.isArray(enabled) && enabled.length > 0) {
-        return enabled.filter(f => f === 'claude-code' || f === 'codex-cli') as ('claude-code' | 'codex-cli')[];
-      }
-      return ['claude-code'];
-    })();
+    // Single source of truth for framework gating (see getEnabledFrameworks).
+    const frameworks = this.getEnabledFrameworks();
 
     const rules = listParityRules();
     let renderedCount = 0;
@@ -2251,6 +2279,17 @@ The user has been talking to you (possibly for days). A generic greeting like "H
    * Migrates legacy PostToolUse/Notification hooks to proper SessionStart type.
    */
   private migrateSettings(result: MigrationResult): void {
+    // Framework gate (portability audit Gap 5). `.claude/settings.json` is
+    // Claude Code's hook/MCP configuration — it has zero meaning for a
+    // Codex-only runtime. Skip the entire step when claude-code is not in
+    // the enabled set so a Codex-only install is not scaffolded with
+    // `.claude/` artifacts it will never read. Default (unset config) is
+    // ['claude-code'], so existing and dual-framework installs are
+    // unaffected.
+    if (!this.getEnabledFrameworks().includes('claude-code')) {
+      result.skipped.push('.claude/settings.json (skipped — claude-code not in enabledFrameworks)');
+      return;
+    }
     const settingsPath = path.join(this.config.projectDir, '.claude', 'settings.json');
     if (!fs.existsSync(settingsPath)) {
       result.skipped.push('.claude/settings.json (not found — will be created on next init)');

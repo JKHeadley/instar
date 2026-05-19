@@ -1665,6 +1665,19 @@ export interface InstarConfig {
    * agent's framework.
    */
   topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'>;
+  /**
+   * Agent-level set of frameworks this install actively uses. Drives
+   * which framework-specific migration steps run on update: a
+   * codex-cli-only install should not receive `.claude/`-specific
+   * scaffolding it will never use. When unset or empty, defaults to
+   * `['claude-code']` — the historical behavior, so existing and
+   * dual-framework installs are unaffected. Set to `['codex-cli']`
+   * for a Codex-only agent, or `['claude-code','codex-cli']` for a
+   * dual-runtime install. (Mirrors FrameworkParitySentinel's
+   * `enabledFrameworks`; this is the persisted, operator-settable
+   * source of truth the migrator reads.)
+   */
+  enabledFrameworks?: ('claude-code' | 'codex-cli')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
   /** Registered users */

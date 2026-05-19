@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/portability-framework-gate.md",
+  "artifactPath": "upgrades/side-effects/feat-portability-framework-gate.md",
+  "artifactSha256": "fe53efd4a38b3eda0f62e021980aa5c3280b743b48aebd2d97cffb0e3b16da18",
+  "coveredFiles": [
+    "src/core/types.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/PostUpdateMigrator-frameworkGate.test.ts",
+    "specs/dev-infrastructure/portability-framework-gate.md",
+    "specs/dev-infrastructure/portability-framework-gate.eli16.md",
+    "docs/specs/reports/portability-framework-gate-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-portability-framework-gate.md"
+  ],
+  "writtenAt": "2026-05-19T20:30:00Z",
+  "agent": "echo",
+  "summary": "Portability audit Gap 5: the audit's 'wrap legacy steps in enabledFrameworks guards' would have been INERT (enabledFrameworks was read defensively but was never a real settable InstarConfig field). Fix makes it a real field, adds getEnabledFrameworks() single-source helper (default ['claude-code']), DRY-refactors the duplicate inline logic in migrateParityRenderings, and gates migrateSettings (Claude-only .claude/settings.json) to skip for codex-only installs. 6-case test proves the gate is reachable AND the default does not skip; 11 parity-renderings tests pass unchanged. Ships v1.0.11."
+}
