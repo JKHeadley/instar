@@ -137,7 +137,7 @@ describe('per-topic framework dispatch end-to-end', () => {
     expect(claudecodeCount).toBeGreaterThanOrEqual(2);
   });
 
-  it('codex framework emits a resume warning when resumeSessionId is provided (subcommand mismatch)', async () => {
+  it('codex framework inserts `resume <id>` subcommand when resumeSessionId is provided', async () => {
     const mgr = buildManager();
     const warnings: string[] = [];
     const origWarn = console.warn;
@@ -153,9 +153,13 @@ describe('per-topic framework dispatch end-to-end', () => {
     } finally {
       console.warn = origWarn;
     }
-    expect(warnings.some(w => w.includes('Codex resume requested'))).toBe(true);
+    // Codex 0.130 accepts `resume` as a subcommand; we now actually use it.
+    // The prior warning ("Codex resume requested ... starting fresh") must be gone.
+    expect(warnings.some(w => w.includes('Codex resume requested'))).toBe(false);
     const log = tmuxLog();
-    // The legacy Claude --resume flag MUST NOT have leaked into Codex's argv.
+    // The `resume sess-42` subcommand pair must appear in the spawned argv.
+    expect(log).toMatch(/resume[^\n]*sess-42/);
+    // The flag-style --resume must NEVER appear — Codex doesn't accept it.
     expect(log).not.toContain('--resume');
   });
 

@@ -76,15 +76,54 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     });
 
-    it('does NOT pass a --resume flag — Codex resume is a subcommand and is not yet supported on this path', () => {
+    it('inserts `resume <id>` as a subcommand right after the binary path when resumeSessionId is set', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
         resumeSessionId: 'sess-42',
       });
-      // Codex's --resume is a SUBCOMMAND (codex resume <id>), not a flag.
-      // Until TopicResumeMap learns the subcommand form, the launch path
-      // starts fresh and emits a console warning.
+      // Codex's resume is a SUBCOMMAND (codex resume <id>), not a flag.
+      // Must be the first arg after the binary; flags follow.
+      expect(spec.argv[0]).toBe('/usr/local/bin/codex');
+      expect(spec.argv[1]).toBe('resume');
+      expect(spec.argv[2]).toBe('sess-42');
+      expect(spec.argv).toContain('--model');
+      // The flag-style --resume must NEVER appear — Codex doesn't accept it.
       expect(spec.argv).not.toContain('--resume');
+    });
+
+    it('does NOT insert `resume` when resumeSessionId is absent (fresh launch)', () => {
+      const spec = buildInteractiveLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+      });
+      expect(spec.argv).not.toContain('resume');
+      expect(spec.argv[1]).toBe('--model');
+    });
+
+    it('preserves sandbox + model flags when resuming', () => {
+      const spec = buildInteractiveLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        resumeSessionId: 'uuid-7',
+        codexSandboxMode: 'workspace-write',
+      });
+      expect(spec.argv).toContain('resume');
+      expect(spec.argv).toContain('uuid-7');
+      expect(spec.argv).toContain('--sandbox');
+      expect(spec.argv).toContain('workspace-write');
+      expect(spec.argv).toContain('--model');
+    });
+
+    it('preserves --oss + --local-provider when resuming a local-model session', () => {
+      const spec = buildInteractiveLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        resumeSessionId: 'local-uuid',
+        codexLocalProvider: 'ollama',
+        defaultModel: 'llama3.2:latest',
+      });
+      expect(spec.argv).toContain('resume');
+      expect(spec.argv).toContain('local-uuid');
+      expect(spec.argv).toContain('--oss');
+      expect(spec.argv).toContain('--local-provider');
+      expect(spec.argv).toContain('ollama');
     });
 
     it('emits CLAUDECODE= override as defense-in-depth', () => {

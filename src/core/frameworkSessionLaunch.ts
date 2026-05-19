@@ -69,8 +69,8 @@ export interface InteractiveLaunchOptions {
   /** Absolute path to the CLI binary for the selected framework. */
   binaryPath: string;
   /**
-   * Optional session ID to resume into. Claude uses `--resume <id>`;
-   * Codex uses `--resume <id>` too but interprets the id differently;
+   * Optional session ID to resume into. Claude uses `--resume <id>` (flag).
+   * Codex uses `resume <id>` (subcommand inserted right after the binary);
    * unsupported frameworks may ignore.
    */
   resumeSessionId?: string;
@@ -159,8 +159,28 @@ const codexCliBuilder: Builder = (options) => {
   const resolvedModel = isLocal
     ? (options.defaultModel ?? 'llama3.2:latest')
     : (resolveModelForFramework('codex-cli', options.defaultModel) ?? 'gpt-5.3-codex');
+
+  // Codex's `resume` is a subcommand (`codex resume <SESSION_ID>`), not a
+  // flag. When resuming, insert it as the first argument after the binary
+  // path — every other flag (`--model`, `--sandbox`, etc.) is accepted by
+  // the `resume` subcommand and behaves the same as on a fresh launch
+  // (verified against codex 0.130 `codex resume --help`). When not
+  // resuming, argv stays in the original fresh-launch shape.
+  //
+  // Stale-id handling: if the tracked SESSION_ID no longer exists in
+  // Codex's session store (~/.codex/sessions/...), `codex resume` exits
+  // non-zero at startup and the tmux pane shows an error. SessionManager's
+  // respawn logic catches the dead pane and the route handler can clear
+  // the stale resume id (per existing PR #248 framework-swap pattern).
+  // We don't pre-validate filesystem presence here to avoid coupling the
+  // launch helper to Codex's on-disk session layout.
+  const resumePrefix: string[] = options.resumeSessionId
+    ? ['resume', options.resumeSessionId]
+    : [];
+
   const argv: string[] = [
     options.binaryPath,
+    ...resumePrefix,
     '--model', resolvedModel,
   ];
   if (isLocal) {
@@ -170,20 +190,6 @@ const codexCliBuilder: Builder = (options) => {
     argv.push('--sandbox', options.codexSandboxMode, '--ask-for-approval', 'never');
   } else {
     argv.push('--dangerously-bypass-approvals-and-sandbox');
-  }
-  // Codex's `resume` is a subcommand (`codex resume <id>`), not a flag.
-  // For the interactive launch path, callers who want to resume should
-  // use the subcommand form; we keep the flag-style behavior off for
-  // now since the legacy v0.x Claude code passes `--resume <id>` flat
-  // and we want consistent argv shape. Resume support for Codex lands
-  // when the topic-resume map is generalized.
-  if (options.resumeSessionId) {
-    // Best-effort: pass the id as the first non-flag positional under
-    // the hood would require the `resume` subcommand. For now, skip
-    // resume for Codex and start fresh; the warning helps users notice.
-    console.warn(
-      `[frameworkSessionLaunch] Codex resume requested (id=${options.resumeSessionId}) but codex CLI's "resume" is a subcommand, not a flag — starting fresh. Will be supported when TopicResumeMap is generalized.`,
-    );
   }
   return {
     argv,
