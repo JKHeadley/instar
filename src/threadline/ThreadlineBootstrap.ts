@@ -117,8 +117,8 @@ export async function bootstrapThreadline(
   // Start heartbeat for liveness detection
   const stopHeartbeat = discovery.startPresenceHeartbeat();
 
-  // ── 4. Register MCP server into Claude Code config ───────────────
-  registerThreadlineMcp(config.projectDir, config.agentName, config.stateDir);
+  // ── 4. Register MCP server into framework config(s) ──────────────
+  await registerThreadlineMcp(config.projectDir, config.agentName, config.stateDir);
 
   // ── 5. Cloud Relay Connection (opt-in) ─────────────────────────
   const relayEnabled = config.relayEnabled === true
@@ -370,14 +370,23 @@ function loadOrCreateIdentityKeys(threadlineDir: string): KeyPair {
 // ── MCP Registration ─────────────────────────────────────────────────
 
 /**
- * Register the Threadline MCP server into Claude Code's config.
+ * Register the Threadline MCP server into every framework config present.
  *
- * Uses the same pattern as ensurePlaywrightMcp() — registers in both
- * ~/.claude.json (local scope) and .mcp.json (project scope).
+ * Claude Code: ~/.claude.json (local scope) + .mcp.json (project scope).
+ * Codex CLI: `[mcp_servers."threadline"]` in ~/.codex/config.toml — added
+ *   for the cross-framework portability audit (Gap 2). Before this, a
+ *   Codex agent that joined the Threadline network had the relay running
+ *   but no MCP tools advertised to its runtime. The Codex TOML format and
+ *   path were empirically verified from a live ~/.codex/ (Codex CLI
+ *   0.78.0); registration reuses the existing, tested
+ *   OpenAiCodexMcpToolRegistry so the two writers cannot drift.
  *
- * The MCP server is a stdio process that Claude Code launches as a subprocess.
+ * The MCP server is a stdio process the framework launches as a subprocess.
+ * Codex registration is gated on ~/.codex/ existing (Codex installed on
+ * this machine) so a Claude-only host is never given a Codex config it
+ * does not use.
  */
-function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: string): void {
+async function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: string): Promise<void> {
   const absDir = path.resolve(projectDir);
 
   // The MCP server entry point — runs as a child process of Claude Code.
@@ -453,5 +462,31 @@ function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: 
     fs.renameSync(tmpPath, mcpJsonPath);
   } catch {
     // Non-fatal
+  }
+
+  // ── 3. Also register in Codex's ~/.codex/config.toml (portability Gap 2) ──
+  // Gated on ~/.codex/ existing so a Claude-only host never gets a Codex
+  // config it does not use. Reuses the existing OpenAiCodexMcpToolRegistry
+  // (idempotent remove-then-append of the [mcp_servers."threadline"] table)
+  // so the TOML writer is never duplicated. Non-fatal, matching the Claude
+  // registration blocks above.
+  try {
+    const codexHome = process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex');
+    if (fs.existsSync(codexHome)) {
+      const { createMcpToolRegistry } = await import(
+        '../providers/adapters/openai-codex/integration/mcpToolRegistry.js'
+      );
+      await createMcpToolRegistry().register(
+        {
+          kind: 'stdio',
+          name: 'threadline',
+          command: mcpEntry.command,
+          args: mcpEntry.args,
+        },
+        { scope: 'user' },
+      );
+    }
+  } catch {
+    // Non-fatal — Claude registration above is unaffected.
   }
 }

@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/portability-codex-mcp.md",
+  "artifactPath": "upgrades/side-effects/feat-portability-codex-mcp.md",
+  "artifactSha256": "3bbe68a304d685f6e85a1620a5df1419dc2eca6a2100e13d7c1c7d3737da6239",
+  "coveredFiles": [
+    "src/threadline/ThreadlineBootstrap.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/threadline-codex-mcp-registration.test.ts",
+    "specs/dev-infrastructure/portability-codex-mcp.md",
+    "specs/dev-infrastructure/portability-codex-mcp.eli16.md",
+    "docs/specs/reports/portability-codex-mcp-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-portability-codex-mcp.md"
+  ],
+  "writtenAt": "2026-05-19T21:30:00Z",
+  "agent": "echo",
+  "summary": "Portability audit Gap 2 (final code gap): ThreadlineBootstrap.registerThreadlineMcp is now async and, after the unchanged Claude ~/.claude.json + .mcp.json blocks, also registers the threadline stdio server into Codex's ~/.codex/config.toml when ~/.codex/ exists. Reuses the existing OpenAiCodexMcpToolRegistry (no duplicate TOML writer), idempotent remove-then-append, preserves operator content, non-fatal. Codex format/path empirically verified from live ~/.codex/ (Codex CLI 0.78.0) + our own mcpToolRegistry.ts docs. 4-case test + ThreadlineBootstrap regression green. Ships v1.0.13. Only Gap 6 (architecture decision) remains, deferred to operator review by design."
+}
