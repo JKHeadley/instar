@@ -1,0 +1,21 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/portability-neutral-relay-path.md",
+  "artifactPath": "upgrades/side-effects/feat-portability-neutral-relay-path.md",
+  "artifactSha256": "9cb8573e7dfbb1bf35b07707a8adf75c2382239b7012c614207882355e1a6980",
+  "coveredFiles": [
+    "src/core/IdentityRenderer.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/PostUpdateMigrator-neutralRelayPath.test.ts",
+    "tests/unit/IdentityRenderer.test.ts",
+    "specs/dev-infrastructure/portability-neutral-relay-path.md",
+    "specs/dev-infrastructure/portability-neutral-relay-path.eli16.md",
+    "docs/specs/reports/portability-neutral-relay-path-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-portability-neutral-relay-path.md"
+  ],
+  "writtenAt": "2026-05-19T20:00:00Z",
+  "agent": "echo",
+  "summary": "Portability audit Gap 4: telegram-reply.sh now also installed at framework-neutral .instar/scripts/ (not only .claude/scripts/); IdentityRenderer relay appendix points at the neutral path with a documented .claude/scripts/ fallback. Closes the case where a Codex/Gemini install was told to run a nonexistent relay script. migrateScripts mirror is install-if-missing + SHA-migrate, idempotent, Migration-Parity-compliant. 4-case migrator test + updated IdentityRenderer assertion + regression sweep of 4 adjacent test files. Ships v1.0.10, second of the v1.0.9-v1.0.14 hardening series."
+}

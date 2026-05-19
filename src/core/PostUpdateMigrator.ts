@@ -2164,6 +2164,36 @@ The user has been talking to you (possibly for days). A generic greeting like "H
           result,
         });
       }
+
+      // Framework-neutral mirror (portability audit Gap 4). The SessionStart
+      // hook and the IdentityRenderer relay appendix prefer
+      // `.instar/scripts/telegram-reply.sh` because `.instar/` exists for
+      // every runtime, whereas `.claude/scripts/` only exists for Claude
+      // Code. Before this, the script was installed ONLY under
+      // `.claude/scripts/`, so the neutral preference never resolved and a
+      // Codex/Gemini install was told (via AGENTS.md) to run a script that
+      // did not exist. Mirror the same generated content to the neutral
+      // location, install-if-missing + SHA-migrate, identical semantics to
+      // the `.claude/scripts/` copy above.
+      const neutralScriptsDir = path.join(this.config.stateDir, 'scripts');
+      try {
+        fs.mkdirSync(neutralScriptsDir, { recursive: true });
+        const neutralScriptPath = path.join(neutralScriptsDir, 'telegram-reply.sh');
+        if (!fs.existsSync(neutralScriptPath)) {
+          fs.writeFileSync(neutralScriptPath, newContent, { mode: 0o755 });
+          result.upgraded.push('.instar/scripts/telegram-reply.sh (framework-neutral relay)');
+        } else {
+          this.migrateReplyScriptToPortConfig({
+            scriptPath: neutralScriptPath,
+            newContent,
+            label: '.instar/scripts/telegram-reply.sh',
+            stateDir: this.config.stateDir,
+            result,
+          });
+        }
+      } catch (err) {
+        result.errors.push(`.instar/scripts/telegram-reply.sh: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     // Slack reply script — file-presence gated (migrator has no hasSlack

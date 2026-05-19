@@ -259,7 +259,11 @@ describe('ensureFrameworkIdentityFile', () => {
       ensureFrameworkIdentityFile(tmp, 'codex-cli', { appendTelegramRelayBlock: true });
       const out = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
       expect(out).toContain('## Telegram Relay (MANDATORY)');
-      expect(out).toContain("cat <<'EOF' | .claude/scripts/telegram-reply.sh N");
+      // Gap 4: the relay appendix now points at the framework-neutral
+      // .instar/scripts/ path (works for Codex/Gemini), with a documented
+      // .claude/scripts/ fallback note for older installs.
+      expect(out).toContain("cat <<'EOF' | .instar/scripts/telegram-reply.sh N");
+      expect(out).toContain('.claude/scripts/telegram-reply.sh');
       expect(out).toContain('Codex CLI specifically:');
     });
 
