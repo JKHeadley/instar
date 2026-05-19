@@ -1,31 +1,33 @@
-# Upgrade Guide — v1.0.7
+# Upgrade Guide — v1.0.8
 
 <!-- bump: patch -->
 
 ## What Changed
 
-Lands the canonical Instar Design Principles + Lessons Learned index at docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md.
+Adds an 8th reviewer to the /spec-converge pipeline: the lessons-aware reviewer. Its only job is to check a draft spec against the canonical Instar Design Principles + Lessons Learned index (the previous release) plus the running agent's local memory entries, then surface any documented lesson the spec contradicts or fails to engage with.
 
-This is the structured catalog every Instar agent and the upcoming /spec-converge lessons-aware reviewer (8th reviewer, separate PR) consult before drafting a new spec or approving one. 10 foundational principles (Structure>Willpower, Signal-vs-Authority, Migration Parity, Testing Integrity, Agent Awareness, Zero-Failure, LLM-Supervised Execution, UX & Agent Agency, Intent Engineering, Comprehensive-First). 17 architectural lessons (AGENT.md bloat, context-death, topology check, external cross-model review, state-detection robustness, side-effects review, bug-fix evidence, active follow-through, ELI16 required, release notes in same PR, External Operation Safety, Destructive-Tool Containment, Parallel Dev Isolation, PR Review Hardening, Authorization Policy, Project Scope, Integrated-Being Ledger). 39 behavioral lessons across communication, lifecycle, testing, autonomy, and platform-specific patterns.
+This is the structural fix for the recurrence pattern we just walked through: across six recently-merged primitive PRs, multiple specs backtracked on already-documented lessons — the AGENT.md context-bloat trap, the Migration Parity standard, the Testing Integrity standard, the install-if-missing wedge for built-in hooks. None of the seven existing reviewers (4 internal perspective-based + 3 external cross-model) carried the brief "does this spec respect what we've already learned." The author was running convergence on their own spec under hybrid-C pre-authorization that included a self-verify step against the foundational specs they themselves had written — a circular check that surfaced nothing.
 
-Sourced from CLAUDE.md Standards, 45 .instar/memory/feedback_*.md entries, docs/specs/ (TESTING-INTEGRITY-SPEC, EXTERNAL-OPERATION-SAFETY-SPEC, COMPREHENSIVE-DESTRUCTIVE-TOOL-CONTAINMENT-SPEC, PARALLEL-DEV-ISOLATION-SPEC, PR-REVIEW-HARDENING-SPEC, AUTHORIZATION-POLICY-SPEC, PROJECT-SCOPE-SPEC, INTENT-ENGINEERING-SPEC, integrated-being-ledger-v2), docs/UX-AND-AGENT-AGENCY-STANDARD.md, docs/LLM-SUPERVISED-EXECUTION.md, docs/E2E-TESTING-STANDARD.md, docs/signal-vs-authority.md, and the Echo AGENT.md + USER.md identity files.
+The lessons-aware reviewer breaks the circle by injecting a reviewer whose only context is the catalog of paid-for lessons, independent of the spec author's framing. When a spec contradicts a lesson, the reviewer flags it as a critical finding. When a spec touches a surface a lesson covers but never engages with the lesson, the reviewer flags it as a high finding. Findings are signals, not authority — the convergence orchestrator + spec author + user (via the approved tag) decide whether to ship.
 
-Compiled in response to a real backtrack: the conversational-action primitive draft inlined a catalog block into AGENT.md, violating three already-built defenses against AGENT.md bloat (ContextHierarchy, Playbook, Self-Knowledge Tree) plus the Structure-over-Willpower principle. The compromise to use abbreviated convergence under hybrid-C pre-authorization made the failure structural — the "self-verify against foundational specs" step is circular when the same author writes both the spec and the foundational reference. This index closes that gap by giving the lessons-aware reviewer (next PR) a single source of truth to check against.
+Two artifacts: a reviewer prompt template at skills/spec-converge/templates/reviewer-lessons-aware.md and a SKILL.md update that declares the reviewer, changes references from seven reviewers to eight, and locks the lessons-aware reviewer as non-skippable even in pattern-instance abbreviated convergence. v0.1 enforcement is prompt-level — the SKILL.md states the reviewer MUST run. v0.2 will add a deterministic check in the convergence-tag writer that refuses to stamp the spec without a lessons-aware findings section in the report.
+
+Bootstrap exception applied: this spec ships the reviewer itself, so the reviewer cannot run through itself. A manual lessons-aware check is documented in the spec body against the canonical index — same bootstrap pattern /spec-converge used when first introduced.
 
 ## What to Tell Your User
 
-- "The full list of every Instar principle, standard, and lesson is now in one place. The spec-converge reviewer will read it before approving any new spec, so we stop forgetting hard-earned lessons every time we design something new."
+- "The spec-converge skill now has an eighth reviewer whose only job is to check a draft against everything we've already learned. The four internal perspective reviewers and three external cross-model reviewers stayed the same; the new one reads the principles and lessons index that landed in the previous release and flags anything the spec contradicts or forgets to engage with. This is the structural defense against the backtracks we hit when the spec author was also the one running convergence under pre-authorization."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Canonical principles + lessons index | Read docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md before drafting any new spec. Cite engaged principles in spec frontmatter under lessons-engaged. |
-| Lookup by category | Part 1 = principles (P1-P10), Part 2 = architectural lessons (L1-L17), Part 3 = behavioral lessons (B1-B39). |
-| Maintenance pattern | Append-only catalog; old lessons stay even after infrastructure absorbs them, because new contributors need the why. |
+| Lessons-aware reviewer (8th in /spec-converge) | Runs automatically on every convergence round. Findings are surfaced in the convergence report alongside the other seven reviewers' output. |
+| Non-skippable in abbreviated convergence | Pattern-instance abbreviated convergence may skip the three externals to save cost, but the lessons-aware reviewer always runs — the structural defense against circular self-verify. |
+| Per-agent lessons loaded | Reviewer reads the running agent .instar/memory/feedback_*.md entries plus the canonical index, so per-agent specific lessons surface even before promotion. |
 
 ## Deferred (Tracked Follow-ups)
 
-- Lessons-aware reviewer (8th /spec-converge reviewer that consumes this index) — separate PR, next.
-- Re-audit of 6 already-merged PRs (#252-#255 + foundationals) using the new reviewer; amendment PRs for critical findings (Hook stamp vs Migration Parity §4, Sentinel ship-order vs backfill).
-- Migration Parity backfills across five primitives that deferred their PostUpdateMigrator entries.
+- v0.2 deterministic convergence-tag enforcement: refuse to write the review-convergence tag unless the report contains a lessons-aware findings section.
+- v0.2 cross-repo reviewer: today the prompt assumes a single agent memory location; cross-repo specs need disambiguation between author memory and Echo memory.
+- Re-audit of the six already-merged primitive PRs (#252 through #256 plus foundationals) using the new reviewer; amendment PRs for the critical findings already catalogued (Hook stamp pattern vs Migration Parity built-in always-overwrite rule; Sentinel ship-order vs backfill).

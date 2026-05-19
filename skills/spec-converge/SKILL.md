@@ -69,6 +69,7 @@ The skill spawns reviewers in parallel:
 - **Scalability/performance.** Hot-path cost, concurrent writes, memory churn, fail-open semantics, hook latency.
 - **Adversarial.** Misbehaving-session scenarios — bad-entry poisoning, self-reinforcing loops, stale claims, authority ambiguity, kind gaming.
 - **Integration/deployment.** Migration, backup/restore, multi-machine, config knobs, dashboard surface, rollback.
+- **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, and (c) behavioral lessons violated by agent-facing surfaces the spec proposes. Catches the "Phase 2" anti-pattern and the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`).
 
 **External reviewers (cross-model, via the /crossreview pattern):**
 
@@ -78,19 +79,21 @@ The skill spawns reviewers in parallel:
 
 Each reviewer receives the spec, the architectural context docs referenced in the spec (`docs/signal-vs-authority.md`, `docs/integrated-being.md`, relevant subsystem docs), and a prompt specific to their perspective. Each produces a structured finding list.
 
-All seven reviewers run in parallel. Their findings are collected.
+All **eight** reviewers run in parallel. Their findings are collected.
+
+**The lessons-aware reviewer is not optional**, even in pattern-instance abbreviated convergence. Abbreviated convergence may skip external models (one round instead of multiple) but must NOT skip the lessons-aware pass — that's the only defense against the circular self-verify problem documented at `feedback_spec_converge_pre_auth_circular`. When a spec author runs convergence on their own spec, the lessons-aware reviewer is the structural check that catches what the author missed.
 
 ### Phase 2 — Spec update
 
 The skill reads all findings, groups duplicates, prioritizes by severity, and rewrites the spec to address each substantive finding. Trivial/cosmetic findings are noted but may be batched.
 
-The spec update is ONE coherent edit of the spec document — not seven separate patches. The agent treats the findings as a single synthesis input.
+The spec update is ONE coherent edit of the spec document — not eight separate patches. The agent treats the findings as a single synthesis input.
 
 Every update preserves the spec's structure. Changes are additive (new sections for new concerns) or rewrites of existing sections (when a finding reveals a design flaw).
 
 ### Phase 3 — Convergence check
 
-After the spec is updated, the skill runs another full review round (all seven reviewers, in parallel, on the updated spec).
+After the spec is updated, the skill runs another full review round (all eight reviewers, in parallel, on the updated spec).
 
 Convergence criterion: **the new round produces no material new issues.** "Material" means any finding that would require a spec change if unaddressed. Cosmetic findings, repeats of already-addressed concerns, and minor phrasing quibbles are non-material.
 
@@ -158,7 +161,7 @@ The skill does NOT auto-apply `approved: true`. That requires explicit human act
 
 - It does not build code. That's `/instar-dev`'s job, after both tags are present.
 - It does not relax convergence criteria to avoid iteration. 10-iteration cap exists to surface "this design is too confused to review" rather than to force false convergence.
-- It does not skip reviewer perspectives. All seven run on every round.
+- It does not skip reviewer perspectives. All eight run on every round.
 - It does not auto-approve on behalf of the user. Approval is the user's structural contribution to the process.
 
 ## Bootstrap exception
@@ -176,7 +179,7 @@ The convergence check is structural. If the LLM comparator finds new material is
 A smaller finding count is NOT convergence. Convergence is zero material findings in a new round.
 
 ### Skipping a reviewer perspective to ship faster
-All four internal reviewers AND all three external reviewers run on every round. Skipping is visible in the iteration log and fails the report validation.
+All five internal reviewers (security, scalability, adversarial, integration, lessons-aware) AND all three external reviewers run on every round. Skipping is visible in the iteration log and fails the report validation. During pattern-instance abbreviated convergence, the externals (GPT/Gemini/Grok) may be skipped to save cost, but the lessons-aware reviewer MUST run — it's the only structural defense against the spec-converge-pre-auth-circular failure mode.
 
 ### Rewriting the spec between iterations to hide findings
 Spec edits must address findings, not evade them. The iteration log records both the finding and the resolution. An edit that changes the spec to make the finding "not applicable" without actually solving the concern is caught at the next review round.
