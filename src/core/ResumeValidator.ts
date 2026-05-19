@@ -19,9 +19,8 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import type { IntelligenceProvider } from './types.js';
+import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 
 export interface TopicHistoryProvider {
   searchLog(opts: { topicId: number; limit: number }): Array<{ text: string; fromJustin?: boolean; fromUser?: boolean }>;
@@ -35,6 +34,12 @@ export interface ResumeValidatorDeps {
   evaluateFn?: (prompt: string) => Promise<string>;
   /** Override session JSONL reader for testing */
   readSessionJsonl?: (uuid: string) => string;
+  /**
+   * Runtime that produced the session being validated. Drives transcript
+   * path resolution via FrameworkSessionStore (portability audit Gap 3).
+   * Defaults to 'claude-code' — historical behavior, Claude unchanged.
+   */
+  framework?: 'claude-code' | 'codex-cli';
 }
 
 /**
@@ -105,14 +110,16 @@ export async function llmValidateResumeCoherence(
     if (deps.readSessionJsonl) {
       sessionContext = deps.readSessionJsonl(resumeUuid);
     } else {
-      const projectHash = projectDir.replace(/\//g, '-');
-      const jsonlPath = path.join(
-        os.homedir(),
-        '.claude', 'projects', projectHash,
-        `${resumeUuid}.jsonl`
-      );
+      // Gap 3: resolve per-framework. Default claude-code reproduces the
+      // exact prior path (.claude/projects/<hash>/<uuid>.jsonl); codex-cli
+      // globs ~/.codex/sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl.
+      const jsonlPath = resolveFrameworkTranscriptPath({
+        framework: deps.framework ?? 'claude-code',
+        sessionId: resumeUuid,
+        projectDir,
+      });
 
-      if (fs.existsSync(jsonlPath)) {
+      if (jsonlPath && fs.existsSync(jsonlPath)) {
         try {
           const stat = fs.statSync(jsonlPath);
           const fd = fs.openSync(jsonlPath, 'r');

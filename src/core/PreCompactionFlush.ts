@@ -42,6 +42,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
+import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 
 export interface PreCompactionFlushConfig {
   /** Master switch. Default false. */
@@ -66,6 +67,15 @@ export interface PreCompactionFlushDeps {
   agentLabel?: string;
   /** Optional override for transcript root (testing). Defaults to ~/.claude/projects. */
   claudeProjectsRoot?: string;
+  /**
+   * Runtime that produced this session. Drives transcript-path resolution
+   * via FrameworkSessionStore (portability audit Gap 3). Defaults to
+   * 'claude-code' — the historical behavior, so Claude installs are
+   * byte-for-byte unchanged.
+   */
+  framework?: 'claude-code' | 'codex-cli';
+  /** Optional override for the Codex sessions root (testing). */
+  codexSessionsRoot?: string;
   /** Now provider — overridable for tests. */
   now?: () => Date;
 }
@@ -252,9 +262,16 @@ export class PreCompactionFlush {
   private resolveTranscriptPath(payload: PreCompactPayload): string {
     if (payload.transcript_path) return payload.transcript_path;
     if (!payload.session_id) return '';
-    const root = this.deps.claudeProjectsRoot ?? path.join(os.homedir(), '.claude', 'projects');
-    const encoded = this.deps.projectDir.replace(/[\/.]/g, '-');
-    return path.join(root, encoded, `${payload.session_id}.jsonl`);
+    const framework = this.deps.framework ?? 'claude-code';
+    return resolveFrameworkTranscriptPath({
+      framework,
+      sessionId: payload.session_id,
+      projectDir: this.deps.projectDir,
+      rootOverride:
+        framework === 'codex-cli'
+          ? this.deps.codexSessionsRoot
+          : this.deps.claudeProjectsRoot,
+    });
   }
 
   private readTranscriptTail(transcriptPath: string): string | null {
