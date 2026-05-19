@@ -172,6 +172,7 @@ export class PostUpdateMigrator {
 
     this.migrateHooks(result);
     this.migrateClaudeMd(result);
+    this.migrateFrameworkShadowCapabilities(result);
     this.migrateScripts(result);
     this.migrateSettings(result);
     this.migrateConfig(result);
@@ -2146,6 +2147,107 @@ The user has been talking to you (possibly for days). A generic greeting like "H
         fs.writeFileSync(claudeMdPath, content);
       } catch (err) {
         result.errors.push(`CLAUDE.md write: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /**
+   * Mirror capability-instruction sections from the freshly-patched CLAUDE.md
+   * into any non-Claude framework shadows (AGENTS.md, GEMINI.md) that exist
+   * on disk. Portability audit Gap 6 minimal-shim implementation:
+   * `generateClaudeMd` + `migrateClaudeMd` produce a rich capability/
+   * instructions document for Claude Code, but Codex/Gemini shadows had no
+   * equivalent — agents on those runtimes received the canonical identity
+   * (Gap 1, shipped) but none of the "here's what you can do" sections.
+   *
+   * The shim slices each known capability section out of CLAUDE.md (from its
+   * marker through the start of the next top-level heading) and appends any
+   * section missing from the shadow. The section bodies are NOT duplicated
+   * — they are literally copied from the just-patched CLAUDE.md, so the two
+   * cannot drift. Runs AFTER `migrateClaudeMd` so the source is current.
+   *
+   * Idempotent: each section is only appended when its marker is absent from
+   * the shadow. No-op when CLAUDE.md is absent or no shadow exists. Safe for
+   * Claude-only installs (they have no AGENTS.md/GEMINI.md so nothing
+   * happens). A full refactor that extracts the section *bodies* into a
+   * shared array is deliberately NOT done here per the operator's
+   * "minimal shim" decision — that would touch ~360 lines of inline content
+   * in `migrateClaudeMd` and is high-risk for low marginal benefit.
+   */
+  private migrateFrameworkShadowCapabilities(result: MigrationResult): void {
+    const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
+    if (!fs.existsSync(claudeMdPath)) {
+      result.skipped.push('shadow capabilities (CLAUDE.md absent — nothing to mirror)');
+      return;
+    }
+    let claudeMd: string;
+    try {
+      claudeMd = fs.readFileSync(claudeMdPath, 'utf-8');
+    } catch (err) {
+      result.errors.push(`shadow capabilities: CLAUDE.md read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    // Markers identifying each capability section migrateClaudeMd may have
+    // ensured exists in CLAUDE.md. Kept in document order so appended
+    // sections preserve narrative ordering in the shadow.
+    const markers = [
+      '### Self-Discovery',
+      '**Private Viewing**',
+      '**Cloudflare Tunnel**',
+      '**Dashboard**',
+      '**File Viewer',
+      '### Coherence Gate',
+      '### External Operation Safety',
+      '### Playbook — Adaptive Context Engineering',
+      '## Threadline Network (Agent-to-Agent Communication)',
+    ];
+
+    for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
+      const shadowPath = path.join(this.config.projectDir, shadowName);
+      if (!fs.existsSync(shadowPath)) continue;
+
+      let shadowContent: string;
+      try {
+        shadowContent = fs.readFileSync(shadowPath, 'utf-8');
+      } catch (err) {
+        result.errors.push(`${shadowName} read: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      let appended = shadowContent;
+      let mirrored = 0;
+      for (const marker of markers) {
+        if (appended.includes(marker)) continue;
+        const start = claudeMd.indexOf(marker);
+        if (start < 0) continue;
+        // Slice from the marker through the start of the next top-level
+        // heading (##/### line) or EOF. The leading "\n" guard avoids
+        // matching headings inside fenced code blocks at column 0 only
+        // when they begin a line.
+        const after = claudeMd.slice(start);
+        // Skip past the marker's own header line, then look for the next
+        // heading. Without this, a marker that itself starts with "###"
+        // would zero-length match.
+        const nlAfterMarker = after.indexOf('\n');
+        const searchFrom = nlAfterMarker >= 0 ? nlAfterMarker + 1 : 0;
+        const tail = after.slice(searchFrom);
+        const nextRel = tail.search(/(^|\n)(##|###) [^#\n]/);
+        const sectionEnd = nextRel >= 0 ? searchFrom + nextRel : after.length;
+        const section = after.slice(0, sectionEnd).trimEnd();
+        appended = appended.trimEnd() + '\n\n' + section + '\n';
+        mirrored++;
+      }
+
+      if (mirrored > 0) {
+        try {
+          fs.writeFileSync(shadowPath, appended);
+          result.upgraded.push(`${shadowName}: mirrored ${mirrored} capability section(s) from CLAUDE.md`);
+        } catch (err) {
+          result.errors.push(`${shadowName} write: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        result.skipped.push(`${shadowName}: capability sections already present`);
       }
     }
   }

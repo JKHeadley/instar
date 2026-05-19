@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/portability-shadow-capabilities.md",
+  "artifactPath": "upgrades/side-effects/feat-portability-shadow-capabilities.md",
+  "artifactSha256": "8a569d590ad5d40be6e930d88eb03adbdbe13eeed0df1a380fc567e04933b8e6",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/PostUpdateMigrator-shadowCapabilities.test.ts",
+    "specs/dev-infrastructure/portability-shadow-capabilities.md",
+    "specs/dev-infrastructure/portability-shadow-capabilities.eli16.md",
+    "docs/specs/reports/portability-shadow-capabilities-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-portability-shadow-capabilities.md"
+  ],
+  "writtenAt": "2026-05-19T22:00:00Z",
+  "agent": "echo",
+  "summary": "Portability audit Gap 6 (final code gap, operator-chosen minimal shim): new migrateFrameworkShadowCapabilities runs after migrateClaudeMd. For each existing non-Claude shadow (AGENTS.md, GEMINI.md), slices well-known capability sections out of the just-patched CLAUDE.md (Self-Discovery, Private Viewing, Cloudflare Tunnel, Dashboard, File Viewer, Coherence Gate, External Operation Safety, Playbook, Threadline) and appends any missing ones. Section bodies LITERALLY copied — never duplicated in source — so Claude/non-Claude cannot drift. Idempotent; no-op for Claude-only installs. 6-case test. Ships v1.0.14, closes the v1.0.0 cross-framework portability audit at 6/6."
+}
