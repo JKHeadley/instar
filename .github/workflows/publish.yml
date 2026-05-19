@@ -59,20 +59,41 @@ jobs:
         if: steps.guide-check.outputs.skip != 'true'
         id: bump
         run: |
-          # Derive next version from what's actually on npm, not from package.json.
-          # This prevents collisions when queued runs or manual bumps leave
-          # package.json out of sync with the registry.
+          # Version-truth policy (added 2026-05-19 after the v1.0.0 deployment
+          # misalignment incident — docs/incidents/2026-05-19-v1-deployment-misalignment.md):
+          #
+          # package.json is the source of authority for an operator-intended
+          # version. The registry is the source of truth for what already
+          # shipped. Reconcile them:
+          #
+          #   LOCAL  > NPM  → publish at LOCAL (operator-intended leap:
+          #                   major, minor, or an explicit patch jump)
+          #   LOCAL == NPM  → routine patch: bump from NPM (+1 patch). This is
+          #                   the common case — a PR that does not touch
+          #                   package.json leaves LOCAL equal to the last
+          #                   released version.
+          #   LOCAL  < NPM  → stale package.json (e.g. a queued run that landed
+          #                   after an earlier publish already bumped). Do NOT
+          #                   downgrade — bump from NPM (+1 patch).
+          #
+          # The old behavior (always derive from NPM, ignore package.json) made
+          # an operator-intended major bump structurally impossible. That is the
+          # exact failure this policy closes.
           NPM_VERSION=$(npm view instar version 2>/dev/null || echo "0.0.0")
-          echo "npm has: $NPM_VERSION"
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          echo "npm has:        $NPM_VERSION"
+          echo "package.json:   $LOCAL_VERSION"
 
-          # Parse semver and increment patch
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$NPM_VERSION"
-          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          # Resolution policy lives in scripts/resolve-publish-version.mjs so it
+          # is unit-tested (tests/unit/resolve-publish-version.test.ts) rather
+          # than buried in inline bash.
+          NEXT=$(node scripts/resolve-publish-version.mjs "$LOCAL_VERSION" "$NPM_VERSION")
+          echo "resolved:       $NEXT"
 
           # Apply to package.json
           npm version "$NEXT" --no-git-tag-version --allow-same-version
           echo "version=$NEXT" >> "$GITHUB_OUTPUT"
-          echo "Bumped npm $NPM_VERSION → $NEXT"
+          echo "Resolved publish version: $NEXT"
 
       - name: Rename NEXT.md to version-specific guide
         if: steps.guide-check.outputs.skip != 'true'

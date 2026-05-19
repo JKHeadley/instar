@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/publish-version-truth.md",
+  "artifactPath": "upgrades/side-effects/feat-publish-version-truth.md",
+  "artifactSha256": "c0988af2478fdbe3c83766128118437336a08ef544513839d053f01b61aa72ba",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "scripts/resolve-publish-version.mjs",
+    "tests/unit/resolve-publish-version.test.ts",
+    "specs/dev-infrastructure/publish-version-truth.md",
+    "specs/dev-infrastructure/publish-version-truth.eli16.md",
+    "docs/specs/reports/publish-version-truth-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-publish-version-truth.md"
+  ],
+  "writtenAt": "2026-05-19T19:20:00Z",
+  "agent": "echo",
+  "summary": "Publish workflow honors package.json as operator version authority. Resolution policy extracted to scripts/resolve-publish-version.mjs (LOCAL>NPM → honor LOCAL; LOCAL==NPM → patch+1; LOCAL<NPM → stale, patch+1). 9-case unit test including the exact 2026-05-19 incident regression. Closes the documented root cause of the deployment misalignment. Minimal prerequisite for the v1.0.0 cut — NOT the full deployment-lockdown spec (tracked separately in topic 10873)."
+}
