@@ -58,6 +58,7 @@ import {
 import type { InstarConfig } from '../core/types.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
+import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -377,6 +378,16 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   const claudeMd = generateClaudeMd(projectName, identity.name, port, false);
   fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMd);
   console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+
+  // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
+  // from canonical .instar/AGENT.md so a Codex/Gemini install has its
+  // identity file from init-time, not only after the first server spawn.
+  // claude-code is intentionally skipped — its rich CLAUDE.md above owns
+  // that filename.
+  const shadows = renderNonClaudeIdentityShadows(projectDir, { stateDir });
+  for (const s of shadows) {
+    console.log(`  ${pc.green('✓')} Created ${path.relative(projectDir, s)}`);
+  }
 
   // Write .gitignore
   const gitignore = `# Instar per-machine state (sessions, logs, secrets)
@@ -944,6 +955,13 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
     generateClaudeMd(agentName, agentName, port, false),
   );
   console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+
+  // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
+  // from canonical .instar/AGENT.md — see the paired call in the primary
+  // init path. claude-code is intentionally skipped.
+  for (const s of renderNonClaudeIdentityShadows(projectDir, { stateDir })) {
+    console.log(`  ${pc.green('✓')} Created ${path.relative(projectDir, s)}`);
+  }
 
   // Create .claude/ structure
   const claudeDir = path.join(projectDir, '.claude');

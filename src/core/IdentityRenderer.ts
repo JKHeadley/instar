@@ -294,6 +294,51 @@ export function ensureFrameworkIdentityFile(
 }
 
 /**
+ * Render every known framework identity shadow EXCEPT claude-code.
+ *
+ * `instar init` writes a rich, Claude-Code-specific CLAUDE.md via
+ * `generateClaudeMd()` (the capability/instructions document — not an
+ * identity render). That file legitimately owns the CLAUDE.md filename.
+ * But before this helper, init wrote NOTHING for non-Claude runtimes: a
+ * Codex install got a CLAUDE.md (which Codex ignores) and no AGENTS.md,
+ * so identity wasn't auto-loaded until the first server spawn called
+ * `ensureFrameworkIdentityFile`. This closes that init-time gap
+ * additively: it produces AGENTS.md / GEMINI.md (and any future
+ * non-Claude shadow) from the canonical `.instar/AGENT.md`, and
+ * deliberately skips `claude-code` so the rich CLAUDE.md is never
+ * clobbered.
+ *
+ * Idempotent and best-effort: no-ops when AGENT.md is absent, never
+ * throws into the init flow (init must not fail because a shadow could
+ * not be written). Returns the shadow paths written.
+ */
+export function renderNonClaudeIdentityShadows(
+  projectDir: string,
+  options: { stateDir?: string; appendTelegramRelayBlock?: boolean } = {},
+): ReadonlyArray<string> {
+  const nonClaude = Object.keys(FRAMEWORK_SHADOW_FILES).filter(
+    (fw) => fw !== 'claude-code',
+  );
+  const sourcePath = options.stateDir
+    ? path.join(options.stateDir, 'AGENT.md')
+    : undefined;
+  // No canonical source → nothing to render. Not an error at init time.
+  if (resolveSource(projectDir, sourcePath) === null) return [];
+  try {
+    const result = renderIdentity({
+      projectDir,
+      frameworks: nonClaude,
+      sourcePath,
+      appendTelegramRelayBlock: options.appendTelegramRelayBlock,
+    });
+    return result.shadowsWritten;
+  } catch {
+    // Best-effort: a shadow render failure must never break `instar init`.
+    return [];
+  }
+}
+
+/**
  * Bootstrap AGENT.md from a legacy CLAUDE.md (or other shadow file).
  *
  * Used during migration when a project has a CLAUDE.md but no AGENT.md.

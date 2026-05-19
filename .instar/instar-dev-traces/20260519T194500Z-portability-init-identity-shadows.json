@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/portability-init-identity-shadows.md",
+  "artifactPath": "upgrades/side-effects/feat-portability-init-identity-shadows.md",
+  "artifactSha256": "d7c1b6b8c9cd151dea7f6776baa76045badcf7d3f684849d3e7ce998dcdf7434",
+  "coveredFiles": [
+    "src/core/IdentityRenderer.ts",
+    "src/commands/init.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/renderNonClaudeIdentityShadows.test.ts",
+    "specs/dev-infrastructure/portability-init-identity-shadows.md",
+    "specs/dev-infrastructure/portability-init-identity-shadows.eli16.md",
+    "docs/specs/reports/portability-init-identity-shadows-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-portability-init-identity-shadows.md"
+  ],
+  "writtenAt": "2026-05-19T19:45:00Z",
+  "agent": "echo",
+  "summary": "Portability audit Gap 1: init now additively renders non-Claude identity shadows (AGENTS.md/GEMINI.md) from canonical .instar/AGENT.md via new renderNonClaudeIdentityShadows helper. claude-code excluded (rich CLAUDE.md owns that filename — Gap 6 covers unification). Best-effort, idempotent, no-op-no-throw without canonical source. 5-case unit test. Ships v1.0.9, first of the v1.0.9-v1.0.14 hardening series committed to in the v1.0.8 notes."
+}
