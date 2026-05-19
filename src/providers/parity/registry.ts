@@ -15,10 +15,12 @@
 import type { ParityRule, FunctionalPrimitive } from './types.js';
 import { skillParityRule } from './rules/skillParityRule.js';
 import { hookParityRule } from './rules/hookParityRule.js';
+import { memoryParityRule } from './rules/memoryParityRule.js';
 
 const RULES: Map<FunctionalPrimitive, ParityRule> = new Map([
   [skillParityRule.primitive, skillParityRule],
   [hookParityRule.primitive, hookParityRule],
+  [memoryParityRule.primitive, memoryParityRule],
 ]);
 
 export function getParityRule(primitive: FunctionalPrimitive): ParityRule | undefined {
