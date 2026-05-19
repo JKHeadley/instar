@@ -1,0 +1,21 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/portability-session-store.md",
+  "artifactPath": "upgrades/side-effects/feat-portability-session-store.md",
+  "artifactSha256": "1750c258d436bc62d7ca68a608531dd5ea888e5dbf8abf9bccf034df7368c5a5",
+  "coveredFiles": [
+    "src/core/FrameworkSessionStore.ts",
+    "src/core/PreCompactionFlush.ts",
+    "src/core/ResumeValidator.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/FrameworkSessionStore.test.ts",
+    "specs/dev-infrastructure/portability-session-store.md",
+    "specs/dev-infrastructure/portability-session-store.eli16.md",
+    "docs/specs/reports/portability-session-store-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-portability-session-store.md"
+  ],
+  "writtenAt": "2026-05-19T21:00:00Z",
+  "agent": "echo",
+  "summary": "Portability audit Gap 3: new FrameworkSessionStore resolves session transcript paths per runtime. Claude-code = deterministic <root>/<cwd [/.]→->/<id>.jsonl (byte-identical to prior PreCompactionFlush logic, encoding empirically confirmed vs real ~/.claude/projects/). Codex-cli = glob ~/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl (format EMPIRICALLY verified from live ~/.codex/, Codex CLI 0.78.0, per Justin's direction — not guessed). PreCompactionFlush + ResumeValidator delegate to it; both gain optional framework dep defaulting to claude-code. Fixes a pre-existing latent ResumeValidator bug (slash-only cwd encoding vs real slash+dot) transparently. 7 new tests + 35 regression green. Ships v1.0.12."
+}
