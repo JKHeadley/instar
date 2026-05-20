@@ -24,6 +24,13 @@ export interface DetectedPrompt {
   sessionName: string;
   detectedAt: number;
   id: string;               // Unique prompt ID (12-char CSPRNG)
+  /**
+   * Optional auto-dismiss directive for non-blocking system prompts
+   * (e.g. Claude Code's "How is Claude doing this session?" optional survey).
+   * When set, the consumer should send `autoDismissKey` to the session and
+   * SKIP the relay/classify pipeline entirely.
+   */
+  autoDismissKey?: string;
 }
 
 export interface PromptOption {
@@ -67,6 +74,7 @@ interface PatternMatch {
   type: PromptType;
   summary: string;
   options?: PromptOption[];
+  autoDismissKey?: string;
 }
 
 /**
@@ -77,6 +85,36 @@ const PROMPT_PATTERNS: Array<{
   type: PromptType;
   test: (lines: string[], fullWindow?: string[]) => PatternMatch | null;
 }> = [
+  // Claude Code OPTIONAL session feedback survey — non-blocking.
+  // Shape: "How is Claude doing this session? (optional)" followed by
+  //        "1: Bad  2: Fine  3: Good  0: Dismiss" on one line.
+  // The session is NOT blocked — Claude continues working — so we
+  // auto-dismiss (send "0") and skip relay to avoid Telegram spam.
+  // Must run BEFORE the broad "question" pattern.
+  {
+    type: 'selection',
+    test(lines, fullWindow) {
+      const haystack = (fullWindow ?? lines).join('\n');
+      if (!/How is Claude doing this session\?/i.test(haystack)) return null;
+      // Confirm the canonical option row to avoid matching paraphrases
+      // in normal agent output.
+      const hasOptionRow = /\b0\s*[:.)]\s*Dismiss\b/i.test(haystack)
+        && /\b1\s*[:.)]\s*Bad\b/i.test(haystack);
+      if (!hasOptionRow) return null;
+      return {
+        type: 'selection',
+        summary: 'Claude Code session-feedback survey (auto-dismiss — non-blocking)',
+        options: [
+          { key: '1', label: 'Bad' },
+          { key: '2', label: 'Fine' },
+          { key: '3', label: 'Good' },
+          { key: '0', label: 'Dismiss' },
+        ],
+        autoDismissKey: '0',
+      };
+    },
+  },
+
   // File creation/edit permission: "Do you want to create <path>?" with numbered options
   {
     type: 'permission',
@@ -339,6 +377,7 @@ export class InputDetector extends EventEmitter {
       sessionName,
       detectedAt: Date.now(),
       id: randomBytes(6).toString('base64url'),
+      autoDismissKey: match.autoDismissKey,
     };
 
     emitted.add(fingerprint);
@@ -369,6 +408,11 @@ export class InputDetector extends EventEmitter {
     // Pre-filter: skip if terminal shows Claude Code's standard status bar UI
     // These are persistent UI elements, NOT interactive prompts
     const tailText = lines.slice(-3).join('\n');
+    // Optional session-feedback survey is non-blocking; the structural pattern
+    // above (PROMPT_PATTERNS) already handles auto-dismiss. Skip LLM here so
+    // the 5-min cooldown isn't burned on a prompt that doesn't block anything.
+    const llmHaystack = lines.slice(-20).join('\n');
+    if (/How is Claude doing this session\?/i.test(llmHaystack)) return;
     if (/bypass permissions on/i.test(tailText)) return;
     if (/esc to interrupt/i.test(tailText) && !/Do you want|Would you like|proceed\?/i.test(tailText)) return;
     if (/shift\+tab to cycle/i.test(tailText) && !/proceed\?|approve/i.test(tailText)) return;
@@ -485,12 +529,18 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
   /**
    * Called when input is sent to a session — clears dedup cache
    * since the prompt has been answered.
+   *
+   * Also clears the per-session 5-minute LLM relay cooldown so that
+   * a follow-up prompt (e.g. the next question in a multi-question form)
+   * isn't silently blocked. Rate-limiting on the LLM call is still
+   * provided by stableCount + post-emission cooldown.
    */
   onInputSent(sessionName: string): void {
     this.emittedPrompts.delete(sessionName);
     this.stableCount.delete(sessionName);
     this.lastOutput.delete(sessionName);
     this.lastEmissionTime.delete(sessionName); // Clear cooldown so new prompts can fire
+    this.llmRelayTimestamps.delete(sessionName); // Allow LLM to fire for follow-up prompts
     this.noPromptCache.delete(sessionName); // Cleared so post-input output gets re-classified
     // Bump generation so any mid-flight llmDetect drops its NO_PROMPT write.
     this.cacheGeneration.set(sessionName, (this.cacheGeneration.get(sessionName) ?? 0) + 1);

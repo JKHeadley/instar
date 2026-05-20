@@ -123,6 +123,29 @@ detector (Layer 4) ships in the same follow-up release. Spec:
 Side-effects review:
 `upgrades/side-effects/agent-worktree-convention-layer-1-2-5.md`.
 
+**6. Prompt Gate — auto-dismiss Claude Code's optional session-feedback survey, and reset detector state after every Telegram response.**
+Two related fixes to the Prompt Gate detector and relay path, both
+reported live in Echo's Telegram topic 9029 on 2026-05-20 with screenshots
+showing the same survey re-relayed every 25–50 minutes across multiple
+hours. (a) Claude Code's optional "How is Claude doing this session?"
+widget is non-blocking — the session continues working whether or not
+the operator answers — but the LLM-based detector was classifying it as
+a `selection` prompt and re-relaying to Telegram on every 5-minute LLM
+cooldown expiry. A new structural pattern in `PROMPT_PATTERNS` matches
+the survey by both its question text and its canonical option row
+(`1: Bad / 0: Dismiss`), tags the prompt with a new `autoDismissKey`
+directive on `DetectedPrompt`, and the detected-prompt handler in
+`server.ts` honours the directive: sends the dismiss key, resets
+detector state, skips the classify/relay pipeline entirely. A second
+pre-filter in `llmDetect()` short-circuits the survey before any LLM
+tokens are spent. (b) When a user clicked a Telegram button,
+`telegram.onPromptResponse` called `sessionManager.sendKey()` but did
+not call `InputDetector.onInputSent()`, so the per-session 5-minute
+LLM relay cooldown could silently swallow the next prompt in a
+multi-question form. `onInputSent` now also clears
+`llmRelayTimestamps`, and both `onPromptResponse` and
+`onPromptTextResponse` invoke it after a successful send.
+
 **3. Fleet-watchdog bind-failure probe.**
 The watchdog now catches the failure mode where a lifeline reports healthy
 to launchd but its server is locked out of its configured port (typically a
@@ -174,6 +197,35 @@ sections, sliced directly from CLAUDE.md so the content is identical.
 Verified by six unit tests covering append, idempotent re-run, both shadows,
 no-shadow no-op, no-CLAUDE.md no-op, identity preservation.
 
+Prompt Gate survey-spam reproduction prior: Telegram topic 9029
+screenshots dated 6:23 AM through 8:31 AM (2026-05-20, single tmux
+session) show identical "Your agent needs you to choose" relay messages
+re-posted at 6:23, 6:51, 7:16, 7:38, 8:31 — the cadence matches the
+5-minute LLM relay cooldown re-firing on the persistent survey text.
+The relayed `summary` strings ("Framework is asking for user feedback
+rating on Claude's performance this session", "System feedback question:
+How is Claude doing this session?", "Claude Code feedback prompt asking
+for session quality rating", "Claude Code is asking for session quality
+feedback with options to rate or dismiss", "Session quality feedback
+prompt asking user to rate how the agent is performing") all paraphrase
+the same underlying Claude Code prompt and all carry the same
+`1: Bad / 2: Fine / 3: Good` options — confirming the LLM-detection
+path was the entry point and the fingerprint kept rotating because
+surrounding terminal context (task counts, elapsed time) shifted between
+captures. Prompt Gate survey-spam evidence after: new unit test
+`InputDetector.pattern.sessionFeedbackSurvey` in
+`tests/unit/PromptGate.test.ts` pins all three behaviours: (1) the
+canonical survey block emits a `selection` prompt with
+`autoDismissKey: '0'`; (2) the question text alone (without the
+canonical option row) is NOT misclassified as a survey; (3) unrelated
+numbered prompts are not labelled as the survey. A second unit test
+`InputDetector.onInputSent` pins the `llmRelayTimestamps` clear-on-response
+behaviour. Live verification cannot be exercised in dev because the
+survey is fired by Claude Code itself on an opaque internal cadence;
+post-deploy on Echo's host, the Telegram relay history for topic 9029
+should show zero "Claude Code session-feedback survey" relays even as
+agent sessions cross multi-hour durations.
+
 Bind-failure probe evidence: today's AI Guy outage
 (`~/Documents/Projects/ai-guy/.instar/logs/lifeline-launchd.log` records
 "Suppressing duplicate server down notification (4163 suppressed this
@@ -203,6 +255,7 @@ guarantee the spec promises.
 - "You can now pick which AI runtime to use when you set up an Instar agent. Pass the framework flag to instar init for a Codex-only install. Default behavior is unchanged for everyone else. The framework flag is the first piece of a four-part install upgrade — the next three pieces add the same choice to setup, gate Claude-Code-only files behind the choice, and route the setup wizard through whichever runtime you pick."
 - "Codex and Gemini agents now also get the same capability instructions Claude agents have — discover, private views, coherence gate, agent network. This closes the v1.0 cross-framework portability arc."
 - "If two instar agents end up configured for the same port (configuration drift, leftover smoke-test fixtures, etc.), you'll now get a clear Telegram alert within about 15 minutes naming both agents involved. Previously the lifeline could spin silently for days while the supervisor suppressed its own server-down notifications as duplicates."
+- "Prompt Gate is quieter now. It used to keep pinging you about Claude's optional session-feedback survey every twenty-something minutes — I just dismiss that one for you since it doesn't actually block anything. And when you answer a real Telegram prompt, the next prompt in a multi-step form will reach you immediately instead of getting swallowed by a five-minute cooldown."
 - "Your instar agents have a new way to create git worktrees that the macOS sandbox can't kick them out of mid-session. There's a new instar worktree create command that places the worktree inside the agent's own home directory — the only place the sandbox can't revoke access to. Agents you create from now on will know about this convention out of the box. Agents already on your machine pick it up via the next update tick — the wrapper script is installed automatically, the worktree-convention section is backfilled into their CLAUDE.md, and the worktrees-directory is created with secure permissions, no operator action needed. On every agent startup, a lightweight detector also checks the shared instar repo for any worktrees that ended up in unsafe locations (created via raw git commands before this convention existed, for example) and surfaces them as a low-priority attention item so you can decide whether to relocate them with git worktree move."
 - "I have a new way to physically pause all auto-publishing to npm — a small file at the top of the instar repo that says what release line we're on. If we're working on a major feature, I can set it to hold and the publisher will refuse to ship anything until we deliberately flip it back. This release ships with that switch already in the hold position, so no further auto-publishes happen until we choose to resume. This is the second of seven locks designed after the v1.0.0 deployment misalignment in May."
 
@@ -220,6 +273,8 @@ guarantee the spec promises.
 | Authoritative reference doc | `docs/self-knowledge/worktrees.md` — the "how do I create a worktree?" answer any future agent gets pointed at via the seed CLAUDE.md mention. |
 | Existing agents pick up the worktree convention on update | Automatic on next `instar` update tick. `PostUpdateMigrator.migrateWorktreeConvention` installs `<agent_home>/.bin/instar-worktree-create.sh` (wrapper that `exec`s into `instar worktree create`), ensures the `.gitignore` entry, creates `<agent_home>/.worktrees/` with mode `0700`. Idempotent. Refuses if `<agent_home>/.bin` is a symlink. Silently skips agents whose home isn't under `~/.instar/agents/<name>/`. |
 | Existing agents pick up the Worktree Convention CLAUDE.md section on update | Automatic on next update tick (Migration Parity Standard backfill in `migrateClaudeMd`). Section is mirrored through to AGENTS.md / GEMINI.md for Codex/Gemini agents via the shadow-capability mirror. |
+| Auto-dismiss Claude Code's optional session-feedback survey | Automatic. The Prompt Gate recognises the survey by its canonical option row and sends `0` (Dismiss) without relaying. |
+| Detector state reset after every Telegram prompt response | Automatic. `onPromptResponse`/`onPromptTextResponse` now invoke `InputDetector.onInputSent()`, which clears `emittedPrompts`, `stableCount`, `lastOutput`, `lastEmissionTime`, `llmRelayTimestamps`, and the `noPromptCache` (with a generation bump). |
 | Lifeline detector for misplaced worktrees | Automatic on every agent server boot. Resolves the canonical instar repo deterministically (`worktree.repoPath` config or default fallback chain), runs `git worktree list --porcelain` with a 2-second timeout, skips the main checkout and bare entries, and emits an attention-queue-shaped record (or JSONL fallback at `<stateDir>/audit/worktree-detector.jsonl` when no Telegram adapter) for every misplaced worktree. Signal-only — never blocks, never moves, never deletes. Dedupe via `worktree-misplaced:sha256(path)`. |
 | `.instar/release-tier.json` | Committed file. Set `tier` to `patch`, `minor`, `major`, or `hold` to declare the active release line. The publish workflow honors the tier before any side-effectful step. |
 | Tier `hold` engaged on release | Initial value committed as `hold`. To resume routine maintenance, edit `tier` to `patch`. |
