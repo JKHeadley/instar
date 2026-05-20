@@ -95,6 +95,14 @@ export interface HealEvent {
 const HEAL_LOG_FILENAME = 'native-module-heals.jsonl';
 
 /**
+ * Listener fired after every persisted HealEvent (success or failure).
+ * Used by the DegradationReporter bridge so heal failures surface on the
+ * user-visible alert path, not just in the jsonl observability log.
+ * Listener errors are swallowed — observability never breaks the heal.
+ */
+export type HealEventListener = (event: HealEvent) => void;
+
+/**
  * NativeModuleHealer is a process-singleton. Stateful members track
  * whether a heal has already been attempted this process so the
  * expensive rebuild doesn't run on every open() retry.
@@ -103,10 +111,24 @@ class NativeModuleHealerImpl {
   private healAttempted = false;
   private lastResult: HealEvent | null = null;
   private stateDir: string | null = null;
+  private listeners: Set<HealEventListener> = new Set();
 
   /** Configure where heal events are persisted. Optional. */
   configure(opts: { stateDir?: string | null }): void {
     if (opts.stateDir) this.stateDir = opts.stateDir;
+  }
+
+  /**
+   * Subscribe to HealEvents. Listener fires after every persisted event
+   * (both success and failure — the bridge filters on success internally
+   * so a future health-info consumer can also subscribe without
+   * duplicating the dispatch). Returns an unsubscribe function.
+   */
+  onHealEvent(listener: HealEventListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   /** Reset for testing. */
@@ -114,6 +136,7 @@ class NativeModuleHealerImpl {
     this.healAttempted = false;
     this.lastResult = null;
     this.stateDir = null;
+    this.listeners.clear();
   }
 
   /**
@@ -821,6 +844,14 @@ class NativeModuleHealerImpl {
       fs.appendFileSync(logPath, JSON.stringify(event) + '\n');
     } catch {
       /* ignore — observability shouldn't break the heal */
+    }
+
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        /* ignore — listener failures must not break the heal path */
+      }
     }
   }
 }
