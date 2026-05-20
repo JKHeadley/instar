@@ -59,6 +59,7 @@ import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
+import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
 
 export class AgentServer {
   private app: Express;
@@ -375,6 +376,11 @@ export class AgentServer {
         // a NODE_MODULE_VERSION mismatch would still get healed but its
         // observability log would be hard to find.
         NativeModuleHealer.configure({ stateDir: options.config.stateDir });
+        // Surface heal failures on the DegradationReporter alert path so a
+        // failed better-sqlite3 rebuild produces a Telegram alert instead of
+        // silently leaving SemanticMemory / TopicMemory / MemoryIndex /
+        // TokenLedger unavailable.
+        bridgeNativeHealToDegradation();
         const dbPath = path.join(serverDataDir, 'token-ledger.db');
         const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
         // Bound the first-boot scan: with deep history (eg one local agent

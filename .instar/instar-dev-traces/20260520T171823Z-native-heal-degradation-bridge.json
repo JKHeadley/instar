@@ -1,0 +1,19 @@
+{
+  "sessionId": "7cce523c-1376-4ff3-bc56-98a4cc19f4db",
+  "timestamp": "2026-05-20T17:19:00Z",
+  "artifactPath": "upgrades/side-effects/native-heal-degradation-bridge.md",
+  "specPath": "docs/specs/SELF-HEALING-REMEDIATOR-V2-SPEC.md",
+  "specRationale": "DegradationReporter is the v1 signal producer per §A28 / §A33; the spec's go-forward path treats it as the canonical alert surface for caught-exception flows. NativeModuleHealer's jsdoc explicitly names it as a consumer of HealEvents but no consumer was wired. This change adds the missing emit-site: heal-failure HealEvent → legacy DegradationReporter.report(...) → normalize() → no-matching-runbook routing per the spec's outcome matrix (line 590, 854). Pure additive observability — does not change the W-1 dispatch path, the Remediator surface, or the alert pipeline.",
+  "coveredFiles": [
+    "src/memory/NativeModuleHealer.ts",
+    "src/monitoring/NativeHealDegradationBridge.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/NativeHealDegradationBridge.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/native-heal-degradation-bridge.md",
+    "src/data/builtin-manifest.json"
+  ],
+  "phase": "complete",
+  "secondPass": true,
+  "reviewerConcurred": true
+}
