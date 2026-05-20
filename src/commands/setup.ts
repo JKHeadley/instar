@@ -861,18 +861,23 @@ export function installBootWrapper(projectDir: string): { sh: string; js: string
   const stateDir = path.join(projectDir, '.instar');
   const shPath = path.join(stateDir, 'instar-boot.sh');
 
-  // Use .cjs extension if the project has "type": "module" in package.json.
-  // Without this, Node treats the boot wrapper as ESM and `require()` fails.
-  let usesCjs = false;
-  try {
-    const pkgJson = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
-    usesCjs = pkgJson.type === 'module';
-  } catch { /* no package.json or parse error — use .js */ }
-  const jsExt = usesCjs ? '.cjs' : '.js';
-  const jsPath = path.join(stateDir, `instar-boot${jsExt}`);
-  // Clean up the other extension if it exists (prevents stale wrapper confusion)
-  const altPath = path.join(stateDir, `instar-boot${usesCjs ? '.js' : '.cjs'}`);
-  try { SafeFsExecutor.safeUnlinkSync(altPath, { operation: 'src/commands/setup.ts:837' }); } catch { /* didn't exist */ }
+  // Always write .cjs. Node treats .cjs as CommonJS regardless of the parent
+  // package.json "type" field, so the wrapper's require() calls work in both
+  // type=module and type=commonjs projects.
+  //
+  // History: this function used to pick .js vs .cjs based on package.json and
+  // DELETE the alt extension. That created a fatal failure mode: if the plist
+  // was generated when package.json had no "type": "module", it referenced .js;
+  // then if "type": "module" was later added (e.g., via an upgrade that touched
+  // package.json), the next installBootWrapper call deleted the .js file the
+  // plist still pointed at, killing launchd's ability to spawn the agent. None
+  // of the downstream self-heal (ServerSupervisor preflight, sqlite rebuild,
+  // INSTAR_SUPERVISED detection) ever ran because the boot wrapper itself was
+  // gone. See PR description for the on-the-ground failure (echo, 2026-05-20).
+  //
+  // The `.js` field name on the return value is preserved for caller compat;
+  // it now always contains a .cjs path.
+  const jsPath = path.join(stateDir, 'instar-boot.cjs');
 
   const shadowCli = path.join(stateDir, 'shadow-install', 'node_modules', 'instar', 'dist', 'cli.js');
 
@@ -1252,13 +1257,8 @@ child.on('error', (err) => {
  */
 export function ensureBootWrapper(projectDir: string): boolean {
   const stateDir = path.join(projectDir, '.instar');
-  let usesCjs = false;
-  try {
-    const pkgJson = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
-    usesCjs = pkgJson.type === 'module';
-  } catch { /* no package.json — use .js */ }
-  const jsExt = usesCjs ? '.cjs' : '.js';
-  const jsPath = path.join(stateDir, `instar-boot${jsExt}`);
+  // Always .cjs — see installBootWrapper for rationale.
+  const jsPath = path.join(stateDir, 'instar-boot.cjs');
   const shPath = path.join(stateDir, 'instar-boot.sh');
 
   if (fs.existsSync(jsPath) && fs.existsSync(shPath)) return false;

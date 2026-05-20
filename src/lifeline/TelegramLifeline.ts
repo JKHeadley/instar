@@ -2098,6 +2098,28 @@ export class TelegramLifeline {
         }
       }
 
+      // Check 4: Verify the boot wrapper path in the plist actually exists on
+      // disk. This is the failure mode that took an agent dark in the field
+      // (echo, 2026-05-20): installBootWrapper used to delete the alt-extension
+      // wrapper when package.json "type" flipped, leaving the plist's
+      // ProgramArguments pointing at a deleted file. launchd then execs a
+      // nonexistent path on every restart, and none of the downstream
+      // self-heal ever runs because the boot wrapper itself never loads.
+      // Checks 1-3 all pass in that case: the plist DOES mention
+      // 'instar-boot.js', so check 1 sees the JS wrapper; check 2 sees the
+      // node-symlink path; check 3 verifies the node binary exists. Only this
+      // check catches the wrapper-path-deleted case.
+      if (!needsRegeneration) {
+        const wrapperMatch = content.match(/<string>([^<]+instar-boot\.(cjs|js))<\/string>/);
+        if (wrapperMatch) {
+          const plistWrapperPath = wrapperMatch[1];
+          if (!fs.existsSync(plistWrapperPath)) {
+            needsRegeneration = true;
+            reason = `boot wrapper no longer exists at plist-referenced path: ${plistWrapperPath}`;
+          }
+        }
+      }
+
       if (!needsRegeneration) return;
 
       console.log(`[Lifeline] Plist self-heal: ${reason}`);

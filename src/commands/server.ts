@@ -7259,7 +7259,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
           try {
             const plistContent = fs.readFileSync(plistPath, 'utf-8');
-            if (!plistContent.includes('instar-boot.js')) {
+            // Accept either .cjs (current) or .js (legacy installs that
+            // predate the always-.cjs change). The PostUpdateMigrator
+            // handles the .js → .cjs flip; here we only flag "no node
+            // wrapper at all" as needing reinstall.
+            const hasNodeWrapper = plistContent.includes('instar-boot.cjs') ||
+                                   plistContent.includes('instar-boot.js');
+            if (!hasNodeWrapper) {
               needsReinstall = true;
               console.log(pc.yellow(`  Auto-start uses legacy format — upgrading to TCC-safe node entry point`));
             } else if (!plistContent.includes('.instar/bin/node')) {

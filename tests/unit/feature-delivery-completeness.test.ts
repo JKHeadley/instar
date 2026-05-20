@@ -125,6 +125,7 @@ describe('Feature Delivery Completeness', () => {
       'File Viewer',
       'Threadline Network',
       'Playbook',
+      'Worktree Convention',
     ];
 
     for (const section of featureSections) {
@@ -163,6 +164,8 @@ describe('Feature Delivery Completeness', () => {
       'Session Continuity',       // conditional (Telegram-only), not a universal feature
       'CONTINUATION',             // alternate check for Session Continuity
       '/api/files/',              // alternate check for File Viewer
+      'instar-boot.js',           // plist content check (migrateBootWrapperToCjs), NOT a CLAUDE.md section
+      'instar-boot.cjs',          // plist content check (migrateBootWrapperToCjs), NOT a CLAUDE.md section
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

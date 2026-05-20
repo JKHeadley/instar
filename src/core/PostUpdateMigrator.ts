@@ -31,6 +31,7 @@ import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
+import { installAutoStart } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -193,8 +194,87 @@ export class PostUpdateMigrator {
     this.migrateParitySentinelTrust(result);
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
+    this.migrateBootWrapperToCjs(result);
 
     return result;
+  }
+
+  // ── Boot-wrapper .js → .cjs plist migration ─────────────────────────
+  //
+  // Older installs generated `instar-boot.js` and a launchd plist that
+  // referenced `instar-boot.js`. Recent installBootWrapper change ships
+  // `instar-boot.cjs` always (works regardless of package.json "type"),
+  // but in-the-wild agents whose plists already point at the old `.js`
+  // path keep using it — until something deletes the .js wrapper and
+  // launchd's next restart hits a missing file (the failure mode that
+  // took echo dark on 2026-05-20).
+  //
+  // This migration:
+  //   1. Skips non-darwin (only launchd uses the plist path).
+  //   2. Reads ~/Library/LaunchAgents/ai.instar.<projectName>.plist.
+  //   3. If it references `instar-boot.js` (not `.cjs`), regenerates via
+  //      installAutoStart, which writes the new .cjs wrapper AND updates
+  //      the plist's ProgramArguments to match.
+  //   4. Idempotent: if the plist already references `.cjs`, no-op.
+  //
+  // The migration does NOT delete the old `.js` file — leaving it makes
+  // rollback safe and avoids any race where launchd is mid-restart on the
+  // old path. The relevant fix is the plist+wrapper coherence going
+  // forward, not retroactive file cleanup.
+  private migrateBootWrapperToCjs(result: MigrationResult): void {
+    if (process.platform !== 'darwin') {
+      result.skipped.push('boot-wrapper .cjs: non-darwin, no plist to migrate');
+      return;
+    }
+    const label = `ai.instar.${this.config.projectName}`;
+    const plistPath = path.join(
+      process.env.HOME ?? '',
+      'Library',
+      'LaunchAgents',
+      `${label}.plist`,
+    );
+
+    let content: string;
+    try {
+      content = fs.readFileSync(plistPath, 'utf-8');
+    } catch {
+      // No plist (not under launchd, or running under a different
+      // supervision mechanism). Not an error.
+      result.skipped.push('boot-wrapper .cjs: no launchd plist present');
+      return;
+    }
+
+    // Already migrated — plist references .cjs and not .js.
+    if (content.includes('instar-boot.cjs') && !/instar-boot\.js\b/.test(content)) {
+      result.skipped.push('boot-wrapper .cjs: plist already references .cjs');
+      return;
+    }
+
+    // No boot wrapper at all? That's a different shape (old bash-only
+    // installs, hand-rolled plists) — leave it for the lifeline's
+    // selfHealPlist to handle, since it has more context.
+    if (!content.includes('instar-boot.js') && !content.includes('instar-boot.cjs')) {
+      result.skipped.push('boot-wrapper .cjs: plist does not reference any instar-boot wrapper');
+      return;
+    }
+
+    // Regenerate via installAutoStart, which writes the new .cjs wrapper
+    // and updates the plist's ProgramArguments to point at it.
+    try {
+      const installed = installAutoStart(
+        this.config.projectName,
+        this.config.projectDir,
+        this.config.hasTelegram,
+      );
+      if (installed) {
+        result.upgraded.push('boot-wrapper .cjs: regenerated plist to reference instar-boot.cjs');
+      } else {
+        result.errors.push('boot-wrapper .cjs: installAutoStart returned false');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`boot-wrapper .cjs: ${msg}`);
+    }
   }
 
   // ── Conversational-action catalog Playbook manifest (v0.2) ─────────
