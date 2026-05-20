@@ -2574,6 +2574,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // ── Prompt Gate: detect and handle interactive prompts in sessions ──
     const promptGateConfig = config.monitoring?.promptGate;
+    let promptDetector: import('../monitoring/PromptGate.js').InputDetector | undefined;
     if (promptGateConfig?.enabled) {
       const { InputDetector } = await import('../monitoring/PromptGate.js');
       const { InputClassifier } = await import('../monitoring/InputClassifier.js');
@@ -2584,6 +2585,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         enabled: true,
         intelligence: sharedIntelligence ?? undefined,
       });
+      promptDetector = detector;
 
       const classifier = new InputClassifier({
         projectDir: config.sessions.projectDir,
@@ -2610,6 +2612,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Handle detected prompts: classify → auto-approve or relay to Telegram
       detector.on('prompt', async (prompt: import('../monitoring/PromptGate.js').DetectedPrompt) => {
         try {
+          // Non-blocking system prompts (e.g. Claude Code's optional session
+          // feedback survey) carry an autoDismissKey directive. Send the key
+          // and skip the classify/relay pipeline entirely to avoid Telegram
+          // spam on prompts that don't actually block the session.
+          if (prompt.autoDismissKey) {
+            const dismissed = sessionManager.sendKey(prompt.sessionName, prompt.autoDismissKey);
+            console.log(
+              `[PromptGate] Auto-dismissed non-blocking prompt for ${prompt.sessionName} ` +
+              `(key="${prompt.autoDismissKey}", sent=${dismissed}): ${prompt.summary}`
+            );
+            // Reset detector state so the next genuine prompt isn't blocked
+            // by the per-session cooldown.
+            detector.onInputSent(prompt.sessionName);
+            return;
+          }
+
           const classification = await classifier.classify(prompt);
 
           if (classification.action === 'auto-approve') {
@@ -2827,14 +2845,20 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           // Also resolve any pending plan prompt for this session (unblocks the hook)
           resolvePlanPromptForSession(sessionName, key);
-          return sessionManager.sendKey(sessionName, key);
+          const sent = sessionManager.sendKey(sessionName, key);
+          // Reset detector dedup / cooldown so the NEXT prompt in a multi-step
+          // form (or a fresh prompt that follows) can be detected immediately.
+          if (sent) promptDetector?.onInputSent(sessionName);
+          return sent;
         };
         telegram.onPromptTextResponse = (sessionName, text) => {
           if (!sessionManager.isSessionAlive(sessionName)) {
             console.warn(`[PromptGate] Skipping text injection — session "${sessionName}" is no longer alive`);
             return false;
           }
-          return sessionManager.sendInput(sessionName, text);
+          const sent = sessionManager.sendInput(sessionName, text);
+          if (sent) promptDetector?.onInputSent(sessionName);
+          return sent;
         };
         telegram.onRelayLeaseStart = (sessionName) => {
           const sessions = sessionManager.listRunningSessions();
@@ -2914,7 +2938,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           // Also resolve any pending plan prompt for this session (unblocks the hook)
           resolvePlanPromptForSession(sessionName, key);
-          return sessionManager.sendKey(sessionName, key);
+          const sent = sessionManager.sendKey(sessionName, key);
+          // Reset detector dedup / cooldown so a follow-up prompt isn't
+          // blocked by the per-session 5-minute LLM relay cooldown.
+          if (sent) promptDetector?.onInputSent(sessionName);
+          return sent;
         };
         telegram.onPromptTextResponse = (sessionName, text) => {
           // Pre-injection verification: confirm session is still alive
@@ -2922,7 +2950,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.warn(`[PromptGate] Skipping text injection — session "${sessionName}" is no longer alive`);
             return false;
           }
-          return sessionManager.sendInput(sessionName, text);
+          const sent = sessionManager.sendInput(sessionName, text);
+          if (sent) promptDetector?.onInputSent(sessionName);
+          return sent;
         };
         telegram.onRelayLeaseStart = (sessionName) => {
           // Find the session by tmux name and grant a relay lease

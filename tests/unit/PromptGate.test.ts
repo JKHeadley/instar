@@ -217,6 +217,81 @@ describe('InputDetector.pattern', () => {
   });
 });
 
+// ── Claude Code session-feedback survey (auto-dismiss) ────────────
+
+describe('InputDetector.pattern.sessionFeedbackSurvey', () => {
+  it('detects the optional "How is Claude doing this session?" survey and emits an autoDismissKey', () => {
+    const detector = makeDetector();
+    // Window > 5 lines so the survey lives in the larger fullWindow we pass
+    // to patterns. The structural pattern reads from the full window because
+    // the option row can be far from the tail in a busy session.
+    const output = [
+      '✻ Cooked for 2m 46s · 3 shells still running',
+      '',
+      '16 tasks (15 done, 1 open)',
+      '  ☐ Final report to topics 9984 + 10873',
+      '  ✔ Gap 1: init.ts routes through IdentityRenderer',
+      '  ✔ Gap 2: ThreadlineBootstrap framework-aware MCP registration',
+      '  … +11 completed',
+      '',
+      '● How is Claude doing this session? (optional)',
+      '  1: Bad  2: Fine  3: Good  0: Dismiss',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'sess', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('selection');
+    expect(prompt!.autoDismissKey).toBe('0');
+    expect(prompt!.summary).toMatch(/session-feedback survey/i);
+  });
+
+  it('does NOT match when only the question text is present (no canonical option row)', () => {
+    const detector = makeDetector();
+    const output = [
+      'Some agent output discussing the question.',
+      'The user asked: How is Claude doing this session?',
+      'Followed by more agent text.',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'sess', output);
+    // Either null, OR matched by a different pattern — but must NOT carry
+    // the autoDismissKey directive.
+    if (prompt) expect(prompt.autoDismissKey).toBeUndefined();
+  });
+
+  it('does NOT match unrelated numbered prompts as the survey', () => {
+    const detector = makeDetector();
+    const output = [
+      'Pick a flavor:',
+      '1: Chocolate',
+      '2: Vanilla',
+      '3: Strawberry',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'sess', output);
+    if (prompt) {
+      expect(prompt.summary).not.toMatch(/session-feedback survey/i);
+      expect(prompt.autoDismissKey).toBeUndefined();
+    }
+  });
+});
+
+// ── onInputSent clears LLM relay cooldown ──────────────────────────
+
+describe('InputDetector.onInputSent', () => {
+  it('clears the per-session LLM relay cooldown so follow-up prompts can fire', () => {
+    const detector = makeDetector();
+    // Seed the LLM cooldown as if a prompt was just LLM-relayed
+    (detector as any).llmRelayTimestamps.set('sess', Date.now());
+    expect((detector as any).llmRelayTimestamps.has('sess')).toBe(true);
+
+    detector.onInputSent('sess');
+    expect((detector as any).llmRelayTimestamps.has('sess')).toBe(false);
+  });
+});
+
 // ── Debounce ───────────────────────────────────────────────────────
 
 describe('InputDetector.debounce', () => {
