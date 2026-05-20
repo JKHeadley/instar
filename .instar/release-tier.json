@@ -1,0 +1,6 @@
+{
+  "tier": "hold",
+  "reason": "Layer 2 install — auto-publish paused while the deployment lockdown spec lands. Flip to \"patch\" to resume routine maintenance, or leave on hold during major-version work.",
+  "setAt": "2026-05-20T08:00:00Z",
+  "setBy": "echo (Deployment Lockdown Layer 2 install)"
+}
