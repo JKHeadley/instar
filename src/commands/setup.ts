@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-import { detectClaudePath, detectGhPath } from '../core/Config.js';
+import { detectClaudePath, detectCodexPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { allocatePort } from '../core/AgentRegistry.js';
 import type { SecretBackend } from '../core/SecretManager.js';
@@ -62,24 +62,36 @@ function allocatePortSafe(agentDir: string): number {
  * Launch the conversational setup wizard via Claude Code.
  * Claude Code is required — there is no fallback.
  */
-export async function runSetup(): Promise<void> {
-  // Check and install prerequisites (tmux, Claude CLI, Node.js version)
+export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' }): Promise<void> {
+  // Check and install prerequisites (tmux + the chosen framework's CLI)
   console.log();
   const prereqs = await ensurePrerequisites();
 
-  // Claude Code is a hard requirement — Instar can't run without it
+  // Resolve framework — default 'claude-code' preserves historical behavior
+  // for users who don't pass --framework. Portability install PR 3+4 of 4.
+  const framework: 'claude-code' | 'codex-cli' = opts?.framework ?? 'claude-code';
+
+  // Detect both binaries; let checkFrameworkPrerequisite decide whether the
+  // chosen framework's binary is present, with a clear install URL/command
+  // in the error message.
   const claudePath = detectClaudePath();
-  if (!claudePath) {
+  const codexPath = detectCodexPath();
+  const prereq = checkFrameworkPrerequisite({
+    configuredFramework: framework,
+    claudePathDetected: claudePath,
+    codexPathDetected: codexPath,
+  });
+  if (!prereq.satisfied) {
     console.log();
-    console.log(pc.red('  Claude Code is required to use Instar.'));
-    console.log();
-    console.log(pc.dim('  Instar agents are powered by Claude Code — it\'s not optional.'));
-    console.log(pc.dim('  Install it, then run this command again:'));
-    console.log();
-    console.log(`    ${pc.cyan('npm install -g @anthropic-ai/claude-code')}`);
+    console.log(pc.red(`  ${prereq.error}`));
     console.log();
     process.exit(1);
   }
+
+  // The binary the wizard will spawn for both the secret-setup micro-session
+  // and the main wizard. checkFrameworkPrerequisite has already guaranteed
+  // the chosen framework's binary was detected.
+  const binaryPath = framework === 'codex-cli' ? codexPath! : claudePath!;
 
   if (!prereqs.allMet) {
     console.log(pc.red('  Some prerequisites are still missing. Please install them and try again.'));
@@ -235,9 +247,9 @@ ${agentSummary}
 
   // ── Phase Gate: Secret Management ──────────────────────────────────
   // Structure > Willpower: secret management MUST be configured before the
-  // main wizard. Uses a Claude Code micro-session (/secret-setup) for a
-  // conversational experience. Gate: main wizard won't start without backend.json.
-  const secretContext = await ensureSecretBackend(claudePath, instarRoot);
+  // main wizard. Uses a framework-native micro-session for a conversational
+  // experience. Gate: main wizard won't start without backend.json.
+  const secretContext = await ensureSecretBackend(binaryPath, framework, instarRoot);
 
   // If Bitwarden session was saved by the secret-setup micro-session, pass it
   // as an env var so the main wizard can use it for credential restoration.
@@ -250,11 +262,24 @@ ${agentSummary}
     }
   }
 
-  // Launch Claude Code from the instar package root (where .claude/skills/ lives)
-  const child = spawn(claudePath, [
-    '--dangerously-skip-permissions',
-    `/setup-wizard The project to set up is at: ${projectDir}.${gitContext}${detectionContext}${secretContext}`,
-  ], {
+  // Launch the chosen runtime from the instar package root (where
+  // .claude/skills/ lives — both Claude and Codex can read the skill file
+  // from there). The wizard's slash-command works as a Claude SKILL; for
+  // Codex, point it at the SKILL.md content via prose since Codex has no
+  // slash-command equivalent.
+  const wizardPrompt = `The project to set up is at: ${projectDir}.${gitContext}${detectionContext}${secretContext}`;
+  const wizardSkillPath = path.join(instarRoot, '.claude', 'skills', 'setup-wizard', 'SKILL.md');
+  const launchArgs: string[] = framework === 'codex-cli'
+    ? [
+        'exec',
+        '--dangerously-bypass-approvals-and-sandbox',
+        `Read ${wizardSkillPath} and follow its instructions as the setup wizard. ${wizardPrompt}`,
+      ]
+    : [
+        '--dangerously-skip-permissions',
+        `/setup-wizard ${wizardPrompt}`,
+      ];
+  const child = spawn(binaryPath, launchArgs, {
     cwd: instarRoot,
     stdio: 'inherit',
     env: spawnEnv,
@@ -266,9 +291,12 @@ ${agentSummary}
     });
     child.on('error', (err) => {
       console.log();
-      console.log(pc.red(`  Could not launch Claude Code: ${err.message}`));
-      console.log(pc.dim('  Make sure Claude Code is installed and accessible:'));
-      console.log(`    ${pc.cyan('npm install -g @anthropic-ai/claude-code')}`);
+      console.log(pc.red(`  Could not launch ${framework}: ${err.message}`));
+      console.log(pc.dim(`  Make sure ${framework} is installed and accessible:`));
+      const installCmd = framework === 'codex-cli'
+        ? 'npm install -g @openai/codex'
+        : 'npm install -g @anthropic-ai/claude-code';
+      console.log(`    ${pc.cyan(installCmd)}`);
       console.log();
       process.exit(1);
     });
@@ -292,7 +320,11 @@ ${agentSummary}
  *   Claude explains options, guides through Bitwarden install/login/unlock,
  *   configures the backend, and exits. Then we continue.
  */
-async function ensureSecretBackend(claudePath: string, instarRoot: string): Promise<string> {
+async function ensureSecretBackend(
+  binaryPath: string,
+  framework: 'claude-code' | 'codex-cli',
+  instarRoot: string,
+): Promise<string> {
   const backendFile = path.join(os.homedir(), '.instar', 'secrets', 'backend.json');
 
   // Check if already configured
@@ -327,11 +359,19 @@ async function ensureSecretBackend(claudePath: string, instarRoot: string): Prom
   console.log(pc.dim('  Let me walk you through the options...'));
   console.log();
 
-  // Spawn a focused Claude Code session with the /secret-setup skill
-  const child = spawn(claudePath, [
-    '--dangerously-skip-permissions',
-    '/secret-setup',
-  ], {
+  // Spawn a focused micro-session for secret setup. For Claude, this is the
+  // /secret-setup slash-command on the SKILL. For Codex (no slash commands),
+  // point at the skill file content via prose so the wizard reads and
+  // executes the same instructions.
+  const secretSkillPath = path.join(instarRoot, '.claude', 'skills', 'secret-setup', 'SKILL.md');
+  const secretArgs: string[] = framework === 'codex-cli'
+    ? [
+        'exec',
+        '--dangerously-bypass-approvals-and-sandbox',
+        `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
+      ]
+    : ['--dangerously-skip-permissions', '/secret-setup'];
+  const child = spawn(binaryPath, secretArgs, {
     cwd: instarRoot,
     stdio: 'inherit',
   });
@@ -1569,6 +1609,11 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
       console.warn('[setup] Telegram chat IDs are integers (e.g., -1001234567890 for supergroups).');
       console.warn('[setup] Attempting to resolve via Telegram API...');
       try {
+        // RULE 3: EXEMPT — one-shot setup-time validation against Telegram's getChat
+        // endpoint to resolve a human-typed group identifier to a numeric chat id.
+        // Not a runtime state detector; runs exactly once during the
+        // non-interactive setup path and the failure mode is "ask the operator
+        // to enter the numeric id directly" — no inferred state, no follow-up.
         const res = await fetch(`https://api.telegram.org/bot${opts.telegramToken}/getChat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

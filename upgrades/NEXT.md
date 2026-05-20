@@ -1,10 +1,26 @@
-# Upgrade Guide — v1.0.16 (install framework choice + .claude/ gating + shadow capability mirror + fleet bind-failure probe)
+# Upgrade Guide — v1.0.17 (full Codex-only install via instar setup)
 
 <!-- bump: patch -->
 
 ## What Changed
 
-Four independent changes ship together as v1.0.16.
+Five changes ship together as v1.0.17 — completes the install/wizard
+framework-choice arc Justin asked for, plus the v1.0.14-v1.0.16 content
+that has been queued behind the npm auth issue.
+
+**A. `instar setup --framework codex-cli` runs end-to-end on a Codex-only host (portability install PRs 3+4 of 4).**
+The `setup` and bareword (`npx instar`) commands now accept a `--framework
+<claude-code|codex-cli>` flag. Detection no longer hard-exits on missing
+Claude when the operator asked for Codex; it calls `checkFrameworkPrerequisite`
+against whichever framework was selected and surfaces the install URL for
+the missing one. The wizard launch and the secret-setup micro-session now
+spawn the chosen runtime: Claude users get the historical
+`claude --dangerously-skip-permissions /setup-wizard ...` invocation;
+Codex users get `codex exec --dangerously-bypass-approvals-and-sandbox`
+with a prompt that reads the same SKILL.md content (the wizard skill itself
+lives in one place; both runtimes are pointed at it). The Playwright
+Telegram-setup flow is untouched and remains portable — the entry to it
+now works for Codex.
 
 **0. Codex-only init produces zero `.claude/` files (portability install PR 2 of 4).**
 With v1.0.15 the `--framework` flag became expressible; this release makes
@@ -103,10 +119,11 @@ peer-escalation pipeline.
 
 ## Deferred (Tracked Follow-ups)
 
-- Two remaining PRs in the install/wizard portability series: adding the
-  same `--framework` flag to `setup`, and routing the setup wizard through
-  `claude -p` or `codex exec` based on the choice. Together they make a
-  Codex-only install fully functional end-to-end including the playwright
-  Telegram setup.
+- The install/wizard portability series is complete — Codex-only
+  `instar setup --framework codex-cli` runs end-to-end on this release.
+  Follow-up work tracked separately: a full smoke test of a fresh Codex-only
+  install on a clean machine, and any narrative-prose tweaks the wizard
+  skill should adopt to surface framework-specific paths in user-facing
+  output.
 - Per-agent "muted" flag for the bind-probe (legitimate maintenance
   windows) is deferred to the v3 Remediator's policy layer.
