@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-05-20T02:19:19.282Z",
-  "instarVersion": "1.0.15",
+  "generatedAt": "2026-05-20T02:44:11.401Z",
+  "instarVersion": "1.0.16",
   "entryCount": 189,
   "entries": {
     "hook:session-start": {
@@ -1104,7 +1104,7 @@
       "type": "template",
       "domain": "operations",
       "sourcePath": "src/templates/scripts/instar-watchdog.sh",
-      "contentHash": "14ec34c724149dd3df73c6296af39d09a95a74b3d471bea971aa2894c078aed3",
+      "contentHash": "364033171d32f6458b0ebe6c757a55efd578260c3211b2bfe80c5cf56e0ce0ef",
       "since": "2025-01-01"
     },
     "template:serendipity-capture.sh": {

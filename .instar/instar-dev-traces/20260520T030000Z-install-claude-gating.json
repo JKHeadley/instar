@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/install-claude-gating.md",
+  "artifactPath": "upgrades/side-effects/feat-install-claude-gating.md",
+  "artifactSha256": "7947891b3e8f4ad5ecf6bbbd474ddb562cf39d047872ad2db757a13d295f082d",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/init-claude-gating.test.ts",
+    "specs/dev-infrastructure/install-claude-gating.md",
+    "specs/dev-infrastructure/install-claude-gating.eli16.md",
+    "docs/specs/reports/install-claude-gating-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-install-claude-gating.md"
+  ],
+  "writtenAt": "2026-05-20T03:00:00Z",
+  "agent": "echo",
+  "summary": "PR 2 of 4 of the install/wizard portability series. claudeEnabled = resolveEnabledFrameworks(options.framework).includes('claude-code') gates all .claude/-targeting installers in initFreshProject, initExistingProject, initStandaloneAgent, refreshHooksAndSettings, and refreshScripts. Codex-only standalone init pinned to ZERO .claude/ entries by isolated-fs end-to-end test. Default and dual paths byte-identical to v1.0.15. Ships v1.0.16."
+}

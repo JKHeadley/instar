@@ -156,6 +156,11 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
     console.log(`  Project names must start with a letter or number and contain only letters, numbers, dots, hyphens, and underscores.`);
     process.exit(1);
   }
+  // Resolve framework choice once for the whole init flow. Default unchanged
+  // for users who don't pass --framework. PR 2 of 4 (portability install
+  // upgrade): codex-only and gemini-only installs skip all `.claude/` writes.
+  const enabledFrameworks = resolveEnabledFrameworks(options.framework);
+  const claudeEnabled = enabledFrameworks.includes('claude-code');
   if (projectName === '.' || projectName === '..' || projectName.includes('/') || projectName.includes('\\')) {
     console.log(pc.red(`  Invalid project name: "${projectName}"`));
     process.exit(1);
@@ -372,27 +377,34 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   canonicalState.initialize(projectName, projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/quick-facts.json, anti-patterns.json, project-registry.json`);
 
-  // Create .claude/ structure
-  installClaudeSettings(projectDir, port);
-  console.log(`  ${pc.green('✓')} Created .claude/settings.json`);
+  // Create .claude/ structure (gated on claude-code enabled — PR 2 of 4)
+  if (claudeEnabled) {
+    installClaudeSettings(projectDir, port);
+    console.log(`  ${pc.green('✓')} Created .claude/settings.json`);
 
-  installHealthWatchdog(projectDir, port, projectName);
-  console.log(`  ${pc.green('✓')} Created .claude/scripts/health-watchdog.sh`);
+    installHealthWatchdog(projectDir, port, projectName);
+    console.log(`  ${pc.green('✓')} Created .claude/scripts/health-watchdog.sh`);
 
-  installSmartFetch(projectDir);
-  console.log(`  ${pc.green('✓')} Created .claude/scripts/smart-fetch.py (agentic web conventions)`);
+    installSmartFetch(projectDir);
+    console.log(`  ${pc.green('✓')} Created .claude/scripts/smart-fetch.py (agentic web conventions)`);
 
-  installGitSyncGate(projectDir);
-  console.log(`  ${pc.green('✓')} Created .claude/scripts/git-sync-gate.sh (git sync pre-screening)`);
+    installGitSyncGate(projectDir);
+    console.log(`  ${pc.green('✓')} Created .claude/scripts/git-sync-gate.sh (git sync pre-screening)`);
+  } else {
+    console.log(`  ${pc.dim('·')} Skipped .claude/ scaffolding (enabledFrameworks: ${enabledFrameworks.join(', ')})`);
+  }
 
+  // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
 
-  // Create .claude/skills/ directory and install built-in skills
-  const skillsDir = path.join(projectDir, '.claude', 'skills');
-  fs.mkdirSync(skillsDir, { recursive: true });
-  installBuiltinSkills(skillsDir, port);
-  console.log(`  ${pc.green('✓')} Created .claude/skills/ (with built-in evolution skills)`);
+  // Create .claude/skills/ directory and install built-in skills (gated)
+  if (claudeEnabled) {
+    const skillsDir = path.join(projectDir, '.claude', 'skills');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    installBuiltinSkills(skillsDir, port);
+    console.log(`  ${pc.green('✓')} Created .claude/skills/ (with built-in evolution skills)`);
+  }
 
   // Phase 2 — install built-in agentmd jobs (markdown templates + manifests).
   // Legacy jobs.json continues to seed below; the loader handles overlap.
@@ -406,10 +418,15 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
     console.log(`  ${pc.yellow('!')} Built-in agentmd jobs install skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Write CLAUDE.md (standalone version for fresh projects)
-  const claudeMd = generateClaudeMd(projectName, identity.name, port, false);
-  fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMd);
-  console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+  // Write CLAUDE.md (standalone version for fresh projects) — gated on
+  // claude-code enabled. For codex-only/gemini-only installs the rich
+  // Claude capability doc is meaningless and is skipped; AGENTS.md /
+  // GEMINI.md are rendered from canonical AGENT.md below.
+  if (claudeEnabled) {
+    const claudeMd = generateClaudeMd(projectName, identity.name, port, false);
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMd);
+    console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+  }
 
   // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
   // from canonical .instar/AGENT.md so a Codex/Gemini install has its
@@ -537,6 +554,11 @@ node_modules/
 async function initExistingProject(options: InitOptions): Promise<void> {
   const projectDir = path.resolve(options.dir || process.cwd());
   const projectName = options.name || path.basename(projectDir);
+
+  // Framework choice — gates `.claude/` writes for codex-only installs.
+  // Default behavior unchanged for users who don't pass --framework.
+  const enabledFrameworks = resolveEnabledFrameworks(options.framework);
+  const claudeEnabled = enabledFrameworks.includes('claude-code');
 
   // Auto-allocate a port if not explicitly specified (multi-instance support)
   let port: number;
@@ -738,31 +760,34 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     console.log(pc.green('  Created:') + ` canonical state (${stateResult.created.join(', ')})`);
   }
 
-  // Configure Claude Code settings with hooks
-  installClaudeSettings(projectDir, port);
-  console.log(pc.green('  Created:') + ' .claude/settings.json (hook configuration)');
+  // Configure Claude Code settings with hooks (gated — PR 2 of 4)
+  if (claudeEnabled) {
+    installClaudeSettings(projectDir, port);
+    console.log(pc.green('  Created:') + ' .claude/settings.json (hook configuration)');
 
-  // Install health watchdog
-  installHealthWatchdog(projectDir, port, projectName);
-  console.log(pc.green('  Created:') + ' .claude/scripts/health-watchdog.sh');
+    installHealthWatchdog(projectDir, port, projectName);
+    console.log(pc.green('  Created:') + ' .claude/scripts/health-watchdog.sh');
 
-  // Install smart-fetch for agentic web conventions
-  installSmartFetch(projectDir);
-  console.log(pc.green('  Created:') + ' .claude/scripts/smart-fetch.py (agentic web conventions)');
+    installSmartFetch(projectDir);
+    console.log(pc.green('  Created:') + ' .claude/scripts/smart-fetch.py (agentic web conventions)');
 
-  // Install git-sync gate script
-  installGitSyncGate(projectDir);
-  console.log(pc.green('  Created:') + ' .claude/scripts/git-sync-gate.sh (git sync pre-screening)');
+    installGitSyncGate(projectDir);
+    console.log(pc.green('  Created:') + ' .claude/scripts/git-sync-gate.sh (git sync pre-screening)');
+  } else {
+    console.log(pc.dim('  Skipped:') + ` .claude/ scaffolding (enabledFrameworks: ${enabledFrameworks.join(', ')})`);
+  }
 
-  // Install serendipity capture script
+  // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/serendipity-capture.sh');
 
-  // Create .claude/skills/ directory and install built-in skills
-  const skillsDir = path.join(projectDir, '.claude', 'skills');
-  fs.mkdirSync(skillsDir, { recursive: true });
-  installBuiltinSkills(skillsDir, port);
-  console.log(pc.green('  Created:') + ' .claude/skills/ (with built-in evolution skills)');
+  // Create .claude/skills/ directory and install built-in skills (gated)
+  if (claudeEnabled) {
+    const skillsDir = path.join(projectDir, '.claude', 'skills');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    installBuiltinSkills(skillsDir, port);
+    console.log(pc.green('  Created:') + ' .claude/skills/ (with built-in evolution skills)');
+  }
 
   // Append to .gitignore
   const gitignorePath = path.join(projectDir, '.gitignore');
@@ -858,6 +883,10 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
     console.log('  Maximum 64 characters.');
     process.exit(1);
   }
+
+  // Framework choice — gates `.claude/` writes. Default unchanged.
+  const enabledFrameworks = resolveEnabledFrameworks(options.framework);
+  const claudeEnabled = enabledFrameworks.includes('claude-code');
 
   const projectDir = path.join(standaloneAgentsDir(), agentName);
   const stateDir = path.join(projectDir, '.instar');
@@ -983,12 +1012,15 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   fs.writeFileSync(path.join(stateDir, 'jobs.json'), JSON.stringify([], null, 2));
   fs.writeFileSync(path.join(stateDir, 'users.json'), JSON.stringify([], null, 2));
 
-  // Create CLAUDE.md at project root
-  fs.writeFileSync(
-    path.join(projectDir, 'CLAUDE.md'),
-    generateClaudeMd(agentName, agentName, port, false),
-  );
-  console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+  // Create CLAUDE.md at project root (gated on claude-code enabled —
+  // PR 2 of 4 of the install/wizard portability series).
+  if (claudeEnabled) {
+    fs.writeFileSync(
+      path.join(projectDir, 'CLAUDE.md'),
+      generateClaudeMd(agentName, agentName, port, false),
+    );
+    console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+  }
 
   // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
   // from canonical .instar/AGENT.md — see the paired call in the primary
@@ -997,16 +1029,20 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
     console.log(`  ${pc.green('✓')} Created ${path.relative(projectDir, s)}`);
   }
 
-  // Create .claude/ structure
-  const claudeDir = path.join(projectDir, '.claude');
-  fs.mkdirSync(path.join(claudeDir, 'scripts'), { recursive: true });
-  fs.mkdirSync(path.join(claudeDir, 'skills'), { recursive: true });
-  fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
-    hooks: {
-      PreToolUse: [],
-      PostToolUse: [],
-    },
-  }, null, 2));
+  // Create .claude/ structure (gated)
+  if (claudeEnabled) {
+    const claudeDir = path.join(projectDir, '.claude');
+    fs.mkdirSync(path.join(claudeDir, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(claudeDir, 'skills'), { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
+      hooks: {
+        PreToolUse: [],
+        PostToolUse: [],
+      },
+    }, null, 2));
+  } else {
+    console.log(`  ${pc.dim('·')} Skipped .claude/ scaffolding (enabledFrameworks: ${enabledFrameworks.join(', ')})`);
+  }
 
   // Create .gitignore
   fs.writeFileSync(path.join(projectDir, '.gitignore'), [
@@ -3326,26 +3362,45 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
 export function refreshHooksAndSettings(projectDir: string, stateDir: string): void {
   installHooks(stateDir);
 
-  // Read port from config.json so HTTP hooks get resolved URLs
+  // Read port + enabledFrameworks from config.json so HTTP hooks get
+  // resolved URLs AND Claude-Code-only writes can be gated for codex-only
+  // installs (portability audit PR 2 of 4).
   let serverPort: number | undefined;
+  let enabledFrameworks: ReadonlyArray<string> = ['claude-code'];
   try {
     const configPath = path.join(stateDir, 'config.json');
     if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        port?: number;
+        enabledFrameworks?: unknown;
+      };
       serverPort = config.port;
+      if (Array.isArray(config.enabledFrameworks) && config.enabledFrameworks.length > 0) {
+        const filtered = config.enabledFrameworks.filter(
+          (f): f is 'claude-code' | 'codex-cli' => f === 'claude-code' || f === 'codex-cli',
+        );
+        if (filtered.length > 0) enabledFrameworks = filtered;
+      }
     }
   } catch { /* non-fatal */ }
 
-  installClaudeSettings(projectDir, serverPort);
-  refreshClaudeMd(projectDir, stateDir);
+  const claudeEnabled = enabledFrameworks.includes('claude-code');
+
+  if (claudeEnabled) {
+    installClaudeSettings(projectDir, serverPort);
+    refreshClaudeMd(projectDir, stateDir);
+  }
   refreshJobs(stateDir);
   refreshScripts(projectDir, stateDir);
 
-  // Deploy any missing built-in skills (e.g., guardian job skills added after initial setup).
-  // installBuiltinSkills is already non-destructive — only writes missing SKILL.md files.
-  const skillsDir = path.join(projectDir, '.claude', 'skills');
-  fs.mkdirSync(skillsDir, { recursive: true });
-  installBuiltinSkills(skillsDir, serverPort ?? 4321);
+  // Deploy any missing built-in skills. Skills target `.claude/skills/` so
+  // they're Claude-Code-only by destination; skip for codex-only installs to
+  // avoid creating a `.claude/` directory the operator did not ask for.
+  if (claudeEnabled) {
+    const skillsDir = path.join(projectDir, '.claude', 'skills');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    installBuiltinSkills(skillsDir, serverPort ?? 4321);
+  }
 }
 
 /**
@@ -3472,23 +3527,43 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   if (!config) return;
   const port = (config.port as number) || 4040;
 
-  // Install telegram-reply.sh if Telegram is configured
+  // Resolve enabled-frameworks for `.claude/scripts/` gating (PR 2 of 4).
+  // Default ['claude-code'] preserves historical behavior.
+  const enabled = ((): ReadonlyArray<string> => {
+    const raw = (config as { enabledFrameworks?: unknown }).enabledFrameworks;
+    if (Array.isArray(raw) && raw.length > 0) {
+      const filtered = raw.filter(
+        (f): f is 'claude-code' | 'codex-cli' => f === 'claude-code' || f === 'codex-cli',
+      );
+      if (filtered.length > 0) return filtered;
+    }
+    return ['claude-code'];
+  })();
+  const claudeEnabled = enabled.includes('claude-code');
+
+  // Install telegram-reply.sh if Telegram is configured (framework-neutral —
+  // installs to both `.claude/scripts/` for Claude and `.instar/scripts/`
+  // for runtime-neutral after v1.0.10 Gap 4)
   if (isTelegramConfigured(stateDir)) {
     installTelegramRelay(projectDir, port);
   }
 
-  // Install whatsapp-reply.sh if WhatsApp is configured
+  // Install whatsapp-reply.sh if WhatsApp is configured (lives in
+  // `.instar/scripts/` already per init.ts; framework-neutral)
   if (isWhatsAppConfigured(stateDir)) {
     installWhatsAppRelay(projectDir, port);
   }
 
-  // Always install smart-fetch.py (agentic web conventions)
-  installSmartFetch(projectDir);
+  // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
+  // are Claude-Code-specific (the agentic-web fetch script and the
+  // pre-`git push` screening hook). Gate on claude-code enabled.
+  if (claudeEnabled) {
+    installSmartFetch(projectDir);
+    installGitSyncGate(projectDir);
+  }
 
-  // Always install git-sync-gate.sh (pre-screening for git-sync job)
-  installGitSyncGate(projectDir);
-
-  // Always install serendipity-capture.sh
+  // Always install serendipity-capture.sh (lives in `.instar/scripts/`,
+  // framework-neutral).
   installSerendipityCapture(projectDir);
 }
 

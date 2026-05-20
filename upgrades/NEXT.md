@@ -1,10 +1,23 @@
-# Upgrade Guide — v1.0.15 (install framework choice + shadow capability mirror + fleet bind-failure probe)
+# Upgrade Guide — v1.0.16 (install framework choice + .claude/ gating + shadow capability mirror + fleet bind-failure probe)
 
 <!-- bump: patch -->
 
 ## What Changed
 
-Three independent changes ship together as v1.0.15.
+Four independent changes ship together as v1.0.16.
+
+**0. Codex-only init produces zero `.claude/` files (portability install PR 2 of 4).**
+With v1.0.15 the `--framework` flag became expressible; this release makes
+it actually mean something at install time. When `instar init` is run with
+`--framework codex-cli` (or with `enabledFrameworks: ['codex-cli']` in a
+pre-existing config), every `.claude/`-targeting installer is skipped:
+`.claude/settings.json`, `.claude/scripts/health-watchdog.sh`,
+`.claude/scripts/smart-fetch.py`, `.claude/scripts/git-sync-gate.sh`,
+`.claude/skills/`, and the rich CLAUDE.md instruction document. Codex
+agents continue to receive the canonical `.instar/AGENT.md`, the AGENTS.md
+shadow, framework-neutral hooks under `.instar/hooks/instar/`, and the
+serendipity-capture script (which already lives under `.instar/scripts/`).
+Claude-only and dual-framework installs are byte-for-byte unchanged.
 
 **1. `instar init --framework <name>` — choose your runtime at install time.**
 A new flag on the `init` command lets a user pick which AI runtime the agent
@@ -90,11 +103,10 @@ peer-escalation pipeline.
 
 ## Deferred (Tracked Follow-ups)
 
-- Three remaining PRs in the install/wizard portability series: gating the
-  `.claude/settings.json` and `.claude/hooks/` writes on the new flag,
-  adding the same `--framework` flag to `setup`, and routing the setup
-  wizard through `claude -p` or `codex exec` based on the choice. Together
-  they make a Codex-only install fully functional end-to-end including the
-  playwright Telegram setup.
+- Two remaining PRs in the install/wizard portability series: adding the
+  same `--framework` flag to `setup`, and routing the setup wizard through
+  `claude -p` or `codex exec` based on the choice. Together they make a
+  Codex-only install fully functional end-to-end including the playwright
+  Telegram setup.
 - Per-agent "muted" flag for the bind-probe (legitimate maintenance
   windows) is deferred to the v3 Remediator's policy layer.
