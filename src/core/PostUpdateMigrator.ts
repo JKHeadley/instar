@@ -25,6 +25,7 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { resolveAgentHome as resolveAgentHomeForWorktree } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
@@ -191,6 +192,7 @@ export class PostUpdateMigrator {
     this.migrateFleetWatchdog(result);
     this.migrateParitySentinelTrust(result);
     this.migrateConversationalCatalogPlaybookManifest(result);
+    this.migrateWorktreeConvention(result);
 
     return result;
   }
@@ -253,6 +255,130 @@ export class PostUpdateMigrator {
     fs.mkdirSync(builtinDir, { recursive: true });
     fs.writeFileSync(targetPath, templateContent);
     result.upgraded.push('conversational-catalog-playbook: installed/updated manifest template');
+  }
+
+  // ── Agent worktree convention (Layer 3) ────────────────────────────────
+  //
+  // Spec: docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md §"Layer 3 —
+  // PostUpdateMigrator step (single-agent scope)".
+  //
+  // For every agent whose binary just updated, ensure the on-disk surface
+  // is wired up so the convention works:
+  //   1. Install/refresh `<agent_home>/.bin/instar-worktree-create.sh`
+  //      (always-overwrite, per Migration Parity Standard).
+  //   2. `<agent_home>/.gitignore` already covered by `migrateGitignore`
+  //      consumers; we add a one-line direct ensure here as
+  //      defense-in-depth for hosts whose project gitignore isn't reached.
+  //   3. Ensure `<agent_home>/.worktrees/` exists with `0700`.
+  //   4. If a pre-existing `worktree.repoUrlAllowlist` config blocks the
+  //      resolved instar repo (or no repo is reachable), emit one
+  //      AttentionItem so the operator can fix before the wrapper runs.
+  //
+  // Refuses any filesystem mutation when:
+  //   - The agent home doesn't pass `<instarHome>/agents/<name>/` shape +
+  //     registry-membership validation (project-bound agents living
+  //     somewhere else simply opt out — the wrapper isn't applicable).
+  //   - `<agent_home>/.bin` exists as a symlink (defeats the
+  //     /usr/local/bin clobber attack surface).
+  private migrateWorktreeConvention(result: MigrationResult): void {
+    const agentHome = path.dirname(this.config.stateDir);
+
+    // Validate the agent home against Layer 1's contract. We import the
+    // resolver from InstarWorktreeManager so the rule lives in exactly one
+    // place. If validation fails, the convention doesn't apply to this
+    // agent and we skip silently (no error — project-bound agents with
+    // bespoke layouts pass through unchanged).
+    let resolved: { agentHome: string; agentName: string };
+    try {
+      resolved = resolveAgentHomeForWorktree({ env: { INSTAR_AGENT_HOME: agentHome } });
+    } catch (err) {
+      result.skipped.push(`worktree-convention: agent home does not match the convention (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`);
+      return;
+    }
+
+    // `.bin/` must be a real directory inside the agent home.
+    const binDir = path.join(resolved.agentHome, '.bin');
+    if (fs.existsSync(binDir)) {
+      try {
+        const lst = fs.lstatSync(binDir);
+        if (lst.isSymbolicLink()) {
+          result.errors.push(`worktree-convention: ${binDir} is a symlink — refused (defeats /usr/local/bin clobber surface)`);
+          return;
+        }
+      } catch (err) {
+        result.errors.push(`worktree-convention: stat ${binDir} failed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+    } else {
+      fs.mkdirSync(binDir, { recursive: true, mode: 0o755 });
+    }
+
+    // Always-overwrite the wrapper (Migration Parity Standard for hook
+    // scripts: built-in templates are authoritative).
+    const wrapperTargetPath = path.join(binDir, 'instar-worktree-create.sh');
+    const templateCandidates = [
+      path.resolve(__dirname, '..', 'templates', 'scripts', 'instar-worktree-create.sh'),
+      path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'instar-worktree-create.sh'),
+    ];
+    let templatePath = '';
+    for (const cand of templateCandidates) {
+      if (fs.existsSync(cand)) { templatePath = cand; break; }
+    }
+    if (!templatePath) {
+      result.skipped.push('worktree-convention: wrapper template not found in package install');
+      return;
+    }
+    try {
+      const templateContent = fs.readFileSync(templatePath, 'utf-8');
+      const existing = fs.existsSync(wrapperTargetPath)
+        ? fs.readFileSync(wrapperTargetPath, 'utf-8')
+        : null;
+      if (existing !== templateContent) {
+        fs.writeFileSync(wrapperTargetPath, templateContent, { mode: 0o755 });
+        // Re-assert mode (umask masking can drop the +x bit on existing files).
+        fs.chmodSync(wrapperTargetPath, 0o755);
+        result.upgraded.push('worktree-convention: installed/refreshed instar-worktree-create.sh');
+      } else {
+        // Re-assert mode even when content matches — defends against an
+        // operator's `chmod -R` that may have dropped the +x bit.
+        try { fs.chmodSync(wrapperTargetPath, 0o755); } catch { /* @silent-fallback-ok — best-effort */ }
+        result.skipped.push('worktree-convention: instar-worktree-create.sh up to date');
+      }
+    } catch (err) {
+      result.errors.push(`worktree-convention: wrapper install failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    // Ensure `<agent_home>/.gitignore` contains `.worktrees/`. Defense-in-
+    // depth — the v1.1.0 `GITIGNORE_ENTRIES` change covers fresh inits and
+    // any agent whose .gitignore flows through `ensureGitignore` on
+    // update, but agents with hand-crafted gitignores may not reach it.
+    try {
+      const gitignorePath = path.join(resolved.agentHome, '.gitignore');
+      const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf-8') : '';
+      const hasEntry = /^\s*\.worktrees\/?\s*$/m.test(existing);
+      if (!hasEntry) {
+        const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+        const block = `${sep}\n# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)\n.worktrees/\n`;
+        fs.writeFileSync(gitignorePath, existing + block);
+        result.upgraded.push('worktree-convention: added .worktrees/ to agent-home .gitignore');
+      } else {
+        result.skipped.push('worktree-convention: .gitignore already excludes .worktrees/');
+      }
+    } catch (err) {
+      result.errors.push(`worktree-convention: gitignore patch failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Ensure `<agent_home>/.worktrees/` exists with 0700.
+    try {
+      const worktreesDir = path.join(resolved.agentHome, '.worktrees');
+      if (!fs.existsSync(worktreesDir)) {
+        fs.mkdirSync(worktreesDir, { recursive: true, mode: 0o700 });
+      }
+      fs.chmodSync(worktreesDir, 0o700);
+    } catch (err) {
+      result.errors.push(`worktree-convention: .worktrees/ ensure failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
@@ -2142,6 +2268,26 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       result.skipped.push('CLAUDE.md: File Viewer section already present');
     }
 
+    // Worktree Convention section (Migration Parity Standard backfill for
+    // Layer 2 of the agent worktree convention — fresh inits get this via
+    // generateClaudeMd; existing agents get it here on update).
+    if (!content.includes('Worktree Convention') && !content.includes('instar worktree create <branch>')) {
+      const section = `
+## Worktree Convention
+
+Create worktrees for collaborator repos with \`instar worktree create <branch>\` — it resolves your agent's home automatically. Never hardcode another agent's name or place worktrees inside the shared checkout.
+
+**Why:** the macOS sandbox can revoke filesystem access to anything outside the agent home mid-session, with no in-session recovery path. The agent home (\`~/.instar/agents/<agent>/\`) is the one location the sandbox cannot revoke. \`instar worktree create\` places the worktree at \`~/.instar/agents/<agent>/.worktrees/<slug>/\` and refuses any other destination. Spec: \`docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md\`.
+
+**Caveat — git identity env vars:** the CLI sets per-worktree \`user.name\` / \`user.email\` to \`Instar Agent (<name>)\` / \`<name>@instar.local\`. \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override that local config. Agents that care about commit attribution must avoid exporting those vars.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Worktree Convention section');
+    } else {
+      result.skipped.push('CLAUDE.md: Worktree Convention section already present');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -2201,6 +2347,7 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       '### External Operation Safety',
       '### Playbook — Adaptive Context Engineering',
       '## Threadline Network (Agent-to-Agent Communication)',
+      '## Worktree Convention',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

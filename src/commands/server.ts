@@ -2196,6 +2196,43 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.red(`  Port conflict: ${err instanceof Error ? err.message : err}`));
       process.exit(1);
     }
+
+    // Agent worktree convention (Layer 4) — detect worktrees of the
+    // shared instar repo that live outside any agent's `.worktrees/`
+    // safe area. Signal-only: emits an AttentionItem (or appends to the
+    // JSONL fallback when no Telegram adapter is configured) per
+    // misplaced entry; never blocks, never moves. Dedupe is via the
+    // AttentionQueue's item.id collision (Telegram path) or 24h
+    // rolling-window file read (JSONL fallback).
+    try {
+      const detector = await import('../core/AgentWorktreeDetector.js');
+      const repo = detector.resolveDetectorInstarRepo();
+      if (repo) {
+        const safeRoots = detector.enumerateSafeRoots();
+        const detectionResult = await detector.runDetection({
+          instarRepo: repo,
+          stateDir: config.stateDir,
+          safeRoots,
+          // No `emitAttention` adapter wired here yet — TelegramAdapter
+          // initializes later in this same startServer. The JSONL
+          // fallback at `<stateDir>/audit/worktree-detector.jsonl` is the
+          // durable trail for v1; an explicit AttentionQueue wireup is a
+          // tracked follow-up (Layer 4 spec residual R-?).
+        });
+        if (detectionResult.emitted > 0) {
+          console.log(pc.yellow(
+            `  Worktree detector: ${detectionResult.emitted} misplaced worktree(s) flagged (` +
+              `enumerated=${detectionResult.enumerated} skipped=${detectionResult.skipped}` +
+              `${detectionResult.deduped ? ` deduped=${detectionResult.deduped}` : ''}` +
+              `${detectionResult.timedOut ? ' [timeout]' : ''})`,
+          ));
+        }
+      }
+    } catch (err) {
+      console.log(pc.yellow(
+        `  Worktree detector: skipped (${err instanceof Error ? err.message : String(err)})`,
+      ));
+    }
     let stopHeartbeat: (() => void) | undefined;
     try {
       stopHeartbeat = startHeartbeat(config.projectDir);

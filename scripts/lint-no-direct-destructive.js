@@ -469,6 +469,13 @@ const SHELL_ALLOWLIST = new Set([
   // ports this to a Node script that uses SafeGitExecutor and removes this
   // entry.
   'src/templates/scripts/git-sync-gate.sh',
+  // Wrapper installed into every agent's `.bin/`. Primary path delegates
+  // to `instar worktree create` (which uses SafeGitExecutor). The inline
+  // fallback at the bottom of the file runs only when neither `instar`
+  // nor `npx` is on PATH — a documented last-resort path. The direct
+  // `git worktree add` there is intentional and bounded to that case.
+  // Spec: docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md §Sequencing.
+  'src/templates/scripts/instar-worktree-create.sh',
 ]);
 
 function lintShellFile(file, text) {
