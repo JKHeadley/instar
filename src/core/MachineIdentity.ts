@@ -524,6 +524,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/machine/encryption-key.pem',
   '.instar/secrets/',
   '.instar/pairing/',
+  '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
+  '.worktrees/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

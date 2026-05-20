@@ -235,6 +235,15 @@ export function generateMemoryMd(agentName: string): string {
 
 _Patterns and conventions discovered while working on this project._
 
+- **Worktree convention.** Create worktrees for collaborator repos with
+  \`instar worktree create <branch>\` — never \`git worktree add\` directly
+  into a shared checkout, and never hardcode another agent's name into the
+  path. The CLI resolves your agent's home automatically and refuses
+  unsafe placements. Reason: the macOS sandbox can revoke filesystem
+  access mid-session to anything outside the agent home, with no
+  in-session recovery path. The agent home (\`~/.instar/agents/<agent>/\`)
+  is the one location the sandbox cannot revoke.
+
 ## Tools & Scripts
 
 _Custom scripts, jobs, and integrations that have been built._
@@ -1145,6 +1154,14 @@ instar playbook doctor     # Verify everything is healthy
 ### Self-Evolution
 
 Record what I learn. Build infrastructure, not one-offs. Grow to meet the user's needs. Every session should leave things slightly better than I found them.
+
+## Worktree Convention
+
+Create worktrees for collaborator repos with \`instar worktree create <branch>\` — it resolves your agent's home automatically. Never hardcode another agent's name or place worktrees inside the shared checkout.
+
+**Why:** the macOS sandbox can revoke filesystem access to anything outside the agent home mid-session, with no in-session recovery path. The agent home (\`~/.instar/agents/<agent>/\`) is the one location the sandbox cannot revoke. \`instar worktree create\` places the worktree at \`~/.instar/agents/<agent>/.worktrees/<slug>/\` and refuses any other destination. Spec: \`docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md\`.
+
+**Caveat — git identity env vars:** the CLI sets per-worktree \`user.name\` / \`user.email\` to \`Instar Agent (<name>)\` / \`<name>@instar.local\`. \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override that local config. Agents that care about commit attribution must avoid exporting those vars.
 `;
 
   if (hasTelegram) {
