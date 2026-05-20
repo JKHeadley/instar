@@ -11,6 +11,7 @@ review-report: "docs/specs/reports/agent-worktree-convention-convergence.md"
 created: 2026-05-17
 owner: echo
 companion-eli16: AGENT-WORKTREE-CONVENTION-ELI16.md
+eli16-overview: AGENT-WORKTREE-CONVENTION-ELI16.md
 ---
 
 # Agent Worktree Convention
