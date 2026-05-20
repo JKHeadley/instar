@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/setup-framework-flag.md",
+  "artifactPath": "upgrades/side-effects/feat-setup-framework-flag.md",
+  "artifactSha256": "62510f926d7eb4bbf83cc7ff58b3fd1fc6366707fcea078656b0a0c99e43be8a",
+  "coveredFiles": [
+    "src/cli.ts",
+    "src/commands/setup.ts",
+    "src/data/builtin-manifest.json",
+    "specs/dev-infrastructure/setup-framework-flag.md",
+    "specs/dev-infrastructure/setup-framework-flag.eli16.md",
+    "docs/specs/reports/setup-framework-flag-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-setup-framework-flag.md"
+  ],
+  "writtenAt": "2026-05-20T03:30:00Z",
+  "agent": "echo",
+  "summary": "PR 3+4 combined of the install/wizard portability series. instar setup and bareword `npx instar` accept --framework <claude-code|codex-cli>. Detection uses checkFrameworkPrerequisite from src/core/Config.ts (reused, not duplicated). Wizard spawn branches per framework: claude --dangerously-skip-permissions /setup-wizard for Claude, codex exec --dangerously-bypass-approvals-and-sandbox with prompt-pointing-at-SKILL.md for Codex. Same wizard skill content for both runtimes. Default unchanged. Closes audit blockers 2 and 3. Ships v1.0.17. End-to-end smoke test follows as task #66."
+}

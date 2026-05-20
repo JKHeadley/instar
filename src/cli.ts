@@ -272,7 +272,19 @@ program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
   .version(getInstarVersion())
-  .action(async () => {
+  .option(
+    '--framework <name>',
+    'AI runtime to host the setup wizard: claude-code (default) or codex-cli',
+    (v: string) => {
+      const allowed = ['claude-code', 'codex-cli'];
+      if (!allowed.includes(v)) {
+        console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
+        process.exit(1);
+      }
+      return v;
+    },
+  )
+  .action(async (opts) => {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (major < 20 || (major === 20 && minor < 12)) {
       console.error(`\n  Instar setup requires Node.js 20.12 or later.`);
@@ -281,7 +293,7 @@ program
       process.exit(1);
     }
     const { runSetup } = await import('./commands/setup.js');
-    return runSetup();
+    return runSetup({ framework: opts.framework });
   }); // Default: run interactive setup when no subcommand given
 
 // ── Setup (explicit alias) ────────────────────────────────────────
@@ -300,6 +312,18 @@ program
   .option('--whatsapp-access-token <token>', 'Business API access token (non-interactive)')
   .option('--whatsapp-verify-token <token>', 'Business API webhook verify token (non-interactive)')
   .option('--scenario <number>', 'Scenario number 1-8 (non-interactive)')
+  .option(
+    '--framework <name>',
+    'AI runtime to host the setup wizard: claude-code (default) or codex-cli',
+    (v: string) => {
+      const allowed = ['claude-code', 'codex-cli'];
+      if (!allowed.includes(v)) {
+        console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
+        process.exit(1);
+      }
+      return v;
+    },
+  )
   .action(async (opts) => {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (major < 20 || (major === 20 && minor < 12)) {
@@ -312,7 +336,7 @@ program
     if (opts.nonInteractive) {
       return runNonInteractiveSetup(opts);
     }
-    return runSetup();
+    return runSetup({ framework: opts.framework });
   });
 
 // ── Init ─────────────────────────────────────────────────────────
