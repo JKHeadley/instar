@@ -1,10 +1,10 @@
-# Upgrade Guide — v1.0.18 (hotfix: parent-option intercepts --framework on subcommands)
+# Upgrade Guide — v1.1.0 (framework-choice install arc + agent worktree convention)
 
-<!-- bump: patch -->
+<!-- bump: minor -->
 
 ## What Changed
 
-Six changes ship together as v1.0.18 — completes the install/wizard
+Seven changes ship together as v1.1.0 — completes the install/wizard
 framework-choice arc Justin asked for (including a hotfix for the
 parent-option interception that caused the smoke test to fail on the
 v1.0.17 build), plus the v1.0.14-v1.0.16 content that has been queued
@@ -70,6 +70,27 @@ publish step hit an unrelated npm auth issue and did not actually reach the
 registry. Both changes ship together as v1.0.15 once the auth side is
 resolved.)
 
+**4. Agent worktree convention — `instar worktree create <branch>` (Layers 1 + 2 + 5).**
+A new CLI subcommand creates a sandbox-safe git worktree of the shared instar
+repo inside the agent's own home directory
+(`~/.instar/agents/<agent>/.worktrees/<slug>/`). This is the one location the
+macOS sandbox cannot revoke mid-session — agents who land worktrees in the
+shared checkout (the historical default of `git worktree add`) have been
+stranded mid-implementation multiple times this month with no in-session
+recovery path. The new command refuses any other destination, validates the
+target instar repo against a `remote.origin.url` allowlist, sets per-worktree
+git identity (`Instar Agent (<name>)` / `<name>@instar.local` — signing
+configuration deliberately untouched), and appends a JSONL audit ledger plus
+a durable mirror under `<stateDir>/audit/worktree-ops.jsonl`. New agents
+created with `instar init` get the convention in their seed CLAUDE.md,
+MEMORY.md, and `.gitignore` (`.worktrees/` excluded so it never enters
+git-sync). Existing agents inherit the convention through Layer 3 — the
+`PostUpdateMigrator` step shipping in the next release. The lifeline
+detector (Layer 4) ships in the same follow-up release. Spec:
+`docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md` (approved 2026-05-17).
+Side-effects review:
+`upgrades/side-effects/agent-worktree-convention-layer-1-2-5.md`.
+
 **3. Fleet-watchdog bind-failure probe.**
 The watchdog now catches the failure mode where a lifeline reports healthy
 to launchd but its server is locked out of its configured port (typically a
@@ -118,6 +139,7 @@ peer-escalation pipeline.
 - "You can now pick which AI runtime to use when you set up an Instar agent. Pass the framework flag to instar init for a Codex-only install. Default behavior is unchanged for everyone else. The framework flag is the first piece of a four-part install upgrade — the next three pieces add the same choice to setup, gate Claude-Code-only files behind the choice, and route the setup wizard through whichever runtime you pick."
 - "Codex and Gemini agents now also get the same capability instructions Claude agents have — discover, private views, coherence gate, agent network. This closes the v1.0 cross-framework portability arc."
 - "If two instar agents end up configured for the same port (configuration drift, leftover smoke-test fixtures, etc.), you'll now get a clear Telegram alert within about 15 minutes naming both agents involved. Previously the lifeline could spin silently for days while the supervisor suppressed its own server-down notifications as duplicates."
+- "Your instar agents have a new way to create git worktrees that the macOS sandbox can't kick them out of mid-session. There's a new instar worktree create command that places the worktree inside the agent's own home directory — the only place the sandbox can't revoke access to. Agents you create from now on will know about this convention out of the box. Agents already on your machine pick it up in the next release (the migrator that propagates the helper is the next thing on the queue)."
 
 ## Summary of New Capabilities
 
@@ -128,6 +150,9 @@ peer-escalation pipeline.
 | No-duplication source | The section bodies live in exactly one place (CLAUDE.md) and are sliced into shadows at migration time; Claude and non-Claude cannot drift. |
 | Fleet watchdog bind-failure probe | Automatic. Catches port-collision / server-unreachable agents whose lifelines look healthy to launchd. Escalates via peer agent's `/attention` endpoint after 3 cycles. |
 | Conflict-aware Telegram alerts | When the probe identifies the wrong-project case, the escalation summary names both contested parties. |
+| `instar worktree create <branch>` | New CLI subcommand. Places the worktree at `~/.instar/agents/<agent>/.worktrees/<slug>/` — the only location the macOS sandbox cannot revoke mid-session. Resolves agent home from `INSTAR_AGENT_HOME` or CWD walk-up; validates the instar repo against `worktree.repoUrlAllowlist` in `~/.instar/config.json`; sets per-worktree git identity without touching signing config; symlinks `node_modules` by default (`--no-share-node-modules` opts out). |
+| Sandbox-safe worktrees for new agents | `instar init` now seeds the convention into CLAUDE.md (top-level "Worktree Convention" section), MEMORY.md (Project Patterns entry), and `.gitignore` (`.worktrees/` excluded from git-sync). Existing agents pick this up via Layer 3 migrator in the next release. |
+| Authoritative reference doc | `docs/self-knowledge/worktrees.md` — the "how do I create a worktree?" answer any future agent gets pointed at via the seed CLAUDE.md mention. |
 
 ## Deferred (Tracked Follow-ups)
 
@@ -139,3 +164,14 @@ peer-escalation pipeline.
   output.
 - Per-agent "muted" flag for the bind-probe (legitimate maintenance
   windows) is deferred to the v3 Remediator's policy layer.
+- Layers 3 (PostUpdateMigrator step that installs the wrapper into every
+  existing agent home on update + ensures the `.gitignore` entry and the
+  `.worktrees/` directory exist with `0700`) and 4 (lifeline detector that
+  surfaces an attention-queue item for any worktree of the shared instar
+  repo that lives outside an agent home) of the agent worktree convention
+  ship in the next release. Until then, existing agents continue to use
+  the hand-rolled `instar-worktree-create.sh` already in their `.bin/`.
+- The two-line wrapper refresh in echo + bob `.bin/` that wires the
+  existing bash helper to `exec` into `instar worktree create` is an
+  agent-home edit (no instar source change, no gate) and lands together
+  with the v1.1.0 push.

@@ -1,12 +1,17 @@
 /**
- * `instar worktree ...` — operator tools for parallel-dev isolation.
+ * `instar worktree ...` — operator tools for parallel-dev isolation
+ * (the `register-keypair` subcommand) and for the agent worktree convention
+ * (the `create` subcommand — see docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md).
  *
  * Currently exposes:
  *   - `register-keypair --private <path>` — move a Day-2 migration keypair
  *     into the configured keyvault backend (macOS keychain, Linux libsecret,
- *     or flat-file fallback). Generates hmac + machineId locally.
- *
- * See docs/specs/PARALLEL-DEV-ISOLATION-SPEC.md §"Migration (iter 4)".
+ *     or flat-file fallback). Generates hmac + machineId locally. See
+ *     docs/specs/PARALLEL-DEV-ISOLATION-SPEC.md §"Migration (iter 4)".
+ *   - `create <branch>` — create a git worktree of the shared instar repo
+ *     inside the agent's own home directory, the only location the macOS
+ *     sandbox cannot revoke mid-session. See
+ *     docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md.
  */
 
 import crypto from 'node:crypto';
@@ -16,6 +21,11 @@ import pc from 'picocolors';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
 import { WorktreeKeyVault } from '../core/WorktreeKeyVault.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  createWorktree as createAgentWorktree,
+  type CreateWorktreeOptions,
+  type CreateWorktreeResult,
+} from '../core/InstarWorktreeManager.js';
 
 export interface RegisterKeypairOptions {
   /** Path to the Ed25519 private-key PEM (pkcs8). Usually the `.NEW` file
@@ -94,4 +104,25 @@ export async function registerKeypair(opts: RegisterKeypairOptions): Promise<voi
   if (!opts.keepInputFile) {
     console.log(pc.dim(`  input file scrubbed + deleted: ${privAbs}`));
   }
+}
+
+/**
+ * Thin shim around `InstarWorktreeManager.createWorktree`. The CLI handler
+ * (in src/cli.ts) translates picocolors-friendly flags into this signature
+ * and prints the result. All validation lives in the manager so unit tests
+ * don't have to drive picocolors.
+ */
+export async function createWorktree(opts: CreateWorktreeOptions): Promise<CreateWorktreeResult> {
+  const result = await createAgentWorktree(opts);
+  console.log(pc.green(`✓ worktree created`));
+  console.log(pc.dim(`  agent:        ${result.agentName}`));
+  console.log(pc.dim(`  branch:       ${result.branch} ${result.createdBranch ? '(new)' : '(existing)'}`));
+  console.log(pc.dim(`  worktree:     ${result.worktreePath}`));
+  console.log(pc.dim(`  instar repo:  ${result.instarRepo} @ ${result.instarRepoSha}`));
+  if (result.shareNodeModules) {
+    console.log(pc.yellow(
+      `  shared node_modules — concurrent 'npm install' in the main checkout may mutate this worktree's dependency tree mid-test.`,
+    ));
+  }
+  return result;
 }

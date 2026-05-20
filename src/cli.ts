@@ -432,7 +432,12 @@ removeAdapterCmd
 
 const worktreeCmd = program
   .command('worktree')
-  .description('Operator tools for parallel-dev topic-worktree isolation');
+  .description(
+    'Agent worktree operations. `create` places a sandbox-safe worktree of the shared ' +
+      'instar repo inside the agent home (see docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md). ' +
+      '`register-keypair` is a separate operator tool for parallel-dev topic-worktree ' +
+      'isolation cryptography (see docs/specs/PARALLEL-DEV-ISOLATION-SPEC.md).',
+  );
 
 worktreeCmd
   .command('register-keypair')
@@ -450,6 +455,33 @@ worktreeCmd
       });
     } catch (err) {
       console.error(pc.red(`register-keypair failed: ${(err as Error).message}`));
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('create <branch>')
+  .description(
+    'Create a git worktree of the shared instar repo inside the agent home ' +
+      '(~/.instar/agents/<agent>/.worktrees/<slug>). Agent home is resolved from ' +
+      'INSTAR_AGENT_HOME (set by the agent launcher) or by walking up from the CWD. ' +
+      'Caveat: GIT_AUTHOR_NAME / GIT_COMMITTER_EMAIL in the environment override the ' +
+      "per-worktree identity this command sets — agents that need attribution must avoid exporting those vars.",
+  )
+  .option('--slug <slug>', 'Override the worktree directory slug (defaults to branch with `/` → `-`)')
+  .option('--no-share-node-modules', 'Skip the symlink to the shared node_modules (full isolation)')
+  .option('--base <branch>', 'Override the base branch for new branches (defaults to origin/HEAD)')
+  .action(async (branch, opts) => {
+    const { createWorktree } = await import('./commands/worktree.js');
+    try {
+      await createWorktree({
+        branch,
+        slug: opts.slug,
+        shareNodeModules: opts.shareNodeModules,
+        baseBranch: opts.base,
+      });
+    } catch (err) {
+      console.error(pc.red(`worktree create failed: ${(err as Error).message}`));
       process.exit(1);
     }
   });
