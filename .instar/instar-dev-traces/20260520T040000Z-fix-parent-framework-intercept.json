@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/fix-parent-framework-intercept.md",
+  "artifactPath": "upgrades/side-effects/feat-fix-parent-framework-intercept.md",
+  "artifactSha256": "647fff8b4e00bc685089fac055c3bf3cf7f6e956b667801847d6010c1a2b2f33",
+  "coveredFiles": [
+    "src/cli.ts",
+    "src/data/builtin-manifest.json",
+    "specs/dev-infrastructure/fix-parent-framework-intercept.md",
+    "specs/dev-infrastructure/fix-parent-framework-intercept.eli16.md",
+    "docs/specs/reports/fix-parent-framework-intercept-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-fix-parent-framework-intercept.md"
+  ],
+  "writtenAt": "2026-05-20T04:00:00Z",
+  "agent": "echo",
+  "summary": "Hotfix on v1.0.17. PR 3+4 added --framework to three places (init, setup, bareword). Commander's program-level options intercept subcommand args, so `instar init --framework codex-cli` had its flag silently consumed by the parent parser and defaulted to claude-code. Smoke test on this machine caught it: enabledFrameworks: ['claude-code'] instead of ['codex-cli']; .claude/ and CLAUDE.md present. Fix removes the parent-level --framework option (subcommands keep theirs). Comment at the call site documents why. Smoke verified after fix: codex-only install produces zero .claude/, no CLAUDE.md, enabledFrameworks: ['codex-cli'], AGENTS.md present. Ships v1.0.18 — install/wizard portability arc functional end-to-end."
+}

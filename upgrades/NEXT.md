@@ -1,12 +1,24 @@
-# Upgrade Guide — v1.0.17 (full Codex-only install via instar setup)
+# Upgrade Guide — v1.0.18 (hotfix: parent-option intercepts --framework on subcommands)
 
 <!-- bump: patch -->
 
 ## What Changed
 
-Five changes ship together as v1.0.17 — completes the install/wizard
-framework-choice arc Justin asked for, plus the v1.0.14-v1.0.16 content
-that has been queued behind the npm auth issue.
+Six changes ship together as v1.0.18 — completes the install/wizard
+framework-choice arc Justin asked for (including a hotfix for the
+parent-option interception that caused the smoke test to fail on the
+v1.0.17 build), plus the v1.0.14-v1.0.16 content that has been queued
+behind the npm auth issue.
+
+**Hotfix on v1.0.17. Parent --framework option intercepted subcommand flag.**
+The bareword command (`npx instar` with no subcommand) had its own
+`--framework` option defined alongside the same flag on `init` and
+`setup`. Commander treats program-level options as global, so an
+invocation like `instar init --framework codex-cli` had its flag consumed
+by the parent parser before the init subcommand saw it — the flag silently
+fell back to `claude-code`. Smoke-test caught this; the parent-level
+option is removed. To pick a framework from the bareword path, use
+`instar setup --framework codex-cli` explicitly.
 
 **A. `instar setup --framework codex-cli` runs end-to-end on a Codex-only host (portability install PRs 3+4 of 4).**
 The `setup` and bareword (`npx instar`) commands now accept a `--framework

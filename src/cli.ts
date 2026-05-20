@@ -272,19 +272,13 @@ program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
   .version(getInstarVersion())
-  .option(
-    '--framework <name>',
-    'AI runtime to host the setup wizard: claude-code (default) or codex-cli',
-    (v: string) => {
-      const allowed = ['claude-code', 'codex-cli'];
-      if (!allowed.includes(v)) {
-        console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
-        process.exit(1);
-      }
-      return v;
-    },
-  )
-  .action(async (opts) => {
+  // Note: --framework is defined ONLY on subcommands (init, setup), not on the
+  // program. Commander treats program-level options as global; defining
+  // --framework here would intercept its value before the subcommand parser
+  // sees it, so `instar init --framework codex-cli` silently dropped the
+  // flag (verified via smoke test 2026-05-20). For the bareword path that
+  // wants Codex, use `instar setup --framework codex-cli` explicitly.
+  .action(async () => {
     const [major, minor] = process.versions.node.split('.').map(Number);
     if (major < 20 || (major === 20 && minor < 12)) {
       console.error(`\n  Instar setup requires Node.js 20.12 or later.`);
@@ -293,7 +287,7 @@ program
       process.exit(1);
     }
     const { runSetup } = await import('./commands/setup.js');
-    return runSetup({ framework: opts.framework });
+    return runSetup();
   }); // Default: run interactive setup when no subcommand given
 
 // ── Setup (explicit alias) ────────────────────────────────────────
