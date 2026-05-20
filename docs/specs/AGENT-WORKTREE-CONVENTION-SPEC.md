@@ -1,8 +1,9 @@
 ---
 title: Agent Worktree Convention
-status: draft
-approved: false
-approver:
+status: approved
+approved: true
+approver: justin
+approved-at: "2026-05-17T22:35:00Z"
 review-convergence: "2026-05-17T22:48:00Z"
 review-iterations: 4
 review-completed-at: "2026-05-17T22:48:00Z"
