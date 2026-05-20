@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/install-framework-flag.md",
+  "artifactPath": "upgrades/side-effects/feat-install-framework-flag.md",
+  "artifactSha256": "9813aa852700638c443ca9183202a6b15c87afb4c87b3cf70513c312f67d7555",
+  "coveredFiles": [
+    "src/cli.ts",
+    "src/commands/init.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/init-framework-flag.test.ts",
+    "specs/dev-infrastructure/install-framework-flag.md",
+    "specs/dev-infrastructure/install-framework-flag.eli16.md",
+    "docs/specs/reports/install-framework-flag-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-install-framework-flag.md"
+  ],
+  "writtenAt": "2026-05-20T02:15:00Z",
+  "agent": "echo",
+  "summary": "PR 1 of the four-PR install/wizard portability series. Adds --framework <claude-code|codex-cli|both> to instar init. Pure resolveEnabledFrameworks() helper maps the flag to enabledFrameworks array. All three init paths (fresh, existing, standalone) write the field to .instar/config.json. PostUpdateMigrator.getEnabledFrameworks() (v1.0.11) already reads it. Default behavior unchanged: omitting the flag yields ['claude-code'], byte-identical to today. 5-case unit test pins every flag value + default + fresh-array invariant. Ships v1.0.15 with combined release notes for both this PR and the v1.0.14-stranded shadow capability mirror."
+}
