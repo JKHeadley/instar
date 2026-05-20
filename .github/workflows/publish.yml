@@ -55,8 +55,52 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Determine next version
+      - name: Release-tier gate (Layer 2)
+        # Deployment Lockdown — Layer 2.
+        # `.instar/release-tier.json` declares the active release line
+        # (patch | minor | major | hold). The workflow honors that file
+        # BEFORE any side-effectful step. This is the operator's
+        # authoritative "no deploy" signal — without it, the workflow has
+        # no concept of a holding pattern and ships every PR as a patch.
+        # That's the exact gap that caused the 2026-05-19 misalignment.
+        # Resolution logic lives in scripts/resolve-release-tier.mjs so it
+        # is unit-tested (tests/unit/resolve-release-tier.test.ts) rather
+        # than buried in inline bash.
         if: steps.guide-check.outputs.skip != 'true'
+        id: tier-gate
+        run: |
+          NPM_VERSION=$(npm view instar version 2>/dev/null || echo "0.0.0")
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          echo "npm has:      $NPM_VERSION"
+          echo "package.json: $LOCAL_VERSION"
+
+          set +e
+          DECISION=$(node scripts/resolve-release-tier.mjs "$LOCAL_VERSION" "$NPM_VERSION" 2> /tmp/tier-reason.txt)
+          STATUS=$?
+          set -e
+          REASON=$(cat /tmp/tier-reason.txt)
+          echo "tier reason: $REASON"
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::release-tier: $REASON"
+            exit "$STATUS"
+          fi
+
+          if [ "$DECISION" = "skip" ]; then
+            {
+              echo "## Publish skipped — Layer 2 release-tier gate"
+              echo ""
+              echo "$REASON"
+              echo ""
+              echo "To resume publishing, edit \`.instar/release-tier.json\` (currently the tier blocks this release)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine next version
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         id: bump
         run: |
           # Version-truth policy (added 2026-05-19 after the v1.0.0 deployment
@@ -96,7 +140,7 @@ jobs:
           echo "Resolved publish version: $NEXT"
 
       - name: Rename NEXT.md to version-specific guide
-        if: steps.guide-check.outputs.skip != 'true'
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: |
           if [ -f "upgrades/NEXT.md" ]; then
             mv upgrades/NEXT.md "upgrades/${{ steps.bump.outputs.version }}.md"
@@ -106,18 +150,18 @@ jobs:
           fi
 
       - name: Check upgrade guide
-        if: steps.guide-check.outputs.skip != 'true'
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: node scripts/check-upgrade-guide.js
         continue-on-error: false
 
       - name: Publish to npm
-        if: steps.guide-check.outputs.skip != 'true'
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Commit version bump & tag
-        if: steps.guide-check.outputs.skip != 'true'
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         env:
           HUSKY: '0'
         run: |

@@ -1,4 +1,4 @@
-# Upgrade Guide — v1.1.0 (framework-choice install arc + agent worktree convention)
+# Upgrade Guide — v1.1.0 (framework-choice install arc + agent worktree convention + deployment lockdown layer 2)
 
 <!-- bump: minor -->
 
@@ -134,6 +134,24 @@ After 3 consecutive cycles (~15 min), the user gets a conflict-aware Telegram
 alert naming both parties — closes the AI-Guy-stuck-behind-codex-server-smoke
 class of failure that took 2 days to surface this week.
 
+**4. Deployment lockdown — Layer 2 (release-tier gate).**
+The publish workflow now consults `.instar/release-tier.json` before any
+side-effectful step. The committed tier declares the active release line:
+`patch` (routine maintenance, current default), `minor` (only publish when
+package.json declares a minor leap over npm), `major` (Layer 5
+multi-signature required; blocks until Layer 5 ships), or `hold` (all
+publishes disabled). This closes the second of seven lockdown layers
+designed after the 2026-05-19 v1.0.0 misalignment. Layer 1 (package.json
+as version-truth) shipped in v1.0.8 and is what made every subsequent
+1.0.x release ship at its declared version; Layer 2 is the operator's
+authoritative "no deploy" signal, expressed in a single committed file
+the workflow physically honors. Resolution logic lives in
+`scripts/resolve-release-tier.mjs` and is exercised by 20 unit tests
+including the regression case that reproduces the 2026-05-19 incident
+under `tier: hold`. The initial committed value is `tier: hold` — this
+release itself does not auto-publish; flip to `patch` to resume routine
+maintenance, or leave on hold during major-version work.
+
 ## Evidence
 
 Install-framework-choice reproduction prior: `instar init` had no way to
@@ -166,12 +184,27 @@ a Telegram alert by cycle 3. `tests/unit/watchdog-bind-probe.test.ts`
 (2 tests) cover the probe's behaviour and the full bind-fail →
 peer-escalation pipeline.
 
+Lockdown Layer 2 evidence: reproduction of the 2026-05-19 incident
+class — a no-deploy session with `package.json: 1.0.13` while npm is on
+`0.28.121` would, under v1.0.8 alone, still publish (Layer 1 honors
+package.json but has no concept of "hold"). Under Layer 2 with
+`tier: hold` committed, the workflow's gate step writes the skip reason
+to `$GITHUB_STEP_SUMMARY` and every downstream step (version bump,
+NEXT.md rename, npm publish, version-bump commit) short-circuits. The
+20-test unit suite `tests/unit/resolve-release-tier.test.ts` covers each
+of the four tiers across both passing and blocking version configurations
+plus an explicit regression case mirroring the 2026-05-19 incident input
+under `tier: hold`. The committed tier in this release is `hold`, so
+this PR's own merge does not auto-publish — exactly the headline
+guarantee the spec promises.
+
 ## What to Tell Your User
 
 - "You can now pick which AI runtime to use when you set up an Instar agent. Pass the framework flag to instar init for a Codex-only install. Default behavior is unchanged for everyone else. The framework flag is the first piece of a four-part install upgrade — the next three pieces add the same choice to setup, gate Claude-Code-only files behind the choice, and route the setup wizard through whichever runtime you pick."
 - "Codex and Gemini agents now also get the same capability instructions Claude agents have — discover, private views, coherence gate, agent network. This closes the v1.0 cross-framework portability arc."
 - "If two instar agents end up configured for the same port (configuration drift, leftover smoke-test fixtures, etc.), you'll now get a clear Telegram alert within about 15 minutes naming both agents involved. Previously the lifeline could spin silently for days while the supervisor suppressed its own server-down notifications as duplicates."
 - "Your instar agents have a new way to create git worktrees that the macOS sandbox can't kick them out of mid-session. There's a new instar worktree create command that places the worktree inside the agent's own home directory — the only place the sandbox can't revoke access to. Agents you create from now on will know about this convention out of the box. Agents already on your machine pick it up via the next update tick — the wrapper script is installed automatically, the worktree-convention section is backfilled into their CLAUDE.md, and the worktrees-directory is created with secure permissions, no operator action needed. On every agent startup, a lightweight detector also checks the shared instar repo for any worktrees that ended up in unsafe locations (created via raw git commands before this convention existed, for example) and surfaces them as a low-priority attention item so you can decide whether to relocate them with git worktree move."
+- "I have a new way to physically pause all auto-publishing to npm — a small file at the top of the instar repo that says what release line we're on. If we're working on a major feature, I can set it to hold and the publisher will refuse to ship anything until we deliberately flip it back. This release ships with that switch already in the hold position, so no further auto-publishes happen until we choose to resume. This is the second of seven locks designed after the v1.0.0 deployment misalignment in May."
 
 ## Summary of New Capabilities
 
@@ -188,6 +221,9 @@ peer-escalation pipeline.
 | Existing agents pick up the worktree convention on update | Automatic on next `instar` update tick. `PostUpdateMigrator.migrateWorktreeConvention` installs `<agent_home>/.bin/instar-worktree-create.sh` (wrapper that `exec`s into `instar worktree create`), ensures the `.gitignore` entry, creates `<agent_home>/.worktrees/` with mode `0700`. Idempotent. Refuses if `<agent_home>/.bin` is a symlink. Silently skips agents whose home isn't under `~/.instar/agents/<name>/`. |
 | Existing agents pick up the Worktree Convention CLAUDE.md section on update | Automatic on next update tick (Migration Parity Standard backfill in `migrateClaudeMd`). Section is mirrored through to AGENTS.md / GEMINI.md for Codex/Gemini agents via the shadow-capability mirror. |
 | Lifeline detector for misplaced worktrees | Automatic on every agent server boot. Resolves the canonical instar repo deterministically (`worktree.repoPath` config or default fallback chain), runs `git worktree list --porcelain` with a 2-second timeout, skips the main checkout and bare entries, and emits an attention-queue-shaped record (or JSONL fallback at `<stateDir>/audit/worktree-detector.jsonl` when no Telegram adapter) for every misplaced worktree. Signal-only — never blocks, never moves, never deletes. Dedupe via `worktree-misplaced:sha256(path)`. |
+| `.instar/release-tier.json` | Committed file. Set `tier` to `patch`, `minor`, `major`, or `hold` to declare the active release line. The publish workflow honors the tier before any side-effectful step. |
+| Tier `hold` engaged on release | Initial value committed as `hold`. To resume routine maintenance, edit `tier` to `patch`. |
+| Workflow gate (Layer 2) | Automatic. Reads `release-tier.json`, runs `scripts/resolve-release-tier.mjs`, short-circuits all publish steps on skip with a structured `$GITHUB_STEP_SUMMARY` entry. |
 
 ## Deferred (Tracked Follow-ups)
 
@@ -221,3 +257,9 @@ peer-escalation pipeline.
   existing bash helper to `exec` into `instar worktree create` is an
   agent-home edit (no instar source change, no gate) and lands together
   with the v1.1.0 push.
+- Layers 3–7 of the deployment lockdown spec — branch isolation as a
+  workflow trigger restriction, NEXT.md `hold: true` frontmatter,
+  multi-signature for major bumps, loud-refusal hardening with PR
+  comments and Telegram mirror, and session-start memory injection —
+  ship as separate PRs after Layer 2 lands. Spec:
+  `docs/specs/deployment-lockdown.md` (to land alongside Layer 3 PR).
