@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "slug": "watchdog-bind-failure-probe",
+  "coveredFiles": [
+    "src/templates/scripts/instar-watchdog.sh",
+    "tests/unit/watchdog-bind-probe.test.ts",
+    "tests/integration/watchdog-bind-fail-escalation.test.ts",
+    "docs/specs/watchdog-bind-failure-probe.md",
+    "docs/specs/watchdog-bind-failure-probe.eli16.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/watchdog-bind-failure-probe.md"
+  ],
+  "artifactPath": "upgrades/side-effects/watchdog-bind-failure-probe.md",
+  "artifactSha256": "b845fdb441e647c47cf73e638d381ceb23d764e101d49b1d1f0fd6d97cefa25b",
+  "specPath": "docs/specs/watchdog-bind-failure-probe.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "createdAt": "2026-05-20T02:04:44.000Z"
+}

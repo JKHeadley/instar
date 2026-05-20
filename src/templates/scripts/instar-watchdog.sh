@@ -270,6 +270,7 @@ bump_fail_counter() {
 reset_fail_counter() {
   local label="$1"
   rm -f "$HEAL_STATE_DIR/$label.consecutive-heal-fails" 2>/dev/null || true
+  rm -f "$HEAL_STATE_DIR/$label.bind-fail-conflict" 2>/dev/null || true
 }
 
 # Escalate via a healthy peer agent's /attention endpoint.
@@ -288,6 +289,20 @@ escalate_via_peer() {
 
   # Strip ai.instar. prefix for the user-facing name
   local dead_name="${dead_label#ai.instar.}"
+
+  # If the BIND-FAIL path stashed a conflicting-project hint, use it to build
+  # a more specific summary. Falls back to the generic "offline" copy.
+  local conflict_file="$HEAL_STATE_DIR/$dead_label.bind-fail-conflict"
+  local conflict_name=""
+  if [ -r "$conflict_file" ]; then
+    conflict_name=$(cat "$conflict_file" 2>/dev/null || true)
+  fi
+  local summary_text
+  if [ -n "$conflict_name" ] && [ "$conflict_name" != "$dead_name" ]; then
+    summary_text="${dead_name} hasn't been able to start its server because ${conflict_name} is using its port. My repair attempts haven't fixed it."
+  else
+    summary_text="${dead_name} has been offline for about ${minutes_down} minutes and my repair attempts aren't working."
+  fi
 
   # Find a healthy peer
   local peer_plist peer_label peer_dir peer_port peer_auth health_code
@@ -327,7 +342,7 @@ escalate_via_peer() {
 {
   "id": "fleet-watchdog-heal-fail-${dead_label}-${fail_count}",
   "title": "${dead_name} is offline",
-  "summary": "${dead_name} has been offline for about ${minutes_down} minutes and my repair attempts aren't working.",
+  "summary": "${summary_text}",
   "description": "Want me to dig in?",
   "category": "degradation",
   "priority": "HIGH"
@@ -389,6 +404,140 @@ JSONEOF
   return 1
 }
 
+# Probe whether an agent's lifeline-managed server actually owns its configured
+# port. Used to catch the failure mode where the lifeline (and launchd) report
+# healthy but the server itself is locked out — e.g. by a port collision with
+# another agent.
+#
+# Inputs:
+#   $1 = project_dir (e.g. /Users/x/Documents/Projects/ai-guy)
+#   $2 = label (e.g. ai.instar.ai-guy)
+#
+# Returns:
+#   0 — server reachable and identifies as the expected project (or no port
+#       configured, treat as lifeline-only and skip).
+#   2 — BIND-FAIL: port held by a different project.
+#   3 — BIND-FAIL: port unreachable while lifeline alive.
+#
+# Side-effects: writes a log line on BIND-FAIL. Stdout (single line):
+#   "<kind>\t<conflicting-project-or-empty>"  on BIND-FAIL.
+#   Empty otherwise.
+probe_server_identity() {
+  local project_dir="$1"
+  local label="$2"
+
+  [ -z "$project_dir" ] || [ ! -d "$project_dir" ] && return 0
+  local config_file="$project_dir/.instar/config.json"
+  [ ! -r "$config_file" ] && return 0
+
+  local node_bin port auth_token
+  node_bin=$(resolve_node || true)
+  [ -z "$node_bin" ] && return 0
+
+  # Read port + authToken in one node invocation. The authToken is required
+  # because /health gates the `project` field behind authentication — without
+  # it the probe can't verify identity and would silently fail-open.
+  local meta
+  meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(c.port||'')+'\t'+String(c.authToken||''))" "$config_file" 2>/dev/null || true)
+  port="${meta%%	*}"
+  auth_token="${meta##*	}"
+  # Lifeline-only agents have no port; treat as healthy from probe POV.
+  [ -z "$port" ] && return 0
+
+  # Probe /health with a short timeout. Short is critical — the watchdog runs
+  # every 5 minutes and must not stall on an unresponsive server.
+  # Authorization header included so the response carries the `project` field
+  # (gated server-side; see routes.ts /health handler).
+  local resp http_code body project_field auth_args
+  auth_args=()
+  if [ -n "$auth_token" ]; then
+    auth_args=(-H "Authorization: Bearer $auth_token")
+  fi
+  resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "${auth_args[@]}" "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  http_code=$(echo "$resp" | tail -n1)
+  body=$(echo "$resp" | sed '$d')
+
+  if [ "$http_code" != "200" ]; then
+    log "BIND-FAIL: $label — port $port unreachable while lifeline alive (http=$http_code)"
+    printf 'unreachable\t\n'
+    return 3
+  fi
+
+  # Extract the project field from the JSON response.
+  project_field=$("$node_bin" -e "try{const j=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(String(j.project||''))}catch(_){}" <<<"$body" 2>/dev/null || true)
+
+  # Derive expected name: strip ai.instar. prefix from label.
+  local expected="${label#ai.instar.}"
+
+  if [ -z "$project_field" ]; then
+    # Server is responding but doesn't expose its project — can't verify.
+    # Treat as healthy (don't false-alarm); old instar versions don't return this field.
+    return 0
+  fi
+
+  if [ "$project_field" != "$expected" ]; then
+    log "BIND-FAIL: $label — port $port owned by $project_field (expected $expected)"
+    printf 'wrong-project\t%s\n' "$project_field"
+    return 2
+  fi
+
+  return 0
+}
+
+# Run the heal + escalate pipeline for a BIND-FAIL detection. Reuses the
+# same machinery as crash-loop detection so we have ONE escalation path.
+#
+# Inputs:
+#   $1 = label
+#   $2 = project_dir
+#   $3 = plist
+#   $4 = probe stdout (kind\tconflicting-project)
+handle_bind_fail() {
+  local label="$1"
+  local project_dir="$2"
+  local plist="$3"
+  local probe_out="$4"
+  local kind conflict
+  kind="${probe_out%%	*}"
+  conflict="${probe_out#*	}"
+  conflict="${conflict%$'\n'}"
+
+  if ! should_attempt_heal "$label"; then
+    $VERBOSE && log "BIND-FAIL: $label — heal attempted recently, waiting"
+    return 0
+  fi
+
+  if try_self_heal "$project_dir" "$label"; then
+    log "RECOVERING: $label — self-heal applied for bind-fail, reloading"
+    if ! $DRY_RUN; then
+      mark_heal_attempt "$label"
+      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
+      sleep 1
+      launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
+      reset_fail_counter "$label"
+      log "RELOADED: $label (after bind-fail self-heal)"
+    else
+      log "DRY-RUN: Would reload $label after bind-fail self-heal"
+    fi
+    return 0
+  fi
+
+  # Heal can't fix it. Bump counter; escalate at threshold.
+  log "BIND-FAIL: $label — no fixable issues found ($kind${conflict:+, conflict=$conflict})"
+  mark_heal_attempt "$label"
+  local fail_count
+  fail_count=$(bump_fail_counter "$label")
+  if [ "$fail_count" -ge "$ESCALATE_AFTER_FAILS" ]; then
+    # Stash the bind-fail context so escalate_via_peer can pick it up.
+    if [ -n "$conflict" ]; then
+      echo "$conflict" > "$HEAL_STATE_DIR/$label.bind-fail-conflict"
+    fi
+    escalate_via_peer "$label" "$fail_count" || true
+  else
+    $VERBOSE && log "FAIL-COUNT: $label — ${fail_count}/${ESCALATE_AFTER_FAILS}"
+  fi
+}
+
 recovered=0
 checked=0
 for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
@@ -405,10 +554,21 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
     exit_status=$(launchctl list "$label" 2>/dev/null | grep '"LastExitStatus"' | grep -o '[0-9]*' || true)
 
     if [ -n "$pid" ] && [ "$pid" != "0" ]; then
-      # Healthy — clear heal state
-      rm -f "$HEAL_STATE_DIR/$label.last-heal" 2>/dev/null || true
-      reset_fail_counter "$label"
-      $VERBOSE && log "OK: $label (PID $pid)"
+      # Lifeline-level healthy. But the lifeline can be alive while the agent's
+      # server is locked out of its port (e.g. port collision with a peer).
+      # Run the bind-probe to catch that.
+      project_dir=$(get_project_dir "$plist")
+      probe_out=$(probe_server_identity "$project_dir" "$label")
+      probe_rc=$?
+      if [ "$probe_rc" -eq 0 ]; then
+        # Truly healthy — clear heal state
+        rm -f "$HEAL_STATE_DIR/$label.last-heal" 2>/dev/null || true
+        rm -f "$HEAL_STATE_DIR/$label.bind-fail-conflict" 2>/dev/null || true
+        reset_fail_counter "$label"
+        $VERBOSE && log "OK: $label (PID $pid)"
+      else
+        handle_bind_fail "$label" "$project_dir" "$plist" "$probe_out"
+      fi
     elif [ -n "$exit_status" ] && [ "$exit_status" != "0" ]; then
       log "CRASH-LOOP: $label (exit $exit_status, no PID)"
 
@@ -472,4 +632,7 @@ if [ -f "$LOG_FILE" ] && [ "$(wc -l < "$LOG_FILE")" -gt 1000 ]; then
 fi
 
 # Trim heal state files older than 24 hours
-find "$HEAL_STATE_DIR" -name "*.last-heal" -mmin +1440 -delete 2>/dev/null || true
+# Trim heal-state files older than 24 hours. Covers all per-label markers:
+# *.last-heal, *.consecutive-heal-fails, *.bind-fail-conflict — so state from
+# uninstalled agents doesn't accumulate indefinitely.
+find "$HEAL_STATE_DIR" \( -name "*.last-heal" -o -name "*.consecutive-heal-fails" -o -name "*.bind-fail-conflict" \) -mmin +1440 -delete 2>/dev/null || true
