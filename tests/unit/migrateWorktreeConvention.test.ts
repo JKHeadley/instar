@@ -83,12 +83,24 @@ function makeMigrator(stateDir: string): PostUpdateMigrator {
 }
 
 describe('PostUpdateMigrator.migrateWorktreeConvention', () => {
+  let originalAuditDir: string | undefined;
+
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iwm-mig-'));
     setHome(tmp);
+    // Redirect SafeGitExecutor's destructive-ops audit log to the per-test
+    // tmpdir so the full PostUpdateMigrator.migrate() chain — which fans
+    // out into many other steps that may call git via SafeGitExecutor —
+    // doesn't write to `<cwd>/.instar/audit/destructive-ops.jsonl` and
+    // mutate the CI working tree (the working-tree integrity check in
+    // .github/workflows/ci.yml rejects any post-test mutation).
+    originalAuditDir = process.env.INSTAR_AUDIT_LOG_DIR;
+    process.env.INSTAR_AUDIT_LOG_DIR = path.join(tmp, 'audit');
   });
 
   afterEach(() => {
+    if (originalAuditDir === undefined) delete process.env.INSTAR_AUDIT_LOG_DIR;
+    else process.env.INSTAR_AUDIT_LOG_DIR = originalAuditDir;
     restoreHome();
     // The full PostUpdateMigrator runs many other steps that fan out
     // writes (builtin-skills, jobs, etc.); recursive cleanup of tmp can
