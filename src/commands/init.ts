@@ -87,6 +87,37 @@ interface InitOptions {
   standalone?: boolean;
   /** Skip prerequisite checks (for testing). When true, uses provided or default paths. */
   skipPrereqs?: boolean;
+  /**
+   * Which AI runtime(s) this install should support. Drives framework-aware
+   * scaffolding (whose identity-shadow files are written; whether
+   * `.claude/settings.json` is created; which CLI the setup wizard spawns).
+   * Default `'claude-code'` preserves prior behavior. `'codex-cli'` produces
+   * a Codex-only install with no `.claude/` writes. `'both'` enables
+   * dual-runtime use.
+   */
+  framework?: 'claude-code' | 'codex-cli' | 'both';
+}
+
+/**
+ * Resolve the user-facing `--framework` choice into the persisted
+ * `enabledFrameworks` array stored in `.instar/config.json`. The migrator,
+ * sentinel, and runtime spawn paths all read this single field. Default
+ * (no flag) is `['claude-code']` so behavior is unchanged for existing
+ * users and the historical `npx instar` flow.
+ */
+export function resolveEnabledFrameworks(
+  choice: 'claude-code' | 'codex-cli' | 'both' | undefined,
+): ReadonlyArray<'claude-code' | 'codex-cli'> {
+  switch (choice) {
+    case 'codex-cli':
+      return ['codex-cli'];
+    case 'both':
+      return ['claude-code', 'codex-cli'];
+    case 'claude-code':
+    case undefined:
+    default:
+      return ['claude-code'];
+  }
 }
 
 /**
@@ -296,6 +327,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       visibility: 'public',
       capabilities: ['chat'],
     },
+    enabledFrameworks: [...resolveEnabledFrameworks(options.framework)],
   };
 
   const configFilePath = path.join(stateDir, 'config.json');
@@ -622,6 +654,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       visibility: 'public',
       capabilities: ['chat'],
     },
+    enabledFrameworks: [...resolveEnabledFrameworks(options.framework)],
   };
 
   const configPath = path.join(stateDir, 'config.json');
@@ -941,6 +974,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
       enabled: true,
       type: 'quick',
     },
+    enabledFrameworks: [...resolveEnabledFrameworks(options.framework)],
   };
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2));
   console.log(`  ${pc.green('✓')} Created config.json`);

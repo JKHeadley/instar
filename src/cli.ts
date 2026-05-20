@@ -323,6 +323,18 @@ program
   .option('-d, --dir <path>', 'Project directory (default: current directory)')
   .option('--port <port>', 'Server port (default: 4040)', (v: string) => parseInt(v, 10))
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
+  .option(
+    '--framework <name>',
+    'AI runtime to target: claude-code (default), codex-cli, or both',
+    (v: string) => {
+      const allowed = ['claude-code', 'codex-cli', 'both'];
+      if (!allowed.includes(v)) {
+        console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
+        process.exit(1);
+      }
+      return v;
+    },
+  )
   .action((projectName, opts) => {
     return initProject({ ...opts, name: projectName });
   });
