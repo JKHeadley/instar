@@ -1,0 +1,757 @@
+/**
+ * CapabilityIndex — single source of truth for the /capabilities self-discovery
+ * surface AND the discoverability lint that PR #290 introduced.
+ *
+ * Before this module: /capabilities was a hand-curated 440-line object literal
+ * in routes.ts, and the lint test in tests/unit/capabilities-discoverability.test.ts
+ * kept a parallel hand-written INTERNAL_ALLOWLIST. Two manual surfaces had to
+ * stay in sync for the discoverability promise to hold; nothing structurally
+ * enforced that sync. Echo's case study (topic 11141, 2026-05-21) called out
+ * the third manual edit point as the next obvious risk.
+ *
+ * After this module: /capabilities iterates CAPABILITY_INDEX and the lint
+ * reads the same array. Adding a new top-level route prefix to routes.ts
+ * fails CI until the author either adds an entry to CAPABILITY_INDEX (the
+ * "this is agent-facing, surface it" choice) or adds the prefix to
+ * INTERNAL_PREFIXES (the "this is operator-only, skip discovery" choice).
+ * The lint test no longer carries policy in test code — it just enforces the
+ * invariant that every prefix has been classified.
+ *
+ * Each entry has a `build(input)` function that produces the block to merge
+ * into the /capabilities response. Builders are pure (no I/O beyond what
+ * ctx already exposes) so /capabilities stays cheap to call on every probe.
+ *
+ * Spec: docs/specs/capabilities-introspection.md (PR #N — follow-up #2 of two).
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import type { SecretDrop } from './SecretDrop.js';
+import type { RouteContext } from './routes.js';
+
+/** Inputs every capability builder receives. Pure data — no closures. */
+export interface CapabilityBuildInput {
+  ctx: RouteContext;
+  /** Names of files under .claude/scripts/ — already enumerated by the handler. */
+  scripts: string[];
+  /** The SecretDrop instance — required for the `secrets` block's pending count. */
+  secretDrop: SecretDrop;
+}
+
+/** A single capability surfaced in the /capabilities response. */
+export interface CapabilityEntry {
+  /** JSON key under which this capability appears in the response body. */
+  readonly key: string;
+  /** Top-level route prefixes this capability owns. Drives the lint. */
+  readonly prefixes: readonly string[];
+  /** Human-friendly one-line description (for docs + telemetry). */
+  readonly description: string;
+  /** Produce the block to merge into the response. */
+  readonly build: (input: CapabilityBuildInput) => unknown;
+}
+
+// ── Top-level capability entries ─────────────────────────────────────────
+
+export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
+  {
+    key: 'telegram',
+    prefixes: ['/telegram'],
+    description: 'Telegram messaging adapter (bidirectional)',
+    build: ({ ctx, scripts }) => {
+      const hasTelegramConfig = ctx.config.messaging.some(
+        (m) => m.type === 'telegram' && m.enabled,
+      );
+      const hasTelegramReplyScript = scripts.includes('telegram-reply.sh');
+      return {
+        configured: hasTelegramConfig,
+        replyScript: hasTelegramReplyScript,
+        adapter: !!ctx.telegram,
+        bidirectional:
+          hasTelegramConfig && hasTelegramReplyScript && !!ctx.telegram,
+      };
+    },
+  },
+  {
+    key: 'imessage',
+    prefixes: ['/imessage'],
+    description: 'iMessage adapter + AppleScript send pipeline',
+    build: ({ ctx }) => {
+      const hasIMessageConfig =
+        ctx.config.messaging?.some((m) => m.type === 'imessage' && m.enabled) ??
+        false;
+      return {
+        configured: hasIMessageConfig,
+        adapter: !!ctx.imessage,
+        connected: ctx.imessage?.getConnectionInfo().state === 'connected',
+        endpoints: ctx.imessage
+          ? [
+              'GET /imessage/status',
+              'POST /imessage/validate-send/:recipient — validate + get send token (Layer 3)',
+              'POST /imessage/reply/:recipient — confirm delivery with token (called by imessage-reply.sh)',
+              'GET /imessage/chats',
+              'GET /imessage/chats/:chatId/history',
+              'GET /imessage/search?q=...',
+              'GET /imessage/log-stats',
+            ]
+          : [],
+      };
+    },
+  },
+  {
+    key: 'scheduler',
+    prefixes: ['/jobs'],
+    description: 'Cron-based job scheduler',
+    build: ({ ctx }) => {
+      let jobCount = 0;
+      let jobSlugs: string[] = [];
+      if (ctx.scheduler) {
+        const jobs = ctx.scheduler.getJobs();
+        jobCount = jobs.length;
+        jobSlugs = jobs.map((j) => j.slug);
+      }
+      return {
+        enabled: ctx.config.scheduler.enabled,
+        jobCount,
+        jobSlugs,
+      };
+    },
+  },
+  {
+    key: 'relationships',
+    prefixes: ['/relationships'],
+    description: 'Relationship registry — context for personalized interactions',
+    build: ({ ctx }) => {
+      const relationshipsDir = ctx.config.relationships?.relationshipsDir;
+      let relationshipCount = 0;
+      if (relationshipsDir && fs.existsSync(relationshipsDir)) {
+        try {
+          relationshipCount = fs
+            .readdirSync(relationshipsDir)
+            .filter((f) => f.endsWith('.json')).length;
+        } catch {
+          /* ignore */
+        }
+      }
+      return {
+        enabled: !!ctx.config.relationships,
+        count: relationshipCount,
+      };
+    },
+  },
+  {
+    key: 'feedback',
+    prefixes: ['/feedback'],
+    description: 'Feedback channel to upstream maintainers',
+    build: ({ ctx }) => ({ enabled: !!ctx.config.feedback?.enabled }),
+  },
+  {
+    key: 'publishing',
+    prefixes: ['/publish', '/published'],
+    description: 'Public web pages via Telegraph (PUBLIC content)',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.publisher,
+      pageCount: ctx.publisher?.listPages().length ?? 0,
+      warning:
+        'Telegraph pages are PUBLIC — anyone with the URL can view them.',
+      endpoints: ctx.publisher
+        ? [
+            'POST /publish — publish markdown as a public Telegraph page',
+            'GET /published — list all published pages',
+            'PUT /publish/:pagePath — edit a published page',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'privateViewer',
+    prefixes: ['/view', '/views'],
+    description: 'Private auth-gated HTML views (the safe sharing surface)',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.viewer,
+      viewCount: ctx.viewer?.list().length ?? 0,
+      endpoints: ctx.viewer
+        ? [
+            'POST /view — create a private auth-gated HTML view',
+            'GET /views — list all private views',
+            'GET /view/:viewId — render a private view (HTML)',
+            'PUT /view/:viewId — update a view',
+            'DELETE /view/:viewId — delete a view',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'tunnel',
+    prefixes: ['/tunnel'],
+    description: 'Cloudflare tunnel for remote access to private viewer + API',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.tunnel,
+      running: ctx.tunnel?.isRunning ?? false,
+      url: ctx.tunnel?.url ?? null,
+      type: ctx.config.tunnel?.type ?? null,
+    }),
+  },
+  {
+    key: 'users',
+    prefixes: [],
+    description: 'Multi-user registry — counts only; no prefix because user routes live under other prefixes',
+    build: ({ ctx }) => {
+      let userCount = 0;
+      const usersFile = path.join(ctx.config.stateDir, 'users.json');
+      if (fs.existsSync(usersFile)) {
+        try {
+          const users = JSON.parse(fs.readFileSync(usersFile, 'utf-8'));
+          if (Array.isArray(users)) userCount = users.length;
+        } catch {
+          /* ignore */
+        }
+      }
+      return { count: userCount };
+    },
+  },
+  {
+    key: 'secrets',
+    prefixes: ['/secrets'],
+    description:
+      'Secret Drop — secure one-time-link credential intake from users',
+    build: ({ secretDrop }) => ({
+      // Secret Drop — surfaced explicitly because /capabilities is the
+      // documented self-discovery primitive. Agents that don't see this
+      // block here will reach for unsafe channels (chat paste, env vars).
+      enabled: true,
+      pending: secretDrop.listPending().length,
+      endpoints: [
+        'POST /secrets/request — create a one-time submission link',
+        'GET /secrets/pending — list pending submissions',
+        'POST /secrets/retrieve/:token — retrieve a submitted secret (one-time read)',
+        'DELETE /secrets/pending/:token — cancel a pending request',
+      ],
+      retrievalHint:
+        'ALWAYS retrieve via `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name` (use `--names` to discover fields). It streams the value to stdout and NEVER prints the response body. Raw curl against /secrets/retrieve dumps the secret into the Bash tool transcript — do not use it.',
+    }),
+  },
+  {
+    key: 'topicMemory',
+    prefixes: ['/topic'],
+    description: 'Conversation memory keyed by Telegram topic',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.topicMemory,
+      stats: ctx.topicMemory?.stats() ?? null,
+      endpoints: ctx.topicMemory
+        ? [
+            'GET /topic/search?q=...&topic=N&limit=20',
+            'GET /topic/context/:topicId?recent=30',
+            'GET /topic/context/:topicId?assembled=true&prompt=...',
+            'GET /session/context/:topicId?prompt=...&job=...',
+            'GET /topic/list',
+            'GET /topic/stats',
+            'POST /topic/summarize { topicId }',
+            'POST /topic/summary { topicId, summary, messageCount, lastMessageId }',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'monitoring',
+    prefixes: ['/monitoring'],
+    description: 'Runtime monitoring — quotas, watchdogs, degradations, etc.',
+    build: ({ ctx }) => ctx.config.monitoring,
+  },
+  {
+    key: 'evolution',
+    prefixes: ['/evolution'],
+    description: 'Evolution proposals + learnings + gaps + actions',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.evolution,
+      subsystems: ['proposals', 'learnings', 'gaps', 'actions'],
+    }),
+  },
+  {
+    key: 'autonomy',
+    prefixes: ['/autonomy'],
+    description: 'Autonomy profile — how much freedom the agent has',
+    build: ({ ctx }) =>
+      ctx.autonomyManager
+        ? {
+            enabled: true,
+            profile: ctx.autonomyManager.getProfile(),
+            endpoints: [
+              'GET /autonomy — full dashboard with profile, resolved state, summary, elevations',
+              'GET /autonomy/summary — natural language summary',
+              'POST /autonomy/profile { profile, reason } — set profile level',
+              'PATCH /autonomy/notifications — update notification preferences',
+              'GET /autonomy/history — profile change history',
+            ],
+          }
+        : { enabled: false },
+  },
+  {
+    key: 'git',
+    prefixes: ['/git'],
+    description: 'Git state — repo, remote, sync job status + hints',
+    build: ({ ctx }) => {
+      const projectDir = ctx.config.projectDir;
+      const hasGitRepo = fs.existsSync(path.join(projectDir, '.git'));
+      let hasRemote = false;
+      let gitSyncJobEnabled = false;
+      if (hasGitRepo) {
+        try {
+          const remote = SafeGitExecutor.readSync(['remote'], {
+            cwd: projectDir,
+            stdio: 'pipe',
+            operation: 'src/server/CapabilityIndex.ts:git.build',
+          })
+            .toString()
+            .trim();
+          hasRemote = remote.length > 0;
+        } catch {
+          /* no remote */
+        }
+      }
+      if (ctx.scheduler) {
+        const gitJob = ctx.scheduler
+          .getJobs()
+          .find((j: { slug?: string }) => j.slug === 'git-sync');
+        gitSyncJobEnabled = !!(gitJob as { enabled?: boolean })?.enabled;
+      }
+      return {
+        inRepo: hasGitRepo,
+        hasRemote,
+        gitSyncJob: gitSyncJobEnabled,
+        autoSyncing: hasGitRepo && hasRemote && gitSyncJobEnabled,
+        agentType: ctx.config.agentType || 'standalone',
+        hint:
+          hasGitRepo && hasRemote && gitSyncJobEnabled
+            ? 'Git sync is active — your state is automatically committed and pushed hourly.'
+            : hasGitRepo && hasRemote
+              ? 'Git repo with remote exists but git-sync job is not enabled. Enable it in jobs.json.'
+              : hasGitRepo
+                ? 'Git repo exists but no remote configured. Add one with `git remote add origin <url>`.'
+                : 'No git repo. For standalone agents, run `instar git init`. For project-bound, initialize the parent repo.',
+      };
+    },
+  },
+  {
+    key: 'dispatches',
+    prefixes: ['/dispatches'],
+    description: 'Inter-machine dispatch queue (pull/apply tasks)',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.config.dispatches?.enabled,
+      autoDispatch: !!ctx.autoDispatcher,
+    }),
+  },
+  {
+    key: 'updates',
+    prefixes: ['/updates'],
+    description: 'Auto-update channel (npm pull + migrator)',
+    build: ({ ctx }) => ({ autoUpdate: !!ctx.autoUpdater }),
+  },
+  {
+    key: 'playbook',
+    prefixes: [],
+    description:
+      'Playbook context manifest — CLI-driven, no HTTP prefix surface',
+    build: ({ ctx }) => {
+      const playbookDir = path.join(ctx.config.stateDir, 'playbook');
+      const initialized = fs.existsSync(playbookDir);
+      let itemCount = 0;
+      let hasManifest = false;
+      if (initialized) {
+        const manifestPath = path.join(playbookDir, 'context-manifest.json');
+        hasManifest = fs.existsSync(manifestPath);
+        if (hasManifest) {
+          try {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+            itemCount = Array.isArray(manifest.items) ? manifest.items.length : 0;
+          } catch {
+            /* corrupt manifest */
+          }
+        }
+      }
+      return {
+        initialized,
+        itemCount,
+        hasManifest,
+        commands: [
+          'instar playbook init — initialize the playbook system',
+          'instar playbook doctor — health check',
+          'instar playbook status — manifest overview',
+          'instar playbook list — all context items',
+          'instar playbook add — add a context item',
+          'instar playbook assemble — preview trigger-based assembly',
+          'instar playbook evaluate — run lifecycle (score, decay, dedup)',
+          'instar playbook mount — import context from another agent',
+          'instar playbook search — find items by tag',
+        ],
+        hint: initialized
+          ? `Playbook active with ${itemCount} context items. Run 'instar playbook doctor' to verify health.`
+          : "Playbook not initialized. Run 'instar playbook init' to set up adaptive context engineering.",
+      };
+    },
+  },
+  {
+    key: 'attentionQueue',
+    prefixes: ['/attention'],
+    description: 'User-attention queue (signal needs/reviews)',
+    build: () => ({
+      enabled: true,
+      hint: 'Use POST /attention to signal important items to the user.',
+    }),
+  },
+  {
+    key: 'commitments',
+    prefixes: ['/commitments'],
+    description: 'CommitmentTracker — lifecycle for agent promises',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /commitments — list commitments (filterable)',
+        'GET /commitments/:id — fetch a single commitment',
+        'POST /commitments — open a new commitment',
+        'PATCH /commitments/:id — update status/details',
+        'POST /commitments/:id/deliver — mark delivered',
+        'POST /commitments/:id/withdraw — withdraw the commitment',
+        'POST /commitments/:id/resume — resume a paused commitment',
+        'GET /commitments/active-context — assemble active-commitment context',
+      ],
+    }),
+  },
+  {
+    key: 'semantic',
+    prefixes: ['/semantic'],
+    description: 'Semantic memory — successor to deprecated /memory',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'POST /semantic/remember — store a memory',
+        'GET /semantic/recall/:id — fetch a memory by id',
+        'GET /semantic/search?q=... — semantic search',
+        'GET /semantic/search/hybrid?q=... — hybrid (vector + keyword) search',
+        'POST /semantic/connect — link two memories',
+        'GET /semantic/explore/:id — graph traversal from a memory',
+        'POST /semantic/verify/:id — mark a memory verified',
+        'POST /semantic/supersede — replace one memory with another',
+        'GET /semantic/stale — list stale memories',
+        'GET /semantic/stats — store statistics',
+        'GET /semantic/context — assembled context for a prompt',
+      ],
+    }),
+  },
+  {
+    key: 'tokens',
+    prefixes: ['/tokens'],
+    description: 'TokenLedger — read-only token-usage observability',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /tokens/summary — aggregate token usage',
+        'GET /tokens/sessions — per-session token usage',
+        'GET /tokens/by-project — usage grouped by project',
+        'GET /tokens/orphans — sessions with no project binding',
+      ],
+    }),
+  },
+  {
+    key: 'skipLedger',
+    prefixes: ['/skip-ledger'],
+    description: 'Skip-ledger — workload-aware idempotency',
+    build: () => ({
+      enabled: true,
+      hint: 'Use GET /skip-ledger to avoid re-processing items in jobs.',
+    }),
+  },
+  {
+    key: 'projectMap',
+    prefixes: ['/project-map'],
+    description: 'Project map — file/structure self-awareness',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.projectMapper,
+      hasSavedMap: ctx.projectMapper?.loadSavedMap() !== null,
+      endpoints: ctx.projectMapper
+        ? [
+            'GET /project-map — full project structure (JSON, ?format=markdown, ?format=compact)',
+            'POST /project-map/refresh — regenerate the project map',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'contextHierarchy',
+    prefixes: ['/context'],
+    description: 'Context hierarchy + dispatch table',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.contextHierarchy,
+      segments:
+        ctx.contextHierarchy
+          ?.listSegments()
+          .map((s) => ({ id: s.id, tier: s.tier, exists: s.exists })) ?? [],
+      endpoints: ctx.contextHierarchy
+        ? [
+            'GET /context — list all context segments with status',
+            'GET /context/dispatch — dispatch table (when X, load Y)',
+            'GET /context/:segmentId — load a specific context segment',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'workingMemory',
+    prefixes: [],
+    description:
+      'Working memory assembler — surfaced through /context/working-memory',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.workingMemory,
+      endpoints: ctx.workingMemory
+        ? [
+            'GET /context/working-memory?prompt=...&jobSlug=...&sessionId=... — token-budgeted context assembly from all memory layers',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'canonicalState',
+    prefixes: ['/state', '/projects'],
+    description: 'Canonical state — quick-facts, anti-patterns, projects',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.canonicalState,
+      endpoints: ctx.canonicalState
+        ? [
+            'GET /state/quick-facts — fast answers to common questions',
+            'POST /state/quick-facts — add/update a quick fact',
+            'GET /state/anti-patterns — things NOT to do',
+            'POST /state/anti-patterns — record a new anti-pattern',
+            'GET /state/projects — all known projects',
+            'POST /state/projects — register a project',
+            'GET /state/summary — compact state summary',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'coherence',
+    prefixes: ['/coherence', '/topic-bindings'],
+    description: 'Coherence gate — pre-action verification + topic bindings',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.coherenceGate,
+      endpoints: ctx.coherenceGate
+        ? [
+            'POST /coherence/check — pre-action coherence verification',
+            'POST /coherence/reflect — generate self-reflection prompt',
+            'GET /topic-bindings — list topic-project bindings',
+            'POST /topic-bindings — bind a topic to a project',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'responseReview',
+    prefixes: ['/review'],
+    description: 'Response-review pipeline + coherence proposals',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.responseReviewGate,
+      endpoints: ctx.responseReviewGate
+        ? [
+            'POST /review/evaluate — evaluate agent response before delivery',
+            'POST /review/test — dry-run test of review pipeline',
+            'GET /review/history — review audit log (filterable, 30-day retention)',
+            'DELETE /review/history?sessionId=X — delete history for session (DSAR)',
+            'GET /review/stats — reviewer effectiveness metrics (per-period, per-recipient)',
+            'GET /coherence/proposals — patch proposal queue',
+            'POST /coherence/proposals — submit a new proposal',
+            'POST /coherence/proposals/:id/approve — approve a proposal',
+            'POST /coherence/proposals/:id/reject — reject a proposal',
+            'GET /coherence/health — coherence evolution dashboard',
+            'GET /review/health — reviewer health and anomaly detection',
+            'POST /review/canary — run canary tests with known-bad messages',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'externalOperationSafety',
+    prefixes: ['/operations', '/sentinel', '/trust'],
+    description:
+      'External operation gate + message sentinel + adaptive-trust profile',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.operationGate,
+      sentinel: !!ctx.sentinel,
+      adaptiveTrust: !!ctx.adaptiveTrust,
+      endpoints: ctx.operationGate
+        ? [
+            'POST /operations/classify — classify an operation (risk level)',
+            'POST /operations/evaluate — full gate evaluation (proceed/plan/block)',
+            'GET /operations/log — recent operation history',
+            'GET /operations/permissions/:service — service permissions',
+            'POST /sentinel/classify — test message classification',
+            'GET /sentinel/stats — sentinel classification stats',
+            'GET /trust — full trust profile',
+            'GET /trust/summary — compact trust summary',
+            'POST /trust/grant — explicitly grant trust',
+            'GET /trust/elevations — pending elevation suggestions',
+            'GET /trust/changelog — recent trust changes',
+          ]
+        : [],
+    }),
+  },
+  {
+    key: 'featureGuide',
+    prefixes: [],
+    description:
+      'Context-triggered capability suggestions (no own routes; meta-guidance)',
+    build: () => ({
+      description:
+        'Context-triggered capability suggestions. Use these proactively when context matches.',
+      triggers: FEATURE_GUIDE_TRIGGERS,
+    }),
+  },
+  {
+    key: 'discovery',
+    prefixes: ['/features'],
+    description: 'FeatureRegistry — opt-in feature discovery + per-user state',
+    build: ({ ctx }) =>
+      ctx.featureRegistry
+        ? {
+            enabled: true,
+            featureCount: ctx.featureRegistry.getAllDefinitions().length,
+            summaries: ctx.featureRegistry.getSummaries(),
+            evaluator: ctx.discoveryEvaluator
+              ? { active: true, ...ctx.discoveryEvaluator.getStatus() }
+              : { active: false },
+            endpoints: [
+              'GET /features — full feature registry (definitions + per-user state)',
+              'GET /features/:id — single feature details with valid transitions',
+              'GET /features?state=undiscovered,aware — filter by discovery state',
+              'GET /features/summary — lightweight summaries only',
+              'POST /features/evaluate-context — evaluate context for feature surfacing',
+              'GET /features/evaluator-status — evaluator rate-limit and cache status',
+            ],
+          }
+        : { enabled: false },
+  },
+];
+
+// ── Feature-guide triggers (large static payload; isolated for readability) ──
+
+const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }> = [
+  { context: 'User mentions a document, file, or report', action: 'Render it as a private view (POST /view) — beautiful HTML accessible on any device. If tunnel is running, shareable remotely.' },
+  { context: 'User wants to share something publicly', action: 'Publish via Telegraph (POST /publish). Always warn the user it is publicly accessible.' },
+  { context: 'User mentions someone by name', action: 'Check relationships (GET /relationships). Use context to personalize interactions. Offer to start tracking if not found.' },
+  { context: 'User has a recurring task', action: 'Create a scheduled job in .instar/jobs.json. Explain it will run automatically.' },
+  { context: 'User repeats a workflow', action: 'Create a skill in .claude/skills/. It becomes a slash command for future sessions.' },
+  { context: 'User is debugging CI or deployment', action: 'Check CI health (GET /ci) for GitHub Actions status.' },
+  { context: 'User asks about past events or prior conversations', action: 'Search topic memory (GET /topic/search?q=...), get topic context (GET /topic/context/:topicId), check memory, review activity logs.' },
+  { context: 'User frustrated with a limitation', action: 'Check for updates (GET /updates). Check dispatches (GET /dispatches/pending). The fix may already exist.' },
+  { context: 'User asks to remember something', action: 'Write to .instar/MEMORY.md. Explain it persists across sessions.' },
+  { context: 'Something needs user attention later', action: 'Queue in attention system (POST /attention). More reliable than hoping they see a message.' },
+  { context: 'Job processes a list of items', action: 'Use skip ledger (POST /skip-ledger/workload) to avoid re-processing on next run.' },
+  { context: 'About to deploy, push, or modify files outside project', action: 'Run coherence check FIRST (POST /coherence/check). Verify you are in the right project for the current topic.' },
+  { context: 'Working on a topic tied to a specific project', action: 'Check topic-project binding (GET /topic-bindings). If unbound, bind it (POST /topic-bindings) to prevent cross-project confusion.' },
+  { context: 'Unsure what project this is or what files exist', action: 'Check project map (GET /project-map?format=compact) for spatial awareness — project type, key files, deployment targets.' },
+  { context: 'About to call an external service API (email, calendar, messaging)', action: 'Evaluate through operation gate FIRST (POST /operations/evaluate). The gate classifies risk and decides proceed/plan/block.' },
+  { context: 'User says to stop, cancel, or abort', action: 'MessageSentinel intercepts these automatically. For manual classification: POST /sentinel/classify.' },
+  { context: 'User says "you don\'t need to ask me about X"', action: 'Grant trust explicitly (POST /trust/grant). Trust persists across sessions.' },
+  { context: 'User asks about autonomy, trust level, approval settings, or how much freedom the agent has', action: 'Show autonomy summary (GET /autonomy/summary). Present in natural language — never show CLI commands.' },
+  { context: 'User says "go autonomous", "handle everything yourself", "I trust you", or wants less friction', action: 'Set autonomy profile (POST /autonomy/profile { profile: "autonomous", reason: "..." }). Confirm the implications conversationally first.' },
+  { context: 'User says "supervise everything", "ask me first", "I want to approve", or wants more control', action: 'Set autonomy profile (POST /autonomy/profile { profile: "cautious" or "supervised", reason: "..." }).' },
+  { context: 'User wants to undo an evolution change or revert agent self-modification', action: 'Check evolution proposals (GET /evolution/proposals?status=implemented), then PATCH the proposal status back. Explain what happened and what was reverted.' },
+  { context: 'User asks to adjust memory warning thresholds or stop memory alerts', action: 'Update thresholds (PATCH /monitoring/memory/thresholds with {warning, elevated, critical}). Check current state (GET /monitoring/memory).' },
+  { context: 'User asks about Instar features, architecture, multi-user, or multi-machine setup', action: 'STOP — do NOT answer from memory. Run GET /capabilities first, then check `instar --help` for CLI commands, then GET /context/dispatch for the full context map. Answer ONLY from what these return.' },
+  { context: 'User says to update, install latest version, or apply updates', action: 'Run POST /updates/apply immediately. Do NOT explain how to update — just do it. If you want to enable auto-updates, set updates.autoApply to true in .instar/config.json.' },
+  { context: 'Agent learns a lesson, discovers a pattern, or user teaches something worth remembering', action: 'Add it to the Playbook manifest (instar playbook add). Context items persist across sessions and get assembled based on triggers. This is more structured than MEMORY.md — items have triggers, scores, and lifecycle management.' },
+  { context: 'Session context feels stale or irrelevant', action: 'Run instar playbook evaluate to score items, decay stale ones, and deduplicate. Then check instar playbook status.' },
+  { context: 'Another agent wants to share context', action: 'Use instar playbook mount to import their manifest with integrity verification. Only global-scoped items are accepted.' },
+  { context: 'User mentions other AI agents, wants to collaborate with other agents, or asks about multi-agent communication', action: 'Check if Threadline relay is enabled (GET /threadline/status). If not enabled, explain: you have the ability to connect to a secure agent network where you can discover and message other AI agents in real time. Offer to enable it conversationally. If enabled, use threadline_discover and threadline_send.' },
+  { context: 'User asks what you can do, your features, or capabilities you have not used yet', action: 'Include Threadline relay in your capability overview if not yet enabled. Explain it lets you join a network of agents for real-time secure communication — available but waiting for their go-ahead.' },
+];
+
+// ── Internal-only prefixes (intentionally NOT surfaced in /capabilities) ──
+
+/**
+ * Top-level route prefixes that are intentionally invisible to agents in
+ * the /capabilities response. Each entry is a deliberate "skip" with a
+ * one-line reason. The discoverability lint verifies that every prefix in
+ * routes.ts is either claimed by a CAPABILITY_INDEX entry OR allowlisted
+ * here — never both, never neither.
+ */
+export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'health', reason: 'basic liveness check, no auth' },
+  { prefix: 'ping', reason: 'synchronous noop, used by tunnel/lifeline probes' },
+  { prefix: 'whoami', reason: 'internal identity probe (sentinel/relay layer 1c)' },
+  { prefix: 'capabilities', reason: 'the discovery endpoint itself — surfacing would recurse' },
+  { prefix: 'internal', reason: 'internal-only IPC namespace' },
+  { prefix: 'pastes', reason: 'internal Claude Code paste-callback receiver' },
+  { prefix: 'listener', reason: 'internal heartbeat/listener wiring' },
+  { prefix: 'events', reason: 'internal SSE/event-stream' },
+  { prefix: 'config', reason: 'global config CRUD used by setup/migrator' },
+  { prefix: 'status', reason: 'legacy status endpoint, superseded by /capabilities' },
+  { prefix: 'shared-state', reason: 'legacy state primitive, superseded by canonicalState' },
+  { prefix: 'backups', reason: 'backup listing is operator-only, not agent-facing' },
+  { prefix: 'episodes', reason: 'legacy episode log, replaced by topicMemory' },
+  { prefix: 'reflection', reason: 'legacy reflection log, replaced by topicMemory' },
+  { prefix: 'serendipity', reason: 'operator review surface, not agent-facing' },
+  { prefix: 'system-review', reason: 'legacy system review log, replaced by responseReview' },
+  { prefix: 'system-reviews', reason: 'legacy system review log, replaced by responseReview' },
+  { prefix: 'systems', reason: 'legacy systems registry, replaced by canonicalState.projects' },
+  { prefix: 'memory', reason: 'deprecated (Deprecation/Sunset headers) → /semantic' },
+  { prefix: 'messaging', reason: 'alternative surface for /telegram, /imessage, etc.' },
+  { prefix: 'messages', reason: 'legacy direct message access' },
+  { prefix: 'providers', reason: 'legacy provider registry, replaced by autonomy' },
+  { prefix: 'quota', reason: 'operator-only quota observability' },
+  { prefix: 'watchdog', reason: 'operator-only watchdog state' },
+  { prefix: 'telemetry', reason: 'operator-only telemetry plumbing' },
+  { prefix: 'homeostasis', reason: 'operator-only homeostasis state' },
+  { prefix: 'agents', reason: 'surfaced via threadline discovery' },
+  { prefix: 'delivery-queue', reason: 'operator-only relay queue observability' },
+  { prefix: 'prompt-gate', reason: 'operator-only prompt-gate observability' },
+  { prefix: 'scope-coherence', reason: 'operator-only scope-coherence observability' },
+  { prefix: 'slack', reason: 'surfaced via messaging adapters' },
+  { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
+  { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },
+  { prefix: 'initiatives', reason: 'surfaced inside `evolution` subsystems' },
+  { prefix: 'triage', reason: 'surfaced inside `evolution` subsystems' },
+  { prefix: 'intent', reason: 'surfaced inside `evolution` subsystems' },
+  { prefix: 'self-knowledge', reason: 'surfaced inside `capability-map`' },
+  { prefix: 'capability-map', reason: 'separate self-knowledge surface with its own discovery path' },
+  { prefix: 'build', reason: 'operator-only build endpoint' },
+  { prefix: 'sessions', reason: 'operator/dashboard-only session listing (no agent-facing API)' },
+  { prefix: 'ci', reason: 'operator-only CI status surface' },
+  { prefix: 'session', reason: 'single-session context surfaced via topicMemory endpoints' },
+  { prefix: 'identity', reason: 'identity files surfaced via the top-level `identity` field of the response' },
+  { prefix: 'hooks', reason: 'hook listing surfaced via the top-level `hooks` field of the response' },
+  { prefix: 'threadline', reason: 'surfaced via discovery (threadline-relay feature)' },
+];
+
+// ── Public helpers ───────────────────────────────────────────────────────
+
+/**
+ * Map every top-level route prefix to its CapabilityIndex key (for entries
+ * that claim prefixes). Lint uses this to verify routes.ts has full coverage.
+ */
+export function buildPrefixToKeyMap(): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const entry of CAPABILITY_INDEX) {
+    for (const prefix of entry.prefixes) {
+      // Strip leading slash for symmetry with route extraction.
+      const normalized = prefix.startsWith('/') ? prefix.slice(1) : prefix;
+      m.set(normalized, entry.key);
+    }
+  }
+  return m;
+}
+
+/** Set of all prefixes that should NOT appear in /capabilities. */
+export function buildInternalPrefixSet(): Set<string> {
+  return new Set(INTERNAL_PREFIXES.map((e) => e.prefix));
+}
+
+/** Iterate the index and produce the full capability-block object. */
+export function buildAllCapabilityBlocks(
+  input: CapabilityBuildInput,
+): Record<string, unknown> {
+  const blocks: Record<string, unknown> = {};
+  for (const entry of CAPABILITY_INDEX) {
+    blocks[entry.key] = entry.build(input);
+  }
+  return blocks;
+}
