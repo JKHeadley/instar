@@ -2348,6 +2348,38 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       result.skipped.push('CLAUDE.md: File Viewer section already present');
     }
 
+    // Secret Drop hardened retrieve — patch the unsafe `curl /secrets/retrieve/TOKEN`
+    // line if it's still in the user's CLAUDE.md. Fresh inits get the hardened
+    // guidance via generateClaudeMd; existing agents updating in place keep the
+    // old unsafe instruction unless we rewrite it here. Idempotent: skips if
+    // the user already has the hardened helper documented.
+    if (
+      content.includes('Retrieve the secret:') &&
+      content.includes('secrets/retrieve/TOKEN') &&
+      !content.includes('secret-drop-retrieve.mjs')
+    ) {
+      const oldLine =
+        `- Retrieve the secret: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/retrieve/TOKEN\``;
+      const newBlock =
+        `- **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Pipe directly: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN password | gh secret set FOO\`. Discover available fields with \`... TOKEN --names\`.\n- **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript. The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).`;
+      if (content.includes(oldLine)) {
+        content = content.replace(oldLine, newBlock);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: rewrote Secret Drop retrieval to hardened helper');
+      } else {
+        // Older agents may have a slightly different port literal in the
+        // line — match on the stable substring and replace the whole line.
+        const lineRegex = /- Retrieve the secret:.*\/secrets\/retrieve\/TOKEN`/;
+        if (lineRegex.test(content)) {
+          content = content.replace(lineRegex, newBlock);
+          patched = true;
+          result.upgraded.push('CLAUDE.md: rewrote Secret Drop retrieval to hardened helper (port-tolerant)');
+        }
+      }
+    } else if (content.includes('secret-drop-retrieve.mjs')) {
+      result.skipped.push('CLAUDE.md: Secret Drop already documents hardened helper');
+    }
+
     // Worktree Convention section (Migration Parity Standard backfill for
     // Layer 2 of the agent worktree convention — fresh inits get this via
     // generateClaudeMd; existing agents get it here on update).
@@ -2600,6 +2632,27 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('scripts/convergence-check.sh (pre-messaging quality gate)');
     } catch (err) {
       result.errors.push(`convergence-check.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Secret Drop hardened retrieve helper — always overwrite. Security-
+    // critical: the raw curl pattern against /secrets/retrieve leaks the
+    // value into the Bash tool transcript (2026-05-20 incident class). The
+    // hardened mjs streams the field value to stdout and never prints the
+    // response body. Existing agents must get the helper without waiting
+    // for a manual install. Custom forks land at custom/secret-drop-* paths
+    // and are untouched by this overwrite.
+    try {
+      const retrieveContent = this.loadRelayTemplate('secret-drop-retrieve.mjs');
+      if (retrieveContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-drop-retrieve.mjs'),
+          retrieveContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-drop-retrieve.mjs (hardened Secret Drop retrieval)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-drop-retrieve.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

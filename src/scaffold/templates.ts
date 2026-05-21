@@ -427,7 +427,8 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Request a secret: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/request -H 'Content-Type: application/json' -d '{"label":"OpenAI API Key","description":"Needed for GPT integration","topicId":TOPIC_ID}'\`
 - The response includes a one-time URL (\`localUrl\` and \`tunnelUrl\`). Send this link to the user.
 - When the user submits the secret through the form, you receive a Telegram confirmation in the specified topic.
-- Retrieve the secret: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/retrieve/TOKEN\`
+- **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Pipe directly: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN password | gh secret set FOO\`. Discover available fields with \`... TOKEN --names\`.
+- **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript. The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).
 - List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
 - Cancel: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending/TOKEN\`
 - **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.

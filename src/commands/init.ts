@@ -397,6 +397,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
+  installSecretDropRetrieve(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -780,6 +782,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/serendipity-capture.sh');
+  installSecretDropRetrieve(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -3565,6 +3569,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   // Always install serendipity-capture.sh (lives in `.instar/scripts/`,
   // framework-neutral).
   installSerendipityCapture(projectDir);
+  installSecretDropRetrieve(projectDir);
 }
 
 /**
@@ -4342,6 +4347,44 @@ function installSerendipityCapture(projectDir: string): void {
 
   if (!scriptContent) {
     // Non-fatal: skip if template not found (e.g., during development)
+    return;
+  }
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
+ * Install the hardened Secret Drop retrieve helper. Streams the requested
+ * field value to stdout WITHOUT ever printing the response body — the
+ * structural guard against the 2026-05-20 leak class where a raw curl
+ * against /secrets/retrieve dumped the full JSON (including credentials)
+ * into the Bash tool transcript.
+ *
+ * Lives under .instar/scripts/ so it ships outside the .claude/ tree that
+ * may get reset on framework reinstall. The mjs script reads authToken +
+ * port from .instar/config.json at runtime; no port substitution needed.
+ */
+function installSecretDropRetrieve(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  const scriptPath = path.join(scriptsDir, 'secret-drop-retrieve.mjs');
+
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'secret-drop-retrieve.mjs'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-drop-retrieve.mjs'),
+  ];
+
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+
+  if (!scriptContent) {
     return;
   }
 
