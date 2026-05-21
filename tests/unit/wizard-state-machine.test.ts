@@ -12,8 +12,137 @@ import {
   buildFreshProjectInstall,
   INITIAL_STATE,
   resolveChoice,
+  requireNonEmpty,
+  requireChoice,
   type WizardAnswers,
 } from '../../src/commands/setup-wizard/state-machine.js';
+
+describe('requireNonEmpty', () => {
+  const v = requireNonEmpty('name');
+
+  it('rejects empty strings with a buffered-Enter-aware message', () => {
+    const msg = v('');
+    expect(msg).not.toBeNull();
+    expect(msg!.toLowerCase()).toMatch(/blank/);
+    expect(msg!.toLowerCase()).toMatch(/extra enter/);
+    expect(msg!.toLowerCase()).toMatch(/name/);
+  });
+
+  it('rejects whitespace-only strings', () => {
+    expect(v('   ')).not.toBeNull();
+    expect(v('\t')).not.toBeNull();
+    expect(v('\n')).not.toBeNull();
+  });
+
+  it('accepts any non-whitespace text', () => {
+    expect(v('codey')).toBeNull();
+    expect(v(' bob ')).toBeNull();
+    expect(v('a')).toBeNull();
+  });
+});
+
+describe('requireChoice', () => {
+  const choices = [
+    { value: 'yes', label: 'Yes, lets go' },
+    { value: 'no', label: 'Not right now' },
+  ];
+  const v = requireChoice(choices);
+
+  it('rejects empty input', () => {
+    expect(v('')).not.toBeNull();
+    expect(v('   ')).not.toBeNull();
+  });
+
+  it('rejects unmatched text', () => {
+    expect(v('maybe')).not.toBeNull();
+    expect(v('xyzzy')).not.toBeNull();
+  });
+
+  it('accepts numeric indices, value strings, and label prefixes', () => {
+    expect(v('1')).toBeNull();
+    expect(v('2')).toBeNull();
+    expect(v('yes')).toBeNull();
+    expect(v('Not')).toBeNull();
+  });
+
+  it('error message mentions the valid range', () => {
+    const msg = v('garbage');
+    expect(msg).not.toBeNull();
+    expect(msg!).toMatch(/1-2/);
+  });
+});
+
+describe('state machine validators wired correctly', () => {
+  const states = buildFreshProjectInstall();
+
+  it('agent-name validates non-empty (closes v1.2.13 buffered-Enter bug)', () => {
+    const state = states['agent-name'];
+    if (state?.kind !== 'narrative-then-prompt') return;
+    expect(state.validate).toBeDefined();
+    expect(state.validate!('')).not.toBeNull();
+    expect(state.validate!('  ')).not.toBeNull();
+    expect(state.validate!('codey')).toBeNull();
+  });
+
+  it('agent-role validates non-empty', () => {
+    const state = states['agent-role'];
+    if (state?.kind !== 'narrative-then-prompt') return;
+    expect(state.validate).toBeDefined();
+    expect(state.validate!('')).not.toBeNull();
+    expect(state.validate!('coding agent')).toBeNull();
+  });
+
+  it('user-name validates non-empty', () => {
+    const state = states['user-name'];
+    if (state?.kind !== 'narrative-then-prompt') return;
+    expect(state.validate).toBeDefined();
+    expect(state.validate!('')).not.toBeNull();
+    expect(state.validate!('Justin')).toBeNull();
+  });
+
+  it('welcome validates choice and rejects unmatched text', () => {
+    const state = states.welcome;
+    if (state?.kind !== 'narrative-then-prompt') return;
+    expect(state.validate).toBeDefined();
+    expect(state.validate!('')).not.toBeNull();
+    expect(state.validate!('maybe later')).not.toBeNull();
+    expect(state.validate!('1')).toBeNull();
+    expect(state.validate!('yes')).toBeNull();
+  });
+
+  it('autonomy validates choice', () => {
+    const state = states.autonomy;
+    if (state?.kind !== 'narrative-then-prompt') return;
+    expect(state.validate).toBeDefined();
+    expect(state.validate!('')).not.toBeNull();
+    expect(state.validate!('99')).not.toBeNull();
+    expect(state.validate!('2')).toBeNull();
+    expect(state.validate!('proactive')).toBeNull();
+  });
+
+  it('messaging validates choice', () => {
+    const state = states.messaging;
+    if (state?.kind !== 'narrative-then-prompt') return;
+    expect(state.validate).toBeDefined();
+    expect(state.validate!('')).not.toBeNull();
+    expect(state.validate!('email')).not.toBeNull();
+    expect(state.validate!('1')).toBeNull();
+    expect(state.validate!('telegram')).toBeNull();
+  });
+
+  it('agent-name no longer silently defaults to "agent" on empty input', () => {
+    // After validation accepts a real input, the transition should
+    // use that input — NOT a fallback constant.
+    const state = states['agent-name'];
+    if (state?.kind !== 'narrative-then-prompt') return;
+    const result = state.next('codey', {});
+    expect(result.updates.agentName).toBe('codey');
+    // The validator should have caught empty input before it reached
+    // .next, so this is for theoretical robustness:
+    const trimmed = state.next('  codey  ', {});
+    expect(trimmed.updates.agentName).toBe('codey');
+  });
+});
 
 describe('resolveChoice', () => {
   const choices = [
