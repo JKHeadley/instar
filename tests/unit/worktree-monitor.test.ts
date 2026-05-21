@@ -25,6 +25,7 @@ import {
 } from '../../src/monitoring/WorktreeMonitor.js';
 import type { Session } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { sanitizedGitEnv } from '../helpers/git-test-env.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -47,9 +48,14 @@ function makeSession(overrides?: Partial<Session>): Session {
 /**
  * Run a shell command in a directory. All git helpers use this to avoid
  * space-splitting issues with commit messages and glob patterns.
+ *
+ * env is sanitized to drop GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE so a
+ * pre-push-hook-triggered test run can't accidentally redirect git ops
+ * into the parent repo. vitest-setup.ts strips these from process.env
+ * already; this is defense-in-depth in case the fixture is reused.
  */
 function shell(cmd: string, cwd: string): { stdout: string; stderr: string; status: number | null } {
-  return spawnSync('/bin/sh', ['-c', cmd], { cwd, encoding: 'utf-8' });
+  return spawnSync('/bin/sh', ['-c', cmd], { cwd, encoding: 'utf-8', env: sanitizedGitEnv() });
 }
 
 /**

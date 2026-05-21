@@ -8,6 +8,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  invariants:
+    name: Repo Invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # No npm install needed — the script is pure node stdlib.
+      - run: node scripts/check-repo-invariants.mjs
+
   lint:
     name: Type Check
     runs-on: ubuntu-latest

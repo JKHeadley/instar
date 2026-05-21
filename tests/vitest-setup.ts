@@ -1,5 +1,21 @@
 // Global vitest setup. Runs once before any test file loads.
 //
+// Strip git environment overrides inherited from the parent process FIRST.
+// When git invokes a hook (e.g. .husky/pre-push runs `npm run test:smoke`),
+// it sets GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY /
+// GIT_COMMON_DIR in the child env, pinning every git command in every
+// descendant process to the parent repo regardless of cwd. Tests that spawn
+// `git init` / `git commit` in a tmpdir then end up committing into the
+// real repo on whichever branch happens to be checked out — exactly the
+// failure that produced the "# Test Project" README clobber on main
+// (PR #130, PR #277). Clearing these vars here closes the failure class
+// for every test, no matter how the test spawns git.
+delete process.env.GIT_DIR;
+delete process.env.GIT_WORK_TREE;
+delete process.env.GIT_INDEX_FILE;
+delete process.env.GIT_OBJECT_DIRECTORY;
+delete process.env.GIT_COMMON_DIR;
+
 // Pre-set git identity env vars so SafeGitExecutor's identity lookup
 // doesn't fall through to `git config --global user.name/email` reads via
 // execFileSync. Tests that mock execFileSync would otherwise have their

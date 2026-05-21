@@ -12,6 +12,7 @@ import {
   _internal,
 } from '../../src/core/SafeGitExecutor.js';
 import { SourceTreeGuardError } from '../../src/core/SourceTreeGuard.js';
+import { sanitizedGitEnv } from '../helpers/git-test-env.js';
 
 // ── fixture helpers ───────────────────────────────────────────────
 
@@ -29,12 +30,17 @@ function rmrf(p: string): void {
 }
 
 function initRepo(dir: string): void {
-  execFileSync('git', ['init', '--initial-branch=main'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 't@t.com'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'T'], { cwd: dir, stdio: 'ignore' });
+  // env: sanitizedGitEnv() drops GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE
+  // so a pre-push-triggered test run can't redirect these git ops into
+  // the parent repo. vitest-setup strips them globally; this is belt-and-
+  // suspenders.
+  const env = sanitizedGitEnv();
+  execFileSync('git', ['init', '--initial-branch=main'], { cwd: dir, stdio: 'ignore', env });
+  execFileSync('git', ['config', 'user.email', 't@t.com'], { cwd: dir, stdio: 'ignore', env });
+  execFileSync('git', ['config', 'user.name', 'T'], { cwd: dir, stdio: 'ignore', env });
   fs.writeFileSync(path.join(dir, 'seed'), 'seed');
-  execFileSync('git', ['add', 'seed'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'seed'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['add', 'seed'], { cwd: dir, stdio: 'ignore', env });
+  execFileSync('git', ['commit', '-m', 'seed'], { cwd: dir, stdio: 'ignore', env });
 }
 
 function makeFakeInstarSource(): string {

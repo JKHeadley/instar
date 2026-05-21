@@ -16,6 +16,7 @@ import { MoltBridgeClient } from '../../src/moltbridge/MoltBridgeClient.js';
 import { ProfileCompiler } from '../../src/moltbridge/ProfileCompiler.js';
 import { CanonicalIdentityManager } from '../../src/identity/IdentityManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { sanitizedGitEnv } from '../helpers/git-test-env.js';
 
 // Mock the moltbridge SDK
 vi.mock('moltbridge', () => ({
@@ -65,11 +66,13 @@ Thorough and systematic.
 - Implemented Ed25519 signing for all API calls #profile-safe
 `);
 
-    // Initialize git repo for git stats
+    // Initialize git repo for git stats. env: sanitizedGitEnv() drops the
+    // GIT_DIR family that a pre-push test run would inherit, so this can't
+    // redirect into the parent repo.
     try {
       const execSync = require('child_process').execSync;
       execSync('git init && git add -A && git commit -m "init" --allow-empty', {
-        cwd: stateDir, stdio: 'ignore',
+        cwd: stateDir, stdio: 'ignore', env: sanitizedGitEnv(),
       });
     } catch {
       // OK if git init fails in test env

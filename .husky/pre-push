@@ -4,6 +4,15 @@ if ! node scripts/pre-push-gate.js; then
   exit 1
 fi
 
+# ── Fixture-pollution guard: refuse pushes that carry test-fixture commits ──
+# (test wrote into the real repo because GIT_DIR leaked from a prior pre-push
+# hook into a child test process — the bug that landed "# Test Project" on
+# main via PRs #130 and #277). Bypass: INSTAR_PRE_PUSH_FIXTURE_GUARD_SKIP=1
+echo "🔒 Running pre-push fixture-pollution guard..."
+if ! node scripts/pre-push-fixture-guard.mjs; then
+  exit 1
+fi
+
 # ── Smoke tier: run only tests affected by files changed vs origin/main ──
 # Full suite still runs in CI across 8 sharded runners — that's the authority.
 # Pre-push is a fast signal to catch obvious breakage before it costs a CI run.
