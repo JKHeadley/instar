@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/bareword-framework-prompt.md",
+  "artifactPath": "upgrades/side-effects/feat-bareword-framework-prompt.md",
+  "artifactSha256": "f15d4c31726b7625122614ab9c5f884c584d4325cac4f648afbfe8b90408e49c",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/bareword-framework-prompt.test.ts",
+    "specs/dev-infrastructure/bareword-framework-prompt.md",
+    "specs/dev-infrastructure/bareword-framework-prompt.eli16.md",
+    "docs/specs/reports/bareword-framework-prompt-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-bareword-framework-prompt.md"
+  ],
+  "writtenAt": "2026-05-20T21:15:00Z",
+  "agent": "echo",
+  "summary": "Bareword `npx instar` asks which AI runtime when stdin is a TTY and no --framework was passed. Skips the prompt when exactly one runtime is installed; prompts when both or neither installed. Pipes/CI default to claude-code (unchanged). Pure decision in exported resolveFrameworkPromptBehavior + private async promptForFramework with readline. 4-case unit test on the decision function. Closes the install/wizard arc's final UX gap left by #276. Ships v1.1.4 alongside the test-env isolation work from PR #286."
+}

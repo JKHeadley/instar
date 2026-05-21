@@ -20,6 +20,7 @@ import { execFileSync, execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 
@@ -62,20 +63,82 @@ function allocatePortSafe(agentDir: string): number {
  * Launch the conversational setup wizard via Claude Code.
  * Claude Code is required — there is no fallback.
  */
+/**
+ * Decide what the framework prompt should do given which binaries were
+ * detected. Pure function so the decision is unit-testable without
+ * spawning readline.
+ *
+ *   - both installed                → 'prompt'    (ask the user)
+ *   - only claude-code installed    → 'claude-code'  (no point asking)
+ *   - only codex-cli installed      → 'codex-cli'    (no point asking)
+ *   - neither installed             → 'prompt'    (let the user pick;
+ *                                       checkFrameworkPrerequisite will
+ *                                       then surface the right install
+ *                                       message for their choice)
+ */
+export function resolveFrameworkPromptBehavior(
+  claudeDetected: boolean,
+  codexDetected: boolean,
+): 'prompt' | 'claude-code' | 'codex-cli' {
+  if (claudeDetected && codexDetected) return 'prompt';
+  if (claudeDetected && !codexDetected) return 'claude-code';
+  if (!claudeDetected && codexDetected) return 'codex-cli';
+  return 'prompt';
+}
+
+/**
+ * Bareword `npx instar` framework-choice prompt. Reads "1" / "2" / a
+ * framework name; defaults to claude-code on empty input. Skipped
+ * entirely when the binary detection results make the choice obvious
+ * (only one runtime installed).
+ */
+async function promptForFramework(
+  claudePath: string | null,
+  codexPath: string | null,
+): Promise<'claude-code' | 'codex-cli'> {
+  const behavior = resolveFrameworkPromptBehavior(!!claudePath, !!codexPath);
+  if (behavior !== 'prompt') return behavior;
+
+  console.log();
+  console.log(pc.bold('  Which AI runtime should this agent use?'));
+  console.log();
+  console.log(`    ${pc.cyan('1)')} Claude Code  ${claudePath ? pc.dim('(installed)') : pc.yellow('(not installed)')}`);
+  console.log(`    ${pc.cyan('2)')} Codex CLI    ${codexPath ? pc.dim('(installed)') : pc.yellow('(not installed)')}`);
+  console.log();
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await new Promise<string>((resolve) => {
+      rl.question(pc.dim('  Enter 1 or 2 (default 1): '), (a) => resolve(a));
+    })).trim().toLowerCase();
+    if (answer === '2' || answer === 'codex' || answer === 'codex-cli') return 'codex-cli';
+    return 'claude-code';
+  } finally {
+    rl.close();
+  }
+}
+
 export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' }): Promise<void> {
   // Check and install prerequisites (tmux + the chosen framework's CLI)
   console.log();
   const prereqs = await ensurePrerequisites();
 
-  // Resolve framework — default 'claude-code' preserves historical behavior
-  // for users who don't pass --framework. Portability install PR 3+4 of 4.
-  const framework: 'claude-code' | 'codex-cli' = opts?.framework ?? 'claude-code';
-
-  // Detect both binaries; let checkFrameworkPrerequisite decide whether the
-  // chosen framework's binary is present, with a clear install URL/command
-  // in the error message.
+  // Detect both binaries first so the framework-choice prompt can offer
+  // only what's actually installed and surface a single clean install
+  // message if neither is present.
   const claudePath = detectClaudePath();
   const codexPath = detectCodexPath();
+
+  // Resolve framework. Precedence:
+  //   1. Explicit --framework flag from the subcommand parser.
+  //   2. Interactive prompt when stdin is a TTY and the flag was omitted —
+  //      this is the bareword `npx instar` path so a fresh user gets asked
+  //      which runtime to use.
+  //   3. Default 'claude-code' otherwise (non-interactive / piped / CI).
+  const framework: 'claude-code' | 'codex-cli' = opts?.framework
+    ?? (process.stdin.isTTY
+      ? await promptForFramework(claudePath, codexPath)
+      : 'claude-code');
   const prereq = checkFrameworkPrerequisite({
     configuredFramework: framework,
     claudePathDetected: claudePath,
