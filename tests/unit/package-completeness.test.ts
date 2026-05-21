@@ -275,4 +275,83 @@ describe('Package completeness', () => {
       expect(malformed, `Malformed upgrade guides:\n${malformed.join('\n')}`).toEqual([]);
     }
   });
+
+  /**
+   * Every file listed in package.json `bin` must ship with the executable bit
+   * set inside the tarball.
+   *
+   * Born from a real failure (2026-05-21): `tsc` writes dist/cli.js at mode
+   * 0644. `npm install` chmods bin targets to 0755 at link time, so fresh
+   * installs work. But `npx`'s cache reuses an existing symlink across
+   * version upgrades and silently skips the re-chmod — so users who had
+   * previously run `npx instar` got "Permission denied" on the bin script
+   * after a version bump. The durable fix is to ship the tarball with
+   * the exec bit already set, instead of relying on npm's install-time
+   * chmod. This test pins that invariant.
+   *
+   * Implementation: pack a real tarball and inspect tar entry modes via
+   * `tar -tvf`. `npm pack --dry-run --json` does not expose file modes.
+   */
+  it('all package.json bin files ship with the executable bit set', async () => {
+    const fsDyn = await import('node:fs');
+    const os = await import('node:os');
+    const pkg = JSON.parse(fsDyn.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+    const binField = pkg.bin;
+    if (!binField) return;
+
+    const binPaths: string[] =
+      typeof binField === 'string' ? [binField] : Object.values(binField);
+
+    // Ensure dist/ exists. CI's unit-test job runs `npm ci` then tests
+    // directly (no separate build step), so dist/ may be empty. We invoke
+    // tsc + the chmod step directly instead of `npm run build` because
+    // the full build also regenerates src/data/builtin-manifest.json,
+    // which mutates the working tree and trips ci.yml's integrity check.
+    const needsBuild = binPaths.some(b => !fsDyn.existsSync(path.join(ROOT, b)));
+    if (needsBuild) {
+      execSync('npx tsc && chmod 0755 dist/cli.js', { cwd: ROOT, stdio: 'pipe' });
+    }
+
+    const tmpDir = fsDyn.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-mode-'));
+    try {
+      const packOut = execSync('npm pack --silent --pack-destination ' + JSON.stringify(tmpDir), {
+        cwd: ROOT,
+        encoding: 'utf-8',
+      }).trim();
+      const tarballName = packOut.split('\n').pop() as string;
+      const tarballPath = path.join(tmpDir, tarballName);
+      expect(fsDyn.existsSync(tarballPath), `tarball not produced: ${tarballPath}`).toBe(true);
+
+      const listing = execSync(`tar -tvf ${JSON.stringify(tarballPath)}`, { encoding: 'utf-8' });
+      const lines = listing.split('\n');
+
+      const missingExec: string[] = [];
+      for (const binPath of binPaths) {
+        const expectedInTar = `package/${binPath}`;
+        const entry = lines.find(l => l.endsWith(' ' + expectedInTar));
+        if (!entry) {
+          missingExec.push(`${binPath}: NOT FOUND in tarball`);
+          continue;
+        }
+        // tar -tvf output starts with a mode string like "-rwxr-xr-x"
+        const mode = entry.trim().split(/\s+/)[0];
+        if (!mode.includes('x')) {
+          missingExec.push(`${binPath}: ships at "${mode}" (no exec bit)`);
+        }
+      }
+
+      if (missingExec.length > 0) {
+        const message = [
+          'package.json bin files must ship with the executable bit set.',
+          'tsc outputs files at 0644 by default — add `&& chmod 0755 <path>`',
+          'to the build script for each bin target.',
+          '',
+          ...missingExec,
+        ].join('\n');
+        expect(missingExec, message).toEqual([]);
+      }
+    } finally {
+      fsDyn.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
