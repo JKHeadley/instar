@@ -210,3 +210,80 @@ describe('Incident-A fs regression', () => {
     }
   });
 });
+
+describe('SafeFsExecutor agent-runtime-state carve-out', () => {
+  // When instar is deployed in agent mode the agent dir IS a checkout of the
+  // source. WakeSocketServer.stale-socket-recovery and similar runtime ops must
+  // be allowed to unlink under `<root>/.instar/` even though the root passes
+  // the guard's source-tree detection. .instar/ contents are gitignored.
+  let fakeInstar: string;
+  beforeEach(() => {
+    fakeInstar = makeFakeInstarSource();
+    fs.mkdirSync(path.join(fakeInstar, '.instar'), { recursive: true });
+  });
+  afterEach(() => {
+    rmrf(fakeInstar);
+  });
+
+  it('allows unlink on a socket file under <root>/.instar/', () => {
+    const sockPath = path.join(fakeInstar, '.instar', 'listener.sock');
+    fs.writeFileSync(sockPath, '');
+    expect(() =>
+      SafeFsExecutor.safeUnlinkSync(sockPath, {
+        operation: 'WakeSocketServer.ts:stale-socket-recovery',
+      }),
+    ).not.toThrow();
+    expect(fs.existsSync(sockPath)).toBe(false);
+  });
+
+  it('allows unlink on a lock file under <root>/.instar/', () => {
+    const lockPath = path.join(fakeInstar, '.instar', 'lifeline.lock');
+    fs.writeFileSync(lockPath, '');
+    expect(() =>
+      SafeFsExecutor.safeUnlinkSync(lockPath, {
+        operation: 'TelegramLifeline.ts:lock-cleanup',
+      }),
+    ).not.toThrow();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('allows rm on a nested file under <root>/.instar/state/', () => {
+    const stateDir = path.join(fakeInstar, '.instar', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const target = path.join(stateDir, 'stale.json');
+    fs.writeFileSync(target, '{}');
+    expect(() =>
+      SafeFsExecutor.safeRmSync(target, {
+        force: true,
+        operation: 'state-prune',
+      }),
+    ).not.toThrow();
+    expect(fs.existsSync(target)).toBe(false);
+  });
+
+  it('still BLOCKS rm on the `.instar` directory itself (not its contents)', () => {
+    // The carve-out is for files INSIDE .instar/, not the dir itself. Blowing
+    // away .instar wholesale would be a destructive op even in agent mode.
+    const dotInstar = path.join(fakeInstar, '.instar');
+    expect(() =>
+      SafeFsExecutor.safeRmSync(dotInstar, {
+        recursive: true,
+        force: true,
+        operation: 'rm-dot-instar',
+      }),
+    ).toThrow(SourceTreeGuardError);
+    expect(fs.existsSync(dotInstar)).toBe(true);
+  });
+
+  it('still BLOCKS unlink on source files at the tree root', () => {
+    const srcFile = path.join(fakeInstar, 'src', 'foo.ts');
+    fs.mkdirSync(path.dirname(srcFile), { recursive: true });
+    fs.writeFileSync(srcFile, '// dummy');
+    expect(() =>
+      SafeFsExecutor.safeUnlinkSync(srcFile, {
+        operation: 'should-be-blocked',
+      }),
+    ).toThrow(SourceTreeGuardError);
+    expect(fs.existsSync(srcFile)).toBe(true);
+  });
+});

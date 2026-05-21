@@ -1,0 +1,16 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/safe-fs-agent-state-carveout.md",
+  "artifactPath": "upgrades/side-effects/safe-fs-agent-state-carveout.md",
+  "artifactSha256": "2e022c074ac2b2b03e6b9eeadfb1ba0bbfa29d4f4509a56205e600d09de611a3",
+  "coveredFiles": [
+    "src/core/SafeFsExecutor.ts",
+    "tests/unit/SafeFsExecutor.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/safe-fs-agent-state-carveout.md",
+    "specs/dev-infrastructure/safe-fs-agent-state-carveout.md"
+  ],
+  "writtenAt": "2026-05-21T17:00:00Z",
+  "agent": "dawn",
+  "summary": "SafeFsExecutor.guard() bypasses assertNotInstarSourceTree when the canonicalized target is under <root>/.instar/. New helper isUnderAgentRuntimeState() (interior-only predicate). Fix-in-the-field: every Echo cold start post-1.2.4 hit EADDRINUSE on .instar/listener.sock; WakeSocketServer's stale-socket-recovery was blocked by the source-tree guard because Echo's deployed dir IS a checkout of the source. Carve-out is gitignore-aligned: state/, logs/, audit/, instar-dev-traces/, shared-state.jsonl, plus sockets and lockfiles. .instar directory itself still protected. 5 new tests; 17 total pass."
+}

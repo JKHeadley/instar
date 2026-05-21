@@ -68,8 +68,43 @@ function canonicalizeTarget(target: string): string {
   }
 }
 
+/**
+ * Agent runtime state carve-out.
+ *
+ * When instar is deployed in "agent" mode the agent dir IS a checkout of the
+ * instar source (same .git, same .instar-source-tree marker, same package.json
+ * with name === "instar"). The guard correctly identifies this as the source
+ * tree — but runtime artifacts under `.instar/` (sockets, locks, logs, audit
+ * trail) are explicitly NOT source code (they are .gitignored). Destructive
+ * ops on those paths are a normal part of operation, not a 2026-04-22-class
+ * incident.
+ *
+ * This predicate returns true when `canonical` is anywhere under an `.instar/`
+ * subdirectory of the source root — those are runtime state and the guard's
+ * brittle-block is a false positive for them.
+ *
+ * The check is intentionally narrow: it requires `/.instar/` as an interior
+ * path segment (not just trailing), so operations on the `.instar` directory
+ * itself still go through the guard. The carve-out is for files INSIDE it.
+ */
+function isUnderAgentRuntimeState(canonical: string): boolean {
+  const sep = path.sep;
+  const marker = `${sep}.instar${sep}`;
+  const idx = canonical.indexOf(marker);
+  if (idx === -1) return false;
+  return canonical.length > idx + marker.length;
+}
+
 function guard(target: string, operation: string, fnName: string): string {
   const canonical = canonicalizeTarget(target);
+  // Carve-out: runtime state under `.instar/` is gitignored, not source code.
+  // The guard's brittle-block is a false positive for these paths in
+  // agent-mode deployments where the agent dir IS a checkout of the source.
+  // See isUnderAgentRuntimeState() above for the precise predicate.
+  if (isUnderAgentRuntimeState(canonical)) {
+    audit(fnName, operation, canonical, 'allowed', 'agent-runtime-state-carveout');
+    return canonical;
+  }
   try {
     assertNotInstarSourceTree(canonical, operation);
   } catch (err) {
