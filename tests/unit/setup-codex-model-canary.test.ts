@@ -1,25 +1,30 @@
 /**
- * Canary test for the codex `--model` flag on setup.ts spawns.
+ * Canary tests for the setup-wizard spawn discipline in setup.ts.
  *
- * Background: v1.2.1 added a runtime prompt that lets the user pick the
- * codex-cli framework at install time, and v1.0.x had already wired
- * `instar setup --framework codex-cli` to spawn the wizard inside a
- * Codex session. Both code paths called `codex exec ...` without a
- * `-m`/`--model` flag, so Codex used its default model
- * `gpt-5.2-codex` — which OpenAI retired from ChatGPT-subscription
- * accounts on 2026-04-14. The first real end-to-end install attempt by
- * a ChatGPT-subscription user (the primary audience) hit
- * `The 'gpt-5.2-codex' model is not supported when using Codex with a
- * ChatGPT account.` and aborted before the wizard could render.
+ * Two historical bugs are pinned here:
  *
- * The fix: define a `WIZARD_CODEX_MODEL` constant (gpt-5.3-codex) and
- * pass `-m WIZARD_CODEX_MODEL` to every `codex exec` spawn in
- * setup.ts.
+ * 1. **v1.2.10 model-pin gap** (now obsolete after v1.2.12): setup.ts
+ *    used to spawn `codex exec` for the wizard, but did not pass a
+ *    `-m`/`--model` flag. Codex CLI's default model (`gpt-5.2-codex`)
+ *    was retired from ChatGPT-subscription accounts on 2026-04-14, so
+ *    the spawn returned a 400 before the wizard could render. v1.2.10
+ *    added `-m WIZARD_CODEX_MODEL`.
  *
- * This test pins the fix as a structural contract: if any future PR
- * removes the `-m` flag from a codex spawn in setup.ts, the test
- * fails, surfacing the regression in CI instead of on a user's
- * machine.
+ * 2. **v1.2.12 wizard-via-claude pin**: the first end-to-end test of
+ *    the Codex install path showed that even with the correct model,
+ *    Codex ignores the wizard skill's conversational instructions —
+ *    it executes the setup non-interactively instead of leading the
+ *    user through identity, autonomy, and messaging questions. v1.2.12
+ *    routes the wizard ALWAYS through Claude, regardless of which
+ *    framework the user picked at the runtime prompt. The host
+ *    framework still gates the agent's runtime (enabledFrameworks); it
+ *    just no longer gates the conversational onboarding tool.
+ *
+ * The canary asserts the v1.2.12 contract: no codex spawns remain in
+ * setup.ts for the interactive wizard or secret-setup phases. The
+ * WIZARD_CODEX_MODEL constant remains exported as a deprecated public
+ * symbol so any future codex spawn that DOES land in setup.ts uses the
+ * subscription-supported model.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -32,38 +37,43 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SETUP_SRC = path.resolve(__dirname, '../../src/commands/setup.ts');
 
-describe('setup.ts codex spawn canary', () => {
+describe('setup.ts wizard spawn canary', () => {
   const source = fs.readFileSync(SETUP_SRC, 'utf-8');
 
-  it('exports WIZARD_CODEX_MODEL pinned to a ChatGPT-subscription-supported model', () => {
-    // gpt-5.2-codex was Codex CLI's default and is API-only since 2026-04-14
-    // (rejected on ChatGPT accounts).
+  it('keeps WIZARD_CODEX_MODEL pinned to a ChatGPT-subscription-supported model', () => {
+    // gpt-5.2-codex was Codex CLI's default and is API-only since
+    // 2026-04-14 (rejected on ChatGPT accounts). Even though setup.ts
+    // no longer spawns codex directly, the constant remains exported
+    // as the canonical name in case a future code path needs it.
     expect(WIZARD_CODEX_MODEL).not.toBe('gpt-5.2-codex');
     // Empirically confirmed-working on ChatGPT auth per
     // src/providers/adapters/openai-codex/models.ts (probed 2026-05-15).
     expect(WIZARD_CODEX_MODEL).toMatch(/^gpt-5\.(2|3-codex|4)$/);
   });
 
-  it('every codex exec spawn in setup.ts passes -m WIZARD_CODEX_MODEL', () => {
-    // Match each `framework === 'codex-cli'` branch in setup.ts that
-    // builds a `codex exec` argv. There are two as of this fix: the
-    // wizard launch and the secret-setup micro-session. Both must
-    // include `-m` followed by WIZARD_CODEX_MODEL (or its literal
-    // value) before the freeform prompt.
-    const execBlocks = source.match(
-      /framework === 'codex-cli'[\s\S]*?\[[\s\S]*?'exec',[\s\S]*?\]/g,
-    ) ?? [];
-    expect(execBlocks.length).toBeGreaterThanOrEqual(2);
-    for (const block of execBlocks) {
-      expect(block).toMatch(/'-m'\s*,\s*WIZARD_CODEX_MODEL/);
-    }
+  it('setup.ts has no `codex exec` spawn — wizard always runs on Claude', () => {
+    // The v1.2.12 contract: every interactive micro-session in setup.ts
+    // (the main wizard launch and the secret-setup micro-session) goes
+    // through Claude, not Codex. Codex's training pulls toward execution
+    // and it routinely ignores the wizard skill's conversational
+    // contract. If a future PR adds a `codex exec` argv string back
+    // into setup.ts, this test fails — surfacing the regression to the
+    // author before it ships.
+    expect(source).not.toMatch(/'exec'\s*,\s*[\s\S]{0,200}'-m'/);
+    expect(source).not.toMatch(/'-m'\s*,\s*WIZARD_CODEX_MODEL/);
+  });
+
+  it('the wizard binary is the detected Claude path, not a framework conditional', () => {
+    // The wizardBinary assignment must not be ternary on `framework`.
+    // It should resolve to claudePath unconditionally (with a hard
+    // refusal upstream if claudePath is null).
+    const wizardBinaryAssign = source.match(/const wizardBinary = [^;]+;/);
+    expect(wizardBinaryAssign).not.toBeNull();
+    expect(wizardBinaryAssign![0]).not.toMatch(/framework\s*===\s*'codex-cli'/);
+    expect(wizardBinaryAssign![0]).toContain('claudePath');
   });
 
   it('no string literal in setup.ts hardcodes the retired gpt-5.2-codex model name', () => {
-    // Comments referencing the retired model are fine (this file has them
-    // to explain the fix). What's NOT fine is the literal name appearing
-    // inside a single- or double-quoted string, which would be a code
-    // path passing it to codex.
     expect(source).not.toMatch(/['"]gpt-5\.2-codex['"]/);
   });
 });

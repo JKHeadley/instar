@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/wizard-via-claude.md",
+  "artifactPath": "upgrades/side-effects/fix-wizard-via-claude.md",
+  "artifactSha256": "29cabe43916c054a91fcabc805aa3f2e76785c6ad71c9bfc8ed97fde9ba76374",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "tests/unit/setup-codex-model-canary.test.ts",
+    "specs/dev-infrastructure/wizard-via-claude.md",
+    "specs/dev-infrastructure/wizard-via-claude.eli16.md",
+    "docs/specs/reports/wizard-via-claude-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-wizard-via-claude.md"
+  ],
+  "writtenAt": "2026-05-21T19:59:12Z",
+  "agent": "echo",
+  "summary": "Routes both setup.ts wizard spawns (main wizard + secret-setup micro-session) through Claude unconditionally, regardless of host framework. Closes the broken Codex install UX where Codex ignored the wizard skill's conversational contract and executed the entire setup non-interactively. Agent runtime (enabledFrameworks) is unchanged — only the interactive onboarding binary is forced to Claude. Canary from PR #299 inverted to assert no codex spawns in setup.ts. Ships v1.2.12."
+}

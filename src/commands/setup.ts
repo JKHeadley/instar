@@ -167,9 +167,36 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   }
 
   // The binary the wizard will spawn for both the secret-setup micro-session
-  // and the main wizard. checkFrameworkPrerequisite has already guaranteed
-  // the chosen framework's binary was detected.
-  const binaryPath = framework === 'codex-cli' ? codexPath! : claudePath!;
+  // and the main wizard. We ALWAYS use Claude for these two interactive
+  // micro-sessions, regardless of the host framework choice. Reason:
+  // Codex's training pulls toward execution — when given the wizard's
+  // skill prompt ("speak conversationally / wait for the user / never
+  // show CLI commands"), it routinely ignores the conversational
+  // instructions and runs the whole setup non-interactively, leaving the
+  // user with a generic agent identity they never got to shape. Claude
+  // reliably follows the conversational contract.
+  //
+  // `framework` still gates the resulting agent's runtime
+  // (enabledFrameworks in config.json) and the install-time scaffolding
+  // gates downstream of this point. Only the interactive wizard binaries
+  // are forced to Claude.
+  //
+  // Prerequisite: Claude must be installed even on Codex-only-target
+  // hosts. The top-level prerequisite check (ensurePrerequisites)
+  // already requires it, so this is consistent with shipped behavior.
+  // A future PR can add a true Codex-only wizard if/when a user reports
+  // wanting to install without Claude present.
+  if (!claudePath) {
+    console.log();
+    console.log(pc.red('  The setup wizard requires Claude CLI to be installed.'));
+    console.log(pc.dim('  Claude is the conversational onboarding tool. The agent itself can still run on Codex'));
+    console.log(pc.dim('  if you picked codex-cli at the runtime prompt — only setup needs Claude.'));
+    console.log();
+    console.log(pc.dim('  Install: npm install -g @anthropic-ai/claude-code'));
+    console.log();
+    process.exit(1);
+  }
+  const wizardBinary = claudePath;
 
   if (!prereqs.allMet) {
     console.log(pc.red('  Some prerequisites are still missing. Please install them and try again.'));
@@ -325,9 +352,10 @@ ${agentSummary}
 
   // ── Phase Gate: Secret Management ──────────────────────────────────
   // Structure > Willpower: secret management MUST be configured before the
-  // main wizard. Uses a framework-native micro-session for a conversational
-  // experience. Gate: main wizard won't start without backend.json.
-  const secretContext = await ensureSecretBackend(binaryPath, framework, instarRoot);
+  // main wizard. Uses a Claude micro-session for a conversational
+  // experience regardless of host framework. Gate: main wizard won't
+  // start without backend.json.
+  const secretContext = await ensureSecretBackend(wizardBinary, framework, instarRoot);
 
   // If Bitwarden session was saved by the secret-setup micro-session, pass it
   // as an env var so the main wizard can use it for credential restoration.
@@ -340,30 +368,16 @@ ${agentSummary}
     }
   }
 
-  // Launch the chosen runtime from the instar package root (where
-  // .claude/skills/ lives — both Claude and Codex can read the skill file
-  // from there). The wizard's slash-command works as a Claude SKILL; for
-  // Codex, point it at the SKILL.md content via prose since Codex has no
-  // slash-command equivalent.
+  // Launch Claude from the instar package root (where .claude/skills/ lives)
+  // and invoke the wizard via its slash-command. Even when the host
+  // framework is codex-cli, the wizard itself runs on Claude — see the
+  // wizardBinary comment above for the rationale.
   const wizardPrompt = `The project to set up is at: ${projectDir}.${gitContext}${detectionContext}${secretContext}`;
-  const wizardSkillPath = path.join(instarRoot, '.claude', 'skills', 'setup-wizard', 'SKILL.md');
-  const launchArgs: string[] = framework === 'codex-cli'
-    ? [
-        'exec',
-        '--dangerously-bypass-approvals-and-sandbox',
-        // Pass an explicit model. Codex CLI's default is gpt-5.2-codex which
-        // OpenAI retired from ChatGPT-subscription accounts on 2026-04-14
-        // (API-only since). The wizard targets the subscription path by
-        // default, so we pin to gpt-5.3-codex — confirmed-working on
-        // ChatGPT auth (see src/providers/adapters/openai-codex/models.ts).
-        '-m', WIZARD_CODEX_MODEL,
-        `Read ${wizardSkillPath} and follow its instructions as the setup wizard. ${wizardPrompt}`,
-      ]
-    : [
-        '--dangerously-skip-permissions',
-        `/setup-wizard ${wizardPrompt}`,
-      ];
-  const child = spawn(binaryPath, launchArgs, {
+  const launchArgs: string[] = [
+    '--dangerously-skip-permissions',
+    `/setup-wizard ${wizardPrompt}`,
+  ];
+  const child = spawn(wizardBinary, launchArgs, {
     cwd: instarRoot,
     stdio: 'inherit',
     env: spawnEnv,
@@ -375,12 +389,9 @@ ${agentSummary}
     });
     child.on('error', (err) => {
       console.log();
-      console.log(pc.red(`  Could not launch ${framework}: ${err.message}`));
-      console.log(pc.dim(`  Make sure ${framework} is installed and accessible:`));
-      const installCmd = framework === 'codex-cli'
-        ? 'npm install -g @openai/codex'
-        : 'npm install -g @anthropic-ai/claude-code';
-      console.log(`    ${pc.cyan(installCmd)}`);
+      console.log(pc.red(`  Could not launch the setup wizard: ${err.message}`));
+      console.log(pc.dim('  The wizard runs on Claude. Make sure Claude is installed and accessible:'));
+      console.log(`    ${pc.cyan('npm install -g @anthropic-ai/claude-code')}`);
       console.log();
       process.exit(1);
     });
@@ -406,7 +417,10 @@ ${agentSummary}
  */
 async function ensureSecretBackend(
   binaryPath: string,
-  framework: 'claude-code' | 'codex-cli',
+  // framework no longer affects secret-setup spawn (always Claude); kept
+  // in the signature for backwards-compat of any internal caller that
+  // still passes it. Will be removed in a future tidy-up PR.
+  _framework: 'claude-code' | 'codex-cli',
   instarRoot: string,
 ): Promise<string> {
   const backendFile = path.join(os.homedir(), '.instar', 'secrets', 'backend.json');
@@ -443,19 +457,13 @@ async function ensureSecretBackend(
   console.log(pc.dim('  Let me walk you through the options...'));
   console.log();
 
-  // Spawn a focused micro-session for secret setup. For Claude, this is the
-  // /secret-setup slash-command on the SKILL. For Codex (no slash commands),
-  // point at the skill file content via prose so the wizard reads and
-  // executes the same instructions.
-  const secretSkillPath = path.join(instarRoot, '.claude', 'skills', 'secret-setup', 'SKILL.md');
-  const secretArgs: string[] = framework === 'codex-cli'
-    ? [
-        'exec',
-        '--dangerously-bypass-approvals-and-sandbox',
-        '-m', WIZARD_CODEX_MODEL,
-        `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
-      ]
-    : ['--dangerously-skip-permissions', '/secret-setup'];
+  // Spawn a focused Claude micro-session for secret setup. We always use
+  // Claude here regardless of host framework — same rationale as the main
+  // wizard launch (see WIZARD_BINARY_RATIONALE in runSetup). The secret-
+  // setup skill is also conversational ("explain options, ask questions,
+  // install Bitwarden"), which Claude follows reliably and Codex routinely
+  // ignores in favor of execution.
+  const secretArgs: string[] = ['--dangerously-skip-permissions', '/secret-setup'];
   const child = spawn(binaryPath, secretArgs, {
     cwd: instarRoot,
     stdio: 'inherit',
