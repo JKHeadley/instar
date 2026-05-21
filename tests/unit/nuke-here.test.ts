@@ -190,5 +190,36 @@ describe('nukeHere — filesystem teardown', () => {
     await nukeHere({ dir: tmp, skipConfirm: true });
     expect(fs.existsSync(path.join(tmp, 'CLAUDE.md'))).toBe(false);
   });
+
+  it('deletes an instar-created .gitignore in a non-git project', async () => {
+    seedInstall(tmp);
+    fs.writeFileSync(path.join(tmp, '.gitignore'), '.instar/state/\n');
+    await nukeHere({ dir: tmp, skipConfirm: true });
+    expect(fs.existsSync(path.join(tmp, '.gitignore'))).toBe(false);
+  });
+
+  it('keeps a pre-existing git-tracked .gitignore', async () => {
+    gitInit(tmp);
+    fs.writeFileSync(path.join(tmp, '.gitignore'), 'node_modules/\n');
+    gitCommitAll(tmp, 'seed');
+    seedInstall(tmp);
+    await nukeHere({ dir: tmp, skipConfirm: true });
+    expect(fs.existsSync(path.join(tmp, '.gitignore'))).toBe(true);
+    expect(fs.readFileSync(path.join(tmp, '.gitignore'), 'utf-8')).toBe('node_modules/\n');
+  });
+
+  it('leaves NO .instar/ directory behind (audit-log carryover regression)', async () => {
+    // Repro: pre-fix, the SafeFsExecutor audit log inside .instar/audit/
+    // got recreated AFTER nuke deleted .instar/ because subsequent destructive
+    // ops wrote audit entries to the now-absent .instar/audit/ path. The fix
+    // reorders teardown so .instar is LAST and suppresses audit logging
+    // during its delete. This test pins that behavior.
+    seedInstall(tmp);
+    fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# instar-created\n');
+    fs.writeFileSync(path.join(tmp, 'GEMINI.md'), '# instar-created\n');
+    await nukeHere({ dir: tmp, skipConfirm: true });
+    expect(fs.existsSync(path.join(tmp, '.instar'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, '.instar', 'audit'))).toBe(false);
+  });
 });
 

@@ -47,6 +47,11 @@ const PROJECT_LOCAL_IDENTITY_SHADOWS = [
   'CLAUDE.md',
   'AGENTS.md',
   'GEMINI.md',
+  // .gitignore goes through the same classifier: instar's init writes a
+  // fresh .gitignore listing per-machine state paths, but a project may
+  // already have one tracked at HEAD. Same rule applies (tracked-clean
+  // keep, tracked-modified restore, untracked delete).
+  '.gitignore',
 ];
 
 export async function nukeAgent(name: string, options: NukeOptions = {}): Promise<void> {
@@ -385,20 +390,17 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
     // non-fatal — may not be registered
   }
 
-  // 5. Filesystem teardown
-  for (const rel of presentAlwaysRemove) {
-    const abs = path.join(dir, rel);
-    try {
-      SafeFsExecutor.safeRmSync(abs, {
-        recursive: true,
-        force: true,
-        operation: 'src/commands/nuke.ts:nukeHere-delete-always',
-      });
-      console.log(`  ${pc.green('✓')} Removed ${rel}`);
-    } catch (err) {
-      console.log(pc.red(`  Could not remove ${rel}: ${err instanceof Error ? err.message : err}`));
-    }
-  }
+  // 5. Filesystem teardown.
+  //
+  // Order matters: SafeFsExecutor + SafeGitExecutor both write to
+  // .instar/audit/destructive-ops.jsonl on every operation. If .instar
+  // is deleted first, every subsequent destructive op recreates
+  // .instar/audit/ to log its entry, leaving a ghost .instar directory
+  // behind. So:
+  //   1) Process identity-shadow files first.
+  //   2) Process non-.instar always-remove paths second.
+  //   3) Process .instar LAST, with audit logging suppressed for that
+  //      final op so it doesn't immediately recreate itself.
   for (const { file, action } of shadowDispositions) {
     const abs = path.join(dir, file);
     if (action === 'keep') {
@@ -425,6 +427,42 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
       } catch (err) {
         console.log(pc.red(`  Could not remove ${file}: ${err instanceof Error ? err.message : err}`));
       }
+    }
+  }
+  const dotInstar = presentAlwaysRemove.find(rel => rel === '.instar');
+  const nonInstarAlwaysRemove = presentAlwaysRemove.filter(rel => rel !== '.instar');
+  for (const rel of nonInstarAlwaysRemove) {
+    const abs = path.join(dir, rel);
+    try {
+      SafeFsExecutor.safeRmSync(abs, {
+        recursive: true,
+        force: true,
+        operation: 'src/commands/nuke.ts:nukeHere-delete-always',
+      });
+      console.log(`  ${pc.green('✓')} Removed ${rel}`);
+    } catch (err) {
+      console.log(pc.red(`  Could not remove ${rel}: ${err instanceof Error ? err.message : err}`));
+    }
+  }
+  if (dotInstar) {
+    // Suppress audit logging for this op only — .instar IS the audit log
+    // location, so a final audit-write would recreate the directory we
+    // are deleting. The agent dir is going away in the same breath, so
+    // there's nothing the audit log would be useful FOR anymore.
+    const prevAudit = process.env.INSTAR_AUDIT_LOG_DISABLED;
+    process.env.INSTAR_AUDIT_LOG_DISABLED = '1';
+    try {
+      SafeFsExecutor.safeRmSync(path.join(dir, dotInstar), {
+        recursive: true,
+        force: true,
+        operation: 'src/commands/nuke.ts:nukeHere-delete-dot-instar',
+      });
+      console.log(`  ${pc.green('✓')} Removed ${dotInstar}`);
+    } catch (err) {
+      console.log(pc.red(`  Could not remove ${dotInstar}: ${err instanceof Error ? err.message : err}`));
+    } finally {
+      if (prevAudit === undefined) delete process.env.INSTAR_AUDIT_LOG_DISABLED;
+      else process.env.INSTAR_AUDIT_LOG_DISABLED = prevAudit;
     }
   }
 

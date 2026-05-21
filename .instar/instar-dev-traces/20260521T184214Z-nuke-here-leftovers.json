@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/nuke-here-leftovers.md",
+  "artifactPath": "upgrades/side-effects/fix-nuke-here-leftovers.md",
+  "artifactSha256": "e73505a7882e958b46271e704cd42b7572b1c239affbce6703d7e6a61f0e8650",
+  "coveredFiles": [
+    "src/commands/nuke.ts",
+    "tests/unit/nuke-here.test.ts",
+    "specs/dev-infrastructure/nuke-here-leftovers.md",
+    "specs/dev-infrastructure/nuke-here-leftovers.eli16.md",
+    "docs/specs/reports/nuke-here-leftovers-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-nuke-here-leftovers.md"
+  ],
+  "writtenAt": "2026-05-21T18:42:14Z",
+  "agent": "echo",
+  "summary": "Closes two leftover-artifact failure modes in nuke --here uncovered by end-to-end test on instar-codey: (1) .gitignore joins the identity-shadow classifier (keep/restore/delete by git status), and (2) teardown reorders so .instar/ is last, with INSTAR_AUDIT_LOG_DISABLED=1 suppressing the audit-log write for that final delete (otherwise the rmSync entry recreates .instar/audit/). Three new unit tests pin the corrected behavior. Ships v1.2.9."
+}
