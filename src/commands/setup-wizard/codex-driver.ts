@@ -25,7 +25,6 @@ import pc from 'picocolors';
 import {
   buildFreshProjectInstall,
   INITIAL_STATE,
-  resolveChoice,
   type WizardAnswers,
   type WizardState,
   type WizardAction,
@@ -142,16 +141,51 @@ const FALLBACK_NARRATIVES: Record<string, string> = {
 };
 
 /**
+ * Spinner state for the composing indicator. Animates a single line
+ * during the codex narrative call so the user sees feedback instead
+ * of a silent terminal. Cleared (via carriage-return + spaces)
+ * before the narrative paragraph is printed.
+ */
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+function startSpinner(label: string): { stop: () => void } {
+  let i = 0;
+  const tty = process.stdout.isTTY;
+  if (!tty) {
+    process.stdout.write(`  ${label}\n`);
+    return { stop: () => {} };
+  }
+  const render = (): void => {
+    process.stdout.write(`\r  ${pc.cyan(SPINNER_FRAMES[i % SPINNER_FRAMES.length])} ${pc.dim(label)}`);
+    i++;
+  };
+  render();
+  const handle = setInterval(render, 100);
+  return {
+    stop: () => {
+      clearInterval(handle);
+      // Clear the spinner line so the narrative paragraph renders cleanly.
+      process.stdout.write(`\r${' '.repeat(label.length + 6)}\r`);
+    },
+  };
+}
+
+/**
  * Run `codex exec` for one narrative-generation turn. Returns the
  * text body of Codex's response (stdout), or null on failure /
  * timeout. Bounded to a short per-turn timeout so a flaky network
  * doesn't stall the wizard.
+ *
+ * Shows a spinner while the call is running so the user sees
+ * visible feedback during the latency window (avoids the
+ * "is-it-frozen?" reflex that triggers buffered-Enter bugs).
  */
 function runCodexNarrative(
   codexPath: string,
   prompt: string,
   options: { instarRoot: string; timeoutMs: number },
 ): string | null {
+  const spinner = startSpinner('composing…');
   try {
     const result = spawnSync(
       codexPath,
@@ -186,6 +220,8 @@ function runCodexNarrative(
     return body || null;
   } catch {
     return null;
+  } finally {
+    spinner.stop();
   }
 }
 
@@ -205,14 +241,27 @@ async function askUser(promptText: string): Promise<string> {
 
 /**
  * Render a state to the user: narrative paragraph (LLM-generated) +
- * structural prompt (verbatim). Then read the answer.
+ * structural prompt (verbatim). Then read the answer, validating it
+ * against the state's `validate` function. On invalid input, prints
+ * the validator's friendly retry message and re-asks WITHOUT
+ * regenerating the narrative paragraph (cheap loop, no extra codex
+ * exec calls). Returns the first answer that passes validation.
+ *
+ * This is the structural answer to the buffered-Enter bug from
+ * v1.2.13 — the user could press Enter during the silent codex
+ * narrative window, that Enter would buffer in stdin, and the next
+ * readline would consume it as an empty answer to a required field
+ * (silently defaulting agent-name to "agent"). With validate +
+ * retry-loop, an empty submission to a required field surfaces a
+ * friendly reprompt instead of accepting the default.
  */
 async function renderNarrativeState(
   state: Extract<WizardState, { kind: 'narrative-then-prompt' }>,
   answers: WizardAnswers,
   options: CodexDriverOptions,
 ): Promise<string> {
-  // Generate narrative
+  // Generate narrative once per state entry (re-asks on validation
+  // failure skip this and just re-print the question).
   let narrative: string | null = null;
   if (options.enableNarrative !== false) {
     const prompt = narrativeFor(state.id, answers, { projectDir: options.projectDir });
@@ -236,6 +285,21 @@ async function renderNarrativeState(
       : '';
   if (placeholderHint) console.log(placeholderHint);
 
+  // Retry loop: at most 5 attempts so a wedged input doesn't trap
+  // the wizard forever. After 5 invalid attempts we let the answer
+  // through; the state machine's `next` function still has its own
+  // resolveChoice fallback so the wizard doesn't crash.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const answer = await askUser('  > ');
+    if (!state.validate) return answer;
+    const validationMsg = state.validate(answer);
+    if (validationMsg === null) return answer;
+    console.log();
+    console.log(pc.yellow(`  ${validationMsg}`));
+    console.log();
+  }
+  // Last-resort: take whatever was last typed even if invalid. The
+  // state machine's `next` should still produce a usable transition.
   return askUser('  > ');
 }
 

@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/wizard-validation.md",
+  "artifactPath": "upgrades/side-effects/fix-wizard-validation.md",
+  "artifactSha256": "e54395b13dab47dfeb1104b98d464df2b80536e16f28791ab0078211f4a6e62e",
+  "coveredFiles": [
+    "src/commands/setup-wizard/state-machine.ts",
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/wizard-state-machine.test.ts",
+    "specs/dev-infrastructure/wizard-validation.md",
+    "specs/dev-infrastructure/wizard-validation.eli16.md",
+    "docs/specs/reports/wizard-validation-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-wizard-validation.md"
+  ],
+  "writtenAt": "2026-05-21T23:22:13Z",
+  "agent": "echo",
+  "summary": "Closes the v1.2.13 buffered-Enter UX hole. Per-state validators (requireNonEmpty, requireChoice) catch empty/garbage submissions and re-ask without re-generating narrative. Spinner during codex calls eliminates silent-latency window. Removes silent-default fallback on agent-name. 14 new unit tests. Ships v1.2.14."
+}

@@ -66,8 +66,18 @@ export interface NarrativeState {
   /** Optional preamble keys for the driver to look up narrative-prompt builders. */
   narrativeContext: string;
   input:
-    | { kind: 'text'; placeholder?: string }
+    | { kind: 'text'; placeholder?: string; required?: boolean }
     | { kind: 'choice'; choices: Array<{ value: string; label: string }> };
+  /**
+   * Validate the user's raw answer BEFORE the driver routes it through
+   * `next`. Return `null` to accept; return a friendly message to
+   * surface to the user and re-render the same state. This is how
+   * the wizard catches buffered-Enter empty submissions on required
+   * fields and unmatched choice inputs — surfaces an "I think
+   * something slipped through, try again" reprompt instead of
+   * silently defaulting.
+   */
+  validate?: (answer: string) => string | null;
   /** Where to go next based on the user's answer. Driver invokes this. */
   next: (answer: string, answers: WizardAnswers) => { state: string; updates: Partial<WizardAnswers> };
 }
@@ -115,6 +125,36 @@ export function resolveChoice(
 }
 
 /**
+ * Standard validator: require non-empty trimmed text. Surfaces a
+ * friendly reprompt when the user submits whitespace-only (the
+ * classic buffered-Enter problem).
+ */
+export function requireNonEmpty(fieldLabel: string): (answer: string) => string | null {
+  return (answer: string): string | null => {
+    if (answer.trim().length === 0) {
+      return `That looked blank — did an extra Enter slip through? Try typing a ${fieldLabel}.`;
+    }
+    return null;
+  };
+}
+
+/**
+ * Standard validator for a choice prompt: surfaces a friendly retry
+ * when the user's input matches none of the offered choices (by
+ * number, value, or label prefix).
+ */
+export function requireChoice(
+  choices: Array<{ value: string; label: string }>,
+): (answer: string) => string | null {
+  return (answer: string): string | null => {
+    if (resolveChoice(answer, choices) === null) {
+      return `I didn't recognize that — try typing one of the numbers (1-${choices.length}) or the option name.`;
+    }
+    return null;
+  };
+}
+
+/**
  * Build the wizard state machine for a fresh project-bound install
  * (the most common entry point — and the one observed broken in the
  * v1.2.11 instar-codey log). Restore / multi-user / multi-machine
@@ -143,11 +183,15 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
           { value: 'no', label: 'Not right now' },
         ],
       },
+      validate: requireChoice([
+        { value: 'yes', label: 'Yes, let\'s go' },
+        { value: 'no', label: 'Not right now' },
+      ]),
       next: (answer) => {
         const choice = resolveChoice(answer, [
           { value: 'yes', label: 'Yes, let\'s go' },
           { value: 'no', label: 'Not right now' },
-        ]) ?? 'yes';
+        ])!; // validator guarantees non-null here
         return choice === 'no'
           ? { state: 'declined', updates: {} }
           : { state: 'agent-name', updates: {} };
@@ -159,10 +203,11 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
       kind: 'narrative-then-prompt',
       narrativeContext: 'agent-name',
       prompt: 'What would you like to call your agent? (a single word works best)',
-      input: { kind: 'text', placeholder: 'e.g. echo, scout, codey' },
+      input: { kind: 'text', placeholder: 'e.g. echo, scout, codey', required: true },
+      validate: requireNonEmpty('name'),
       next: (answer) => ({
         state: 'agent-role',
-        updates: { agentName: answer.trim() || 'agent' },
+        updates: { agentName: answer.trim() },
       }),
     },
 
@@ -172,10 +217,11 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
       narrativeContext: 'agent-role',
       prompt:
         'In one sentence, what should this agent focus on? (you can change this anytime)',
-      input: { kind: 'text', placeholder: 'e.g. coding assistant for this project' },
+      input: { kind: 'text', placeholder: 'e.g. coding assistant for this project', required: true },
+      validate: requireNonEmpty('focus or purpose'),
       next: (answer) => ({
         state: 'user-name',
-        updates: { agentRole: answer.trim() || 'general-purpose autonomous agent' },
+        updates: { agentRole: answer.trim() },
       }),
     },
 
@@ -184,10 +230,11 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
       kind: 'narrative-then-prompt',
       narrativeContext: 'user-name',
       prompt: 'And what should the agent call you?',
-      input: { kind: 'text', placeholder: 'your first name is fine' },
+      input: { kind: 'text', placeholder: 'your first name is fine', required: true },
+      validate: requireNonEmpty('name'),
       next: (answer) => ({
         state: 'autonomy',
-        updates: { userName: answer.trim() || 'friend' },
+        updates: { userName: answer.trim() },
       }),
     },
 
@@ -209,13 +256,18 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
           { value: 'autonomous', label: 'Autonomous' },
         ],
       },
+      validate: requireChoice([
+        { value: 'guided', label: 'Guided' },
+        { value: 'proactive', label: 'Proactive' },
+        { value: 'autonomous', label: 'Autonomous' },
+      ]),
       next: (answer) => {
         const a = resolveChoice(answer, [
           { value: 'guided', label: 'Guided' },
           { value: 'proactive', label: 'Proactive' },
           { value: 'autonomous', label: 'Autonomous' },
-        ]) as Autonomy | null;
-        return { state: 'do-init', updates: { autonomy: a ?? 'proactive' } };
+        ])! as Autonomy;
+        return { state: 'do-init', updates: { autonomy: a } };
       },
     },
 
@@ -253,14 +305,19 @@ export function buildFreshProjectInstall(): Record<string, WizardState> {
           { value: 'skip', label: 'Skip' },
         ],
       },
+      validate: requireChoice([
+        { value: 'telegram', label: 'Telegram' },
+        { value: 'whatsapp', label: 'WhatsApp' },
+        { value: 'slack', label: 'Slack' },
+        { value: 'skip', label: 'Skip' },
+      ]),
       next: (answer) => {
-        const m = resolveChoice(answer, [
+        const messaging = resolveChoice(answer, [
           { value: 'telegram', label: 'Telegram' },
           { value: 'whatsapp', label: 'WhatsApp' },
           { value: 'slack', label: 'Slack' },
           { value: 'skip', label: 'Skip' },
-        ]) as Messaging | null;
-        const messaging = m ?? 'skip';
+        ])! as Messaging;
         if (messaging === 'telegram') return { state: 'do-telegram', updates: { messaging } };
         if (messaging === 'whatsapp') return { state: 'do-whatsapp', updates: { messaging } };
         if (messaging === 'slack') return { state: 'do-slack', updates: { messaging } };
