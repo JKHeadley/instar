@@ -3486,6 +3486,19 @@ fi
 # For startup/resume/clear — output a compact orientation
 echo "=== SESSION START ==="
 
+# Current wall-clock time — addresses Claude Code's "harness injects date, not
+# time of day" blind spot. Without this, agents say things like "it's 2am" when
+# it's actually 5:45am because they carry stale clock context from session
+# history. Always fired, always fresh.
+NOW=\$(date +'%Y-%m-%d %H:%M:%S %z (%Z)' 2>/dev/null)
+if [ -n "\$NOW" ]; then
+  echo ""
+  echo "--- CURRENT TIME ---"
+  echo "\$NOW"
+  echo "Wall-clock at hook fire. Quote this — do not carry stale clock times from prior context."
+  echo "--- END CURRENT TIME ---"
+fi
+
 # TOPIC CONTEXT (loaded FIRST — highest priority context)
 if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
   TOPIC_ID="\$INSTAR_TELEGRAM_TOPIC"
@@ -4051,6 +4064,21 @@ fi
 # This prevents the "what are we talking about?" failure after compaction
 # or session restart — where the agent receives a message without
 # conversation context and responds with a generic greeting.
+#
+# Time injection: fires on every UserPromptSubmit regardless of [telegram:N]
+# prefix so the agent always sees current wall-clock time. Addresses the
+# Claude Code "harness injects date, not time of day" blind spot that caused
+# agents to hallucinate clock times in long sessions.
+
+# Current wall-clock time — always emitted, BEFORE the [telegram:N] early-exit.
+NOW=\$(date +'%Y-%m-%d %H:%M:%S %z (%Z)' 2>/dev/null)
+if [ -n "\$NOW" ]; then
+  echo "--- CURRENT TIME ---"
+  echo "\$NOW"
+  echo "Wall-clock at user-prompt submit. Quote this — do not carry stale clock times from prior context."
+  echo "--- END CURRENT TIME ---"
+  echo ""
+fi
 
 # Read the user prompt from stdin (Claude Code pipes JSON with { prompt: "..." })
 USER_PROMPT=\$(python3 -c "
