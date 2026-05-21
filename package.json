@@ -1,6 +1,6 @@
 {
   "name": "instar",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "description": "Persistent autonomy infrastructure for AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -105,6 +105,7 @@
     "moltbridge": "^0.1.6",
     "picocolors": "^1.0.0",
     "proper-lockfile": "^4.1.2",
+    "telegram": "^2.26.22",
     "ws": "^8.19.0",
     "zod": "^4.3.6"
   },
