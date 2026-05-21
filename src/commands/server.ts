@@ -2197,42 +2197,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       process.exit(1);
     }
 
-    // Agent worktree convention (Layer 4) — detect worktrees of the
-    // shared instar repo that live outside any agent's `.worktrees/`
-    // safe area. Signal-only: emits an AttentionItem (or appends to the
-    // JSONL fallback when no Telegram adapter is configured) per
-    // misplaced entry; never blocks, never moves. Dedupe is via the
-    // AttentionQueue's item.id collision (Telegram path) or 24h
-    // rolling-window file read (JSONL fallback).
-    try {
-      const detector = await import('../core/AgentWorktreeDetector.js');
-      const repo = detector.resolveDetectorInstarRepo();
-      if (repo) {
-        const safeRoots = detector.enumerateSafeRoots();
-        const detectionResult = await detector.runDetection({
-          instarRepo: repo,
-          stateDir: config.stateDir,
-          safeRoots,
-          // No `emitAttention` adapter wired here yet — TelegramAdapter
-          // initializes later in this same startServer. The JSONL
-          // fallback at `<stateDir>/audit/worktree-detector.jsonl` is the
-          // durable trail for v1; an explicit AttentionQueue wireup is a
-          // tracked follow-up (Layer 4 spec residual R-?).
-        });
-        if (detectionResult.emitted > 0) {
-          console.log(pc.yellow(
-            `  Worktree detector: ${detectionResult.emitted} misplaced worktree(s) flagged (` +
-              `enumerated=${detectionResult.enumerated} skipped=${detectionResult.skipped}` +
-              `${detectionResult.deduped ? ` deduped=${detectionResult.deduped}` : ''}` +
-              `${detectionResult.timedOut ? ' [timeout]' : ''})`,
-          ));
-        }
-      }
-    } catch (err) {
-      console.log(pc.yellow(
-        `  Worktree detector: skipped (${err instanceof Error ? err.message : String(err)})`,
-      ));
-    }
+    // Agent worktree convention (Layer 4) — detector invocation lives
+    // AFTER the TelegramAdapter setup blocks below, so it can pass
+    // `telegram.createAttentionItem` as the emit-attention callback when
+    // Telegram is configured. The original placement here was deferred
+    // for that reason (see upgrades/side-effects/agent-worktree-
+    // convention-layer-3-4.md). When no Telegram adapter is present the
+    // detector still runs and falls back to the JSONL append.
     let stopHeartbeat: (() => void) | undefined;
     try {
       stopHeartbeat = startHeartbeat(config.projectDir);
@@ -3154,6 +3125,67 @@ export async function startServer(options: StartOptions): Promise<void> {
       ensureAgentUpdatesTopic(telegram, state).catch(err => {
         console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
       });
+    }
+
+    // Agent worktree convention (Layer 4) — lifeline detector.
+    //
+    // Runs once per server boot. Inspects the canonical instar repo's
+    // worktree list and emits an AttentionItem per worktree that lives
+    // outside any registered agent's `<agent_home>/.worktrees/` safe
+    // area. Signal-only: never blocks, never moves, never deletes.
+    //
+    // Placement is deliberately AFTER both TelegramAdapter setup blocks
+    // (send-only at line ~2810 and full-mode at line ~2897) so we can
+    // pass `telegram.createAttentionItem` as the emit-attention callback.
+    // When Telegram isn't configured the detector still runs and falls
+    // back to the JSONL append at
+    // `<stateDir>/audit/worktree-detector.jsonl` (O_NOFOLLOW + fstat,
+    // 24h rolling-window dedupe).
+    //
+    // Dedupe semantics:
+    //   - Telegram path: AttentionQueue's `item.id` collision (a second
+    //     emit with the same `worktree-misplaced:sha256(path)` id is a
+    //     no-op via the existing `attentionItems` Map lookup in
+    //     TelegramAdapter.createAttentionItem).
+    //   - JSONL path: 24h rolling-window scan of the fallback file.
+    try {
+      const detector = await import('../core/AgentWorktreeDetector.js');
+      const repo = detector.resolveDetectorInstarRepo();
+      if (repo) {
+        const safeRoots = detector.enumerateSafeRoots();
+        const emitAttention = telegram
+          ? async (item: import('../core/AgentWorktreeDetector.js').AttentionItemInput) => {
+              await telegram!.createAttentionItem({
+                id: item.id,
+                title: item.title,
+                summary: item.summary,
+                description: item.description,
+                category: item.category,
+                priority: item.priority,
+                sourceContext: item.sourceContext,
+              });
+            }
+          : undefined;
+        const detectionResult = await detector.runDetection({
+          instarRepo: repo,
+          stateDir: config.stateDir,
+          safeRoots,
+          emitAttention,
+        });
+        if (detectionResult.emitted > 0) {
+          const channel = telegram ? 'Telegram' : 'JSONL fallback';
+          console.log(pc.yellow(
+            `  Worktree detector: ${detectionResult.emitted} misplaced worktree(s) flagged via ${channel} (` +
+              `enumerated=${detectionResult.enumerated} skipped=${detectionResult.skipped}` +
+              `${detectionResult.deduped ? ` deduped=${detectionResult.deduped}` : ''}` +
+              `${detectionResult.timedOut ? ' [timeout]' : ''})`,
+          ));
+        }
+      }
+    } catch (err) {
+      console.log(pc.yellow(
+        `  Worktree detector: skipped (${err instanceof Error ? err.message : String(err)})`,
+      ));
     }
 
     // Initialize TopicMemory whenever Telegram is configured (any mode).
