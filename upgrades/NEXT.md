@@ -46,11 +46,11 @@ Side-effects review: `upgrades/side-effects/feat-nuke-here.md`.
 ## What to Tell Your User
 
 If you want to test installing instar a few different ways in a
-project directory, the new uninstall command is `npx instar nuke
---here`. Run it inside the project and it tears down everything
-instar installed in one shot. Files you had committed before the
-install are kept (or restored from git HEAD), so it is safe to run
-on a repo that already had its own CLAUDE.md or AGENTS.md.
+project directory, there is now a built-in uninstall mode that runs
+inside the project. It tears down everything instar installed in one
+shot. Files you had committed before the install are kept (or
+restored from git HEAD), so it is safe to run on a repo that already
+had its own identity-shadow files.
 
 ## Summary of New Capabilities
 
