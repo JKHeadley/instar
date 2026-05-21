@@ -96,21 +96,63 @@ function acquireLockFile(lockPath: string): boolean {
           // Signal 0 checks if process exists without killing it
           process.kill(data.pid, 0);
 
-          // Process is alive — but is it a zombie from a sleep/wake crash?
-          // If the lock was created over 5 minutes ago, the old lifeline
-          // should be well-established. Check if it's actually functional
-          // by verifying the process is a node process (not a zombie).
+          // Process is alive — but is it actually functional?
+          // We have three "stuck" states to detect:
+          //   1. Zombie (Z) or stopped (T) — clearly dead-but-not-reaped.
+          //   2. Sleeping (S) for >5 min without responding to SIGTERM —
+          //      observed in the 2026-05-20 b2lead-insights incident: the
+          //      previous lifeline received SIGTERM via the CLI's pkill
+          //      fallback path and went to 'S' state but never exited,
+          //      holding the lock for >5 min until manual SIGKILL.
+          //   3. A live, healthy lifeline (R/S < 5 min) — DON'T touch it.
           if (data.startedAt) {
             const lockAge = Date.now() - new Date(data.startedAt).getTime();
             const fiveMinutes = 5 * 60_000;
             if (lockAge > fiveMinutes) {
-              // Check if the process is a zombie or stopped
+              // Check process state
               const procInfo = spawnSync('/bin/ps', ['-p', String(data.pid), '-o', 'stat='], {
                 encoding: 'utf-8', timeout: 3000,
               }).stdout?.trim() ?? '';
-              if (procInfo.includes('Z') || procInfo.includes('T')) {
+
+              // Z (zombie) / T (stopped) — always recoverable.
+              const isZombieOrStopped = procInfo.includes('Z') || procInfo.includes('T');
+
+              // Sleeping process that is post-SIGTERM-but-not-exiting:
+              // if it received SIGTERM and is still alive after 5 min,
+              // it's wedged. We probe by sending SIGTERM ourselves (or
+              // detect 'S+' / sleep + signal-pending) and if it's still
+              // alive after the grace window, escalate. The presence of
+              // 'S' state alone for >5 min after the lock was written
+              // is the failure shape — a healthy lifeline writes the
+              // lock and starts running tasks within seconds, leaving
+              // 'R' or short 'S' bursts. Sustained 'S' for 5+ min with
+              // no progress is the wedged state we observed.
+              const isWedgedSleeping =
+                /^S/i.test(procInfo) && lockAge > fiveMinutes;
+
+              if (isZombieOrStopped) {
                 console.log(`[Lifeline] Lock holder PID ${data.pid} is zombie/stopped (state: ${procInfo}) — taking over`);
                 try { process.kill(data.pid, 'SIGKILL'); } catch { /* ignore */ }
+              } else if (isWedgedSleeping) {
+                // Try SIGTERM with a short grace window, then SIGKILL.
+                console.log(`[Lifeline] Lock holder PID ${data.pid} sleeping >5min after lock write (state: ${procInfo}) — sending SIGTERM`);
+                try { process.kill(data.pid, 'SIGTERM'); } catch { /* ignore */ }
+                // Synchronously poll for exit up to 3s, then SIGKILL.
+                const killDeadline = Date.now() + 3000;
+                let alive = true;
+                while (Date.now() < killDeadline) {
+                  try {
+                    process.kill(data.pid, 0);
+                    spawnSync('/bin/sleep', ['0.25'], { timeout: 500 });
+                  } catch {
+                    alive = false;
+                    break;
+                  }
+                }
+                if (alive) {
+                  console.log(`[Lifeline] PID ${data.pid} survived SIGTERM grace — SIGKILL`);
+                  try { process.kill(data.pid, 'SIGKILL'); } catch { /* ignore */ }
+                }
               } else {
                 // Process is alive and not a zombie — another lifeline is truly running
                 return false;
@@ -1187,11 +1229,16 @@ export class TelegramLifeline {
       // Record success for watchdog.
       this.consecutiveForwardFailures = 0;
       this.lastForwardSuccessAt = Date.now();
+      // Successful forward → the skew episode (if any) has resolved.
+      // Clear the flag and the alert-dedupe timestamp so the next episode
+      // gets its own user-visible notification.
+      this.versionSkewActive = false;
+      this.versionSkewAlertSentAt = 0;
       return true;
     } catch (err) {
       // Version-skew handler: emit signal + request restart via orchestrator.
       if (err instanceof ForwardVersionSkewError) {
-        this.handleVersionSkew(err);
+        this.handleVersionSkew(err, topicId);
         return false;
       }
       this.consecutiveForwardFailures++;
@@ -1205,7 +1252,7 @@ export class TelegramLifeline {
    * through the orchestrator. If the body is malformed or the versions
    * match (loopback impostor), treat as transient.
    */
-  private handleVersionSkew(err: ForwardVersionSkewError): void {
+  private handleVersionSkew(err: ForwardVersionSkewError, topicId: number): void {
     const { body } = err;
     if (body.upgradeRequired !== true) {
       // Not a genuine Stage-B upgrade directive; treat as transient noise.
@@ -1218,6 +1265,27 @@ export class TelegramLifeline {
       this.consecutiveForwardFailures++;
       return;
     }
+    // Genuine version-skew: mark the episode so the replay loop suspends
+    // its drop-after-3-failures policy, and send a one-time user-visible
+    // alert so the user knows ingress is paused rather than the agent
+    // appearing asleep.
+    this.versionSkewActive = true;
+    const ALERT_DEDUPE_MS = 24 * 60 * 60 * 1000;
+    if (Date.now() - this.versionSkewAlertSentAt > ALERT_DEDUPE_MS) {
+      this.versionSkewAlertSentAt = Date.now();
+      const alertBody =
+        `Heads up: my server auto-updated to v${body.serverVersion} but my ` +
+        `lifeline is still on v${this.lifelineVersion}. Ingress is paused ` +
+        `until the lifeline restarts onto the new version. Your messages ` +
+        `are NOT lost — they will replay automatically on recovery.`;
+      // Best-effort fire-and-forget — never block the forward path.
+      this.sendToTopic(topicId, alertBody).catch((sendErr) => {
+        console.warn(
+          `[Lifeline] failed to send version-skew alert to topic ${topicId}: ` +
+          `${sendErr instanceof Error ? sendErr.message : sendErr}`
+        );
+      });
+    }
     this.initiateRestart('versionSkew', 'version-skew', {
       serverVersion: body.serverVersion,
       lifelineVersion: this.lifelineVersion,
@@ -1228,6 +1296,22 @@ export class TelegramLifeline {
   private consecutiveForwardFailures = 0;
   private lastForwardSuccessAt = 0;
   private conflict409StartedAt: number | null = null;
+
+  /**
+   * Version-skew episode state. While a server/lifeline major-minor
+   * mismatch is active, ingress is paused until the lifeline restarts
+   * onto the matching version. We track this so the replay loop can
+   * SKIP the drop-after-3-failures policy for messages that failed
+   * specifically due to version skew — retrying is useless against a
+   * hard incompatibility, but DROPPING is worse (silent data loss).
+   * The flag is set in handleVersionSkew and cleared on the next
+   * successful forward (or process restart).
+   */
+  private versionSkewActive = false;
+  /** Wall-clock of the user-visible "ingress paused" alert for the
+   * current skew episode. Used to dedupe — one alert per topic per
+   * episode, not one per dropped message. */
+  private versionSkewAlertSentAt = 0;
 
   private orchestrator: RestartOrchestrator | null = null;
   private watchdog: LifelineHealthWatchdog | null = null;
@@ -1349,6 +1433,21 @@ export class TelegramLifeline {
     for (const msg of messages) {
       // Drop messages that have failed too many times — they likely cause crashes
       const failures = msg.replayFailures ?? 0;
+      // CRITICAL: never drop while a version-skew episode is in flight.
+      // The drop policy assumes failures are transient or message-specific;
+      // a hard incompatibility (HTTP 426) makes EVERY forward fail for a
+      // reason unrelated to the message. Dropping under skew turns a
+      // recoverable outage into silent data loss (the 2026-05-20
+      // b2lead-insights failure mode). Re-queue without incrementing the
+      // failure counter until the lifeline restarts onto a compatible
+      // version and forward starts succeeding again.
+      if (this.versionSkewActive) {
+        this.queue.enqueue(msg);
+        // Don't count toward replay-budget; the next replay tick will
+        // try again after the orchestrator-driven restart.
+        failed++;
+        continue;
+      }
       if (failures >= TelegramLifeline.MAX_REPLAY_FAILURES) {
         dropped++;
         // Before the drop becomes silent: persist the record, report a

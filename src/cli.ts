@@ -1636,7 +1636,14 @@ lifelineCmd
     const fs = await import('node:fs');
     const path = await import('node:path');
     const config = loadConfig(opts.dir);
-    const label = `com.instar.${config.projectName}.lifeline`;
+    // The launchd plist is generated with label `ai.instar.<projectName>`
+    // (see installMacOSLaunchAgent in src/commands/setup.ts). This restart
+    // command used to hardcode `com.instar.<projectName>.lifeline` — the
+    // wrong domain AND the wrong suffix — which made launchctl kickstart
+    // always fail with "Could not find service" and silently fall back to
+    // pkill. The pkill path triggered the stuck-lock loop observed in the
+    // 2026-05-20 b2lead-insights post-incident report.
+    const label = `ai.instar.${config.projectName}`;
 
     // Check shadow-install .updating lockfile — don't kickstart against a
     // half-written install. Wait up to 60 s.
@@ -1663,11 +1670,26 @@ lifelineCmd
       execFileSync('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], { stdio: 'inherit' });
     } catch (err) {
       // Fallback: maybe running under tmux (dev). Try SIGTERM via pkill.
+      // The b2lead incident showed that SIGTERM-only fallback leaves
+      // sleeping lifeline processes holding lifeline.lock, blocking the
+      // respawn loop indefinitely. Escalate to SIGKILL after a short
+      // grace period so the lock is released and the new lifeline can
+      // take over.
       console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to pkill`));
+      const pattern = `${config.projectName}.*lifeline`;
       try {
-        execSync(`pkill -TERM -f '${config.projectName}.*lifeline'`);
+        execSync(`pkill -TERM -f '${pattern}'`);
       } catch {
-        /* no process to kill */
+        /* no process to kill — escalation below is a no-op */
+      }
+      // Grace period for clean exit (signal handlers, queue flush, etc.).
+      // After this, anything still alive is stuck and holding the lock.
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        execSync(`pkill -KILL -f '${pattern}'`);
+        console.warn(pc.yellow(`escalated to SIGKILL — old lifeline did not exit on SIGTERM`));
+      } catch {
+        /* nothing left to kill — SIGTERM did its job */
       }
     }
 
