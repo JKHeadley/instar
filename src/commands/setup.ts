@@ -25,6 +25,21 @@ import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Codex model used by setup-wizard and secret-setup micro-sessions when
+ * the host framework is codex-cli. Codex CLI's bundled default
+ * (gpt-5.2-codex) was retired from ChatGPT-subscription accounts on
+ * 2026-04-14 and is API-only since. The wizard targets the subscription
+ * path by default, so we pin to a model empirically confirmed-working on
+ * ChatGPT auth (see src/providers/adapters/openai-codex/models.ts for
+ * the full availability matrix).
+ *
+ * Exported for the tests-suite canary that asserts this constant is
+ * passed to every codex spawn in setup.ts.
+ */
+export const WIZARD_CODEX_MODEL = 'gpt-5.3-codex';
+
 import { detectClaudePath, detectCodexPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { allocatePort } from '../core/AgentRegistry.js';
@@ -336,6 +351,12 @@ ${agentSummary}
     ? [
         'exec',
         '--dangerously-bypass-approvals-and-sandbox',
+        // Pass an explicit model. Codex CLI's default is gpt-5.2-codex which
+        // OpenAI retired from ChatGPT-subscription accounts on 2026-04-14
+        // (API-only since). The wizard targets the subscription path by
+        // default, so we pin to gpt-5.3-codex — confirmed-working on
+        // ChatGPT auth (see src/providers/adapters/openai-codex/models.ts).
+        '-m', WIZARD_CODEX_MODEL,
         `Read ${wizardSkillPath} and follow its instructions as the setup wizard. ${wizardPrompt}`,
       ]
     : [
@@ -431,6 +452,7 @@ async function ensureSecretBackend(
     ? [
         'exec',
         '--dangerously-bypass-approvals-and-sandbox',
+        '-m', WIZARD_CODEX_MODEL,
         `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
       ]
     : ['--dangerously-skip-permissions', '/secret-setup'];

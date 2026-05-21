@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/codex-wizard-model.md",
+  "artifactPath": "upgrades/side-effects/fix-codex-wizard-model.md",
+  "artifactSha256": "255606e8cf697108814664571b96469357635f5ece774f5f645a0700af8b3fdc",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "tests/unit/setup-codex-model-canary.test.ts",
+    "specs/dev-infrastructure/codex-wizard-model.md",
+    "specs/dev-infrastructure/codex-wizard-model.eli16.md",
+    "docs/specs/reports/codex-wizard-model-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-codex-wizard-model.md"
+  ],
+  "writtenAt": "2026-05-21T19:08:30Z",
+  "agent": "echo",
+  "summary": "Pins setup.ts codex spawns to gpt-5.3-codex (ChatGPT-subscription-supported). Adds WIZARD_CODEX_MODEL exported const + -m flag on both wizard launch and secret-setup spawns. Canary test AST-greps every codex exec block in setup.ts and refuses blocks missing the flag. Closes broken-from-the-jump Codex install path on subscription auth. Ships v1.2.10."
+}
