@@ -7,24 +7,28 @@
  *
  * That promise is only true if /capabilities actually enumerates every
  * primitive the server exposes. Without enforcement, primitives slip through:
- * Secret Drop shipped with full routes (POST /secrets/request, /secrets/retrieve,
- * /secrets/pending, DELETE /secrets/pending/:token), got documented in
- * the CLAUDE.md template, but was never added to the /capabilities response
- * body. Agents that trusted /capabilities as authoritative reached for unsafe
- * credential-intake workarounds because the discovery primitive lied.
+ * Secret Drop shipped with full routes but was never added to the response
+ * body. Agents that trusted /capabilities reached for unsafe workarounds.
  *
- * This lint catches that class of regression structurally. It walks routes.ts
- * for every top-level prefix (`/secrets`, `/views`, etc.) and asserts each
- * either appears in the /capabilities response body or is on the explicit
- * INTERNAL_ALLOWLIST below.
+ * Structural fix (PR #N — follow-up #2 of two): both the /capabilities
+ * response builders AND this lint's policy now read from a single source —
+ * src/server/CapabilityIndex.ts. Each top-level route prefix in routes.ts
+ * must either be claimed by a CAPABILITY_INDEX entry (surfaced to agents)
+ * OR be in INTERNAL_PREFIXES (operator-only). Anything else fails this test.
  *
- * Adding a new prefix that is neither surfaced nor allowlisted will fail this
- * test until the author makes a deliberate choice about discoverability.
+ * Adding a new prefix to routes.ts will fail this lint until the author
+ * makes a deliberate classification in CapabilityIndex.ts.
  */
 
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  CAPABILITY_INDEX,
+  INTERNAL_PREFIXES,
+  buildPrefixToKeyMap,
+  buildInternalPrefixSet,
+} from '../../src/server/CapabilityIndex.js';
 
 const routesSource = fs.readFileSync(
   path.join(process.cwd(), 'src/server/routes.ts'),
@@ -32,56 +36,10 @@ const routesSource = fs.readFileSync(
 );
 
 /**
- * Endpoints that are intentionally not surfaced in /capabilities. These are
- * meta endpoints (health checks, the capabilities route itself), internal
- * RPCs called only by other instar processes, or deprecated/internal-only
- * routes. Adding to this list is a deliberate choice — every entry should
- * have a one-line reason after it.
+ * INTERNAL_ALLOWLIST lives in src/server/CapabilityIndex.ts now (exported as
+ * INTERNAL_PREFIXES). This reference exists for documentation only — the
+ * tests below read directly from the source-of-truth helpers.
  */
-const INTERNAL_ALLOWLIST: ReadonlyArray<string> = [
-  'health',          // basic liveness check, no auth
-  'ping',            // synchronous noop, used by tunnel/lifeline probes
-  'whoami',          // internal identity probe (sentinel/relay layer 1c)
-  'capabilities',    // the discovery endpoint itself — surfacing would recurse
-  'internal',        // internal-only IPC namespace
-  'pastes',          // internal Claude Code paste-callback receiver
-  'listener',        // internal heartbeat/listener wiring
-  'events',          // internal SSE/event-stream
-  'config',          // global config CRUD used by setup/migrator
-  'status',          // legacy status endpoint, superseded by /capabilities
-  'shared-state',    // legacy state primitive, superseded by canonicalState
-  'backups',         // backup listing is operator-only, not agent-facing
-  'episodes',        // legacy episode log, replaced by topicMemory
-  'reflection',      // legacy reflection log, replaced by topicMemory
-  'serendipity',     // operator review surface, not agent-facing
-  'system-review',   // legacy system review log, replaced by responseReview
-  'system-reviews',  // legacy system review log, replaced by responseReview
-  'systems',         // legacy systems registry, replaced by canonicalState.projects
-  'memory',          // deprecated (Deprecation/Sunset headers) → /semantic
-  'messaging',       // alternative surface for /telegram, /imessage, etc.
-  'messages',        // legacy direct message access
-  'providers',       // legacy provider registry, replaced by autonomy
-  'quota',           // operator-only quota observability
-  'watchdog',        // operator-only watchdog state
-  'telemetry',       // operator-only telemetry plumbing
-  'homeostasis',     // operator-only homeostasis state
-  'agents',          // surfaced via threadline discovery
-  'delivery-queue',  // operator-only relay queue observability
-  'prompt-gate',     // operator-only prompt-gate observability
-  'scope-coherence', // operator-only scope-coherence observability
-  'jobs',            // surfaced inside the `scheduler` block
-  'slack',           // surfaced via messaging adapters
-  'whatsapp',        // surfaced via messaging adapters
-  'flows',           // surfaced inside `evolution` subsystems
-  'initiatives',     // surfaced inside `evolution` subsystems
-  'triage',          // surfaced inside `evolution` subsystems
-  'intent',          // surfaced inside `evolution` subsystems
-  'self-knowledge',  // surfaced inside `capability-map`
-  'capability-map',  // separate self-knowledge surface, has its own discovery path
-  'projects',        // surfaced inside `canonicalState`
-  'build',           // operator-only build endpoint
-  'sessions',        // operator/dashboard-only session listing (no agent-facing API)
-];
 
 /**
  * Extract all top-level path prefixes registered on `router.*('/<prefix>...')`.
@@ -97,75 +55,70 @@ function extractTopLevelPrefixes(source: string): Set<string> {
   return prefixes;
 }
 
-/**
- * Extract the literal /capabilities response body — the object passed to
- * `res.json({...})` inside the GET /capabilities handler. Used as the source
- * of truth for what /capabilities surfaces.
- */
-function extractCapabilitiesBody(source: string): string {
-  const handlerStart = source.indexOf("router.get('/capabilities'");
-  if (handlerStart < 0) throw new Error('GET /capabilities handler not found');
-  const resJsonStart = source.indexOf('res.json(', handlerStart);
-  if (resJsonStart < 0) throw new Error('res.json call not found in /capabilities handler');
-  // Walk forward until the matching close paren (depth-1 in res.json call).
-  // The body is the {…} between res.json( and the matching ).
-  const openBrace = source.indexOf('{', resJsonStart);
-  if (openBrace < 0) throw new Error('Opening brace not found in /capabilities res.json');
-  let depth = 0;
-  for (let i = openBrace; i < source.length; i++) {
-    if (source[i] === '{') depth++;
-    else if (source[i] === '}') {
-      depth--;
-      if (depth === 0) return source.slice(openBrace, i + 1);
-    }
-  }
-  throw new Error('Could not find matching close brace for /capabilities res.json body');
-}
-
 describe('Capabilities Discoverability', () => {
-  const prefixes = extractTopLevelPrefixes(routesSource);
-  const capabilitiesBody = extractCapabilitiesBody(routesSource);
+  const routePrefixes = extractTopLevelPrefixes(routesSource);
+  const capabilityPrefixToKey = buildPrefixToKeyMap();
+  const internalPrefixes = buildInternalPrefixSet();
+  const capabilityKeys = new Set(CAPABILITY_INDEX.map((e) => e.key));
 
   it('extracts a non-trivial set of route prefixes (sanity)', () => {
-    expect(prefixes.size).toBeGreaterThan(30);
+    expect(routePrefixes.size).toBeGreaterThan(30);
   });
 
-  it('Secret Drop (`/secrets`) is surfaced in /capabilities', () => {
-    // This is the regression that prompted the lint. It MUST stay green.
-    expect(capabilitiesBody).toMatch(/POST \/secrets\/(request|retrieve)/);
+  it('CAPABILITY_INDEX has the expected secrets entry (regression guard)', () => {
+    // This is the regression that prompted the lint. Secret Drop MUST be
+    // claimed by a CAPABILITY_INDEX entry, not allowlisted.
+    expect(capabilityKeys).toContain('secrets');
+    expect(capabilityPrefixToKey.get('secrets')).toBe('secrets');
+    expect(internalPrefixes).not.toContain('secrets');
   });
 
-  for (const prefix of [...prefixes].sort()) {
-    it(`prefix "/${prefix}" is either surfaced in /capabilities or in INTERNAL_ALLOWLIST`, () => {
-      if (INTERNAL_ALLOWLIST.includes(prefix)) {
-        // Allowlist hit — deliberate skip. Make sure the entry isn't dead by
-        // re-confirming the prefix is registered (which we already did when
-        // building `prefixes`).
-        expect(prefixes.has(prefix)).toBe(true);
-        return;
-      }
-      // Look for the prefix in the /capabilities response body. Three shapes
-      // count as "surfaced":
-      //   1. An explicit endpoint string ("GET /<prefix>") in any endpoints array
-      //   2. A JSON-style key ("<prefix>:") opening a discoverability block
-      //   3. ES shorthand reference ("\b<prefix>,") — e.g. `res.json({ telegram, ... })`
-      const escaped = prefix.replace(/-/g, '\\-');
-      const endpointPattern = new RegExp(
-        `(GET|POST|PUT|DELETE|PATCH)\\s+\\/${escaped}(\\b|/)`,
-      );
-      const keyPattern = new RegExp(`["']?${escaped}["']?\\s*:`);
-      const shorthandPattern = new RegExp(`(^|\\s)${escaped}\\s*,`, 'm');
-      const surfaced =
-        endpointPattern.test(capabilitiesBody) ||
-        keyPattern.test(capabilitiesBody) ||
-        shorthandPattern.test(capabilitiesBody);
+  it('no prefix is both claimed by CAPABILITY_INDEX and listed in INTERNAL_PREFIXES', () => {
+    const collisions: string[] = [];
+    for (const prefix of capabilityPrefixToKey.keys()) {
+      if (internalPrefixes.has(prefix)) collisions.push(prefix);
+    }
+    expect(
+      collisions,
+      `Prefixes that appear in BOTH the surfaced index and the internal allowlist (must be exactly one): ${collisions.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('every CAPABILITY_INDEX prefix actually exists as a route in routes.ts', () => {
+    const orphans: string[] = [];
+    for (const prefix of capabilityPrefixToKey.keys()) {
+      if (!routePrefixes.has(prefix)) orphans.push(prefix);
+    }
+    expect(
+      orphans,
+      `Prefixes claimed by CAPABILITY_INDEX with no matching route in routes.ts — dead entries: ${orphans.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('every INTERNAL_PREFIXES entry actually exists as a route in routes.ts', () => {
+    const orphans: string[] = [];
+    for (const { prefix } of INTERNAL_PREFIXES) {
+      if (!routePrefixes.has(prefix)) orphans.push(prefix);
+    }
+    expect(
+      orphans,
+      `INTERNAL_PREFIXES entries with no matching route in routes.ts — dead allowlist entries: ${orphans.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  for (const prefix of [...routePrefixes].sort()) {
+    it(`prefix "/${prefix}" is classified (in CAPABILITY_INDEX or INTERNAL_PREFIXES)`, () => {
+      const claimedKey = capabilityPrefixToKey.get(prefix);
+      const isInternal = internalPrefixes.has(prefix);
+      const surfaced = !!claimedKey || isInternal;
 
       expect(
         surfaced,
-        `Route prefix "/${prefix}" is registered in routes.ts but is NOT surfaced in the /capabilities ` +
-          `response and is NOT on the INTERNAL_ALLOWLIST. Either add an endpoint entry inside the appropriate ` +
-          `block of res.json({...}) in the GET /capabilities handler, or add "${prefix}" to INTERNAL_ALLOWLIST ` +
-          `in tests/unit/capabilities-discoverability.test.ts with a one-line reason.`,
+        `Route prefix "/${prefix}" is registered in routes.ts but is NOT classified. ` +
+          `Either:\n` +
+          `  (a) add prefix to an entry's "prefixes" in src/server/CapabilityIndex.ts CAPABILITY_INDEX (surfaces it in /capabilities), OR\n` +
+          `  (b) add { prefix: "${prefix}", reason: "..." } to INTERNAL_PREFIXES in the same file (skips discovery — agent-invisible).\n` +
+          `The lint refuses to assume; the author makes the call.`,
       ).toBe(true);
     });
   }
