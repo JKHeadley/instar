@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/nuke-here.md",
+  "artifactPath": "upgrades/side-effects/feat-nuke-here.md",
+  "artifactSha256": "aa7e8b6e60243384928ab036a6f4a7c4f03664893136bce550bf94cb0e8223c1",
+  "coveredFiles": [
+    "src/commands/nuke.ts",
+    "src/cli.ts",
+    "tests/unit/nuke-here.test.ts",
+    "specs/dev-infrastructure/nuke-here.md",
+    "specs/dev-infrastructure/nuke-here.eli16.md",
+    "docs/specs/reports/nuke-here-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-nuke-here.md"
+  ],
+  "writtenAt": "2026-05-21T17:48:05Z",
+  "agent": "echo",
+  "summary": "Adds 'instar nuke --here' for project-local install teardown. Sibling of nukeAgent; same tmux/auto-start/secrets/registry steps + filesystem teardown with git-based decision for identity-shadow files (CLAUDE.md/AGENTS.md/GEMINI.md). Refuses to run in the instar source repo. 14 unit tests cover the source-repo guard, the shadow-file classifier, and the filesystem teardown end-to-end against tmpdirs. Ships v1.2.8."
+}

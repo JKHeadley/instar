@@ -30,6 +30,25 @@ interface NukeOptions {
   skipConfirm?: boolean;
 }
 
+interface NukeHereOptions {
+  dir?: string;
+  skipConfirm?: boolean;
+}
+
+const PROJECT_LOCAL_ALWAYS_REMOVE = [
+  '.instar',
+  '.claude',
+  '.codex',
+  '.mcp.json',
+  'instar.config.json',
+];
+
+const PROJECT_LOCAL_IDENTITY_SHADOWS = [
+  'CLAUDE.md',
+  'AGENTS.md',
+  'GEMINI.md',
+];
+
 export async function nukeAgent(name: string, options: NukeOptions = {}): Promise<void> {
   const agentDir = path.join(standaloneAgentsDir(), name);
   const stateDir = path.join(agentDir, '.instar');
@@ -203,6 +222,275 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
     console.log(pc.dim(`  To restore: git clone <repo-url> ${agentDir} && instar server start ${name}`));
   }
   console.log();
+}
+
+/**
+ * `instar nuke --here` — Remove the project-local instar install in cwd.
+ *
+ * Sibling of nukeAgent for project-bound installs (the result of
+ * `npx instar setup` inside a project directory). See
+ * `specs/dev-infrastructure/nuke-here.md` for the full design.
+ */
+export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
+  const dir = path.resolve(options.dir || process.cwd());
+  const stateDir = path.join(dir, '.instar');
+  const configPath = path.join(stateDir, 'config.json');
+
+  if (isInstarSourceRepo(dir)) {
+    console.log(pc.red('  Refusing to nuke the instar source repo.'));
+    console.log(pc.dim('  --here removes an installed agent in a project directory.'));
+    console.log(pc.dim('  The instar source checkout is not an agent install.'));
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(configPath)) {
+    console.log(pc.red(`  No instar install found at ${dir}`));
+    console.log(pc.dim('  Expected: .instar/config.json'));
+    console.log(pc.dim('  (Standalone agents live under ~/.instar/agents/ — use `instar nuke <name>` for those.)'));
+    process.exit(1);
+  }
+
+  let projectName = path.basename(dir);
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    projectName = config.projectName || projectName;
+  } catch {
+    // fall back to basename
+  }
+
+  const hasTmux = isTmuxSessionRunning(projectName);
+  const isGitRepo = fs.existsSync(path.join(dir, '.git'));
+
+  const presentAlwaysRemove = PROJECT_LOCAL_ALWAYS_REMOVE.filter(rel =>
+    fs.existsSync(path.join(dir, rel)),
+  );
+  const presentShadows = PROJECT_LOCAL_IDENTITY_SHADOWS.filter(rel =>
+    fs.existsSync(path.join(dir, rel)),
+  );
+
+  // Decide shadow disposition up front so the plan can show it.
+  const shadowDispositions: Array<{ file: string; action: 'keep' | 'restore' | 'delete' }> = [];
+  for (const rel of presentShadows) {
+    shadowDispositions.push({ file: rel, action: classifyShadowFile(dir, rel, isGitRepo) });
+  }
+
+  console.log();
+  console.log(pc.bold(pc.red('  This will remove instar from this project:')));
+  console.log();
+  console.log(`  Project: ${pc.cyan(projectName)}`);
+  console.log(`  Directory: ${pc.dim(dir)}`);
+  console.log();
+  console.log('  Artifacts to remove:');
+  for (const rel of presentAlwaysRemove) {
+    console.log(`  ${pc.red('x')} ${rel}`);
+  }
+  for (const { file, action } of shadowDispositions) {
+    if (action === 'delete') {
+      console.log(`  ${pc.red('x')} ${file} ${pc.dim('(created by instar)')}`);
+    } else if (action === 'restore') {
+      console.log(`  ${pc.yellow('~')} ${file} ${pc.dim('(restoring to git HEAD)')}`);
+    } else {
+      console.log(`  ${pc.dim('-')} ${file} ${pc.dim('(pre-existing, kept)')}`);
+    }
+  }
+  if (hasTmux) {
+    console.log(`  ${pc.red('x')} Running server: ${pc.dim(`tmux session "${projectName}-server"`)}`);
+  }
+  console.log(`  ${pc.red('x')} Auto-start configuration (if any)`);
+  console.log(`  ${pc.red('x')} Agent registry entry (if any)`);
+  console.log(`  ${pc.green('~')} Secrets backed up (auto-restored on next setup)`);
+  console.log();
+
+  if (!options.skipConfirm) {
+    try {
+      const { confirm } = await import('@inquirer/prompts');
+      const confirmed = await confirm({
+        message: `Remove instar from "${projectName}"? This cannot be undone.`,
+        default: false,
+      });
+      if (!confirmed) {
+        console.log(pc.dim('  Cancelled.'));
+        return;
+      }
+    } catch {
+      console.log(pc.dim('  Cancelled.'));
+      return;
+    }
+  }
+
+  console.log();
+
+  // 1. Stop tmux server + spawned sessions
+  if (hasTmux) {
+    try {
+      execFileSync('tmux', ['kill-session', '-t', `${projectName}-server`], { stdio: 'pipe' });
+      console.log(`  ${pc.green('✓')} Stopped server`);
+    } catch {
+      console.log(pc.yellow('  Could not stop server (may already be stopped)'));
+    }
+  }
+  try {
+    const sessions = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim().split('\n').filter(Boolean);
+    const projectSessions = sessions.filter(
+      s => s.startsWith(`${projectName}-`) && s !== `${projectName}-server`,
+    );
+    for (const session of projectSessions) {
+      try { execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'pipe' }); } catch { /* */ }
+    }
+    if (projectSessions.length > 0) {
+      console.log(`  ${pc.green('✓')} Killed ${projectSessions.length} spawned session(s)`);
+    }
+  } catch {
+    // tmux not running or no sessions — fine
+  }
+
+  // 2. Remove auto-start
+  try {
+    const removed = uninstallAutoStart(projectName);
+    if (removed) console.log(`  ${pc.green('✓')} Removed auto-start`);
+  } catch {
+    // non-fatal
+  }
+
+  // 3. Back up secrets
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const secretMgr = new SecretManager({ agentName: projectName });
+    secretMgr.initialize();
+    const telegramEntry = config.messaging?.find?.(
+      (m: { type: string }) => m.type === 'telegram',
+    );
+    if (telegramEntry?.config) {
+      secretMgr.backupFromConfig({
+        telegramToken: telegramEntry.config.token,
+        telegramChatId: telegramEntry.config.chatId,
+        authToken: config.authToken,
+        dashboardPin: config.dashboardPin,
+        tunnelToken: config.tunnel?.token,
+      });
+      console.log(`  ${pc.green('✓')} Secrets backed up`);
+    }
+  } catch {
+    // non-fatal — store may not be configured
+  }
+
+  // 4. Unregister from agent registry
+  try {
+    unregisterAgent(dir);
+    console.log(`  ${pc.green('✓')} Removed from agent registry`);
+  } catch {
+    // non-fatal — may not be registered
+  }
+
+  // 5. Filesystem teardown
+  for (const rel of presentAlwaysRemove) {
+    const abs = path.join(dir, rel);
+    try {
+      SafeFsExecutor.safeRmSync(abs, {
+        recursive: true,
+        force: true,
+        operation: 'src/commands/nuke.ts:nukeHere-delete-always',
+      });
+      console.log(`  ${pc.green('✓')} Removed ${rel}`);
+    } catch (err) {
+      console.log(pc.red(`  Could not remove ${rel}: ${err instanceof Error ? err.message : err}`));
+    }
+  }
+  for (const { file, action } of shadowDispositions) {
+    const abs = path.join(dir, file);
+    if (action === 'keep') {
+      console.log(`  ${pc.dim('-')} Kept ${file} (pre-existing)`);
+    } else if (action === 'restore') {
+      try {
+        SafeGitExecutor.execSync(['checkout', 'HEAD', '--', file], {
+          cwd: dir,
+          stdio: 'pipe',
+          operation: 'src/commands/nuke.ts:nukeHere-restore-shadow',
+        });
+        console.log(`  ${pc.green('↺')} Restored ${file} to git HEAD`);
+      } catch (err) {
+        console.log(pc.red(`  Could not restore ${file}: ${err instanceof Error ? err.message : err}`));
+      }
+    } else {
+      try {
+        SafeFsExecutor.safeRmSync(abs, {
+          recursive: false,
+          force: true,
+          operation: 'src/commands/nuke.ts:nukeHere-delete-shadow',
+        });
+        console.log(`  ${pc.green('✓')} Removed ${file}`);
+      } catch (err) {
+        console.log(pc.red(`  Could not remove ${file}: ${err instanceof Error ? err.message : err}`));
+      }
+    }
+  }
+
+  console.log();
+  console.log(pc.green(`  instar has been removed from "${projectName}".`));
+  console.log(pc.dim('  Run `npx instar` to reinstall.'));
+  console.log();
+}
+
+/**
+ * Returns true when `dir` is the instar source repo (package.json name ===
+ * "instar" AND src/cli.ts is present). Conservative — must match BOTH to
+ * avoid false positives in projects that happen to be named "instar."
+ */
+export function isInstarSourceRepo(dir: string): boolean {
+  const pkgPath = path.join(dir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    if (pkg.name !== 'instar') return false;
+  } catch {
+    return false;
+  }
+  return fs.existsSync(path.join(dir, 'src', 'cli.ts'));
+}
+
+/**
+ * Classifies an identity-shadow file (CLAUDE.md / AGENTS.md / GEMINI.md)
+ * for `nuke --here` disposition:
+ *   - 'keep'    — tracked by git at HEAD with no working-tree diff (pre-existing)
+ *   - 'restore' — tracked by git at HEAD with a diff (instar modified)
+ *   - 'delete'  — not tracked, or not in a git repo (instar created)
+ *
+ * Exported for unit testing.
+ */
+export function classifyShadowFile(
+  dir: string,
+  relPath: string,
+  isGitRepo: boolean,
+): 'keep' | 'restore' | 'delete' {
+  if (!isGitRepo) return 'delete';
+  let tracked = false;
+  try {
+    SafeGitExecutor.readSync(['ls-files', '--error-unmatch', relPath], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      operation: 'src/commands/nuke.ts:classifyShadowFile-ls',
+    });
+    tracked = true;
+  } catch {
+    tracked = false;
+  }
+  if (!tracked) return 'delete';
+  let dirty = '';
+  try {
+    dirty = SafeGitExecutor.readSync(['status', '--porcelain', relPath], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      operation: 'src/commands/nuke.ts:classifyShadowFile-status',
+    }).trim();
+  } catch {
+    return 'restore';
+  }
+  return dirty ? 'restore' : 'keep';
 }
 
 function hasGitRemote(dir: string): boolean {
