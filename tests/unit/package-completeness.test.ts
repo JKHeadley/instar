@@ -302,6 +302,16 @@ describe('Package completeness', () => {
     const binPaths: string[] =
       typeof binField === 'string' ? [binField] : Object.values(binField);
 
+    // Ensure dist/ exists. CI's unit-test job runs `npm ci` then tests
+    // directly (no separate build step), so dist/ may be empty. We invoke
+    // tsc + the chmod step directly instead of `npm run build` because
+    // the full build also regenerates src/data/builtin-manifest.json,
+    // which mutates the working tree and trips ci.yml's integrity check.
+    const needsBuild = binPaths.some(b => !fsDyn.existsSync(path.join(ROOT, b)));
+    if (needsBuild) {
+      execSync('npx tsc && chmod 0755 dist/cli.js', { cwd: ROOT, stdio: 'pipe' });
+    }
+
     const tmpDir = fsDyn.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-mode-'));
     try {
       const packOut = execSync('npm pack --silent --pack-destination ' + JSON.stringify(tmpDir), {
