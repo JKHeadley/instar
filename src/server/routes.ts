@@ -2983,10 +2983,22 @@ export function createRoutes(ctx: RouteContext): Router {
         enabled: !!ctx.publisher,
         pageCount: ctx.publisher?.listPages().length ?? 0,
         warning: 'Telegraph pages are PUBLIC — anyone with the URL can view them.',
+        endpoints: ctx.publisher ? [
+          'POST /publish — publish markdown as a public Telegraph page',
+          'GET /published — list all published pages',
+          'PUT /publish/:pagePath — edit a published page',
+        ] : [],
       },
       privateViewer: {
         enabled: !!ctx.viewer,
         viewCount: ctx.viewer?.list().length ?? 0,
+        endpoints: ctx.viewer ? [
+          'POST /view — create a private auth-gated HTML view',
+          'GET /views — list all private views',
+          'GET /view/:viewId — render a private view (HTML)',
+          'PUT /view/:viewId — update a view',
+          'DELETE /view/:viewId — delete a view',
+        ] : [],
       },
       tunnel: {
         enabled: !!ctx.tunnel,
@@ -2996,6 +3008,22 @@ export function createRoutes(ctx: RouteContext): Router {
       },
       users: {
         count: userCount,
+      },
+      secrets: {
+        // Secret Drop — secure one-time-link credential intake from users.
+        // Surfaced explicitly because /capabilities is the documented
+        // self-discovery primitive (per the Self-Discovery section of the
+        // CLAUDE.md template). Agents that don't see this block here will
+        // reach for unsafe channels (chat paste, env vars) instead.
+        enabled: true,
+        pending: secretDrop.listPending().length,
+        endpoints: [
+          'POST /secrets/request — create a one-time submission link',
+          'GET /secrets/pending — list pending submissions',
+          'POST /secrets/retrieve/:token — retrieve a submitted secret (one-time read)',
+          'DELETE /secrets/pending/:token — cancel a pending request',
+        ],
+        retrievalHint: 'When retrieving, ALWAYS use .instar/scripts/secret-drop-retrieve.mjs — it streams the value to stdout without ever printing the response body. The raw curl pattern leaks the secret into the Bash tool transcript.',
       },
       topicMemory: {
         enabled: !!ctx.topicMemory,
@@ -3102,6 +3130,50 @@ export function createRoutes(ctx: RouteContext): Router {
       attentionQueue: {
         enabled: true,
         hint: 'Use POST /attention to signal important items to the user.',
+      },
+      commitments: {
+        // CommitmentTracker — lifecycle for "I'll do X" promises. Used by
+        // PromiseBeacon for follow-through monitoring. Agent-facing.
+        enabled: true,
+        endpoints: [
+          'GET /commitments — list commitments (filterable)',
+          'GET /commitments/:id — fetch a single commitment',
+          'POST /commitments — open a new commitment',
+          'PATCH /commitments/:id — update status/details',
+          'POST /commitments/:id/deliver — mark delivered',
+          'POST /commitments/:id/withdraw — withdraw the commitment',
+          'POST /commitments/:id/resume — resume a paused commitment',
+          'GET /commitments/active-context — assemble active-commitment context',
+        ],
+      },
+      semantic: {
+        // SemanticMemory — successor to the deprecated /memory endpoint.
+        // Vector + graph store for episodic and structured memory.
+        enabled: true,
+        endpoints: [
+          'POST /semantic/remember — store a memory',
+          'GET /semantic/recall/:id — fetch a memory by id',
+          'GET /semantic/search?q=... — semantic search',
+          'GET /semantic/search/hybrid?q=... — hybrid (vector + keyword) search',
+          'POST /semantic/connect — link two memories',
+          'GET /semantic/explore/:id — graph traversal from a memory',
+          'POST /semantic/verify/:id — mark a memory verified',
+          'POST /semantic/supersede — replace one memory with another',
+          'GET /semantic/stale — list stale memories',
+          'GET /semantic/stats — store statistics',
+          'GET /semantic/context — assembled context for a prompt',
+        ],
+      },
+      tokens: {
+        // TokenLedger — read-only token-usage observability over Claude Code
+        // JSONL transcripts. Never gates or mutates source files.
+        enabled: true,
+        endpoints: [
+          'GET /tokens/summary — aggregate token usage',
+          'GET /tokens/sessions — per-session token usage',
+          'GET /tokens/by-project — usage grouped by project',
+          'GET /tokens/orphans — sessions with no project binding',
+        ],
       },
       skipLedger: {
         enabled: true,
