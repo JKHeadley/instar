@@ -392,9 +392,16 @@ class NativeModuleHealerImpl {
 
     let result: SpawnSyncReturns<string>;
     try {
+      // `--build-from-source` forces npm to compile against the current
+      // Node ABI instead of installing a cached prebuilt that may match
+      // the SAME wrong ABI the existing broken binary has. Without it,
+      // `npm rebuild` can exit 0 while leaving the failure mode intact —
+      // the "rebuild succeeded but module still fails to load" pattern.
+      // `--ignore-scripts` keeps the rebuild scoped to the named package
+      // and avoids running every dependency's postinstall hooks.
       result = spawnSync(
         process.execPath,
-        [npmPath, 'rebuild', 'better-sqlite3', '--prefix', installPrefix],
+        [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
         {
           encoding: 'utf-8',
           timeout: 120_000,

@@ -109,7 +109,15 @@ export function decide(
 
   const state = outcome.state;
   const elapsed = Math.max(0, now - Date.parse(state.lastRestartAt));
-  if (elapsed < WATCHDOG_COOLDOWN_MS) {
+
+  // versionSkew is a HARD INCOMPATIBILITY signal (HTTP 426 from the
+  // /internal/telegram-forward endpoint). No amount of cooldown waiting
+  // makes the wrong-version lifeline suddenly compatible — only a
+  // restart resolves it. So we bypass the watchdog cooldown for this
+  // bucket. The daily cap (below) still applies as the loop-safety
+  // backstop so a misconfigured version handshake can't infinitely
+  // restart-cycle.
+  if (bucket !== 'versionSkew' && elapsed < WATCHDOG_COOLDOWN_MS) {
     return { allowed: false, reason: 'cooldown-active' };
   }
 

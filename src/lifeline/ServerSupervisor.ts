@@ -748,7 +748,23 @@ export class ServerSupervisor extends EventEmitter {
           if (checkNode !== process.execPath) {
             rebuildEnv.npm_node_execpath = checkNode;
           }
-          const rebuildArgs = ['rebuild', 'better-sqlite3', '--prefix', copy.prefixDir];
+          // `--build-from-source` forces npm to compile the native module
+          // against the current Node ABI instead of falling back to a
+          // cached prebuilt binary. Without this flag, npm rebuild can
+          // exit 0 having installed the SAME wrong-ABI prebuilt that was
+          // there before — producing the "rebuild succeeded but module
+          // still fails to load" pattern observed in the 2026-05-20
+          // b2lead-insights incident.
+          // `--ignore-scripts` prevents this rebuild from running every
+          // dependency's postinstall hooks (large surface, slow, and a
+          // supply-chain risk per the SELF-HEALING-REMEDIATOR-V3 §A45).
+          const rebuildArgs = [
+            'rebuild',
+            '--build-from-source',
+            '--ignore-scripts',
+            'better-sqlite3',
+            '--prefix', copy.prefixDir,
+          ];
           if (force) rebuildArgs.push('--force');
           const rebuildResult = spawnSync(checkNode, [npmPath, ...rebuildArgs], {
             encoding: 'utf-8',
@@ -1695,6 +1711,12 @@ export class ServerSupervisor extends EventEmitter {
    * 1. tmux pane capture (last 50 lines of terminal output)
    * 2. stderr crash log file (tee'd from server process)
    */
+  // RULE 3: EXEMPT — this `tmux capture-pane` is a forensic best-effort
+  // read of the dead server's terminal scrollback, NOT a state-detector
+  // that gates behavior. The result is logged for human triage only; no
+  // restart / heal / authority decision branches on its content. It also
+  // pre-exists this PR (lifeline-version-skew-recovery) — modifying it
+  // is out of scope. See specs/provider-portability/05-state-detection-robustness.md.
   private captureCrashOutput(): void {
     // Try tmux pane capture first
     if (this.tmuxPath) {

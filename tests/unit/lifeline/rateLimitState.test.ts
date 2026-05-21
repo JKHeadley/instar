@@ -96,6 +96,20 @@ describe('decide', () => {
     expect(decide({ kind: 'ok', state }, 'watchdog', now).allowed).toBe(true);
   });
 
+  it('versionSkew bucket BYPASSES the cooldown', () => {
+    // A version-skew restart is requested in response to HTTP 426 from
+    // /internal/telegram-forward — a hard incompatibility that does not
+    // resolve with waiting. Cooldown bypass is what unblocks the
+    // 2026-05-20 b2lead-insights failure mode (silent message drop
+    // because the cooldown wedged every restart attempt).
+    const lastRestartAt = new Date(now - WATCHDOG_COOLDOWN_MS + 1000).toISOString();
+    const state = { lastRestartAt, lastReason: 'noForwardStuck', history: [{ at: lastRestartAt, reason: 'noForwardStuck', bucket: 'watchdog' as const }] };
+    // Same state, watchdog bucket: blocked.
+    expect(decide({ kind: 'ok', state }, 'watchdog', now).reason).toBe('cooldown-active');
+    // Same state, versionSkew bucket: allowed.
+    expect(decide({ kind: 'ok', state }, 'versionSkew', now).allowed).toBe(true);
+  });
+
   it('versionSkew bucket caps at 3 per 24h', () => {
     const oldEnough = new Date(now - WATCHDOG_COOLDOWN_MS - 1000).toISOString();
     const history = Array.from({ length: VERSION_SKEW_DAILY_CAP }, (_, i) => ({
