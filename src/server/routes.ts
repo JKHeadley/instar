@@ -8117,6 +8117,37 @@ export function createRoutes(ctx: RouteContext): Router {
 
   const secretDrop = new SecretDrop(ctx.config.projectName || 'Agent');
 
+  // Stuck-consumer hardening: when an agent's consumer chain fails to
+  // claim a submitted secret within the grace window, route a visible
+  // cue to the bound topic so the operator hears about the failure
+  // instead of silently waiting on a value that never arrives. Added
+  // 2026-05-20 in response to the topic-10873 lost-SMS-code incident.
+  secretDrop.onStuckConsumer((event) => {
+    if (!event.topicId || !ctx.sessionManager) return;
+    const topicId = event.topicId;
+    const systemMsg = `[secret-drop-stuck] Secret "${event.label}" was submitted but has not been consumed by an agent process. ` +
+      `If you weren't expecting this, the consumer may have hit a bug. ` +
+      `The submission will auto-clean in ~${event.minutesUntilCleanup} minute(s). ` +
+      `To retry, re-read it (non-destructive): curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:${ctx.config.port}/secrets/retrieve/${event.token}.`;
+    try {
+      const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+      let targetSession: string | null = null;
+      if (fs.existsSync(sdRegistryPath)) {
+        const registry = JSON.parse(fs.readFileSync(sdRegistryPath, 'utf-8'));
+        targetSession = registry.topicToSession?.[String(topicId)] ?? null;
+      }
+      if (targetSession && ctx.sessionManager.isSessionAlive(targetSession)) {
+        ctx.sessionManager.injectPasteNotification(
+          targetSession,
+          `<system-reminder>${systemMsg}</system-reminder>`,
+        );
+      }
+    } catch (err) {
+      // @silent-fallback-ok — the stuck-consumer signal is best-effort
+      console.error('[secret-drop] stuck-consumer notify failed:', err instanceof Error ? err.message : String(err));
+    }
+  });
+
   /** Build a browser-clickable tunnel URL for a secret drop */
   function secretDropUrl(token: string): { localUrl: string; tunnelUrl: string | null } {
     const localUrl = `/secrets/drop/${token}`;
@@ -8233,7 +8264,9 @@ export function createRoutes(ctx: RouteContext): Router {
       const fieldCount = Object.keys(submission.values).length;
       const fieldNames = Object.keys(submission.values).join(', ');
       const systemMsg = `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
-        `Retrieve it with: curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:${ctx.config.port}/secrets/retrieve/${req.params.token} | Then acknowledge receipt to the user conversationally via Telegram topic ${topicId}.`;
+        `Retrieve (non-destructive — safe to retry on parse error): curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:${ctx.config.port}/secrets/retrieve/${req.params.token}. ` +
+        `When you have successfully handed off the value, consume it: append ?consume=true to the same URL. ` +
+        `Then acknowledge receipt to the user conversationally via Telegram topic ${topicId}.`;
 
       const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
       let targetSession: string | null = null;
@@ -8373,15 +8406,25 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ok: true });
   });
 
-  // Retrieve a received secret (agent-facing, requires auth)
-  // This is for polling-based retrieval — the secret is returned once and deleted.
+  // Retrieve a received secret (agent-facing, requires auth).
+  //
+  // Non-destructive by default — repeated calls return the same value
+  // until the in-memory cleanup timer fires (~5 min). Pass `?consume=true`
+  // for the legacy one-shot semantics. Rationale: a buggy consumer that
+  // dropped the response value used to lose the secret with no recovery;
+  // non-destructive default lets the caller retry. See
+  // docs/specs/secret-drop-hardening.md for the full rationale.
   router.post('/secrets/retrieve/:token', (req, res) => {
-    const submission = secretDrop.getReceived(req.params.token);
+    const consumeFlag = req.query.consume;
+    const consume = consumeFlag === 'true' || consumeFlag === '1';
+    const submission = consume
+      ? secretDrop.consumeReceived(req.params.token)
+      : secretDrop.peekReceived(req.params.token);
     if (!submission) {
       res.status(404).json({ error: 'No submission found for this token' });
       return;
     }
-    res.json(submission);
+    res.json({ ...submission, consumed: consume });
   });
 
   // ── Tunnel Status ──────────────────────────────────────────────
