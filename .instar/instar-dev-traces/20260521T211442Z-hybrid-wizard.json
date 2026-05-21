@@ -1,0 +1,22 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/hybrid-wizard.md",
+  "artifactPath": "upgrades/side-effects/feat-hybrid-wizard.md",
+  "artifactSha256": "1570433da26b39545a088911cf51ce0a527f72f4319d5cfd043be12cabbc077d",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "src/commands/setup-wizard/state-machine.ts",
+    "src/commands/setup-wizard/codex-driver.ts",
+    "src/commands/setup-wizard/model-constants.ts",
+    "tests/unit/setup-codex-model-canary.test.ts",
+    "tests/unit/wizard-state-machine.test.ts",
+    "specs/dev-infrastructure/hybrid-wizard.md",
+    "specs/dev-infrastructure/hybrid-wizard.eli16.md",
+    "docs/specs/reports/hybrid-wizard-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-hybrid-wizard.md"
+  ],
+  "writtenAt": "2026-05-21T21:14:42Z",
+  "agent": "echo",
+  "summary": "Hybrid wizard: instar state machine owns conversation flow + Codex per-turn narrative driver. Replaces broken-on-Codex SKILL.md spawn for codex-cli installs. Claude path unchanged. Telegram phase hands off to Codex as full agentic session for Playwright. 17 new unit tests (12 state-machine + 5 dispatch canary). Ships v1.2.12."
+}
