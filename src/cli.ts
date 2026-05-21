@@ -2084,10 +2084,28 @@ program
   });
 
 program
-  .command('nuke <name>')
-  .description('Completely remove a standalone agent and all its data')
+  .command('nuke [name]')
+  .description('Remove an instar install (standalone agent by name, or project-local with --here)')
+  .option('--here', 'Remove the instar install in the current project directory (instead of a standalone agent)')
   .option('--yes', 'Skip confirmation prompts')
+  .option('-d, --dir <path>', 'Project directory (with --here; defaults to cwd)')
   .action(async (name, opts) => {
+    if (opts.here) {
+      if (name) {
+        console.error('  --here removes the install in the current project directory.');
+        console.error('  Do not pass a <name> with --here — the project name is read from .instar/config.json.');
+        process.exit(1);
+      }
+      const { nukeHere } = await import('./commands/nuke.js');
+      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes });
+      return;
+    }
+    if (!name) {
+      console.error('Usage:');
+      console.error('  instar nuke <name>     — remove a standalone agent at ~/.instar/agents/<name>/');
+      console.error('  instar nuke --here     — remove the project-local install in the current directory');
+      process.exit(1);
+    }
     const { nukeAgent } = await import('./commands/nuke.js');
     await nukeAgent(name, { skipConfirm: opts.yes });
   });
