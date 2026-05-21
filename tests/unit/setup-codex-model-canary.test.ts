@@ -70,8 +70,13 @@ describe('setup.ts wizard dispatch canary', () => {
   });
 
   it('the codex driver passes -m WIZARD_CODEX_MODEL on every codex exec spawn', () => {
+    // v1.2.12: there were 2 codex exec spawns in the driver (narrative
+    // + Telegram-agentic). v1.2.15 replaced the Telegram one with an
+    // instar-native readline + Telegram Bot API flow, so the driver
+    // now has exactly ONE codex exec spawn — the per-turn narrative
+    // generation. That one must still pass -m WIZARD_CODEX_MODEL.
     const execBlocks = driverSrc.match(/'exec'[\s\S]*?\]/g) ?? [];
-    expect(execBlocks.length).toBeGreaterThanOrEqual(2);
+    expect(execBlocks.length).toBeGreaterThanOrEqual(1);
     for (const block of execBlocks) {
       expect(block).toMatch(/'-m'\s*,\s*WIZARD_CODEX_MODEL/);
     }
