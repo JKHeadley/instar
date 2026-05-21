@@ -85,10 +85,35 @@ export interface CreateSecretRequestOptions {
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const MAX_PENDING = 20;
 const TOKEN_BYTES = 32; // 256-bit
+const RECEIVED_TTL_MS = 5 * 60 * 1000; // 5 minutes — auto-cleanup window for stored submissions
+const STUCK_CONSUMER_GRACE_MS = 60 * 1000; // 60 seconds — emit a warning if a submission sits unconsumed past this
+
+/**
+ * Event emitted when a submission has been sitting in `received` for longer
+ * than {@link STUCK_CONSUMER_GRACE_MS} without being explicitly consumed.
+ * Consumers register a listener via {@link SecretDrop.onStuckConsumer}.
+ *
+ * Added 2026-05-20 after the topic-10873 incident: a buggy bridge consumer
+ * called the (then-destructive) retrieve endpoint, failed to extract the
+ * value, and lost the secret silently. The hardening makes retrieval
+ * non-destructive by default; this event surfaces the case where a
+ * non-destructive retrieve never reaches an explicit consume — a visible
+ * cue that the consumer chain broke.
+ */
+export interface StuckConsumerEvent {
+  token: string;
+  label: string;
+  topicId?: number;
+  receivedAt: string;
+  minutesUntilCleanup: number;
+}
 
 export class SecretDrop {
   private pending = new Map<string, SecretRequest>();
   private received = new Map<string, SecretSubmission>();
+  private receivedTimers = new Map<string, NodeJS.Timeout>();
+  private stuckTimers = new Map<string, NodeJS.Timeout>();
+  private stuckConsumerListeners: Array<(event: StuckConsumerEvent) => void> = [];
   private cleanupTimer: NodeJS.Timeout;
   private agentName: string;
 
@@ -98,6 +123,17 @@ export class SecretDrop {
     // Periodic cleanup of expired requests
     this.cleanupTimer = setInterval(() => this.cleanup(), 60_000);
     this.cleanupTimer.unref();
+  }
+
+  /**
+   * Register a listener for stuck-consumer events. Listeners are invoked
+   * when a submission has been in `received` longer than the grace period
+   * (60s) without being explicitly consumed. Multiple listeners may
+   * register — all are invoked. Listener errors are caught and logged so
+   * a single bad listener cannot block the others.
+   */
+  onStuckConsumer(listener: (event: StuckConsumerEvent) => void): void {
+    this.stuckConsumerListeners.push(listener);
   }
 
   /**
@@ -194,9 +230,59 @@ export class SecretDrop {
       topicId: request.topicId,
     };
 
-    // Store submission briefly for retrieval (auto-cleanup in 5 minutes)
+    // Store submission briefly for retrieval (auto-cleanup window).
+    // The submission is NOT removed on first retrieve — callers must
+    // either explicitly consume it via `consumeReceived` (or the
+    // `?consume=true` route parameter) or wait for the cleanup timer.
+    // Rationale: a buggy consumer that drops the response (parse error,
+    // exception in the writer step, etc.) historically lost the value
+    // with no recovery path; non-destructive retrieval lets the same
+    // caller retry within the 5-minute window.
     this.received.set(token, submission);
-    setTimeout(() => this.received.delete(token), 5 * 60 * 1000).unref();
+    const cleanupTimer = setTimeout(() => {
+      this.received.delete(token);
+      this.receivedTimers.delete(token);
+      const stuck = this.stuckTimers.get(token);
+      if (stuck) {
+        clearTimeout(stuck);
+        this.stuckTimers.delete(token);
+      }
+    }, RECEIVED_TTL_MS);
+    cleanupTimer.unref();
+    this.receivedTimers.set(token, cleanupTimer);
+
+    // Schedule a stuck-consumer signal: if the submission has not been
+    // explicitly consumed within the grace period, emit a structured
+    // event to every registered listener. This is the visible-cue half
+    // of the silent-loss fix — agents that bind to topics can mirror
+    // the event back to the operator who submitted the secret.
+    const stuckTimer = setTimeout(() => {
+      this.stuckTimers.delete(token);
+      // Only fire if the submission is still in `received` (i.e. nobody
+      // consumed it during the grace window).
+      const stillPresent = this.received.get(token);
+      if (!stillPresent) return;
+      const cleanupAt = submission.receivedAt
+        ? new Date(submission.receivedAt).getTime() + RECEIVED_TTL_MS
+        : Date.now() + RECEIVED_TTL_MS;
+      const event: StuckConsumerEvent = {
+        token,
+        label: stillPresent.label,
+        topicId: stillPresent.topicId,
+        receivedAt: stillPresent.receivedAt,
+        minutesUntilCleanup: Math.max(0, Math.ceil((cleanupAt - Date.now()) / 60_000)),
+      };
+      for (const listener of this.stuckConsumerListeners) {
+        try {
+          listener(event);
+        } catch (err) {
+          // @silent-fallback-ok — listener errors must not break the SecretDrop service
+          console.error('[secret-drop] stuck-consumer listener error:', err instanceof Error ? err.message : String(err));
+        }
+      }
+    }, STUCK_CONSUMER_GRACE_MS);
+    stuckTimer.unref();
+    this.stuckTimers.set(token, stuckTimer);
 
     // Fire callback if provided
     if (request.onReceive) {
@@ -212,14 +298,53 @@ export class SecretDrop {
   }
 
   /**
-   * Retrieve a received submission (for polling-based retrieval).
-   * Returns and removes the submission.
+   * Retrieve a received submission WITHOUT consuming it. The submission
+   * remains in the store until explicitly consumed via
+   * {@link consumeReceived} or until the {@link RECEIVED_TTL_MS} timer
+   * fires. Safe to call repeatedly — used by polling consumers that
+   * want retry semantics on top of the natural cleanup window.
+   *
+   * @returns the submission or null if not present (never seen, already
+   *   consumed, or already cleaned up by the TTL).
    */
-  getReceived(token: string): SecretSubmission | null {
+  peekReceived(token: string): SecretSubmission | null {
+    return this.received.get(token) ?? null;
+  }
+
+  /**
+   * Retrieve AND consume a submission. The submission is removed from
+   * the store before the function returns. Use this when the caller is
+   * confident the value has been successfully handed off (parsed, stored,
+   * forwarded, etc.) and a re-read would be wrong.
+   *
+   * @returns the submission or null if not present.
+   */
+  consumeReceived(token: string): SecretSubmission | null {
     const submission = this.received.get(token);
     if (!submission) return null;
     this.received.delete(token);
+    const tCleanup = this.receivedTimers.get(token);
+    if (tCleanup) {
+      clearTimeout(tCleanup);
+      this.receivedTimers.delete(token);
+    }
+    const tStuck = this.stuckTimers.get(token);
+    if (tStuck) {
+      clearTimeout(tStuck);
+      this.stuckTimers.delete(token);
+    }
     return submission;
+  }
+
+  /**
+   * @deprecated Use {@link peekReceived} for non-destructive reads or
+   * {@link consumeReceived} for one-shot semantics. Preserved on the
+   * public surface for callers that have not yet migrated; behaves
+   * identically to {@link consumeReceived} so existing code keeps
+   * working until migrated.
+   */
+  getReceived(token: string): SecretSubmission | null {
+    return this.consumeReceived(token);
   }
 
   /**
@@ -535,10 +660,15 @@ export class SecretDrop {
   }
 
   /**
-   * Shutdown — clean up timer.
+   * Shutdown — clean up timers and listeners.
    */
   shutdown(): void {
     clearInterval(this.cleanupTimer);
+    for (const t of this.receivedTimers.values()) clearTimeout(t);
+    for (const t of this.stuckTimers.values()) clearTimeout(t);
+    this.receivedTimers.clear();
+    this.stuckTimers.clear();
+    this.stuckConsumerListeners.length = 0;
     this.pending.clear();
     this.received.clear();
   }
