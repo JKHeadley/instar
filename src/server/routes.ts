@@ -3023,7 +3023,7 @@ export function createRoutes(ctx: RouteContext): Router {
           'POST /secrets/retrieve/:token — retrieve a submitted secret (one-time read)',
           'DELETE /secrets/pending/:token — cancel a pending request',
         ],
-        retrievalHint: 'When retrieving, ALWAYS use .instar/scripts/secret-drop-retrieve.mjs — it streams the value to stdout without ever printing the response body. The raw curl pattern leaks the secret into the Bash tool transcript.',
+        retrievalHint: 'ALWAYS retrieve via `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name` (use `--names` to discover fields). It streams the value to stdout and NEVER prints the response body. Raw curl against /secrets/retrieve dumps the secret into the Bash tool transcript — do not use it.',
       },
       topicMemory: {
         enabled: !!ctx.topicMemory,
@@ -8200,7 +8200,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const systemMsg = `[secret-drop-stuck] Secret "${event.label}" was submitted but has not been consumed by an agent process. ` +
       `If you weren't expecting this, the consumer may have hit a bug. ` +
       `The submission will auto-clean in ~${event.minutesUntilCleanup} minute(s). ` +
-      `To retry, re-read it (non-destructive): curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:${ctx.config.port}/secrets/retrieve/${event.token}.`;
+      `To retry, use the hardened helper (non-destructive): node .instar/scripts/secret-drop-retrieve.mjs ${event.token} <field-name>. ` +
+      `Discover field names with --names. DO NOT use raw curl against /secrets/retrieve.`;
     try {
       const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
       let targetSession: string | null = null;
@@ -8336,8 +8337,10 @@ export function createRoutes(ctx: RouteContext): Router {
       const fieldCount = Object.keys(submission.values).length;
       const fieldNames = Object.keys(submission.values).join(', ');
       const systemMsg = `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
-        `Retrieve (non-destructive — safe to retry on parse error): curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:${ctx.config.port}/secrets/retrieve/${req.params.token}. ` +
-        `When you have successfully handed off the value, consume it: append ?consume=true to the same URL. ` +
+        `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name>. ` +
+        `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
+        `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +
+        `DO NOT use raw curl against /secrets/retrieve — that pattern leaks the value into the Bash tool transcript. ` +
         `Then acknowledge receipt to the user conversationally via Telegram topic ${topicId}.`;
 
       const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
