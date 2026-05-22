@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/codex-playwright-telegram.md",
+  "artifactPath": "upgrades/side-effects/feat-codex-playwright-telegram.md",
+  "artifactSha256": "c3b6164d3381d8ead15b97246d0d3236820195fe38b59d308c560b23c1ba0e31",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/codex-playwright-telegram.test.ts",
+    "specs/dev-infrastructure/codex-playwright-telegram.md",
+    "specs/dev-infrastructure/codex-playwright-telegram.eli16.md",
+    "docs/specs/reports/codex-playwright-telegram-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-codex-playwright-telegram.md"
+  ],
+  "writtenAt": "2026-05-22T01:28:19Z",
+  "agent": "echo",
+  "summary": "Restores Codex+Playwright as primary Telegram setup path. ensureCodexPlaywrightMcp appends [mcp_servers.playwright] to ~/.codex/config.toml (idempotent). runTelegramAgentic spawns Codex with Playwright-aware prompt; verifyTelegramConfig reads config.json after spawn to authoritatively confirm write happened. On verifier failure, dispatch falls through to v1.2.15 readline backstop. 18 new tests. Ships v1.2.17."
+}

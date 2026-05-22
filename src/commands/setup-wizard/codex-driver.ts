@@ -413,6 +413,16 @@ async function runAction(
     }
 
     case 'setup-telegram-agentic': {
+      // Try Codex+Playwright agentic path first (the experience
+      // Justin asked for: "surely codex has the same playwright
+      // capabilities as claude code?"). Falls through to the
+      // instar-native readline flow when Codex returns the
+      // PLAYWRIGHT_UNAVAILABLE sentinel, when the spawn fails, or
+      // when the config write didn't actually land.
+      const agentic = await runTelegramAgentic(options);
+      if (agentic.telegramConfigured) return agentic;
+      console.log();
+      console.log(pc.dim('  Browser automation didn\'t finish — switching to manual setup.'));
       return await runTelegramSetup(options);
     }
 
@@ -441,27 +451,193 @@ async function runAction(
 }
 
 /**
- * Telegram setup — instar-native flow.
+ * Telegram setup — Codex+Playwright agentic path (v1.2.17, primary).
  *
- * Previously this spawned `codex exec` and asked it to walk the user
- * through BotFather. But `codex exec` is non-interactive (single-turn,
- * stdin already consumed by the prompt), so it couldn't wait for the
- * user to paste a token. The spawned session printed manual
- * instructions, ended, and the wizard recorded "telegramConfigured:
- * true" without anything actually configured.
+ * Spawns Codex with the Playwright MCP available (registered into
+ * ~/.codex/config.toml by ensureCodexPlaywrightMcp in setup.ts).
+ * Codex drives Telegram Web through the BotFather flow, captures
+ * the bot token + chat ID, and writes them into
+ * `.instar/config.json` directly.
  *
- * The fix: drive the entire Telegram setup from instar with readline +
- * the Telegram Bot API. No LLM session is involved. We:
+ * After the spawn returns, instar VERIFIES the config write by
+ * reading the file and confirming `messaging[]` contains a telegram
+ * entry with non-empty token + chatId. If verification fails — for
+ * any reason (Codex output PLAYWRIGHT_UNAVAILABLE, user couldn't
+ * complete login, BotFather rejected the username repeatedly,
+ * config write didn't happen) — the action returns
+ * `telegramConfigured: false` and the dispatch falls through to
+ * `runTelegramSetup` (the instar-native readline backstop).
  *
- *  1. Print clear BotFather instructions.
- *  2. Prompt the user for the bot token, validate via getMe.
- *  3. Prompt the user to add the bot to a group and send a message,
- *     then call getUpdates to extract the chat ID.
- *  4. Write the token + chat ID into .instar/config.json's messaging[].
+ * This is the structural answer to Justin's question "surely codex
+ * has the same playwright capabilities as claude code?" — yes, but
+ * only if Playwright MCP is registered for Codex. Pre-v1.2.17,
+ * ensurePlaywrightMcp only wrote to ~/.claude.json + .mcp.json,
+ * never to ~/.codex/config.toml. With v1.2.17 it does both, and
+ * this action exercises the Codex side of that registration.
+ */
+async function runTelegramAgentic(options: CodexDriverOptions): Promise<Partial<WizardAnswers>> {
+  console.log();
+  console.log(pc.bold('  Telegram setup'));
+  console.log(pc.dim('  Starting browser-driven bot creation via Codex + Playwright.'));
+  console.log(pc.dim('  This opens a browser window; you may need to scan a QR code from your phone to log into Telegram Web.'));
+  console.log();
+
+  const prompt = buildTelegramAgenticPrompt(options.projectDir);
+  // Long timeout — the human-in-the-loop login can take a couple
+  // minutes if the user has to grab their phone.
+  const result = spawnSync(
+    options.codexPath,
+    [
+      'exec',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '-m', WIZARD_CODEX_MODEL,
+      '--skip-git-repo-check',
+      prompt,
+    ],
+    {
+      cwd: options.projectDir,
+      stdio: 'inherit',
+      timeout: 600_000, // 10 minutes
+    },
+  );
+  if (result.status !== 0 && result.status !== null) {
+    return { telegramConfigured: false };
+  }
+  // Verify config write — the agentic path is only "successful"
+  // when .instar/config.json actually has a telegram entry with
+  // non-empty token + chatId after the spawn ends.
+  const verified = verifyTelegramConfig(options.projectDir);
+  if (!verified) {
+    return { telegramConfigured: false };
+  }
+  console.log();
+  console.log(pc.green('  ✓ Telegram is set up (via Codex + Playwright).'));
+  return { telegramConfigured: true };
+}
+
+/**
+ * Build the prompt for Codex's Playwright-driven Telegram setup.
+ * Exported for testing (we can assert the prompt's shape includes
+ * the verification sentinels and the success criterion).
+ */
+export function buildTelegramAgenticPrompt(projectDir: string): string {
+  return `
+You have Playwright browser-automation MCP tools available
+(mcp__playwright__browser_navigate, browser_snapshot, browser_click,
+browser_type, browser_press_key, browser_wait_for, etc).
+
+TASK: Set up a Telegram bot for an instar agent at ${projectDir}.
+
+SUCCESS CRITERION (verified by the caller after you exit):
+  .instar/config.json's messaging[] contains exactly one entry
+  shaped as:
+    { type: "telegram", enabled: true,
+      config: { token: "<bot-token>", chatId: "<chat-id>",
+                pollIntervalMs: 2000, stallTimeoutMinutes: 5 } }
+
+STEPS:
+
+1. Verify Playwright is reachable. Call mcp__playwright__browser_navigate
+   with URL "https://web.telegram.org/a/". If the tool call fails or
+   the tool is not present, output EXACTLY this string and exit:
+     PLAYWRIGHT_UNAVAILABLE
+   (Do NOT print any manual instructions; the caller has its own
+   manual fallback.)
+
+2. The user may need to scan a QR code from their phone to log in.
+   Take snapshots periodically (every ~5 seconds, up to ~120 seconds
+   total). The page is "logged in" when the left rail shows a chat
+   list (search bar + chats) rather than the QR code or phone-number
+   form. If still on login after 120s, output:
+     AGENTIC_FAILED: telegram-login-timeout
+   and exit.
+
+3. Once logged in, use the search bar to find "BotFather". Click
+   the verified @BotFather result.
+
+4. Send /newbot. Wait for the reply.
+
+5. When BotFather asks for the bot's display name, type:
+   "Instar Agent"
+
+6. When BotFather asks for the bot's username, generate one ending
+   in "bot" (use the basename of the project dir, lower-case,
+   ASCII-only, with "_instar_bot" appended; if taken, append random
+   digits and retry up to 5 times).
+
+7. Read BotFather's reply containing the token. Extract the token
+   from the message body. Token format: \\d+:[A-Za-z0-9_-]+
+   Store it in a local variable.
+
+8. Validate the token via the Telegram Bot API (Bash):
+     curl -s "https://api.telegram.org/bot<TOKEN>/getMe"
+   If response.ok is not true, output:
+     AGENTIC_FAILED: token-invalid
+   and exit.
+
+9. Create a new group chat:
+   a. Click the "new message" / pencil icon.
+   b. Choose "New Group".
+   c. Search for and add the bot you just created.
+   d. Name the group "<basename> + instar".
+   e. Create the group.
+   f. Send a message inside the group: "first contact".
+
+10. Fetch the chat ID:
+      curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates"
+    Pick the result where message.chat.type is "group" or
+    "supergroup". Extract message.chat.id as a string.
+
+11. Write the config. Read the existing .instar/config.json. Filter
+    out any existing { type: "telegram" } entries. Push:
+      { type: "telegram", enabled: true,
+        config: { token: "<TOKEN>", chatId: "<CHAT_ID>",
+                  pollIntervalMs: 2000, stallTimeoutMinutes: 5 } }
+    Write the file back (atomic-ish: tmp file + rename is fine).
+
+12. Verify your write succeeded by re-reading the file and confirming
+    the messaging entry is present with both fields populated. If
+    not, output:
+      AGENTIC_FAILED: config-write-failed
+    and exit.
+
+13. Exit cleanly. Do NOT print summary text — the caller will verify
+    the config and report to the user.
+
+FAILURE MODE: at ANY step you cannot recover from, output exactly
+"AGENTIC_FAILED: <one-line reason>" and exit. The caller will fall
+through to a readline-based manual setup. Do NOT try to be clever —
+fast-fail is what enables the fallback to work.
+`.trim();
+}
+
+/**
+ * Verify that .instar/config.json has a fully-populated Telegram
+ * messaging entry. Used by runTelegramAgentic to confirm the
+ * agentic path actually wrote what it was supposed to before
+ * declaring success. Exported for testing.
+ */
+export function verifyTelegramConfig(projectDir: string): boolean {
+  const configPath = path.join(projectDir, '.instar', 'config.json');
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw) as { messaging?: Array<{ type: string; enabled?: boolean; config?: { token?: string; chatId?: string } }> };
+    const tg = (config.messaging || []).find((m) => m.type === 'telegram');
+    if (!tg) return false;
+    if (!tg.config?.token || !tg.config?.chatId) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Telegram setup — instar-native readline backstop (v1.2.15 flow).
  *
- * Failure modes (network down, user can't paste, etc.) gracefully
- * skip with a clear "you can finish setup later" pointer, but never
- * silently mark the channel as configured when it isn't.
+ * Reached only if runTelegramAgentic returns
+ * `telegramConfigured: false`. Drives the entire setup from instar
+ * with readline + the Telegram Bot API. No LLM session is involved.
+ * See spec wizard-telegram-native.md for the original rationale.
  */
 async function runTelegramSetup(options: CodexDriverOptions): Promise<Partial<WizardAnswers>> {
   console.log();

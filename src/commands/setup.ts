@@ -658,6 +658,45 @@ function ensurePlaywrightMcp(dir: string): void {
       // Non-fatal
     }
   }
+
+  // ── 3. Register in ~/.codex/config.toml (for Codex-runtime agents) ──
+  // Codex reads MCP servers from ~/.codex/config.toml under
+  // [mcp_servers."<name>"] sections. We append a Playwright section
+  // if one doesn't already exist. Idempotent — re-runs are safe.
+  ensureCodexPlaywrightMcp();
+}
+
+/**
+ * Idempotently register the Playwright MCP server in
+ * ~/.codex/config.toml so codex-runtime agentic sessions can drive
+ * browser automation (used by the v1.2.17 Telegram setup primary
+ * path). Skips silently if Codex isn't installed (no config dir).
+ *
+ * TOML is appended hand-rolled rather than parsed: we just check
+ * for the section header and add it if missing. Codex's config is
+ * regular TOML; an extra section at EOF is a no-op for unrelated
+ * config values.
+ *
+ * Exported for unit testing.
+ */
+export function ensureCodexPlaywrightMcp(): void {
+  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
+  if (!fs.existsSync(path.dirname(codexConfigPath))) return;
+  try {
+    let content = '';
+    if (fs.existsSync(codexConfigPath)) {
+      content = fs.readFileSync(codexConfigPath, 'utf-8');
+      if (/\[mcp_servers\.(?:"playwright"|playwright)\]/.test(content)) return;
+    }
+    const block = `\n[mcp_servers."playwright"]\nkind = "stdio"\ncommand = "npx"\nargs = ["-y", "@playwright/mcp@latest"]\n`;
+    const next = content + (content.length > 0 && !content.endsWith('\n') ? '\n' : '') + block;
+    const tmpPath = `${codexConfigPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, next);
+    fs.renameSync(tmpPath, codexConfigPath);
+  } catch {
+    // Non-fatal — Codex-agentic Telegram will fall back to manual
+    // setup if Playwright isn't reachable from the codex session.
+  }
 }
 
 /**
