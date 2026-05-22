@@ -112,66 +112,73 @@ describe('fix-better-sqlite3 state machine', () => {
 });
 
 /**
- * Regression: testBinary must spawn process.execPath, NOT bare `node` from PATH.
+ * Regression: testBinary must spawn the RESOLVED Node binary (NODE_BIN),
+ * NOT bare `node` from PATH.
  *
- * If the script is invoked with an asdf / shim / user-PATH `node` that differs
- * from process.execPath (which is how the instar server actually invokes it),
- * using `node` from PATH would test the binary against the wrong Node ABI.
- * That produces a false positive when the binary happens to match PATH's Node
- * but not process.execPath's Node — which is exactly the silent degradation
- * on Inspec 2026-04-21 (ABI-127 binary "passed" testBinary under an asdf
- * Node 22 PATH, but the server's Node 25 then failed to load it).
+ * Originally these tests asserted on the literal `process.execPath` spawn
+ * target. The heal-execpath-staleness fix introduced `NODE_BIN`, a
+ * module-level constant resolved via `scripts/resolve-node-binary.cjs`. In
+ * the healthy case NODE_BIN equals process.execPath; in the brew-swept-out
+ * case it falls back to a stable Node (homebrew/usr-local/PATH-which).
  *
- * This test reads the script source and asserts testBinary uses execFileSync
- * with process.execPath, not execSync('node ...'). A structural check on the
- * source is the right level: we can't spawn real Nodes of different ABIs in
- * CI, but we CAN guarantee the code never reintroduces the `node`-from-PATH
- * spawn shape.
+ * The original safety goal — never spawn `node` from PATH directly — is
+ * preserved. The assertions now check that:
+ *   1. Spawns go through NODE_BIN, not bare `node`.
+ *   2. NODE_BIN itself is initialized from resolveStableNodeBinary at module
+ *      load (a structural check on the file header).
+ *
+ * Inspec 2026-04-21 (asdf Node 22 vs server's Node 25) is still defended:
+ * the resolver's first preference IS process.execPath; only when execPath
+ * is ENOENT do we move to fallbacks. The Inspec failure mode would never
+ * see a fallback in the first place.
  */
 describe('fix-better-sqlite3 testBinary Node resolution', () => {
   const scriptPath = require.resolve('../../scripts/fix-better-sqlite3.cjs');
   const src = fs.readFileSync(scriptPath, 'utf8');
 
-  it('testBinary must invoke process.execPath, not bare `node`', () => {
-    // Extract the testBinary function body (between `function testBinary` and
-    // the matching closing brace at column 0 "^}"). A conservative regex is
-    // fine here — we just need to isolate the function body to grep inside.
+  it('script resolves NODE_BIN from the stable-Node resolver at module load', () => {
+    // Header must require the resolver and assign NODE_BIN from it.
+    expect(src).toMatch(/require\(['"]\.\/resolve-node-binary\.cjs['"]\)/);
+    expect(src).toMatch(/const NODE_BIN/);
+    expect(src).toMatch(/resolveStableNodeBinary\(\)/);
+  });
+
+  it('testBinary must invoke NODE_BIN, not bare `node`', () => {
     const fnStart = src.indexOf('function testBinary(');
     expect(fnStart).toBeGreaterThan(-1);
-    // Find the end of the function — first `\n}` after the opening brace at col 0.
     const fnEnd = src.indexOf('\n}', fnStart);
     expect(fnEnd).toBeGreaterThan(fnStart);
     const body = src.slice(fnStart, fnEnd);
 
-    // MUST reference process.execPath as the spawn target.
-    expect(body).toMatch(/process\.execPath/);
+    // MUST reference NODE_BIN as the spawn target.
+    expect(body).toMatch(/NODE_BIN/);
 
     // MUST NOT invoke `node -e` via a shell — that reads PATH and picks up
-    // whatever Node is there, which can differ from process.execPath.
+    // whatever Node is there.
     expect(body).not.toMatch(/`node\s+-e/);
     expect(body).not.toMatch(/"node\s+-e/);
     expect(body).not.toMatch(/'node\s+-e/);
   });
 
-  it('trySourceBuild must prepend execDir to PATH so bare `node` in child resolves correctly', () => {
+  it('trySourceBuild must prepend NODE_BIN dir to PATH so bare `node` in child resolves correctly', () => {
     const fnStart = src.indexOf('function trySourceBuild(');
     expect(fnStart).toBeGreaterThan(-1);
     const fnEnd = src.indexOf('\n}', fnStart);
     const body = src.slice(fnStart, fnEnd);
 
-    // Must compute the exec dir AND prepend it to the child's PATH.
-    expect(body).toMatch(/path\.dirname\(process\.execPath\)/);
+    // Must compute the exec dir from NODE_BIN AND prepend it to the child's PATH.
+    expect(body).toMatch(/path\.dirname\(NODE_BIN\)/);
     expect(body).toMatch(/PATH:/);
   });
 
-  it('trySourceBuild must invoke the npm CLI via process.execPath, not a shell', () => {
+  it('trySourceBuild must invoke the npm CLI via NODE_BIN, not a shell', () => {
     const fnStart = src.indexOf('function trySourceBuild(');
     const fnEnd = src.indexOf('\n}', fnStart);
     const body = src.slice(fnStart, fnEnd);
 
-    // execFileSync(process.execPath, [npmCli, ...]) — not a shelled execSync
+    // execFileSync(NODE_BIN, [npmCli, ...]) — not a shelled execSync
     // with a quoted command string (which can re-expand PATH unexpectedly).
-    expect(body).toMatch(/execFileSync\(\s*process\.execPath/);
+    expect(body).toMatch(/execFileSync\(\s*NODE_BIN/);
     // The one legitimate remaining execSync inside trySourceBuild would be
     // a smell — fail the test if we see it there.
     expect(body).not.toMatch(/execSync\(/);

@@ -28,10 +28,24 @@ const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { resolveStableNodeBinary } = require('./resolve-node-binary.cjs');
 
 const MODULE_VERSION = process.versions.modules;
 const ARCH = process.arch;
 const PLATFORM = process.platform;
+
+// Resolve a stable Node binary up front. process.execPath is preferred when
+// it still exists; we fall back to /opt/homebrew/bin/node (or PATH-derived
+// node) when Homebrew has swept the original Cellar dir out from under us.
+// See scripts/resolve-node-binary.cjs and src/utils/resolveNodeBinary.ts.
+const _resolvedNode = resolveStableNodeBinary();
+const NODE_BIN = _resolvedNode ? _resolvedNode.path : process.execPath;
+if (_resolvedNode && _resolvedNode.source !== 'execPath') {
+  console.warn(
+    `[fix-better-sqlite3] process.execPath (${process.execPath}) is unreachable; ` +
+    `using ${_resolvedNode.source} fallback at ${NODE_BIN}.`
+  );
+}
 
 function findBetterSqlite3() {
   try {
@@ -72,7 +86,7 @@ function getBetterSqliteVersion(pkgDir) {
 function verifyChildAbiMatches() {
   try {
     const out = execFileSync(
-      process.execPath,
+      NODE_BIN,
       ['-e', "process.stdout.write(process.versions.modules)"],
       { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }
     );
@@ -94,7 +108,7 @@ function verifyChildAbiMatches() {
 function testBinary(pkgDir) {
   try {
     execFileSync(
-      process.execPath,
+      NODE_BIN,
       [
         '-e',
         "const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.pragma('journal_mode = WAL'); db.close();",
@@ -180,7 +194,10 @@ function tryPrebuild(pkgDir, betterSqliteVersion) {
 
 /** Locate npm's CLI entry without needing a shell. */
 function findNpmCli() {
-  const nodeDir = path.dirname(process.execPath);
+  // Prefer the npm sibling of the resolved Node binary — when execPath is
+  // stale, NODE_BIN points at the live Node, and its sibling npm is the right
+  // pair for that ABI.
+  const nodeDir = path.dirname(NODE_BIN);
   const candidates = [
     path.resolve(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js',
@@ -215,13 +232,15 @@ function trySourceBuild(pkgDir) {
   // we're building FOR. Without this, a mixed environment (e.g. asdf Node 22
   // on PATH + server's Node 25 as execPath) compiles against the wrong
   // headers and produces an ABI-mismatched binary that silently fails later.
-  const execDir = path.dirname(process.execPath);
+  // Use NODE_BIN (the resolved Node) so the PATH prefix points at a Node that
+  // actually exists on disk — process.execPath may be stale.
+  const execDir = path.dirname(NODE_BIN);
   const childPath = `${execDir}${path.delimiter}${process.env.PATH || ''}`;
 
   try {
     console.log(`[fix-better-sqlite3] Source-building better-sqlite3 in ${rebuildCwd} (~30s)`);
     execFileSync(
-      process.execPath,
+      NODE_BIN,
       [npmCli, 'rebuild', 'better-sqlite3', '--build-from-source'],
       {
         cwd: rebuildCwd,

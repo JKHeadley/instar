@@ -72,6 +72,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { LiveConfig } from '../config/LiveConfig.js';
@@ -1784,12 +1785,40 @@ async function ensureSqliteBindings(): Promise<boolean> {
     if (!isBindingError) return false; // Not a binding issue — let subsystems handle it.
 
     console.log(pc.yellow('  better-sqlite3: native binding mismatch detected — auto-rebuilding for current Node.js version...'));
+
+    // Heal-execpath-staleness fix: resolve a stable Node binary BEFORE spawning.
+    // When Homebrew (or any package manager) updates Node mid-session, the
+    // running process holds an FD to the original binary so it keeps executing,
+    // but spawnSync(process.execPath, …) returns ENOENT because the file is
+    // gone from disk. Observed live on luna 2026-05-21. See src/utils/resolveNodeBinary.ts.
+    const resolved = resolveStableNodeBinary();
+    if (!resolved) {
+      const recoveryHint =
+        'No working Node.js binary found at process.execPath or any fallback ' +
+        '(/opt/homebrew/bin/node, /usr/local/bin/node, /usr/bin/node, PATH). ' +
+        'This typically means Node was uninstalled or moved while the server ' +
+        'was running. Reinstall Node, then restart the agent.';
+      console.log(pc.yellow(`  better-sqlite3: ${recoveryHint}`));
+      DegradationReporter.getInstance().report({
+        feature: 'ensureSqliteBindings.nodeBinaryResolution',
+        primary: 'Locate a working Node.js binary to run the better-sqlite3 rebuild',
+        fallback: 'Rebuild skipped — SQLite subsystems will degrade until operator restores Node',
+        reason: `Why: process.execPath (${process.execPath}) is ENOENT and no fallback resolved`,
+        impact: recoveryHint,
+      });
+      return false;
+    }
+    const spawnNode = resolved.path;
+    if (spawnNode !== process.execPath) {
+      console.log(pc.dim(`  better-sqlite3: process.execPath (${process.execPath}) unreachable; using ${resolved.source} fallback at ${spawnNode}`));
+    }
+
     try {
       // Use the bundled fix script which downloads correct prebuilds from GitHub.
       // This is more reliable than `npm rebuild` which fails with pnpm/asdf installs.
       const fixScript = path.resolve(__dirname, '../../../scripts/fix-better-sqlite3.cjs');
       if (fs.existsSync(fixScript)) {
-        execFileSync(process.execPath, [fixScript], { encoding: 'utf-8', timeout: 60000, stdio: 'pipe' });
+        execFileSync(spawnNode, [fixScript], { encoding: 'utf-8', timeout: 60000, stdio: 'pipe' });
       } else {
         // Fallback: npm rebuild in the directory containing better-sqlite3.
         // Shadow installs have their own node_modules — try that first, then global.
@@ -1799,15 +1828,15 @@ async function ensureSqliteBindings(): Promise<boolean> {
         const instarDir = path.resolve(__dirname, '../../..');
         const shadowBs3 = path.join(instarDir, 'node_modules', 'better-sqlite3');
         if (fs.existsSync(shadowBs3)) {
-          execFileSync(process.execPath, [npmCli, 'rebuild', 'better-sqlite3'], {
+          execFileSync(spawnNode, [npmCli, 'rebuild', 'better-sqlite3'], {
             cwd: instarDir,
             encoding: 'utf-8',
             timeout: 60000,
             stdio: 'pipe',
           });
         } else {
-          const globalInstarDir = execFileSync(process.execPath, [npmCli, 'root', '-g'], { encoding: 'utf-8', timeout: 10000 }).toString().trim() + '/instar';
-          execFileSync(process.execPath, [npmCli, 'rebuild', 'better-sqlite3'], {
+          const globalInstarDir = execFileSync(spawnNode, [npmCli, 'root', '-g'], { encoding: 'utf-8', timeout: 10000 }).toString().trim() + '/instar';
+          execFileSync(spawnNode, [npmCli, 'rebuild', 'better-sqlite3'], {
             cwd: globalInstarDir,
             encoding: 'utf-8',
             timeout: 60000,
@@ -1818,7 +1847,20 @@ async function ensureSqliteBindings(): Promise<boolean> {
       console.log(pc.green('  better-sqlite3: rebuilt successfully — restarting to apply (ESM module cache must be cleared).'));
       return true; // Restart needed — ESM cache holds the stale failure
     } catch (rebuildErr) {
-      console.log(pc.yellow(`  better-sqlite3: rebuild failed (${rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr)}). SQLite subsystems may degrade.`));
+      const rebuildMsg = rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr);
+      console.log(pc.yellow(`  better-sqlite3: rebuild failed (${rebuildMsg}). SQLite subsystems may degrade.`));
+      DegradationReporter.getInstance().report({
+        feature: 'ensureSqliteBindings.rebuildFailed',
+        primary: 'Rebuild better-sqlite3 native bindings for the current Node.js version',
+        fallback: 'SQLite subsystems (SemanticMemory, TopicMemory, FeatureRegistry) will degrade until rebuild succeeds',
+        reason: `Why: ${rebuildMsg}`,
+        impact:
+          'The agent is running but its knowledge graph, conversation summaries, and ' +
+          'related sqlite-backed subsystems are offline. The most common cause is a ' +
+          'Node upgrade landed after the server started. Restart the agent to pick up ' +
+          'the rebuilt binding; if rebuild itself keeps failing, run `npx instar update` ' +
+          'or reinstall the agent.',
+      });
       return false;
     }
   }
