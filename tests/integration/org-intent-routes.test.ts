@@ -380,4 +380,19 @@ describe('Org Intent Routes (integration)', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  // ── GET /intent/org/drift (Phase 4) ────────────────────────────
+
+  describe('GET /intent/org/drift', () => {
+    it('returns 503 when the response review gate is not enabled', async () => {
+      // The minimal RouteContext doesn't wire a responseReviewGate, so the
+      // drift route must return 503 (feature not available) rather than
+      // crashing on a null deref. Full lifecycle coverage with a real gate
+      // is in the Tier-3 E2E test.
+      const res = await request(app)
+        .get('/intent/org/drift');
+      expect(res.status).toBe(503);
+      expect(res.body.error).toContain('Response review pipeline not enabled');
+    });
+  });
 });

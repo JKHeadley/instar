@@ -2170,6 +2170,7 @@ Manage it:
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
 - Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
+- Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — drift digest from recent Coherence Gate review history. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.
 
 **Topic-Project Bindings**: Each Telegram topic can be bound to a specific project. When switching topics, verify the binding matches your current working directory.
 - View bindings: \`GET http://localhost:${port}/topic-bindings\`
@@ -2205,6 +2206,7 @@ Manage it:
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
 - Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
+- Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — drift digest from recent Coherence Gate review history. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.
 `;
       // Anchor: insert after "Topic-Project Bindings" header so it lands inside
       // the Coherence Gate section but before the Project Map subsection.
@@ -2221,13 +2223,38 @@ Manage it:
       }
     } else if (
       content.includes('ORG-INTENT.md (Organizational Intent at Runtime)')
+      && content.includes('/intent/tradeoff-resolve')
+      && !content.includes('/intent/org/drift')
+    ) {
+      // CLAUDE.md has Phase 1+2+3 but is missing Phase 4 (drift detection).
+      // Append the drift curl line to the existing Manage-it bullet list.
+      // Idempotent: substring check above prevents re-insertion.
+      const driftLine = `- Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — drift digest from recent Coherence Gate review history. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.`;
+      // Anchor: insert right after the Phase 3 tradeoff-resolve line.
+      const phase3Marker = '/intent/tradeoff-resolve';
+      const idx = content.indexOf(phase3Marker);
+      if (idx >= 0) {
+        const lineEnd = content.indexOf('\n', idx);
+        if (lineEnd >= 0) {
+          content = content.slice(0, lineEnd + 1) + driftLine + '\n' + content.slice(lineEnd + 1);
+          patched = true;
+          result.upgraded.push('CLAUDE.md: added Phase 4 drift-detection curl line to ORG-INTENT subsection');
+        } else {
+          result.skipped.push('CLAUDE.md: Phase 3 marker present but newline anchor missing (skipping)');
+        }
+      } else {
+        result.skipped.push('CLAUDE.md: Phase 3 anchor for drift insertion not found (skipping)');
+      }
+    } else if (
+      content.includes('ORG-INTENT.md (Organizational Intent at Runtime)')
       && content.includes('/intent/org/session-context')
       && !content.includes('/intent/tradeoff-resolve')
     ) {
       // CLAUDE.md has Phase 1+2 but is missing Phase 3 (tradeoff helper).
       // Append the tradeoff-resolve curl line to the existing Manage-it
       // bullet list. Idempotent: substring check above prevents re-insertion.
-      const tradeoffLine = `- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.`;
+      const tradeoffLine = `- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
+- Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — drift digest from recent Coherence Gate review history. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.`;
       const anchor = `- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\``;
       const before = content;
       content = content.replace(anchor, `${anchor}\n${tradeoffLine}`);
@@ -2258,6 +2285,7 @@ Manage it:
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
 - Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
+- Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — drift digest from recent Coherence Gate review history. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.
 
 `;
       const before = content;
