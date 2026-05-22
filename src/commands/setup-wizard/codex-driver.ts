@@ -799,40 +799,35 @@ STEPS:
      — pinning and topic management may not work." This is
      NON-fatal — continue with the rest of setup. NOT AGENTIC_FAILED.
 
-13. Create the 4 system topics. Each via createForumTopic:
+13. Create ONLY the Lifeline topic. Do NOT create Dashboard,
+    Updates, or Attention topics here — the instar SERVER creates
+    those automatically on its first boot, with their own
+    canonical intros, emojis, colors, AND the dashboard-link
+    wiring. If you create them too, you get DUPLICATE topics: the
+    server tracks its own topics by stored IDs it doesn't know you
+    created, so it makes a second copy. Lifeline is the one
+    exception — you create it, persist its ID to config (step 15),
+    and the server reuses that ID instead of making a duplicate.
 
-    a. Lifeline (color 9367192 — green):
-       curl -s -X POST "https://api.telegram.org/bot<TOKEN>/createForumTopic" \\
-         -H 'Content-Type: application/json' \\
-         -d '{"chat_id": "<FORUM_CHAT_ID>",
-              "name": "🛡️ Lifeline",
-              "icon_color": 9367192}'
-       Capture result.message_thread_id as LIFELINE_TOPIC_ID.
+    Create Lifeline (color 9367192 — green):
+      curl -s -X POST "https://api.telegram.org/bot<TOKEN>/createForumTopic" \\
+        -H 'Content-Type: application/json' \\
+        -d '{"chat_id": "<FORUM_CHAT_ID>",
+             "name": "🛡️ Lifeline",
+             "icon_color": 9367192}'
+    Capture result.message_thread_id as LIFELINE_TOPIC_ID.
 
-    b. Updates (color 7322096 — blue):
-       Same call with name "📢 Updates", icon_color 7322096.
-       Capture as UPDATES_TOPIC_ID.
+    If the call returns !ok, tell the user "Couldn't create the
+    Lifeline topic — switching to manual." Output
+    AGENTIC_FAILED: topics-create-failed and exit.
 
-    c. Dashboard (color 7322096 — blue):
-       Same with name "📊 Dashboard". Capture as DASHBOARD_TOPIC_ID.
-
-    d. Attention (color 16766590 — yellow):
-       Same with name "🔔 Attention". Capture as ATTENTION_TOPIC_ID.
-
-    If any createForumTopic call returns !ok, tell the user
-    "Couldn't create the system topics — switching to manual."
-    Output AGENTIC_FAILED: topics-create-failed and exit.
-
-14. Seed each topic with one orienting message via sendMessage +
-    message_thread_id. These are NEUTRAL channel-purpose blurbs,
-    not the agent's personal greeting (that's a separate step
-    after server start — see Phase 5 of the wizard). Use the
-    agent's first-person voice in plain text. Adapt wording as
-    needed for the agent's personality, but keep meaning intact.
-
-    a. Lifeline (LIFELINE_TOPIC_ID) — this one is RICHER because
-       new users see it first and need to understand how topics
-       work:
+14. Seed the Lifeline topic with one orienting message via
+    sendMessage + message_thread_id. This is a NEUTRAL channel-
+    purpose blurb, not the agent's personal greeting (that's a
+    separate step after server start — see Phase 5 of the wizard).
+    Use the agent's first-person voice. This message is RICHER
+    than a plain label because new users see it first and need to
+    understand how topics work:
 
        text: |
          Hey ${userName} — I'm ${agentName}. This is the **Lifeline** topic.
@@ -847,33 +842,19 @@ STEPS:
          proactively create topics when something's worth a
          dedicated thread.
 
-         I'll send my proper hello once the server's up — should
-         only be a few seconds.
+         A few more topics (Updates, Dashboard, Attention) will
+         appear automatically once my server starts. I'll send my
+         proper hello here in Lifeline a few seconds after that.
 
-    b. Updates (UPDATES_TOPIC_ID):
-       "Updates is where I'll post automated status — job runs,
-       sync notifications, anything informational that doesn't
-       need a response from you."
-
-    c. Dashboard (DASHBOARD_TOPIC_ID):
-       "Dashboard is where I'll post the link to my web dashboard
-       once a tunnel is up. You'll be able to monitor sessions
-       from your phone."
-
-    d. Attention (ATTENTION_TOPIC_ID):
-       "Attention is for things you need to look at — failed jobs,
-       missing credentials, anything urgent. I'll only post here
-       when something actually needs you."
-
-    All four via:
+    Via:
       curl -s -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" \\
         -H 'Content-Type: application/json' \\
         -d '{"chat_id": "<FORUM_CHAT_ID>",
-             "message_thread_id": <TOPIC_ID>,
+             "message_thread_id": <LIFELINE_TOPIC_ID>,
              "text": "<intro text>"}'
 
-    Capture the Lifeline intro's result.message_id as
-    LIFELINE_INTRO_MESSAGE_ID — used in 14b for pinning.
+    Capture result.message_id as LIFELINE_INTRO_MESSAGE_ID — used
+    in 14b for pinning.
 
 14b. Pin the Lifeline intro so users scrolling back later don't
      lose the orientation. Requires admin rights from step 12b;

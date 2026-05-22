@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/codex-only-lifeline-topic.md",
+  "artifactPath": "upgrades/side-effects/fix-codex-only-lifeline-topic.md",
+  "artifactSha256": "ff51f16cd3cd1519155338da6144c5dcc7ceefb6d15d36723c0a5ef84ca1f3f1",
+  "coveredFiles": [
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/codex-playwright-telegram.test.ts",
+    "specs/dev-infrastructure/codex-only-lifeline-topic.md",
+    "specs/dev-infrastructure/codex-only-lifeline-topic.eli16.md",
+    "docs/specs/reports/codex-only-lifeline-topic-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-codex-only-lifeline-topic.md"
+  ],
+  "writtenAt": "2026-05-22T17:50:20Z",
+  "agent": "echo",
+  "summary": "Fixes duplicate Dashboard topic: Codex agentic flow now creates + seeds + persists ONLY Lifeline; server owns Dashboard/Updates/Attention on boot. Prompt steps 13+14 rewritten. Lifeline orientation message tells user the rest appear on server boot. 81 wizard tests pass. The missing-dashboard-link issue was a Cloudflare 429 rate-limit (not a code bug); two follow-ups tracked (tunnel-failure notification + backup tunnel pool). Ships v1.2.29."
+}

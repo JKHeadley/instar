@@ -128,17 +128,22 @@ describe('buildTelegramAgenticPrompt', () => {
     expect(prompt).toMatch(/forum-mode-not-enabled/);
   });
 
-  it('creates the 4 canonical system topics with TOPIC_STYLE colors', () => {
+  it('creates ONLY the Lifeline topic (v1.2.21 — server owns the other 3)', () => {
+    // Pre-v1.2.21 the Codex flow created all 4 topics, which
+    // duplicated the server's own Dashboard/Updates/Attention on
+    // boot. v1.2.21: Codex creates only Lifeline (+persists its id);
+    // the server creates Dashboard/Updates/Attention.
     expect(prompt).toMatch(/Lifeline/);
-    expect(prompt).toMatch(/Updates/);
-    expect(prompt).toMatch(/Dashboard/);
-    expect(prompt).toMatch(/Attention/);
-    // Canonical colors from src/messaging/TelegramAdapter.ts TOPIC_STYLE.
     expect(prompt).toMatch(/9367192/);  // SYSTEM (Lifeline) — green
-    expect(prompt).toMatch(/7322096/);  // INFO (Updates, Dashboard) — blue
-    expect(prompt).toMatch(/16766590/); // ALERT (Attention) — yellow
     expect(prompt).toMatch(/createForumTopic/);
     expect(prompt).toMatch(/topics-create-failed/);
+    // It must explicitly tell Codex NOT to create the other three.
+    // (whitespace-flexible — the phrase wraps across lines in the prompt)
+    expect(prompt).toMatch(/Do NOT create Dashboard,\s+Updates, or\s+Attention/i);
+    expect(prompt).toMatch(/DUPLICATE/);
+    // The other-topic colors should NOT be hard-coded as create
+    // instructions anymore (the only colour referenced is Lifeline's).
+    expect(prompt).not.toMatch(/16766590/); // Attention yellow — gone
   });
 
   it('seeds each topic with an orienting message via sendMessage + message_thread_id', () => {
