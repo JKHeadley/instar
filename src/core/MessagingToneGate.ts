@@ -56,6 +56,7 @@ const VALID_RULES = new Set([
   'B12_HEALTH_ALERT_INTERNALS',
   'B13_HEALTH_ALERT_SUPPRESSED_BY_HEAL',
   'B14_HEALTH_ALERT_NO_CTA',
+  'B15_CONTEXT_DEATH_STOP',
 ]);
 
 export interface ToneReviewContextMessage {
@@ -275,6 +276,34 @@ These rules only fire when the producer has explicitly marked the candidate as a
 - **B13_HEALTH_ALERT_SUPPRESSED_BY_HEAL** — message-kind is "health-alert" AND the selfHeal signal is \`{attempted: true, succeeded: true}\`. The producer has already fixed the issue; bothering the user is wrong. Block so the upstream caller suppresses the message entirely (or sends a quiet retrospective if the original problem had previously been escalated).
 - **B14_HEALTH_ALERT_NO_CTA** — message-kind is "health-alert" AND the candidate does NOT end with a single yes/no question the user can answer in one word ("Want me to dig in?" / "Should I look into this?" / "Want me to try again?"). Health alerts that escalate to the user MUST end with an actionable yes/no. A trailing imperative like "check the logs" or "verify the deployment" is exactly the failure this rule catches.
 
+## SELF-STOP rule — always evaluated (no signal/kind precondition):
+
+- **B15_CONTEXT_DEATH_STOP** — the candidate proposes pausing, stopping, or handing off the current in-flight work for a context-window / fresh-session / end-of-session reason rather than a legitimate stop reason. The structural intent is to catch the "Context-Death Self-Stop" anti-pattern (the agent rationalizing a stop using "context will be better fresh" when the agent's own systems handle context fine and the user-requested scope is not yet shipped).
+
+  LITERAL pattern markers — you must point at the exact string when applying B15:
+  - "fresh session", "next session", "in a fresh", "fresh start"
+  - "pick this up later", "pick it up later", "pick up in a", "pick up next"
+  - "tail of this session", "tail end of this", "remaining context", "remaining hours of this session", "in the remaining time"
+  - "stop cleanly here", "natural break point", "natural break", "hand off cleanly", "handoff point", "let me hand off"
+  - "given the scope ... in remaining", "in this single session", "multi-session work" (when used to justify stopping THIS work, not as a neutral characterization), "in remaining context"
+  - "quality risk on completing in this session", "rather than risk shipping incomplete"
+
+  LEGITIMATE STOP CLAUSES — apply B15 ONLY if NONE of these is present in the candidate:
+  - The candidate is literally asking the user a question only they can answer (real design fork; explicit "should I X or Y?" with the choice clearly the user's).
+  - The candidate states the agent is blocked on information only the user can supply (a credential the user holds; an external system the user owns).
+  - The candidate reports a genuine error / blocker (a tool/API/system call failed, not a soft preference to stop).
+  - The candidate is a completion report: the user-requested scope has shipped/merged/been delivered (e.g., "v1.2.31 is on npm", "PR #324 merged", "feature live").
+
+  If the candidate proposes stopping/handing-off AND contains at least one literal context-death pattern from the list AND NONE of the legitimate stop clauses is present → BLOCK with B15 and suggest deleting the handoff framing and continuing, or supplying an explicit legitimate-stop reason.
+
+  B15 does NOT apply to:
+  - Messages that DISCUSS the stop pattern (this very rule's text, an operator-facing memo explaining B15, conversation about WHY the agent slipped before).
+  - Strategy-reassessment messages that don't conclude with a context-death stop (e.g., "let me re-scope this and proceed" passes; "let me re-scope this and pick it up in a fresh session" blocks).
+  - Topic-split / topic-move logistics where the work continues immediately in another topic ("creating a new topic and continuing there" is continuation, not a stop).
+  - Operator-completion messages where the operator is informing the agent of a stop ("we're done for today" → not the agent stopping itself).
+
+  Severity: HIGH. False-negatives (a real slip getting through) are worse than false-positives here — the operator has explicitly asked for this guard as a structural defense against a recurring failure mode.
+
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 
 - **B11_STYLE_MISMATCH** — the message significantly mismatches the agent's configured TARGET STYLE (see section below). This rule is generic — the target style is a free-text description the operator sets in config. Apply the rule when: (1) a target style is provided (not empty), AND (2) the candidate message clearly violates the style's stated intent in a way the target user would notice and find jarring.
@@ -310,7 +339,7 @@ Respond EXCLUSIVELY with valid JSON:
   "suggestion": "<how to rephrase — empty if pass is true>"
 }
 
-If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, or B14 exactly (no other values — inventing rule ids is itself a violation).
+If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, or B15 exactly (no other values — inventing rule ids is itself a violation).
 
 Channel: ${channel}
 ${kindSection}${contextSection}${signalsSection}${styleSection}
