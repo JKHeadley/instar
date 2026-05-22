@@ -75,3 +75,4 @@ round confirmed convergence — no new material issues.
 
 The full technical spec lives in the parent document; this companion
 is what you read.
+

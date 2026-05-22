@@ -1,55 +1,88 @@
 /**
- * Cloudflare Tunnel manager for Instar agents.
+ * TunnelManager — single owner of the tunnel lifecycle.
  *
- * Manages cloudflared tunnel lifecycle — quick tunnels (zero-config,
- * ephemeral) and named tunnels (persistent, custom domain).
+ * Per spec specs/dev-infrastructure/tunnel-failure-resilience.md.
  *
- * Quick tunnels require no Cloudflare account. Named tunnels require
- * a tunnel token from the Cloudflare dashboard.
+ * Rewritten on top of the foundation modules:
+ *   - TunnelProvider — backend abstraction; concrete providers under
+ *     src/tunnel/Cloudflare*Provider.ts.
+ *   - TunnelLifecycle — single-writer CAS-guarded state machine.
+ *   - TunnelNotifier — two-channel routing (group / owner-DM) of
+ *     transition events.
  *
- * The tunnel exposes the agent's local HTTP server to the internet,
- * enabling:
- *   - Private content viewing (auth-gated rendered markdown)
- *   - Remote API access from anywhere
- *   - File serving (logs, reports, exports)
- *   - Webhook endpoints for external integrations
+ * The manager is the SOLE owner of the detect → attempt → fall-back →
+ * notify → self-heal lifecycle. The previous server.ts startup-retry
+ * ladder + background-retry ladder + Lifeline failure message are
+ * retired in favor of routing all retry through here (one backoff
+ * engine, not two).
+ *
+ * Scope of this rewrite (PR 2 of the chain):
+ *   - Tier-1 provider pool (Cloudflare named → quick) with internal
+ *     backoff between retries within an episode.
+ *   - Post-start reachability probe (HTTP /health through the public
+ *     URL) before declaring `active` — prevents broadcasting a "back
+ *     online" link that doesn't actually serve traffic.
+ *   - Backward-compatible public API: start(), stop(), forceStop(),
+ *     enableAutoReconnect(), disableAutoReconnect(), getExternalUrl(),
+ *     url/isRunning/state. Plus the existing events.
+ *   - Notifier sink optional; when telegram adapter is plumbed,
+ *     transition events route to the group topic.
+ *
+ * Out of scope for THIS PR (future PRs in the chain):
+ *   - Tier-2 consent flow + relay providers (PR 4).
+ *   - Owner-DM channel + inline-button consent UX (PR 3).
+ *   - authToken/PIN rotation + boot recovery (PR 5).
+ *   - Self-heal probe with N-consecutive-success stability gate (PR 6).
+ *   - The /tunnel route (PR 7).
+ *
+ * The lifecycle state machine already supports these states; the
+ * manager simply doesn't transition into them yet in PR 2.
  */
 
 import { EventEmitter } from 'node:events';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { bin, install, Tunnel } from 'cloudflared';
+import {
+  TunnelLifecycle,
+  classifyFailure,
+  type PersistedTunnelState,
+  type TransitionEvent,
+} from './TunnelLifecycle.js';
+import type {
+  TunnelProvider,
+  TunnelProviderHandle,
+  ProviderName,
+  ProviderFailureReason,
+} from './TunnelProvider.js';
+import { CloudflareQuickProvider } from './CloudflareQuickProvider.js';
+import { CloudflareNamedProvider } from './CloudflareNamedProvider.js';
+import type { NotifierSink } from './TunnelNotifier.js';
+import { TunnelNotifier } from './TunnelNotifier.js';
 
-// ── Types ──────────────────────────────────────────────────────────
+// ── Types (back-compat) ─────────────────────────────────────────────
 
 export interface TunnelConfig {
-  /** Whether tunnel is enabled */
+  /** Whether tunnel is enabled. */
   enabled: boolean;
-  /** Tunnel type: 'quick' (ephemeral, no account) or 'named' (persistent, requires token) */
+  /** Tunnel type: 'quick' (ephemeral, no account) or 'named' (persistent, requires token). */
   type: 'quick' | 'named';
-  /** Cloudflare tunnel token (required for named tunnels using token auth) */
+  /** Cloudflare tunnel token (named, token-auth). */
   token?: string;
-  /** Config file path for named tunnels using credentials file auth */
+  /** Config file path (named, config-file-auth). */
   configFile?: string;
-  /** Public hostname for named tunnels (e.g., echo.dawn-tunnel.dev) */
+  /** Public hostname for named tunnels. */
   hostname?: string;
-  /** Local port to tunnel to */
+  /** Local port to tunnel to. */
   port: number;
-  /** State directory for persisting tunnel info */
+  /** State directory for persisting tunnel.json. */
   stateDir: string;
 }
 
 export interface TunnelState {
-  /** Current tunnel URL (null if not connected) */
   url: string | null;
-  /** Tunnel type */
   type: 'quick' | 'named';
-  /** When the tunnel was started */
   startedAt: string | null;
-  /** Connection info from cloudflared */
   connectionId?: string;
-  /** Connection location */
   connectionLocation?: string;
 }
 
@@ -61,488 +94,403 @@ export interface TunnelEvents {
   stopped: () => void;
 }
 
+/** Optional injections for testability. */
+export interface TunnelManagerInjections {
+  providers?: TunnelProvider[];
+  notifierSink?: NotifierSink;
+  fetch?: typeof fetch;
+}
+
+// ── Constants ───────────────────────────────────────────────────────
+
+const BASE_BACKOFF_MS = 5_000;
+const MAX_BACKOFF_MS = 5 * 60_000;
+const MAX_BACKOFF_ATTEMPTS = 10;
+const REACHABILITY_TIMEOUT_MS = 8_000;
+/**
+ * Post-exhausted retry cadence — the minimum-viable "self-heal"
+ * placeholder for PR 2. After the bounded startup-reconnect ladder
+ * exhausts (MAX_BACKOFF_ATTEMPTS), the manager keeps probing the
+ * Tier-1 pool at this cadence indefinitely. This is intentionally
+ * crude; PR 6 replaces it with the spec's N-consecutive-success
+ * stability-gate probe per Part 5. Without this placeholder, the
+ * agent stays link-less after exhaustion until restart — which is
+ * the regression we explicitly need to avoid in the PR chain.
+ */
+const POST_EXHAUSTED_RETRY_INTERVAL_MS = 15 * 60_000;
+
 // ── Manager ────────────────────────────────────────────────────────
 
 export class TunnelManager extends EventEmitter {
-  private config: TunnelConfig;
-  private tunnel: Tunnel | null = null;
-  private stateFile: string;
-  private _state: TunnelState;
-  private _stopped = false;
-  private _autoReconnect = false;
-  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private _reconnectAttempt = 0;
-  private _startPromise: Promise<string> | null = null; // Mutex: prevents concurrent start()
-  private static readonly MAX_RECONNECT_ATTEMPTS = 10;
-  private static readonly BASE_RECONNECT_DELAY_MS = 5_000;
-  private static readonly MAX_RECONNECT_DELAY_MS = 5 * 60_000;
+  private readonly config: TunnelConfig;
+  private readonly stateFile: string;
 
-  constructor(config: TunnelConfig) {
+  private readonly lifecycle: TunnelLifecycle;
+  private readonly providers: TunnelProvider[];
+  private readonly notifier: TunnelNotifier | null;
+  private readonly fetcher: typeof fetch;
+
+  private currentHandle: TunnelProviderHandle | null = null;
+  private currentProviderName: ProviderName | null = null;
+  private _legacyState: TunnelState;
+  private _autoReconnect = true; // always-on under the new design
+  private _stopped = false;
+  private _startPromise: Promise<string> | null = null;
+  private _backoffAttempt = 0;
+  private _backoffTimer: ReturnType<typeof setTimeout> | null = null;
+  private _postExhaustedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(config: TunnelConfig, injections?: TunnelManagerInjections) {
     super();
     this.config = config;
     this.stateFile = path.join(config.stateDir, 'tunnel.json');
-    this._state = {
+    this.lifecycle = new TunnelLifecycle();
+    this.providers = injections?.providers ?? this.buildDefaultPool(config);
+    this.notifier = injections?.notifierSink
+      ? new TunnelNotifier({ sink: injections.notifierSink })
+      : null;
+    this.fetcher = injections?.fetch ?? globalThis.fetch.bind(globalThis);
+
+    this._legacyState = {
       url: null,
       type: config.type,
       startedAt: null,
     };
+
+    // Route lifecycle transitions through the notifier.
+    this.lifecycle.on('transition', (e: TransitionEvent) => {
+      if (this.notifier) void this.notifier.onTransition(e);
+    });
+
+    // Restore persisted snapshot (rotation-pending flag + consent cooldown).
+    this.restorePersisted();
   }
 
-  /** Current tunnel URL, or null if not connected */
-  get url(): string | null {
-    return this._state.url;
-  }
+  // ── Public API (back-compat with the legacy manager) ────────────
 
-  /** Whether the tunnel is currently running */
-  get isRunning(): boolean {
-    return this.tunnel !== null && !this._stopped;
-  }
+  get url(): string | null { return this._legacyState.url; }
 
-  /** Current tunnel state */
-  get state(): TunnelState {
-    return { ...this._state };
+  get isRunning(): boolean { return this.currentHandle !== null && !this._stopped; }
+
+  get state(): TunnelState { return { ...this._legacyState }; }
+
+  /** Additive new accessor — lifecycle snapshot. */
+  get lifecycleState(): PersistedTunnelState {
+    const snap = this.lifecycle.snapshot();
+    snap.lastUrl = this._legacyState.url;
+    return snap;
   }
 
   /**
-   * Start the tunnel. Ensures the cloudflared binary is installed,
-   * then starts the appropriate tunnel type.
+   * Start the tunnel. Drives the full Tier-1 ladder internally — the
+   * caller does NOT wrap with its own retry loop (the old server.ts
+   * startup ladder is RETIRED).
+   *
+   * Resolves with the URL of the first provider that reaches `active`.
+   * Rejects when all Tier-1 providers fail and backoff is exhausted.
    */
   async start(): Promise<string> {
-    // Mutex: if a start is already in progress, return the same promise
-    // This prevents concurrent start() calls from the SleepWake handler
-    // and auto-reconnect racing each other.
-    if (this._startPromise) {
-      return this._startPromise;
-    }
-
-    // If tunnel is already running, return the current URL
-    if (this.tunnel && this._state.url) {
-      return this._state.url;
-    }
-
+    if (this._startPromise) return this._startPromise;
+    if (this.currentHandle && this._legacyState.url) return this._legacyState.url;
     this._stopped = false;
-
-    const doStart = async (): Promise<string> => {
-      try {
-        // Ensure cloudflared binary is installed
-        await this.ensureBinary();
-
-        // Start the appropriate tunnel type
-        if (this.config.type === 'named') {
-          if (!this.config.token && !this.config.configFile) {
-            throw new Error('Named tunnel requires either a token or a configFile. Set tunnel.token or tunnel.configFile in config.');
-          }
-          if (this.config.configFile) {
-            return await this.startConfigFileTunnel();
-          }
-          return await this.startNamedTunnel();
-        } else {
-          return await this.startQuickTunnel();
-        }
-      } finally {
-        this._startPromise = null;
-      }
-    };
-
-    this._startPromise = doStart();
+    this._startPromise = this.doStart().finally(() => { this._startPromise = null; });
     return this._startPromise;
   }
 
-  /**
-   * Stop the tunnel gracefully. Intentional stops disable auto-reconnect.
-   */
   async stop(): Promise<void> {
     this._stopped = true;
-    this._startPromise = null; // Cancel any in-flight start
-    if (this._reconnectTimer) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
+    this.clearBackoffTimer();
+    this.clearPostExhaustedTimer();
+    this._startPromise = null;
+
+    if (this.currentHandle) {
+      try { await this.currentHandle.stop(); } catch { /* handle may be dead */ }
+      this.currentHandle = null;
     }
-    this._reconnectAttempt = 0;
-    if (this.tunnel) {
-      this.tunnel.stop();
-      this.tunnel = null;
+
+    this._legacyState.url = null;
+    this._legacyState.startedAt = null;
+    this.currentProviderName = null;
+
+    const from = this.lifecycle.state;
+    if (from !== 'idle') {
+      try { this.lifecycle.transition(from, 'idle', { activeProvider: null }); }
+      catch { /* invalid pair — best-effort */ }
     }
-    this._state.url = null;
-    this._state.startedAt = null;
-    this.saveState();
+
+    this.persist();
     this.emit('stopped');
   }
 
-  /**
-   * Force-stop the tunnel with a timeout. If cloudflared doesn't respond to
-   * SIGINT within `timeoutMs`, escalate to SIGKILL. Essential for sleep/wake
-   * recovery where cloudflared may be a zombie process.
-   */
-  async forceStop(timeoutMs = 5000): Promise<void> {
-    this._stopped = true;
-    this._startPromise = null; // Cancel any in-flight start
-    if (this._reconnectTimer) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
-    }
-    this._reconnectAttempt = 0;
-
-    if (this.tunnel) {
-      const tunnelProcess = this.tunnel.process;
-      const pid = tunnelProcess?.pid;
-
-      // Send SIGINT (graceful)
-      try { this.tunnel.stop(); } catch { /* may already be dead */ }
-
-      if (pid) {
-        // Wait for process to exit, escalate to SIGKILL if it doesn't
-        const exited = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => resolve(false), timeoutMs);
-          // Check if process is already dead
-          try {
-            process.kill(pid, 0);
-          } catch {
-            clearTimeout(timer);
-            resolve(true);
-            return;
-          }
-          // Poll for exit
-          const poll = setInterval(() => {
-            try {
-              process.kill(pid, 0);
-            } catch {
-              clearInterval(poll);
-              clearTimeout(timer);
-              resolve(true);
-            }
-          }, 200);
-        });
-
-        if (!exited) {
-          console.warn(`[Tunnel] cloudflared (PID ${pid}) didn't exit after ${timeoutMs}ms SIGINT — sending SIGKILL`);
-          try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
-        }
-      }
-
-      this.tunnel = null;
-    }
-
-    this._state.url = null;
-    this._state.startedAt = null;
-    this.saveState();
-    this.emit('stopped');
+  /** Force-stop with escalation. Providers internally do SIGINT → SIGKILL. */
+  async forceStop(_timeoutMs?: number): Promise<void> {
+    await this.stop();
   }
 
-  /**
-   * Enable automatic reconnection when the tunnel disconnects unexpectedly.
-   * Uses exponential backoff: 5s, 10s, 20s, ... up to 5 minutes, max 10 attempts.
-   */
-  enableAutoReconnect(): void {
-    this._autoReconnect = true;
-  }
+  enableAutoReconnect(): void { this._autoReconnect = true; }
 
   disableAutoReconnect(): void {
     this._autoReconnect = false;
-    if (this._reconnectTimer) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
-    }
-    this._reconnectAttempt = 0;
+    this.clearBackoffTimer();
   }
 
-  /**
-   * Attempt to reconnect the tunnel with exponential backoff.
-   */
-  private attemptReconnect(): void {
-    if (!this._autoReconnect || this._stopped) return;
-    // Skip if a start is already in progress (e.g., SleepWake handler is restarting)
-    if (this._startPromise) return;
-    if (this._reconnectAttempt >= TunnelManager.MAX_RECONNECT_ATTEMPTS) {
-      console.error(`[Tunnel] Auto-reconnect gave up after ${this._reconnectAttempt} attempts`);
-      this.emit('error', new Error(`Tunnel auto-reconnect failed after ${this._reconnectAttempt} attempts`));
-      return;
-    }
-
-    const delay = Math.min(
-      TunnelManager.BASE_RECONNECT_DELAY_MS * Math.pow(2, this._reconnectAttempt),
-      TunnelManager.MAX_RECONNECT_DELAY_MS,
-    );
-    this._reconnectAttempt++;
-
-    console.log(`[Tunnel] Auto-reconnect attempt ${this._reconnectAttempt}/${TunnelManager.MAX_RECONNECT_ATTEMPTS} in ${delay / 1000}s`);
-
-    this._reconnectTimer = setTimeout(async () => {
-      if (this._stopped) return;
-      try {
-        const url = await this.start();
-        console.log(`[Tunnel] Auto-reconnected: ${url}`);
-        this._reconnectAttempt = 0;
-      } catch (err) {
-        console.error(`[Tunnel] Auto-reconnect failed:`, err instanceof Error ? err.message : err);
-        this.attemptReconnect();
-      }
-    }, delay);
-  }
-
-  /**
-   * Get the full external URL for a local path.
-   * Returns null if tunnel is not connected.
-   */
   getExternalUrl(localPath: string): string | null {
-    if (!this._state.url) return null;
-    const base = this._state.url.replace(/\/$/, '');
+    if (!this._legacyState.url) return null;
+    const base = this._legacyState.url.replace(/\/$/, '');
     const p = localPath.startsWith('/') ? localPath : `/${localPath}`;
     return `${base}${p}`;
   }
 
-  // ── Internal ───────────────────────────────────────────────────
+  // ── Internals ──────────────────────────────────────────────────
 
-  private async ensureBinary(): Promise<void> {
-    if (!fs.existsSync(bin)) {
-      await install(bin);
+  private buildDefaultPool(config: TunnelConfig): TunnelProvider[] {
+    const pool: TunnelProvider[] = [];
+    if (config.token || config.configFile) {
+      pool.push(new CloudflareNamedProvider({
+        token: config.token,
+        configFile: config.configFile,
+        hostname: config.hostname,
+      }));
+    }
+    pool.push(new CloudflareQuickProvider({ port: config.port, stateDir: config.stateDir }));
+    return pool;
+  }
+
+  private async doStart(): Promise<string> {
+    if (!this.config.enabled) throw new Error('tunnel.enabled is false');
+
+    if (this.lifecycle.state === 'idle' || this.lifecycle.state === 'active') {
+      this.lifecycle.startEpisode();
+    }
+
+    if (!this.lifecycle.transition('idle', 'starting')) {
+      if (this.lifecycle.state === 'starting' || this.lifecycle.state === 'active') {
+        if (this._legacyState.url) return this._legacyState.url;
+      }
+      throw new Error(`cannot start: lifecycle in state ${this.lifecycle.state}`);
+    }
+
+    return this.driveTier1();
+  }
+
+  private async driveTier1(): Promise<string> {
+    let lastErr: Error | null = null;
+
+    for (let i = 0; i < this.providers.length; i++) {
+      if (this._stopped) throw new Error('tunnel start aborted: stopped');
+      const provider = this.providers[i];
+      if (!provider) continue;
+      if (provider.tier !== 1) continue; // Tier-2 deferred to PR 4
+
+      const available = await provider.isAvailable().catch(() => false);
+      if (!available) continue;
+
+      try {
+        const handle = await provider.start(this.config.port);
+
+        // Reachability probe BEFORE declaring active.
+        const reachable = await this.probeReachability(handle.url).catch(() => false);
+        if (!reachable) {
+          try { await handle.stop(); } catch { /* best effort */ }
+          this.lifecycle.recordAttempt(provider.name, 'reachability-failed');
+          lastErr = new Error(`reachability-failed: ${provider.name} URL did not respond to /health`);
+          continue;
+        }
+
+        // Success.
+        this.currentHandle = handle;
+        this.currentProviderName = provider.name;
+        this._legacyState.url = handle.url;
+        this._legacyState.startedAt = new Date().toISOString();
+
+        const from = this.lifecycle.state;
+        if (from === 'starting' || from === 'retrying') {
+          this.lifecycle.transition(from, 'active', {
+            activeProvider: provider.name,
+            lastFailureReason: null,
+          });
+        }
+
+        // Persist AFTER the transition so the snapshot reflects 'active'.
+        this.persist();
+
+        this.emit('url', handle.url);
+        this._backoffAttempt = 0;
+        return handle.url;
+      } catch (err) {
+        const reason = classifyFailure(err);
+        this.lifecycle.recordAttempt(provider.name, reason);
+        lastErr = err instanceof Error ? err : new Error(String(err));
+
+        if (this.lifecycle.state === 'starting') {
+          this.lifecycle.transition('starting', 'retrying', {
+            activeProvider: null,
+            lastFailureReason: reason,
+          });
+        }
+      }
+    }
+
+    // All Tier-1 providers exhausted in this attempt round.
+    return this.exhaustedOrBackoff(lastErr);
+  }
+
+  private async exhaustedOrBackoff(lastErr: Error | null): Promise<string> {
+    // Matches the legacy semantics: start() rejects after the FIRST
+    // round of provider attempts fails. The backoff retry runs in the
+    // background — the manager keeps trying without blocking the
+    // caller, and emits 'url' when a later attempt succeeds. This
+    // prevents start() from blocking server.ts boot for the full
+    // 25-minute worst-case exponential window. The original failing
+    // E2E (tests/e2e/tunnel-private-view.test.ts) timed out at the
+    // beforeAll 60s budget because the old draft kept retrying inside
+    // start().
+    const from = this.lifecycle.state;
+    if (from === 'retrying' || from === 'starting') {
+      this.lifecycle.transition(from, 'exhausted', { activeProvider: null });
+    }
+
+    const err = lastErr ?? new Error('all Tier-1 providers failed');
+
+    // Schedule background retry (bounded exponential ladder, then the
+    // indefinite post-exhausted placeholder once the ladder runs out).
+    // Fire-and-forget; if a later attempt succeeds, the 'url' event
+    // fires and downstream subscribers (notifier, dashboard
+    // broadcaster, log line) catch up.
+    if (this._autoReconnect && !this._stopped) {
+      this.scheduleBackgroundRetry();
+    }
+
+    this.emit('error', err);
+    throw err;
+  }
+
+  /**
+   * Background retry — runs the bounded exponential ladder off the
+   * start() promise so initial start() resolves/rejects fast. After
+   * the ladder exhausts, hands off to the indefinite post-exhausted
+   * placeholder (the PR 2 self-heal; PR 6 replaces with the spec's
+   * N-consecutive-success probe).
+   */
+  private scheduleBackgroundRetry(): void {
+    if (this._stopped || !this._autoReconnect) return;
+    if (this._backoffTimer) return; // already scheduled
+
+    if (this._backoffAttempt >= MAX_BACKOFF_ATTEMPTS) {
+      this.schedulePostExhaustedRetry();
+      return;
+    }
+
+    const delay = Math.min(BASE_BACKOFF_MS * Math.pow(2, this._backoffAttempt), MAX_BACKOFF_MS);
+    this._backoffAttempt += 1;
+
+    this._backoffTimer = setTimeout(() => {
+      this._backoffTimer = null;
+      if (this._stopped || !this._autoReconnect) return;
+      const from = this.lifecycle.state;
+      try {
+        if (from === 'exhausted') {
+          this.lifecycle.transition('exhausted', 'starting');
+        } else if (from === 'idle') {
+          this.lifecycle.transition('idle', 'starting');
+        } else if (from === 'retrying') {
+          this.lifecycle.transition('retrying', 'starting');
+        } else {
+          return; // unexpected state; bail
+        }
+      } catch {
+        return; // invalid transition; bail
+      }
+      void this.driveTier1().catch(() => { /* scheduleBackgroundRetry already chained */ });
+    }, delay);
+  }
+
+  private clearBackoffTimer(): void {
+    if (this._backoffTimer) {
+      clearTimeout(this._backoffTimer);
+      this._backoffTimer = null;
+    }
+    this._backoffAttempt = 0;
+  }
+
+  private clearPostExhaustedTimer(): void {
+    if (this._postExhaustedTimer) {
+      clearTimeout(this._postExhaustedTimer);
+      this._postExhaustedTimer = null;
     }
   }
 
-  private startQuickTunnel(): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const localUrl = `http://127.0.0.1:${this.config.port}`;
-
-      try {
-        // Write an empty config to prevent cloudflared from loading
-        // ~/.cloudflared/config.yml, which may contain named tunnel
-        // ingress rules that override the quick tunnel's --url proxy.
-        const emptyConfig = path.join(this.config.stateDir, 'cloudflared-quick.yml');
-        const dir = path.dirname(emptyConfig);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        fs.writeFileSync(emptyConfig, '# Quick tunnel — no ingress rules\n');
-        this.tunnel = Tunnel.quick(localUrl, { '--config': emptyConfig });
-      } catch (err) {
-        reject(new Error(`Failed to start quick tunnel: ${err instanceof Error ? err.message : String(err)}`));
+  /**
+   * Minimum-viable post-exhausted retry (PR 2 self-heal placeholder).
+   * Schedules a single low-frequency probe; on completion (success or
+   * failure) it re-arms itself, so the agent keeps trying to recover
+   * even after the bounded startup-reconnect ladder gives up. PR 6
+   * replaces this with the spec's N-consecutive-success stability gate.
+   */
+  private schedulePostExhaustedRetry(): void {
+    if (this._stopped || !this._autoReconnect) return;
+    if (this._postExhaustedTimer) return; // already scheduled
+    this._postExhaustedTimer = setTimeout(async () => {
+      this._postExhaustedTimer = null;
+      if (this._stopped || !this._autoReconnect) return;
+      // Re-enter from exhausted → starting.
+      const from = this.lifecycle.state;
+      if (from === 'exhausted') {
+        try { this.lifecycle.transition('exhausted', 'starting'); }
+        catch { /* invalid transition — bail */ return; }
+      } else if (from !== 'starting' && from !== 'idle') {
+        // State moved beyond our reach; let the active path handle it.
         return;
       }
-
-      let resolved = false;
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          reject(new Error('Tunnel connection timed out after 30 seconds'));
-        }
-      }, 30_000);
-
-      this.tunnel.once('url', (url: string) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timeout);
-
-        this._state.url = url;
-        this._state.startedAt = new Date().toISOString();
-        this.saveState();
-        this.emit('url', url);
-        resolve(url);
-      });
-
-      this.tunnel.once('connected', (info: { id: string; ip: string; location: string }) => {
-        this._state.connectionId = info.id;
-        this._state.connectionLocation = info.location;
-        this.saveState();
-        this.emit('connected', info);
-      });
-
-      this.tunnel.on('error', (err: Error) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(err);
-        }
-        this.emit('error', err);
-      });
-
-      this.tunnel.on('exit', (code: number | null) => {
-        if (!this._stopped) {
-          this.tunnel = null;
-          this._state.url = null;
-          this.saveState();
-          this.emit('disconnected');
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeout);
-            reject(new Error(`Tunnel process exited with code ${code}`));
-          } else {
-            // Tunnel was running and disconnected unexpectedly — try to reconnect
-            this.attemptReconnect();
-          }
-        }
-      });
-    });
+      this._backoffAttempt = 0;
+      this.driveTier1().then(
+        () => { /* success — 'url' event already fired */ },
+        () => { /* fail — driveTier1 already re-scheduled via this same path */ },
+      );
+    }, POST_EXHAUSTED_RETRY_INTERVAL_MS);
   }
 
-  private startNamedTunnel(): Promise<string> {
-    return new Promise((resolve, reject) => {
-      try {
-        this.tunnel = Tunnel.withToken(this.config.token!);
-      } catch (err) {
-        reject(new Error(`Failed to start named tunnel: ${err instanceof Error ? err.message : String(err)}`));
-        return;
-      }
-
-      let resolved = false;
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          reject(new Error('Named tunnel connection timed out after 30 seconds'));
-        }
-      }, 30_000);
-
-      this.tunnel.once('url', (url: string) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timeout);
-
-        this._state.url = url;
-        this._state.startedAt = new Date().toISOString();
-        this.saveState();
-        this.emit('url', url);
-        resolve(url);
+  /** HTTP probe through the public URL — confirms the link actually serves. */
+  private async probeReachability(url: string): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), REACHABILITY_TIMEOUT_MS);
+      const res = await this.fetcher(`${url.replace(/\/$/, '')}/health`, {
+        signal: controller.signal,
       });
-
-      this.tunnel.once('connected', (info: { id: string; ip: string; location: string }) => {
-        this._state.connectionId = info.id;
-        this._state.connectionLocation = info.location;
-        this.saveState();
-        this.emit('connected', info);
-
-        // For named tunnels, the URL may come from the connection info
-        // rather than the 'url' event, since the URL is pre-configured
-        if (!resolved && this._state.url) {
-          resolved = true;
-          clearTimeout(timeout);
-          resolve(this._state.url);
-        }
-      });
-
-      this.tunnel.on('error', (err: Error) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(err);
-        }
-        this.emit('error', err);
-      });
-
-      this.tunnel.on('exit', (code: number | null) => {
-        if (!this._stopped) {
-          this.tunnel = null;
-          this._state.url = null;
-          this.saveState();
-          this.emit('disconnected');
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeout);
-            reject(new Error(`Named tunnel process exited with code ${code}`));
-          } else {
-            this.attemptReconnect();
-          }
-        }
-      });
-    });
+      clearTimeout(t);
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
-  private startConfigFileTunnel(): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const configFile = this.config.configFile!;
-      const hostname = this.config.hostname;
+  // ── Persistence ──────────────────────────────────────────────────
 
-      if (!fs.existsSync(configFile)) {
-        reject(new Error(`Tunnel config file not found: ${configFile}`));
-        return;
-      }
-
-      // Spawn cloudflared directly with the config file
-      const child = spawn(bin, ['tunnel', '--config', configFile, 'run'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let resolved = false;
-      let stderrBuffer = '';
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          // Named tunnels with config files don't emit a URL — the URL is the hostname
-          if (hostname) {
-            const url = `https://${hostname}`;
-            this._state.url = url;
-            this._state.startedAt = new Date().toISOString();
-            this.saveState();
-            this.emit('url', url);
-            resolve(url);
-          } else {
-            reject(new Error('Named tunnel timed out and no hostname configured'));
-          }
-        }
-      }, 15_000);
-
-      // Watch stderr for connection established messages
-      child.stderr.on('data', (data: Buffer) => {
-        const line = data.toString();
-        stderrBuffer += line;
-
-        // cloudflared logs connection info to stderr
-        if (line.includes('Registered tunnel connection') || line.includes('Connection registered')) {
-          if (!resolved && hostname) {
-            resolved = true;
-            clearTimeout(timeout);
-            const url = `https://${hostname}`;
-            this._state.url = url;
-            this._state.startedAt = new Date().toISOString();
-            this.saveState();
-            this.emit('url', url);
-            resolve(url);
-          }
-        }
-      });
-
-      child.on('error', (err: Error) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          reject(new Error(`Failed to start config-file tunnel: ${err.message}`));
-        }
-      });
-
-      child.on('exit', (code: number | null) => {
-        if (!this._stopped) {
-          this.tunnel = null;
-          this._state.url = null;
-          this.saveState();
-          this.emit('disconnected');
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeout);
-            const errContext = stderrBuffer.slice(-500);
-            reject(new Error(`Config-file tunnel exited with code ${code}: ${errContext}`));
-          } else {
-            this.attemptReconnect();
-          }
-        }
-      });
-
-      // Store reference for cleanup — wrap in a Tunnel-like interface
-      this.tunnel = {
-        stop: () => { child.kill('SIGTERM'); },
-        once: () => {},
-        on: () => {},
-        emit: () => false,
-      } as unknown as Tunnel;
-    });
-  }
-
-  private saveState(): void {
+  private persist(): void {
     try {
       const dir = path.dirname(this.stateFile);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(this.stateFile, JSON.stringify(this._state, null, 2));
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const snap = this.lifecycle.snapshot();
+      snap.lastUrl = this._legacyState.url;
+      fs.writeFileSync(this.stateFile, JSON.stringify(snap, null, 2));
     } catch {
-      // Non-critical — don't crash if state save fails
+      // Non-critical.
+    }
+  }
+
+  private restorePersisted(): void {
+    try {
+      if (!fs.existsSync(this.stateFile)) return;
+      const raw = fs.readFileSync(this.stateFile, 'utf-8');
+      const snap = JSON.parse(raw) as PersistedTunnelState;
+      if (snap && typeof snap === 'object') {
+        this.lifecycle.restoreFrom(snap);
+      }
+    } catch {
+      // Corrupted state file — start fresh.
     }
   }
 }
+
+export type { ProviderFailureReason };
