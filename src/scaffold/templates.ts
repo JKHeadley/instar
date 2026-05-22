@@ -1482,6 +1482,22 @@ Before answering ANY question about my capabilities or architecture from memory 
 2. **If result says "block"** — STOP. You may be working on the wrong project for this topic.
 3. **If result says "warn"** — Pause and verify before proceeding.
 
+### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, the Coherence Gate now reads it on every outbound message review and surfaces the three-rule contract to the value-alignment reviewer:
+
+- **Constraints** are mandatory — violations are flagged with severity \`block\` and the message is blocked.
+- **Goals** are organizational defaults — contradictions warn or block (depending on severity).
+- **Values** shape representation — drift warns.
+- **Tradeoff hierarchy** resolves ties when two values pull in opposite directions; the earlier entry wins.
+
+This means: writing an ORG-INTENT.md file actually changes how the agent's outbound messages are evaluated. Before this wiring, the file existed only as input to offline analyzers (\`instar intent validate\`, \`instar intent reflect\`).
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Validate agent intent against org intent (static analysis): \`instar intent validate\`
+- Inspect the parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
+
 ## Agent Infrastructure
 
 This project uses instar for persistent agent capabilities.
