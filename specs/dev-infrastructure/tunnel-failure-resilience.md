@@ -7,7 +7,7 @@ review-convergence: "2026-05-22T20:30:00Z"
 review-completed-at: "2026-05-22T20:30:00Z"
 review-report: "docs/specs/reports/tunnel-failure-resilience-convergence.md"
 review-status: "converged at iteration 4 (internal iter1 + GPT iter2 + GPT verification iter3 + GPT verification iter4 returned CONVERGED — no new material issues). External Gemini round skipped per operator (local OAuth not viable in this env; Grok unavailable). eli16-overview embedded as the ELI16 Overview section at the top of the convergence report."
-eli16-overview: "docs/specs/reports/tunnel-failure-resilience-convergence.md#eli16-overview"
+eli16-overview: "specs/dev-infrastructure/tunnel-failure-resilience.eli16.md"
 approved: true
 ---
 
