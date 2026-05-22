@@ -18,7 +18,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PolicyEnforcementLayer } from './PolicyEnforcementLayer.js';
 import type { PELResult, PELContext } from './PolicyEnforcementLayer.js';
-import { CoherenceReviewer, type ReviewResult, type ReviewContext } from './CoherenceReviewer.js';
+import { CoherenceReviewer, type ReviewResult, type ReviewContext, type OrgIntentReviewContext } from './CoherenceReviewer.js';
+import { OrgIntentManager } from './OrgIntentManager.js';
 import { GateReviewer, type GateResult } from './reviewers/gate-reviewer.js';
 import { ConversationalToneReviewer } from './reviewers/conversational-tone.js';
 import { ClaimProvenanceReviewer } from './reviewers/claim-provenance.js';
@@ -136,6 +137,14 @@ interface ValueDocCache {
   agentValues: string;
   userValues: string;
   orgValues: string;
+  /**
+   * Structured org intent parsed from ORG-INTENT.md via OrgIntentManager.
+   * Null if ORG-INTENT.md is absent, template-only, or unparseable. When non-null,
+   * reviewers receive constraints/goals/values/tradeoffHierarchy as separate
+   * buckets, enforcing the three-rule contract instead of treating the file as
+   * an undifferentiated values blob.
+   */
+  orgIntent: OrgIntentReviewContext | null;
   loadedAt: number;
 }
 
@@ -339,6 +348,7 @@ export class CoherenceGate {
       agentValues: valueDocs.agentValues || undefined,
       userValues: valueDocs.userValues || undefined,
       orgValues: valueDocs.orgValues || undefined,
+      orgIntent: valueDocs.orgIntent,
       trustLevel: recipientContext.trustLevel,
       relationshipContext: recipientContext.communicationStyle ? {
         communicationStyle: recipientContext.communicationStyle,
@@ -392,7 +402,7 @@ export class CoherenceGate {
         // Reviewer failed — treat as abstain
         abstainCount++;
         const reviewerName = enabledReviewers[i].name;
-        const criticality = this.config.reviewerCriticality?.[reviewerName] ?? 'standard';
+        const criticality = this.resolveCriticality(reviewerName, valueDocs.orgIntent);
         if (criticality === 'high') {
           highCritTimeout = true;
         }
@@ -687,6 +697,29 @@ export class CoherenceGate {
     return this.config.reviewers?.[reviewerName]?.mode ?? 'block';
   }
 
+  /**
+   * Resolve a reviewer's criticality tier, with org-intent-aware defaults.
+   *
+   * When ORG-INTENT.md is present and parseable, `value-alignment` is the
+   * deterministic enforcer of org constraints (mandatory rules from the
+   * three-rule contract). Its timeouts on external channels MUST fail-closed,
+   * so it is auto-promoted to 'high' criticality unless the user has
+   * explicitly overridden the criticality in config.
+   *
+   * For all other reviewers, falls back to the explicit config or 'standard'.
+   */
+  private resolveCriticality(
+    reviewerName: string,
+    orgIntent: OrgIntentReviewContext | null,
+  ): 'critical' | 'high' | 'medium' | 'low' | 'standard' {
+    const explicit = this.config.reviewerCriticality?.[reviewerName];
+    if (explicit) return explicit;
+    if (reviewerName === 'value-alignment' && orgIntent && orgIntent.constraints.length > 0) {
+      return 'high';
+    }
+    return 'standard';
+  }
+
   // ── Channel Configuration ──────────────────────────────────────────
 
   private resolveChannelConfig(channel: string, isExternal: boolean): ChannelReviewConfig {
@@ -817,7 +850,7 @@ export class CoherenceGate {
     return [...(message.match(urlRegex) ?? [])];
   }
 
-  private loadValueDocs(): { agentValues: string; userValues: string; orgValues: string } {
+  private loadValueDocs(): ValueDocCache {
     // Check cache
     if (this.valueDocCache && Date.now() - this.valueDocCache.loadedAt < VALUE_DOC_CACHE_TTL_MS) {
       return this.valueDocCache;
@@ -830,11 +863,26 @@ export class CoherenceGate {
     const userValues = this.extractValueSection(
       path.join(this.stateDir, 'USER.md'),
     );
+
+    // ORG-INTENT.md gets structured parsing via OrgIntentManager so the
+    // three-rule contract (constraints mandatory, goals defaults, values shape)
+    // can be enforced at review time. The flat orgValues blob is retained for
+    // backwards compatibility with custom reviewers that read `orgValues`.
+    const orgIntentManager = new OrgIntentManager(this.stateDir);
+    const parsed = orgIntentManager.parse();
+    const orgIntent: OrgIntentReviewContext | null = parsed ? {
+      name: parsed.name,
+      constraints: parsed.constraints.map(c => c.text),
+      goals: parsed.goals.map(g => g.text),
+      values: parsed.values,
+      tradeoffHierarchy: parsed.tradeoffHierarchy,
+    } : null;
+
     const orgValues = this.extractValueSection(
       path.join(this.stateDir, 'ORG-INTENT.md'),
     );
 
-    this.valueDocCache = { agentValues, userValues, orgValues, loadedAt: Date.now() };
+    this.valueDocCache = { agentValues, userValues, orgValues, orgIntent, loadedAt: Date.now() };
     return this.valueDocCache;
   }
 

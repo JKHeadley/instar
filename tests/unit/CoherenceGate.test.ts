@@ -517,6 +517,174 @@ This should not be included.
     });
   });
 
+  describe('ORG-INTENT.md structured loading (three-rule contract)', () => {
+    // These tests exercise the runtime integration that surfaces ORG-INTENT.md
+    // as structured constraints/goals/values/tradeoffHierarchy to reviewers,
+    // rather than the legacy flat-blob form. See INTENT-ENGINEERING-SPEC.md.
+
+    function writeOrgIntent(content: string) {
+      fs.writeFileSync(path.join(tmpDir, 'ORG-INTENT.md'), content);
+    }
+
+    it('passes structured intent into the value-alignment reviewer prompt when ORG-INTENT.md is present', async () => {
+      writeOrgIntent(`# Organizational Intent: Acme Co
+
+## Constraints (Mandatory)
+- Never quote internal pricing to external contacts
+- Always disclose AI nature on first interaction
+
+## Goals (Defaults)
+- Resolve customer questions on first contact when possible
+
+## Values
+- Honesty over expedience
+
+## Tradeoff Hierarchy
+- Customer trust over resolution speed
+- Compliance over convenience
+`);
+
+      // Capture the prompt sent to the value-alignment reviewer.
+      // Reviewer order from CoherenceGate.initializeReviewers():
+      //   gate, conversational-tone, claim-provenance, settling-detection,
+      //   context-completeness, capability-accuracy, url-validity,
+      //   value-alignment, information-leakage, escalation-resolution
+      // information-leakage skips for primary-user so the value-alignment call
+      // is the last specialist invocation. We just inspect all calls and find
+      // the one that names value-alignment via its anchor preamble.
+      const intel = makeMockIntelligence({ pass: true, severity: 'warn', issue: '', suggestion: '' });
+
+      const gate = createGate(undefined, intel);
+      await gate.evaluate({
+        message: 'Hello',
+        sessionId: 'org-intent-1',
+        stopHookActive: false,
+        context: { channel: 'telegram', isExternalFacing: true, recipientType: 'primary-user' },
+      });
+
+      const allPrompts = (intel.evaluate as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0] as string);
+      const valueAlignmentPrompt = allPrompts.find(p => p.includes('value alignment reviewer'));
+      expect(valueAlignmentPrompt).toBeDefined();
+      // Three-rule contract bucket labels must be present
+      expect(valueAlignmentPrompt).toContain('CONSTRAINTS');
+      expect(valueAlignmentPrompt).toContain('GOALS');
+      expect(valueAlignmentPrompt).toContain('VALUES');
+      expect(valueAlignmentPrompt).toContain('TRADEOFF HIERARCHY');
+      // Actual content from the structured parse
+      expect(valueAlignmentPrompt).toContain('Never quote internal pricing to external contacts');
+      expect(valueAlignmentPrompt).toContain('Customer trust over resolution speed');
+      expect(valueAlignmentPrompt).toContain('Acme Co');
+    });
+
+    it('gracefully degrades when ORG-INTENT.md is absent (no orgIntent block, falls back to empty)', async () => {
+      // No ORG-INTENT.md in tmpDir
+      const intel = makeAllPassIntelligence();
+      const gate = createGate(undefined, intel);
+
+      const result = await gate.evaluate({
+        message: 'Hello',
+        sessionId: 'org-intent-absent',
+        stopHookActive: false,
+        context: { channel: 'direct' },
+      });
+
+      expect(result.pass).toBe(true);
+      // The reviewer prompt should fall back to the sentinel string
+      const allPrompts = (intel.evaluate as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0] as string);
+      const valueAlignmentPrompt = allPrompts.find(p => p.includes('value alignment reviewer'));
+      if (valueAlignmentPrompt) {
+        expect(valueAlignmentPrompt).toContain('No organizational intent provided.');
+      }
+    });
+
+    it('treats template-only ORG-INTENT.md as absent (no structured intent surfaced)', async () => {
+      writeOrgIntent(`# Organizational Intent: <!-- name -->
+
+<!-- This is a template placeholder, nothing real here. -->
+
+## Constraints (Mandatory)
+<!-- list your mandatory constraints -->
+
+## Goals (Defaults)
+<!-- list your default goals -->
+`);
+
+      const intel = makeAllPassIntelligence();
+      const gate = createGate(undefined, intel);
+      await gate.evaluate({
+        message: 'Hello',
+        sessionId: 'org-intent-template',
+        stopHookActive: false,
+        context: { channel: 'direct' },
+      });
+
+      const allPrompts = (intel.evaluate as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0] as string);
+      const valueAlignmentPrompt = allPrompts.find(p => p.includes('value alignment reviewer'));
+      if (valueAlignmentPrompt) {
+        // Template-only means no structured surfacing; prompt should not show real constraint text
+        expect(valueAlignmentPrompt).not.toContain('CONSTRAINTS (mandatory');
+      }
+    });
+
+    it('omits empty buckets from the structured surfacing (only goals present → no CONSTRAINTS section)', async () => {
+      writeOrgIntent(`# Organizational Intent: GoalsOnly Inc
+
+## Goals (Defaults)
+- Be friendly
+`);
+
+      const intel = makeAllPassIntelligence();
+      const gate = createGate(undefined, intel);
+      await gate.evaluate({
+        message: 'Hello',
+        sessionId: 'org-intent-goals-only',
+        stopHookActive: false,
+        context: { channel: 'direct' },
+      });
+
+      const allPrompts = (intel.evaluate as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0] as string);
+      const valueAlignmentPrompt = allPrompts.find(p => p.includes('value alignment reviewer'));
+      expect(valueAlignmentPrompt).toBeDefined();
+      expect(valueAlignmentPrompt).toContain('GOALS (organizational defaults');
+      expect(valueAlignmentPrompt).toContain('Be friendly');
+      // CONSTRAINTS, VALUES, TRADEOFF HIERARCHY rendered sections all absent.
+      // These checks use the exact rendered headers from formatOrgIntent —
+      // not the bare phrases (which also appear in the static instructions).
+      expect(valueAlignmentPrompt).not.toContain('CONSTRAINTS (mandatory — violations MUST block)');
+      expect(valueAlignmentPrompt).not.toContain('TRADEOFF HIERARCHY (earlier wins');
+      expect(valueAlignmentPrompt).not.toContain('VALUES (representation — drift warns)');
+    });
+
+    it('caches structured intent across evaluations within TTL', async () => {
+      writeOrgIntent(`# Organizational Intent: Cache Co
+
+## Constraints (Mandatory)
+- Never share secrets
+`);
+
+      const intel = makeAllPassIntelligence();
+      const gate = createGate(undefined, intel);
+
+      // First evaluation loads + caches
+      await gate.evaluate({ message: 'Hello', sessionId: 's1', stopHookActive: false, context: { channel: 'direct' } });
+      // Mutate the file on disk
+      writeOrgIntent(`# Organizational Intent: Cache Co
+
+## Constraints (Mandatory)
+- Brand new mandate that should NOT appear in cached read
+`);
+      // Second evaluation within the 60-minute TTL still sees the cached version
+      await gate.evaluate({ message: 'Hello again', sessionId: 's2', stopHookActive: false, context: { channel: 'direct' } });
+
+      const allPrompts = (intel.evaluate as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0] as string);
+      const secondEvalPrompts = allPrompts.slice(Math.floor(allPrompts.length / 2));
+      const valueAlignmentPrompt = secondEvalPrompts.find(p => p.includes('value alignment reviewer'));
+      expect(valueAlignmentPrompt).toBeDefined();
+      expect(valueAlignmentPrompt).toContain('Never share secrets');
+      expect(valueAlignmentPrompt).not.toContain('Brand new mandate');
+    });
+  });
+
   describe('URL extraction', () => {
     it('extracts URLs from messages', async () => {
       const gate = createGate();

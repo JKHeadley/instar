@@ -2160,6 +2160,15 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 3. **If result says "warn"** — Pause and verify before proceeding.
 4. **Generate a reflection prompt**: \`POST http://localhost:${port}/coherence/reflect\` — produces a self-verification checklist.
 
+#### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, the Coherence Gate now reads it on every outbound message review and surfaces the three-rule contract to the value-alignment reviewer: **constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Static validation against agent intent: \`instar intent validate\`
+- Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
+
 **Topic-Project Bindings**: Each Telegram topic can be bound to a specific project. When switching topics, verify the binding matches your current working directory.
 - View bindings: \`GET http://localhost:${port}/topic-bindings\`
 - Create binding: \`POST http://localhost:${port}/topic-bindings\` with \`{"topicId": N, "binding": {"projectName": "...", "projectDir": "..."}}\`
@@ -2177,6 +2186,35 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Coherence Gate section');
+    } else if (!content.includes('ORG-INTENT.md (Organizational Intent at Runtime)') && !content.includes('Organizational Intent at Runtime')) {
+      // Coherence Gate section is present but predates the ORG-INTENT runtime
+      // wiring. Append the ORG-INTENT subsection inline after the
+      // "Generate a reflection prompt" line so the agent learns that
+      // ORG-INTENT.md now actually shapes outbound message review.
+      const subsection = `
+
+#### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, the Coherence Gate now reads it on every outbound message review and surfaces the three-rule contract to the value-alignment reviewer: **constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Static validation against agent intent: \`instar intent validate\`
+- Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
+`;
+      // Anchor: insert after "Topic-Project Bindings" header so it lands inside
+      // the Coherence Gate section but before the Project Map subsection.
+      const anchor = content.indexOf('**Topic-Project Bindings**');
+      if (anchor >= 0) {
+        content = content.slice(0, anchor) + subsection + '\n' + content.slice(anchor);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added ORG-INTENT.md runtime subsection to Coherence Gate');
+      } else {
+        // Fallback: append at end if the Topic-Project Bindings anchor moved
+        content += '\n' + subsection;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: appended ORG-INTENT.md runtime subsection (anchor missing, fallback insert)');
+      }
     } else {
       result.skipped.push('CLAUDE.md: Coherence Gate section already present');
     }

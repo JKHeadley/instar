@@ -13,6 +13,24 @@ import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Structured org intent surfaced to reviewers. Mirrors the on-disk three-rule
+ * contract from ORG-INTENT.md: constraints are mandatory, goals are defaults,
+ * values shape representation, tradeoff hierarchy resolves ties.
+ */
+export interface OrgIntentReviewContext {
+  /** Org name from the H1 heading */
+  name: string;
+  /** Mandatory rules — violations MUST block (severity=block, criticality=high) */
+  constraints: string[];
+  /** Default goals — agents may specialize, contradictions warn */
+  goals: string[];
+  /** Values shaping representation/tone */
+  values: string[];
+  /** Tradeoff hierarchy — ordered list resolving ties between values */
+  tradeoffHierarchy: string[];
+}
+
 export interface ReviewResult {
   pass: boolean;
   severity: 'block' | 'warn';
@@ -37,8 +55,18 @@ export interface ReviewContext {
   agentValues?: string;
   /** User values summary from USER.md */
   userValues?: string;
-  /** Org values from ORG-INTENT.md */
+  /**
+   * Org values from ORG-INTENT.md — DEPRECATED flat-blob form, kept for
+   * backwards compatibility with custom reviewers. Prefer `orgIntent`.
+   */
   orgValues?: string;
+  /**
+   * Structured org intent from ORG-INTENT.md. When present, the
+   * three-rule contract (constraints mandatory, goals defaults, values shape)
+   * is surfaced to reviewers as separate buckets instead of one flat blob.
+   * Null when ORG-INTENT.md is absent, template-only, or unparseable.
+   */
+  orgIntent?: OrgIntentReviewContext | null;
   /** Trust level for agent recipients */
   trustLevel?: string;
   /** Relationship context (communicationStyle, formality - no free-text fields) */
