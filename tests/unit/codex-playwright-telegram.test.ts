@@ -106,6 +106,49 @@ describe('buildTelegramAgenticPrompt', () => {
     expect(prompt).not.toMatch(/up to ~120 seconds/);
     expect(prompt).toMatch(/5 MINUTES|5 minutes/);
   });
+
+  it('disables BotFather privacy mode (v1.2.19 fix — bot otherwise can not see group messages)', () => {
+    // Real user (Justin) hit v1.2.18 install where bot was created
+    // but couldn't see his group messages — can_read_all_group_messages
+    // came back false on /getMe. Root cause: BotFather creates bots
+    // with privacy mode ON by default. v1.2.19 prompt drives
+    // /setprivacy → Disable.
+    expect(prompt).toMatch(/\/setprivacy/);
+    expect(prompt).toMatch(/Disable/);
+    expect(prompt).toMatch(/can_read_all_group_messages/);
+    expect(prompt).toMatch(/privacy-not-disabled/);
+  });
+
+  it('enables Forum/Topics mode on the new group (v1.2.19 fix)', () => {
+    // Required for topic threads. Bot API cannot enable Forum mode —
+    // must be done via UI (group settings → Topics toggle).
+    expect(prompt).toMatch(/Forum mode|Topics.*Forum|enable Topics/i);
+    expect(prompt).toMatch(/is_forum/);
+    expect(prompt).toMatch(/forum-mode-not-enabled/);
+  });
+
+  it('creates the 4 canonical system topics with TOPIC_STYLE colors', () => {
+    expect(prompt).toMatch(/Lifeline/);
+    expect(prompt).toMatch(/Updates/);
+    expect(prompt).toMatch(/Dashboard/);
+    expect(prompt).toMatch(/Attention/);
+    // Canonical colors from src/messaging/TelegramAdapter.ts TOPIC_STYLE.
+    expect(prompt).toMatch(/9367192/);  // SYSTEM (Lifeline) — green
+    expect(prompt).toMatch(/7322096/);  // INFO (Updates, Dashboard) — blue
+    expect(prompt).toMatch(/16766590/); // ALERT (Attention) — yellow
+    expect(prompt).toMatch(/createForumTopic/);
+    expect(prompt).toMatch(/topics-create-failed/);
+  });
+
+  it('seeds each topic with an intro message via sendMessage + message_thread_id', () => {
+    expect(prompt).toMatch(/intro message/i);
+    expect(prompt).toMatch(/message_thread_id/);
+    expect(prompt).toMatch(/sendMessage/);
+  });
+
+  it('persists lifelineTopicId in the config write step', () => {
+    expect(prompt).toMatch(/lifelineTopicId/);
+  });
 });
 
 describe('verifyTelegramConfig', () => {

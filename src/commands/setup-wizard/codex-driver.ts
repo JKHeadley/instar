@@ -627,41 +627,143 @@ STEPS:
      AGENTIC_FAILED: token-invalid
    and exit.
 
-10. Tell the user briefly:
-    "Bot's ready. Creating a group chat now and adding the bot."
+10. CRITICAL — disable the bot's privacy mode via BotFather. Without
+    this, the bot can't see normal messages in a group (only direct
+    @mentions and replies to its own messages). New bots have
+    privacy mode ON by default, which BREAKS messaging entirely.
+
+    Tell the user briefly: "Bot's ready. Disabling its privacy mode
+    so it can read messages in the group."
+
+    In the BotFather chat:
+    a. Send /setprivacy
+    b. BotFather lists your bots. Click the bot you just created.
+    c. BotFather asks "Enable or disable privacy?" Click "Disable".
+
+    Verify via the Bot API:
+      curl -s "https://api.telegram.org/bot<TOKEN>/getMe"
+    Confirm result.can_read_all_group_messages === true. If not,
+    retry the Disable step once. If still wrong after the retry,
+    tell the user "Couldn't disable bot privacy — switching to
+    manual." Output AGENTIC_FAILED: privacy-not-disabled and exit.
+
+11. Tell the user briefly:
+    "Creating a group chat now and adding the bot."
     Then create a new group chat:
     a. Click the "new message" / pencil icon.
     b. Choose "New Group".
     c. Search for and add the bot you just created.
     d. Name the group "<basename> + instar".
     e. Create the group.
-    f. Send a message inside the group: "first contact".
 
-11. Fetch the chat ID:
+12. CRITICAL — enable Topics (Forum mode) on the new group. This
+    converts the basic group to a supergroup with topic threads.
+    instar organizes different conversation contexts via topics
+    (Lifeline, Updates, Dashboard, Attention). Without this, all
+    messages collapse into one stream.
+
+    The Bot API CANNOT enable Forum mode — must be done via UI:
+    a. Tell the user briefly: "Enabling topics so we can organize
+       different conversation threads."
+    b. Open the group you just created (click it in the chat list).
+    c. Click the group title at the top to open Group Info.
+    d. Click the pencil/edit icon to edit group settings.
+    e. Find the "Topics" toggle (sometimes labelled "Forum"). Turn
+       it ON.
+    f. Save / confirm.
+
+    Send a probe message in the group's General topic:
+      "first contact"
+    Then verify via Bot API:
       curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates"
-    Pick the result where message.chat.type is "group" or
-    "supergroup". Extract message.chat.id as a string.
+    Confirm message.chat.type === "supergroup" AND
+    message.chat.is_forum === true. The chat.id will have CHANGED
+    from the original basic-group id to a -100-prefixed supergroup
+    id — use this NEW id going forward (call it FORUM_CHAT_ID).
 
-12. Write the config. Read the existing .instar/config.json. Filter
+    If is_forum is not true after 2 retries (enable + re-probe),
+    tell the user "Couldn't enable topic threads — switching to
+    manual." Output AGENTIC_FAILED: forum-mode-not-enabled.
+
+13. Create the 4 system topics. Each via createForumTopic:
+
+    a. Lifeline (color 9367192 — green):
+       curl -s -X POST "https://api.telegram.org/bot<TOKEN>/createForumTopic" \\
+         -H 'Content-Type: application/json' \\
+         -d '{"chat_id": "<FORUM_CHAT_ID>",
+              "name": "🛡️ Lifeline",
+              "icon_color": 9367192}'
+       Capture result.message_thread_id as LIFELINE_TOPIC_ID.
+
+    b. Updates (color 7322096 — blue):
+       Same call with name "📢 Updates", icon_color 7322096.
+       Capture as UPDATES_TOPIC_ID.
+
+    c. Dashboard (color 7322096 — blue):
+       Same with name "📊 Dashboard". Capture as DASHBOARD_TOPIC_ID.
+
+    d. Attention (color 16766590 — yellow):
+       Same with name "🔔 Attention". Capture as ATTENTION_TOPIC_ID.
+
+    If any createForumTopic call returns !ok, tell the user
+    "Couldn't create the system topics — switching to manual."
+    Output AGENTIC_FAILED: topics-create-failed and exit.
+
+14. Seed each topic with one short, friendly intro message via
+    sendMessage + message_thread_id. Use the agent's first-person
+    voice. The agent's name is the basename of the project dir
+    (e.g. "codey" for /Users/.../instar-codey).
+
+    a. Lifeline (LIFELINE_TOPIC_ID):
+       "Hey 👋 This is the Lifeline — the main channel between us.
+       Anything that doesn't fit in another topic, send it here."
+
+    b. Updates (UPDATES_TOPIC_ID):
+       "Updates is where I'll post automated status — job runs,
+       sync notifications, anything informational that doesn't
+       need a response."
+
+    c. Dashboard (DASHBOARD_TOPIC_ID):
+       "Dashboard is where I'll post the link to my web dashboard
+       once a tunnel is up. You can monitor sessions from your
+       phone."
+
+    d. Attention (ATTENTION_TOPIC_ID):
+       "Attention is for things you need to look at — failed jobs,
+       missing credentials, anything urgent. I'll only post here
+       when something actually needs you."
+
+    All four via:
+      curl -s -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" \\
+        -H 'Content-Type: application/json' \\
+        -d '{"chat_id": "<FORUM_CHAT_ID>",
+             "message_thread_id": <TOPIC_ID>,
+             "text": "<intro text>"}'
+
+15. Write the config. Read the existing .instar/config.json. Filter
     out any existing { type: "telegram" } entries. Push:
       { type: "telegram", enabled: true,
-        config: { token: "<TOKEN>", chatId: "<CHAT_ID>",
-                  pollIntervalMs: 2000, stallTimeoutMinutes: 5 } }
+        config: {
+          token: "<TOKEN>",
+          chatId: "<FORUM_CHAT_ID>",
+          lifelineTopicId: <LIFELINE_TOPIC_ID>,
+          pollIntervalMs: 2000,
+          stallTimeoutMinutes: 5
+        } }
     Write the file back (atomic-ish: tmp file + rename is fine).
 
-13. Verify your write succeeded by re-reading the file and confirming
-    the messaging entry is present with both fields populated. If
-    not, tell the user briefly:
-      "Couldn't save the Telegram config — switching to manual."
-    Then output:
+16. Verify your write succeeded by re-reading the file and confirming
+    the messaging entry has token, chatId, AND lifelineTopicId all
+    populated. If not, tell the user "Couldn't save the Telegram
+    config — switching to manual." Output:
       AGENTIC_FAILED: config-write-failed
     and exit.
 
-14. Tell the user briefly:
-    "Telegram is connected. From here on, your agent will message
-    you in that group."
-    Then exit cleanly. The caller will verify the config and
-    proceed with the rest of the wizard.
+17. Tell the user briefly:
+    "Telegram is connected with the bot, the group, and the four
+    system topics (Lifeline, Updates, Dashboard, Attention). From
+    here on, your agent will message you in the Lifeline topic."
+    Then exit cleanly.
 
 FAILURE MODE: at ANY step you cannot recover from, FIRST tell the
 user in plain English what happened (one sentence, no jargon), THEN

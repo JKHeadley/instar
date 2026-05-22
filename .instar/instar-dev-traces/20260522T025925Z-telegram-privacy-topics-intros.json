@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/telegram-privacy-topics-intros.md",
+  "artifactPath": "upgrades/side-effects/fix-telegram-privacy-topics-intros.md",
+  "artifactSha256": "25c6fafcd46f09975324924101e90d6ede16b35500038eecfafc73abf44e3dfc",
+  "coveredFiles": [
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/codex-playwright-telegram.test.ts",
+    "specs/dev-infrastructure/telegram-privacy-topics-intros.md",
+    "specs/dev-infrastructure/telegram-privacy-topics-intros.eli16.md",
+    "docs/specs/reports/telegram-privacy-topics-intros-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-telegram-privacy-topics-intros.md"
+  ],
+  "writtenAt": "2026-05-22T02:59:25Z",
+  "agent": "echo",
+  "summary": "Telegram agentic prompt now disables bot privacy via /setprivacy, enables Forum mode on group via UI (re-fetches new -100 chatId), creates 4 TOPIC_STYLE-aligned system topics (Lifeline/Updates/Dashboard/Attention) via Bot API, seeds each with first-person intro, persists lifelineTopicId. 5 new tests + 20 existing all pass. Ships v1.2.19."
+}
