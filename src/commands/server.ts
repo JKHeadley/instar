@@ -4140,6 +4140,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         getTopicForSession: telegram
           ? (tmuxSession) => telegram!.getTopicForSession(tmuxSession)
           : undefined,
+        // When SemanticMemory is available, the sentinel materializes
+        // entities + relationships extracted by the digest LLM call into
+        // the knowledge graph. Without this wire, digests still persist
+        // with `entities: []` — graceful degradation.
+        semanticMemory: semanticMemory ?? undefined,
       });
 
       sessionManager.on('sessionComplete', (session) => {
@@ -4152,7 +4157,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       });
 
-      console.log(pc.green('  Episodic memory sentinel enabled (LLM-powered digestion)'));
+      const semStatus = semanticMemory ? 'with entity extraction' : 'digests only (no SemanticMemory)';
+      console.log(pc.green(`  Episodic memory sentinel enabled (LLM-powered digestion, ${semStatus})`));
     }
 
     // Initialize WorkingMemoryAssembler — token-budgeted context assembly for session-start hooks.

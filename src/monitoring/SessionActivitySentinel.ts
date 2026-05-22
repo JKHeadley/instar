@@ -31,6 +31,8 @@ import type { IntelligenceProvider } from '../core/types.js';
 import { EpisodicMemory, type ActivityDigest, type SessionSynthesis, type SentinelState } from '../memory/EpisodicMemory.js';
 import { ActivityPartitioner, type TelegramLogEntry, type ActivityUnit } from '../memory/ActivityPartitioner.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import type { SemanticMemory } from '../memory/SemanticMemory.js';
+import type { EntityType, RelationType } from '../core/types.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -47,7 +49,34 @@ export interface SentinelConfig {
   getTopicForSession?: (tmuxSession: string) => number | null;
   /** Max retries before archiving pending content (default: 3) */
   maxRetries?: number;
+  /**
+   * Optional SemanticMemory instance. When provided, the digest LLM is asked
+   * to also extract typed entities + relationships, and those are materialized
+   * into the knowledge graph with provenance back to the source session.
+   * When absent, digests are persisted with `entities: []` — graceful
+   * degradation.
+   */
+  semanticMemory?: SemanticMemory;
 }
+
+/** Shape of a single entity extracted from a digest LLM response. */
+interface ExtractedEntity {
+  type: EntityType;
+  name: string;
+  content: string;
+  relationships: Array<{ to: string; relation: RelationType }>;
+}
+
+/** Valid entity types (must match EntityType in src/core/types.ts). */
+const VALID_ENTITY_TYPES: readonly EntityType[] = [
+  'fact', 'person', 'project', 'tool', 'pattern', 'decision', 'lesson',
+];
+
+/** Valid relation types (must match RelationType in src/core/types.ts). */
+const VALID_RELATION_TYPES: readonly RelationType[] = [
+  'related_to', 'built_by', 'learned_from', 'depends_on', 'supersedes',
+  'contradicts', 'part_of', 'used_in', 'knows_about', 'caused', 'verified_by',
+];
 
 export interface SentinelReport {
   scannedAt: string;
@@ -257,6 +286,27 @@ export class SessionActivitySentinel {
     const parsed = this.parseDigestResponse(response);
     if (!parsed) return null;
 
+    // Materialize extracted entities into SemanticMemory when wired.
+    // Failures here MUST NOT block digest persistence — the digest is still
+    // useful as a summary record even if the entity graph can't be populated
+    // for this particular unit. The digest's `entities: []` field falls back
+    // to an empty array on any materialization error.
+    let entityIds: string[] = [];
+    if (this.config.semanticMemory && parsed.entities.length > 0) {
+      try {
+        entityIds = this.materializeEntities(session.id, parsed.entities);
+      } catch (err) {
+        // @silent-fallback-ok — entity extraction is best-effort; the
+        // digest is the canonical record. Log and continue so future scans
+        // get another chance to extract entities from related content.
+        console.warn(
+          `[ActivitySentinel] entity materialization failed for session ${session.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+
     const digestId = this.episodicMemory.saveDigest({
       sessionId: session.id,
       sessionName: session.name,
@@ -265,7 +315,7 @@ export class SessionActivitySentinel {
       telegramTopicId,
       summary: parsed.summary,
       actions: parsed.actions,
-      entities: [],  // Entity extraction is a separate step (future)
+      entities: entityIds,
       learnings: parsed.learnings,
       significance: parsed.significance,
       themes: parsed.themes,
@@ -273,6 +323,84 @@ export class SessionActivitySentinel {
     });
 
     return this.episodicMemory.getDigest(session.id, digestId)!;
+  }
+
+  /**
+   * Materialize extracted entities into SemanticMemory.
+   *
+   * Two-pass algorithm:
+   *   1. For each entity, dedupe against the existing graph via findByName.
+   *      If the entity exists, reuse its ID. Otherwise call remember() to
+   *      create it. Build a name→id map covering both reused and newly-created
+   *      entities in this batch.
+   *   2. For each entity's relationships, resolve the target by name. Check
+   *      the batch map first (intra-digest references), then findByName for
+   *      cross-digest references. Unresolved targets are dropped silently —
+   *      they'll naturally resolve when a future digest mentions both names.
+   *
+   * Confidence is set to 0.7 — matching the MEMORY.md migration default. This
+   * reflects observation-grade certainty (the LLM extracted from real
+   * conversation content), not user-asserted certainty (which would be 0.95).
+   *
+   * Returns the array of entity IDs (existing + newly-created) for
+   * traceability via ActivityDigest.entities.
+   */
+  private materializeEntities(
+    sessionId: string,
+    entities: ExtractedEntity[],
+  ): string[] {
+    const sm = this.config.semanticMemory;
+    if (!sm) return [];
+
+    const now = new Date().toISOString();
+    const sourceTag = `session:${sessionId}`;
+    const nameToId = new Map<string, string>();
+    const allIds: string[] = [];
+
+    // Pass 1 — remember entities, build name→id map.
+    for (const e of entities) {
+      const existing = sm.findByName(e.name, e.type);
+      let id: string;
+      if (existing) {
+        id = existing.id;
+      } else {
+        id = sm.remember({
+          type: e.type,
+          name: e.name,
+          content: e.content,
+          confidence: 0.7,
+          lastVerified: now,
+          source: sourceTag,
+          sourceSession: sessionId,
+          tags: [],
+        });
+      }
+      nameToId.set(e.name.toLowerCase(), id);
+      allIds.push(id);
+    }
+
+    // Pass 2 — connect relationships. Resolve targets via batch map first,
+    // then fall through to the cross-digest lookup.
+    for (const e of entities) {
+      const fromId = nameToId.get(e.name.toLowerCase());
+      if (!fromId) continue;
+      for (const rel of e.relationships) {
+        const targetKey = rel.to.toLowerCase();
+        let toId = nameToId.get(targetKey);
+        if (!toId) {
+          const found = sm.findByName(rel.to);
+          if (found) {
+            toId = found.id;
+            nameToId.set(targetKey, toId);
+          }
+        }
+        if (!toId) continue;  // unresolved cross-digest target — drop
+        if (toId === fromId) continue;  // self-loops aren't meaningful here
+        sm.connect(fromId, toId, rel.relation, `digest:${sessionId}`);
+      }
+    }
+
+    return allIds;
   }
 
   private buildDigestPrompt(session: Session, unit: ActivityUnit): string {
@@ -304,7 +432,17 @@ export class SessionActivitySentinel {
     lines.push('  "actions": ["key action 1", "key action 2"],');
     lines.push('  "learnings": ["insight or lesson learned"],');
     lines.push('  "significance": 5,');
-    lines.push('  "themes": ["topic1", "topic2"]');
+    lines.push('  "themes": ["topic1", "topic2"],');
+    lines.push('  "entities": [');
+    lines.push('    {');
+    lines.push('      "type": "decision",');
+    lines.push('      "name": "short canonical name",');
+    lines.push('      "content": "1-3 sentence description with enough context to recall later",');
+    lines.push('      "relationships": [');
+    lines.push('        {"to": "other entity name", "relation": "part_of"}');
+    lines.push('      ]');
+    lines.push('    }');
+    lines.push('  ]');
     lines.push('}');
     lines.push('');
     lines.push('RULES:');
@@ -312,6 +450,13 @@ export class SessionActivitySentinel {
     lines.push('- themes are 1-3 word topic tags');
     lines.push('- actions are specific: "committed migration engine", not "wrote code"');
     lines.push('- learnings are insights, not descriptions: "FTS5 requires sync triggers", not "worked on FTS5"');
+    lines.push('- entities are durable things worth remembering across sessions: people mentioned, projects discussed, decisions made, tools introduced, patterns observed, lessons learned, hard facts. NOT every noun — only what an agent would want to recall weeks later.');
+    lines.push('- entity type MUST be one of: fact, person, project, tool, pattern, decision, lesson');
+    lines.push('- entity name is short and canonical (the form you would use to refer back to it)');
+    lines.push('- entity content captures enough context to ground a future recall (not just the name)');
+    lines.push('- relationship "to" references another entity by its name (must match one in this same entities array or a prior digest)');
+    lines.push('- relation MUST be one of: related_to, built_by, learned_from, depends_on, supersedes, contradicts, part_of, used_in, knows_about, caused, verified_by');
+    lines.push('- omit the entities array entirely or use [] if nothing in this activity unit is worth durable memory');
 
     return lines.join('\n');
   }
@@ -322,6 +467,7 @@ export class SessionActivitySentinel {
     learnings: string[];
     significance: number;
     themes: string[];
+    entities: ExtractedEntity[];
   } | null {
     try {
       // Extract JSON from response (may have surrounding text)
@@ -336,11 +482,45 @@ export class SessionActivitySentinel {
         learnings: Array.isArray(parsed.learnings) ? parsed.learnings.map(String) : [],
         significance: Math.min(10, Math.max(1, Number(parsed.significance) || 5)),
         themes: Array.isArray(parsed.themes) ? parsed.themes.map(String) : [],
+        entities: this.parseExtractedEntities(parsed.entities),
       };
     } catch {
       // @silent-fallback-ok — LLM response may not be valid JSON; caller handles null gracefully
       return null;
     }
+  }
+
+  /**
+   * Validate and normalize the entities array from the LLM response.
+   *
+   * Malformed entries are dropped (logged at warn level) rather than failing
+   * the whole digest. The digest summary remains useful even when entity
+   * extraction degrades. Type and relation values not in the enums are
+   * filtered out at this step rather than at materialization, so the
+   * SemanticMemory.remember() call never receives an invalid type.
+   */
+  private parseExtractedEntities(raw: unknown): ExtractedEntity[] {
+    if (!Array.isArray(raw)) return [];
+    const out: ExtractedEntity[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue;
+      const o = item as Record<string, unknown>;
+      const type = String(o.type ?? '').toLowerCase() as EntityType;
+      const name = String(o.name ?? '').trim();
+      const content = String(o.content ?? '').trim();
+      if (!name || !content) continue;
+      if (!VALID_ENTITY_TYPES.includes(type)) continue;
+      const relationships = Array.isArray(o.relationships)
+        ? (o.relationships as Array<Record<string, unknown>>)
+            .map((r) => ({
+              to: String(r?.to ?? '').trim(),
+              relation: String(r?.relation ?? '').toLowerCase() as RelationType,
+            }))
+            .filter((r) => r.to && VALID_RELATION_TYPES.includes(r.relation))
+        : [];
+      out.push({ type, name, content, relationships });
+    }
+    return out;
   }
 
   // ─── Session Synthesis ──────────────────────────────────────────

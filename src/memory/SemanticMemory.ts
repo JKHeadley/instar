@@ -1397,6 +1397,33 @@ export class SemanticMemory {
     return row ? rowToEntity(row) : null;
   }
 
+  /**
+   * Find an entity by case-insensitive name match, optionally scoped by type.
+   *
+   * Used by the activity-digest entity-extraction pipeline to dedupe across
+   * digests — if "Tom Southam" was remembered in digest N, digest N+1's
+   * mention of the same name resolves to the existing entity instead of
+   * creating a duplicate. Type scoping prevents accidental cross-type
+   * collisions (e.g., a `tool` named "React" must not collide with a
+   * `pattern` of the same name).
+   *
+   * Returns the earliest match by created_at, or null. The current schema
+   * doesn't have a soft-delete column; if soft-deletes land later this
+   * method should add a deleted_at IS NULL filter.
+   */
+  findByName(name: string, type?: EntityType): MemoryEntity | null {
+    const db = this.ensureOpen();
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    const sql = type
+      ? 'SELECT * FROM entities WHERE LOWER(name) = LOWER(?) AND type = ? ORDER BY created_at ASC LIMIT 1'
+      : 'SELECT * FROM entities WHERE LOWER(name) = LOWER(?) ORDER BY created_at ASC LIMIT 1';
+    const row = type
+      ? (db.prepare(sql).get(trimmed, type) as EntityRow | undefined)
+      : (db.prepare(sql).get(trimmed) as EntityRow | undefined);
+    return row ? rowToEntity(row) : null;
+  }
+
   // ─── Search ─────────────────────────────────────────────────────
 
   /**
