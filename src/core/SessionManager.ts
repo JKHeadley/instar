@@ -780,10 +780,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // INSTAR_FRAMEWORK env. Defaults to claude-code for back-compat.
     const headlessFramework = resolveInteractiveFramework({
       perCall: options.framework,
-      // SessionManagerConfig has no top-level framework field; agent-level
-      // default lives in INSTAR_FRAMEWORK env (set at server boot from
-      // the agent's intelligence config). Per-call wins; env is fallback.
-      configFramework: undefined,
+      // config.framework is the agent's resolved runtime framework
+      // (derived at load from sessions.framework | enabledFrameworks[0]
+      // | INSTAR_FRAMEWORK). Per-call wins, then config, then env.
+      configFramework: this.config.framework,
       envFramework: frameworkFromEnv(),
     });
     const headlessBinaryPath =
@@ -1469,11 +1469,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Generate session ID before tmux spawn so we can pass it as env var
     const interactiveSessionId = this.generateId();
 
-    // Resolve which framework this session runs under (per-call override
-    // wins; otherwise default to claude-code). Pick the right binary
-    // path; fall back to the legacy claudePath when the framework-binary
-    // map isn't populated.
-    const framework: IntelligenceFramework = options?.framework ?? 'claude-code';
+    // Resolve which framework this session runs under. Precedence:
+    //   1. per-call override (options.framework)
+    //   2. the agent's resolved runtime framework (config.framework,
+    //      derived at load from sessions.framework | enabledFrameworks[0]
+    //      | INSTAR_FRAMEWORK)
+    //   3. INSTAR_FRAMEWORK env (defense-in-depth if config.framework
+    //      wasn't populated by an older Config.load)
+    //   4. 'claude-code' (historical default)
+    // Before config.framework existed this hardcoded 'claude-code',
+    // which made a codex-cli-only agent spawn a Claude session every
+    // time the user messaged it (the interactive path is what handles
+    // Telegram/Slack messages).
+    const framework: IntelligenceFramework = resolveInteractiveFramework({
+      perCall: options?.framework,
+      configFramework: this.config.framework,
+      envFramework: frameworkFromEnv(),
+    });
     const binaryPath =
       this.config.frameworkBinaryPaths?.[framework]
       ?? this.config.claudePath;

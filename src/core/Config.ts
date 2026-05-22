@@ -287,12 +287,25 @@ export function checkFrameworkPrerequisite(
 export function resolveConfiguredFramework(
   configValue: 'claude-code' | 'codex-cli' | undefined,
   envValue: string | undefined,
+  enabledFrameworks?: ('claude-code' | 'codex-cli')[],
 ): 'claude-code' | 'codex-cli' {
+  // Precedence:
+  //   1. sessions.framework (explicit per-install runtime override)
+  //   2. INSTAR_FRAMEWORK env (explicit runtime override for this boot)
+  //   3. enabledFrameworks[0] (the persisted install choice the wizard
+  //      writes — this is what a codex-cli-only agent actually has set;
+  //      added in the framework-spawn-portability fix so the runtime
+  //      honors the wizard's framework choice even when sessions.framework
+  //      and the env are both unset)
+  //   4. 'claude-code' (historical default)
   if (configValue === 'claude-code' || configValue === 'codex-cli') {
     return configValue;
   }
   const env = envValue?.trim().toLowerCase();
   if (env === 'codex-cli' || env === 'codex') return 'codex-cli';
+  if (env === 'claude-code' || env === 'claude') return 'claude-code';
+  const first = enabledFrameworks?.[0];
+  if (first === 'claude-code' || first === 'codex-cli') return first;
   return 'claude-code';
 }
 
@@ -574,6 +587,12 @@ export function loadConfig(projectDir?: string): InstarConfig {
       | 'codex-cli'
       | undefined,
     process.env['INSTAR_FRAMEWORK'],
+    // The wizard/init persists the framework choice as top-level
+    // enabledFrameworks. Without this third input, a codex-cli-only
+    // agent (sessions.framework + INSTAR_FRAMEWORK both unset) would
+    // resolve to claude-code and spawn Claude sessions on every
+    // message — the framework-portability bug.
+    fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli')[] | undefined,
   );
   const claudePathDetected = fileConfig.sessions?.claudePath || detectClaudePath();
   const codexPathDetected = detectCodexPath();
@@ -610,6 +629,10 @@ export function loadConfig(projectDir?: string): InstarConfig {
       ...(claudePathDetected ? { 'claude-code': claudePathDetected } : {}),
       ...(codexPathDetected ? { 'codex-cli': codexPathDetected } : {}),
     },
+    // The resolved runtime framework. Both spawn paths read this as
+    // the default when no per-call framework override is given, so a
+    // codex-cli agent spawns Codex on EVERY path (jobs + messages).
+    framework: configuredFramework,
     projectDir: resolvedProjectDir,
     maxSessions: fileConfig.sessions?.maxSessions ?? DEFAULT_MAX_SESSIONS,
     protectedSessions: fileConfig.sessions?.protectedSessions || [`${projectName}-server`],

@@ -96,6 +96,17 @@ export interface SessionManagerConfig {
    * subscription-safe default.
    */
   frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string };
+  /**
+   * The agent's resolved runtime framework — the single source of
+   * truth for which CLI a spawned session uses when no per-call
+   * override is given. Derived at config-load time from
+   * (sessions.framework | enabledFrameworks[0] | INSTAR_FRAMEWORK |
+   * 'claude-code'). Both spawnSession and spawnInteractiveSession
+   * consult this so a codex-cli-only agent spawns Codex sessions on
+   * EVERY path — scheduled jobs AND user messages. Before this
+   * field existed, spawnInteractiveSession hardcoded 'claude-code',
+   * so messaging a Codex-only agent spawned a Claude session. */
+  framework?: 'claude-code' | 'codex-cli';
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */
