@@ -62,16 +62,16 @@ instar add quota
 
 ## What Happens Next
 
-With default settings, your agent will:
+With default settings, your agent ships with fourteen built-in jobs that give it a circadian rhythm of self-maintenance. A sample of what runs:
 
-- **Every 5 minutes**: Run a health check (Haiku)
-- **Every 2 hours**: Self-diagnose infrastructure (Sonnet)
-- **Every 4 hours**: Reflect on recent work (Sonnet), check commitments (Haiku)
-- **Every 6 hours**: Review evolution proposals (Sonnet), retry failed feedback (Haiku)
-- **Every 8 hours**: Harvest insights from learnings (Sonnet)
-- **Daily**: Review stale relationships (Sonnet)
+- **Every 5 minutes**: Health check (Haiku) + commitment detection (Haiku)
+- **Every 4 hours**: Reflection on recent work (Opus) + evolution overdue check (Haiku)
+- **Every 6 hours**: Evolution proposal evaluate (Sonnet) and implement
+- **Every 8 hours**: Insight harvest from learnings (Sonnet)
+- **Daily**: Review stale relationships (Sonnet) + identity review
+- **On a schedule**: Five `overseer-*` jobs (development, guardian, infrastructure, learning, maintenance) that watch over different facets of the agent's life
 
-These [default jobs](/reference/default-jobs) give your agent a circadian rhythm -- regular self-maintenance without your intervention.
+See the [default jobs reference](/reference/default-jobs) for the complete list with cron schedules and supervision tiers.
 
 ## Next Steps
 

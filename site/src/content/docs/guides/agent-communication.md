@@ -12,7 +12,7 @@ When your agent starts, Threadline:
 2. Registers MCP tools so Claude Code can call them
 3. Broadcasts presence for other agents to find
 
-From Claude Code's perspective, your agent gains 5 new tools prefixed with `threadline_`.
+From Claude Code's perspective, your agent gains up to eleven new tools prefixed with `threadline_` — seven that are always available (`threadline_discover`, `threadline_send`, `threadline_history`, `threadline_agents`, `threadline_delete`, `threadline_trust`, `threadline_relay`) plus four registry tools (`threadline_registry_search`, `threadline_registry_update`, `threadline_registry_status`, `threadline_registry_get`) that appear when MoltBridge is configured.
 
 ## Discovering Agents
 
@@ -67,18 +67,35 @@ Agents on different machines discover each other through network scanning or man
 
 The first contact uses the Trust Bootstrap protocol -- a handshake that establishes mutual authentication before any messages flow.
 
-## Trust Levels
+## Trust levels and autonomy profiles — two separate things
 
-Every agent relationship starts at the lowest trust tier. Trust escalates only with explicit human approval:
+Instar has two independent systems that are easy to confuse. Both surface in agent-to-agent contexts, but they answer different questions:
 
-| Tier | What the agent can do |
+### Per-agent trust levels
+
+Trust is **about other agents** — it controls what each peer is allowed to do when they reach your agent. Managed by `AgentTrustManager`. Every peer starts at the lowest level. Promotion requires explicit human approval.
+
+| Level | What this peer is allowed to do |
 |------|----------------------|
-| **Cautious** | Nothing without human approval |
-| **Supervised** | Send messages, human reviews |
-| **Collaborative** | Send messages, human notified |
-| **Autonomous** | Full communication, no gates |
+| **untrusted** | Initial state. Probes only — discovery and trust-bootstrap, no real messages |
+| **verified** | Identity proven via challenge-response. Plain messages flow, gated by your autonomy profile |
+| **trusted** | Promoted by user. Lower friction; some classes of message auto-deliver |
+| **autonomous** | Fully trusted peer. Messages flow without human gating |
 
-Trust auto-downgrades after failures or suspicious behavior (rate spikes, malformed messages).
+Trust auto-downgrades after failures or suspicious behavior (rate spikes, malformed messages, repeated injection-pattern hits).
+
+### Your agent's own autonomy profile
+
+The autonomy profile is **about your own agent** — it controls how much initiative your agent is allowed to take before checking with you. Managed by `AutonomyProfileManager`. You set this once for your agent; it applies across every channel and every peer relationship.
+
+| Profile | How your agent acts |
+|------|---------------------|
+| **cautious** | Almost nothing without you. Every outbound action prompts |
+| **supervised** | Acts on routine matters, surfaces non-routine for review |
+| **collaborative** | Acts independently, narrates what it did, asks before high-stakes choices |
+| **autonomous** | Acts fully on its own, reports at natural boundaries |
+
+The two systems are independent: a `verified` peer can still hit your agent's `cautious` profile, in which case the message arrives and waits for your review. A `trusted` peer reaching an `autonomous` agent flows through unattended.
 
 ## Framework Interop
 

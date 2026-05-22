@@ -101,10 +101,11 @@ An agent that forgets what you discussed yesterday, doesn't recognize someone it
 | Feature | Description | Docs |
 |---------|-------------|------|
 | **Job Scheduler** | Cron-based tasks with priority levels, model tiering, and quota awareness | [→](https://instar.sh/features/scheduler/) |
-| **Telegram** | Two-way messaging via forum topics. Each topic maps to a Claude session | [→](https://instar.sh/features/telegram/) |
-| **WhatsApp** | Full messaging via local Baileys library. No cloud dependency | [→](https://instar.sh/features/whatsapp/) |
+| **Telegram** | Two-way messaging via forum topics. Each topic maps to a Claude session. Default GFM-to-HTML markdown formatter (v1.1.0+) | [→](https://instar.sh/features/telegram/) |
+| **WhatsApp** | Full messaging via local Baileys library or WhatsApp Business API webhook. No cloud dependency in Baileys mode | [→](https://instar.sh/features/whatsapp/) |
 | **iMessage** | Native macOS messaging via Messages.app database polling + `imsg` CLI. [Setup guide](#imessage-setup-macos) | |
-| **Lifeline** | Persistent supervisor. Detects crashes, auto-recovers, queues messages | [→](https://instar.sh/features/lifeline/) |
+| **Slack** | Two-way messaging via Slack adapter. Channel and DM routing, eight HTTP routes, dedicated CLI | [→](https://instar.sh/features/slack/) |
+| **Lifeline** | Persistent supervisor. Detects crashes, auto-recovers, queues messages, version-skew handling (v1.1.3+) | [→](https://instar.sh/features/lifeline/) |
 | **Conversational Memory** | Per-topic SQLite with FTS5, rolling summaries, context re-injection | [→](https://instar.sh/features/memory/) |
 | **Evolution System** | Proposals, learnings, gap tracking, commitment follow-through | [→](https://instar.sh/features/evolution/) |
 | **Relationships** | Cross-platform identity resolution, significance scoring, context injection | [→](https://instar.sh/features/relationships/) |
@@ -113,19 +114,21 @@ An agent that forgets what you discussed yesterday, doesn't recognize someone it
 | **Intent Alignment** | Decision journaling, drift detection, organizational constraints | [→](https://instar.sh/features/intent/) |
 | **Multi-Machine** | Ed25519/X25519 crypto identity, encrypted sync, automatic failover | [→](https://instar.sh/features/multi-machine/) |
 | **Serendipity Protocol** | Sub-agents capture out-of-scope discoveries without breaking focus. HMAC-signed, secret-scanned | [→](https://instar.sh/features/serendipity/) |
-| **Threadline Protocol** | Agent-to-agent conversations with canonical identity, three-layer trust model, authorization policy, Ed25519 invitations, Sybil protection, MoltBridge network discovery, rich agent profiles (auto-compiled from agent data with human review gate), discovery waterfall, message security, tamper-proof audit logging, framework-agnostic interop, and persistent listener daemon (always-on relay connection, pipe-mode sessions, sub-30s cross-machine failover). 2,324 tests across 104 test files | [→](https://instar.sh/features/threadline/) |
+| **Threadline Protocol** | Agent-to-agent conversations with canonical identity, three-layer trust model, authorization policy, Ed25519 invitations, Sybil protection, MoltBridge network discovery, rich agent profiles (auto-compiled from agent data with human review gate), discovery waterfall, message security, tamper-proof audit logging, framework-agnostic interop, persistent listener daemon (always-on relay connection, pipe-mode sessions, sub-30s cross-machine failover), eleven MCP tools (seven core + four registry-conditional). 80 modules, roughly 3,800 test cases across 74 dedicated test files plus 125 cross-cutting | [→](https://instar.sh/features/threadline/) |
 | **Self-Healing** | LLM-powered stall detection, session recovery, promise tracking | [→](https://instar.sh/features/self-healing/) |
 | **AutoUpdater** | Built-in update engine. Checks npm, auto-applies, self-restarts | [→](https://instar.sh/features/autoupdater/) |
 | **Build Pipeline** | `/build` skill with worktree isolation, 6-phase pipeline, quality gates, stop-hook enforcement | |
-| **Behavioral Hooks** | 9 automatic hooks: command guards, safety gates, identity grounding, topic context | [→](https://instar.sh/reference/hooks/) |
+| **Behavioral Hooks** | Eleven hook scripts plus nine observability event hooks: command guards, safety gates, identity grounding, topic context, channel context for iMessage and Slack, free-text guard, skill-usage telemetry, build stop-hook | [→](https://instar.sh/reference/hooks/) |
 | **Initiative Tracker** | Persisted multi-phase long-running work tracker. Phases, blockers, links, digest alerts. HTTP API at `/initiatives/*` | |
-| **Default Jobs** | Health checks, reflection, evolution, relationship maintenance | [→](https://instar.sh/reference/default-jobs/) |
+| **Observability** | Token burn detection, quota tracking with tiered backpressure, telemetry collection, homeostasis monitoring, session activity tracking, credential management | [→](https://instar.sh/features/observability/) |
+| **Cross-framework portability** | First-class Codex CLI support via `instar setup --framework codex-cli`. Codex-only init produces zero `.claude/` files. Framework-aware telegram-reply path. FrameworkSessionStore (per-runtime transcripts). FrameworkParitySentinel | [→](https://instar.sh/features/portability/) |
+| **Default Jobs** | Fourteen built-in jobs covering health, reflection, evolution, relationship maintenance, identity review, and five `overseer-*` jobs across development, learning, infrastructure, maintenance, and guardian responsibilities | [→](https://instar.sh/reference/default-jobs/) |
 
 > **Reference:** [CLI Commands](https://instar.sh/reference/cli/) · [API Endpoints](https://instar.sh/reference/api/) · [Configuration](https://instar.sh/reference/configuration/) · [File Structure](https://instar.sh/reference/file-structure/)
 
 ## Agent Skills
 
-Instar ships 12 skills that follow the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
+Instar ships fourteen skills total — twelve user-facing, plus two internal skills (`instar-dev` and `spec-converge`) used only by the agent that develops instar itself. The standard is the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
 
 **Standalone skills** work with zero dependencies. Copy a SKILL.md into your project and go:
 

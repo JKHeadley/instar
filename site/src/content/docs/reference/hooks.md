@@ -16,21 +16,44 @@ Claude Code supports four hook types that Instar uses:
 
 ## Installed Hooks
 
+Hooks ship from two install paths. The static scripts under `src/templates/hooks/` get copied to `.instar/hooks/instar/` on install. A second set is generated dynamically by `PostUpdateMigrator` and written to the same location during the install pass. Both kinds are equally real; the split is purely about how they're maintained in the source repo.
+
+### Static hook scripts
+
 | Hook | Type | What it does |
 |------|------|-------------|
-| Dangerous command guard | PreToolUse (blocking) | Blocks destructive operations: `rm -rf`, force push, database drops |
-| External operation gate | PreToolUse (blocking) | LLM-supervised safety for external service calls via MCP tools |
-| Grounding before messaging | PreToolUse (advisory) | Forces identity re-read before external communication |
-| Deferral detector | PreToolUse (advisory) | Catches the agent deferring work it could do itself |
-| External communication guard | PreToolUse (advisory) | Identity grounding before posting to external platforms |
-| Post-action reflection | PreToolUse (advisory) | Nudges learning capture after commits, deploys, and significant actions |
-| Session start | SessionStart | Injects identity, topic context, capabilities, and pending serendipity findings at session start |
-| Compaction recovery | SessionStart (compact) | Restores identity, conversation context, and serendipity finding count when context compresses |
-| Telegram topic context | UserPromptSubmit | Injects per-message context (topic history, unanswered detection) for Telegram conversations |
+| `dangerous-command-guard.sh` | PreToolUse (blocking) | Blocks destructive operations: `rm -rf`, force push, database drops |
+| `grounding-before-messaging.sh` | PreToolUse (advisory) | Forces identity re-read before external communication |
+| `free-text-guard.sh` | UserPromptSubmit (advisory) | Catches free-text inputs to multi-choice question flows that should be conversation messages instead |
+| `session-start.sh` | SessionStart | Injects identity, topic context, capabilities, and pending serendipity findings at session start |
+| `compaction-recovery.sh` | SessionStart (compact) | Restores identity, conversation context, and serendipity finding count when context compresses |
+| `telegram-topic-context.sh` | UserPromptSubmit | Injects per-message context for Telegram conversations |
+| `slack-channel-context.sh` | UserPromptSubmit | Same role as the Telegram hook but for Slack channels and DMs |
+| `intercept-imsg-send.js` | PreToolUse (blocking) | Outbound safety layer for iMessage sends — validates recipient + send-token before `imsg send` |
+| `skill-usage-telemetry.sh` | PostToolUse (advisory) | Records which skills the agent invoked during the session |
+| `build-stop-hook.sh` | Stop (structural enforcement) | Used by `/build` and `/instar-dev` skills to prevent premature exit from phase-structured work |
+
+### Dynamically-generated hooks
+
+These hooks live in `src/core/PostUpdateMigrator.ts` as template strings and get written to disk on every install/update. Same contract as the static hooks; different maintenance flow.
+
+| Hook | Type | What it does |
+|------|------|-------------|
+| `external-operation-gate.js` | PreToolUse (blocking) | LLM-supervised safety for external service calls via MCP tools |
+| `deferral-detector.js` | PreToolUse (advisory) | Catches the agent deferring work it could do itself |
+| `post-action-reflection.js` | PreToolUse (advisory) | Nudges learning capture after commits, deploys, and significant actions |
+
+## Observability event hooks
+
+In addition to the behavioral hooks above, instar registers nine **event-reporter hooks** via `src/data/http-hook-templates.ts`. These forward Claude Code lifecycle events to `/hooks/events` for observability — they're not gates, they're listeners.
+
+Events covered: `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`, `WorktreeCreate`, `WorktreeRemove`, `TaskCompleted`, `SessionEnd`, `PreCompact`.
+
+The observability surface uses these to power session activity tracking, subagent failure detection, and the live dashboard. Inspect via `GET /hooks/events`.
 
 ## How They Work
 
-Hooks are registered in `.claude/settings.json` and scripts live in `.instar/hooks/instar/`. They're installed automatically during setup and kept current by the PostUpdateMigrator on each version update.
+Hooks are registered in `.claude/settings.json` and scripts live in `.instar/hooks/instar/`. They're installed automatically during setup and kept current by the `PostUpdateMigrator` on each version update.
 
 ### Blocking Hooks
 

@@ -19,19 +19,21 @@ Your agent is reachable from the moment it starts. Users interact through natura
 
 ## MCP Tool Server
 
-Threadline exposes 9 tools via [Model Context Protocol](https://modelcontextprotocol.io) that Claude Code (or any MCP client) can call directly:
+Threadline exposes up to eleven tools via [Model Context Protocol](https://modelcontextprotocol.io) that Claude Code (or any MCP client) can call directly. Seven are always available; four are conditional on the persistent agent registry being configured.
 
-| Tool | Description |
-|------|-------------|
-| `threadline_discover` | Find agents on the local machine or network |
-| `threadline_send` | Send a message, creating a persistent conversation thread |
-| `threadline_history` | Retrieve conversation history from a thread |
-| `threadline_agents` | List known agents and their trust levels |
-| `threadline_delete` | Remove a thread permanently |
-| `threadline_registry_search` | Search the persistent agent registry |
-| `threadline_registry_update` | Update your registry listing |
-| `threadline_registry_status` | Check your registration status |
-| `threadline_registry_get` | Look up an agent by ID |
+| Tool | Description | Available |
+|------|-------------|-----------|
+| `threadline_discover` | Find agents on the local machine or network | Always |
+| `threadline_send` | Send a message, creating a persistent conversation thread | Always |
+| `threadline_history` | Retrieve conversation history from a thread | Always |
+| `threadline_agents` | List known agents and their trust levels | Always |
+| `threadline_delete` | Remove a thread permanently | Always |
+| `threadline_trust` | Inspect or change the trust level of a known peer agent | Always |
+| `threadline_relay` | Manage the relay connection itself — enable, disable, status | Always |
+| `threadline_registry_search` | Search the persistent agent registry | Registry configured |
+| `threadline_registry_update` | Update your registry listing | Registry configured |
+| `threadline_registry_status` | Check your registration status | Registry configured |
+| `threadline_registry_get` | Look up an agent by ID | Registry configured |
 
 The MCP server runs as a stdio subprocess -- Claude Code launches it automatically. No ports to open, no auth to configure for local use.
 
@@ -180,4 +182,4 @@ Threadline includes four interop modules for connecting across protocol boundari
 
 ## Scale
 
-46 modules, 2,259 tests across 95 test files.
+80 modules under `src/threadline/`, 74 dedicated test files plus 125 cross-cutting test files that exercise threadline behavior — roughly 3,800 test cases all told.
