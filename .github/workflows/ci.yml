@@ -19,6 +19,27 @@ jobs:
       # No npm install needed — the script is pure node stdlib.
       - run: node scripts/check-repo-invariants.mjs
 
+  docs-coverage:
+    name: Docs Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Pure node stdlib — no install needed.
+      # --check enforces per-category floors calibrated to current state;
+      # PRs that improve docs may also raise the floors.
+      - run: node scripts/docs-coverage.mjs --check
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-coverage
+          path: |
+            .instar/docs-coverage.md
+            .instar/docs-coverage.json
+
   lint:
     name: Type Check
     runs-on: ubuntu-latest
