@@ -93,6 +93,26 @@ export interface SynthesisReport {
   error?: string;
 }
 
+/**
+ * Resolve the periodic-scan interval in milliseconds from config.
+ *
+ * Returns `null` when the periodic scan is disabled (enabled === false).
+ * Otherwise returns the interval clamped to a 5-minute floor (a faster
+ * cadence wastes LLM budget — scan() skips dormant sessions and enforces a
+ * minimum-activity threshold anyway, so there's no value in scanning more
+ * often than every few minutes). Default is 30 minutes.
+ *
+ * Extracted as a pure function so the clamp / default / disabled logic is
+ * unit-testable without standing up the full server bootstrap.
+ */
+export function resolveSentinelScanIntervalMs(
+  cfg?: { enabled?: boolean; scanIntervalMinutes?: number },
+): number | null {
+  if (cfg?.enabled === false) return null;
+  const minutes = Math.max(5, cfg?.scanIntervalMinutes ?? 30);
+  return minutes * 60_000;
+}
+
 // ─── SessionActivitySentinel ────────────────────────────────────────
 
 export class SessionActivitySentinel {

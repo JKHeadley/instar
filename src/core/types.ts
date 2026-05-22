@@ -2497,6 +2497,18 @@ export interface MonitoringConfig {
     /** Relay timeout in seconds (default: 300) */
     relayTimeoutSeconds?: number;
   };
+  /**
+   * Episodic memory sentinel — periodic mid-session activity digestion.
+   * The sentinel digests long-running sessions on a cadence so activity
+   * (and the entities extracted from it) is captured before sessions end,
+   * not only at sessionComplete.
+   */
+  episodicSentinel?: {
+    /** Enable the periodic scan (default: true when the sentinel is built). */
+    enabled?: boolean;
+    /** Minutes between periodic scans (default: 30). Clamped to >= 5. */
+    scanIntervalMinutes?: number;
+  };
 }
 
 export type TelemetryLevel = 'basic' | 'usage';

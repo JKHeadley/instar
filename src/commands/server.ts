@@ -4124,7 +4124,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Creates mid-session mini-digests via LLM, and session syntheses on completion.
     let activitySentinel: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel | undefined;
     if (sharedIntelligence) {
-      const { SessionActivitySentinel } = await import('../monitoring/SessionActivitySentinel.js');
+      const { SessionActivitySentinel, resolveSentinelScanIntervalMs } = await import('../monitoring/SessionActivitySentinel.js');
       activitySentinel = new SessionActivitySentinel({
         stateDir: config.stateDir,
         intelligence: sharedIntelligence,
@@ -4156,6 +4156,34 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.error(`[ActivitySentinel] Synthesis failed for ${session.name}: ${err instanceof Error ? err.message : err}`);
         });
       });
+
+      // Periodic mid-session scan. Without this, the sentinel only digests on
+      // sessionComplete — so a long-running Telegram session that never cleanly
+      // ends (compaction, multi-day topic, machine restart) accumulates hours
+      // of activity that is never digested, and the entities within it never
+      // reach SemanticMemory. The periodic scan digests in-flight activity on a
+      // cadence so the knowledge graph grows throughout long sessions, not just
+      // at the end. scan() is internally idempotent (hash-keyed digests),
+      // skips dormant sessions, and enforces a minimum-activity threshold, so a
+      // frequent cadence is safe.
+      const scanIntervalMs = resolveSentinelScanIntervalMs(config.monitoring.episodicSentinel);
+      if (scanIntervalMs !== null) {
+        const scanMinutes = Math.round(scanIntervalMs / 60_000);
+        const activityScanTimer = setInterval(() => {
+          // Only the awake machine scans — mirrors the scheduler gating so
+          // standby machines in a multi-machine setup don't double-digest.
+          if (coordinator.enabled && !coordinator.isAwake) return;
+          activitySentinel!.scan().then((report) => {
+            if (report.digestsCreated > 0) {
+              console.log(`[ActivitySentinel] Periodic scan: ${report.digestsCreated} digest(s) across ${report.sessionsScanned} session(s)`);
+            }
+          }).catch((err) => {
+            console.error(`[ActivitySentinel] Periodic scan failed: ${err instanceof Error ? err.message : err}`);
+          });
+        }, scanIntervalMs);
+        if (activityScanTimer.unref) activityScanTimer.unref();
+        console.log(pc.dim(`  Episodic memory sentinel: periodic scan every ${scanMinutes}min`));
+      }
 
       const semStatus = semanticMemory ? 'with entity extraction' : 'digests only (no SemanticMemory)';
       console.log(pc.green(`  Episodic memory sentinel enabled (LLM-powered digestion, ${semStatus})`));
