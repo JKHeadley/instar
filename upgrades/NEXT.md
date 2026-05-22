@@ -1,4 +1,4 @@
-# Upgrade Guide — v1.2.29 (Codex creates only Lifeline topic)
+# Upgrade Guide — v1.2.30 (Codex creates only Lifeline topic)
 
 <!-- bump: patch -->
 <!-- patch = bug fixes, refactors, test additions, doc updates -->
