@@ -3,7 +3,7 @@ title: Configuration
 description: Configuration reference for Instar agents.
 ---
 
-All configuration lives in `.instar/config.json`, created during setup and editable at any time. All keys are top-level (no nesting under section objects).
+All configuration lives in `.instar/config.json`, created during setup and editable at any time. Most keys live at the top level. A handful of subsystems (scheduler, monitoring, threadline, evolution, multiMachine, dashboard, tunnel, updates, publishing, externalOperations, dispatches, gitBackup, inputGuard, notifications, onboarding, recoveryKey, integratedBeing, backup, prGate, parallelDev) nest their settings under their own key — sections below note which is which.
 
 ## Server
 

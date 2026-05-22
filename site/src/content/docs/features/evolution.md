@@ -68,13 +68,18 @@ Serendipity findings are triaged with the same approve/dismiss/defer model as ev
 
 ## Default Jobs
 
-Three jobs drive the evolution cycle automatically:
+Four jobs drive the evolution + commitment cycle automatically:
 
-| Job | Schedule | Purpose |
-|-----|----------|---------|
-| evolution-review | Every 6h | Review proposals, implement approved ones |
-| insight-harvest | Every 8h | Synthesize learnings into proposals |
-| commitment-check | Every 4h | Surface overdue action items |
+| Job | Schedule | Model | Purpose |
+|-----|----------|-------|---------|
+| `evolution-proposal-evaluate` | Every 6h | Sonnet | Score proposals against current goals; mark approved/rejected |
+| `evolution-proposal-implement` | 4× daily (1am, 7am, 1pm, 7pm) | Opus | Implement proposals that passed evaluation |
+| `evolution-overdue-check` | Every 4h | Haiku | Surface overdue action items and stalled work |
+| `insight-harvest` | Every 8h | Opus | Synthesize learnings from the registry into new proposals |
+
+Evolution work is a two-phase cycle: evaluate first (lightweight scoring), then implement separately (heavier reasoning). Splitting these lets the cheaper model run more often without paying Opus prices for proposals that won't be implemented anyway.
+
+Commitment detection runs separately on a much shorter cadence — every 5 minutes via `commitment-detection` — so new commitments get captured in near-real-time as you chat with the agent. The overdue-check job above is the slower follow-up that escalates if a commitment goes too long without movement.
 
 ## Post-Action Reflection
 

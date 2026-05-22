@@ -1,11 +1,11 @@
 ---
 title: Under the Hood
-description: How 54 background systems keep your agent alive, responsive, and self-healing.
+description: How around 48 background systems keep your agent alive, responsive, and self-healing.
 ---
 
-Your agent isn't just Claude in a terminal. Behind every session, **54 background systems** work continuously to keep things running — recovering from crashes, delivering messages reliably, syncing state across machines, and cleaning up after themselves.
+Your agent isn't just Claude in a terminal. Behind every session, **around 48 background systems** work continuously to keep things running — recovering from crashes, delivering messages reliably, syncing state across machines, and cleaning up after themselves.
 
-**None of these were designed upfront.** Every system on this page exists because something actually broke in production. Sessions stalled silently, messages vanished, laptops slept and agents went brain-dead, logs filled disks, orphaned processes ate memory. Each problem showed up during real usage, got diagnosed, and got solved — then the solution became a permanent part of the platform. This isn't speculative architecture. It's 54 battle scars turned into armor.
+**None of these were designed upfront.** Every system on this page exists because something actually broke in production. Sessions stalled silently, messages vanished, laptops slept and agents went brain-dead, logs filled disks, orphaned processes ate memory. Each problem showed up during real usage, got diagnosed, and got solved — then the solution became a permanent part of the platform. This isn't speculative architecture. It's roughly four dozen battle scars turned into armor — and the count grows over time as new failure modes show up and earn permanent solutions.
 
 This page gives you the bird's-eye view. Scan the overview, then open any category to look inside the engine.
 

@@ -46,9 +46,18 @@ instar autostart status         # Check if auto-start is installed
 ```bash
 instar add telegram --token BOT_TOKEN --chat-id CHAT_ID
 instar add whatsapp
+instar add slack                # Add Slack channel + DM messaging
 instar add email --credentials-file ./credentials.json [--token-file ./token.json]
 instar add quota [--state-file ./quota.json]
 instar add sentry --dsn https://key@o0.ingest.sentry.io/0
+```
+
+## Channel adapters (direct)
+
+```bash
+instar slack-cli status         # Slack connection state and channel mappings
+instar slack-cli channels       # List authorized channels
+instar whatsapp                 # WhatsApp adapter management (QR pairing, status)
 ```
 
 ## Users
@@ -196,6 +205,46 @@ instar review                   # Review system state
 instar nuke <name>              # Remove an agent completely
 instar migrate                  # Run pending migrations
 instar upgrade-ack              # Acknowledge an upgrade
+instar discovery                # Scan filesystem + registry + GitHub for existing agents
+instar gate                     # UnjustifiedStopGate operator tooling (enforcement mode, kill-switch, logs)
+```
+
+## Multi-machine
+
+```bash
+instar pair                     # Initiate pairing on a new machine
+instar join <code>              # Complete pairing using a code from `pair`
+instar whoami                   # Show local machine identity
+instar machines                 # List paired machines and their state
+instar wakeup [machine]         # Wake a paired machine (where supported)
+instar leave                    # Remove this machine from the multi-machine cluster
+```
+
+## Workspace and worktrees
+
+```bash
+instar worktree create <branch> [slug]  # Create a sandbox-safe worktree under .instar/agents/<self>/.worktrees/
+instar worktree register-keypair        # Register a per-worktree keypair for parallel-dev isolation
+```
+
+## Threadline relay
+
+```bash
+instar relay status             # Threadline relay connection status
+instar relay start              # Start the relay listener (Phase 1+ listener daemon)
+instar relay stop               # Stop the relay listener
+instar listener install         # Install the listener as a launchd / systemd unit
+instar listener logs            # Tail listener logs
+```
+
+## Power-user tooling
+
+```bash
+instar route <task>             # One-shot framework + model routing for a task description
+instar jobMigrate               # Migrate jobs between schema versions
+instar ledgerCleanup            # Token ledger cleanup
+instar memoryBackfillEvidence   # Backfill evidence rows into the memory index
+instar org init "Acme Corp"     # Create ORG-INTENT.md for organizational intent
 ```
 
 ## Feedback

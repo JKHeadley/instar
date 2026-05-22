@@ -1,9 +1,9 @@
 ---
 title: The Living System
-description: How 54 processes and 26 jobs form a single organism — mapped to the biological systems that keep it alive.
+description: How roughly four dozen processes and fourteen default jobs form a single organism — mapped to the biological systems that keep it alive.
 ---
 
-The [Under the Hood](/architecture/under-the-hood) page describes your agent's 54 background processes. The [Default Jobs](/reference/default-jobs) page describes its 26 scheduled jobs. But they don't operate in isolation — they form **a single organism** with interlocking systems that detect threats, learn from experience, maintain hygiene, and grow over time.
+The [Under the Hood](/architecture/under-the-hood) page describes your agent's background processes (currently around forty-eight named systems across nine categories). The [Default Jobs](/reference/default-jobs) page describes its fourteen built-in scheduled jobs. But they don't operate in isolation — they form **a single organism** with interlocking systems that detect threats, learn from experience, maintain hygiene, and grow over time.
 
 This page maps the complete system to biological analogies. Not because it's cute — because it reveals the design logic. Each biological system has a clear purpose, and so does each group of processes and jobs. When something goes wrong, the question isn't "which component broke?" but "which system is failing?"
 
@@ -196,7 +196,7 @@ The biological metaphor isn't decorative — it's a diagnostic framework.
 
 ## See Also
 
-- [Under the Hood](/architecture/under-the-hood) — Detailed descriptions of all 54 system processes
+- [Under the Hood](/architecture/under-the-hood) — Detailed descriptions of all the system processes
 - [Default Jobs](/reference/default-jobs) — Detailed descriptions of all 26 scheduled jobs
 - [Self-Healing](/features/self-healing) — The user-facing perspective on recovery
 - [Evolution System](/features/evolution) — How the Memory & Learning system appears to users
