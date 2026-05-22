@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/telegram-login-ux.md",
+  "artifactPath": "upgrades/side-effects/fix-telegram-login-ux.md",
+  "artifactSha256": "677607930d255972247e44a5874b31e68de3276f35fbc70d4e502a94eda3e1f9",
+  "coveredFiles": [
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/codex-playwright-telegram.test.ts",
+    "specs/dev-infrastructure/telegram-login-ux.md",
+    "specs/dev-infrastructure/telegram-login-ux.eli16.md",
+    "docs/specs/reports/telegram-login-ux-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-telegram-login-ux.md"
+  ],
+  "writtenAt": "2026-05-22T02:09:52Z",
+  "agent": "echo",
+  "summary": "Rewrites buildTelegramAgenticPrompt with explicit conversational rules + step-by-step user narration. Codex now tells the user to open Telegram on their phone, walks through Settings→Devices→Link Desktop Device, prints periodic reminders during the 5-minute (was 120s) login wait. 2 new tests + existing 18 still pass. Ships v1.2.18."
+}

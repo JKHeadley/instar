@@ -478,13 +478,14 @@ async function runAction(
 async function runTelegramAgentic(options: CodexDriverOptions): Promise<Partial<WizardAnswers>> {
   console.log();
   console.log(pc.bold('  Telegram setup'));
-  console.log(pc.dim('  Starting browser-driven bot creation via Codex + Playwright.'));
-  console.log(pc.dim('  This opens a browser window; you may need to scan a QR code from your phone to log into Telegram Web.'));
   console.log();
 
   const prompt = buildTelegramAgenticPrompt(options.projectDir);
-  // Long timeout — the human-in-the-loop login can take a couple
-  // minutes if the user has to grab their phone.
+  // 10-minute spawn timeout — the first-time user might need to
+  // install Telegram on their phone before they can scan the QR.
+  // Codex itself enforces a tighter login-wait via the prompt
+  // (it prints user-facing instructions and polls for the login
+  // transition); this is the outer wall in case Codex hangs.
   const result = spawnSync(
     options.codexPath,
     [
@@ -497,7 +498,7 @@ async function runTelegramAgentic(options: CodexDriverOptions): Promise<Partial<
     {
       cwd: options.projectDir,
       stdio: 'inherit',
-      timeout: 600_000, // 10 minutes
+      timeout: 600_000,
     },
   );
   if (result.status !== 0 && result.status !== null) {
@@ -522,11 +523,28 @@ async function runTelegramAgentic(options: CodexDriverOptions): Promise<Partial<
  */
 export function buildTelegramAgenticPrompt(projectDir: string): string {
   return `
-You have Playwright browser-automation MCP tools available
+You are the instar setup wizard's Telegram phase. The user is sitting
+at the terminal RIGHT NOW reading what you print. You also have
+Playwright browser-automation MCP tools available
 (mcp__playwright__browser_navigate, browser_snapshot, browser_click,
 browser_type, browser_press_key, browser_wait_for, etc).
 
 TASK: Set up a Telegram bot for an instar agent at ${projectDir}.
+
+CRITICAL CONVERSATIONAL RULES:
+  - You are talking to a real person, not running a job. Speak to
+    them warmly and clearly at every step. They cannot see your
+    snapshot results, your tool calls, or your internal reasoning.
+    Only the prose you print appears on their terminal.
+  - When you start a step, TELL THE USER what's about to happen and
+    what they need to do (if anything) before you do it. Like a
+    helpful guide narrating their experience.
+  - When you're waiting on the user (e.g. QR-code login), print
+    reminder text every ~25-30 seconds — not internal status, but
+    REAL instructions they can act on right now.
+  - Never print "still polling" or "no transition detected" or
+    other internal-state language. The user doesn't care about your
+    polling cadence; they care about what to do.
 
 SUCCESS CRITERION (verified by the caller after you exit):
   .instar/config.json's messaging[] contains exactly one entry
@@ -544,70 +562,112 @@ STEPS:
    (Do NOT print any manual instructions; the caller has its own
    manual fallback.)
 
-2. The user may need to scan a QR code from their phone to log in.
-   Take snapshots periodically (every ~5 seconds, up to ~120 seconds
-   total). The page is "logged in" when the left rail shows a chat
-   list (search bar + chats) rather than the QR code or phone-number
-   form. If still on login after 120s, output:
+2. After Playwright loads the page, IMMEDIATELY print to the user
+   a clear, friendly instruction block like:
+
+   > A browser window just opened with Telegram Web. To log in:
+   >   • Open Telegram on your phone (if you don't have it yet,
+   >     install it from your phone's app store — it's free and
+   >     takes about 30 seconds)
+   >   • In Telegram, open Settings → Devices → Link Desktop Device
+   >   • Point your phone at the QR code in the browser window
+   >
+   > I'll wait up to 5 minutes for the login. Take your time — I'll
+   > remind you periodically.
+
+   (Adjust the wording to match the actual UI you see in the
+   snapshot if Telegram Web's options/copy differs from this.)
+
+3. Poll for login transition every ~5 seconds via browser_snapshot.
+   Up to 5 MINUTES total (60 attempts). The page is "logged in"
+   when the left rail shows a chat list rather than the QR/phone-
+   number form.
+
+   While polling, EVERY ~25-30 seconds print a short user-facing
+   reminder (vary the wording so it doesn't feel robotic):
+     "Still waiting for the QR scan — once you've logged in on
+     your phone, the browser will update automatically and I'll
+     keep going."
+
+   If still on login after 5 minutes, print to the user:
+     "I didn't see the login complete after 5 minutes. I'll switch
+     us to a manual setup — same end result, just a couple of
+     copy-pastes."
+   Then output:
      AGENTIC_FAILED: telegram-login-timeout
    and exit.
 
-3. Once logged in, use the search bar to find "BotFather". Click
-   the verified @BotFather result.
+4. Once logged in, tell the user briefly:
+   "You're in. I'll create the bot and the group for us — give me
+   a moment."
+   Then use the search bar to find "BotFather". Click the verified
+   @BotFather result.
 
-4. Send /newbot. Wait for the reply.
+5. Send /newbot. Wait for the reply.
 
-5. When BotFather asks for the bot's display name, type:
+6. When BotFather asks for the bot's display name, type:
    "Instar Agent"
 
-6. When BotFather asks for the bot's username, generate one ending
+7. When BotFather asks for the bot's username, generate one ending
    in "bot" (use the basename of the project dir, lower-case,
    ASCII-only, with "_instar_bot" appended; if taken, append random
    digits and retry up to 5 times).
 
-7. Read BotFather's reply containing the token. Extract the token
+8. Read BotFather's reply containing the token. Extract the token
    from the message body. Token format: \\d+:[A-Za-z0-9_-]+
-   Store it in a local variable.
+   Store it in a local variable. (Do NOT print the token to the
+   terminal — it's a credential.)
 
-8. Validate the token via the Telegram Bot API (Bash):
+9. Validate the token via the Telegram Bot API (Bash):
      curl -s "https://api.telegram.org/bot<TOKEN>/getMe"
-   If response.ok is not true, output:
+   If response.ok is not true, tell the user:
+     "Something went wrong with the bot creation. Switching to
+     manual setup."
+   Then output:
      AGENTIC_FAILED: token-invalid
    and exit.
 
-9. Create a new group chat:
-   a. Click the "new message" / pencil icon.
-   b. Choose "New Group".
-   c. Search for and add the bot you just created.
-   d. Name the group "<basename> + instar".
-   e. Create the group.
-   f. Send a message inside the group: "first contact".
+10. Tell the user briefly:
+    "Bot's ready. Creating a group chat now and adding the bot."
+    Then create a new group chat:
+    a. Click the "new message" / pencil icon.
+    b. Choose "New Group".
+    c. Search for and add the bot you just created.
+    d. Name the group "<basename> + instar".
+    e. Create the group.
+    f. Send a message inside the group: "first contact".
 
-10. Fetch the chat ID:
+11. Fetch the chat ID:
       curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates"
     Pick the result where message.chat.type is "group" or
     "supergroup". Extract message.chat.id as a string.
 
-11. Write the config. Read the existing .instar/config.json. Filter
+12. Write the config. Read the existing .instar/config.json. Filter
     out any existing { type: "telegram" } entries. Push:
       { type: "telegram", enabled: true,
         config: { token: "<TOKEN>", chatId: "<CHAT_ID>",
                   pollIntervalMs: 2000, stallTimeoutMinutes: 5 } }
     Write the file back (atomic-ish: tmp file + rename is fine).
 
-12. Verify your write succeeded by re-reading the file and confirming
+13. Verify your write succeeded by re-reading the file and confirming
     the messaging entry is present with both fields populated. If
-    not, output:
+    not, tell the user briefly:
+      "Couldn't save the Telegram config — switching to manual."
+    Then output:
       AGENTIC_FAILED: config-write-failed
     and exit.
 
-13. Exit cleanly. Do NOT print summary text — the caller will verify
-    the config and report to the user.
+14. Tell the user briefly:
+    "Telegram is connected. From here on, your agent will message
+    you in that group."
+    Then exit cleanly. The caller will verify the config and
+    proceed with the rest of the wizard.
 
-FAILURE MODE: at ANY step you cannot recover from, output exactly
-"AGENTIC_FAILED: <one-line reason>" and exit. The caller will fall
-through to a readline-based manual setup. Do NOT try to be clever —
-fast-fail is what enables the fallback to work.
+FAILURE MODE: at ANY step you cannot recover from, FIRST tell the
+user in plain English what happened (one sentence, no jargon), THEN
+output "AGENTIC_FAILED: <one-line reason>" and exit. The caller
+will fall through to a readline-based manual setup. Do NOT try to
+be clever — fast-fail is what enables the fallback to work.
 `.trim();
 }
 
