@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd site && pnpm install --no-frozen-lockfile && pnpm exec astro build && rm -rf ../.vercel/output && mv .vercel/output ../.vercel/output",
+  "installCommand": "echo 'Install handled inside buildCommand for site/ subdirectory'",
+  "framework": null
+}
