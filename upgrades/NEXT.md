@@ -24,7 +24,7 @@ Side-effects review: `upgrades/side-effects/org-intent-drift-detection.md`.
 
 ## What to Tell Your User
 
-The drift detection capability that was supposed to ship in the prior release was a release-pipeline misfire — the code landed but the publish skipped. This release re-cuts that work so the new endpoint and the weekly audit job become available via `npm install instar`. No behavior change from the prior release if you don't act on it; if you have an `ORG-INTENT.md` authored and want the weekly drift check, enable the new `org-intent-drift-audit.md` job.
+The drift detection capability that was supposed to ship in the prior release was a release-pipeline misfire — the code landed but the publish skipped. This release re-cuts that work so the new endpoint and the weekly audit job become available through the normal instar update path. No behavior change from the prior release if you don't act on it; if you have an organizational intent file authored and want the weekly drift check, ask your agent to enable the new drift-audit job for you.
 
 ## Summary of New Capabilities
 
