@@ -191,7 +191,11 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   console.log();
   console.log(pc.bold('  Welcome to Instar'));
   console.log();
-  console.log(pc.yellow('  Note: Instar runs Claude Code with --dangerously-skip-permissions.'));
+  const runtimeLabel = framework === 'codex-cli' ? 'Codex CLI' : 'Claude Code';
+  const sandboxFlag = framework === 'codex-cli'
+    ? '--dangerously-bypass-approvals-and-sandbox'
+    : '--dangerously-skip-permissions';
+  console.log(pc.yellow(`  Note: Instar runs ${runtimeLabel} with ${sandboxFlag}.`));
   console.log(pc.dim('  This allows your agent to operate autonomously — reading, writing, and'));
   console.log(pc.dim('  executing within your project without per-action approval prompts.'));
   console.log(pc.dim('  Security is enforced through behavioral hooks, identity grounding, and'));

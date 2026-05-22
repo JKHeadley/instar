@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/banner-framework-aware.md",
+  "artifactPath": "upgrades/side-effects/fix-banner-framework-aware.md",
+  "artifactSha256": "97585b3bda2bf4edb4c0c3abfb0a53482d9192aac98fa1523f6cbbf6ebe4f40c",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "tests/unit/setup-banner-framework-aware.test.ts",
+    "specs/dev-infrastructure/banner-framework-aware.md",
+    "specs/dev-infrastructure/banner-framework-aware.eli16.md",
+    "docs/specs/reports/banner-framework-aware-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-banner-framework-aware.md"
+  ],
+  "writtenAt": "2026-05-22T00:44:22Z",
+  "agent": "echo",
+  "summary": "Welcome banner is framework-aware. Pre-fix said 'Claude Code' even when Codex picked. Post-fix two derived consts feed template string. 4 canary tests. v1.2.16."
+}
