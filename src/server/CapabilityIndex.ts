@@ -705,6 +705,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'delivery-queue', reason: 'operator-only relay queue observability' },
   { prefix: 'prompt-gate', reason: 'operator-only prompt-gate observability' },
   { prefix: 'scope-coherence', reason: 'operator-only scope-coherence observability' },
+  { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
   { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },
