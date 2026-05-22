@@ -71,9 +71,13 @@ describe('TunnelNotifier — channel separation (GPT critical finding)', () => {
     }
   });
 
-  it('owner DM is the only channel that gets credential placeholders', async () => {
+  it('owner DM is the only channel that carries the credential snapshot', async () => {
     const sink = mockSink();
-    const n = new TunnelNotifier({ sink, clock: fakeClock });
+    const n = new TunnelNotifier({
+      sink,
+      clock: fakeClock,
+      credentialProvider: () => ({ url: 'https://tunnel.example', pin: '123456' }),
+    });
     await n.onTransition(tx({ from: 'retrying', to: 'active', epoch: 1 }));
     await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 2, episode: ep('ep_aaab') }));
     await n.onTransition(tx({ from: 'self-healing', to: 'active', epoch: 3, episode: ep('ep_aaac') }));
@@ -81,8 +85,23 @@ describe('TunnelNotifier — channel separation (GPT critical finding)', () => {
     // Every credential-bearing message goes to DM (count = 3 — recovered, relay, restored).
     expect(sink.dmCalls.length).toBe(3);
     for (const dm of sink.dmCalls) {
-      expect(dm).toContain('PLACEHOLDER');
+      expect(dm).toContain('https://tunnel.example');
+      expect(dm).toContain('123456');
     }
+    // The credentials must NEVER appear in any group message.
+    for (const grp of sink.groupCalls) {
+      expect(grp).not.toContain('https://tunnel.example');
+      expect(grp).not.toContain('123456');
+    }
+  });
+
+  it('renders a graceful "link not available" placeholder when no credentialProvider is wired', async () => {
+    const sink = mockSink();
+    const n = new TunnelNotifier({ sink, clock: fakeClock });
+    await n.onTransition(tx({ from: 'retrying', to: 'active', epoch: 1 }));
+    expect(sink.dmCalls.length).toBe(1);
+    expect(sink.dmCalls[0]).not.toContain('https://');
+    expect(sink.dmCalls[0]).toContain('link not available');
   });
 });
 
@@ -131,8 +150,9 @@ describe('TunnelNotifier — class-based throttling (V2 + GPT #5)', () => {
     now = 600;
     await n.onTransition(tx({ from: 'retrying', to: 'awaiting-consent', epoch: 7 }));
 
-    // Two consent prompts (action-required) regardless of throttle window.
-    const consentDms = sink.dmCalls.filter((d) => d.includes('CONSENT_PROMPT'));
+    // Two consent prompts (action-required) regardless of throttle window —
+    // matched by the consent message's distinctive phrasing.
+    const consentDms = sink.dmCalls.filter((d) => d.includes('Reply "yes, use a backup"'));
     expect(consentDms.length).toBe(2);
   });
 

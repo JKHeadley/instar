@@ -287,6 +287,68 @@ describe('TunnelManager (rewrite) — notifier wiring', () => {
   });
 });
 
+describe('TunnelManager (rewrite) — attachTelegram wires the notifier sink', () => {
+  it('falls back to the Lifeline topic when no Dashboard topic is configured', async () => {
+    const sendToTopic = vi.fn(async () => undefined);
+    const adapter = {
+      sendToTopic,
+      sendToOwnerDM: vi.fn(async () => undefined),
+      getDashboardTopicId: () => undefined,
+      getLifelineTopicId: () => 77,
+    };
+    const named = mockProvider({ name: 'cloudflare-named', startResult: { error: 'rate-limited: 1015' } });
+    const quick = mockProvider({ name: 'cloudflare-quick', url: 'https://q.example' });
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [named, quick], fetch: vi.fn(async () => okResponse()) },
+    );
+    mgr.attachTelegram(adapter, () => undefined);
+    await mgr.start();
+    const topicIds = sendToTopic.mock.calls.map((c) => c[0]);
+    expect(topicIds).toContain(77);
+  });
+
+  it('routes the "couldn\'t reach" group message to the Dashboard topic id', async () => {
+    const sendToTopic = vi.fn(async () => undefined);
+    const adapter = {
+      sendToTopic,
+      sendToOwnerDM: vi.fn(async () => undefined),
+      getDashboardTopicId: () => 42,
+      getLifelineTopicId: () => 43,
+    };
+    const named = mockProvider({ name: 'cloudflare-named', startResult: { error: 'rate-limited: 1015' } });
+    const quick = mockProvider({ name: 'cloudflare-quick', url: 'https://q.example' });
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [named, quick], fetch: vi.fn(async () => okResponse()) },
+    );
+    mgr.attachTelegram(adapter, () => '999000');
+    await mgr.start();
+    const calls = sendToTopic.mock.calls.map((c) => ({ topicId: c[0] as number, text: c[1] as string }));
+    expect(calls.some((c) => c.topicId === 42 && c.text.includes("Couldn't reach"))).toBe(true);
+  });
+
+  it('owner-DM message carries the live URL and current PIN (credential substitution)', async () => {
+    const dms: string[] = [];
+    const adapter = {
+      sendToTopic: vi.fn(async () => undefined),
+      sendToOwnerDM: vi.fn(async (text: string) => { dms.push(text); }),
+      getDashboardTopicId: () => 42,
+      getLifelineTopicId: () => 43,
+    };
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [
+        mockProvider({ name: 'cloudflare-named', startResult: { error: 'rate-limited' } }),
+        mockProvider({ name: 'cloudflare-quick', url: 'https://quick.example' }),
+      ], fetch: vi.fn(async () => okResponse()) },
+    );
+    mgr.attachTelegram(adapter, () => '111222');
+    await mgr.start();
+    expect(dms.some((d) => d.includes('https://quick.example') && d.includes('111222'))).toBe(true);
+  });
+});
+
 describe('TunnelManager (rewrite) — restoration of persisted snapshot', () => {
   it('restores the rotation-pending flag from tunnel.json on construction', () => {
     const snap = {

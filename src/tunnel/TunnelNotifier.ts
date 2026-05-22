@@ -57,9 +57,30 @@ export interface NotifierClock {
   now(): number;
 }
 
+/**
+ * Credential snapshot the notifier substitutes into owner-DM messages
+ * at compose time. Returned by a `credentialProvider` callback so the
+ * notifier never holds stale credentials in its own state.
+ */
+export interface CredentialSnapshot {
+  /** Current public URL (null when no tunnel is active). */
+  url: string | null;
+  /** Current dashboard PIN (undefined when not configured). */
+  pin?: string;
+}
+
 export interface TunnelNotifierOptions {
   sink: NotifierSink;
   clock?: NotifierClock;
+  /**
+   * Returns a fresh credential snapshot. Called each time the notifier
+   * composes an owner-DM message that needs URL/PIN substitution.
+   * Optional — when absent, owner-DM messages render without
+   * credentials (the user gets the explanatory text but no link). This
+   * is the back-compat path for tests that don't wire a credential
+   * provider.
+   */
+  credentialProvider?: () => CredentialSnapshot;
   /** Within-episode same-state re-entry throttle (default 15 min). */
   stateChangeMinIntervalMs?: number;
   /** Flap threshold — N connect/drop cycles within an episode → noise-collapse. */
@@ -69,6 +90,7 @@ export interface TunnelNotifierOptions {
 export class TunnelNotifier {
   private readonly sink: NotifierSink;
   private readonly clock: NotifierClock;
+  private readonly credentialProvider: (() => CredentialSnapshot) | undefined;
   private readonly stateChangeMinIntervalMs: number;
   private readonly flapThreshold: number;
 
@@ -92,6 +114,7 @@ export class TunnelNotifier {
   constructor(opts: TunnelNotifierOptions) {
     this.sink = opts.sink;
     this.clock = opts.clock ?? { now: () => Date.now() };
+    this.credentialProvider = opts.credentialProvider;
     this.stateChangeMinIntervalMs = opts.stateChangeMinIntervalMs ?? 15 * 60_000;
     this.flapThreshold = opts.flapThreshold ?? 3;
   }
@@ -193,7 +216,7 @@ export class TunnelNotifier {
           messages.push({
             channel: 'owner-dm',
             class: 'state-change',
-            text: `__OWNER_DM_RESTORED_URL_PLACEHOLDER__`,
+            text: this.composeRestoredDM(),
             episodeId: ep,
             epoch: e.epoch,
           });
@@ -209,7 +232,7 @@ export class TunnelNotifier {
           messages.push({
             channel: 'owner-dm',
             class: 'state-change',
-            text: `__OWNER_DM_RECOVERED_URL_PLACEHOLDER__`,
+            text: this.composeRecoveredDM(),
             episodeId: ep,
             epoch: e.epoch,
           });
@@ -229,7 +252,7 @@ export class TunnelNotifier {
         messages.push({
           channel: 'owner-dm',
           class: 'action-required',
-          text: `__OWNER_DM_CONSENT_PROMPT_PLACEHOLDER__`,
+          text: this.composeConsentPromptDM(),
           episodeId: ep,
           epoch: e.epoch,
         });
@@ -247,7 +270,7 @@ export class TunnelNotifier {
         messages.push({
           channel: 'owner-dm',
           class: 'state-change',
-          text: `__OWNER_DM_RELAY_URL_PLACEHOLDER__`,
+          text: this.composeRelayActiveDM(),
           episodeId: ep,
           epoch: e.epoch,
         });
@@ -298,6 +321,41 @@ export class TunnelNotifier {
     const lastAt = this.lastEmittedAt.get(key);
     if (lastAt === undefined) return true;
     return this.clock.now() - lastAt >= this.stateChangeMinIntervalMs;
+  }
+
+  // ── Owner-DM message composers ───────────────────────────────────
+
+  /** Snapshot of credentials at compose time (safely degrades when no provider). */
+  private creds(): CredentialSnapshot {
+    if (!this.credentialProvider) return { url: null };
+    try {
+      return this.credentialProvider();
+    } catch {
+      return { url: null };
+    }
+  }
+
+  private renderLink(): string {
+    const { url, pin } = this.creds();
+    if (!url) return `(link not available yet — I'll send it as soon as the tunnel is up)`;
+    if (pin) return `Link: ${url}\nPIN: ${pin}`;
+    return `Link: ${url}`;
+  }
+
+  private composeRecoveredDM(): string {
+    return `Cloudflare is back. Your dashboard link:\n\n${this.renderLink()}`;
+  }
+
+  private composeRestoredDM(): string {
+    return `Your permanent Cloudflare link is back — switched off the backup. New link:\n\n${this.renderLink()}\n\nIf you had your dashboard open, you may need to re-enter the PIN.`;
+  }
+
+  private composeRelayActiveDM(): string {
+    return `Backup tunnel is up and serving your dashboard. New link below.\n\nHeads up: this routes through a third-party server, so your dashboard traffic is briefly going through their machines while Cloudflare is down. The agent will switch you back to your normal link automatically as soon as Cloudflare recovers.\n\n${this.renderLink()}`;
+  }
+
+  private composeConsentPromptDM(): string {
+    return `Cloudflare is unavailable and I can't get you a dashboard link through the usual path.\n\nI can try a backup that routes through a third-party server. This means your dashboard PIN and any private view links would briefly be visible to whoever operates that backup while it's in use — and your auth token will be rotated after the backup is no longer needed, which will sign you out of any open dashboard tabs and invalidate any previously-shared private view links.\n\nReply "yes, use a backup" to approve, or "no" to keep waiting for Cloudflare. If you don't reply, I'll keep waiting for Cloudflare and won't use a backup.`;
   }
 }
 

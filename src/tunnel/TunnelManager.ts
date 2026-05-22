@@ -101,6 +101,19 @@ export interface TunnelManagerInjections {
   fetch?: typeof fetch;
 }
 
+/**
+ * Minimal duck-typed interface for the messaging adapter the manager
+ * uses for user-facing notifications. The real implementation is
+ * `TelegramAdapter` but we don't import that type here to keep this
+ * module decoupled from the messaging layer.
+ */
+export interface TunnelMessagingAdapter {
+  sendToTopic(topicId: number, text: string): Promise<unknown>;
+  sendToOwnerDM(text: string): Promise<unknown>;
+  getDashboardTopicId(): number | undefined;
+  getLifelineTopicId(): number | undefined;
+}
+
 // ── Constants ───────────────────────────────────────────────────────
 
 const BASE_BACKOFF_MS = 5_000;
@@ -127,7 +140,7 @@ export class TunnelManager extends EventEmitter {
 
   private readonly lifecycle: TunnelLifecycle;
   private readonly providers: TunnelProvider[];
-  private readonly notifier: TunnelNotifier | null;
+  private notifier: TunnelNotifier | null;
   private readonly fetcher: typeof fetch;
 
   private currentHandle: TunnelProviderHandle | null = null;
@@ -239,6 +252,42 @@ export class TunnelManager extends EventEmitter {
     const base = this._legacyState.url.replace(/\/$/, '');
     const p = localPath.startsWith('/') ? localPath : `/${localPath}`;
     return `${base}${p}`;
+  }
+
+  /**
+   * Attach a messaging adapter so the manager can route lifecycle
+   * transitions to the user. Called by `server.ts` after the telegram
+   * adapter is constructed (the tunnel itself is constructed earlier
+   * in startup so it can boot before messaging is wired). Safe to call
+   * once; subsequent calls replace the active notifier.
+   *
+   * Channel routing:
+   *   - Group messages → Dashboard topic (falls back to Lifeline if
+   *     Dashboard isn't ensured yet).
+   *   - Owner DM messages → `sendToOwnerDM` on the adapter (the
+   *     adapter handles "no owner configured" / "owner hasn't DM'd
+   *     the bot yet" failure modes itself).
+   *
+   * The credentialProvider returns the current URL + dashboard PIN
+   * at compose time. The notifier substitutes them into owner-DM
+   * messages; the credentials NEVER appear in group messages.
+   */
+  attachTelegram(adapter: TunnelMessagingAdapter, dashboardPin: () => string | undefined): void {
+    const sink: NotifierSink = {
+      sendGroup: async (text: string) => {
+        const topicId = adapter.getDashboardTopicId() ?? adapter.getLifelineTopicId();
+        if (typeof topicId !== 'number') return; // no group destination
+        await adapter.sendToTopic(topicId, text);
+      },
+      sendOwnerDM: async (text: string) => {
+        await adapter.sendToOwnerDM(text);
+      },
+    };
+    const credentialProvider = () => ({
+      url: this._legacyState.url,
+      pin: dashboardPin(),
+    });
+    this.notifier = new TunnelNotifier({ sink, credentialProvider });
   }
 
   // ── Internals ──────────────────────────────────────────────────

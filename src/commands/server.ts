@@ -7340,6 +7340,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.log(pc.green(`  Auto-generated dashboard PIN: ${pin}`));
           }
 
+          // Wire the tunnel's two-channel notifier to telegram now that
+          // both telegram + Dashboard topic exist. Per
+          // specs/dev-infrastructure/tunnel-failure-resilience.md Part 3:
+          //   - Group messages (status text only) → Dashboard topic.
+          //   - Owner-DM messages (credentials) → telegram.sendToOwnerDM.
+          // The credentialProvider supplies the live URL + current PIN
+          // at compose time so the notifier never holds stale credentials.
+          if (tunnel) {
+            tunnel.attachTelegram(telegram, () => {
+              const live = liveConfig.get<string>('dashboardPin', '');
+              return live || config.dashboardPin;
+            });
+          }
+
           // Only broadcast if we have a tunnel URL — posting localhost to Telegram
           // is useless noise. The user can't access localhost remotely.
           const dashUrl = tunnel?.url;

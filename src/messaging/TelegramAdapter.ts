@@ -43,6 +43,25 @@ export interface TelegramConfig {
   pollIntervalMs?: number;
   /** Authorized Telegram user IDs (only these users' messages are processed) */
   authorizedUserIds?: number[];
+  /**
+   * Owner principal — the single Telegram user id who controls
+   * security-sensitive decisions for this instance (notably the
+   * consent gate for Tier-2 relay tunnels — see
+   * specs/dev-infrastructure/tunnel-failure-resilience.md).
+   *
+   * Why a separate field from `authorizedUserIds`: that set is the
+   * "who may interact with the bot" allowlist (multiple users may
+   * legitimately use the bot for routine interaction), while
+   * `ownerUserId` is the principal who alone may approve actions
+   * with cross-user security impact (relay activation, credential
+   * exposure, etc.). The GPT external review on the tunnel spec
+   * specifically flagged that the consent gate must NOT trust the
+   * broader authorizedUserIds set.
+   *
+   * `sendToOwnerDM()` uses this id as the private-chat target.
+   * Defaults to `promptGate?.ownerId` for back-compat when unset.
+   */
+  ownerUserId?: number;
   /** Voice transcription provider: 'groq' or 'openai' (auto-detects if not set) */
   voiceProvider?: string;
   /** Stall detection timeout in minutes (default: 5, 0 to disable) */
@@ -1004,6 +1023,58 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   getLifelineTopicId(): number | undefined {
     return this.config.lifelineTopicId;
+  }
+
+  /**
+   * Owner principal — the single Telegram user id who controls
+   * security-sensitive decisions for this instance. Falls back to the
+   * promptGate.ownerId for back-compat when ownerUserId isn't
+   * explicitly configured.
+   */
+  getOwnerUserId(): number | undefined {
+    return this.config.ownerUserId ?? this.config.promptGate?.ownerId;
+  }
+
+  /**
+   * Send a private DM to the owner principal. Telegram's bot API
+   * permits the bot to initiate a DM only after the user has messaged
+   * the bot at least once; if the user has never DM'd the bot, the
+   * send will fail with HTTP 403 ("forbidden: bot can't initiate
+   * conversation with a user"). Callers should treat a null return
+   * as a non-fatal degradation, NOT a fatal error.
+   *
+   * Per the tunnel-failure-resilience spec (Part 3 — two-channel
+   * notification), this is the ONLY channel that ever carries the
+   * URL + PIN + signed view links. Group topics get status text
+   * only.
+   *
+   * Returns the SendResult on success; null on any failure (no
+   * owner configured, owner never DM'd the bot, network error,
+   * etc.). All failure paths are logged-not-thrown to preserve the
+   * fire-and-forget contract callers expect for outbound messaging.
+   */
+  async sendToOwnerDM(text: string): Promise<SendResult | null> {
+    const owner = this.getOwnerUserId();
+    if (!owner) {
+      console.warn('[telegram] sendToOwnerDM called but no ownerUserId is configured');
+      return null;
+    }
+    try {
+      const params: Record<string, unknown> = {
+        chat_id: owner,
+        text,
+      };
+      const result = await this.apiCall('sendMessage', params) as { message_id: number };
+      return { messageId: result.message_id };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('forbidden') || msg.includes('403')) {
+        console.warn(`[telegram] sendToOwnerDM forbidden — owner ${owner} hasn't messaged the bot yet`);
+      } else {
+        console.warn(`[telegram] sendToOwnerDM failed: ${msg}`);
+      }
+      return null;
+    }
   }
 
   /**
