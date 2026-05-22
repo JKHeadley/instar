@@ -228,4 +228,84 @@ describe('Org Intent Routes (integration)', () => {
       expect(res.body.warnings.length).toBeGreaterThan(0);
     });
   });
+
+  // ── GET /intent/org/session-context (Phase 2 — session-start injection) ─
+
+  describe('GET /intent/org/session-context', () => {
+    it('returns { present: false } when no ORG-INTENT.md exists', async () => {
+      const res = await request(app).get('/intent/org/session-context');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ present: false });
+    });
+
+    it('returns { present: false } when ORG-INTENT.md is template-only', async () => {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: TemplateOnly',
+        '',
+        '<!-- nothing real yet -->',
+        '',
+        '## Constraints (Mandatory)',
+        '<!-- list constraints -->',
+      ].join('\n'));
+
+      const res = await request(app).get('/intent/org/session-context');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ present: false });
+    });
+
+    it('returns formatted block + counts when ORG-INTENT.md is populated', async () => {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: Acme Co',
+        '',
+        '## Constraints (Mandatory)',
+        '- Never quote internal pricing externally',
+        '- Always disclose AI nature',
+        '',
+        '## Goals (Defaults)',
+        '- Resolve on first contact when possible',
+        '',
+        '## Values',
+        '- Honesty over expedience',
+        '',
+        '## Tradeoff Hierarchy',
+        '- Customer trust over resolution speed',
+        '- Compliance over convenience',
+      ].join('\n'));
+
+      const res = await request(app).get('/intent/org/session-context');
+      expect(res.status).toBe(200);
+      expect(res.body.present).toBe(true);
+      expect(res.body.name).toBe('Acme Co');
+      expect(res.body.counts).toEqual({
+        constraints: 2,
+        goals: 1,
+        values: 1,
+        tradeoffHierarchy: 2,
+      });
+      expect(res.body.block).toContain('=== ORGANIZATIONAL INTENT ===');
+      expect(res.body.block).toContain('Never quote internal pricing externally');
+      expect(res.body.block).toContain('Customer trust over resolution speed');
+      expect(res.body.block).toContain('=== END ORGANIZATIONAL INTENT ===');
+    });
+
+    it('omits empty buckets in the rendered block', async () => {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: GoalsOnly',
+        '',
+        '## Goals (Defaults)',
+        '- Just one goal',
+      ].join('\n'));
+
+      const res = await request(app).get('/intent/org/session-context');
+      expect(res.status).toBe(200);
+      expect(res.body.present).toBe(true);
+      expect(res.body.counts.constraints).toBe(0);
+      expect(res.body.counts.values).toBe(0);
+      expect(res.body.counts.tradeoffHierarchy).toBe(0);
+      expect(res.body.block).toContain('GOALS (organizational defaults');
+      expect(res.body.block).not.toContain('CONSTRAINTS (mandatory');
+      expect(res.body.block).not.toContain('TRADEOFF HIERARCHY (earlier wins');
+    });
+  });
 });
