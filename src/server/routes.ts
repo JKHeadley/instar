@@ -9661,6 +9661,61 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ORG-INTENT drift digest (Phase 4 of the ORG-INTENT runtime project).
+  // Samples recent Coherence Gate review history and emits a drift digest:
+  // overall block rate, per-reviewer breakdown, half-window trend comparison,
+  // and cross-reference against ORG-INTENT constraints/goals/values. SIGNAL
+  // only — never blocks anything. Used by the weekly org-intent-drift-audit
+  // job, surfacable on-demand by the dashboard or any agent.
+  //
+  // Query params:
+  //   ?lookbackDays=N   (default 7)
+  //   ?limit=N          (default 500 — caps the entries pulled from history)
+  router.get('/intent/org/drift', async (req, res) => {
+    try {
+      const lookbackDays = req.query.lookbackDays
+        ? Math.max(1, parseInt(req.query.lookbackDays as string, 10) || 7)
+        : 7;
+      const limit = req.query.limit
+        ? Math.max(1, parseInt(req.query.limit as string, 10) || 500)
+        : 500;
+
+      if (!ctx.responseReviewGate) {
+        res.status(503).json({
+          error: 'Response review pipeline not enabled — drift analysis requires gate review history.',
+        });
+        return;
+      }
+
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      const { analyzeOrgIntentDrift } = await import('../core/OrgIntentDriftAnalyzer.js');
+
+      const manager = new OrgIntentManager(ctx.config.stateDir);
+      const parsed = manager.parse();
+
+      const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+      const history = ctx.responseReviewGate.getReviewHistory({ since, limit });
+
+      const analysis = analyzeOrgIntentDrift({
+        entries: history.map(h => ({
+          timestamp: h.timestamp,
+          verdict: h.verdict,
+          violations: h.violations.map(v => ({
+            reviewer: v.reviewer,
+            severity: v.severity,
+            issue: v.issue,
+          })),
+        })),
+        orgIntent: parsed,
+        lookbackDays,
+      });
+
+      res.json(analysis);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to analyze drift' });
+    }
+  });
+
   router.get('/intent/validate', async (_req, res) => {
     try {
       const { OrgIntentManager } = await import('../core/OrgIntentManager.js');

@@ -205,6 +205,40 @@ Manage it:
     expect(matches.length).toBe(1);
   });
 
+  it('adds Phase 4 drift-detection curl line to a Phase-1+2+3 CLAUDE.md', () => {
+    // A CLAUDE.md that has Phase 1+2+3 but no Phase 4 mention.
+    const phase123Only = PREEXISTING_COHERENCE_GATE_SECTION.replace(
+      '**Topic-Project Bindings**',
+      `#### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, the runtime surfaces consume it.
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Static validation against agent intent: \`instar intent validate\`
+- Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/intent/org\`
+- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/intent/org/session-context\`
+- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:4042/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
+
+**Topic-Project Bindings**`,
+    );
+    fs.writeFileSync(home.claudeMd, phase123Only);
+
+    const migrator = buildMigrator(home.projectDir, home.stateDir);
+    migrator.migrate();
+
+    const content = fs.readFileSync(home.claudeMd, 'utf-8');
+    expect(content).toContain('/intent/org/drift');
+    expect(content).toContain('Surface accumulated drift (Phase 4)');
+    expect(content).toContain('org-intent-drift-audit.md');
+    // Idempotent: re-running doesn't double-insert
+    migrator.migrate();
+    const reread = fs.readFileSync(home.claudeMd, 'utf-8');
+    expect(reread).toBe(content);
+    const matches = reread.match(/\/intent\/org\/drift/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
   it('does not double-insert when CLAUDE.md already contains the subsection', () => {
     // Pre-existing CLAUDE.md already carries the subsection (e.g. from a fresh init)
     const alreadyMigrated = PREEXISTING_COHERENCE_GATE_SECTION.replace(
