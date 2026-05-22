@@ -100,6 +100,20 @@ All recall outcomes return a typed `source` so the caller can observe:
 | `circuit-open` | Breaker is open; recall short-circuits to empty. |
 | `error` | Search threw. Increments circuit counter. |
 
+## Framework coverage — known limitation
+
+**Claude Code only as of v1.0.x.** This feature triggers via Claude Code's `UserPromptSubmit` hook. Codex CLI (the other v1.0 framework option) does not expose an equivalent per-prompt hook surface, so on codex sessions the pre-prompt memory recall does not fire.
+
+This is a deliberate v1 scope choice surfaced by the 2026-05-21 OpenClaw v1.0 re-audit (topic 9003). Three options were considered:
+
+1. Accept Claude-Code-only as v1 scope (selected). Document the limitation. Reversible if codex usage grows.
+2. Wire codex-side trigger via a session-start hook — coarser (recall once per session, not per turn) but available.
+3. Defer entirely until codex usage warrants the design work.
+
+**Why option (1).** The server-side `PromptBuildRecall` primitive itself is framework-agnostic — if codex ever gains a pre-prompt hook (or a session-start trigger becomes acceptable), wiring it is a small follow-up. The asymmetry is honest, documented, and reversible.
+
+**Operator note.** On a topic configured to run codex (`topicFrameworks: { "<topicId>": "codex-cli" }`), the agent's responses on that topic will not benefit from the bounded recall pass. The existing in-skill grounding patterns (`relationship-grounding`, etc.) continue to function as before. SemanticMemory search remains available via direct API call if a codex agent wants to invoke it explicitly.
+
 ## What is NOT in this spec
 
 - **Six prompt styles** (`balanced`, `strict`, etc.). One bias setting (`minConfidence`) is enough for v1.
