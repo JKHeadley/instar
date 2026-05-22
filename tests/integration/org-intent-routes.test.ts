@@ -308,4 +308,76 @@ describe('Org Intent Routes (integration)', () => {
       expect(res.body.block).not.toContain('TRADEOFF HIERARCHY (earlier wins');
     });
   });
+
+  // ── POST /intent/tradeoff-resolve (Phase 3) ────────────────────
+
+  describe('POST /intent/tradeoff-resolve', () => {
+    it('returns no-match when ORG-INTENT.md is absent', async () => {
+      const res = await request(app)
+        .post('/intent/tradeoff-resolve')
+        .send({ valueA: 'speed', valueB: 'quality' });
+      expect(res.status).toBe(200);
+      expect(res.body.winner).toBe(null);
+      expect(res.body.basis).toBe('no-match');
+      expect(res.body.hierarchy).toBe(null);
+    });
+
+    it('resolves via list-order when ORG-INTENT.md has a ranked hierarchy', async () => {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: Acme Co',
+        '',
+        '## Constraints (Mandatory)',
+        '- Always disclose AI nature',
+        '',
+        '## Tradeoff Hierarchy',
+        '- customer trust',
+        '- compliance',
+        '- speed',
+      ].join('\n'));
+
+      const res = await request(app)
+        .post('/intent/tradeoff-resolve')
+        .send({ valueA: 'speed', valueB: 'customer trust' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.winner).toBe('B');
+      expect(res.body.basis).toBe('list-order');
+      expect(res.body.hierarchy).toEqual(['customer trust', 'compliance', 'speed']);
+    });
+
+    it('resolves via pair-pattern when entry uses "X over Y"', async () => {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: Acme Co',
+        '',
+        '## Constraints (Mandatory)',
+        '- Always disclose AI nature',
+        '',
+        '## Tradeoff Hierarchy',
+        '- customer trust over resolution speed',
+      ].join('\n'));
+
+      const res = await request(app)
+        .post('/intent/tradeoff-resolve')
+        .send({ valueA: 'customer trust', valueB: 'speed' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.winner).toBe('A');
+      expect(res.body.basis).toBe('pair-pattern');
+    });
+
+    it('returns 400 when valueA is missing', async () => {
+      const res = await request(app)
+        .post('/intent/tradeoff-resolve')
+        .send({ valueB: 'speed' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Both "valueA" and "valueB"');
+    });
+
+    it('returns 400 when valueB is missing', async () => {
+      const res = await request(app)
+        .post('/intent/tradeoff-resolve')
+        .send({ valueA: 'speed' });
+      expect(res.status).toBe(400);
+    });
+  });
 });

@@ -2169,6 +2169,7 @@ Manage it:
 - Static validation against agent intent: \`instar intent validate\`
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
+- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
 
 **Topic-Project Bindings**: Each Telegram topic can be bound to a specific project. When switching topics, verify the binding matches your current working directory.
 - View bindings: \`GET http://localhost:${port}/topic-bindings\`
@@ -2203,6 +2204,7 @@ Manage it:
 - Static validation against agent intent: \`instar intent validate\`
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
+- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
 `;
       // Anchor: insert after "Topic-Project Bindings" header so it lands inside
       // the Coherence Gate section but before the Project Map subsection.
@@ -2216,6 +2218,24 @@ Manage it:
         content += '\n' + subsection;
         patched = true;
         result.upgraded.push('CLAUDE.md: appended ORG-INTENT.md runtime subsection (anchor missing, fallback insert)');
+      }
+    } else if (
+      content.includes('ORG-INTENT.md (Organizational Intent at Runtime)')
+      && content.includes('/intent/org/session-context')
+      && !content.includes('/intent/tradeoff-resolve')
+    ) {
+      // CLAUDE.md has Phase 1+2 but is missing Phase 3 (tradeoff helper).
+      // Append the tradeoff-resolve curl line to the existing Manage-it
+      // bullet list. Idempotent: substring check above prevents re-insertion.
+      const tradeoffLine = `- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.`;
+      const anchor = `- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\``;
+      const before = content;
+      content = content.replace(anchor, `${anchor}\n${tradeoffLine}`);
+      if (content !== before) {
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Phase 3 tradeoff-resolve curl line to ORG-INTENT subsection');
+      } else {
+        result.skipped.push('CLAUDE.md: ORG-INTENT subsection present but Phase 3 anchor line not found (skipping)');
       }
     } else if (
       content.includes('ORG-INTENT.md (Organizational Intent at Runtime)')
@@ -2237,6 +2257,7 @@ Manage it:
 - Static validation against agent intent: \`instar intent validate\`
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
+- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
 
 `;
       const before = content;

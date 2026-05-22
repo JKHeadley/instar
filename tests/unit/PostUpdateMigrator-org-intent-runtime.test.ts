@@ -173,6 +173,38 @@ If \`.instar/ORG-INTENT.md\` exists on disk, two runtime surfaces consume it: th
     expect(afterSecond).toBe(afterFirst);
   });
 
+  it('adds Phase 3 tradeoff-resolve curl line to a Phase-1+2 CLAUDE.md', () => {
+    // A CLAUDE.md that has Phase 1+2 wording but no Phase 3 curl yet.
+    const phase12Only = PREEXISTING_COHERENCE_GATE_SECTION.replace(
+      '**Topic-Project Bindings**',
+      `#### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, two runtime surfaces consume it: the Coherence Gate (Phase 1) reads it on every outbound message review, and the session-start hook (Phase 2) fetches it at session boot via \`GET /intent/org/session-context\` and injects the structured contract into your context.
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Static validation against agent intent: \`instar intent validate\`
+- Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/intent/org\`
+- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/intent/org/session-context\`
+
+**Topic-Project Bindings**`,
+    );
+    fs.writeFileSync(home.claudeMd, phase12Only);
+
+    const migrator = buildMigrator(home.projectDir, home.stateDir);
+    migrator.migrate();
+
+    const content = fs.readFileSync(home.claudeMd, 'utf-8');
+    expect(content).toContain('/intent/tradeoff-resolve');
+    expect(content).toContain('Resolve a tradeoff via the org hierarchy (Phase 3)');
+    // Single insertion — no duplication on re-run
+    migrator.migrate();
+    const reread = fs.readFileSync(home.claudeMd, 'utf-8');
+    expect(reread).toBe(content);
+    const matches = reread.match(/\/intent\/tradeoff-resolve/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
   it('does not double-insert when CLAUDE.md already contains the subsection', () => {
     // Pre-existing CLAUDE.md already carries the subsection (e.g. from a fresh init)
     const alreadyMigrated = PREEXISTING_COHERENCE_GATE_SECTION.replace(

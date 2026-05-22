@@ -1503,6 +1503,7 @@ Manage it:
 - Validate agent intent against org intent (static analysis): \`instar intent validate\`
 - Inspect the parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
 - Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
+- Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
 
 ## Agent Infrastructure
 

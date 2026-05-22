@@ -9626,6 +9626,41 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime
+  // project). Given two contending values, consults the organization's
+  // tradeoff hierarchy and returns which wins, with the basis for the
+  // decision. Pure logic — no LLM call. Auth-gated like the rest of /intent/*.
+  //
+  // Body: { valueA: string, valueB: string }
+  // Response: TradeoffResolution + { hierarchy: string[] | null }
+  router.post('/intent/tradeoff-resolve', async (req, res) => {
+    const valueA = typeof req.body?.valueA === 'string' ? req.body.valueA : '';
+    const valueB = typeof req.body?.valueB === 'string' ? req.body.valueB : '';
+
+    if (!valueA || !valueB) {
+      res.status(400).json({
+        error: 'Both "valueA" and "valueB" are required string fields in the request body.',
+      });
+      return;
+    }
+
+    try {
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      const { resolveTradeoff } = await import('../core/TradeoffResolver.js');
+      const manager = new OrgIntentManager(ctx.config.stateDir);
+      const parsed = manager.parse();
+      const hierarchy = parsed?.tradeoffHierarchy ?? [];
+
+      const resolution = resolveTradeoff({ valueA, valueB, hierarchy });
+      res.json({
+        ...resolution,
+        hierarchy: parsed ? hierarchy : null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to resolve tradeoff' });
+    }
+  });
+
   router.get('/intent/validate', async (_req, res) => {
     try {
       const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
