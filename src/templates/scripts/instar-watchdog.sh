@@ -538,6 +538,70 @@ handle_bind_fail() {
   fi
 }
 
+# Out-of-process channel for the coordinated lifeline-restart signal.
+# When AutoUpdater / server-426 / PostUpdateMigrator writes
+# state/lifeline-restart-requested.json, the lifeline's own tick loop is the
+# primary consumer. But if that loop is wedged, only an external process can
+# break it. This watchdog runs under its own launchd job (separate process),
+# so it can force-restart a stuck lifeline that can't read its own signal.
+#
+# We act ONLY if the signal is >60s old (giving the in-process consumer first
+# crack) and not expired. On match: bootout/bootstrap the agent's launchd job
+# and delete the signal.
+#
+# Returns 0 if a restart was performed, 1 otherwise.
+check_stale_lifeline_signal() {
+  local project_dir="$1"
+  local label="$2"
+  local plist="$3"
+
+  [ -z "$project_dir" ] || [ ! -d "$project_dir" ] && return 1
+  local signal_file="$project_dir/.instar/state/lifeline-restart-requested.json"
+  [ ! -r "$signal_file" ] && return 1
+
+  local node_bin
+  node_bin=$(resolve_node || true)
+  [ -z "$node_bin" ] && return 1
+
+  # Parse: emit "actionable" if expiresAt>now AND requestedAt < now-60s.
+  local verdict
+  verdict=$("$node_bin" -e '
+    try {
+      const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      const now = Date.now();
+      const exp = Date.parse(s.expiresAt);
+      const req = Date.parse(s.requestedAt);
+      if (!Number.isFinite(exp) || exp <= now) { process.stdout.write("expired"); }
+      else if (Number.isFinite(req) && req < now - 60000) { process.stdout.write("actionable"); }
+      else { process.stdout.write("too-fresh"); }
+    } catch (_) { process.stdout.write("unreadable"); }
+  ' "$signal_file" 2>/dev/null || echo "unreadable")
+
+  case "$verdict" in
+    actionable)
+      log "LIFELINE-SIGNAL: $label — stale coordinated-restart signal (>60s, lifeline did not self-restart), forcing"
+      if ! $DRY_RUN; then
+        launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
+        sleep 1
+        launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
+        # Delete the signal so the next cycle (and the respawned lifeline)
+        # doesn't re-fire on it.
+        rm -f "$signal_file" 2>/dev/null || true
+        log "RELOADED: $label (forced via stale lifeline-restart signal)"
+        return 0
+      else
+        log "DRY-RUN: Would force-restart $label (stale lifeline-restart signal)"
+        return 0
+      fi
+      ;;
+    expired)
+      # Clean up expired signal so it doesn't accumulate.
+      rm -f "$signal_file" 2>/dev/null || true
+      ;;
+  esac
+  return 1
+}
+
 recovered=0
 checked=0
 for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
@@ -554,10 +618,23 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
     exit_status=$(launchctl list "$label" 2>/dev/null | grep '"LastExitStatus"' | grep -o '[0-9]*' || true)
 
     if [ -n "$pid" ] && [ "$pid" != "0" ]; then
-      # Lifeline-level healthy. But the lifeline can be alive while the agent's
-      # server is locked out of its port (e.g. port collision with a peer).
-      # Run the bind-probe to catch that.
+      # Lifeline-level healthy. But the lifeline can be alive while either
+      # (a) its server is locked out of its port (port collision), or (b) it
+      # has a stale coordinated-restart signal pending that its own tick
+      # loop failed to act on. Check both before declaring OK.
       project_dir=$(get_project_dir "$plist")
+
+      # First: stale coordinated-restart signal. If the lifeline didn't read
+      # its own signal within 60s, force a restart from out-of-process. This
+      # is the third channel (alongside the in-process tick reader and the
+      # ServerSupervisor) — runs in a separate launchd job so it can break
+      # a wedged event loop the others can't.
+      if check_stale_lifeline_signal "$project_dir" "$label" "$plist"; then
+        recovered=$((recovered + 1))
+        continue
+      fi
+
+      # Second: bind-probe (port collision / server-locked-out case).
       probe_out=$(probe_server_identity "$project_dir" "$label")
       probe_rc=$?
       if [ "$probe_rc" -eq 0 ]; then

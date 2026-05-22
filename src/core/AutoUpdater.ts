@@ -28,6 +28,7 @@ import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
 import type { SessionManagerLike, SessionMonitorLike } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -667,12 +668,13 @@ export class AutoUpdater {
    * self-restart, which can loop or leave the port bound.
    */
   private requestRestart(newVersion: string): void {
+    const previousVersion = this.updateChecker.getInstalledVersion();
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
     const data = {
       requestedAt: new Date().toISOString(),
       requestedBy: 'auto-updater',
       targetVersion: newVersion,
-      previousVersion: this.updateChecker.getInstalledVersion(),
+      previousVersion,
       plannedRestart: true, // Signals lifeline/supervisor: this is maintenance, not a crash
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour TTL (was 10 min — too short for foreground mode)
       pid: process.pid,
@@ -687,6 +689,30 @@ export class AutoUpdater {
     } catch (err) {
       console.error(`[AutoUpdater] Failed to write restart request: ${err}`);
       console.error('[AutoUpdater] Update was applied but a manual restart is needed.');
+    }
+
+    // Version-skew coordination: when this update crosses a major.minor
+    // boundary, the running lifeline process is on the OLD major.minor and
+    // will be rejected by the new server's /internal/telegram-forward with
+    // HTTP 426. Write a sibling signal so the lifeline restarts onto the
+    // matching version in the same maintenance window. Spec:
+    // docs/specs/auto-updater-lifeline-coordination.md.
+    if (crossesBreaking(previousVersion, newVersion)) {
+      try {
+        const outcome = writeLifelineRestartSignal({
+          stateDir: this.stateDir,
+          requestedBy: 'auto-updater',
+          reason: 'version-bump-crossing-major-minor',
+          previousVersion,
+          targetVersion: newVersion,
+        });
+        console.log(
+          `[AutoUpdater] Lifeline restart signaled (${outcome}) — ` +
+          `crossed major.minor from v${previousVersion} to v${newVersion}`,
+        );
+      } catch (err) {
+        console.error(`[AutoUpdater] Failed to write lifeline restart signal: ${err}`);
+      }
     }
   }
 

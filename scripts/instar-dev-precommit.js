@@ -330,6 +330,134 @@ if (staged.includes(spec) && !staged.includes(eli16Rel)) {
   );
 }
 
+// ─── Step 7.5: orphan deferrals must be tracked ───────────────────────────
+// Why: on 2026-05-20 PR #284 shipped four of five fixes for a version-skew
+// failure class and explicitly deferred the fifth ("lifeline auto-restart on
+// server upgrade — out of scope today"). Two days later that exact deferral
+// produced the same outage. Per user feedback 2026-05-22: "WE NEED TO CHANGE
+// THIS. Our development work should focus on COMPLETE features/fixes with NO
+// deferrals." This check makes the rule structural: any spec that contains
+// "deferred / out of scope today / follow-up / preemptive fix / NOT in this
+// PR" language must explicitly track each instance (HTML comment marker
+// `<!-- tracked: <id> -->` within 200 chars, or a frontmatter
+// `deferrals-tracked` field). Override via INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS=1
+// (logged for visibility).
+//
+// Detector patterns intentionally conservative — false-positives are cheaper
+// than false-negatives here. The author can either link a tracker or rephrase
+// the sentence to not promise a deferral.
+// Patterns: { regex, requireUnnegated } — when requireUnnegated is true,
+// we skip the match if the immediately-preceding chars contain "no ", "non-",
+// "non ", "non", or "un" (so "no deferrals" / "non-deferred" / "undeferred"
+// don't false-alarm).
+//
+// Reviewer feedback 2026-05-22: the prior implementation honored a
+// `deferrals-tracked:` frontmatter wave-through that short-circuited the
+// entire body scan. That was a loophole — a future author could write
+// `deferrals-tracked: see below` and ship orphan deferrals with no
+// validation. Closed: every body hit must have its own inline tracker
+// marker within 200 chars. The §"Deferrals tracked" section in the spec is
+// still useful as a human-readable catalog, but no longer a bypass.
+const DEFERRAL_PATTERNS = [
+  { regex: /\bdeferred?\b/gi, requireUnnegated: true },
+  { regex: /\bdeferrals?\b/gi, requireUnnegated: true },
+  { regex: /\bout of scope today\b/gi, requireUnnegated: false },
+  { regex: /\bout of scope for now\b/gi, requireUnnegated: false },
+  { regex: /\bnot in this pr\b/gi, requireUnnegated: false },
+  { regex: /\bpreemptive fix\b/gi, requireUnnegated: false },
+  // Match standalone "follow-up" / "follow-ups" / "followups" mentions.
+  // Reviewer broadened from the prior narrow "(?!\s+(?:are\s+)?tracked)"
+  // exclusion — that only handled "follow-ups tracked" / "follow-ups are
+  // tracked" and false-positived on natural variants. We now require the
+  // 200-char tracker-marker check to do the work uniformly.
+  { regex: /\bfollow[- ]?ups?\b/gi, requireUnnegated: false },
+];
+const TRACKED_NEAR_HIT_CHARS = 200;
+const TRACKED_MARKER = /<!--\s*tracked:\s*[A-Za-z0-9._/-]+\s*-->/;
+const NEGATION_BEFORE = /(?:\b(?:no|non-?|un)[- ]?)$/i;
+
+function findOrphanDeferrals(content) {
+  const orphans = [];
+  for (const { regex, requireUnnegated } of DEFERRAL_PATTERNS) {
+    regex.lastIndex = 0;
+    let m;
+    while ((m = regex.exec(content)) !== null) {
+      const start = m.index;
+      if (requireUnnegated) {
+        // Look at up to 8 chars immediately before the match. Treat
+        // matches preceded by "no ", "non-", "non ", "un" as legitimate
+        // negations (false-positive guard for "no deferrals", "non-
+        // deferred", "undeferred").
+        const before = content.slice(Math.max(0, start - 8), start);
+        if (NEGATION_BEFORE.test(before)) continue;
+      }
+      const end = Math.min(content.length, start + m[0].length + TRACKED_NEAR_HIT_CHARS);
+      const slice = content.slice(start, end);
+      if (TRACKED_MARKER.test(slice)) continue;
+      // Compute line number for the operator's diagnostic.
+      const beforeAll = content.slice(0, start);
+      const lineNo = (beforeAll.match(/\n/g) || []).length + 1;
+      orphans.push({ pattern: regex.source, match: m[0], lineNo });
+      if (orphans.length >= 16) return orphans; // cap noise (was 8; widened patterns may trip more)
+    }
+  }
+  return orphans;
+}
+
+const orphans = findOrphanDeferrals(specContent);
+if (orphans.length > 0) {
+  const override = process.env.INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS === '1';
+  if (override) {
+    // Log the override for visibility — every use is audited.
+    try {
+      const logPath = path.join(TRACES_DIR, 'orphan-deferral-overrides.jsonl');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(
+        logPath,
+        JSON.stringify({
+          at: new Date().toISOString(),
+          spec,
+          orphans,
+          stagedFiles: inScopeFiles,
+        }) + '\n',
+      );
+      console.warn(
+        `[instar-dev-precommit] WARN: INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS=1 — ` +
+        `${orphans.length} orphan deferral(s) in ${spec} bypassed and logged to ${path.relative(ROOT, logPath)}`,
+      );
+    } catch { /* logging is best-effort */ }
+  } else {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Spec ${spec} contains ${orphans.length} orphan deferral mention(s) — each must be tracked.`,
+        '',
+        ...orphans.map(o => `  • line ${o.lineNo}: "${o.match}"`),
+        '',
+        'Why this rule exists:',
+        '  On 2026-05-20 a PR shipped 4 of 5 fixes for a failure class and',
+        '  explicitly deferred the 5th. Two days later that exact deferral',
+        '  produced the same outage. Deferrals are how regressions happen.',
+        '',
+        'How to resolve each one:',
+        '  (a) Move the work into this PR (preferred — eliminates the deferral).',
+        '  (b) Add a tracked marker within 200 chars of the mention:',
+        '      `<!-- tracked: <id> -->` where <id> is an issue, topic, or',
+        '      commitment-action ID that owns the follow-up.',
+        '  (c) Rephrase the sentence so it no longer promises a deferral',
+        '      (e.g. quote the historical phrase verbatim with surrounding',
+        '      context that makes the non-prescriptive intent obvious).',
+        '',
+        'Emergency override (logged + audited):',
+        '  INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS=1 git commit ...',
+        '  Use only when the deferral language is in a non-prescriptive context',
+        '  (e.g. quoting an old spec). Every use lands in',
+        '  .instar/instar-dev-traces/orphan-deferral-overrides.jsonl for review.',
+      ].join('\n'),
+    );
+  }
+}
+
 // ─── Step 8: proposal-derived runbook gate (S-3) ─────────────────────────
 // Per SELF-HEALING-REMEDIATOR-V2-SPEC §A11/§A22/§A32, runbook source files
 // emitted by the SystemReviewer proposal pipeline must:

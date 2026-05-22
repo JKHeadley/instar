@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export type RestartBucket = 'watchdog' | 'versionSkew';
+export type RestartBucket = 'watchdog' | 'versionSkew' | 'plannedUpgrade';
 
 export interface RestartHistoryEntry {
   at: string;           // ISO
@@ -110,22 +110,27 @@ export function decide(
   const state = outcome.state;
   const elapsed = Math.max(0, now - Date.parse(state.lastRestartAt));
 
-  // versionSkew is a HARD INCOMPATIBILITY signal (HTTP 426 from the
-  // /internal/telegram-forward endpoint). No amount of cooldown waiting
-  // makes the wrong-version lifeline suddenly compatible — only a
-  // restart resolves it. So we bypass the watchdog cooldown for this
-  // bucket. The daily cap (below) still applies as the loop-safety
-  // backstop so a misconfigured version handshake can't infinitely
-  // restart-cycle.
-  if (bucket !== 'versionSkew' && elapsed < WATCHDOG_COOLDOWN_MS) {
+  // versionSkew + plannedUpgrade are HARD INCOMPATIBILITY signals.
+  // versionSkew = lifeline detected a 426 from /internal/telegram-forward.
+  // plannedUpgrade = AutoUpdater / server / migrator wrote a coordinated
+  //                  restart signal because a major.minor crossing happened.
+  // Neither can be cured by waiting; only a restart resolves them. So we
+  // bypass the watchdog cooldown for both. The daily cap (below) still
+  // applies as the loop-safety backstop so a misconfigured handshake
+  // can't infinitely restart-cycle.
+  const isHardSkewBucket = bucket === 'versionSkew' || bucket === 'plannedUpgrade';
+  if (!isHardSkewBucket && elapsed < WATCHDOG_COOLDOWN_MS) {
     return { allowed: false, reason: 'cooldown-active' };
   }
 
-  if (bucket === 'versionSkew') {
-    const recentSkew = state.history.filter(
-      h => h.bucket === 'versionSkew' && now - Date.parse(h.at) < 24 * 60 * 60 * 1000
+  if (isHardSkewBucket) {
+    // Both buckets count toward the same daily cap so a misbehaving signal
+    // can't sneak past via bucket-hopping.
+    const recentHardSkew = state.history.filter(
+      h => (h.bucket === 'versionSkew' || h.bucket === 'plannedUpgrade') &&
+           now - Date.parse(h.at) < 24 * 60 * 60 * 1000
     ).length;
-    if (recentSkew >= VERSION_SKEW_DAILY_CAP) {
+    if (recentHardSkew >= VERSION_SKEW_DAILY_CAP) {
       return { allowed: false, reason: 'version-skew-daily-cap' };
     }
   }

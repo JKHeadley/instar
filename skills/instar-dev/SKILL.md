@@ -98,6 +98,30 @@ The review must answer each of the following in writing. "No issue identified" i
 6. **External surfaces** — does it change anything visible to other agents, other users, other systems? Does it depend on timing, conversation state, or runtime conditions we can't fully control?
 7. **Rollback cost** — if this turns out wrong in production, what's the back-out? Hot-fix release? Data migration? Agent state repair?
 
+### Phase 4.5 — No-deferrals check (enforced in pre-commit)
+
+The most reliable way to create a regression is to ship a partial fix and defer the rest. We've seen this twice in one week: PR #284 (2026-05-20) shipped four of five fixes for a version-skew failure class and explicitly deferred the fifth as "out of scope today." Two days later that exact deferral produced the same outage in a new agent.
+
+Per direct user feedback (2026-05-22): "WE NEED TO CHANGE THIS. Our development work should focus on COMPLETE features/fixes with NO deferrals."
+
+The pre-commit hook (`scripts/instar-dev-precommit.js`) now scans the spec frontmatter and body for orphan deferral language:
+
+- `deferred` / `deferred for later`
+- `out of scope today` / `out of scope for now`
+- `not in this PR`
+- `preemptive fix`
+- `follow-up` (unless already linked to a tracker)
+
+Each occurrence must be linked within 200 chars to a tracked marker — `<!-- tracked: <issue-id, topic-id, or commitment-action-id> -->`. There is no spec-level wave-through; the frontmatter `deferrals-tracked` field was removed after reviewer feedback noted it was a loophole (an author could write `deferrals-tracked: see below` and ship orphan deferrals undetected).
+
+**Bootstrap-commit exception.** The very PR that ADDS the rule must describe the rule's vocabulary extensively (so future authors know what trips it). That bootstrap commit uses the `INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS=1` env override; the audit log entry in `.instar/instar-dev-traces/orphan-deferral-overrides.jsonl` is the structural visibility. Future PRs are subject to the full rule.
+
+If the check finds an orphan deferral, the commit is blocked. The block message explains how to resolve it (move work into the PR, add a tracked marker, or rephrase).
+
+**Emergency override:** `INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS=1 git commit ...` — but every use is logged to `.instar/instar-dev-traces/orphan-deferral-overrides.jsonl` for visibility. Use only when the deferral language appears in a non-prescriptive context (e.g. quoting an old spec for historical comparison).
+
+The point of this rule is structural — moving the "no deferrals" commitment from agent willpower into a hook that can't be forgotten.
+
 ### Phase 5 — Second-pass review (for high-risk changes)
 
 If the change touches any of the following, the agent spawns a dedicated reviewer subagent whose only job is to independently audit the artifact from Phase 4:

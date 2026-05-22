@@ -1,0 +1,31 @@
+{
+  "phase": "complete",
+  "slug": "auto-updater-lifeline-coordination",
+  "coveredFiles": [
+    "src/core/version-skew.ts",
+    "src/core/AutoUpdater.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/RestartOrchestrator.ts",
+    "src/lifeline/rateLimitState.ts",
+    "src/server/routes.ts",
+    "src/templates/scripts/instar-watchdog.sh",
+    "scripts/instar-dev-precommit.js",
+    "skills/instar-dev/SKILL.md",
+    "tests/unit/core/version-skew.test.ts",
+    "tests/unit/lifeline/rateLimitState-plannedUpgrade.test.ts",
+    "tests/unit/core/PostUpdateMigrator-staleLifelineSignal.test.ts",
+    "tests/unit/instar-dev-precommit-deferrals.test.ts",
+    "tests/integration/auto-updater-lifeline-handshake.test.ts",
+    "docs/specs/auto-updater-lifeline-coordination.md",
+    "docs/specs/auto-updater-lifeline-coordination.eli16.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/auto-updater-lifeline-coordination.md"
+  ],
+  "artifactPath": "upgrades/side-effects/auto-updater-lifeline-coordination.md",
+  "artifactSha256": "4d443ebcf43f6ad5ab136c546fcd77b9d7ad55accac8bfa763177162c5071790",
+  "specPath": "docs/specs/auto-updater-lifeline-coordination.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "createdAt": "2026-05-22T23:19:59.000Z"
+}

@@ -37,6 +37,10 @@ import pc from 'picocolors';
 import { loadConfig, ensureStateDir, detectTmuxPath, getInstarVersion } from '../core/Config.js';
 import { registerAgent, unregisterAgent, startHeartbeat } from '../core/AgentRegistry.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  readLifelineRestartSignal,
+  clearLifelineRestartSignal,
+} from '../core/version-skew.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the lifeline on older Node versions
 // import { installAutoStart } from '../commands/setup.js';
@@ -246,6 +250,7 @@ export class TelegramLifeline {
   private offsetPath: string;
   private stopHeartbeat: (() => void) | null = null;
   private replayInterval: ReturnType<typeof setInterval> | null = null;
+  private restartSignalInterval: ReturnType<typeof setInterval> | null = null;
   private lifelineTopicId: number | null = null;
   private lockPath: string;
   private consecutive409s = 0;
@@ -440,6 +445,20 @@ export class TelegramLifeline {
       }
     }, 15_000);
 
+    // Coordinated restart channel: every 30s, check for a lifeline-restart
+    // signal written by the AutoUpdater (major.minor crossing), the server
+    // (426 evidence), or the PostUpdateMigrator (one-time stale-lifeline
+    // bootstrap). On match, restart via the planned-upgrade bucket which
+    // bypasses the watchdog cooldown.
+    // Spec: docs/specs/auto-updater-lifeline-coordination.md
+    this.restartSignalInterval = setInterval(() => {
+      this.checkLifelineRestartSignal();
+    }, 30_000);
+    // Run once immediately so a fresh lifeline picks up a signal written
+    // before it started (e.g. by PostUpdateMigrator during the previous
+    // launchctl cycle).
+    this.checkLifelineRestartSignal();
+
     // Stage B: install the restart orchestrator and health watchdog.
     // In unsupervised mode (no INSTAR_SUPERVISED=1 and no launchd parent),
     // the orchestrator emits signals and logs but skips process.exit.
@@ -508,6 +527,7 @@ export class TelegramLifeline {
     this.polling = false;
     if (this.pollTimeout) clearTimeout(this.pollTimeout);
     if (this.replayInterval) { clearInterval(this.replayInterval); this.replayInterval = null; }
+    if (this.restartSignalInterval) { clearInterval(this.restartSignalInterval); this.restartSignalInterval = null; }
     if (this.watchdog) this.watchdog.stop();
     try { if (this.stopHeartbeat) this.stopHeartbeat(); } catch { /* non-critical */ }
     try { unregisterAgent(this.projectConfig.projectDir + '-lifeline'); } catch { /* non-critical */ }
@@ -1289,6 +1309,48 @@ export class TelegramLifeline {
     this.initiateRestart('versionSkew', 'version-skew', {
       serverVersion: body.serverVersion,
       lifelineVersion: this.lifelineVersion,
+    });
+  }
+
+  /**
+   * Per-tick check of the coordinated-restart signal file.
+   *
+   * Three independent writers (AutoUpdater on major.minor crossing; the
+   * server on a 426 forward; PostUpdateMigrator's one-time stale-lifeline
+   * bootstrap) drop a signal at `state/lifeline-restart-requested.json`.
+   * We read it, validate, delete it (so a respawn doesn't re-fire), and
+   * call initiateRestart on the `plannedUpgrade` bucket which bypasses
+   * the watchdog cooldown.
+   *
+   * Spec: docs/specs/auto-updater-lifeline-coordination.md
+   */
+  private checkLifelineRestartSignal(): void {
+    let signal;
+    try {
+      signal = readLifelineRestartSignal(this.projectConfig.stateDir);
+    } catch (err) {
+      console.warn(`[Lifeline] failed to read restart signal: ${err}`);
+      return;
+    }
+    if (!signal) return;
+    // Same-version no-op: a respawned lifeline that already matches the
+    // target version should clear the stale signal and not loop.
+    if (signal.targetVersion === this.lifelineVersion) {
+      clearLifelineRestartSignal(this.projectConfig.stateDir);
+      return;
+    }
+    // First step: delete the file. If initiateRestart goes through, the
+    // process exits and a fresh lifeline starts on the new version — it
+    // must not re-read the same signal.
+    clearLifelineRestartSignal(this.projectConfig.stateDir);
+    console.log(
+      `[Lifeline] coordinated restart signal received from ${signal.requestedBy}: ` +
+      `v${signal.previousVersion} → v${signal.targetVersion} (${signal.reason})`,
+    );
+    this.initiateRestart('plannedUpgrade', signal.reason, {
+      requestedBy: signal.requestedBy,
+      previousVersion: signal.previousVersion,
+      targetVersion: signal.targetVersion,
     });
   }
 

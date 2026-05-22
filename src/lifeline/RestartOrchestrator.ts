@@ -25,7 +25,7 @@ export type RestartState = 'idle' | 'quiescing' | 'persisting' | 'exiting';
 
 export interface RestartRequest {
   reason: string;              // e.g., 'noForwardStuck', 'version-skew', 'external-signal'
-  bucket: 'watchdog' | 'versionSkew';
+  bucket: 'watchdog' | 'versionSkew' | 'plannedUpgrade';
   context?: Record<string, unknown>;
 }
 

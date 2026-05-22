@@ -31,6 +31,7 @@ import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
+import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { installAutoStart } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
@@ -195,6 +196,7 @@ export class PostUpdateMigrator {
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
     this.migrateBootWrapperToCjs(result);
+    this.migrateStaleLifelineSignal(result);
 
     return result;
   }
@@ -221,6 +223,75 @@ export class PostUpdateMigrator {
   // rollback safe and avoids any race where launchd is mid-restart on the
   // old path. The relevant fix is the plist+wrapper coherence going
   // forward, not retroactive file cleanup.
+  // ── Stale-lifeline coordinated-restart bootstrap ────────────────────
+  //
+  // When an agent's running lifeline is on a pre-coordination version of
+  // instar (no in-process signal-file consumer), the auto-updater can bump
+  // the server through many minor releases over hours/days and the lifeline
+  // never restarts. We saw this twice in three days (b2lead-insights
+  // 2026-05-19 → 2026-05-22). Spec:
+  // docs/specs/auto-updater-lifeline-coordination.md
+  //
+  // This migration runs once per agent update. If the running lifeline
+  // version (recorded in `lifeline-started-at.json`) crosses major.minor
+  // against the version this migrator is part of, we write the coordinated-
+  // restart signal. The fleet watchdog (out-of-process) picks the signal up
+  // within ~5 min and force-restarts the lifeline; in-process consumers
+  // pick it up faster.
+  //
+  // Idempotent: writeLifelineRestartSignal skips when a fresh signal for
+  // the same targetVersion already exists.
+  private migrateStaleLifelineSignal(result: MigrationResult): void {
+    const lifelineStartedAtPath = path.join(this.config.stateDir, 'lifeline-started-at.json');
+    if (!fs.existsSync(lifelineStartedAtPath)) {
+      result.skipped.push('stale-lifeline-signal: no lifeline-started-at.json (lifeline never ran here)');
+      return;
+    }
+
+    let lifelineVersion: string | null = null;
+    try {
+      const data = JSON.parse(fs.readFileSync(lifelineStartedAtPath, 'utf-8')) as { version?: string };
+      lifelineVersion = data.version ?? null;
+    } catch {
+      result.skipped.push('stale-lifeline-signal: lifeline-started-at.json unreadable');
+      return;
+    }
+
+    if (!lifelineVersion) {
+      result.skipped.push('stale-lifeline-signal: no version field in lifeline-started-at.json');
+      return;
+    }
+
+    let installedVersion: string;
+    try {
+      const pkgPath = path.resolve(__dirname, '..', '..', 'package.json');
+      installedVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version as string;
+    } catch {
+      result.skipped.push('stale-lifeline-signal: could not read installed package.json');
+      return;
+    }
+
+    if (!crossesBreaking(lifelineVersion, installedVersion)) {
+      result.skipped.push(`stale-lifeline-signal: lifeline v${lifelineVersion} same major.minor as v${installedVersion}`);
+      return;
+    }
+
+    try {
+      const outcome = writeLifelineRestartSignal({
+        stateDir: this.config.stateDir,
+        requestedBy: 'post-update-migrator-bootstrap',
+        reason: 'stale-lifeline-bootstrap',
+        previousVersion: lifelineVersion,
+        targetVersion: installedVersion,
+      });
+      result.upgraded.push(
+        `stale-lifeline-signal: ${outcome} (lifeline v${lifelineVersion} → v${installedVersion})`,
+      );
+    } catch (err) {
+      result.errors.push(`stale-lifeline-signal: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateBootWrapperToCjs(result: MigrationResult): void {
     if (process.platform !== 'darwin') {
       result.skipped.push('boot-wrapper .cjs: non-darwin, no plist to migrate');
@@ -2006,6 +2077,32 @@ setTimeout(() => process.exit(0), 2000);
 
     let patched = false;
     const port = this.config.port;
+
+    // Version-Skew Self-Recovery section
+    // Tells the agent what's happening when the lifeline+server temporarily
+    // mismatch versions during an auto-update. Without this, agents diagnose
+    // their own "ingress paused" alerts as a problem the user has to solve.
+    if (!content.includes('Version-Skew Self-Recovery') && !content.includes('coordinated lifeline restart')) {
+      const versionSkewSection = `
+### Version-Skew Self-Recovery
+
+When my server auto-updates across a major.minor boundary, my lifeline (the process that polls Telegram) needs to restart onto the matching version. This is now coordinated automatically:
+
+- The auto-updater writes a coordinated-restart signal whenever it bumps major.minor.
+- My lifeline reads the signal on its next tick (within 30s) and self-restarts.
+- If my lifeline tick loop is wedged, the out-of-process fleet watchdog catches it within ~5 minutes and force-restarts via launchd.
+- Belt-and-suspenders: the server itself writes the same signal whenever it returns HTTP 426 on \`/internal/telegram-forward\`.
+
+**What the user might see:** a one-time Telegram alert *"Heads up: my server auto-updated to v… but my lifeline is still on v… Ingress is paused until the lifeline restarts onto the new version. Your messages are NOT lost — they will replay automatically on recovery."* — followed by a quiet recovery within 30s to 5 min. No action needed.
+
+I should NEVER manually touch \`state/lifeline-restart-requested.json\` — it's purely managed by infrastructure (AutoUpdater, server, PostUpdateMigrator, fleet watchdog).
+
+Spec: \`docs/specs/auto-updater-lifeline-coordination.md\` (in the instar repo).
+`;
+      content += '\n' + versionSkewSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Version-Skew Self-Recovery section');
+    }
 
     // Self-Discovery section
     if (!content.includes('Self-Discovery') && !content.includes('/capabilities')) {

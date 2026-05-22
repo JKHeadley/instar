@@ -19,6 +19,7 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig } from '../core/types.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
+import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
@@ -8249,6 +8250,24 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       const decision = compareVersions(_serverVersionParsed, clientVersion);
       if (decision.kind === 'upgrade-required') {
+        // Second-channel coordination: the running lifeline is on an
+        // incompatible major.minor. Write the lifeline-restart signal so
+        // that even if AutoUpdater missed the boundary (deferred restart,
+        // lockfile race, etc.), the lifeline self-corrects on its next
+        // tick / supervisor poll. Idempotent vs. AutoUpdater's prior write.
+        try {
+          writeLifelineRestartSignal({
+            stateDir: ctx.config.stateDir,
+            requestedBy: 'server-426',
+            reason: 'server-426-direct-evidence',
+            previousVersion: lifelineVersion,
+            targetVersion: decision.serverVersionString,
+          });
+        } catch (err) {
+          // Non-fatal — the 426 response itself still drives the lifeline's
+          // in-process versionSkew handler. The signal is belt-and-suspenders.
+          console.warn(`[telegram-forward] failed to write lifeline-restart signal: ${err}`);
+        }
         res.status(426).json({
           ok: false,
           upgradeRequired: true,
