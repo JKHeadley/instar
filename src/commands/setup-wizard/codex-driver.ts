@@ -18,13 +18,15 @@
  * driving the browser, that's its strength).
  */
 
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import pc from 'picocolors';
 import {
   buildFreshProjectInstall,
   INITIAL_STATE,
+  resolveChoice,
   type WizardAnswers,
   type WizardState,
   type WizardAction,
@@ -291,16 +293,45 @@ async function renderNarrativeState(
   // resolveChoice fallback so the wizard doesn't crash.
   for (let attempt = 0; attempt < 5; attempt++) {
     const answer = await askUser('  > ');
-    if (!state.validate) return answer;
+    if (!state.validate) {
+      echoChoice(state, answer);
+      return answer;
+    }
     const validationMsg = state.validate(answer);
-    if (validationMsg === null) return answer;
+    if (validationMsg === null) {
+      echoChoice(state, answer);
+      return answer;
+    }
     console.log();
     console.log(pc.yellow(`  ${validationMsg}`));
     console.log();
   }
   // Last-resort: take whatever was last typed even if invalid. The
   // state machine's `next` should still produce a usable transition.
-  return askUser('  > ');
+  const answer = await askUser('  > ');
+  echoChoice(state, answer);
+  return answer;
+}
+
+/**
+ * For choice prompts, echo the resolved label back to the user as a
+ * confirmation line ("→ Proactive"). For text prompts, no-op — the
+ * answer is the answer.
+ *
+ * This closes the v1.2.14 confusion where typing "Proactive" or
+ * "Telegram" got correctly interpreted by resolveChoice but the
+ * wizard never showed the user what selection it understood.
+ */
+function echoChoice(
+  state: Extract<WizardState, { kind: 'narrative-then-prompt' }>,
+  answer: string,
+): void {
+  if (state.input.kind !== 'choice') return;
+  const matched = resolveChoice(answer, state.input.choices);
+  if (!matched) return;
+  const choice = state.input.choices.find((c) => c.value === matched);
+  if (!choice) return;
+  console.log(pc.dim(`  → ${choice.label}`));
 }
 
 /**
@@ -337,13 +368,16 @@ async function runAction(
     }
 
     case 'add-user': {
-      const id = (answers.userName || 'user').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const id = (answers.userName || 'user').toLowerCase().replace(/[^a-z0-9]/g, '') || 'user';
       const name = answers.userName || 'User';
       try {
+        // `instar user add` reads project from cwd — does NOT accept
+        // -d/--dir (pre-fix passed it and the CLI errored "unknown
+        // option '-d'"). Set cwd on the spawn instead.
         execFileSync(
           'npx',
-          ['instar', 'user', 'add', '-d', options.projectDir, '--id', id, '--name', name],
-          { stdio: 'inherit' },
+          ['instar', 'user', 'add', '--id', id, '--name', name],
+          { stdio: 'inherit', cwd: options.projectDir },
         );
       } catch {
         // non-fatal
@@ -353,7 +387,12 @@ async function runAction(
 
     case 'start-server': {
       try {
-        execFileSync('npx', ['instar', 'server', 'start', '-d', options.projectDir], { stdio: 'inherit' });
+        // server start accepts -d, but pass cwd too for consistency.
+        execFileSync(
+          'npx',
+          ['instar', 'server', 'start', '-d', options.projectDir],
+          { stdio: 'inherit', cwd: options.projectDir },
+        );
         return { serverStarted: true };
       } catch {
         return { serverStarted: false };
@@ -362,7 +401,11 @@ async function runAction(
 
     case 'install-autostart': {
       try {
-        execFileSync('npx', ['instar', 'autostart', 'install', '-d', options.projectDir], { stdio: 'inherit' });
+        execFileSync(
+          'npx',
+          ['instar', 'autostart', 'install', '-d', options.projectDir],
+          { stdio: 'inherit', cwd: options.projectDir },
+        );
       } catch {
         // non-fatal
       }
@@ -398,62 +441,199 @@ async function runAction(
 }
 
 /**
- * Telegram setup — the agentic phase. Spawns Codex with a tight
- * Telegram-specific prompt and Playwright access. Codex's
- * execution-orientation is an asset here.
+ * Telegram setup — instar-native flow.
+ *
+ * Previously this spawned `codex exec` and asked it to walk the user
+ * through BotFather. But `codex exec` is non-interactive (single-turn,
+ * stdin already consumed by the prompt), so it couldn't wait for the
+ * user to paste a token. The spawned session printed manual
+ * instructions, ended, and the wizard recorded "telegramConfigured:
+ * true" without anything actually configured.
+ *
+ * The fix: drive the entire Telegram setup from instar with readline +
+ * the Telegram Bot API. No LLM session is involved. We:
+ *
+ *  1. Print clear BotFather instructions.
+ *  2. Prompt the user for the bot token, validate via getMe.
+ *  3. Prompt the user to add the bot to a group and send a message,
+ *     then call getUpdates to extract the chat ID.
+ *  4. Write the token + chat ID into .instar/config.json's messaging[].
+ *
+ * Failure modes (network down, user can't paste, etc.) gracefully
+ * skip with a clear "you can finish setup later" pointer, but never
+ * silently mark the channel as configured when it isn't.
  */
 async function runTelegramSetup(options: CodexDriverOptions): Promise<Partial<WizardAnswers>> {
-  const skillPath = path.join(
-    options.instarRoot,
-    '.claude',
-    'skills',
-    'setup-wizard',
-    'SKILL.md',
-  );
-  // Inline Codex-specific Telegram-only prompt. The skill text isn't
-  // perfect for Codex but the Telegram-via-Playwright phase is
-  // primarily execution (open browser, click buttons, capture token),
-  // which Codex handles well.
-  const telegramPrompt = `
-You are completing the Telegram messaging setup for an instar agent
-already initialized at ${options.projectDir}.
+  console.log();
+  console.log(pc.bold('  Telegram setup'));
+  console.log(pc.dim('  This takes about 2 minutes. I\'ll walk you through each step.'));
+  console.log();
+  console.log(pc.bold('  Step 1 of 3 — Create a bot'));
+  console.log('  • Open https://web.telegram.org/a/ in your browser');
+  console.log('  • Search for @BotFather and start a chat');
+  console.log('  • Send /newbot and follow the prompts:');
+  console.log('      – Display name (e.g. "Instar Codey")');
+  console.log('      – Username (must end with "bot", e.g. "instar_codey_bot")');
+  console.log('  • BotFather will reply with a token like 1234567890:AAH...');
+  console.log();
 
-Your task is OPERATIONAL and BOUNDED:
-1. Open Telegram Web in a browser via Playwright (if Playwright MCP
-   tools are available; otherwise fall back to printing manual steps).
-2. Help the user create a bot via BotFather.
-3. Capture the bot token and chat ID.
-4. Write them to .instar/config.json under messaging[].config.
+  let token = '';
+  let botUsername = '';
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const input = (await askUser('  Paste the bot token here: ')).trim();
+    if (!input) {
+      console.log(pc.yellow('  That looked blank — paste the token from BotFather (the long string).'));
+      continue;
+    }
+    console.log(pc.dim('  Verifying token with Telegram…'));
+    const verified = await telegramGetMe(input);
+    if (!verified.ok) {
+      console.log(pc.yellow(`  Telegram rejected that token: ${verified.error}. Try pasting it again.`));
+      continue;
+    }
+    token = input;
+    botUsername = verified.username;
+    console.log(pc.green(`  ✓ Bot verified: @${botUsername}`));
+    break;
+  }
+  if (!token) {
+    console.log(pc.yellow('  Skipping Telegram for now. You can finish setup by chatting your agent later.'));
+    return { telegramConfigured: false };
+  }
 
-When you have the token + chat ID and have written them, exit. Do NOT
-proceed past Telegram setup — the rest of the wizard is owned by
-instar's state machine.
+  console.log();
+  console.log(pc.bold('  Step 2 of 3 — Connect a chat'));
+  console.log(`  • In Telegram, create a new group (or open an existing one)`);
+  console.log(`  • Add @${botUsername} as a member`);
+  console.log('  • Send any message in the group ("hi" works)');
+  console.log();
+  await askUser('  Press Enter once you\'ve done that > ');
 
-If Playwright is not available, print clear manual steps (open
-t.me/BotFather, type /newbot, etc.) and prompt the user for the token
-and chat ID. Then write them to config.
+  let chatId = '';
+  let chatName = '';
+  for (let attempt = 0; attempt < 4; attempt++) {
+    console.log(pc.dim('  Fetching the chat ID from Telegram…'));
+    const updates = await telegramGetUpdates(token);
+    if (!updates.ok) {
+      console.log(pc.yellow(`  Couldn't reach Telegram: ${updates.error}.`));
+      const retry = (await askUser('  Press Enter to try again, type "skip" to skip > ')).toLowerCase().trim();
+      if (retry === 'skip') break;
+      continue;
+    }
+    // Prefer group/supergroup chats. Fall back to most recent chat
+    // of any type — that's still useful (private DM with the bot
+    // works too).
+    const groupHit = updates.chats.find((c) => c.type === 'group' || c.type === 'supergroup');
+    const hit = groupHit ?? updates.chats[updates.chats.length - 1];
+    if (hit) {
+      chatId = hit.id;
+      chatName = hit.name;
+      console.log(pc.green(`  ✓ Chat found: "${chatName}" (id ${chatId})`));
+      break;
+    }
+    console.log(pc.yellow('  No recent messages found yet. Make sure you sent a message in the group AFTER adding the bot.'));
+    const retry = (await askUser('  Press Enter to try again, type "skip" to skip > ')).toLowerCase().trim();
+    if (retry === 'skip') break;
+  }
+  if (!chatId) {
+    console.log(pc.yellow('  Skipping chat-ID detection. Your bot token is saved; you can add the chat ID later.'));
+    // Still save the token — partial config is better than none.
+    writeTelegramConfig(options.projectDir, { token, chatId: '' });
+    return { telegramConfigured: false };
+  }
 
-Reference skill (for the wizard sections about Telegram if you need
-detail): ${skillPath}
-`.trim();
+  console.log();
+  console.log(pc.bold('  Step 3 of 3 — Saving config'));
+  const written = writeTelegramConfig(options.projectDir, { token, chatId });
+  if (!written) {
+    console.log(pc.red('  Couldn\'t write to .instar/config.json. Your bot is created but not wired up yet.'));
+    return { telegramConfigured: false };
+  }
+  console.log(pc.green('  ✓ Telegram is set up.'));
+  console.log(pc.dim(`  Your agent will message you in "${chatName}" once the server starts.`));
+  return { telegramConfigured: true };
+}
 
-  return new Promise((resolve) => {
-    const child = spawn(
-      options.codexPath,
-      [
-        'exec',
-        '--dangerously-bypass-approvals-and-sandbox',
-        '-m', WIZARD_CODEX_MODEL,
-        telegramPrompt,
-      ],
-      {
-        cwd: options.projectDir,
-        stdio: 'inherit',
+interface TelegramVerifyResult {
+  ok: boolean;
+  username: string;
+  error: string;
+}
+
+async function telegramGetMe(token: string): Promise<TelegramVerifyResult> {
+  try {
+    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/getMe`;
+    const res = await fetch(url);
+    const data = (await res.json()) as { ok: boolean; description?: string; result?: { username?: string } };
+    if (!data.ok) return { ok: false, username: '', error: data.description || 'invalid token' };
+    return { ok: true, username: data.result?.username || 'unknown', error: '' };
+  } catch (err) {
+    return { ok: false, username: '', error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+interface TelegramChat {
+  id: string;
+  type: string;
+  name: string;
+}
+
+interface TelegramUpdatesResult {
+  ok: boolean;
+  chats: TelegramChat[];
+  error: string;
+}
+
+async function telegramGetUpdates(token: string): Promise<TelegramUpdatesResult> {
+  try {
+    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/getUpdates`;
+    const res = await fetch(url);
+    const data = (await res.json()) as {
+      ok: boolean;
+      description?: string;
+      result?: Array<{ message?: { chat?: { id?: number; type?: string; title?: string; first_name?: string; username?: string } } }>;
+    };
+    if (!data.ok) return { ok: false, chats: [], error: data.description || 'getUpdates failed' };
+    const chats: TelegramChat[] = (data.result || [])
+      .map((u) => u.message?.chat)
+      .filter((c): c is NonNullable<typeof c> => !!c && typeof c.id === 'number')
+      .map((c) => ({
+        id: String(c.id!),
+        type: c.type || 'private',
+        name: c.title || c.first_name || c.username || `chat ${c.id}`,
+      }));
+    return { ok: true, chats, error: '' };
+  } catch (err) {
+    return { ok: false, chats: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Persist a Telegram messaging entry into .instar/config.json's
+ * messaging[]. Replaces any existing telegram entry. Returns true on
+ * success.
+ */
+function writeTelegramConfig(projectDir: string, params: { token: string; chatId: string }): boolean {
+  const configPath = path.join(projectDir, '.instar', 'config.json');
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw) as { messaging?: Array<{ type: string; enabled?: boolean; config?: Record<string, unknown> }> };
+    config.messaging = (config.messaging || []).filter((m) => m.type !== 'telegram');
+    config.messaging.push({
+      type: 'telegram',
+      enabled: true,
+      config: {
+        token: params.token,
+        chatId: params.chatId,
+        pollIntervalMs: 2000,
+        stallTimeoutMinutes: 5,
       },
-    );
-    child.on('close', () => resolve({ telegramConfigured: true }));
-    child.on('error', () => resolve({ telegramConfigured: false }));
-  });
+    });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

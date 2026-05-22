@@ -1,0 +1,19 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/wizard-telegram-native.md",
+  "artifactPath": "upgrades/side-effects/fix-wizard-telegram-native.md",
+  "artifactSha256": "609d9b6d5148f5cb146757ea82ba1a5f60068576313fe3b8ef98fa105adc6675",
+  "coveredFiles": [
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/wizard-telegram-native.test.ts",
+    "tests/unit/setup-codex-model-canary.test.ts",
+    "specs/dev-infrastructure/wizard-telegram-native.md",
+    "specs/dev-infrastructure/wizard-telegram-native.eli16.md",
+    "docs/specs/reports/wizard-telegram-native-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/fix-wizard-telegram-native.md"
+  ],
+  "writtenAt": "2026-05-21T23:56:10Z",
+  "agent": "echo",
+  "summary": "Three real-user UX fixes from the v1.2.14 Codex install log: (1) drop -d on user-add spawn, use cwd; (2) echo choice label after validation; (3) rewrite Telegram setup as instar-native readline + Telegram Bot API flow. The Telegram rewrite replaces a broken codex-exec spawn that couldn't wait for user input and was silently marking the channel as configured. 6 new tests + updated canary. Ships v1.2.15."
+}
