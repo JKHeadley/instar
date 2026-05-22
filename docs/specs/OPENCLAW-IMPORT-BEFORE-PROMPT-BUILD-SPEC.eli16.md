@@ -38,6 +38,12 @@ This change adds a single bounded recall pass that runs before EVERY reply, so t
 - Any change when memory is sparse. If SemanticMemory has nothing relevant to your message, the recall returns empty and Claude Code sees no injected context. The reply is identical to today.
 - Any disruption to existing grounding skills. Skills that already check memory continue to do so. This adds a layer; it doesn't replace anything.
 
+## Heads up — Claude Code only
+
+This feature only fires on Claude Code sessions, not Codex. Codex CLI doesn't have a pre-prompt hook the way Claude Code does, so there's nowhere for instar to inject the recall block before a codex turn. If you've configured a topic to run on codex, the agent's replies on that topic will not benefit from this bounded recall pass — your other grounding skills still work normally.
+
+This is a documented v1 limitation, not a bug. If codex usage grows enough that the gap matters, a session-start trigger (recall once at the start of a codex conversation, not per turn) is a small follow-up. For now: the asymmetry is honest, and Claude Code is where most agent traffic lives anyway.
+
 ## Safety properties
 
 - **Bounded.** Max 5 entries, max 1200 chars of injected text, max 2-second search.
