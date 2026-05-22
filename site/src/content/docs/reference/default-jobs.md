@@ -23,6 +23,8 @@ Instar ships with fourteen default jobs that run automatically on schedule. Each
 | `overseer-maintenance` | `0 2 * * *` (daily 2am) | Sonnet | Maintenance oversight — log rotation, cleanup, hygiene |
 | `identity-review` | `0 3 * * *` (daily 3am) | Opus | Identity review — AGENT.md drift, value alignment |
 | `overseer-learning` | `0 3 */2 * *` (every other day 3am) | Sonnet | Learning oversight — knowledge consolidation, gap detection |
+| `docs-coverage-audit` | `0 10 * * 1` (Mondays 10am) | Haiku | Weekly walk of the instar source tree against the docs surface, surfaces newly-undocumented capabilities. Ships `enabled: false` by default; only useful on machines with the instar source repo locally |
+| `org-intent-drift-audit` | (configurable) | Sonnet | Periodic drift detection for organizational intent — compares recent decisions and outputs against the constraints and goals declared in `ORG-INTENT.md`, surfaces drift via the degradation channel |
 
 All jobs ship inside `src/scaffold/templates/jobs/instar/` and are installed on `instar init` plus refreshed on every update via `PostUpdateMigrator`.
 

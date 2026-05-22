@@ -289,3 +289,81 @@ Monitors git worktrees created for isolated agent work. Detects stale branches, 
 Legacy health probe system — superseded by SystemReviewer's more comprehensive tiered probe architecture.
 
 </details>
+
+---
+
+## Subsystem class inventory
+
+The sections above describe what each subsystem does at a behavioral level. The lists below enumerate every top-level class shipped under `src/<subsystem>/` so you can grep from a class name straight to its owning page. This is meant as a navigation aid — see the per-subsystem feature pages for actual descriptions.
+
+### `src/core/` — agent fundamentals, gates, orchestration
+
+`AccessControl`, `AdaptationValidator`, `AdaptiveTrust`, `AgentBus`, `AgentConnector`, `AgentRegistry`, `AgentWorktreeDetector`, `AuditTrail`, `AutoApprover`, `AutoDispatcher`, `AutoUpdater`, `AutonomousEvolution`, `AutonomyProfileManager`, `AutonomySkill`, `BackupManager`, `BitwardenProvider`, `BlockerLearningLoop`, `BranchManager`, `CaffeinateManager`, `CallbackRegistry`, `CanonicalState`, `CapabilityMapper`, `CapabilityRegistryGenerator`, `ClaudeCliIntelligenceProvider`, `CodexCliIntelligenceProvider`, `CoherenceGate`, `CoherenceReviewer`, `CommitmentSweeper`, `Config`, `ConflictNegotiator`, `ContextHierarchy`, `ContextSnapshotBuilder`, `ContextualEvaluator`, `ConvergenceChecker`, `CoordinationProtocol`, `CustomReviewerLoader`, `DecisionJournal`, `DeferredDispatchTracker`, `DiscoveryEvaluator`, `DispatchDecisionJournal`, `DispatchExecutor`, `DispatchManager`, `DispatchScopeEnforcer`, `DispatchVerifier`, `DriftSpendLedger`, `EvolutionManager`, `ExecutionJournal`, `ExternalOperationGate`, `FeatureDefinitions`, `FeatureRegistry`, `FeedbackManager`, `FileClassifier`, `ForegroundRestartWatcher`, `FrameworkSessionStore`, `GitStateManager`, `GitSync`, `GlobalInstallCleanup`, `GlobalSecretStore`, `HandoffManager`, `HeartbeatManager`, `IdentityRenderer`, `InitiativeTracker`, `InputGuard`, `InstarWorktreeManager`, `IntentDriftDetector`, `JargonDetector`, `JobReflector`, `LLMConflictResolver`, `LearnSkillBridge`, `LedgerAuth`, `LedgerParaphraseDetector`, `LedgerSessionRegistry`, `MachineHeartbeat`, `MachineIdentity`, `MessageSentinel`, `MessagingToneGate`, `MigrationProvenance`, `MigratorStepEngine`, `MultiMachineCoordinator`, `NonceStore`, `OrgIntentManager`, `OutboundDedupGate`, `OverlapGuard`, `PairingProtocol`, `ParallelDevWiring`, `PatternAnalyzer`, `PlanDocParser`, `PlatformActivityRegistry`, `PolicyEnforcementLayer`, `PortRegistry`, `PostUpdateMigrator`, `PreCompactionFlush`, `Prerequisites`, `ProcessIntegrity`, `ProjectAutoAdvancePoller`, `ProjectDigestCache`, `ProjectDriftChecker`, `ProjectDriftCheckerCache`, `ProjectMapper`, `ProjectRoundCompleteMessage`, `ProjectRoundExecution`, `ProjectRoundLock`, `ProjectRoundRunner`, `ProjectRoundWorktrees`, `PromptBuildRecall`, `PromptGuard`, `RecipientResolver`, `ReflectionConsolidator`, `RelationshipManager`, `RelevanceFilter`, `ResearchRateLimiter`, `ResumeValidator`, `SafeFsExecutor`, `SafeGitExecutor`, `SafeYaml`, `ScopeCoherenceTracker`, `ScopeVerifier`, `SecretManager`, `SecretMigrator`, `SecretRedactor`, `SecretStore`, `SecurityLog`, `SendGateway`, `SessionMaintenanceRunner`, `SessionManager`, `SessionRefresh`, `SharedStateLedger`, `SleepWakeDetector`, `SoulManager`, `SourceTreeGuard`, `StageTransitionValidator`, `StaleProcessGuard`, `StateManager`, `StateWriteAuthority`, `StopGateDb`, `StuckInputSentinel`, `SurfacingTemplates`, `SyncOrchestrator`, `TemporalCoherenceChecker`, `TopicClassifier`, `TopicFrameworksStore`, `TopicLocalModelStore`, `TopicResumeMap`, `TrustElevationTracker`, `TrustRecovery`, `UnjustifiedStopGate`, `UpdateChecker`, `UpdateGate`, `UpgradeGuideProcessor`, `UpgradeNotifyManager`, `WorkLedger`, `WorktreeKeyVault`, `WorktreeManager`.
+
+### `src/monitoring/` — sentinels, watchdogs, observability
+
+`AccountSwitcher`, `AttributionResolver`, `BurnAlertButtons`, `BurnDetectionSubscriber`, `BurnDetector`, `BurnThrottleRunbook`, `BurnVerifier`, `CoherenceMonitor`, `CommitmentSentinel`, `CommitmentTracker`, `CompactionSentinel`, `CrashLoopPauser`, `CredentialProvider`, `DegradationReporter`, `ErrorCodeExtractor`, `FeedbackAnomalyDetector`, `FrameworkParitySentinel`, `HealthChecker`, `HelperWatchdog`, `HomeostasisMonitor`, `HookEventReceiver`, `InputClassifier`, `InstructionsVerifier`, `LlmQueue`, `LlmRateGate`, `MemoryPressureMonitor`, `NativeHealDegradationBridge`, `OrphanProcessReaper`, `PresenceProxy`, `PromiseBeacon`, `PromptGate`, `ProxyCoordinator`, `QuotaCollector`, `QuotaExhaustionDetector`, `QuotaManager`, `QuotaNotifier`, `QuotaTracker`, `Redactor`, `ReflectionMetrics`, `SessionActivitySentinel`, `SessionCredentialManager`, `SessionMigrator`, `SessionMonitor`, `SessionRecovery`, `SessionWatchdog`, `StallTriageNurse`, `SubagentTracker`, `SystemReviewer`, `TelemetryAuth`, `TelemetryCollector`, `TelemetryHeartbeat`, `TokenLedger`, `TokenLedgerPoller`, `TriageOrchestrator`, `WorktreeMonitor`, `WorktreeReaper`.
+
+### `src/threadline/` — agent-to-agent protocol stack
+
+`A2AGateway`, `AgentCard`, `AgentDiscovery`, `AgentTrustManager`, `ApprovalQueue`, `AuthorizationPolicy`, `AutonomyGate`, `BackfillCore`, `CircuitBreaker`, `ComputeMeter`, `ContentClassifier`, `ContextThreadMap`, `DNSVerifier`, `DigestCollector`, `DiscoveryWaterfall`, `HandshakeManager`, `HeartbeatWatchdog`, `HeartbeatWriter`, `InboundMessageGate`, `InvitationManager`, `ListenerSessionManager`, `MCPAuth`, `MessageSecurity`, `OpenClawBridge`, `OpenClawSkillManifest`, `PipeSessionSpawner`, `RateLimiter`, `RelayGroundingPreamble`, `RelaySpawnFailureHandler`, `SalienceGate`, `SecureInvitation`, `SessionLifecycle`, `SpawnLedger`, `SpawnNonce`, `TelegramBridge`, `TelegramBridgeConfig`, `ThreadResumeMap`, `ThreadlineBootstrap`, `ThreadlineCrypto`, `ThreadlineEndpoints`, `ThreadlineMCPServer`, `ThreadlineNicknames`, `ThreadlineObservability`, `ThreadlineRouter`, `TopicLinkageHandler`, `TrustAuditLog`, `TrustBootstrap`, `TrustEvaluator`, `UnifiedTrustWiring`, `WakeSocketServer`.
+
+### `src/memory/` — conversational + semantic memory
+
+`ActivityPartitioner`, `Chunker`, `EmbeddingProvider`, `EpisodicMemory`, `EvidenceRenderer`, `MemoryExporter`, `MemoryIndex`, `MemoryMigrator`, `NativeModuleHealer`, `SemanticMemory`, `TopicMemory`, `TopicSummarizer`, `VectorSearch`, `WorkingMemoryAssembler`.
+
+### `src/messaging/` — channel adapters and routing
+
+`AdapterRegistry`, `AgentTokenManager`, `DeliveryRetryManager`, `DropPickup`, `GitSyncTransport`, `MessageDelivery`, `MessageFormatter`, `MessageRouter`, `MessageStore`, `NotificationBatcher`, `SessionSummarySentinel`, `SpawnRequestManager`, `TelegramAdapter`, `TelegramMarkdownFormatter`, `TopicContentValidator`, `WhatsAppAdapter`.
+
+### `src/scheduler/` — cron + agentmd job execution
+
+`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+
+### `src/identity/` — machine + agent cryptographic identity
+
+`IdentityManager`, `KeyEncryption`, `KeyRevocation`, `KeyRotation`, `Migration`, `RecoveryPhrase`.
+
+### `src/lifeline/` — persistent supervisor
+
+`LifelineHealthWatchdog`, `MessageQueue`, `RestartOrchestrator`, `ServerSupervisor`, `SlackLifeline`, `TelegramLifeline`.
+
+### `src/knowledge/` — self-knowledge tree
+
+`CoverageAuditor`, `IntegrityManager`, `KnowledgeManager`, `ProbeRegistry`, `SelfKnowledgeTree`, `TreeGenerator`, `TreeSynthesis`, `TreeTraversal`, `TreeTriage`.
+
+### `src/users/` — multi-user identity + GDPR
+
+`GdprCommands`, `OnboardingGate`, `UserContextBuilder`, `UserManager`, `UserOnboarding`, `UserPropagator`.
+
+### `src/remediation/` — Self-Healing Remediator v2
+
+`IntentJournal`, `MachineLock`, `NovelFailureReviewer`, `PrimaryAggregatorLease`, `Remediator`, `RemediatorBootstrap`, `RemediationContext`, `RemediationKeyVault`, `TrustElevationSource`.
+
+### `src/tasks/` — durable task flow registry
+
+`DivergenceChecker`, `LruCache`, `RateLimiter`, `TaskFlowDueWaker`, `TaskFlowMaintenanceSweeper`, `TaskFlowRegistry`, `ThreadlineFlowBridge`.
+
+### `src/paste/` — paste content lifecycle
+
+`PasteManager`, `TruncationDetector`.
+
+### `src/privacy/` — sensitive-response routing
+
+`OutputPrivacyRouter`.
+
+### `src/moltbridge/` — agent profile + trust network
+
+`MoltBridgeClient`, `ProfileCompiler`.
+
+### `src/security/` — cryptographic primitives
+
+`SecretRedactor`.
+
+### `src/tunnel/` — Cloudflare tunnel management
+
+`TunnelManager`.
+
+### `src/providers/` — cross-framework intelligence routing
+
+`AnthropicIntelligenceProvider`, `CostAwareRoutingPolicy`, `LocalModelAdapter`, `ProviderRegistry`, `StallTriageNurse` (provider-side fork), `TierResolver`.

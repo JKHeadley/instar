@@ -76,13 +76,13 @@ const num = (env, def) => {
 // Floors below current measured coverage by ~2-3 percentage points to
 // allow normal churn without false failures.
 const THRESHOLDS = {
-  overall: num('INSTAR_DOCS_COVERAGE_MIN', 13),
-  route: num('INSTAR_DOCS_COVERAGE_ROUTE_MIN', 11),
-  command: num('INSTAR_DOCS_COVERAGE_COMMAND_MIN', 40),
-  job: num('INSTAR_DOCS_COVERAGE_JOB_MIN', 55),
-  hook: num('INSTAR_DOCS_COVERAGE_HOOK_MIN', 22),
-  skill: num('INSTAR_DOCS_COVERAGE_SKILL_MIN', 80),
-  class: num('INSTAR_DOCS_COVERAGE_CLASS_MIN', 8),
+  overall: num('INSTAR_DOCS_COVERAGE_MIN', 55),
+  route: num('INSTAR_DOCS_COVERAGE_ROUTE_MIN', 55),
+  command: num('INSTAR_DOCS_COVERAGE_COMMAND_MIN', 60),
+  job: num('INSTAR_DOCS_COVERAGE_JOB_MIN', 85),
+  hook: num('INSTAR_DOCS_COVERAGE_HOOK_MIN', 70),
+  skill: num('INSTAR_DOCS_COVERAGE_SKILL_MIN', 90),
+  class: num('INSTAR_DOCS_COVERAGE_CLASS_MIN', 55),
 };
 
 // ── Capability enumeration ──────────────────────────────────────────

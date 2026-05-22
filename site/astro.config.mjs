@@ -81,6 +81,10 @@ export default defineConfig({
             { label: 'AutoUpdater', slug: 'features/autoupdater' },
             { label: 'Observability', slug: 'features/observability' },
             { label: 'Cross-Framework Portability', slug: 'features/portability' },
+            { label: 'Paste Handling', slug: 'features/paste-handling' },
+            { label: 'Privacy Routing', slug: 'features/privacy-routing' },
+            { label: 'Self-Healing Remediator', slug: 'features/remediator' },
+            { label: 'Task Flows', slug: 'features/task-flows' },
           ],
         },
         {
