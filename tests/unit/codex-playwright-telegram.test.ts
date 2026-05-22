@@ -83,6 +83,29 @@ describe('buildTelegramAgenticPrompt', () => {
     expect(prompt).toMatch(/getMe/);
     expect(prompt).toMatch(/getUpdates/);
   });
+
+  it('tells Codex to surface user-facing instructions (v1.2.18 fix)', () => {
+    // The v1.2.17 prompt only told Codex to "take snapshots" — no
+    // user-facing language. Real user (Justin) sat looking at a QR
+    // code with no on-screen guidance. v1.2.18 explicitly tells
+    // Codex to narrate to the user.
+    expect(prompt).toMatch(/CONVERSATIONAL RULES/i);
+    expect(prompt).toMatch(/real person/i);
+    expect(prompt).toMatch(/Telegram on your phone/);
+    expect(prompt).toMatch(/Link Desktop Device/);
+    // Install hint for first-time users.
+    expect(prompt).toMatch(/install.*app store/i);
+    // Periodic reminder pattern during the wait.
+    expect(prompt).toMatch(/every ~25-30 seconds/);
+  });
+
+  it('uses a 5-minute (not 2-minute) login-wait window', () => {
+    // v1.2.17 had "up to ~120 seconds". v1.2.18 bumps to 5 minutes
+    // so a fresh user who has to install Telegram on their phone
+    // first doesn't time out.
+    expect(prompt).not.toMatch(/up to ~120 seconds/);
+    expect(prompt).toMatch(/5 MINUTES|5 minutes/);
+  });
 });
 
 describe('verifyTelegramConfig', () => {
