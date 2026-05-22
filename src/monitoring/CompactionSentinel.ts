@@ -86,6 +86,13 @@ export interface CompactionSentinelDeps {
    */
   jsonlRoot?: string;
 
+  /**
+   * Defer (skip starting) a compaction recovery when this returns true — e.g.
+   * a rate-limit recovery already owns this session. Prevents two sentinels
+   * injecting into one pane concurrently. Default: never defer.
+   */
+  deferIf?: (sessionName: string) => boolean;
+
   /** Override for Date.now — for tests. */
   now?: () => number;
 
@@ -125,16 +132,23 @@ export class CompactionSentinel extends EventEmitter {
   private readonly active = new Map<string, RecoveryState>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly recentReports = new Map<string, number>(); // sessionName → lastReportedAt
+  private deferIf?: (sessionName: string) => boolean;
 
   constructor(deps: CompactionSentinelDeps, config: CompactionSentinelConfig = {}) {
     super();
     this.deps = deps;
+    this.deferIf = deps.deferIf;
     this.cfg = {
       dedupeWindowMs: config.dedupeWindowMs ?? DEFAULTS.dedupeWindowMs,
       verifyWindowMs: config.verifyWindowMs ?? DEFAULTS.verifyWindowMs,
       maxInjectAttempts: config.maxInjectAttempts ?? DEFAULTS.maxInjectAttempts,
       recoveryGuardMs: config.recoveryGuardMs ?? DEFAULTS.recoveryGuardMs,
     };
+  }
+
+  /** Late-bind the deferral predicate (server.ts wires the two sentinels at each other). */
+  setDeferIf(fn: (sessionName: string) => boolean): void {
+    this.deferIf = fn;
   }
 
   private now(): number {
@@ -161,6 +175,9 @@ export class CompactionSentinel extends EventEmitter {
 
     if (this.active.has(sessionName)) {
       return; // Recovery already in flight — ignore duplicate trigger.
+    }
+    if (this.deferIf?.(sessionName)) {
+      return; // Another recovery (e.g. rate-limit) owns this session — bidirectional defer.
     }
     const lastReport = this.recentReports.get(sessionName);
     if (lastReport && now - lastReport < this.cfg.dedupeWindowMs) {

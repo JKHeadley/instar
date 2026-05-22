@@ -122,6 +122,7 @@ export class AgentServer {
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
+    rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
     quotaManager?: import('../monitoring/QuotaManager.js').QuotaManager;
     messageRouter?: MessageRouter;
@@ -436,6 +437,7 @@ export class AgentServer {
       commitmentTracker: options.commitmentTracker ?? null,
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,
+      rateLimitSentinel: options.rateLimitSentinel ?? null,
       workingMemory: options.workingMemory ?? null,
       quotaManager: options.quotaManager ?? null,
       messageRouter: options.messageRouter ?? null,

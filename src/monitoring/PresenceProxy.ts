@@ -65,6 +65,16 @@ export interface PresenceProxyConfig {
   hasRecentBuildHeartbeat?: (topicId: number, windowMs?: number) => boolean;
 
   /**
+   * When the RateLimitSentinel is actively recovering this topic's session from
+   * a server-side throttle, it is already messaging the user (notice → check-ins
+   * → recovered/escalated). PresenceProxy must stay silent so the user hears one
+   * voice. Unlike the build-heartbeat suppression, this covers EVERY tier
+   * (including Tier 1) — the sentinel's immediate notice already provides the
+   * first signal of life. Absent/undefined = no suppression.
+   */
+  hasActiveRateLimitRecovery?: (topicId: number) => boolean;
+
+  /**
    * BUILD-STALL-VISIBILITY-SPEC Fix 3 — long-tool-wait detector.
    * When enabled, detects "agent blocked on a long-running tool with no
    * interleaved text" via snapshot-hash diff + Cogitated-line presence,
@@ -887,6 +897,16 @@ export class PresenceProxy {
 
     // Check silence
     if (state.silencedUntil && Date.now() < state.silencedUntil) return;
+
+    // Rate-limit recovery owns the voice: when the RateLimitSentinel is riding
+    // out a server-side throttle for this topic's session, it's already
+    // messaging the user. Suppress EVERY tier (incl. Tier 1) and re-check after
+    // a delay, so we resume only if the agent is still silent post-recovery.
+    if (this.config.hasActiveRateLimitRecovery?.(topicId)) {
+      console.log(`[PresenceProxy] Suppressing Tier ${tier} for topic ${topicId} — rate-limit recovery active`);
+      this.scheduleTier(topicId, tier as 1 | 2 | 3, this.tier2DelayMs);
+      return;
+    }
 
     // BUILD-STALL-VISIBILITY-SPEC Fix 2 "Routing": when a /build heartbeat
     // landed recently for this topic, the user is already hearing a progress

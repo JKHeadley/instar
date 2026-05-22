@@ -43,6 +43,7 @@ export interface SessionDiagnostics {
   suggestions: string[];
 }
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { detectRateLimited } from '../monitoring/rateLimitDetection.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
 
@@ -127,6 +128,13 @@ function sanitizeSessionName(name: string): string {
 
 export interface SessionManagerEvents {
   sessionComplete: [session: Session];
+  /**
+   * Emitted when a session goes idle after a server-side throttle ("Server is
+   * temporarily limiting requests · not your usage limit") rather than a
+   * generic API error. The RateLimitSentinel owns recovery from here — the
+   * immediate single-nudge is deliberately skipped for this case.
+   */
+  rateLimitedAtIdle: [sessionName: string];
 }
 
 export class SessionManager extends EventEmitter {
@@ -595,6 +603,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
               if (!this.errorNudgedSessions.has(session.id)) {
                 const recentOutput = this.captureOutput(session.tmuxSession, 30);
                 if (recentOutput) {
+                  // Server-side throttle ("Server is temporarily limiting
+                  // requests · not your usage limit") gets a DIFFERENT path:
+                  // the immediate nudge re-hits the live throttle and burns
+                  // quota, so we skip it and hand ownership to the
+                  // RateLimitSentinel (backoff-before-nudge). We do NOT consume
+                  // the single-nudge token, so a later generic API error can
+                  // still get its one nudge. The sentinel dedupes the re-emits
+                  // that persist while the throttle string stays on the pane.
+                  if (detectRateLimited(recentOutput)) {
+                    this.emit('rateLimitedAtIdle', session.tmuxSession);
+                    continue; // Skip to next session — sentinel owns recovery.
+                  }
                   const hasError = TERMINAL_ERROR_PATTERNS.some(p => recentOutput.includes(p));
                   if (hasError) {
                     this.errorNudgedSessions.add(session.id);
@@ -846,6 +866,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-s', tmuxSession,
         '-c', resolvedCwd,
         ...frameworkEnvFlags,
+        // Opt-in: raise Claude Code's own retry count so it rides out transient
+        // throttle/overload longer before surfacing to the RateLimitSentinel.
+        ...(this.config.claudeCodeMaxRetries != null
+          ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
+          : []),
         '-e', `INSTAR_SESSION_ID=${sessionId}`, // Expose instar session ID to hook events
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
@@ -1512,6 +1537,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-s', tmuxSession,
         '-c', this.config.projectDir,
         '-x', '200', '-y', '50',
+        // Opt-in: raise Claude Code's own retry count so it rides out transient
+        // throttle/overload longer before surfacing to the RateLimitSentinel.
+        ...(this.config.claudeCodeMaxRetries != null
+          ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
+          : []),
         '-e', `INSTAR_SESSION_ID=${interactiveSessionId}`, // Expose instar session ID to hook events
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,

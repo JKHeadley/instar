@@ -5021,9 +5021,74 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Defaults are production-sensible; override here only if needed.
       {},
     );
-    sessionManager.setActiveRecoveryChecker(
-      session => compactionSentinel.isRecoveryActive(session.tmuxSession),
+    // ── RateLimitSentinel ─────────────────────────────────────────────
+    // Rides out Anthropic's server-side capacity throttle ("Server is
+    // temporarily limiting requests · not your usage limit") with
+    // backoff-before-nudge + user check-ins, instead of the single immediate
+    // nudge (quota burn) → silence the session used to fall into. See
+    // docs/specs/rate-limit-sentinel.md.
+    const { RateLimitSentinel } = await import('../monitoring/RateLimitSentinel.js');
+    const getClaudeSessionIdForName = (sessionName: string): string | undefined =>
+      sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId;
+
+    // Neutral "continue" nudge — NOT the compaction-resume payload (which would
+    // falsely tell the agent its memory was reset). Topic-tagged so InputGuard
+    // accepts it.
+    const rateLimitResume = async (sessionName: string): Promise<boolean> => {
+      if (!sessionManager.isSessionAlive(sessionName)) return false;
+      const topicId = telegram?.getTopicForSession(sessionName);
+      if (topicId == null) return false;
+      const tagged = `[telegram:${topicId}] The temporary server throttle should have cleared — please continue where you left off.`;
+      return sessionManager.injectMessage(sessionName, tagged);
+    };
+    // Route a user-facing notice for the session's topic (Telegram).
+    const rateLimitNotify = async (sessionName: string, text: string): Promise<void> => {
+      const topicId = telegram?.getTopicForSession(sessionName);
+      if (topicId == null) return;
+      const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
+        body: JSON.stringify({ text }),
+      });
+      if (!resp.ok) throw new Error(`rate-limit notify failed: ${resp.status}`);
+    };
+    const rlsCfg = config.monitoring?.rateLimitSentinel ?? { enabled: true };
+    const rateLimitSentinel = new RateLimitSentinel(
+      {
+        resumeFn: rateLimitResume,
+        notifyFn: rateLimitNotify,
+        projectDir: config.projectDir,
+        getClaudeSessionId: getClaudeSessionIdForName,
+      },
+      rlsCfg,
     );
+
+    // Zombie-kill veto: compose BOTH sentinels (editing the single-predicate
+    // checker — a second setActiveRecoveryChecker call would drop the
+    // compaction veto).
+    sessionManager.setActiveRecoveryChecker(
+      session =>
+        compactionSentinel.isRecoveryActive(session.tmuxSession) ||
+        rateLimitSentinel.isRecoveryActive(session.tmuxSession),
+    );
+    // Bidirectional deferral — neither sentinel injects into a pane the other
+    // already owns.
+    rateLimitSentinel.setDeferIf(s => compactionSentinel.isRecoveryActive(s));
+    compactionSentinel.setDeferIf(s => rateLimitSentinel.isRecoveryActive(s));
+
+    // Triggers: watchdog poll + SessionManager idle-error emit. Both deduped by
+    // the sentinel.
+    if (watchdog) {
+      watchdog.on('rate-limited', (sessionName: string) => {
+        rateLimitSentinel.report(sessionName, 'watchdog-poll');
+      });
+    }
+    sessionManager.on('rateLimitedAtIdle', (sessionName: string) => {
+      rateLimitSentinel.report(sessionName, 'idle-error');
+    });
+    if (rlsCfg.enabled !== false) {
+      console.log(pc.green('  RateLimitSentinel enabled (server-throttle backoff + check-ins)'));
+    }
     console.log(pc.green('  CompactionSentinel enabled (verified recovery lifecycle)'));
 
     // Trigger 1: PreCompact hook event — report to sentinel.
@@ -5508,6 +5573,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           // BUILD-STALL-VISIBILITY-SPEC Fix 2 — suppress generic standby when
           // a /build heartbeat landed recently on this topic.
           hasRecentBuildHeartbeat: (topicId, windowMs) => proxyCoordinator.hasRecentBuildHeartbeat(topicId, windowMs),
+          // Suppress ALL tiers while the RateLimitSentinel owns the voice for
+          // this topic's session (server-throttle recovery).
+          hasActiveRateLimitRecovery: (topicId) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            const sessionName = (slackChId && _slackAdapter)
+              ? _slackAdapter.getSessionForChannel(slackChId)
+              : telegram!.getSessionForTopic(topicId);
+            return sessionName ? rateLimitSentinel.isRecoveryActive(sessionName) : false;
+          },
           // Shared LLM queue (interactive lane) — cross-monitor concurrency
           // and daily-spend-cap with PromiseBeacon.
           sharedLlmQueue,
@@ -7141,7 +7215,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 

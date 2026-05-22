@@ -18,6 +18,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { detectRateLimited } from './rateLimitDetection.js';
 
 /** Drop-in replacement for execSync that avoids its security concerns. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -150,6 +151,7 @@ export interface WatchdogEvents {
   intervention: [event: InterventionEvent];
   recovery: [sessionName: string, fromLevel: EscalationLevel];
   'compaction-idle': [sessionName: string];
+  'rate-limited': [sessionName: string];
 }
 
 export class SessionWatchdog extends EventEmitter {
@@ -181,6 +183,10 @@ export class SessionWatchdog extends EventEmitter {
   /** Cooldowns for compaction-idle detection — prevents repeated emissions */
   private compactionIdleCooldowns = new Map<string, number>(); // sessionName → timestamp
   private static readonly COMPACTION_IDLE_COOLDOWN_MS = 300_000; // 5 minutes
+
+  /** Cooldowns for rate-limited detection — prevents repeated emissions */
+  private rateLimitedCooldowns = new Map<string, number>(); // sessionName → timestamp
+  private static readonly RATE_LIMITED_COOLDOWN_MS = 60_000; // 1 minute (sentinel dedupes too)
 
   constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager) {
     super();
@@ -369,6 +375,53 @@ export class SessionWatchdog extends EventEmitter {
     // This is the polling-based fallback for the PreCompact event path which
     // is unreliable (Claude Code doesn't always fire the event).
     this.checkCompactionIdle(tmuxSession);
+
+    // Server-side throttle detection — catch sessions stopped at a prompt after
+    // Anthropic's "temporarily limiting requests" throttle exhausted Claude's
+    // own retries. Signal-only: emits 'rate-limited' for the RateLimitSentinel
+    // to own recovery (backoff-before-nudge).
+    this.checkRateLimited(tmuxSession);
+  }
+
+  /**
+   * Detects sessions idle at a prompt because of a server-side capacity
+   * throttle (NOT the user's usage quota, NOT mid-retry). Emits 'rate-limited'
+   * (with a cooldown) so the RateLimitSentinel owns recovery. Detection logic
+   * (throttle-vs-usage-vs-spinner discrimination) lives in detectRateLimited.
+   */
+  checkRateLimited(tmuxSession: string): void {
+    const lastEmitted = this.rateLimitedCooldowns.get(tmuxSession);
+    if (lastEmitted && (Date.now() - lastEmitted) < SessionWatchdog.RATE_LIMITED_COOLDOWN_MS) {
+      return;
+    }
+
+    // If Claude has active child processes it's executing tools, not stalled.
+    const claudePid = this.getClaudePid(tmuxSession);
+    if (claudePid) {
+      const children = this.getChildProcesses(claudePid);
+      const activeChildren = children.filter(c => !this.isExcluded(c.command));
+      if (activeChildren.length > 0) return;
+    }
+
+    const output = this.sessionManager.captureOutput(tmuxSession, 20);
+    if (!output) return;
+
+    // Throttle present, not a usage limit, not mid-retry.
+    if (!detectRateLimited(output)) return;
+
+    // Must be idle at a prompt (tail check, same shape as compaction-idle).
+    const lines = output.split('\n').filter(l => l.trim());
+    const tail = lines.slice(-3).join('\n');
+    const atPrompt =
+      tail.includes('❯') ||
+      tail.includes('bypass permissions') ||
+      /^>\s*$/m.test(tail) ||
+      tail.trim() === '>';
+    if (!atPrompt) return;
+
+    console.log(`[Watchdog] "${tmuxSession}": rate-limited detected — server throttle, idle at prompt`);
+    this.rateLimitedCooldowns.set(tmuxSession, Date.now());
+    this.emit('rate-limited', tmuxSession);
   }
 
   /**

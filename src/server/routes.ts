@@ -532,6 +532,7 @@ export interface RouteContext {
   commitmentTracker: CommitmentTracker | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
+  rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
   messageRouter: MessageRouter | null;
   summarySentinel: SessionSummarySentinel | null;
   spawnManager: SpawnRequestManager | null;
@@ -1356,6 +1357,31 @@ export function createRoutes(ctx: RouteContext): Router {
    *
    * Returns: { flipped: number }   count of events actually marked
    */
+  /**
+   * Read-only observability for the RateLimitSentinel — active server-throttle
+   * recoveries (sessionName, status, attempts, nextBackoffMs). Bearer-gated by
+   * the global auth middleware. Backs the E2E "feature is alive" check.
+   */
+  router.get('/rate-limit/status', (_req, res) => {
+    if (!ctx.rateLimitSentinel) {
+      res.json({ enabled: false, active: [] });
+      return;
+    }
+    res.json({
+      enabled: true,
+      active: ctx.rateLimitSentinel.listActive().map(s => ({
+        sessionName: s.sessionName,
+        trigger: s.trigger,
+        status: s.status,
+        attempts: s.attempts,
+        nextBackoffMs: s.nextBackoffMs,
+        detectedAt: s.detectedAt,
+        lastInjectAt: s.lastInjectAt,
+        lastCheckInAt: s.lastCheckInAt,
+      })),
+    });
+  });
+
   router.post('/health/degradations/mark-reported', (req, res) => {
     const reporter = DegradationReporter.getInstance();
     const { feature, featurePattern } = req.body ?? {};

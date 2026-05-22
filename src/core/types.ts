@@ -74,6 +74,14 @@ export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 export interface SessionManagerConfig {
   /** Path to tmux binary */
   tmuxPath: string;
+  /**
+   * Override for Claude Code's own internal retry count
+   * (CLAUDE_CODE_MAX_RETRIES env), injected at spawn. When set, raises how
+   * long Claude rides out a transient throttle/overload before surfacing the
+   * error to the RateLimitSentinel. Unset by default (Claude's default of 10
+   * stands) so genuine outages aren't masked. Future-spawn only.
+   */
+  claudeCodeMaxRetries?: number;
   /** Path to the framework CLI binary for the agent's primary framework.
    *  Misnamed for v0.x compat — actually holds whichever framework binary
    *  was selected (claude OR codex OR …). New code should consult
@@ -2417,6 +2425,28 @@ export interface MonitoringConfig {
     stuckCommandSec?: number;
     /** Poll interval in ms (default: 30000) */
     pollIntervalMs?: number;
+  };
+  /**
+   * RateLimitSentinel — rides out Anthropic's server-side capacity throttle
+   * ("Server is temporarily limiting requests · not your usage limit") with
+   * backoff-before-nudge, user check-ins, and escalation, instead of dropping
+   * the session. See docs/specs/rate-limit-sentinel.md.
+   */
+  rateLimitSentinel?: {
+    /** Master kill switch (default: true). false → pre-feature behavior. */
+    enabled: boolean;
+    /** Escalating wait (ms) before each re-engagement attempt. Last value repeats. */
+    backoffScheduleMs?: number[];
+    /** Max re-engagement attempts before escalating (default: 6). */
+    maxAttempts?: number;
+    /** Max wall-clock window (ms) before escalating (default: 1_800_000). */
+    maxWindowMs?: number;
+    /** Wait after a nudge before checking jsonl growth (default: 25_000). */
+    verifyWindowMs?: number;
+    /** Minimum spacing (ms) between user check-ins (default: 120_000). */
+    checkInEveryMs?: number;
+    /** Ignore repeat reports within this window (default: 60_000). */
+    dedupeWindowMs?: number;
   };
   /** LLM-powered stall triage nurse — intelligent session recovery */
   triage?: {

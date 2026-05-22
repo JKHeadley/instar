@@ -24,6 +24,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     watchdog: {
       enabled: true,
     },
+    // RateLimitSentinel — default-on so every agent rides out Anthropic's
+    // server-side throttle instead of dropping the session. enabled:false
+    // restores pre-feature behavior. See docs/specs/rate-limit-sentinel.md.
+    rateLimitSentinel: {
+      enabled: true,
+    },
     promptGate: {
       enabled: true,
       autoApprove: {
