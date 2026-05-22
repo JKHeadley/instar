@@ -21,7 +21,7 @@
  * real Codex/Telegram calls.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildTelegramAgenticPrompt,
   verifyTelegramConfig,
+  runSendLifelineGreeting,
 } from '../../src/commands/setup-wizard/codex-driver.js';
 import { ensureCodexPlaywrightMcp } from '../../src/commands/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -140,8 +141,12 @@ describe('buildTelegramAgenticPrompt', () => {
     expect(prompt).toMatch(/topics-create-failed/);
   });
 
-  it('seeds each topic with an intro message via sendMessage + message_thread_id', () => {
-    expect(prompt).toMatch(/intro message/i);
+  it('seeds each topic with an orienting message via sendMessage + message_thread_id', () => {
+    // v1.2.20: wording changed from "intro message" to "orienting
+    // message" — these are channel-purpose blurbs, distinct from
+    // the agent's personal first hello (which fires post-server-
+    // start via the send-greeting state-machine action).
+    expect(prompt).toMatch(/orienting message|intro message/i);
     expect(prompt).toMatch(/message_thread_id/);
     expect(prompt).toMatch(/sendMessage/);
   });
@@ -150,6 +155,178 @@ describe('buildTelegramAgenticPrompt', () => {
     expect(prompt).toMatch(/lifelineTopicId/);
   });
 });
+
+describe('buildTelegramAgenticPrompt v1.2.20 audit additions', () => {
+  const prompt = buildTelegramAgenticPrompt('/tmp/fake-project', {
+    agentName: 'codey',
+    userName: 'Justin',
+    agentRole: 'coding assistant',
+  });
+
+  it('uses the user-chosen agentName as the BotFather display name (D2/G1 fix)', () => {
+    // Pre-v1.2.20 the display name was hardcoded "Instar Agent" —
+    // even when the user picked "codey" in the wizard, Telegram
+    // contact list showed "Instar Agent". v1.2.20 pipes agentName
+    // into the prompt.
+    expect(prompt).toContain('"codey"');
+    expect(prompt).not.toMatch(/type:\s*\n?\s*["']Instar Agent["']/);
+  });
+
+  it('addresses the user by name in greetings + ID context (D2)', () => {
+    expect(prompt).toContain('Justin');
+    expect(prompt).toMatch(/User name:\s+"Justin"/);
+  });
+
+  it('uses agentRole in /setdescription text (A2 fix)', () => {
+    expect(prompt).toContain('coding assistant');
+    expect(prompt).toMatch(/\/setdescription/);
+  });
+
+  it('sets /setabouttext (A3 fix)', () => {
+    expect(prompt).toMatch(/\/setabouttext/);
+    // About text is 120-char cap.
+    expect(prompt).toMatch(/120 chars/);
+  });
+
+  it('promotes bot to group admin via Playwright UI (A1 fix)', () => {
+    expect(prompt).toMatch(/admin/i);
+    expect(prompt).toMatch(/Add Admin|Add Administrator|Administrators/);
+    expect(prompt).toMatch(/getChatMember/);
+    expect(prompt).toMatch(/status === "administrator"/);
+  });
+
+  it('pins the Lifeline orientation message (B3 fix)', () => {
+    expect(prompt).toMatch(/pinChatMessage/);
+    expect(prompt).toMatch(/LIFELINE_INTRO_MESSAGE_ID/);
+    // Pinning is non-fatal — depends on A1 admin rights.
+    expect(prompt).toMatch(/NOT AGENTIC_FAILED/);
+  });
+
+  it('chmods config.json to 0600 after writing the token (F2 fix)', () => {
+    expect(prompt).toMatch(/chmod 0600/);
+    // Justification in the comment near the chmod step.
+    expect(prompt).toMatch(/credential material|world-readable/i);
+  });
+
+  it('flushes the /getUpdates long-poll backlog before verification (G5 fix)', () => {
+    expect(prompt).toMatch(/getUpdates\?offset=-1/);
+    expect(prompt).toMatch(/sleep 1/);
+  });
+
+  it('Lifeline orienting message teaches topic mechanics in agent voice (C1 fix)', () => {
+    // SKILL.md's Lifeline greeting was richer than the v1.2.19
+    // text. v1.2.20 should now teach the user how topics work +
+    // invite them to create more.
+    expect(prompt).toMatch(/Lifeline/);
+    expect(prompt).toMatch(/topic|topics/i);
+    // Either form of the create-topics invitation is fine.
+    expect(prompt).toMatch(/create.*topic|create new topic|create a topic/i);
+  });
+
+  it('CRITICAL CREDENTIAL HYGIENE section refuses to print the bot token (F1 fix)', () => {
+    expect(prompt).toMatch(/CRITICAL CREDENTIAL HYGIENE/i);
+    expect(prompt).toMatch(/NEVER print the bot token/i);
+    expect(prompt).toMatch(/REDACTED/);
+  });
+
+  it('falls back to projectDir basename + "friend" when ctx is omitted (defensive)', () => {
+    const bare = buildTelegramAgenticPrompt('/Users/x/instar-foo');
+    // Agent name defaults to project basename.
+    expect(bare).toContain('"instar-foo"');
+    // User name defaults to "friend".
+    expect(bare).toMatch(/User name:\s+"friend"/);
+  });
+});
+
+describe('runSendLifelineGreeting (C2/D1 — magic moment after server start)', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = mktmp('greet-'); });
+  afterEach(() => { tmpRm(tmp); });
+
+  function writeMessagingConfig(messaging: unknown[]): void {
+    fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, '.instar', 'config.json'),
+      JSON.stringify({ messaging }),
+    );
+  }
+
+  const baseOptions = {
+    codexPath: '/bin/true',
+    projectDir: '',
+    instarRoot: '',
+  };
+
+  it('silently no-ops when telegram messaging is not configured', async () => {
+    writeMessagingConfig([]);
+    const updates = await runSendLifelineGreeting(
+      { agentName: 'codey', userName: 'Justin' },
+      { ...baseOptions, projectDir: tmp },
+    );
+    expect(updates).toEqual({});
+  });
+
+  it('silently no-ops when lifelineTopicId is missing', async () => {
+    writeMessagingConfig([
+      { type: 'telegram', enabled: true, config: { token: 'x:y', chatId: '-100abc' } },
+    ]);
+    const updates = await runSendLifelineGreeting(
+      { agentName: 'codey', userName: 'Justin' },
+      { ...baseOptions, projectDir: tmp },
+    );
+    expect(updates).toEqual({});
+  });
+
+  it('silently no-ops when config.json is missing entirely', async () => {
+    // No config dir at all.
+    const updates = await runSendLifelineGreeting(
+      { agentName: 'codey', userName: 'Justin' },
+      { ...baseOptions, projectDir: tmp },
+    );
+    expect(updates).toEqual({});
+  });
+
+  it('attempts the sendMessage call when token + chatId + lifelineTopicId are all present', async () => {
+    writeMessagingConfig([
+      {
+        type: 'telegram',
+        enabled: true,
+        config: { token: 'x:y', chatId: '-100abc', lifelineTopicId: 42 },
+      },
+    ]);
+    // Stub global fetch to capture the call.
+    const fetchCalls: Array<{ url: string; body: unknown }> = [];
+    const stubFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (url, init) => {
+        fetchCalls.push({
+          url: typeof url === 'string' ? url : String(url),
+          body: init?.body ? JSON.parse(init.body as string) : null,
+        });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+    try {
+      await runSendLifelineGreeting(
+        { agentName: 'codey', userName: 'Justin', autonomy: 'proactive' },
+        { ...baseOptions, projectDir: tmp },
+      );
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0].url).toMatch(/api\.telegram\.org\/botx%3Ay\/sendMessage/);
+      const body = fetchCalls[0].body as {
+        chat_id: string;
+        message_thread_id: number;
+        text: string;
+      };
+      expect(body.chat_id).toBe('-100abc');
+      expect(body.message_thread_id).toBe(42);
+      expect(body.text).toContain('codey');
+      expect(body.text).toContain('Justin');
+    } finally {
+      stubFetch.mockRestore();
+    }
+  });
+});
+
 
 describe('verifyTelegramConfig', () => {
   let tmp: string;

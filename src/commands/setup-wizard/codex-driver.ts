@@ -419,7 +419,7 @@ async function runAction(
       // instar-native readline flow when Codex returns the
       // PLAYWRIGHT_UNAVAILABLE sentinel, when the spawn fails, or
       // when the config write didn't actually land.
-      const agentic = await runTelegramAgentic(options);
+      const agentic = await runTelegramAgentic(options, answers);
       if (agentic.telegramConfigured) return agentic;
       console.log();
       console.log(pc.dim('  Browser automation didn\'t finish — switching to manual setup.'));
@@ -438,9 +438,18 @@ async function runAction(
     }
 
     case 'send-greeting': {
-      // Lifeline topic greeting depends on Telegram being configured.
-      // Defer to existing helper if available; otherwise skip silently.
-      return {};
+      // The "magic moment" — agent's first words to the user in the
+      // Lifeline topic, in the agent's voice, after the server is
+      // alive. SKILL.md devotes Phase 5b to this; the v1.2.20 audit
+      // surfaced that this action was a no-op.
+      //
+      // Reads token + chatId + lifelineTopicId from the just-written
+      // config.json (the agentic Telegram step wrote them), and
+      // sends a 2-3 sentence personalized greeting via sendMessage.
+      // Silently skips if any of the three fields are missing
+      // (Telegram wasn't configured, or the user took the manual
+      // backstop without lifelineTopicId).
+      return await runSendLifelineGreeting(answers, options);
     }
 
     case 'github-backup': {
@@ -475,12 +484,19 @@ async function runAction(
  * never to ~/.codex/config.toml. With v1.2.17 it does both, and
  * this action exercises the Codex side of that registration.
  */
-async function runTelegramAgentic(options: CodexDriverOptions): Promise<Partial<WizardAnswers>> {
+async function runTelegramAgentic(
+  options: CodexDriverOptions,
+  answers: WizardAnswers,
+): Promise<Partial<WizardAnswers>> {
   console.log();
   console.log(pc.bold('  Telegram setup'));
   console.log();
 
-  const prompt = buildTelegramAgenticPrompt(options.projectDir);
+  const prompt = buildTelegramAgenticPrompt(options.projectDir, {
+    agentName: answers.agentName,
+    userName: answers.userName,
+    agentRole: answers.agentRole,
+  });
   // 10-minute spawn timeout — the first-time user might need to
   // install Telegram on their phone before they can scan the QR.
   // Codex itself enforces a tighter login-wait via the prompt
@@ -520,8 +536,30 @@ async function runTelegramAgentic(options: CodexDriverOptions): Promise<Partial<
  * Build the prompt for Codex's Playwright-driven Telegram setup.
  * Exported for testing (we can assert the prompt's shape includes
  * the verification sentinels and the success criterion).
+ *
+ * `ctx.agentName` / `ctx.userName` / `ctx.agentRole` come from the
+ * earlier conversational phases of the wizard. They feed the bot's
+ * display name (so it shows up as "Codey" in Telegram instead of
+ * the v1.2.19 hardcoded "Instar Agent"), the bot description, and
+ * the system-topic intro texts.
  */
-export function buildTelegramAgenticPrompt(projectDir: string): string {
+export interface TelegramAgenticContext {
+  agentName?: string;
+  userName?: string;
+  agentRole?: string;
+}
+
+export function buildTelegramAgenticPrompt(
+  projectDir: string,
+  ctx: TelegramAgenticContext = {},
+): string {
+  // Defensive fallbacks: project basename for agent name, "friend"
+  // for user. The state-machine's validators guarantee these are
+  // populated in practice; defaults exist for tests and the
+  // pathological "Codex prompt invoked without prior state" case.
+  const agentName = (ctx.agentName || projectDir.split('/').filter(Boolean).pop() || 'agent').trim();
+  const userName = (ctx.userName || 'friend').trim();
+  const agentRole = (ctx.agentRole || 'persistent AI agent').trim();
   return `
 You are the instar setup wizard's Telegram phase. The user is sitting
 at the terminal RIGHT NOW reading what you print. You also have
@@ -530,6 +568,13 @@ Playwright browser-automation MCP tools available
 browser_type, browser_press_key, browser_wait_for, etc).
 
 TASK: Set up a Telegram bot for an instar agent at ${projectDir}.
+
+AGENT CONTEXT (use this for the bot's identity throughout):
+  - Agent name: "${agentName}"  (use as the BotFather display name,
+    bot description, group name, intro voice)
+  - User name: "${userName}"    (address the user by this name in
+    intros and the final greeting)
+  - Agent role: "${agentRole}"  (use in /setdescription text)
 
 CRITICAL CONVERSATIONAL RULES:
   - You are talking to a real person, not running a job. Speak to
@@ -545,6 +590,15 @@ CRITICAL CONVERSATIONAL RULES:
   - Never print "still polling" or "no transition detected" or
     other internal-state language. The user doesn't care about your
     polling cadence; they care about what to do.
+
+CRITICAL CREDENTIAL HYGIENE:
+  - NEVER print the bot token to the terminal, even in error
+    messages. The token pattern is \\d+:[A-Za-z0-9_-]{35}.
+  - If an error response from the Bot API mentions the token,
+    redact to "Token: [REDACTED]" before narrating to the user.
+  - stdio is inherited from the calling instar process — anything
+    you print lands on the user's terminal AND their shell
+    scrollback. Treat every print as a permanent record.
 
 SUCCESS CRITERION (verified by the caller after you exit):
   .instar/config.json's messaging[] contains exactly one entry
@@ -605,13 +659,17 @@ STEPS:
 
 5. Send /newbot. Wait for the reply.
 
-6. When BotFather asks for the bot's display name, type:
-   "Instar Agent"
+6. When BotFather asks for the bot's display name, type the
+   AGENT NAME from the context above: "${agentName}".
+   (This is what appears as the bot's name in ${userName}'s
+   Telegram contact list and message header — it MUST match the
+   identity the user chose earlier in the wizard, not a generic
+   "Instar Agent" placeholder.)
 
 7. When BotFather asks for the bot's username, generate one ending
-   in "bot" (use the basename of the project dir, lower-case,
-   ASCII-only, with "_instar_bot" appended; if taken, append random
-   digits and retry up to 5 times).
+   in "bot". Recommended form: "${agentName.toLowerCase().replace(/[^a-z0-9]/g, '')}_instar_bot"
+   (lower-case ASCII-only). If taken, append random digits and
+   retry up to 5 times.
 
 8. Read BotFather's reply containing the token. Extract the token
    from the message body. Token format: \\d+:[A-Za-z0-9_-]+
@@ -626,6 +684,31 @@ STEPS:
    Then output:
      AGENTIC_FAILED: token-invalid
    and exit.
+
+9b. Set the bot description (what appears in the "What can this
+    bot do?" panel when someone opens the bot's profile). In the
+    BotFather chat:
+    a. Send /setdescription
+    b. Select the bot you just created.
+    c. Send this exact text (or close to it, in the agent's voice):
+       "I'm ${agentName}, a ${agentRole} for ${userName}. Talk to me here for anything you'd ask an assistant — questions, tasks, status checks. I'll respond from this chat."
+    d. BotFather confirms with "Success!" or similar.
+
+    If BotFather rejects the description (length, content), shorten
+    and retry once. If it still fails, narrate "Couldn't set the
+    description, moving on" and continue — this is non-fatal, NOT
+    AGENTIC_FAILED. The bot works without a description.
+
+9c. Set the bot's About text (the short line shown under the bot's
+    name in the chat header). In the BotFather chat:
+    a. Send /setabouttext
+    b. Select the same bot.
+    c. Send a SHORT line (cap is 120 chars) in the agent's voice:
+       "${agentRole} • here for ${userName}"
+    d. BotFather confirms.
+
+    Same non-fatal handling as 9b — narrate and continue if BotFather
+    rejects.
 
 10. CRITICAL — disable the bot's privacy mode via BotFather. Without
     this, the bot can't see normal messages in a group (only direct
@@ -648,12 +731,14 @@ STEPS:
     manual." Output AGENTIC_FAILED: privacy-not-disabled and exit.
 
 11. Tell the user briefly:
-    "Creating a group chat now and adding the bot."
+    "Creating a group chat now and adding ${agentName}."
     Then create a new group chat:
     a. Click the "new message" / pencil icon.
     b. Choose "New Group".
     c. Search for and add the bot you just created.
-    d. Name the group "<basename> + instar".
+    d. Name the group "${userName} + ${agentName}" (or
+       "${agentName} + ${userName}" — whichever reads more naturally
+       to you given the wizard's tone).
     e. Create the group.
 
 12. CRITICAL — enable Topics (Forum mode) on the new group. This
@@ -674,8 +759,11 @@ STEPS:
 
     Send a probe message in the group's General topic:
       "first contact"
-    Then verify via Bot API:
-      curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates"
+    Then flush stale long-poll backlog FIRST (in case another
+    instar instance is polling the same bot) and re-probe:
+      curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates?offset=-1" > /dev/null
+      sleep 1
+      curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates?timeout=5"
     Confirm message.chat.type === "supergroup" AND
     message.chat.is_forum === true. The chat.id will have CHANGED
     from the original basic-group id to a -100-prefixed supergroup
@@ -684,6 +772,32 @@ STEPS:
     If is_forum is not true after 2 retries (enable + re-probe),
     tell the user "Couldn't enable topic threads — switching to
     manual." Output AGENTIC_FAILED: forum-mode-not-enabled.
+
+12b. CRITICAL — promote the bot to group admin. Without admin
+     rights, several capabilities silently degrade: the bot can't
+     pin messages, can't manage topics (rename / delete / reopen),
+     and Telegram's evolving group-permission rules may further
+     restrict it.
+
+     The Bot API does NOT let a bot self-promote — must be done
+     via Playwright UI:
+     a. Tell the user briefly: "Promoting ${agentName} to admin
+        so it can pin messages and manage topics."
+     b. Open the group, click the group title to open Group Info.
+     c. Click "Administrators" (sometimes nested under
+        "Permissions" or "Members").
+     d. Click "Add Admin" / "Add Administrator".
+     e. Search for and select the bot you created.
+     f. Save / confirm. (No permission tweaks needed — defaults
+        are fine.)
+
+     Verify via the Bot API:
+       curl -s "https://api.telegram.org/bot<TOKEN>/getChatMember?chat_id=<FORUM_CHAT_ID>&user_id=<BOT_ID>"
+     (BOT_ID is result.id from the /getMe call earlier.) Confirm
+     result.status === "administrator". If not after one retry,
+     narrate "Couldn't promote ${agentName} to admin, moving on
+     — pinning and topic management may not work." This is
+     NON-fatal — continue with the rest of setup. NOT AGENTIC_FAILED.
 
 13. Create the 4 system topics. Each via createForumTopic:
 
@@ -709,24 +823,42 @@ STEPS:
     "Couldn't create the system topics — switching to manual."
     Output AGENTIC_FAILED: topics-create-failed and exit.
 
-14. Seed each topic with one short, friendly intro message via
-    sendMessage + message_thread_id. Use the agent's first-person
-    voice. The agent's name is the basename of the project dir
-    (e.g. "codey" for /Users/.../instar-codey).
+14. Seed each topic with one orienting message via sendMessage +
+    message_thread_id. These are NEUTRAL channel-purpose blurbs,
+    not the agent's personal greeting (that's a separate step
+    after server start — see Phase 5 of the wizard). Use the
+    agent's first-person voice in plain text. Adapt wording as
+    needed for the agent's personality, but keep meaning intact.
 
-    a. Lifeline (LIFELINE_TOPIC_ID):
-       "Hey 👋 This is the Lifeline — the main channel between us.
-       Anything that doesn't fit in another topic, send it here."
+    a. Lifeline (LIFELINE_TOPIC_ID) — this one is RICHER because
+       new users see it first and need to understand how topics
+       work:
+
+       text: |
+         Hey ${userName} — I'm ${agentName}. This is the **Lifeline** topic.
+
+         Quick orientation: each topic is a separate conversation
+         thread (like Slack channels). Lifeline is the main
+         channel between us — anything that doesn't fit elsewhere,
+         send it here.
+
+         You can ask me to create new topics for different tasks
+         ("create a topic for deployment issues") and I'll
+         proactively create topics when something's worth a
+         dedicated thread.
+
+         I'll send my proper hello once the server's up — should
+         only be a few seconds.
 
     b. Updates (UPDATES_TOPIC_ID):
        "Updates is where I'll post automated status — job runs,
        sync notifications, anything informational that doesn't
-       need a response."
+       need a response from you."
 
     c. Dashboard (DASHBOARD_TOPIC_ID):
        "Dashboard is where I'll post the link to my web dashboard
-       once a tunnel is up. You can monitor sessions from your
-       phone."
+       once a tunnel is up. You'll be able to monitor sessions
+       from your phone."
 
     d. Attention (ATTENTION_TOPIC_ID):
        "Attention is for things you need to look at — failed jobs,
@@ -740,6 +872,22 @@ STEPS:
              "message_thread_id": <TOPIC_ID>,
              "text": "<intro text>"}'
 
+    Capture the Lifeline intro's result.message_id as
+    LIFELINE_INTRO_MESSAGE_ID — used in 14b for pinning.
+
+14b. Pin the Lifeline intro so users scrolling back later don't
+     lose the orientation. Requires admin rights from step 12b;
+     non-fatal if 12b skipped.
+
+       curl -s -X POST "https://api.telegram.org/bot<TOKEN>/pinChatMessage" \\
+         -H 'Content-Type: application/json' \\
+         -d '{"chat_id": "<FORUM_CHAT_ID>",
+              "message_id": <LIFELINE_INTRO_MESSAGE_ID>,
+              "disable_notification": true}'
+
+     If response.ok is false, narrate "Couldn't pin the Lifeline
+     intro" and continue. NOT AGENTIC_FAILED.
+
 15. Write the config. Read the existing .instar/config.json. Filter
     out any existing { type: "telegram" } entries. Push:
       { type: "telegram", enabled: true,
@@ -752,6 +900,12 @@ STEPS:
         } }
     Write the file back (atomic-ish: tmp file + rename is fine).
 
+15b. chmod the config file to 0600 since it now contains the bot
+     token (credential material). Default umask leaves it
+     world-readable.
+
+       chmod 0600 .instar/config.json
+
 16. Verify your write succeeded by re-reading the file and confirming
     the messaging entry has token, chatId, AND lifelineTopicId all
     populated. If not, tell the user "Couldn't save the Telegram
@@ -760,9 +914,9 @@ STEPS:
     and exit.
 
 17. Tell the user briefly:
-    "Telegram is connected with the bot, the group, and the four
-    system topics (Lifeline, Updates, Dashboard, Attention). From
-    here on, your agent will message you in the Lifeline topic."
+    "Telegram is connected. ${agentName}'s ready in the group —
+    you'll see its proper hello in the Lifeline topic once the
+    server starts."
     Then exit cleanly.
 
 FAILURE MODE: at ANY step you cannot recover from, FIRST tell the
@@ -791,6 +945,86 @@ export function verifyTelegramConfig(projectDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Send the agent's personal "first hello" to the Lifeline topic
+ * after the server has started. This is SKILL.md's "magic moment"
+ * — the agent's first words to the user, in voice, using their
+ * actual name + role + the user's name.
+ *
+ * Reads token + chatId + lifelineTopicId from the just-written
+ * config.json. Silently no-ops if any are missing (Telegram wasn't
+ * configured, or the manual backstop didn't write lifelineTopicId).
+ *
+ * Exported for testing.
+ */
+export async function runSendLifelineGreeting(
+  answers: WizardAnswers,
+  options: CodexDriverOptions,
+): Promise<Partial<WizardAnswers>> {
+  const configPath = path.join(options.projectDir, '.instar', 'config.json');
+  let token = '';
+  let chatId = '';
+  let lifelineTopicId = 0;
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw) as {
+      messaging?: Array<{
+        type: string;
+        config?: { token?: string; chatId?: string; lifelineTopicId?: number };
+      }>;
+    };
+    const tg = (config.messaging || []).find((m) => m.type === 'telegram');
+    if (!tg?.config) return {};
+    token = tg.config.token ?? '';
+    chatId = tg.config.chatId ?? '';
+    lifelineTopicId = tg.config.lifelineTopicId ?? 0;
+  } catch {
+    return {};
+  }
+  if (!token || !chatId || !lifelineTopicId) {
+    // No Telegram configured, or partial config (manual backstop
+    // didn't capture chat id). Silent skip.
+    return {};
+  }
+
+  const agentName = (answers.agentName || 'your agent').trim();
+  const userName = (answers.userName || 'there').trim();
+  const autonomy = answers.autonomy || 'proactive';
+  const autonomyBlurb =
+    autonomy === 'guided'
+      ? 'I\'ll check with you before doing things.'
+      : autonomy === 'autonomous'
+        ? 'I\'ll own outcomes end-to-end and report back when something needs you.'
+        : 'I\'ll take initiative on obvious next steps and ask when uncertain.';
+
+  const greeting = `Hey ${userName}, ${agentName} here — server's up and I'm online.\n\n${autonomyBlurb}\n\nAnything we set up just now — name, focus, autonomy, messaging — you can change anytime just by chatting me. What would you like to work on first?`;
+
+  try {
+    // RULE 3: EXEMPT — this is a fire-and-forget POST to send a
+    // wizard-completion greeting, NOT a state-detection probe.
+    // Failure is silently swallowed (non-fatal) so there's no
+    // detection-result branching to canary against.
+    const res = await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_thread_id: lifelineTopicId,
+        text: greeting,
+      }),
+    });
+    const data = (await res.json()) as { ok: boolean };
+    if (data.ok) {
+      console.log();
+      console.log(pc.green(`  ✓ ${agentName} said hello in the Lifeline topic.`));
+    }
+  } catch {
+    // Non-fatal — server is up, agent will reach out on its own
+    // schedule. Don't block the wizard's completion.
+  }
+  return {};
 }
 
 /**

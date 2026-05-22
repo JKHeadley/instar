@@ -1,0 +1,18 @@
+{
+  "phase": "complete",
+  "specPath": "specs/dev-infrastructure/wizard-audit-bundle.md",
+  "artifactPath": "upgrades/side-effects/feat-wizard-audit-bundle.md",
+  "artifactSha256": "18d2994546ce349d550b0e99056682217fdc439721ccdf9cb390c0df0b5015dc",
+  "coveredFiles": [
+    "src/commands/setup-wizard/codex-driver.ts",
+    "tests/unit/codex-playwright-telegram.test.ts",
+    "specs/dev-infrastructure/wizard-audit-bundle.md",
+    "specs/dev-infrastructure/wizard-audit-bundle.eli16.md",
+    "docs/specs/reports/wizard-audit-bundle-convergence.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/feat-wizard-audit-bundle.md"
+  ],
+  "writtenAt": "2026-05-22T03:19:57Z",
+  "agent": "echo",
+  "summary": "Consolidated 10-item bundle from SKILL.md audit: agentName piping, richer Lifeline orientation, post-server magic-moment greeting (new runSendLifelineGreeting helper, send-greeting action wired), bot admin promotion, token redaction rule, /setdescription, /setabouttext, pin Lifeline, chmod 0600, two-call getUpdates flush. 81 wizard tests pass; 11 new. Ships v1.2.20."
+}
