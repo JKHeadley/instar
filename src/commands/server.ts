@@ -7297,72 +7297,27 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log('[Housekeeping] Periodic cleanup completed');
     }, HOUSEKEEPING_INTERVAL_MS);
 
-    // Start tunnel AFTER server is listening (with retry on failure)
+    // Start tunnel AFTER server is listening.
+    //
+    // The TunnelManager is now the single owner of the detect → attempt →
+    // fall-back → notify lifecycle (per
+    // specs/dev-infrastructure/tunnel-failure-resilience.md). The old
+    // startup-retry ladder + background-retry scheduler + Lifeline
+    // failure message that used to live here are RETIRED; the manager
+    // handles backoff internally, schedules the post-exhausted self-heal
+    // retry, and (once the notifier sink is wired in the next PR of the
+    // chain) emits user-facing messages via the two-channel notifier.
+    //
+    // Failure on initial start is non-fatal: the manager keeps trying
+    // in the background, and the post-exhausted retry timer keeps the
+    // agent recoverable without requiring a server restart.
     if (tunnel) {
-      tunnel.enableAutoReconnect();
-      const maxRetries = 5;
-      let tunnelStarted = false;
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          const tunnelUrl = await tunnel.start();
-          console.log(pc.green(`  Tunnel active: ${pc.bold(tunnelUrl)}`));
-          tunnelStarted = true;
-          break;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (attempt < maxRetries) {
-            const delay = Math.min(15_000 * Math.pow(2, attempt - 1), 120_000); // 15s, 30s, 60s, 120s
-            console.log(pc.yellow(`  Tunnel failed (attempt ${attempt}/${maxRetries}): ${msg}`));
-            console.log(pc.yellow(`  Retrying in ${delay / 1000}s...`));
-            await new Promise(r => setTimeout(r, delay));
-          } else {
-            console.error(pc.red(`  Tunnel failed after ${maxRetries} attempts: ${msg}`));
-          }
-        }
-      }
-      // If tunnel didn't start, schedule background retries
-      if (!tunnelStarted) {
-        const retryIntervals = [5, 10, 20]; // minutes
-        console.log(pc.yellow(`  Will retry tunnel in ${retryIntervals[0]} minutes...`));
-        const scheduleRetry = (index: number) => {
-          if (index >= retryIntervals.length) return;
-          setTimeout(async () => {
-            try {
-              const tunnelUrl = await tunnel!.start();
-              console.log(pc.green(`[tunnel] Connected: ${tunnelUrl}`));
-              if (tunnelUrl) {
-                const tunnelType = (config.tunnel?.type || 'quick') as 'quick' | 'named';
-                if (telegram) {
-                  await telegram.broadcastDashboardUrl(tunnelUrl, tunnelType).catch(() => {});
-                }
-                if (_slackAdapter) {
-                  await _slackAdapter.broadcastDashboardUrl(tunnelUrl).catch(() => {});
-                }
-              }
-            } catch (retryErr) {
-              const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-              console.error(`[tunnel] Retry failed: ${msg}`);
-              if (index + 1 < retryIntervals.length) {
-                console.log(`[tunnel] Will retry in ${retryIntervals[index + 1]} minutes...`);
-                scheduleRetry(index + 1);
-              } else {
-                console.error('[tunnel] All retries exhausted. Tunnel unavailable until server restart.');
-                if (telegram) {
-                  try {
-                    const lifelineId = telegram.getLifelineTopicId?.();
-                    if (lifelineId) {
-                      await telegram.sendToTopic(
-                        lifelineId,
-                        '⚠️ Tunnel failed after all retries. Dashboard link is unavailable until the server is restarted.',
-                      ).catch(() => {});
-                    }
-                  } catch { /* best-effort notification */ }
-                }
-              }
-            }
-          }, retryIntervals[index] * 60_000);
-        };
-        scheduleRetry(0);
+      try {
+        const tunnelUrl = await tunnel.start();
+        console.log(pc.green(`  Tunnel active: ${pc.bold(tunnelUrl)}`));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(pc.red(`  Tunnel start failed (manager will keep retrying in background): ${msg}`));
       }
     }
 
