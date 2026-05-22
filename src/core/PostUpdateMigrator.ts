@@ -2162,12 +2162,13 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 
 #### ORG-INTENT.md (Organizational Intent at Runtime)
 
-If \`.instar/ORG-INTENT.md\` exists on disk, the Coherence Gate now reads it on every outbound message review and surfaces the three-rule contract to the value-alignment reviewer: **constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
+If \`.instar/ORG-INTENT.md\` exists on disk, two runtime surfaces consume it: the Coherence Gate (Phase 1) reads it on every outbound message review, and the session-start hook (Phase 2) fetches it at session boot via \`GET /intent/org/session-context\` and injects the structured contract into your context. **Constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
 
 Manage it:
 - Scaffold a starter: \`instar intent org-init "Your Org Name"\`
 - Static validation against agent intent: \`instar intent validate\`
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
+- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
 
 **Topic-Project Bindings**: Each Telegram topic can be bound to a specific project. When switching topics, verify the binding matches your current working directory.
 - View bindings: \`GET http://localhost:${port}/topic-bindings\`
@@ -2195,12 +2196,13 @@ Manage it:
 
 #### ORG-INTENT.md (Organizational Intent at Runtime)
 
-If \`.instar/ORG-INTENT.md\` exists on disk, the Coherence Gate now reads it on every outbound message review and surfaces the three-rule contract to the value-alignment reviewer: **constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
+If \`.instar/ORG-INTENT.md\` exists on disk, two runtime surfaces consume it: the Coherence Gate (Phase 1) reads it on every outbound message review, and the session-start hook (Phase 2) fetches it at session boot via \`GET /intent/org/session-context\` and injects the structured contract into your context. **Constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
 
 Manage it:
 - Scaffold a starter: \`instar intent org-init "Your Org Name"\`
 - Static validation against agent intent: \`instar intent validate\`
 - Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
+- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
 `;
       // Anchor: insert after "Topic-Project Bindings" header so it lands inside
       // the Coherence Gate section but before the Project Map subsection.
@@ -2208,12 +2210,42 @@ Manage it:
       if (anchor >= 0) {
         content = content.slice(0, anchor) + subsection + '\n' + content.slice(anchor);
         patched = true;
-        result.upgraded.push('CLAUDE.md: added ORG-INTENT.md runtime subsection to Coherence Gate');
+        result.upgraded.push('CLAUDE.md: added ORG-INTENT.md runtime subsection (Phase 1+2) to Coherence Gate');
       } else {
         // Fallback: append at end if the Topic-Project Bindings anchor moved
         content += '\n' + subsection;
         patched = true;
         result.upgraded.push('CLAUDE.md: appended ORG-INTENT.md runtime subsection (anchor missing, fallback insert)');
+      }
+    } else if (
+      content.includes('ORG-INTENT.md (Organizational Intent at Runtime)')
+      && !content.includes('/intent/org/session-context')
+    ) {
+      // CLAUDE.md already has the Phase 1 ORG-INTENT runtime subsection but
+      // not the Phase 2 session-start injection mention. Rewrite the
+      // subsection in place so the agent learns about both surfaces.
+      // Match: from the heading line through the empty line before the next
+      // ### heading (typically "### External Operation Safety" or
+      // "## Agent Infrastructure").
+      const headingPattern = /(####? ORG-INTENT\.md \(Organizational Intent at Runtime\))[\s\S]*?(?=\n## |\n### |$)/;
+      const replacement = `$1
+
+If \`.instar/ORG-INTENT.md\` exists on disk, two runtime surfaces consume it: the Coherence Gate (Phase 1) reads it on every outbound message review, and the session-start hook (Phase 2) fetches it at session boot via \`GET /intent/org/session-context\` and injects the structured contract into your context. **Constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Static validation against agent intent: \`instar intent validate\`
+- Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org\`
+- Preview the session-start block: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/org/session-context\`
+
+`;
+      const before = content;
+      content = content.replace(headingPattern, replacement);
+      if (content !== before) {
+        patched = true;
+        result.upgraded.push('CLAUDE.md: upgraded ORG-INTENT.md subsection to mention Phase 2 session-start injection');
+      } else {
+        result.skipped.push('CLAUDE.md: ORG-INTENT.md subsection present but Phase 2 upgrade pattern did not match (skipping)');
       }
     } else {
       result.skipped.push('CLAUDE.md: Coherence Gate section already present');
@@ -3592,6 +3624,35 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
       echo "--- INTEGRATED-BEING (cross-session observations) ---"
       echo "\$SHARED_STATE"
       echo "--- END INTEGRATED-BEING ---"
+      echo ""
+    fi
+  fi
+fi
+
+# ORG-INTENT injection — Phase 2 of the ORG-INTENT runtime project.
+# Fetches the parsed three-rule contract (constraints / goals / values /
+# tradeoff hierarchy) from /intent/org/session-context and injects it at
+# session-start so the agent reasons with the organizational intent from
+# message one. The Coherence Gate (Phase 1) still enforces the same contract
+# at outbound-message review time — this just brings the same intent into the
+# agent's working context up front. Fail-open: route unreachable / absent
+# ORG-INTENT.md / 503 → silent skip, session continues normally.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  ORG_INTENT_RESPONSE=\$(curl -sf --max-time 4 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/intent/org/session-context" 2>/dev/null)
+  if [ -n "\$ORG_INTENT_RESPONSE" ]; then
+    ORG_INTENT_BLOCK=\$(echo "\$ORG_INTENT_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$ORG_INTENT_BLOCK" ]; then
+      echo ""
+      echo "\$ORG_INTENT_BLOCK"
       echo ""
     fi
   fi

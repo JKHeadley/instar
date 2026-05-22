@@ -9593,6 +9593,39 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ORG-INTENT.md → session-start friendly text block.
+  // Used by the session-start hook to inject the three-rule contract at the
+  // start of every session, so the agent reasons with the intent from message
+  // one rather than only being blocked by it at gate-evaluate time. Phase 2
+  // of the ORG-INTENT runtime project. Returns:
+  //   { present: true, block: "...text...", name, counts }   when ORG-INTENT.md is present
+  //   { present: false }                                      when absent/template-only
+  router.get('/intent/org/session-context', async (_req, res) => {
+    try {
+      const { OrgIntentManager, formatOrgIntentForSessionStart } = await import('../core/OrgIntentManager.js');
+      const manager = new OrgIntentManager(ctx.config.stateDir);
+      const parsed = manager.parse();
+      if (!parsed) {
+        res.json({ present: false });
+        return;
+      }
+      const block = formatOrgIntentForSessionStart(parsed);
+      res.json({
+        present: true,
+        block,
+        name: parsed.name,
+        counts: {
+          constraints: parsed.constraints.length,
+          goals: parsed.goals.length,
+          values: parsed.values.length,
+          tradeoffHierarchy: parsed.tradeoffHierarchy.length,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read org intent' });
+    }
+  });
+
   router.get('/intent/validate', async (_req, res) => {
     try {
       const { OrgIntentManager } = await import('../core/OrgIntentManager.js');

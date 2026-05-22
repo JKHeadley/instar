@@ -79,7 +79,7 @@ describe('PostUpdateMigrator — ORG-INTENT runtime CLAUDE.md migration', () => 
 
     const content = fs.readFileSync(home.claudeMd, 'utf-8');
     expect(content).toContain('ORG-INTENT.md (Organizational Intent at Runtime)');
-    expect(content).toContain('the three-rule contract');
+    expect(content).toContain('Constraints** are mandatory');
     expect(content).toContain('instar intent org-init');
     // Subsection lands inside the Coherence Gate block, before Topic-Project Bindings
     const orgIntentIdx = content.indexOf('ORG-INTENT.md (Organizational Intent at Runtime)');
@@ -111,7 +111,7 @@ describe('PostUpdateMigrator — ORG-INTENT runtime CLAUDE.md migration', () => 
     const content = fs.readFileSync(home.claudeMd, 'utf-8');
     expect(content).toContain('### Coherence Gate (Pre-Action Verification)');
     expect(content).toContain('ORG-INTENT.md (Organizational Intent at Runtime)');
-    expect(content).toContain('the three-rule contract');
+    expect(content).toContain('Constraints** are mandatory');
   });
 
   it('skips cleanly when CLAUDE.md is missing', () => {
@@ -119,6 +119,58 @@ describe('PostUpdateMigrator — ORG-INTENT runtime CLAUDE.md migration', () => 
     const migrator = buildMigrator(home.projectDir, home.stateDir);
     expect(() => migrator.migrate()).not.toThrow();
     expect(fs.existsSync(home.claudeMd)).toBe(false);
+  });
+
+  it('upgrades the Phase-1-only subsection to mention Phase 2 session-start injection', () => {
+    // A CLAUDE.md that has the Phase 1 ORG-INTENT runtime subsection (from
+    // the first ORG-INTENT runtime PR) but no Phase 2 session-context route
+    // mention — the agent state right before this PR lands.
+    const phase1Only = PREEXISTING_COHERENCE_GATE_SECTION.replace(
+      '**Topic-Project Bindings**',
+      `#### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, the Coherence Gate now reads it on every outbound message review and surfaces the three-rule contract to the value-alignment reviewer: **constraints** are mandatory (violations block), **goals** are organizational defaults (contradictions warn or block), **values** shape representation (drift warns), and the **tradeoff hierarchy** resolves ties when two values pull in opposite directions (earlier entry wins).
+
+Manage it:
+- Scaffold a starter: \`instar intent org-init "Your Org Name"\`
+- Static validation against agent intent: \`instar intent validate\`
+- Inspect parsed structure: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/intent/org\`
+
+**Topic-Project Bindings**`,
+    );
+    fs.writeFileSync(home.claudeMd, phase1Only);
+
+    const migrator = buildMigrator(home.projectDir, home.stateDir);
+    migrator.migrate();
+
+    const content = fs.readFileSync(home.claudeMd, 'utf-8');
+    // Phase 2 mention now present
+    expect(content).toContain('session-start hook (Phase 2)');
+    expect(content).toContain('/intent/org/session-context');
+    expect(content).toContain('Preview the session-start block');
+    // Still only one ORG-INTENT subsection (replacement, not duplication)
+    const matches = content.match(/ORG-INTENT\.md \(Organizational Intent at Runtime\)/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  it('is idempotent on Phase-2-upgraded CLAUDE.md (re-running does not re-modify)', () => {
+    // A CLAUDE.md already with the Phase 2 subsection — the post-migration state.
+    const phase2Done = PREEXISTING_COHERENCE_GATE_SECTION.replace(
+      '**Topic-Project Bindings**',
+      `#### ORG-INTENT.md (Organizational Intent at Runtime)
+
+If \`.instar/ORG-INTENT.md\` exists on disk, two runtime surfaces consume it: the Coherence Gate (Phase 1) reads it on every outbound message review, and the session-start hook (Phase 2) fetches it at session boot via \`GET /intent/org/session-context\`.
+
+**Topic-Project Bindings**`,
+    );
+    fs.writeFileSync(home.claudeMd, phase2Done);
+
+    const migrator = buildMigrator(home.projectDir, home.stateDir);
+    migrator.migrate();
+    const afterFirst = fs.readFileSync(home.claudeMd, 'utf-8');
+    migrator.migrate();
+    const afterSecond = fs.readFileSync(home.claudeMd, 'utf-8');
+    expect(afterSecond).toBe(afterFirst);
   });
 
   it('does not double-insert when CLAUDE.md already contains the subsection', () => {

@@ -183,6 +183,48 @@ function coresOverlap(core1: string, core2: string): boolean {
   return overlap >= 2 || (overlap > 0 && overlap / minSize >= 0.5);
 }
 
+// ── Session-Start Formatter (Phase 2) ───────────────────────────────
+
+/**
+ * Render a `ParsedOrgIntent` into a session-start text block. Constraints
+ * lead (most load-bearing), then goals, values, and tradeoff hierarchy.
+ * Empty buckets are omitted. Used by the session-start hook and exposed via
+ * `GET /intent/org/session-context`.
+ *
+ * Deterministic, single-newline-joined text — no LLM involvement — so it is
+ * safe to inject directly into agent context at session boot.
+ */
+export function formatOrgIntentForSessionStart(intent: ParsedOrgIntent): string {
+  const lines: string[] = [];
+  lines.push('=== ORGANIZATIONAL INTENT ===');
+  lines.push(`Organization: ${intent.name}`);
+  lines.push('');
+  lines.push('This is your operating contract. Constraints are mandatory; goals are organizational defaults; values shape representation; the tradeoff hierarchy resolves ties.');
+  if (intent.constraints.length > 0) {
+    lines.push('');
+    lines.push('CONSTRAINTS (mandatory — outbound messages that violate these are blocked at the Coherence Gate):');
+    for (const c of intent.constraints) lines.push(`  - ${c.text}`);
+  }
+  if (intent.goals.length > 0) {
+    lines.push('');
+    lines.push('GOALS (organizational defaults — specialize but never contradict):');
+    for (const g of intent.goals) lines.push(`  - ${g.text}`);
+  }
+  if (intent.values.length > 0) {
+    lines.push('');
+    lines.push('VALUES (representation — keep these visible in how you communicate):');
+    for (const v of intent.values) lines.push(`  - ${v}`);
+  }
+  if (intent.tradeoffHierarchy.length > 0) {
+    lines.push('');
+    lines.push('TRADEOFF HIERARCHY (when two values pull in opposite directions, the earlier entry wins):');
+    intent.tradeoffHierarchy.forEach((t, i) => lines.push(`  ${i + 1}. ${t}`));
+  }
+  lines.push('');
+  lines.push('=== END ORGANIZATIONAL INTENT ===');
+  return lines.join('\n');
+}
+
 // ── Main Class ───────────────────────────────────────────────────────
 
 export class OrgIntentManager {
