@@ -2149,6 +2149,32 @@ Spec: \`docs/specs/auto-updater-lifeline-coordination.md\` (in the instar repo).
       result.upgraded.push('CLAUDE.md: added Version-Skew Self-Recovery section');
     }
 
+    // Sentinel Notifications (silently-stopped trio post-2026-05-22) — tells
+    // the agent the silently-stopped sentinels are housekeeping and go to the
+    // logs by default. Without this, an agent asked "are my sentinels alerting?"
+    // or "where do sentinel events go?" has no grounded answer. Idempotent via
+    // content-sniffing on the unique marker phrase.
+    if (!content.includes('sentinelTelegramEscalation') && !content.includes('Sentinel Notifications (silently-stopped trio)')) {
+      const section = `
+## Sentinel Notifications (silently-stopped trio)
+
+The SocketDisconnectSentinel + ActiveWorkSilenceSentinel watch for sessions that drop their socket or freeze mid-task. They detect, attempt one gentle nudge, and verify recovery — all on their own.
+
+By default this is HOUSEKEEPING — the user never sees it. Every transition (detected / nudged / recovered / escalated) is written to:
+- The server log (\`logs/server.log\`) as \`[sentinel:KIND] sentinel/sessionName — detail\` lines.
+- A structured audit trail at \`logs/sentinel-events.jsonl\` (one JSON entry per transition).
+
+Telegram delivery of escalations is OFF by default. When a genuinely-stuck session truly fails recovery and the user should know, set \`monitoring.sentinelTelegramEscalation: true\` in \`.instar/config.json\` — then escalations are COALESCED into ONE consolidated message and posted to the existing system (lifeline) topic. They are never per-event new topics. This default-off + single-topic design is the post-2026-05-22 fix for the topic-spam flood.
+
+If a user asks "are my sentinels alerting?" or "why isn't the watchdog notifying me?" — read \`logs/sentinel-events.jsonl\` for the full audit trail and explain that Telegram is opt-in via the flag above. Spec: \`docs/specs/silently-stopped-trio.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Sentinel Notifications section');
+    } else {
+      result.skipped.push('CLAUDE.md: Sentinel Notifications section already present');
+    }
+
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
     // and lifeline drift auto-promote. Complementary to Version-Skew Self-
     // Recovery above (that one handles major.minor crossings; this one handles
