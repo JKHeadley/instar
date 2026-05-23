@@ -759,7 +759,43 @@ export class WorktreeManager extends EventEmitter {
       } catch {
         throw new Error(`Worktree path ${worktreePath} exists but is not a valid git worktree`);
       }
+    } else if (this.shouldCloneInsteadOfWorktree()) {
+      // Clone-default for cross-project worktrees: when the source repo lives
+      // outside agent home, `git worktree add` leaves per-worktree metadata
+      // (HEAD, ORIG_HEAD, gitdir) inside the SOURCE repo's .git/worktrees/
+      // path. Claude Code's sandbox can EPERM-block paths under
+      // /Users/justin/Documents/Projects/* mid-session, killing every git
+      // command from the worktree (confirmed 2026-05-22, recovery cost ~20m).
+      // A `git clone` produces a self-contained .git/ directory inside agent
+      // home — no shared-path dependency, no mid-session sandbox failure.
+      //
+      // Spec: docs/specs/silently-stopped-trio.md
+      SafeGitExecutor.execSync(
+        ['clone', '--quiet', this.opts.projectDir, worktreePath],
+        { timeout: 120_000, operation: 'src/core/WorktreeManager.ts:clone-default' },
+      );
+      // Create branch on the clone (mirrors the worktree path's branch-prep).
+      try {
+        SafeGitExecutor.readSync(
+          ['-C', worktreePath, 'rev-parse', '--verify', branch],
+          { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:clone-branch-check' },
+        );
+        // Branch already exists on the clone (came from source) — check it out.
+        SafeGitExecutor.execSync(
+          ['-C', worktreePath, 'checkout', branch],
+          { timeout: 5000, operation: 'src/core/WorktreeManager.ts:clone-checkout-existing' },
+        );
+      } catch {
+        // Branch doesn't exist yet — create + check out.
+        SafeGitExecutor.execSync(
+          ['-C', worktreePath, 'checkout', '-b', branch],
+          { timeout: 5000, operation: 'src/core/WorktreeManager.ts:clone-checkout-new' },
+        );
+      }
+      await this.fastCopyDeps(worktreePath);
     } else {
+      // In-tree worktree (source is already under agent home — the sandbox
+      // hazard doesn't apply, and worktree is cheaper than clone).
       // Create branch if needed; then `git worktree add`
       try {
         SafeGitExecutor.readSync(['-C', this.opts.projectDir, 'rev-parse', '--verify', branch], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:767' });
@@ -797,6 +833,38 @@ export class WorktreeManager extends EventEmitter {
     });
     this.emit('binding:created', binding);
     return binding;
+  }
+
+  /**
+   * Decide whether to create a self-contained clone instead of a git
+   * worktree. True when the source `projectDir` is outside agent home —
+   * which is when the sandbox-revocation hazard applies. Set
+   * `INSTAR_WORKTREE_FORCE_CLONE=1` to force clone regardless (for tests +
+   * unusual deployments); set `INSTAR_WORKTREE_FORCE_WORKTREE=1` to force
+   * the legacy worktree path (rollback escape hatch).
+   *
+   * Spec: docs/specs/silently-stopped-trio.md
+   */
+  private shouldCloneInsteadOfWorktree(): boolean {
+    if (process.env.INSTAR_WORKTREE_FORCE_WORKTREE === '1') return false;
+    if (process.env.INSTAR_WORKTREE_FORCE_CLONE === '1') return true;
+    // Resolve both paths to absolute, then test prefix membership in
+    // ~/.instar — we use the worktree's parent dir as the "agent home"
+    // anchor since that's where the new clone will live.
+    try {
+      const sourceReal = fs.realpathSync(this.opts.projectDir);
+      const home = process.env.HOME || os.homedir();
+      // Both paths must be canonicalized for the prefix-match to work
+      // cross-platform (macOS resolves /var/folders/… → /private/var/folders/…).
+      let agentHome = path.join(home, '.instar');
+      try { agentHome = fs.realpathSync(agentHome); } catch { /* dir may not exist yet */ }
+      // If the source already lives under agent home, clone is unnecessary —
+      // worktree is cheaper and the sandbox hazard doesn't apply.
+      return !sourceReal.startsWith(agentHome + path.sep) && sourceReal !== agentHome;
+    } catch {
+      // realpath failed — be conservative and clone (safer).
+      return true;
+    }
   }
 
   private async fastCopyDeps(worktreePath: string): Promise<void> {

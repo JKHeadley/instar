@@ -1,0 +1,22 @@
+{
+  "phase": "complete",
+  "slug": "silently-stopped-trio",
+  "coveredFiles": [
+    "src/core/WorktreeManager.ts",
+    "src/monitoring/SocketDisconnectSentinel.ts",
+    "src/monitoring/ActiveWorkSilenceSentinel.ts",
+    "tests/unit/core/WorktreeManager-clone-default.test.ts",
+    "tests/unit/monitoring/SocketDisconnectSentinel.test.ts",
+    "tests/unit/monitoring/ActiveWorkSilenceSentinel.test.ts",
+    "docs/specs/silently-stopped-trio.md",
+    "docs/specs/silently-stopped-trio.eli16.md",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/silently-stopped-trio.md"
+  ],
+  "artifactPath": "upgrades/side-effects/silently-stopped-trio.md",
+  "artifactSha256": "15cc303a6a30fbbdba0b1fcfec46ffe55fdd94f0cfd2206416b81f77c1a82122",
+  "specPath": "docs/specs/silently-stopped-trio.md",
+  "secondPass": false,
+  "reviewerConcurred": null,
+  "createdAt": "2026-05-23T01:56:59.000Z"
+}
