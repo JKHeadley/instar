@@ -1,94 +1,119 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
-<!-- patch = adds the LocaltunnelProvider class — Tier-2 relay backend, not yet wired into the active pool -->
+<!-- patch = consent state machine + grantConsent/declineConsent API; no Telegram wire-up yet -->
 
 ## What Changed
 
-**feat(tunnel): add LocaltunnelProvider — Tier-2 consent-gated relay backend.**
+**feat(tunnel): consent state machine — Tier-1 exhaustion → awaiting-consent → relay-active.**
 
-PR 4 of the tunnel-failure-resilience chain. Adds the
-`LocaltunnelProvider` implementation of the `TunnelProvider` interface
-from PR 1. This is the relay backend the upcoming consent state
-machine (PR 5) will activate when Cloudflare is unavailable and the
-owner approves.
+PR 5 of the tunnel-failure-resilience chain. Lands the consent state
+machine inside `TunnelManager` so an exhausted Tier-1 path can offer
+the Tier-2 relay (LocaltunnelProvider from PR 4) behind an
+owner-approval gate.
 
 What's new:
 
-- `src/tunnel/LocaltunnelProvider.ts` — implements `TunnelProvider`
-  with `name: 'localtunnel'`, `tier: 2`. `isAvailable()` returns true
-  only when the `localtunnel` npm package is installed (dynamic-import
-  with graceful degradation when absent — agents without the dep see
-  the provider report unavailable and the manager skips it). `start()`
-  spawns the localtunnel client and surfaces the `.loca.lt` URL.
-  `stop()` closes the client cleanly.
-- Failure classification matches the existing
-  `ProviderFailureReason` enum: rate-limit responses surface as
-  `rate-limited`, network failures as `network`, anything else as
-  `process-exit`.
-
-Behavior is unchanged for users today: the manager's provider pool is
-still Tier-1 only. The provider class is added to the codebase so the
-next PR can wire it into the pool behind the consent gate without
-touching the underlying provider implementation again.
+- `TunnelManager.buildDefaultPool` now appends a `LocaltunnelProvider`
+  as the Tier-2 slot. `isAvailable()` returns false when the
+  `localtunnel` npm package isn't installed (per the spec's opt-in
+  posture), so the slot is silently skipped on agents without the
+  dep — behavior is unchanged for them.
+- `TunnelManager.exhaustedOrBackoff` now checks for an available
+  Tier-2 provider AND that the cross-episode consent cooldown isn't
+  active before deciding between `exhausted` and `awaiting-consent`.
+  When both conditions hold, the manager transitions to
+  `awaiting-consent` and generates a one-time CSPRNG nonce stored in
+  a new `_pendingConsent` record.
+- `TunnelManager.grantConsent(nonce)` — public API. Validates the
+  nonce matches the pending record AND the state is still
+  `awaiting-consent` (replay-safe single-use), starts the Tier-2
+  provider, runs the post-start reachability probe, and transitions
+  to `relay-active` with `rotationPending=true` (the persisted
+  marker for the upcoming mandatory PIN+authToken rotation in PR 6).
+  Returns true on success; false on any validation failure or
+  start/probe failure.
+- `TunnelManager.declineConsent(nonce)` — public API. Validates the
+  nonce, advances the cross-episode cooldown counter, and
+  transitions to `exhausted` + background retry.
+- Consent timeout (15 min, per spec Part 4 default) — fires
+  automatically; same effect as decline.
+- `stop()` clears the pending consent + its timer so a torn-down
+  manager can't have a stale timeout fire.
+- `TunnelManager.pendingConsent` accessor — returns a defensive
+  snapshot (episodeId, provider name, nonce, issuedAt) for the
+  upcoming Telegram callback handler (PR 6) to embed the nonce in
+  the inline-button payload.
 
 What's NOT new yet (deliberate, future PRs in the chain):
 
-- The state-machine transition into `awaiting-consent` when Tier-1
-  exhausts (PR 5).
-- The inline-button consent UX in the owner DM (PR 5).
-- The Telegram `callback_query` handler that grants consent on a
-  matching nonce (PR 5).
-- The `relay-active` activation path that actually starts the
-  LocaltunnelProvider after consent (PR 5).
-- `authToken` / PIN rotation on relay-episode end (PR 6).
+- Telegram `callback_query` handler that invokes `grantConsent` /
+  `declineConsent` on owner button clicks (PR 6).
+- Inline-button payload in the consent prompt (PR 6).
+- `authToken` / PIN rotation lifecycle on relay-episode end (PR 6+).
 - Full N-consecutive-success self-heal stability gate (PR 7).
-- The auth-gated `/tunnel` route + `ConfigDefaults` migration + agent-
-  awareness CLAUDE.md template (PR 8).
+- The auth-gated `/tunnel` route + `ConfigDefaults` migration +
+  CLAUDE.md template (PR 8).
+- The `localtunnel` npm dep itself (PR 6, alongside the consent
+  wire-up — keeps the capability opt-in until the gate is fully
+  live).
 
-The lifecycle state machine already supports all of these; the manager
-just doesn't transition into the relevant states yet. This PR is
-narrowly the relay backend.
+Behavior change for users today: **none** at runtime. Agents without
+the `localtunnel` dep installed continue exactly as before (Tier-2
+slot is unavailable, manager falls through to exhausted). The
+plumbing is in place; PR 6 makes it user-facing.
 
 ## Evidence
 
-7 new unit tests in `tests/unit/localtunnel-provider.test.ts`:
+11 new unit tests in `tests/unit/tunnel-consent-state-machine.test.ts`:
 
-- Surface: `name === 'localtunnel'`, `tier === 2`, exposes the
-  `TunnelProvider` interface.
-- Graceful degradation: `isAvailable()` returns false when the
-  `localtunnel` npm package is not installed; `start()` rejects with
-  the `binary-missing` classification under the same condition; the
-  "unavailable" verdict is cached across calls.
-- Constructor options: accepts a custom start timeout and an optional
-  subdomain hint.
+- Tier-1 exhausts + Tier-2 available + cooldown inactive →
+  `awaiting-consent` + pendingConsent populated with 128-bit hex nonce.
+- Tier-1 exhausts + NO Tier-2 available → `exhausted` (baseline path).
+- Tier-1 exhausts + consent cooldown active → `exhausted` (cooldown
+  wins).
+- `grantConsent` with matching nonce → `relay-active` + URL emitted +
+  rotationPending=true + pendingConsent cleared (single-use).
+- `grantConsent` with wrong nonce → returns false, state unchanged,
+  provider.start NOT called.
+- `grantConsent` replay of a used nonce → returns false, state
+  unchanged.
+- `grantConsent` + reachability probe fails → `exhausted` + cooldown
+  advanced.
+- `grantConsent` + provider.start throws → `exhausted` + cooldown
+  advanced.
+- `declineConsent` with matching nonce → `exhausted` + cooldown
+  advanced + pendingConsent cleared.
+- `declineConsent` with wrong nonce → returns false, state unchanged,
+  no cooldown change.
+- `stop()` clears pendingConsent + the timeout timer.
 
-`tsc --noEmit` clean. `npm run lint` clean. No existing tests modified.
-
-The actual relay-active flow (manager driving the provider after
-consent) is exercised end-to-end in the integration tests landing in
-PR 5; this PR ships the provider class in isolation so security review
-can focus on the surface.
+All 92 tunnel-related unit tests pass (11 new + 81 from PRs 1–4).
+`tsc --noEmit` clean. `npm run lint` clean.
 
 ## What to Tell Your User
 
-This release adds plumbing for a backup tunnel option that the
-upcoming release will activate. Nothing visible to you yet — the
-backup is offered only when Cloudflare is fully unavailable, and only
-after you tap an approval button in your DM. This release just puts
-the backup capability in the codebase; the next release wires it into
-the failure path.
+This release puts the security gate for backup tunnels into place.
+Nothing visible to you yet — the gate needs a button to click, and
+that's the next release. Once that lands, when Cloudflare goes fully
+down, you'll get a private message from your agent asking permission
+to use a backup. Until you approve, the agent stays link-less and
+keeps retrying Cloudflare. If you decline or don't reply, the agent
+won't ask again for a while (the wait window grows the more you
+decline, so the agent stops bothering you about something you've
+already decided).
 
-If you want the backup capability to be available when the next
-release lands, install the `localtunnel` npm package alongside your
-agent. Without it the backup option will silently be unavailable and
-the agent will continue retrying Cloudflare. Details on how to do
-this safely (exact-version pin, etc.) will land in the next release's
-guide.
+If you want the backup capability to actually work when the next
+release lands, install the localtunnel npm package alongside your
+agent. Without it the backup option is silently skipped and the
+agent continues with Cloudflare only — which is fine if that's your
+preference.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| LocaltunnelProvider class | Internal — wired into the active pool in the next release |
-| Graceful degradation when `localtunnel` npm dep is absent | Automatic — provider reports unavailable, manager skips it |
+| Consent state machine (Tier-1 → awaiting-consent → relay-active) | Internal — exposed via grantConsent / declineConsent APIs that the upcoming Telegram callback handler will call |
+| Single-use CSPRNG nonce binding | Automatic — pendingConsent.nonce embeds in the inline button in the next release |
+| Cross-episode consent cooldown | Automatic — exponential back-off on decline/timeout (1h → 4h → 24h) |
+| Mandatory rotation marker on relay-active entry | Automatic — rotationPending=true is the crash-safe flag the upcoming rotation lifecycle reads |
