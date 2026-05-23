@@ -78,3 +78,24 @@ Fix: two framework-aware pure functions threaded with the agent's resolved defau
 - **`deterministicStallAssessment(snapshot, framework)`** — when the LLM is unavailable/unparseable, fall back to the deterministic active-work signal (`looksActivelyWorking`) instead of blindly assuming "working". No active-work signal → `'stalled'` so it surfaces. This also hardens the Claude path: the old "default to working forever" was itself the silently-stopped failure mode.
 
 Tests: `presence-proxy-codex-blindness.test.ts` (10) — codex idle reads finished (and locks that `detectSessionIdle` alone missed it), codex working not-finished, claude back-compat, absent-framework default, codex stuck/idle/null → stalled, codex/claude working → working. 86 existing presence-proxy tests still pass.
+
+---
+
+### SemanticMemory vec0 false-corruption loop (rebuild-on-every-boot)
+
+`SemanticMemory.open()` runs a secondary "probe read" after `integrity_check` to catch torn interior pages that the schema walk misses — it did `SELECT * FROM <table> LIMIT 100` over every non-fts/non-sqlite table. That set included the `entity_embeddings` **vec0 virtual table**. But the probe runs *before* `initVectorSearch()` loads the sqlite-vec extension, so the SELECT threw `no such module: vec0`. That error was misclassified as disk corruption → the DB was quarantined (`semantic.db.corrupt.<ts>`) and rebuilt from JSONL on **every boot**.
+
+Net effect: a rebuild-on-every-boot loop (codey accumulated 6 `.corrupt.<ts>` files + recovery markers in hours), wasteful churn, and — because the rebuild re-created the vec0 table during the same `open()` — semantic recall never stabilized. This silently defeated the FTS5-only graceful-degradation path the class promises, and it bites any agent (Codex or Claude) whose semantic DB has a vec0 table, whether or not sqlite-vec is actually loadable.
+
+Fix (`SemanticMemory.open()` probe loop):
+1. **Exclude virtual tables from the probe** (`sql NOT LIKE 'CREATE VIRTUAL TABLE%'`). A virtual table is not storage — its real data lives in shadow tables (`entity_embeddings_chunks`, `_rowids`, `_vector_chunks00`, …) which remain plain tables in the probe set, so vector-data corruption is still caught.
+2. **Classify any `no such module` probe error as a missing loadable extension, never corruption** (per-table catch: skip + warn once, keep probing the rest). Belt-and-suspenders for any module-backed object.
+3. Reading `sqlite_master` itself failing is still treated as genuine corruption.
+
+Tests: `semantic-memory-vec0-probe.test.ts` (2) — a DB carrying a populated vec0 table opens without quarantine and preserves entities + the vec0 table (extension not loaded at probe); a genuinely torn storage page still quarantines (probe behaviour preserved). 73 existing semantic-memory tests still pass.
+
+Empirical (codey, live): reproduced the exact stderr (`Database corrupt (probe read failed: no such module: vec0) — quarantining`) and 6 quarantine files. After deploying the fix and restarting twice, zero new quarantine files appeared and the `entity_embeddings` vec0 table now persists across boots with entities intact — vector recall restored, churn gone.
+
+## Rollback (vec0 probe)
+
+Revert the `SemanticMemory.open()` probe-loop change (restore the single `try` over all tables including virtual ones). The false-corruption quarantine loop returns on any DB with a vec0 table.
