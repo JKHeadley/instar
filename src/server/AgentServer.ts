@@ -43,6 +43,8 @@ import { createMachineRoutes } from './machineRoutes.js';
 import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes.js';
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
+import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
@@ -176,6 +178,8 @@ export class AgentServer {
     ledgerSessionRegistry?: import('../core/LedgerSessionRegistry.js').LedgerSessionRegistry;
     /** Worktree manager — parallel-dev isolation (PARALLEL-DEV-ISOLATION-SPEC.md). */
     worktreeManager?: WorktreeManager;
+    /** Layer 1 of the Topic Intent Layer — per-topic confidence tracker. Null/undefined when disabled. */
+    topicIntentStore?: TopicIntentStore;
     /** OIDC verification function for the GH-check endpoint (injected for testability). */
     oidcVerify?: (token: string) => Promise<{ repository: string; workflow_ref: string; ref: string }>;
     /** Enrolled GitHub repos allowed to call the GH-check endpoint. */
@@ -532,6 +536,16 @@ export class AgentServer {
       // eslint-disable-next-line no-console
       console.warn('[agent-server] failed to register remediation-proposals routes:', err);
     }
+
+    // Topic Intent Layer (Layer 1) diagnostics + read-only routes.
+    // Framework-agnostic: works under Claude Code AND Codex sessions; the
+    // store itself is file-based with no framework-specific dependencies.
+    // Mounted unconditionally — if the store is disabled, the route module
+    // returns a 503 stub so the surface always exists for capability probing.
+    const topicIntentRoutes = createTopicIntentRoutes({
+      topicIntentStore: options.topicIntentStore ?? null,
+    });
+    this.app.use(topicIntentRoutes);
 
     // Error handler (must be last)
     this.app.use(errorHandler);
