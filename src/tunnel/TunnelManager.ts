@@ -79,6 +79,15 @@ export interface TunnelConfig {
   port: number;
   /** State directory for persisting tunnel.json. */
   stateDir: string;
+  // ── Tunnel-failure-resilience knobs (spec Part 4) — all optional ───
+  /** Tier-2 relay providers to offer, in consent order. Default ['localtunnel']. */
+  relayProviders?: ('localtunnel' | 'bore')[];
+  /** Master switch for Tier-2 relays. Default true. false = Cloudflare-only (no consent offered). */
+  relaysEnabled?: boolean;
+  /** 'ask' (default) prompts before a relay; 'never' = Cloudflare-only. */
+  relayConsent?: 'ask' | 'never';
+  /** Consent-prompt timeout in ms. Default 900000 (15 min). */
+  consentTimeoutMs?: number;
 }
 
 export interface TunnelState {
@@ -458,11 +467,21 @@ export class TunnelManager extends EventEmitter {
     pool.push(new CloudflareQuickProvider({ port: config.port, stateDir: config.stateDir }));
     // Tier-2 (consent-gated relays). Listed AFTER Tier-1 — the driver
     // only reaches these after exhausting Tier-1, and only after the
-    // owner explicitly grants consent. LocaltunnelProvider's
-    // isAvailable() returns false when the `localtunnel` npm package
-    // isn't installed, so agents without the dep see this slot
-    // silently skipped — the spec's "opt-in capability" posture.
-    pool.push(new LocaltunnelProvider({ port: config.port }));
+    // owner explicitly grants consent. Gated by config (spec Part 4):
+    // relaysEnabled=false drops Tier-2 entirely, and relayProviders
+    // selects which relays are offered (default ['localtunnel']; 'bore'
+    // is opt-in). LocaltunnelProvider's isAvailable() also returns false
+    // when the `localtunnel` npm package isn't installed, so agents
+    // without the dep see the slot silently skipped.
+    if (config.relaysEnabled !== false) {
+      const relays = config.relayProviders ?? ['localtunnel'];
+      if (relays.includes('localtunnel')) {
+        pool.push(new LocaltunnelProvider({ port: config.port }));
+      }
+      // 'bore' has no checksum-verified installer yet (spec Part 7), so it
+      // is not constructed here even when listed; it joins the pool when a
+      // BoreProvider lands in a later PR.
+    }
     return pool;
   }
 
@@ -556,7 +575,11 @@ export class TunnelManager extends EventEmitter {
     // cooldown isn't active. If so, transition to `awaiting-consent`
     // and request consent from the owner. The relay-active path
     // activates on `grantConsent()`.
-    const candidateTier2 = await this.findAvailableTier2();
+    // Config gate (spec Part 4): relaysEnabled=false or relayConsent='never'
+    // means Cloudflare-only — never offer a Tier-2 relay, go straight to
+    // exhausted + background retry.
+    const relaysAllowed = this.config.relaysEnabled !== false && this.config.relayConsent !== 'never';
+    const candidateTier2 = relaysAllowed ? await this.findAvailableTier2() : null;
     const cooldownActive = this.lifecycle.isConsentSuppressed();
 
     if (candidateTier2 && !cooldownActive) {
@@ -756,9 +779,10 @@ export class TunnelManager extends EventEmitter {
     const episode = this.lifecycle.episode;
     if (!episode) return;
     const nonce = generateNonce();
+    const timeoutMs = this.config.consentTimeoutMs ?? CONSENT_TIMEOUT_MS;
     const timer = setTimeout(() => {
       this.recordConsentDecline(nonce, 'timeout');
-    }, CONSENT_TIMEOUT_MS);
+    }, timeoutMs);
     this._pendingConsent = {
       episodeId: episode.episodeId,
       provider,

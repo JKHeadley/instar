@@ -269,7 +269,7 @@ describe('TunnelManager (rewrite) — notifier wiring', () => {
     expect((sink.sendGroup as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
-  it('emits a group message when an episode advances retrying after a failure', async () => {
+  it('emits a recovery group message when Cloudflare comes back after a failure', async () => {
     const sink: NotifierSink = {
       sendGroup: vi.fn(async () => undefined),
       sendOwnerDM: vi.fn(async () => undefined),
@@ -281,9 +281,12 @@ describe('TunnelManager (rewrite) — notifier wiring', () => {
       { providers: [a, b], fetch: vi.fn(async () => okResponse()), notifierSink: sink },
     );
     await mgr.start();
-    // One transition to retrying → notifier emits the "couldn't reach" message.
+    // The named provider fails (→ retrying, now SILENT) then the quick
+    // provider succeeds (→ active). The retrying→active recovery is the
+    // user-visible event: "Back online." Routine retry churn stays quiet.
     const groupCalls = (sink.sendGroup as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
-    expect(groupCalls.some((m) => m.includes("Couldn't reach"))).toBe(true);
+    expect(groupCalls.some((m) => m.includes('Back online'))).toBe(true);
+    expect(groupCalls.some((m) => m.includes("Couldn't reach"))).toBe(false);
   });
 });
 
@@ -308,7 +311,7 @@ describe('TunnelManager (rewrite) — attachTelegram wires the notifier sink', (
     expect(topicIds).toContain(77);
   });
 
-  it('routes the "couldn\'t reach" group message to the Dashboard topic id', async () => {
+  it('routes the recovery group message to the Dashboard topic id', async () => {
     const sendToTopic = vi.fn(async () => undefined);
     const adapter = {
       sendToTopic,
@@ -324,8 +327,10 @@ describe('TunnelManager (rewrite) — attachTelegram wires the notifier sink', (
     );
     mgr.attachTelegram(adapter, () => '999000');
     await mgr.start();
+    // Routine retry churn is silent; the recovery pointer ("Back online")
+    // is what reaches the group, routed to the Dashboard topic.
     const calls = sendToTopic.mock.calls.map((c) => ({ topicId: c[0] as number, text: c[1] as string }));
-    expect(calls.some((c) => c.topicId === 42 && c.text.includes("Couldn't reach"))).toBe(true);
+    expect(calls.some((c) => c.topicId === 42 && c.text.includes('Back online'))).toBe(true);
   });
 
   it('owner-DM message carries the live URL and current PIN (credential substitution)', async () => {

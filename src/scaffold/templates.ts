@@ -441,6 +441,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Quick tunnels (default): Zero-config, ephemeral URL (*.trycloudflare.com), no account needed
 - Named tunnels: Persistent custom domain, requires token from Cloudflare dashboard
 - When a tunnel is running, private view responses include a \`tunnelUrl\` field for remote access
+- **Failure resilience**: If Cloudflare can't give you a link (e.g. rate-limited), I'll DM you (owner only) with two buttons to approve a consent-gated backup relay through a third party. While the backup is active your dashboard traffic briefly passes through that operator, so when Cloudflare recovers I switch back automatically (after several healthy checks) and rotate your dashboard PIN + access token — which signs out open tabs and invalidates previously-shared private view links. \`GET /tunnel\` reports the live \`lifecycle.state\` (active / retrying / awaiting-consent / relay-active / self-healing / exhausted) so you can explain a link issue. Opt out of backups entirely with \`{"tunnel": {"relaysEnabled": false}}\` or \`{"tunnel": {"relayConsent": "never"}}\` (Cloudflare-only).
 
 **Attention Queue** — Signal important items to the user. When something needs their attention — a decision, a review, an anomaly — queue it here instead of hoping they see a chat message.
 - Queue: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention -H 'Content-Type: application/json' -d '{"title":"...","body":"...","priority":"medium","source":"agent"}'\`

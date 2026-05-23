@@ -28,7 +28,7 @@
  */
 
 import type { TransitionEvent, TunnelLifecycleState } from './TunnelLifecycle.js';
-import type { ProviderName, ProviderFailureReason } from './TunnelProvider.js';
+import type { ProviderName } from './TunnelProvider.js';
 
 /** Message class — drives throttling policy. */
 export type NotificationClass = 'action-required' | 'state-change' | 'noise';
@@ -187,31 +187,19 @@ export class TunnelNotifier {
    */
   private composeMessages(e: TransitionEvent): NotifierMessage[] {
     const ep = e.episode?.episodeId ?? null;
-    const reason = e.lastFailureReason;
 
     const messages: NotifierMessage[] = [];
     switch (e.to) {
       case 'retrying':
-        // First Tier-1 failure — describe the cause, no DM.
-        messages.push({
-          channel: 'group',
-          class: 'state-change',
-          text: `Couldn't reach the usual Cloudflare tunnel${reasonSuffix(reason)}; still retrying.`,
-          episodeId: ep,
-          epoch: e.epoch,
-        });
-        // Track for flap detection.
-        this.flapCycles += 1;
-        if (this.flapCycles >= this.flapThreshold && !this.flapCollapsed) {
-          this.flapCollapsed = true;
-          messages.push({
-            channel: 'group',
-            class: 'noise',
-            text: `Tunnel is unstable right now — still working on it. I'll stop re-pinging this until something changes.`,
-            episodeId: ep,
-            epoch: e.epoch,
-          });
-        }
+        // Routine Tier-1 retry churn is SILENT (operator feedback
+        // 2026-05-23: the group topic was being spammed with "still
+        // retrying / unstable" on every background-retry cycle). A
+        // temporary Cloudflare outage is self-evident if the user tries
+        // the link; they don't need a per-cycle play-by-play. The user is
+        // only messaged when there's something to DO (consent) or
+        // something USABLE (a new link) — see awaiting-consent /
+        // relay-active / active. GET /tunnel exposes live state for
+        // anyone who wants to check.
         break;
 
       case 'active':
@@ -290,13 +278,11 @@ export class TunnelNotifier {
         break;
 
       case 'exhausted':
-        messages.push({
-          channel: 'group',
-          class: 'state-change',
-          text: `All tunnel options are unavailable right now. I'll keep retrying Cloudflare in the background and switch back the moment it recovers — no restart needed.`,
-          episodeId: ep,
-          epoch: e.epoch,
-        });
+        // Also SILENT (operator feedback 2026-05-23). "All options
+        // unavailable" fired on every retry cycle's exhaustion and was a
+        // primary noise source. The background retry continues silently;
+        // the user is messaged only on a usable-link change. GET /tunnel
+        // reports `lifecycle.state: 'exhausted'` for anyone checking.
         break;
 
       case 'self-healing':
@@ -374,18 +360,6 @@ export class TunnelNotifier {
 
 function throttleKey(state: TunnelLifecycleState, channel: NotificationChannel): string {
   return `${state}::${channel}`;
-}
-
-function reasonSuffix(reason: ProviderFailureReason | null): string {
-  switch (reason) {
-    case 'rate-limited': return ' (Cloudflare is rate-limiting us)';
-    case 'binary-missing': return ' (the tunnel software is missing)';
-    case 'network': return ' (network is unreachable)';
-    case 'timeout': return ' (it timed out connecting)';
-    case 'process-exit': return ' (the tunnel process exited)';
-    case 'reachability-failed': return ' (the link did not respond)';
-    default: return '';
-  }
 }
 
 // re-export for callers that want the same name
