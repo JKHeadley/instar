@@ -4855,6 +4855,38 @@ export async function startServer(options: StartOptions): Promise<void> {
         port: config.port,
         stateDir: config.stateDir,
       });
+
+      // Wire credential rotation (tunnel-failure-resilience spec Part 6).
+      // The manager owns WHEN to rotate (every terminal exit from
+      // relay-active + boot-recovery); this closure owns WHAT: regenerate
+      // the dashboard PIN + authToken, persist them, and DM the owner the
+      // new PIN. Rotating authToken invalidates every previously-signed
+      // view URL and the dashboard session — the documented UX cost of
+      // having briefly routed private traffic through a third-party relay.
+      tunnel.setCredentialRotator(async () => {
+        const { randomUUID } = await import('node:crypto');
+        const newPin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit, matches startup gen
+        const newToken = randomUUID();
+        // Persist to config.json (survives restart; boot reads the new token)…
+        liveConfig.set('authToken', newToken);
+        liveConfig.set('dashboardPin', newPin);
+        // …and mutate the in-memory config the running server reads live,
+        // so the auth middleware + view-URL signing reject the old token
+        // and old signed links immediately, without a restart.
+        config.authToken = newToken;
+        config.dashboardPin = newPin;
+        console.log(pc.yellow('  [tunnel] rotated dashboard PIN + auth token after relay episode'));
+        if (telegram) {
+          const msg = [
+            `Security cleanup after the backup tunnel: I've rotated your dashboard PIN and access token.`,
+            ``,
+            `New dashboard PIN: ${newPin}`,
+            ``,
+            `Heads up: any dashboard tab you had open will need to sign in again with this new PIN, and any private view links you shared earlier no longer work. That's deliberate — it makes sure the backup operator can't reuse anything they may have seen while the backup was running.`,
+          ].join('\n');
+          await telegram.sendToOwnerDM(msg).catch(() => { /* best-effort; adapter logs its own failures */ });
+        }
+      });
     }
 
     // Set up evolution system (always enabled — the feedback loop infrastructure)
@@ -7283,6 +7315,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
+    // died mid-relay-episode, the persisted tunnel.json carries
+    // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
+    // the server starts accepting API traffic, so a relay operator who saw
+    // the old credentials can't use them against the freshly-booted server.
+    if (tunnel && tunnel.lifecycleState.rotationPending) {
+      console.log(pc.yellow('  [tunnel] boot-recovery: relay episode was in flight at last shutdown — rotating credentials before serving'));
+      await tunnel.recoverPendingRotation();
+    }
+
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 

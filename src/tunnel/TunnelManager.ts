@@ -183,6 +183,16 @@ export class TunnelManager extends EventEmitter {
   } | null = null;
   /** Adapter ref captured by attachTelegram — used to send the button prompt. */
   private _consentAdapter: TunnelMessagingAdapter | null = null;
+  /**
+   * Credential-rotation callback (wired by server.ts via
+   * setCredentialRotator). Owns the WHAT of rotation — regenerate the
+   * dashboard PIN + authToken, persist them, and DM the owner the new
+   * PIN — while the manager owns the WHEN (every terminal exit from
+   * relay-active + boot-recovery). Decoupled from config/messaging so
+   * this module stays free of those imports. See
+   * specs/dev-infrastructure/tunnel-failure-resilience.md Part 6.
+   */
+  private _rotateCredentials: (() => Promise<void>) | null = null;
 
   constructor(config: TunnelConfig, injections?: TunnelManagerInjections) {
     super();
@@ -264,12 +274,89 @@ export class TunnelManager extends EventEmitter {
     }
 
     this.persist();
+
+    // Terminal exit from a relay episode (relay-active → idle via
+    // stop/forceStop/shutdown) MUST rotate credentials — the third-party
+    // relay operator may have observed the PIN + signed view links while
+    // the relay was up. rotationPending (set on relay-active entry) gates
+    // this so non-relay stops are no-ops. See spec Part 6.
+    await this.runCredentialRotation('stop');
+
     this.emit('stopped');
   }
 
   /** Force-stop with escalation. Providers internally do SIGINT → SIGKILL. */
   async forceStop(_timeoutMs?: number): Promise<void> {
     await this.stop();
+  }
+
+  /**
+   * Wire the credential-rotation callback (called by server.ts). The
+   * callback regenerates the dashboard PIN + authToken, persists them,
+   * and DMs the owner the new PIN. Wired early in startup so both
+   * boot-recovery and runtime relay-episode-end can rotate.
+   */
+  setCredentialRotator(fn: (() => Promise<void>) | null): void {
+    this._rotateCredentials = fn;
+  }
+
+  /**
+   * Rotate credentials if a rotation is pending. Idempotent and safe to
+   * call on any stop; the `rotationPending` flag (set on relay-active
+   * entry, persisted to tunnel.json) gates it so non-relay stops are
+   * no-ops. Returns true iff a rotation was actually performed.
+   *
+   * Called from:
+   *   - `stop()` — relay-active → idle (operator stop / shutdown).
+   *   - boot-recovery (`recoverPendingRotation`) — the agent died
+   *     mid-relay-episode; rotate before the server accepts traffic.
+   *   - self-heal switch-back (PR 8) — relay-active → active.
+   *
+   * Mandatory-rotation invariant (spec Part 6): the flag is cleared
+   * ONLY after the rotator resolves, so a crash mid-rotation re-attempts
+   * on next boot. If no rotator is wired (misconfiguration), we log
+   * loudly and clear the flag rather than loop forever — but this path
+   * should never happen in a correctly-wired server.
+   */
+  async runCredentialRotation(reason: string): Promise<boolean> {
+    if (!this.lifecycle.rotationPending) return false;
+
+    if (!this._rotateCredentials) {
+      console.warn(
+        `[tunnel] credential rotation pending (${reason}) but no rotator ` +
+        `is wired — clearing the flag to avoid a permanent-pending loop. ` +
+        `This is a wiring bug: PIN/authToken were NOT rotated.`,
+      );
+      this.lifecycle.setRotationPending(false);
+      this.persist();
+      return false;
+    }
+
+    try {
+      await this._rotateCredentials();
+    } catch (err) {
+      // Rotation failed — leave rotationPending set so the next stop or
+      // next boot retries. Do NOT clear the flag on failure.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[tunnel] credential rotation (${reason}) failed: ${msg} — will retry`);
+      this.emit('rotation-failed', { reason, error: err });
+      return false;
+    }
+
+    this.lifecycle.setRotationPending(false);
+    this.persist();
+    this.emit('credentials-rotated', { reason });
+    return true;
+  }
+
+  /**
+   * Boot-recovery: if the persisted state shows a relay episode was in
+   * flight when the agent last died (rotationPending restored from
+   * tunnel.json), rotate BEFORE the server accepts any API traffic.
+   * server.ts awaits this before `server.start()`.
+   */
+  async recoverPendingRotation(): Promise<boolean> {
+    return this.runCredentialRotation('boot-recovery');
   }
 
   enableAutoReconnect(): void { this._autoReconnect = true; }
