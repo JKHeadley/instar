@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SemanticMemory } from '../../src/memory/SemanticMemory.js';
+import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
 
 interface Setup {
   dir: string;
@@ -308,5 +309,108 @@ describe('SemanticMemory corruption auto-recovery', () => {
     const afterSecond = listCorruptArtifacts(setup.dir);
     expect(afterSecond.markerFiles.length).toBe(beforeSecond.markerFiles.length);
     expect(afterSecond.corruptFiles.length).toBe(beforeSecond.corruptFiles.length);
+  });
+});
+
+/**
+ * Virtual-table probe load-order tests.
+ *
+ * Contract:
+ *   The secondary probe-read MUST NOT treat "no such module: <name>" on a
+ *   virtual table as corruption. Virtual tables require their extension to be
+ *   loaded into the connection before they're queryable, and the probe runs
+ *   synchronously in open() before any deferred extension load could happen.
+ *   Treating a missing-module error as corruption produces an infinite
+ *   quarantine loop on every reopen (see the upstream gap report).
+ *
+ *   Concretely for sqlite-vec: open() pre-loads the extension when available,
+ *   so a healthy DB with an `entity_embeddings` (vec0) virtual table opens
+ *   without quarantine.
+ */
+describe('SemanticMemory probe — virtual tables and load order', () => {
+  let setup: Setup;
+  beforeEach(() => { setup = makeSetup(); });
+  afterEach(() => setup.cleanup());
+
+  async function seedDbWithVec0VirtualTable(dbPath: string): Promise<void> {
+    // Seed the DB exactly the way SemanticMemory's hybrid-search path does: open
+    // through SemanticMemory with an EmbeddingProvider attached, initialize vector
+    // search (which loads sqlite-vec and creates the `entity_embeddings` vec0
+    // virtual table via VectorSearch.createTable), then close. The on-disk schema
+    // now has a vec0 virtual table that requires the sqlite-vec module to query.
+    const memory = new SemanticMemory({ dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    memory.setEmbeddingProvider(new EmbeddingProvider());
+    await memory.open();
+    await memory.initializeVectorSearch();
+    memory.close();
+  }
+
+  it('does not quarantine a healthy DB that contains a vec0 virtual table', async () => {
+    await seedDbWithVec0VirtualTable(setup.dbPath);
+
+    // Sanity: schema actually contains a CREATE VIRTUAL TABLE for entity_embeddings.
+    const BetterSqlite3 = (await import('better-sqlite3')).default;
+    const inspect = new BetterSqlite3(setup.dbPath, { readonly: true });
+    const row = inspect.prepare(
+      "SELECT name, sql FROM sqlite_master WHERE name='entity_embeddings'"
+    ).get() as { name: string; sql: string } | undefined;
+    inspect.close();
+    expect(row).toBeDefined();
+    expect(row!.sql).toMatch(/CREATE\s+VIRTUAL\s+TABLE/i);
+
+    // Reopen via SemanticMemory — must not throw and must not quarantine.
+    const mem = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    await expect(mem.open()).resolves.not.toThrow();
+    mem.close();
+
+    const { corruptFiles, markerFiles } = listCorruptArtifacts(setup.dir);
+    expect(corruptFiles).toEqual([]);
+    expect(markerFiles).toEqual([]);
+  });
+
+  it('opening repeatedly does not accumulate quarantine artifacts (no probe-loop regression)', async () => {
+    await seedDbWithVec0VirtualTable(setup.dbPath);
+
+    for (let i = 0; i < 3; i++) {
+      const mem = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+      await mem.open();
+      mem.close();
+    }
+
+    const { corruptFiles, markerFiles } = listCorruptArtifacts(setup.dir);
+    expect(corruptFiles).toEqual([]);
+    expect(markerFiles).toEqual([]);
+  });
+
+  it('opens cleanly with no embedding provider attached (probe still survives the vec0 schema)', async () => {
+    // The deferred-attachment shape: vector search may not be wired up on every
+    // reopen, but the on-disk schema still contains the vec0 virtual table from
+    // a previous run. The pre-load + per-table missing-module guard must cover
+    // this path so we don't quarantine.
+    await seedDbWithVec0VirtualTable(setup.dbPath);
+
+    const mem = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    // Intentionally no setEmbeddingProvider() — exercise the "vec0 table exists
+    // on disk but caller hasn't asked for vector search" reopen path.
+    await mem.open();
+    mem.close();
+
+    const { corruptFiles, markerFiles } = listCorruptArtifacts(setup.dir);
+    expect(corruptFiles).toEqual([]);
+    expect(markerFiles).toEqual([]);
+  });
+
+  it('genuine probe-detected corruption still quarantines (regression guard for the virtual-table carve-out)', async () => {
+    // Make sure the virtual-table skip didn't accidentally widen the probe's
+    // tolerance for actual corruption in non-virtual tables.
+    await writePartiallyCorruptDb(setup.dbPath);
+
+    const mem = new SemanticMemory({ dbPath: setup.dbPath, decayHalfLifeDays: 30, lessonDecayHalfLifeDays: 90, staleThreshold: 0.2 });
+    await mem.open();
+    mem.close();
+
+    const { corruptFiles, markerFiles } = listCorruptArtifacts(setup.dir);
+    expect(corruptFiles.length).toBeGreaterThanOrEqual(1);
+    expect(markerFiles.length).toBe(1);
   });
 });

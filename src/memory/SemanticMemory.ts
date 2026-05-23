@@ -567,6 +567,25 @@ export class SemanticMemory {
 
     this.db = constructor(this.config.dbPath) as Database;
 
+    // Pre-load sqlite-vec so vec0 virtual tables are queryable during the probe
+    // below. Without this, an existing entity_embeddings (vec0) table — which is
+    // recreated asynchronously by initializeVectorSearch() the first time vector
+    // search runs — causes the probe to throw "no such module: vec0" and triggers
+    // false-positive corruption quarantine. The probe runs synchronously in open()
+    // before the async vector-search init has a chance to load the extension.
+    //
+    // Loading here uses sqlite-vec directly (not via EmbeddingProvider) because:
+    //   1. EmbeddingProvider may not be attached at open() time.
+    //   2. The probe must succeed regardless of whether vector search is wired up,
+    //      since the on-disk DB schema doesn't know about that runtime choice.
+    //
+    // Failure is non-fatal: the probe loop below has its own missing-module guard
+    // that skips virtual tables whose extension isn't available.
+    try {
+      const vec = await import('sqlite-vec');
+      vec.load(this.db);
+    } catch { /* @silent-fallback-ok: sqlite-vec unavailable — probe will skip vec0 tables */ }
+
     // Integrity check — auto-recover from corruption (JSONL is source of truth).
     // Corrupt DBs are quarantined (renamed) not deleted, and a marker file is written
     // so operators can notice the recovery after the fact.
@@ -589,9 +608,23 @@ export class SemanticMemory {
       if (!this._needsRebuild) {
         try {
           const tables = this.db!.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%'"
-          ).all() as Array<{ name: string }>;
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%'"
+          ).all() as Array<{ name: string; sql: string | null }>;
           for (const t of tables) {
+            // Virtual tables require their module to be loaded into the connection.
+            // If a virtual-table probe throws "no such module", the table isn't
+            // corrupt — its extension just isn't available (sqlite-vec missing,
+            // a custom module not yet registered, etc.). Treating that as
+            // corruption produces an infinite quarantine loop on every open.
+            if (t.sql && /^\s*CREATE\s+VIRTUAL\s+TABLE/i.test(t.sql)) {
+              try {
+                this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
+              } catch (vErr) {
+                if (/no such module/i.test((vErr as Error).message)) continue;
+                throw vErr;
+              }
+              continue;
+            }
             this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
           }
         } catch (err) {
