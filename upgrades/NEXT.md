@@ -4,28 +4,24 @@
 
 ## What Changed
 
-**feat(dev): e2e-pairing pre-commit gate — GSD cherry-pick.**
+**feat(safe-fs): atomic-write helpers — cherry-pick from GSD-Instar spike.**
 
-New pre-commit gate (`scripts/check-e2e-pairing.cjs`, wired into `.husky/pre-commit`) that blocks any commit changing a non-test `src/server/*.ts` file unless it also stages at least one `tests/e2e/*.test.ts`. Structurally enforces the Tier-3 "feature is alive" discipline that CLAUDE.md calls the single most important test for any feature with API routes.
+Adds `SafeFsExecutor.atomicWriteFileSync` and `atomicWriteJsonSync` — crash-safe file writes for file-backed state. The pattern: write to a temp sibling in the same directory, fsync to durable storage, then rename over the target (atomic on POSIX). A crash mid-write leaves either the old file intact or the fully-written new file — never a half-written one.
 
-From the GSD-Instar spike, where the gsd-planner methodology surfaced that the Topic Intent Layer's Tier-3 lifecycle test would have been forgotten under ad-hoc planning. This gate makes "ship a route without an e2e test" structurally hard rather than discipline-dependent.
+The failure this prevents: a direct `fs.writeFileSync` truncates then writes; a crash mid-write corrupts the file. For append-only event logs and JSON state, that means silent data loss when the next reader hits a parse error and falls back to an empty skeleton.
 
-Two escape hatches keep it from being tyrannical: env bypass (`INSTAR_SKIP_E2E_PAIRING=1`) and an `E2E-PAIRING: EXEMPT — <reason>` marker in a staged server file (for genuine refactors / type-only / comment changes).
-
-This governs instar's OWN development commits (it's in instar's `.husky/`), not agent-installed files — so no migration parity needed.
+From the GSD-Instar integration spike (gsd-executor Rule 2 finding: file-backed state lacked atomic-write semantics).
 
 ## Evidence
 
-8 unit tests, all green (tmp-git-repo harness): passes with no server files, blocks server-without-e2e, passes server-with-e2e, ignores server test files + .d.ts, respects env bypass + EXEMPT marker, blocks when only an unrelated unit test is staged. TypeScript clean.
+9 unit tests, all green: string write, parent-dir creation, full content replacement (no partial residue), temp-file cleanup on success, mode option, JSON pretty-print + round-trip + custom indent + atomic overwrite. TypeScript compiles clean.
 
-Verified the gate does not block this very PR (this PR changes scripts/ + .husky/ + tests/, not src/server/).
-
-Side-effects review: `upgrades/side-effects/e2e-pairing-gate.md`.
+Side-effects review: `upgrades/side-effects/atomic-write-helper.md`.
 
 ## What to Tell Your User
 
-Nothing user-visible. Internal dev-discipline gate for instar contributors.
+Nothing user-visible. Internal hardening primitive for state files. Callers can opt into it incrementally — existing `fs.writeFileSync` callsites keep working unchanged.
 
 ## Summary of New Capabilities
 
-One new pre-commit gate script + one line in .husky/pre-commit. Signal-with-commit-authority (blocks), with two escape hatches. Errs toward false positives because a route shipped without an e2e test is the corruption-class failure being defended against.
+Two new static methods on `SafeFsExecutor`. Not a destructive op, so they don't go through the source-tree guard, but they share the audit trail. No migration needed (library function, not an agent-installed file).

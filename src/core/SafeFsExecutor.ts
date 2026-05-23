@@ -194,6 +194,68 @@ export class SafeFsExecutor {
       throw err;
     }
   }
+
+  // ── Atomic write ────────────────────────────────────────────────────
+  //
+  // Crash-safe file writes for file-backed state. The failure these prevent:
+  // a direct `fs.writeFileSync` truncates the target THEN writes; if the
+  // process crashes (or the disk fills) mid-write, the file is left
+  // truncated or partially written — and for append-only event logs / JSON
+  // state, that means silent data loss when the next reader hits a parse
+  // error and falls back to an empty skeleton.
+  //
+  // The pattern: write to a sibling temp file in the SAME directory (so the
+  // rename stays on one filesystem and is therefore atomic per POSIX),
+  // fsync the data to durable storage, then rename over the target. A crash
+  // at any point leaves EITHER the old file intact OR the fully-written new
+  // file — never a half-written one.
+  //
+  // Cherry-picked into Instar 2026-05-23 from the GSD-Instar integration
+  // spike (gsd-executor Rule 2 finding: file-backed state lacked atomic
+  // writes). Not a destructive op, so it does not go through the
+  // source-tree guard — but it lives here as the natural home for safe-fs
+  // primitives and shares the audit trail.
+
+  /**
+   * Atomically write a string to `target`. Writes to a temp sibling, fsyncs,
+   * then renames over the target. Creates parent directories if missing.
+   */
+  static atomicWriteFileSync(target: string, data: string | Uint8Array, opts?: { operation?: string; mode?: number }): void {
+    const operation = opts?.operation ?? 'atomicWriteFileSync';
+    const resolved = path.resolve(target);
+    const dir = path.dirname(resolved);
+    // Ensure parent dir exists (matches the convenience of writeFileSync callers
+    // who often forget mkdir).
+    fs.mkdirSync(dir, { recursive: true });
+    // Temp file in the SAME directory so rename is atomic (same filesystem).
+    const tmp = path.join(dir, `.${path.basename(resolved)}.${process.pid}.${Date.now()}.tmp`);
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(tmp, 'w', opts?.mode ?? 0o644);
+      fs.writeSync(fd, data as never);
+      fs.fsyncSync(fd);   // flush data to durable storage before rename
+      fs.closeSync(fd);
+      fd = undefined;
+      fs.renameSync(tmp, resolved);  // atomic replace
+      audit('atomicWriteFileSync', operation, resolved, 'allowed');
+    } catch (err) {
+      // Best-effort cleanup of the temp file; never mask the original error.
+      try { if (fd !== undefined) fs.closeSync(fd); } catch { /* ignore */ }
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
+      audit('atomicWriteFileSync', operation, resolved, 'denied', `write-error: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Atomically write `value` as pretty-printed JSON to `target`.
+   * Convenience wrapper around atomicWriteFileSync — the common case for
+   * Instar's `.instar/state/*.json` files.
+   */
+  static atomicWriteJsonSync(target: string, value: unknown, opts?: { operation?: string; mode?: number; indent?: number }): void {
+    const json = JSON.stringify(value, null, opts?.indent ?? 2);
+    this.atomicWriteFileSync(target, json, { operation: opts?.operation ?? 'atomicWriteJsonSync', mode: opts?.mode });
+  }
 }
 
 // Re-export the guard error so call-site catch blocks don't have to import
