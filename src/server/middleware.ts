@@ -57,8 +57,14 @@ export function _resetDeprecationLogCache(): void {
  * Auth middleware — enforces Bearer token on API endpoints.
  * Health endpoint is exempt (used for external monitoring).
  *
- * @param authToken  The configured server bearer token. If omitted, all
- *   requests pass through (used in tests and unauthenticated dev runs).
+ * @param authToken  The configured server bearer token, or a getter that
+ *   returns it. A getter is resolved on EVERY request so the token can be
+ *   rotated at runtime (tunnel credential rotation, Part 6 of the
+ *   tunnel-failure-resilience spec) and take effect immediately — old
+ *   bearer tokens and old HMAC-signed view URLs are rejected the moment
+ *   rotation completes, without a server restart. If omitted (or the
+ *   getter returns undefined), all requests pass through (used in tests
+ *   and unauthenticated dev runs).
  * @param agentId    The configured server agent identity (e.g. projectName).
  *   When set, the middleware additionally validates the
  *   `X-Instar-AgentId` request header BEFORE comparing the bearer
@@ -68,10 +74,14 @@ export function _resetDeprecationLogCache(): void {
  *   the backward-compatibility deprecation window with a deduped log
  *   line. See spec docs/specs/telegram-delivery-robustness.md § Layer 1b.
  */
-export function authMiddleware(authToken?: string, agentId?: string) {
+export function authMiddleware(authToken?: string | (() => string | undefined), agentId?: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Resolve the token per-request so runtime rotation takes effect
+    // immediately (a getter is re-read on every request).
+    const resolvedToken = typeof authToken === 'function' ? authToken() : authToken;
+
     // Skip auth if no token configured
-    if (!authToken) {
+    if (!resolvedToken) {
       next();
       return;
     }
@@ -153,7 +163,7 @@ export function authMiddleware(authToken?: string, agentId?: string) {
     // View routes support signed URLs for browser access (see ?sig= below)
     if (req.path.startsWith('/view/') && req.method === 'GET') {
       const sig = typeof req.query.sig === 'string' ? req.query.sig : null;
-      if (sig && verifyViewSignature(req.path, sig, authToken)) {
+      if (sig && verifyViewSignature(req.path, sig, resolvedToken)) {
         next();
         return;
       }
@@ -208,7 +218,7 @@ export function authMiddleware(authToken?: string, agentId?: string) {
     const token = header.slice(7);
     // Hash both sides so lengths are always equal — prevents timing leak of token length
     const ha = createHash('sha256').update(token).digest();
-    const hb = createHash('sha256').update(authToken).digest();
+    const hb = createHash('sha256').update(resolvedToken).digest();
     if (!timingSafeEqual(ha, hb)) {
       res.status(403).json({ error: 'Invalid auth token' });
       return;

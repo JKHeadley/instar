@@ -349,7 +349,12 @@ export class AgentServer {
     // structurally reject tokens sent to the wrong agent's server BEFORE
     // any token comparison runs. This closes the cross-tenant misroute
     // class proven by the Inspec/cheryl 2026-04-27 incident.
-    this.app.use(authMiddleware(options.config.authToken, options.config.projectName));
+    // Resolve the token live (via a getter over the shared config object)
+    // so tunnel credential rotation (Part 6 of the tunnel-failure-resilience
+    // spec) takes effect on the running server — rotating authToken
+    // immediately invalidates old bearer tokens AND old HMAC-signed view
+    // URLs without a restart.
+    this.app.use(authMiddleware(() => this.config.authToken, options.config.projectName));
     // Outbound messaging routes are intentionally LLM-backed (tone gate review)
     // and involve third-party API calls (Telegram/Slack/WhatsApp Bot APIs) whose
     // latency we don't control. The default 30s budget is routinely exceeded
