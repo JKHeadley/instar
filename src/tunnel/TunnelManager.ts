@@ -48,6 +48,7 @@ import {
   generateNonce,
   type PersistedTunnelState,
   type TransitionEvent,
+  type TunnelLifecycleState,
 } from './TunnelLifecycle.js';
 import type {
   TunnelProvider,
@@ -147,6 +148,16 @@ const REACHABILITY_TIMEOUT_MS = 8_000;
 const POST_EXHAUSTED_RETRY_INTERVAL_MS = 15 * 60_000;
 /** Per-episode consent prompt timeout — matches spec Part 4 default (15 min). */
 const CONSENT_TIMEOUT_MS = 15 * 60_000;
+/**
+ * Self-heal stability gate (spec Part 5). While a relay is active, an
+ * unbounded low-frequency probe tests whether Tier-1 (Cloudflare) can
+ * come back. Migrate back only after N consecutive successful Tier-1
+ * establishments — a single success during Cloudflare flapping must NOT
+ * trigger a switch (the URL-thrashing HIGH from review). With the
+ * default cadence, 3 consecutive successes span ~5 minutes.
+ */
+const SELF_HEAL_PROBE_INTERVAL_MS = 100_000;
+const SELF_HEAL_REQUIRED_SUCCESSES = 3;
 
 // ── Manager ────────────────────────────────────────────────────────
 
@@ -168,6 +179,11 @@ export class TunnelManager extends EventEmitter {
   private _backoffAttempt = 0;
   private _backoffTimer: ReturnType<typeof setTimeout> | null = null;
   private _postExhaustedTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Self-heal probe (Part 5): runs while relay-active to detect Tier-1 recovery. */
+  private _selfHealTimer: ReturnType<typeof setInterval> | null = null;
+  private _selfHealSuccesses = 0;
+  /** Guards performSwitchBack against re-entrancy (probe tick vs. stop). */
+  private _switchingBack = false;
   /**
    * Pending consent record — populated when the manager enters
    * `awaiting-consent` and cleared on grant / decline / timeout / stop.
@@ -255,6 +271,7 @@ export class TunnelManager extends EventEmitter {
     this._stopped = true;
     this.clearBackoffTimer();
     this.clearPostExhaustedTimer();
+    this.stopSelfHealProbe();
     this.clearPendingConsent();
     this._startPromise = null;
 
@@ -580,6 +597,155 @@ export class TunnelManager extends EventEmitter {
     return null;
   }
 
+  // ── Self-heal (Part 5): switch back to Tier-1 when it recovers ──────
+
+  /** First Tier-1 provider (Cloudflare named/quick), or null. */
+  private firstTier1Provider(): TunnelProvider | null {
+    for (const p of this.providers) {
+      if (p.tier === 1) return p;
+    }
+    return null;
+  }
+
+  private startSelfHealProbe(): void {
+    if (this._selfHealTimer) return;
+    this._selfHealSuccesses = 0;
+    this._selfHealTimer = setInterval(() => {
+      void this.runSelfHealCheck().catch(() => { /* probe is best-effort */ });
+    }, SELF_HEAL_PROBE_INTERVAL_MS);
+    this._selfHealTimer.unref?.();
+  }
+
+  private stopSelfHealProbe(): void {
+    if (this._selfHealTimer) {
+      clearInterval(this._selfHealTimer);
+      this._selfHealTimer = null;
+    }
+    this._selfHealSuccesses = 0;
+  }
+
+  /**
+   * One self-heal probe tick. Public so tests can drive the stability
+   * gate deterministically (no real multi-minute waits — the spec's
+   * Part 8 testability requirement). The production timer calls this on
+   * a fixed cadence.
+   *
+   * Each tick attempts to establish a Tier-1 tunnel and verify
+   * reachability. Consecutive successes accrue; a single failure resets
+   * the counter (so Cloudflare flapping never triggers a premature
+   * switch). On the Nth consecutive success the freshly-verified handle
+   * is PROMOTED via an atomic new-then-old switch-back — so the public
+   * URL never points at a dead tunnel mid-switch.
+   *
+   * Returns the outcome for assertions/telemetry.
+   */
+  async runSelfHealCheck(): Promise<'switched' | 'progress' | 'reset' | 'inactive'> {
+    if (this._stopped || this.lifecycle.state !== 'relay-active' || this._switchingBack) {
+      if (this.lifecycle.state !== 'relay-active') this.stopSelfHealProbe();
+      return 'inactive';
+    }
+    const tier1 = this.firstTier1Provider();
+    if (!tier1) return 'inactive';
+
+    let handle: TunnelProviderHandle | null = null;
+    let ok = false;
+    try {
+      handle = await tier1.start(this.config.port);
+      ok = await this.probeReachability(handle.url).catch(() => false);
+    } catch {
+      ok = false;
+    }
+
+    if (!ok) {
+      if (handle) { try { await handle.stop(); } catch { /* best effort */ } }
+      this._selfHealSuccesses = 0;
+      return 'reset';
+    }
+
+    this._selfHealSuccesses += 1;
+    if (this._selfHealSuccesses >= SELF_HEAL_REQUIRED_SUCCESSES && handle) {
+      // Promote THIS already-up, already-verified handle — no second start.
+      const did = await this.performSwitchBack(tier1, handle);
+      return did ? 'switched' : 'reset';
+    }
+
+    // Not enough consecutive successes yet — release the throwaway probe
+    // tunnel; the relay keeps serving.
+    if (handle) { try { await handle.stop(); } catch { /* best effort */ } }
+    return 'progress';
+  }
+
+  /**
+   * Atomic switch-back from a Tier-2 relay to a recovered Tier-1 tunnel.
+   * `newHandle` is already started AND reachability-verified by the
+   * probe. Order (spec Part 5): swap `_state.url` to the new URL in one
+   * synchronous assignment and emit 'url' BEFORE tearing the relay down,
+   * so getExternalUrl() never returns a dead URL. Relay teardown is the
+   * provider's stop() (forceful escalation is the provider contract).
+   * On reaching `active`, the relay episode has terminally ended → rotate
+   * credentials (PR 7), since the relay operator saw the old PIN/links.
+   */
+  private async performSwitchBack(provider: TunnelProvider, newHandle: TunnelProviderHandle): Promise<boolean> {
+    if (this._switchingBack) return false;
+    const entryState: TunnelLifecycleState = this.lifecycle.state;
+    if (entryState !== 'relay-active') {
+      try { await newHandle.stop(); } catch { /* best effort */ }
+      return false;
+    }
+    this._switchingBack = true;
+    const oldHandle = this.currentHandle;
+    const oldProviderName = this.currentProviderName;
+    const oldUrl = this._legacyState.url;
+    try {
+      this.lifecycle.transition('relay-active', 'self-healing', { activeProvider: null });
+
+      // new-then-old: the new Tier-1 handle is already up + verified.
+      this.currentHandle = newHandle;
+      this.currentProviderName = provider.name;
+      this._legacyState.url = newHandle.url;
+      this._legacyState.startedAt = new Date().toISOString();
+      this.emit('url', newHandle.url);
+
+      // Now tear down the relay — confirm it's gone before declaring
+      // recovery, so private traffic can't keep flowing through the third
+      // party.
+      if (oldHandle && oldHandle !== newHandle) {
+        try { await oldHandle.stop(); } catch { /* provider escalates SIGINT→SIGKILL internally */ }
+      }
+
+      this.lifecycle.transition('self-healing', 'active', {
+        activeProvider: provider.name,
+        lastFailureReason: null,
+      });
+      this.persist();
+      this.stopSelfHealProbe();
+      this.emit('self-healed', { provider: provider.name, url: newHandle.url });
+
+      // Terminal exit from the relay episode → mandatory credential
+      // rotation (rotationPending was set on relay-active entry).
+      await this.runCredentialRotation('self-heal');
+      return true;
+    } catch {
+      // Switch failed — try to stay on the relay rather than go dark.
+      this.currentHandle = oldHandle;
+      this.currentProviderName = oldProviderName;
+      this._legacyState.url = oldUrl;
+      const stateNow: TunnelLifecycleState = this.lifecycle.state;
+      if (stateNow === 'self-healing') {
+        try {
+          this.lifecycle.transition('self-healing', 'relay-active', {
+            activeProvider: oldProviderName,
+          });
+        } catch { /* best effort */ }
+      }
+      this._selfHealSuccesses = 0;
+      try { await newHandle.stop(); } catch { /* best effort */ }
+      return false;
+    } finally {
+      this._switchingBack = false;
+    }
+  }
+
   /**
    * Internal — called after the lifecycle transitions to
    * `awaiting-consent`. Generates the one-time nonce, stores the
@@ -692,6 +858,9 @@ export class TunnelManager extends EventEmitter {
       });
       this.persist();
       this.emit('url', handle.url);
+      // Begin watching for Tier-1 recovery so we can switch back off the
+      // third-party relay automatically (spec Part 5).
+      this.startSelfHealProbe();
       return true;
     } catch (err) {
       this.lifecycle.recordAttempt(provider.name, classifyFailure(err));
