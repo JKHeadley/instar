@@ -2,3 +2,4 @@ npm run lint
 node scripts/instar-dev-precommit.js
 node scripts/check-rule3-coverage.cjs
 node scripts/protect-migration-guarantee.js
+node scripts/check-e2e-pairing.cjs
