@@ -5097,6 +5097,54 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     console.log(pc.green('  CompactionSentinel enabled (verified recovery lifecycle)'));
 
+    // ── Silently-stopped trio: SocketDisconnectSentinel + ActiveWorkSilenceSentinel ──
+    // Both detectors merged in PR #334 but were never instantiated; this is the
+    // missing wire-up. Escalations route through the tone-gated /attention path.
+    // Spec: docs/specs/silently-stopped-trio.md.
+    {
+      const { SocketDisconnectSentinel } = await import('../monitoring/SocketDisconnectSentinel.js');
+      const { ActiveWorkSilenceSentinel } = await import('../monitoring/ActiveWorkSilenceSentinel.js');
+      const {
+        makeAttentionPoster,
+        buildSocketDisconnectDeps,
+        buildActiveWorkSilenceDeps,
+        OutputActivityTracker,
+      } = await import('../monitoring/sentinelWiring.js');
+
+      const sessionSurface = {
+        captureOutput: (s: string, lines?: number) => sessionManager.captureOutput(s, lines),
+        isSessionAlive: (s: string) => sessionManager.isSessionAlive(s),
+        sendKey: (s: string, key: string) => sessionManager.sendKey(s, key),
+        listRunningSessions: () =>
+          sessionManager.listRunningSessions().map(sess => ({
+            tmuxSession: sess.tmuxSession,
+            framework: sessionManager.frameworkForSession(sess.tmuxSession),
+          })),
+      };
+      const attentionPoster = makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' });
+
+      const socketCfg = config.monitoring?.socketDisconnectSentinel ?? { enabled: true };
+      if (socketCfg.enabled !== false) {
+        const socketSentinel = new SocketDisconnectSentinel(
+          buildSocketDisconnectDeps({ sessions: sessionSurface, notify: attentionPoster }),
+          socketCfg,
+        );
+        socketSentinel.start();
+        console.log(pc.green('  SocketDisconnectSentinel enabled (connection-drop recovery)'));
+      }
+
+      const silenceCfg = config.monitoring?.activeWorkSilenceSentinel ?? { enabled: true };
+      if (silenceCfg.enabled !== false) {
+        const tracker = new OutputActivityTracker(sessionSurface);
+        const silenceSentinel = new ActiveWorkSilenceSentinel(
+          buildActiveWorkSilenceDeps({ tracker, sessions: sessionSurface, notify: attentionPoster }),
+          silenceCfg,
+        );
+        silenceSentinel.start();
+        console.log(pc.green('  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog)'));
+      }
+    }
+
     // Trigger 1: PreCompact hook event — report to sentinel.
     hookEventReceiver.on('PreCompact', () => {
       // Delay to let compaction + recovery hooks finish

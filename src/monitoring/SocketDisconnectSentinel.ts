@@ -47,6 +47,12 @@ export interface SocketDisconnectSentinelDeps {
   /** Peek at the session's most recent tmux output. Returns a string that
    * may be empty if the session has no recent output. */
   getRecentOutput: (sessionName: string) => string;
+  /**
+   * Optional: list the session names to scan on each tick. Required for the
+   * self-driving `start()` loop; without it the sentinel is event-driven only
+   * (caller invokes `scanSession`/`report`). The server wiring supplies this.
+   */
+  listSessionNames?: () => string[];
   /** Override Date.now (tests). */
   now?: () => number;
   /** Override timer setters (tests). */
@@ -62,6 +68,8 @@ export interface SocketDisconnectSentinelConfig {
   maxAttempts?: number;
   /** How long to wait after a nudge before declaring recovery (ms). Default 60s. */
   verifyWindowMs?: number;
+  /** How often the self-driving loop scans every session (ms). Default 15s. */
+  tickIntervalMs?: number;
 }
 
 const DEFAULT_CONFIG: Required<SocketDisconnectSentinelConfig> = {
@@ -69,6 +77,7 @@ const DEFAULT_CONFIG: Required<SocketDisconnectSentinelConfig> = {
   backoffScheduleMs: [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000],
   maxAttempts: 4,
   verifyWindowMs: 60_000,
+  tickIntervalMs: 15_000,
 };
 
 /**
@@ -98,10 +107,39 @@ export class SocketDisconnectSentinel extends EventEmitter {
   private readonly cfg: Required<SocketDisconnectSentinelConfig>;
   private readonly states = new Map<string, SocketDisconnectState>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private tickHandle: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: SocketDisconnectSentinelDeps, cfg: SocketDisconnectSentinelConfig = {}) {
     super();
     this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+  }
+
+  /**
+   * Begin the self-driving scan loop. No-op unless `listSessionNames` was
+   * provided (otherwise the sentinel is purely event-driven). The interval is
+   * unref'd so it never holds the process open at shutdown.
+   */
+  start(): void {
+    if (!this.cfg.enabled || this.tickHandle) return;
+    if (!this.deps.listSessionNames) return;
+    this.tickHandle = setInterval(() => this.tick(), this.cfg.tickIntervalMs);
+    if (typeof this.tickHandle.unref === 'function') this.tickHandle.unref();
+  }
+
+  /** Stop the scan loop and cancel all in-flight recovery. */
+  stop(): void {
+    if (this.tickHandle) {
+      clearInterval(this.tickHandle);
+      this.tickHandle = null;
+    }
+    this.shutdown();
+  }
+
+  /** One scan pass over every session the registry currently knows about. */
+  tick(): void {
+    if (!this.cfg.enabled) return;
+    const names = this.deps.listSessionNames?.() ?? [];
+    for (const name of names) this.scanSession(name);
   }
 
   /** Called by the tick loop (or by an event trigger) for each tracked session. */

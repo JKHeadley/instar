@@ -2448,6 +2448,41 @@ export interface MonitoringConfig {
     /** Ignore repeat reports within this window (default: 60_000). */
     dedupeWindowMs?: number;
   };
+  /**
+   * SocketDisconnectSentinel — detects Claude Code's "socket connection closed
+   * unexpectedly" family in tracked sessions and runs a bounded recovery loop
+   * (notice → Enter retry → verify → escalate via the tone-gated /attention
+   * path). Default-on. See docs/specs/silently-stopped-trio.md.
+   */
+  socketDisconnectSentinel?: {
+    /** Master kill switch (default: true). */
+    enabled: boolean;
+    /** Backoff staircase (ms) between recovery attempts. Last value repeats. */
+    backoffScheduleMs?: number[];
+    /** Max recovery attempts before escalating (default: 4). */
+    maxAttempts?: number;
+    /** Wait after a nudge before declaring recovery (ms) (default: 60_000). */
+    verifyWindowMs?: number;
+    /** Scan-loop interval (ms) (default: 15_000). */
+    tickIntervalMs?: number;
+  };
+  /**
+   * ActiveWorkSilenceSentinel — topic-independent watchdog: a session that was
+   * actively producing output goes silent for N minutes. Covers the gap left
+   * by SessionWatchdog (needs a running child), SessionMonitor (topic-bound
+   * only), and PresenceProxy (needs a user message). Default-on. See
+   * docs/specs/silently-stopped-trio.md.
+   */
+  activeWorkSilenceSentinel?: {
+    /** Master kill switch (default: true). */
+    enabled: boolean;
+    /** Registry-walk interval (ms) (default: 60_000). */
+    tickIntervalMs?: number;
+    /** Output-gap that triggers detection (ms) (default: 900_000 = 15m). */
+    silenceThresholdMs?: number;
+    /** Wait after the nudge before escalating (ms) (default: 30_000). */
+    verifyWindowMs?: number;
+  };
   /** LLM-powered stall triage nurse — intelligent session recovery */
   triage?: {
     enabled: boolean;

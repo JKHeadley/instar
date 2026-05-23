@@ -30,6 +30,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     rateLimitSentinel: {
       enabled: true,
     },
+    // SocketDisconnectSentinel + ActiveWorkSilenceSentinel — default-on so
+    // every agent recovers from connection drops and silent mid-task freezes
+    // without anyone having to notice manually. enabled:false restores
+    // pre-feature behavior. See docs/specs/silently-stopped-trio.md.
+    socketDisconnectSentinel: {
+      enabled: true,
+    },
+    activeWorkSilenceSentinel: {
+      enabled: true,
+    },
     promptGate: {
       enabled: true,
       autoApprove: {

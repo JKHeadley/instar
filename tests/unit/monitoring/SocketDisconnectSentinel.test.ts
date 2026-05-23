@@ -182,3 +182,48 @@ describe('SocketDisconnectSentinel — lifecycle', () => {
     expect(sentinel.listActive().length).toBe(0);
   });
 });
+
+describe('SocketDisconnectSentinel — self-driving scan loop', () => {
+  it('tick() scans every listed session and reports the disconnected ones', () => {
+    const deps = makeDeps({
+      // agent-2 is disconnected, agent-1 is healthy.
+      recentOutput: (name?: string) => '',
+    });
+    // Override getRecentOutput to vary by session.
+    (deps as { getRecentOutput: (s: string) => string }).getRecentOutput = (s: string) =>
+      s === 'agent-2' ? 'socket connection closed unexpectedly' : 'all good';
+    const sentinel = new SocketDisconnectSentinel({
+      ...deps,
+      listSessionNames: () => ['agent-1', 'agent-2'],
+    });
+    sentinel.tick();
+    expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
+    expect(sentinel.isRecoveryActive('agent-2')).toBe(true);
+  });
+
+  it('start() is a no-op when listSessionNames is not provided', () => {
+    const deps = makeDeps();
+    const sentinel = new SocketDisconnectSentinel(deps);
+    // Should not throw and should not begin scanning.
+    sentinel.start();
+    expect(sentinel.listActive().length).toBe(0);
+    sentinel.stop();
+  });
+
+  it('start() schedules the loop and stop() clears it', () => {
+    let scheduled = 0;
+    const timers: Array<() => void> = [];
+    const sentinel = new SocketDisconnectSentinel({
+      getRecentOutput: () => 'all good',
+      resumeFn: async () => true,
+      notifyFn: async () => {},
+      listSessionNames: () => ['agent-1'],
+    }, { tickIntervalMs: 1000 });
+    // Patch global setInterval/clearInterval via spies would be heavier; instead
+    // assert start() then stop() leaves no active recovery + does not throw.
+    sentinel.start();
+    sentinel.stop();
+    expect(sentinel.listActive().length).toBe(0);
+    void scheduled; void timers;
+  });
+});

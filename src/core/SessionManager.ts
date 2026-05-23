@@ -1145,6 +1145,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
   clearSessionFrameworkCache(tmuxSession: string): void {
     this.sessionFrameworkCache.delete(tmuxSession);
   }
+  /** Public accessor for a session's resolved intelligence framework
+   *  (claude-code | codex-cli), or undefined if it can't be determined.
+   *  Cached per session. Used by sentinel wiring to pick the right
+   *  activity-signal patterns when classifying a captured frame. */
+  frameworkForSession(tmuxSession: string): IntelligenceFramework | undefined {
+    return this.getSessionFramework(tmuxSession) ?? undefined;
+  }
   private getSessionFramework(tmuxSession: string): IntelligenceFramework | null {
     if (this.sessionFrameworkCache.has(tmuxSession)) {
       return this.sessionFrameworkCache.get(tmuxSession) ?? null;
