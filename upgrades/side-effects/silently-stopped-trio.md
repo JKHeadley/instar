@@ -86,6 +86,12 @@ The v3 Self-Healing Remediator's Tier-3 absorption of these sentinels' detection
 
 ---
 
+## Addendum 2026-05-23 — Smoke-test interaction with SourceTreeGuard (fixed)
+
+After the initial commit landed, `npm run test:smoke` surfaced 14 failures in the existing WorktreeManager test suite — every test that exercised the clone-default branch failed with `SourceTreeGuardError: Refusing to run src/core/WorktreeManager.ts:clone-default against the instar source tree`. Root cause: `SafeGitExecutor.runSourceTreeChecks` defaults the target list to cwd. The new `git clone` call ran from a cwd that happened to be inside the instar source tree (test fixtures invoking `createBinding` from inside an instar checkout), and the guard correctly flagged the cwd as destructive-against-source even though the clone op itself is non-destructive on the source. **Fix:** pin `cwd: this.worktreesRoot` on the clone call — guaranteed outside the source tree and the same dir the clone destination lives under. All 56 smoke tests pass.
+
+This is a defensible interaction, not a guard regression: the guard is doing exactly what it was built to do (conservative protection of the source tree). The clone-default branch needed explicit cwd because it's the first WorktreeManager codepath to run git from outside the source's own dir.
+
 ## Conclusion
 
 Closes the silently-stopped failure class in one PR per the no-deferrals rule. 34 new tests cover the core surfaces. Server-side wire-up + integration tests + CLAUDE.md template update are part of this PR (see commit). Tone-gate compliance asserted at unit level for both sentinels' escalation payloads. Migration of existing worktrees explicitly deferred to v3 Remediator with tracker marker.

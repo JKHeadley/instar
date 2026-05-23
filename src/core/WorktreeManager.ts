@@ -770,9 +770,14 @@ export class WorktreeManager extends EventEmitter {
       // home — no shared-path dependency, no mid-session sandbox failure.
       //
       // Spec: docs/specs/silently-stopped-trio.md
+      // SourceTreeGuard targets defaults to cwd. `git clone src dest` doesn't
+      // need any particular cwd, but the guard would flag this op as
+      // "destructive against the instar source" if cwd happens to be inside
+      // it. Pin cwd to the worktrees root (always outside the source tree,
+      // and guaranteed to exist since worktreePath lives there).
       SafeGitExecutor.execSync(
         ['clone', '--quiet', this.opts.projectDir, worktreePath],
-        { timeout: 120_000, operation: 'src/core/WorktreeManager.ts:clone-default' },
+        { timeout: 120_000, cwd: this.worktreesRoot, operation: 'src/core/WorktreeManager.ts:clone-default' },
       );
       // Create branch on the clone (mirrors the worktree path's branch-prep).
       try {
