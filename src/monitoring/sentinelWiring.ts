@@ -78,9 +78,18 @@ export function makeAttentionPoster(opts: {
 const SOCKET_CAPTURE_LINES = 40;
 const SILENCE_CAPTURE_LINES = 40;
 
+/**
+ * Callback shape for routing a recovery-failed escalation through the
+ * SentinelNotifier (or any equivalent sink). Decouples the wiring from the
+ * specific delivery policy — server.ts wires a SentinelNotifier, tests wire a
+ * capture function. The wiring no longer knows or cares whether the message
+ * ends up in the logs, on Telegram, or in a fixture array.
+ */
+export type EscalateFn = (sessionName: string, text: string) => void | Promise<void>;
+
 export function buildSocketDisconnectDeps(opts: {
   sessions: SentinelSessionSurface;
-  notify: AttentionPoster;
+  escalate: EscalateFn;
 }): SocketDisconnectSentinelDeps {
   return {
     getRecentOutput: (sessionName) =>
@@ -93,11 +102,7 @@ export function buildSocketDisconnectDeps(opts: {
       return opts.sessions.sendKey(sessionName, 'Enter');
     },
     notifyFn: async (sessionName, text) => {
-      await opts.notify({
-        id: `socket-disconnect:${sessionName}`,
-        title: `${friendly(sessionName)} connection issue`,
-        summary: text,
-      });
+      await opts.escalate(sessionName, text);
     },
     listSessionNames: () =>
       opts.sessions.listRunningSessions().map((s) => s.tmuxSession),
@@ -193,7 +198,7 @@ export class OutputActivityTracker {
 export function buildActiveWorkSilenceDeps(opts: {
   tracker: OutputActivityTracker;
   sessions: SentinelSessionSurface;
-  notify: AttentionPoster;
+  escalate: EscalateFn;
 }): ActiveWorkSilenceSentinelDeps {
   return {
     listSessions: () => opts.tracker.snapshot(),
@@ -202,11 +207,7 @@ export function buildActiveWorkSilenceDeps(opts: {
       return opts.sessions.sendKey(sessionName, 'Enter');
     },
     notifyFn: async (sessionName, text) => {
-      await opts.notify({
-        id: `active-silence:${sessionName}`,
-        title: `${friendly(sessionName)} went quiet`,
-        summary: text,
-      });
+      await opts.escalate(sessionName, text);
     },
   };
 }

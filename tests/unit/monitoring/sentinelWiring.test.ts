@@ -91,7 +91,7 @@ describe('makeAttentionPoster', () => {
 
 describe('buildSocketDisconnectDeps — wiring integrity', () => {
   it('all deps are real functions, not null/no-op', () => {
-    const deps = buildSocketDisconnectDeps({ sessions: makeSurface(), notify: async () => true });
+    const deps = buildSocketDisconnectDeps({ sessions: makeSurface(), escalate: async () => {} });
     expect(typeof deps.getRecentOutput).toBe('function');
     expect(typeof deps.resumeFn).toBe('function');
     expect(typeof deps.notifyFn).toBe('function');
@@ -101,7 +101,7 @@ describe('buildSocketDisconnectDeps — wiring integrity', () => {
   it('getRecentOutput delegates to captureOutput and coerces null → empty string', () => {
     const captureCalls: Call[] = [];
     const surface = makeSurface({ output: null, captureCalls });
-    const deps = buildSocketDisconnectDeps({ sessions: surface, notify: async () => true });
+    const deps = buildSocketDisconnectDeps({ sessions: surface, escalate: async () => {} });
     expect(deps.getRecentOutput('agent-1')).toBe('');
     expect(captureCalls.length).toBe(1);
     expect(captureCalls[0].tmuxSession).toBe('agent-1');
@@ -110,7 +110,7 @@ describe('buildSocketDisconnectDeps — wiring integrity', () => {
   it('resumeFn returns false when the session is not alive (no key sent)', async () => {
     const keyCalls: Call[] = [];
     const surface = makeSurface({ alive: false, keyCalls });
-    const deps = buildSocketDisconnectDeps({ sessions: surface, notify: async () => true });
+    const deps = buildSocketDisconnectDeps({ sessions: surface, escalate: async () => {} });
     expect(await deps.resumeFn('agent-1')).toBe(false);
     expect(keyCalls.length).toBe(0);
   });
@@ -118,25 +118,24 @@ describe('buildSocketDisconnectDeps — wiring integrity', () => {
   it('resumeFn sends a bare Enter (not Ctrl+C) when alive', async () => {
     const keyCalls: Call[] = [];
     const surface = makeSurface({ alive: true, keyCalls });
-    const deps = buildSocketDisconnectDeps({ sessions: surface, notify: async () => true });
+    const deps = buildSocketDisconnectDeps({ sessions: surface, escalate: async () => {} });
     expect(await deps.resumeFn('agent-1')).toBe(true);
     expect(keyCalls).toEqual([{ tmuxSession: 'agent-1', key: 'Enter' }]);
   });
 
-  it('notifyFn routes through the poster with a stable socket-disconnect id', async () => {
-    const posted: any[] = [];
+  it('notifyFn delegates the (sessionName, text) pair to the escalate callback', async () => {
+    const calls: Array<{ name: string; text: string }> = [];
     const deps = buildSocketDisconnectDeps({
       sessions: makeSurface(),
-      notify: async (item) => { posted.push(item); return true; },
+      escalate: async (name, text) => { calls.push({ name, text }); },
     });
     await deps.notifyFn('agent-1', 'lost its connection');
-    expect(posted[0].id).toBe('socket-disconnect:agent-1');
-    expect(posted[0].summary).toBe('lost its connection');
+    expect(calls).toEqual([{ name: 'agent-1', text: 'lost its connection' }]);
   });
 
   it('listSessionNames maps running sessions to their tmux names', () => {
     const surface = makeSurface({ sessions: [{ tmuxSession: 'a' }, { tmuxSession: 'b' }] });
-    const deps = buildSocketDisconnectDeps({ sessions: surface, notify: async () => true });
+    const deps = buildSocketDisconnectDeps({ sessions: surface, escalate: async () => {} });
     expect(deps.listSessionNames!()).toEqual(['a', 'b']);
   });
 });
@@ -256,7 +255,7 @@ describe('buildActiveWorkSilenceDeps — wiring integrity', () => {
   it('listSessions delegates to the tracker snapshot', () => {
     const surface = makeSurface({ output: '⠹ working', sessions: [{ tmuxSession: 'agent-1' }] });
     const tracker = new OutputActivityTracker(surface);
-    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, notify: async () => true });
+    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, escalate: async () => {} });
     const list = deps.listSessions();
     expect(list[0].sessionName).toBe('agent-1');
   });
@@ -265,7 +264,7 @@ describe('buildActiveWorkSilenceDeps — wiring integrity', () => {
     const keyCalls: Call[] = [];
     const surface = makeSurface({ alive: true, keyCalls });
     const tracker = new OutputActivityTracker(surface);
-    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, notify: async () => true });
+    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, escalate: async () => {} });
     expect(await deps.nudgeFn('agent-1')).toBe(true);
     expect(keyCalls).toEqual([{ tmuxSession: 'agent-1', key: 'Enter' }]);
   });
@@ -274,20 +273,20 @@ describe('buildActiveWorkSilenceDeps — wiring integrity', () => {
     const keyCalls: Call[] = [];
     const surface = makeSurface({ alive: false, keyCalls });
     const tracker = new OutputActivityTracker(surface);
-    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, notify: async () => true });
+    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, escalate: async () => {} });
     expect(await deps.nudgeFn('agent-1')).toBe(false);
     expect(keyCalls.length).toBe(0);
   });
 
-  it('notifyFn routes through the poster with a stable active-silence id', async () => {
-    const posted: any[] = [];
+  it('notifyFn delegates the (sessionName, text) pair to the escalate callback', async () => {
+    const calls: Array<{ name: string; text: string }> = [];
     const surface = makeSurface();
     const tracker = new OutputActivityTracker(surface);
     const deps = buildActiveWorkSilenceDeps({
       tracker, sessions: surface,
-      notify: async (item) => { posted.push(item); return true; },
+      escalate: async (name, text) => { calls.push({ name, text }); },
     });
     await deps.notifyFn('agent-1', 'went quiet');
-    expect(posted[0].id).toBe('active-silence:agent-1');
+    expect(calls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
   });
 });

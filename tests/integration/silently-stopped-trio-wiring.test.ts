@@ -4,14 +4,15 @@
 /**
  * Integration test for the silently-stopped trio wiring.
  *
- * Unit tests prove each dep delegates correctly. This test proves the whole
- * chain fires end-to-end: a REAL sentinel, driven by REAL wiring deps
- * (buildSocketDisconnectDeps / buildActiveWorkSilenceDeps), against a fake
- * SessionManager surface and a fake `/attention` endpoint that mimics the
- * tone gate (suppresses the no-CTA first notice, passes the CTA escalation).
+ * Drives real sentinels through real wiring deps against a fake SessionManager
+ * surface and a real SentinelNotifier — the same shape server.ts assembles.
  *
- * This is the test that would have failed loudly when PR #334 shipped the
- * sentinels unwired: with no wiring, no escalation ever reaches /attention.
+ * Proves the post-2026-05-22 delivery contract end-to-end:
+ *   - Detection requires an OBSERVED active→silent transition (Defect 1).
+ *   - Routine transitions land in the notifier's audit log, never on Telegram.
+ *   - Genuine escalations are coalesced into ONE consolidated send to a single
+ *     reused system topic — never one-topic-per-event.
+ *   - When telegramEscalation is OFF (default), the user sees nothing.
  *
  * Spec: docs/specs/silently-stopped-trio.md
  */
@@ -20,62 +21,63 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SocketDisconnectSentinel } from '../../src/monitoring/SocketDisconnectSentinel.js';
 import { ActiveWorkSilenceSentinel } from '../../src/monitoring/ActiveWorkSilenceSentinel.js';
 import {
-  makeAttentionPoster,
   buildSocketDisconnectDeps,
   buildActiveWorkSilenceDeps,
   OutputActivityTracker,
   type SentinelSessionSurface,
 } from '../../src/monitoring/sentinelWiring.js';
+import { SentinelNotifier, type SentinelLogEntry } from '../../src/monitoring/SentinelNotifier.js';
 
-interface Posted { url: string; body: any; }
-
-/** A fake /attention that mimics the tone gate: a message with a yes/no CTA
- *  ("dig in") is delivered (201); a no-CTA self-healing notice is blocked (422). */
-function makeToneGatedFetch(posted: Posted[]): typeof fetch {
-  return (async (url: string, init: any) => {
-    const body = JSON.parse(init.body);
-    posted.push({ url, body });
-    const hasCta = /dig in/i.test(body.summary || '');
-    return { status: hasCta ? 201 : 422 };
-  }) as unknown as typeof fetch;
-}
-
-describe('silently-stopped trio wiring — end to end', () => {
+describe('silently-stopped trio — end-to-end through SentinelNotifier', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it('SocketDisconnectSentinel escalates through the tone-gated /attention path', async () => {
-    const posted: Posted[] = [];
+  function makeRig(opts: { telegramEscalation?: boolean; coalesceWindowMs?: number } = {}) {
+    const log: SentinelLogEntry[] = [];
+    const sent: string[] = [];
+    const notifier = new SentinelNotifier(
+      {
+        log: (e) => log.push(e),
+        sendConsolidated: async (text) => { sent.push(text); return true; },
+      },
+      { telegramEscalation: opts.telegramEscalation ?? false, coalesceWindowMs: opts.coalesceWindowMs ?? 50 },
+    );
+    return { notifier, log, sent };
+  }
+
+  it('SocketDisconnectSentinel: routine recovery → audit log only, Telegram silent (default)', async () => {
+    const { notifier, log, sent } = makeRig();
     const surface: SentinelSessionSurface = {
-      // Output stays stuck on the disconnect string — recovery never clears it.
+      // Stays stuck on the disconnect string — recovery never clears it.
       captureOutput: () => 'socket connection closed unexpectedly',
       isSessionAlive: () => true,
       sendKey: () => true,
       listRunningSessions: () => [{ tmuxSession: 'agent-1' }],
     };
-    const notify = makeAttentionPoster({ port: 4040, authToken: 'tok', fetchImpl: makeToneGatedFetch(posted) });
     const sentinel = new SocketDisconnectSentinel(
-      buildSocketDisconnectDeps({ sessions: surface, notify }),
+      buildSocketDisconnectDeps({
+        sessions: surface,
+        escalate: (name, text) => notifier.escalate('socket-disconnect', name, text),
+      }),
       { maxAttempts: 1, backoffScheduleMs: [5], verifyWindowMs: 5 },
     );
 
     sentinel.report('agent-1');
-    // Drive the backoff → attempt → verify → escalate cycle.
     await vi.advanceTimersByTimeAsync(50);
+    await notifier.flushNow();
 
-    const escalation = posted.find(p => p.body.id === 'socket-disconnect:agent-1' && /dig in/i.test(p.body.summary));
-    expect(escalation).toBeDefined();
-    expect(escalation!.url).toBe('http://localhost:4040/attention');
-    expect(escalation!.body.category).toBe('degradation');
+    // Escalation was recorded but never reached Telegram (default = off).
+    expect(log.some(e => e.kind === 'escalated' && e.sessionName === 'agent-1')).toBe(true);
+    expect(log.some(e => e.kind === 'escalation-suppressed')).toBe(true);
+    expect(sent.length).toBe(0);
   });
 
-  it('escalates only AFTER an observed active→silent transition', async () => {
-    // Correct behavior: a session is silence-eligible only once the tracker has
-    // WATCHED its output change at least once. tick 1 = first sighting (skipped),
-    // tick 2 = observed change (now eligible), tick 3 = frozen past threshold →
-    // detect → nudge → escalate.
-    const posted: Posted[] = [];
-    let frame = 'Running Bash(npm test) step 1 (esc to interrupt)';
+  it('escalates only AFTER an observed active→silent transition (the detection fix)', async () => {
+    // Confirms Defect 1 + Defect 2+3 together: first sighting is non-eligible;
+    // an observed change makes the session eligible; freezing past threshold
+    // produces ONE notifier escalation entry. With telegramEscalation off, no send.
+    const { notifier, log } = makeRig();
+    let frame = 'Bash(npm test) step 1 (esc to interrupt)';
     const surface: SentinelSessionSurface = {
       captureOutput: () => frame,
       isSessionAlive: () => true,
@@ -84,83 +86,80 @@ describe('silently-stopped trio wiring — end to end', () => {
     };
     vi.setSystemTime(1_700_000_000_000);
     const tracker = new OutputActivityTracker(surface, () => Date.now());
-    const notify = makeAttentionPoster({ port: 4040, authToken: 'tok', fetchImpl: makeToneGatedFetch(posted) });
     const sentinel = new ActiveWorkSilenceSentinel(
-      buildActiveWorkSilenceDeps({ tracker, sessions: surface, notify }),
+      buildActiveWorkSilenceDeps({
+        tracker, sessions: surface,
+        escalate: (name, text) => notifier.escalate('active-silence', name, text),
+      }),
       { verifyWindowMs: 5 },
     );
 
-    // Tick 1: first sighting → lastOutputAt 0 → not eligible.
     sentinel.tick();
     expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
 
-    // Tick 2: output changed → silence-eligible, stamped "now". Not yet silent.
     vi.setSystemTime(Date.now() + 60_000);
-    frame = 'Running Bash(npm test) step 2 (esc to interrupt)';
+    frame = 'Bash(npm test) step 2 (esc to interrupt)';
     sentinel.tick();
     expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
 
-    // Freeze, advance past the 15-min threshold → detect → nudge → escalate.
     vi.setSystemTime(Date.now() + 16 * 60_000);
     sentinel.tick();
     await vi.advanceTimersByTimeAsync(50);
+    await notifier.flushNow();
 
-    const escalation = posted.find(p => p.body.id === 'active-silence:agent-1' && /dig in/i.test(p.body.summary));
-    expect(escalation).toBeDefined();
-    expect(escalation!.body.category).toBe('degradation');
+    expect(log.some(e => e.kind === 'escalated' && e.sessionName === 'agent-1')).toBe(true);
   });
 
-  it('never escalates a session whose output never changed, even if the frame looks active (the 2026-05-22 flood)', async () => {
-    // The exact incident: on restart the tracker re-sees long-dead leftover
-    // sessions whose frozen last frame still contains "esc to interrupt". Their
-    // output never changes, so they must NEVER cross the silence threshold —
-    // regardless of how long they sit there.
-    const posted: Posted[] = [];
+  it('the 2026-05-22 flood scenario: dead leftover sessions whose output never changes are NEVER escalated', async () => {
+    // Three "zombie" sessions whose frozen last frames still contain "esc to
+    // interrupt" — exactly the leftover-tmux post-restart shape that produced
+    // the wall of "X went quiet" Telegram topics. With the detection fix +
+    // notifier, no escalation is ever generated, regardless of how long they sit.
+    const { notifier, log, sent } = makeRig({ telegramEscalation: true });
     const surface: SentinelSessionSurface = {
-      captureOutput: () => 'Running Bash(npm test) (esc to interrupt)', // frozen — never changes
+      captureOutput: () => 'Bash(npm test) (esc to interrupt)',
       isSessionAlive: () => true,
       sendKey: () => true,
-      listRunningSessions: () => [{ tmuxSession: 'zombie-1' }],
+      listRunningSessions: () => [
+        { tmuxSession: 'zombie-1' },
+        { tmuxSession: 'zombie-2' },
+        { tmuxSession: 'zombie-3' },
+      ],
     };
     vi.setSystemTime(1_700_000_000_000);
     const tracker = new OutputActivityTracker(surface, () => Date.now());
-    const notify = makeAttentionPoster({ port: 4040, authToken: 'tok', fetchImpl: makeToneGatedFetch(posted) });
     const sentinel = new ActiveWorkSilenceSentinel(
-      buildActiveWorkSilenceDeps({ tracker, sessions: surface, notify }),
+      buildActiveWorkSilenceDeps({
+        tracker, sessions: surface,
+        escalate: (name, text) => notifier.escalate('active-silence', name, text),
+      }),
       { verifyWindowMs: 5 },
     );
 
-    // 30 minutes of ticks — well past the 15-min threshold — and nothing fires.
     for (let i = 0; i < 30; i++) {
       vi.setSystemTime(Date.now() + 60_000);
       sentinel.tick();
     }
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(200);
+    await notifier.flushNow();
 
-    expect(sentinel.isRecoveryActive('zombie-1')).toBe(false);
-    expect(posted.length).toBe(0);
+    expect(log.some(e => e.kind === 'escalated')).toBe(false);
+    expect(sent.length).toBe(0); // no Telegram, even with escalation enabled
   });
 
-  it('does NOT flag an idle-at-prompt session as silent (no false escalation)', async () => {
-    const posted: Posted[] = [];
-    const surface: SentinelSessionSurface = {
-      // Idle prompt — not "actively working then stopped".
-      captureOutput: () => '> \n  ? for shortcuts',
-      isSessionAlive: () => true,
-      sendKey: () => true,
-      listRunningSessions: () => [{ tmuxSession: 'agent-1' }],
-    };
-    const tracker = new OutputActivityTracker(surface, () => Date.now() - 20 * 60_000);
-    const notify = makeAttentionPoster({ port: 4040, authToken: 'tok', fetchImpl: makeToneGatedFetch(posted) });
-    const sentinel = new ActiveWorkSilenceSentinel(
-      buildActiveWorkSilenceDeps({ tracker, sessions: surface, notify }),
-      { verifyWindowMs: 5 },
-    );
-
-    sentinel.tick();
-    await vi.advanceTimersByTimeAsync(50);
-
-    expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
-    expect(posted.length).toBe(0);
+  it('multiple simultaneous genuine escalations coalesce into ONE message when escalation is enabled', async () => {
+    // Drives two sessions across an observed change + freeze, both escalate
+    // within the coalesce window → notifier sends ONE consolidated message,
+    // not two. This is the structural replacement for the topic-per-event flood.
+    const { notifier, sent } = makeRig({ telegramEscalation: true, coalesceWindowMs: 100 });
+    notifier.escalate('active-silence', 'agent-1', 'agent-1 was working and went quiet. Want me to dig in?');
+    notifier.escalate('active-silence', 'agent-2', 'agent-2 was working and went quiet. Want me to dig in?');
+    notifier.escalate('socket-disconnect', 'agent-3', 'agent-3 lost its connection.');
+    await vi.advanceTimersByTimeAsync(150);
+    expect(sent.length).toBe(1);
+    expect(sent[0]).toMatch(/3 background sessions/);
+    expect(sent[0]).toMatch(/agent-1/);
+    expect(sent[0]).toMatch(/agent-2/);
+    expect(sent[0]).toMatch(/agent-3/);
   });
 });

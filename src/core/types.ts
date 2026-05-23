@@ -2499,6 +2499,16 @@ export interface MonitoringConfig {
     /** Wait after the nudge before escalating (ms) (default: 30_000). */
     verifyWindowMs?: number;
   };
+  /**
+   * Master gate for Telegram delivery of silently-stopped-sentinel escalations
+   * (SentinelNotifier). Default false → sentinel notices are logged to the
+   * server log + .instar/../logs/sentinel-events.jsonl only; the user never
+   * sees them. When true, genuine recovery-failed escalations are COALESCED
+   * into ONE consolidated message and sent to the existing system (lifeline)
+   * topic — never one-topic-per-event. Default false in response to the
+   * 2026-05-22 topic-spam flood. See docs/specs/silently-stopped-trio.md.
+   */
+  sentinelTelegramEscalation?: boolean;
   /** LLM-powered stall triage nurse — intelligent session recovery */
   triage?: {
     enabled: boolean;

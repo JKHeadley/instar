@@ -5149,18 +5149,22 @@ export async function startServer(options: StartOptions): Promise<void> {
     console.log(pc.green('  CompactionSentinel enabled (verified recovery lifecycle)'));
 
     // ── Silently-stopped trio: SocketDisconnectSentinel + ActiveWorkSilenceSentinel ──
-    // Both detectors merged in PR #334 but were never instantiated; this is the
-    // missing wire-up. Escalations route through the tone-gated /attention path.
+    // Wire-up post-2026-05-22 incident. Every transition (detect/nudge/recover)
+    // lands in the audit log (server logs + JSONL) — the user never sees it.
+    // A genuine recovery-failed escalation goes through SentinelNotifier, which
+    // is OFF for Telegram by default and, when enabled, coalesces into ONE
+    // consolidated message to the existing system topic. No new-topic-per-event.
     // Spec: docs/specs/silently-stopped-trio.md.
     {
       const { SocketDisconnectSentinel } = await import('../monitoring/SocketDisconnectSentinel.js');
       const { ActiveWorkSilenceSentinel } = await import('../monitoring/ActiveWorkSilenceSentinel.js');
       const {
-        makeAttentionPoster,
         buildSocketDisconnectDeps,
         buildActiveWorkSilenceDeps,
         OutputActivityTracker,
       } = await import('../monitoring/sentinelWiring.js');
+      const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
+      type _LogEntry = import('../monitoring/SentinelNotifier.js').SentinelLogEntry;
 
       const sessionSurface = {
         captureOutput: (s: string, lines?: number) => sessionManager.captureOutput(s, lines),
@@ -5172,14 +5176,51 @@ export async function startServer(options: StartOptions): Promise<void> {
             framework: sessionManager.frameworkForSession(sess.tmuxSession),
           })),
       };
-      const attentionPoster = makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' });
+
+      // Audit log: console + JSONL. setupServerLog already created the logs dir.
+      const sentinelLogPath = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+      const logSink = (entry: _LogEntry): void => {
+        const detail = entry.detail ? ` — ${entry.detail}` : '';
+        console.log(`[sentinel:${entry.kind}] ${entry.sentinel}/${entry.sessionName}${detail}`);
+        try {
+          fs.appendFileSync(sentinelLogPath, JSON.stringify(entry) + '\n');
+        } catch { /* logs are best-effort; never crash the monitoring path */ }
+      };
+
+      // Consolidated Telegram delivery — reuses the existing system (lifeline)
+      // topic. When telegramEscalation is off, this callback is never invoked.
+      const localTelegram = telegram;
+      const sendConsolidated = localTelegram
+        ? async (text: string): Promise<boolean> => {
+            const topicId = localTelegram.getLifelineTopicId();
+            if (!topicId) return false;
+            try {
+              await localTelegram.sendToTopic(topicId, text);
+              return true;
+            } catch {
+              return false;
+            }
+          }
+        : undefined;
+
+      const telegramEscalation = config.monitoring?.sentinelTelegramEscalation === true;
+      const notifier = new SentinelNotifier(
+        { log: logSink, sendConsolidated },
+        { telegramEscalation },
+      );
 
       const socketCfg = config.monitoring?.socketDisconnectSentinel ?? { enabled: true };
       if (socketCfg.enabled !== false) {
         const socketSentinel = new SocketDisconnectSentinel(
-          buildSocketDisconnectDeps({ sessions: sessionSurface, notify: attentionPoster }),
+          buildSocketDisconnectDeps({
+            sessions: sessionSurface,
+            escalate: (name, text) => notifier.escalate('socket-disconnect', name, text),
+          }),
           socketCfg,
         );
+        socketSentinel.on('recovered', (n: string) => notifier.record('recovered', 'socket-disconnect', n));
+        socketSentinel.on('recovery-error', (e: { sessionName: string; err: unknown }) =>
+          notifier.record('recovery-error', 'socket-disconnect', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         socketSentinel.start();
         console.log(pc.green('  SocketDisconnectSentinel enabled (connection-drop recovery)'));
       }
@@ -5188,11 +5229,23 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (silenceCfg.enabled !== false) {
         const tracker = new OutputActivityTracker(sessionSurface);
         const silenceSentinel = new ActiveWorkSilenceSentinel(
-          buildActiveWorkSilenceDeps({ tracker, sessions: sessionSurface, notify: attentionPoster }),
+          buildActiveWorkSilenceDeps({
+            tracker, sessions: sessionSurface,
+            escalate: (name, text) => notifier.escalate('active-silence', name, text),
+          }),
           silenceCfg,
         );
+        silenceSentinel.on('silence', (e: { sessionName: string; idleMs: number }) =>
+          notifier.record('detected', 'active-silence', e.sessionName, `idleMs=${e.idleMs}`));
+        silenceSentinel.on('recovered', (n: string) => notifier.record('recovered', 'active-silence', n));
+        silenceSentinel.on('nudge-error', (e: { sessionName: string; err: unknown }) =>
+          notifier.record('nudge-error', 'active-silence', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         silenceSentinel.start();
-        console.log(pc.green('  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog)'));
+        console.log(pc.green(
+          telegramEscalation
+            ? '  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — Telegram escalation ON, consolidated)'
+            : '  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — logs only, Telegram escalation OFF)',
+        ));
       }
     }
 
