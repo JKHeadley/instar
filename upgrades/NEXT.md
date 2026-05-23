@@ -1,29 +1,32 @@
 # Upgrade Guide — vNEXT
 
-<!-- bump: patch -->
+<!-- bump: minor -->
 
 ## What Changed
 
-**feat(hooks): slopcheck-guard — package-legitimacy check on installs (GSD cherry-pick).**
+**feat(build): /build methodology bundle — four GSD cherry-picks + defense-in-depth doc.**
 
-New PreToolUse hook that catches install commands (npm/pnpm/yarn/pip/cargo) for packages not already known to the project, and nudges the agent to confirm the package is legitimate before installing. Defends against slopsquatted and hallucinated package names.
+Four enhancements to the /build skill, all from the GSD-Instar spike, bundled in one PR because they all touch the /build SKILL.md:
 
-When the staged Bash command is a package install, the hook extracts the package names, checks each against the project's manifests and lockfiles (package.json, package-lock.json, requirements.txt, Cargo.toml, etc.), and for any unfamiliar package injects a confirmation checklist (spelling, registry existence, deliberate-vs-hallucinated, established-alternative).
+- **Phase 0.5: MUST-HAVES (goal-backward)** — before planning HOW, state WHAT must be observably true: truths (consumer-perspective), artifacts (exist + substantive + wired), and key_links (grep patterns proving real wiring). Each truth becomes a Phase 3 verification gate. Prevents shipping a component that compiles + passes unit tests but is never instantiated.
+- **STRIDE threat pass** (LARGE builds only) — a small threat register where each mitigation binds to a specific test. Skipped for SMALL builds.
+- **Atomic-commit discipline** in Phase 2 EXECUTE — one commit per plan step, stage specific files by name (never `git add -A`), `{type}({scope}): {summary}` format, verify no accidental deletions. Replaces the old single-mega-commit guidance (which was unreviewable).
+- **SUMMARY.md deviation-tracking** in Phase 5 COMPLETE — enumerate deviations from plan, categorized by the executor Rule 1/2/3/4, plus the must-haves verification result and any infrastructure-backed deferrals.
 
-Signal-only — never blocks. Borrowed from gsd-executor's Rule 3 exclusion (package installs are NOT auto-fixable precisely because a failed/typo'd install may be a slopsquat).
+Also adds `docs/patterns/defense-in-depth-insert-and-projection.md` — the insert-time + projection-time pattern the spike surfaced (with the Topic Intent Layer affirmation cap as the worked example).
 
 ## Evidence
 
-10 unit tests, all green: non-install commands pass silently, unfamiliar npm install fires the nudge, packages in package.json/lockfile are familiar, version specifiers stripped, all five package managers recognized, multi-package commands flag only unfamiliar ones, flags stripped, malformed input never blocks, signal-only (never emits block). TypeScript clean.
+4 unit tests for the migration (migrateBuildSkillMethodology): stock skill updated, idempotent, customized skill untouched, no-throw on missing. TypeScript clean.
 
-Migration parity verified: new agents get it via settings-template.json; existing agents get it via an explicit ensure-block in `migrateSettings()` (added the Bash-matcher slopcheck entry if absent). Hook script always-overwritten by `migrateHooks()`. Registered in builtin-manifest.json + known-builtin-hooks list.
+Migration parity: installBuildSkill is install-if-missing, so existing agents get the methodology via a content-sniffed idempotent migration (only updates a stock /build skill lacking the "Phase 0.5: MUST-HAVES" marker; leaves customized skills alone).
 
-Side-effects review: `upgrades/side-effects/slopcheck-guard.md`.
+Side-effects review: `upgrades/side-effects/build-methodology-bundle.md`.
 
 ## What to Tell Your User
 
-Nothing user-visible. The hook fires silently and only the agent sees the nudge, only when installing an unfamiliar package. Existing agents pick it up on next `instar upgrade`.
+Your /build skill got sharper. It now asks "what must be true when this is done?" before planning, commits work in reviewable per-task chunks instead of one giant commit, and writes a short deviation log at the end so you can see exactly what changed from the original plan. On big builds it also does a quick threat pass. Nothing you have to do differently — /build just does more of the right thing automatically.
 
 ## Summary of New Capabilities
 
-One new PreToolUse hook on the Bash matcher. Catches the supply-chain risk that a hallucinated or typosquatted package name slips into an install. Framework-agnostic (pure Node, no Claude/Codex specifics).
+Four /build methodology sections + one pattern doc + one content-update migration + 4 migration tests. Framework-agnostic (prompt-skill content + a migration). The methodology is the GSD planner/executor discipline imported as Instar's own.

@@ -186,6 +186,7 @@ export class PostUpdateMigrator {
     this.migrateBuiltinJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
+    this.migrateBuildSkillMethodology(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
@@ -1083,6 +1084,42 @@ export class PostUpdateMigrator {
       } catch (err) {
         result.errors.push(`skills/${name}/SKILL.md port migration: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+
+  /**
+   * Update the /build skill with the GSD-cherry-pick methodology sections
+   * (Phase 0.5 must-haves + STRIDE, atomic-commit discipline, SUMMARY
+   * deviation-tracking). installBuildSkill is install-if-missing, so existing
+   * agents need an explicit content-update migration.
+   *
+   * Idempotent + conservative: only re-copies the bundled SKILL.md when the
+   * installed copy (a) lacks the new "Phase 0.5: MUST-HAVES" marker AND
+   * (b) still looks like the stock /build skill (contains "Rigorous Build
+   * Skill" + "Phase 5: COMPLETE"). A heavily-customized /build skill that no
+   * longer matches the stock fingerprint is left untouched.
+   */
+  private migrateBuildSkillMethodology(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'build', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuildSkill handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      if (current.includes('Phase 0.5: MUST-HAVES')) return; // already updated — idempotent
+      // Stock-fingerprint guard: don't clobber a customized /build skill.
+      if (!current.includes('Rigorous Build Skill') || !current.includes('Phase 5: COMPLETE')) {
+        result.skipped.push('skills/build/SKILL.md: customized — left untouched (no methodology update)');
+        return;
+      }
+      // Re-copy the bundled SKILL.md (which carries the new sections).
+      const bundled = path.join(__dirname, '..', '..', '.claude', 'skills', 'build', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes('Phase 0.5: MUST-HAVES')) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/build/SKILL.md (GSD methodology: must-haves + atomic-commit + SUMMARY deviations)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/build/SKILL.md methodology migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
