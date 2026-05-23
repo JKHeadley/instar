@@ -53,3 +53,13 @@ A codex-only agent (enabledFrameworks without 'claude-code') must NEVER invoke C
 New structural guard (`claudeForbiddenGuard`): when the agent is codex-only, `setClaudeForbidden()` is called once at server boot. `ClaudeCliIntelligenceProvider`'s constructor then throws `ClaudeForbiddenError` — any path that reaches for Claude surfaces loudly at the call site instead of silently degrading to Claude. The relationship-intelligence and topic-summary fallbacks now skip Claude when forbidden (those features run without LLM rather than on Claude). PipeSessionSpawner was already framework-aware.
 
 Tests: `claude-forbidden-guard.test.ts` (10) — isCodexOnly detection, flag lifecycle, assert throws with context, and the core enforcement (ClaudeCliIntelligenceProvider construction throws when forbidden). 65 existing provider/framework tests still pass.
+
+---
+
+### Codex session default → gpt-5.5 + reasoning-effort findings
+
+Per Justin (2026-05-23): the Codex session default moves from gpt-5.3-codex (coding-specialist) to **gpt-5.5** (newest generalist + Codex CLI's own default, confirmed working on the ChatGPT subscription). Changed in three places: `TIER_TO_MODEL.balanced`, `resolveModelForFramework` (balanced/sonnet → gpt-5.5), and both codex launch-builder `?? gpt-5.3-codex` fallbacks. The `fast` tier stays gpt-5.2 (cheap internal calls). gpt-5.3-codex remains available via a raw per-call model name. `/sessions/create` model allowlist gains gpt-5.5.
+
+Reasoning-effort research (Justin asked about token savings): levels are low|medium|high|xhigh ('minimal' is GPT-5-only — errors on gpt-5.5). Empirically, on a trivial prompt the levels barely differ (low=7.4k, medium=8.9k, high=7.4k tokens) because the cost is dominated by Codex CLI's fixed per-invocation overhead (openai/codex#19996), not reasoning — the delta only shows on complex tasks. codey's config.toml sets medium (OpenAI's recommended default). The real cheap-call quota win is the fast tier (gpt-5.2, ~103 tokens vs 7k+), already in place.
+
+Tests: 50 framework tests updated + pass (balanced default assertions → gpt-5.5).

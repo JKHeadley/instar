@@ -3711,7 +3711,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // specific names are accepted when they match the framework slot.
     const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
     const CLAUDE_TIERS = ['opus', 'sonnet', 'haiku'];
-    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4'];
+    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.5'];
     if (model !== undefined) {
       if (typeof model !== 'string') {
         res.status(400).json({ error: '"model" must be a string' });

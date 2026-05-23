@@ -41,16 +41,23 @@ import type { ModelTier } from '../../types.js';
  *
  * Default tier choices below favor the subscription path:
  *   - fast:     gpt-5.2 (cheapest working; NO reasoning overhead — keep for
- *                all cheap internal LLM calls)
- *   - balanced: gpt-5.3-codex (coding-specialist tier — the session default)
- *   - capable:  gpt-5.4 (most powerful older tier; high burn, use sparingly)
+ *                all cheap internal LLM calls; ~50-70x cheaper than the
+ *                reasoning models even on a trivial prompt)
+ *   - balanced: gpt-5.5 (the session default as of 2026-05-23, per Justin —
+ *                newest generalist + Codex CLI's own default. Was
+ *                gpt-5.3-codex, the coding-specialist; gpt-5.3-codex is
+ *                still available via a raw per-call model name.)
+ *   - capable:  gpt-5.4 (heaviest older tier; high burn, use sparingly)
  *
- * gpt-5.5 is now Codex CLI's OWN default (codey's ~/.codex/config.toml) and
- * is confirmed working on the subscription. Whether to promote the session
- * default from gpt-5.3-codex (coding-specialist) to gpt-5.5 (newest
- * generalist) is a product decision pending a real coding-quality + burn
- * benchmark — NOT changed here to avoid a silent default shift. gpt-5.5 is
- * available now via a raw per-call model name.
+ * Reasoning effort (model_reasoning_effort): low | medium | high | xhigh.
+ * 'minimal' is GPT-5-only (errors on gpt-5.5). Empirically, on a TRIVIAL
+ * prompt the effort levels barely differ (low=7.4k, medium=8.9k, high=7.4k
+ * tokens) because the cost is dominated by Codex CLI's fixed per-invocation
+ * overhead (see openai/codex#19996), not reasoning — the effort delta only
+ * shows on complex tasks. codey's ~/.codex/config.toml sets medium (OpenAI's
+ * recommended default); gpt-5.5 also uses fewer reasoning tokens than prior
+ * models at the same effort. The real cheap-call quota win is the fast tier
+ * (gpt-5.2), not turning reasoning down on a heavyweight model.
  *
  * Callers on the API-key path can override these per-call to access the
  * full model surface (gpt-5-codex, etc.) by passing a raw model name
@@ -64,7 +71,10 @@ import type { ModelTier } from '../../types.js';
  */
 const TIER_TO_MODEL: Record<ModelTier, string> = {
   fast: 'gpt-5.2',
-  balanced: 'gpt-5.3-codex',
+  // balanced is the session default. gpt-5.5 (Codex CLI's own default +
+  // newest generalist, confirmed working on the ChatGPT subscription
+  // 2026-05-23) per Justin's call. Was gpt-5.3-codex (coding-specialist).
+  balanced: 'gpt-5.5',
   capable: 'gpt-5.4',
 };
 
