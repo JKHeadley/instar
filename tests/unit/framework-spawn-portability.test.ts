@@ -103,3 +103,32 @@ describe('Config.load derives + stores the runtime framework', () => {
     expect(src).toMatch(/framework:\s*configuredFramework/);
   });
 });
+
+describe('server.ts Telegram default-framework reads config.sessions.framework', () => {
+  // The Telegram spawn path (spawnSessionForTopic → resolveTopicFramework)
+  // returns `_defaultFramework` for any topic without an explicit per-topic
+  // override. _defaultFramework MUST be derived from the agent's resolved
+  // runtime framework (config.sessions.framework), NOT from the
+  // INSTAR_FRAMEWORK env var alone — otherwise a codex-cli-only agent that
+  // doesn't set the env (the common case) silently spawns CLAUDE on every
+  // Telegram message. This was the gap that survived the first
+  // framework-spawn-portability fix: the fresh-spawn path was fixed but the
+  // Telegram path read a separate, env-only default.
+  const src = fs.readFileSync(
+    path.resolve(__dirname, '../../src/commands/server.ts'),
+    'utf-8',
+  );
+
+  it('_defaultFramework is derived from config.sessions.framework (not env-only)', () => {
+    // The derivation must reference config.sessions?.framework before the
+    // frameworkFromEnv() fallback.
+    expect(src).toMatch(/config\.sessions\?\.framework\s*\?\?\s*frameworkFromEnv\(\)/);
+  });
+
+  it('does NOT set the default framework from frameworkFromEnv() alone', () => {
+    // The pre-fix bug line: `const framework = frameworkFromEnv() ?? 'claude-code';`
+    // assigned straight to resolvedFramework/_defaultFramework. Assert that
+    // exact env-only derivation no longer appears.
+    expect(src).not.toMatch(/const framework = frameworkFromEnv\(\) \?\? 'claude-code';/);
+  });
+});
