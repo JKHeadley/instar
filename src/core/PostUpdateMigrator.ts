@@ -2290,6 +2290,26 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Private Viewer section already present');
     }
 
+    // Tunnel-failure-resilience awareness (spec Part 7). Existing agents
+    // already have the Cloudflare Tunnel section but not the resilience
+    // text — content-sniff and append a bullet so they can explain a link
+    // outage + the consent-gated backup relay conversationally.
+    if (content.includes('Cloudflare Tunnel') && !content.includes('Failure resilience')) {
+      const resilienceBullet = `- **Failure resilience**: If Cloudflare can't give you a link (e.g. rate-limited), I'll DM you (owner only) with two buttons to approve a consent-gated backup relay through a third party. While the backup is active your dashboard traffic briefly passes through that operator, so when Cloudflare recovers I switch back automatically (after several healthy checks) and rotate your dashboard PIN + access token — which signs out open tabs and invalidates previously-shared private view links. \`GET /tunnel\` reports the live \`lifecycle.state\` (active / retrying / awaiting-consent / relay-active / self-healing / exhausted). Opt out of backups with \`{"tunnel": {"relaysEnabled": false}}\` or \`{"tunnel": {"relayConsent": "never"}}\`.`;
+      // Anchor after the existing tunnelUrl bullet (present in both the
+      // current template and the older variant).
+      const anchors = [
+        '- When a tunnel is running, private view responses include a `tunnelUrl` with auth token for browser-clickable access',
+        '- When a tunnel is running, private view responses include a `tunnelUrl` field for remote access',
+      ];
+      const anchor = anchors.find((a) => content.includes(a));
+      if (anchor) {
+        content = content.replace(anchor, `${anchor}\n${resilienceBullet}`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added tunnel failure-resilience awareness');
+      }
+    }
+
     // Dashboard section
     if (!content.includes('**Dashboard**') && !content.includes('/dashboard')) {
       const section = `

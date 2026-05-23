@@ -2382,6 +2382,17 @@ export interface TunnelConfigType {
   configFile?: string;
   /** Public hostname for named tunnels (e.g., echo.dawn-tunnel.dev) */
   hostname?: string;
+  // ── Tunnel-failure-resilience (spec Part 4) — all optional ─────────
+  /** Consent-offer order for Tier-2 relays. Default ['localtunnel']; 'bore' is opt-in. */
+  relayProviders?: ('localtunnel' | 'bore')[];
+  /** Master switch for Tier-2 relays. Default true (still consent-gated). false = Cloudflare-only. */
+  relaysEnabled?: boolean;
+  /** 'ask' (default) prompts the owner before a relay; 'never' = Cloudflare-only. ('always' is intentionally NOT offered.) */
+  relayConsent?: 'ask' | 'never';
+  /** Consent-prompt timeout in ms. Default 900000 (15 min). */
+  consentTimeoutMs?: number;
+  /** Which Telegram topic carries tunnel status. Default 'dashboard'. */
+  notifyTopic?: 'dashboard' | 'lifeline';
 }
 
 export interface DispatchConfig {

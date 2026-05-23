@@ -8149,10 +8149,23 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // Lifecycle snapshot for the failure-resilience surface (spec Part 8 —
+    // this is THE assertable surface for the event-driven feature). The
+    // route is Bearer-gated by authMiddleware, so callers are owner-level.
+    // lastFailureReason is a classified enum (never a raw/credentialed URL —
+    // spec Part 6); no PIN/token is ever included here.
+    const lc = ctx.tunnel.lifecycleState;
     res.json({
       enabled: true,
       running: ctx.tunnel.isRunning,
       ...ctx.tunnel.state,
+      lifecycle: {
+        state: lc.lastState,
+        activeProvider: lc.activeProvider ?? null,
+        lastFailureReason: lc.episode?.lastFailureReason ?? null,
+        episodeId: lc.episode?.episodeId ?? null,
+        rotationPending: lc.rotationPending,
+      },
     });
   });
 

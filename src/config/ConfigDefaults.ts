@@ -110,6 +110,14 @@ const TYPE_OVERRIDES: Record<string, Record<string, unknown>> = {
     tunnel: {
       enabled: true,
       type: 'quick',
+      // Tunnel-failure-resilience (spec Part 4). Existence-checked deep-merge,
+      // so existing agents pick these up on update without overwriting any
+      // values they've already set.
+      relayProviders: ['localtunnel'],
+      relaysEnabled: true,
+      relayConsent: 'ask',
+      consentTimeoutMs: 900000,
+      notifyTopic: 'dashboard',
     },
   },
   standalone: {

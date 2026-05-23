@@ -4855,6 +4855,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         hostname: config.tunnel?.hostname,
         port: config.port,
         stateDir: config.stateDir,
+        // Tunnel-failure-resilience knobs (spec Part 4).
+        relayProviders: config.tunnel?.relayProviders,
+        relaysEnabled: config.tunnel?.relaysEnabled,
+        relayConsent: config.tunnel?.relayConsent,
+        consentTimeoutMs: config.tunnel?.consentTimeoutMs,
       });
 
       // Wire credential rotation (tunnel-failure-resilience spec Part 6).
