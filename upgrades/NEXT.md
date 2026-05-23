@@ -6,6 +6,29 @@
 
 Audit pass against instar running on Codex agents. Multiple framework-level fixes from codey's shortcomings inventory. NOT YET PUBLISHED — Justin reviews before deploy.
 
+### Item 3 — status doc, no code change shipped
+
+After tracing every codepath the audit named and surfacing the actual failure mode on codey live during the audit, the self-heal infrastructure codey asked for is already in place:
+
+- `NativeModuleHealer.openWithHeal` runs an in-line `npm rebuild --build-from-source` on `NODE_MODULE_VERSION` errors, with per-process attempt cap and HealEvent observability.
+- `ServerSupervisor` preflight runs the same rebuild before spawning the server, and verifies the result.
+- `DegradationReporter` emits `sqlite-runtime-broken` (with both clashing NODE_MODULE_VERSION numbers) on persistent failure.
+- Supervisor restart loop uses exponential backoff + circuit breaker — the "transient rebuild-in-progress vs persistent mismatch" health split codey asked for.
+
+The codey case exercised every path and reached the correct outcome: graceful degradation (sqlite layer off, direct-send paths working, server stayed up). The residual is upstream-dependency: `better-sqlite3@12.10.0` does not compile against Node 25's v8 ABI. That's an operational decision (pin Node back to 22, or upgrade the dep when an upstream-compatible version ships), not something an instar self-heal can perform without operator authority.
+
+Full status documented in `upgrades/side-effects/codex-audit-item-3-sqlite-rebuild-status.md`.
+
+### Items 6 / 7 / 8 — deferred with rationale
+
+Each touches a substantial system and was deferred past the 2026-05-22 autonomous audit window:
+
+- **Item 6 (inbox/outbox directional indexing)**: `src/messaging/MessageStore.ts` has the index files; tightening the directional contract requires a careful refactor of all the existing readers, which is too risky to land in a single autonomous batch.
+- **Item 7 (threadline relay-off ACK feedback)**: would require extending the durable-queue ACK protocol to include "received but not runnable" receipts and threading them back to the sender. New protocol surface; merits its own spec.
+- **Item 8 (lifeline auto-recovery escalation thresholds)**: `StuckInputSentinel` exists; codey asks for "escalate from repeated auto-recovery to hard intervention". Threshold tuning needs telemetry from production agents to size correctly; punting until that data is in hand.
+
+All three are real audit findings worth shipping later; flagging the deferral here so they don't disappear from the backlog.
+
 ### Item 9: framework arg-rendering audit-completeness matrix
 
 codey asked for centralized framework-specific argument rendering with a test matrix for `claude-code` + `codex-cli`. The centralization already exists at `src/core/frameworkSessionLaunch.ts` (`buildInteractiveLaunch` + `buildHeadlessLaunch`, used at every spawn site), and the existing `frameworkSessionLaunch.test.ts` has 38 cases.
