@@ -65,6 +65,25 @@ else
     "http://localhost:${PORT}/telegram/topics/${TOPIC_ID}/messages?limit=30" 2>/dev/null)
 fi
 
+# Layer 2: prepend the topic intent briefing if anything has accumulated.
+# Returns empty body when nothing tracked yet — we silently skip injection.
+# Degrades open: any failure here (server down, route 503'd, network blip)
+# leaves recent-history-only output unchanged.
+TOPIC_BRIEFING=""
+if [ -n "$AUTH_TOKEN" ]; then
+  TOPIC_BRIEFING=$(curl -s --max-time 2 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://localhost:${PORT}/topic-intent/${TOPIC_ID}/briefing" 2>/dev/null)
+else
+  TOPIC_BRIEFING=$(curl -s --max-time 2 \
+    "http://localhost:${PORT}/topic-intent/${TOPIC_ID}/briefing" 2>/dev/null)
+fi
+
+if [ -n "$TOPIC_BRIEFING" ]; then
+  echo "$TOPIC_BRIEFING"
+  echo ""
+fi
+
 # Format and output context with unanswered message detection
 echo "$RECENT_MSGS" | python3 -c "
 import sys, json
