@@ -45,6 +45,7 @@ import path from 'node:path';
 import {
   TunnelLifecycle,
   classifyFailure,
+  generateNonce,
   type PersistedTunnelState,
   type TransitionEvent,
 } from './TunnelLifecycle.js';
@@ -56,6 +57,7 @@ import type {
 } from './TunnelProvider.js';
 import { CloudflareQuickProvider } from './CloudflareQuickProvider.js';
 import { CloudflareNamedProvider } from './CloudflareNamedProvider.js';
+import { LocaltunnelProvider } from './LocaltunnelProvider.js';
 import type { NotifierSink } from './TunnelNotifier.js';
 import { TunnelNotifier } from './TunnelNotifier.js';
 
@@ -131,6 +133,8 @@ const REACHABILITY_TIMEOUT_MS = 8_000;
  * the regression we explicitly need to avoid in the PR chain.
  */
 const POST_EXHAUSTED_RETRY_INTERVAL_MS = 15 * 60_000;
+/** Per-episode consent prompt timeout — matches spec Part 4 default (15 min). */
+const CONSENT_TIMEOUT_MS = 15 * 60_000;
 
 // ── Manager ────────────────────────────────────────────────────────
 
@@ -152,6 +156,19 @@ export class TunnelManager extends EventEmitter {
   private _backoffAttempt = 0;
   private _backoffTimer: ReturnType<typeof setTimeout> | null = null;
   private _postExhaustedTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Pending consent record — populated when the manager enters
+   * `awaiting-consent` and cleared on grant / decline / timeout / stop.
+   * The nonce is the CSPRNG token sent to the owner; matching it on
+   * `grantConsent()` is the security-load-bearing check.
+   */
+  private _pendingConsent: {
+    episodeId: string;
+    provider: TunnelProvider;
+    nonce: string;
+    issuedAt: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   constructor(config: TunnelConfig, injections?: TunnelManagerInjections) {
     super();
@@ -214,6 +231,7 @@ export class TunnelManager extends EventEmitter {
     this._stopped = true;
     this.clearBackoffTimer();
     this.clearPostExhaustedTimer();
+    this.clearPendingConsent();
     this._startPromise = null;
 
     if (this.currentHandle) {
@@ -294,6 +312,8 @@ export class TunnelManager extends EventEmitter {
 
   private buildDefaultPool(config: TunnelConfig): TunnelProvider[] {
     const pool: TunnelProvider[] = [];
+    // Tier-1 (automatic, secure). Cloudflare named first when configured,
+    // then quick as the zero-config default.
     if (config.token || config.configFile) {
       pool.push(new CloudflareNamedProvider({
         token: config.token,
@@ -302,6 +322,13 @@ export class TunnelManager extends EventEmitter {
       }));
     }
     pool.push(new CloudflareQuickProvider({ port: config.port, stateDir: config.stateDir }));
+    // Tier-2 (consent-gated relays). Listed AFTER Tier-1 — the driver
+    // only reaches these after exhausting Tier-1, and only after the
+    // owner explicitly grants consent. LocaltunnelProvider's
+    // isAvailable() returns false when the `localtunnel` npm package
+    // isn't installed, so agents without the dep see this slot
+    // silently skipped — the spec's "opt-in capability" posture.
+    pool.push(new LocaltunnelProvider({ port: config.port }));
     return pool;
   }
 
@@ -385,33 +412,194 @@ export class TunnelManager extends EventEmitter {
   }
 
   private async exhaustedOrBackoff(lastErr: Error | null): Promise<string> {
-    // Matches the legacy semantics: start() rejects after the FIRST
-    // round of provider attempts fails. The backoff retry runs in the
-    // background — the manager keeps trying without blocking the
-    // caller, and emits 'url' when a later attempt succeeds. This
-    // prevents start() from blocking server.ts boot for the full
-    // 25-minute worst-case exponential window. The original failing
-    // E2E (tests/e2e/tunnel-private-view.test.ts) timed out at the
-    // beforeAll 60s budget because the old draft kept retrying inside
-    // start().
+    // start() rejects after the FIRST round of provider attempts
+    // fails (matches the legacy semantics). The backoff retry runs in
+    // the background — the manager keeps trying without blocking the
+    // caller, and emits 'url' when a later attempt succeeds.
+    //
+    // PR 5 addition: BEFORE transitioning to exhausted, check if any
+    // Tier-2 providers are available and the cross-episode consent
+    // cooldown isn't active. If so, transition to `awaiting-consent`
+    // and request consent from the owner. The relay-active path
+    // activates on `grantConsent()`.
+    const candidateTier2 = await this.findAvailableTier2();
+    const cooldownActive = this.lifecycle.isConsentSuppressed();
+
+    if (candidateTier2 && !cooldownActive) {
+      const from = this.lifecycle.state;
+      if (from === 'retrying' || from === 'starting') {
+        if (this.lifecycle.transition(from, 'awaiting-consent', {
+          activeProvider: null,
+          lastFailureReason: classifyFailure(lastErr),
+        })) {
+          this.requestConsent(candidateTier2);
+        }
+      }
+      const err = lastErr ?? new Error('Tier-1 exhausted; awaiting owner consent for backup relay');
+      this.emit('error', err);
+      throw err;
+    }
+
     const from = this.lifecycle.state;
     if (from === 'retrying' || from === 'starting') {
       this.lifecycle.transition(from, 'exhausted', { activeProvider: null });
     }
 
     const err = lastErr ?? new Error('all Tier-1 providers failed');
-
-    // Schedule background retry (bounded exponential ladder, then the
-    // indefinite post-exhausted placeholder once the ladder runs out).
-    // Fire-and-forget; if a later attempt succeeds, the 'url' event
-    // fires and downstream subscribers (notifier, dashboard
-    // broadcaster, log line) catch up.
     if (this._autoReconnect && !this._stopped) {
       this.scheduleBackgroundRetry();
     }
-
     this.emit('error', err);
     throw err;
+  }
+
+  /** First Tier-2 provider that reports available, or null. */
+  private async findAvailableTier2(): Promise<TunnelProvider | null> {
+    for (const p of this.providers) {
+      if (p.tier !== 2) continue;
+      const avail = await p.isAvailable().catch(() => false);
+      if (avail) return p;
+    }
+    return null;
+  }
+
+  /**
+   * Internal — called after the lifecycle transitions to
+   * `awaiting-consent`. Generates the one-time nonce, stores the
+   * pending consent record, and arms the timeout.
+   */
+  private requestConsent(provider: TunnelProvider): void {
+    this.clearPendingConsent();
+    const episode = this.lifecycle.episode;
+    if (!episode) return;
+    const nonce = generateNonce();
+    const timer = setTimeout(() => {
+      this.recordConsentDecline(nonce, 'timeout');
+    }, CONSENT_TIMEOUT_MS);
+    this._pendingConsent = {
+      episodeId: episode.episodeId,
+      provider,
+      nonce,
+      issuedAt: Date.now(),
+      timer,
+    };
+  }
+
+  private clearPendingConsent(): void {
+    if (this._pendingConsent) {
+      clearTimeout(this._pendingConsent.timer);
+      this._pendingConsent = null;
+    }
+  }
+
+  /**
+   * Public — called by the consent UX layer (Telegram callback handler
+   * in PR 6) after the owner approves. Validates the nonce matches the
+   * pending consent record, starts the Tier-2 provider, and transitions
+   * to `relay-active`. Returns true on success, false if the nonce
+   * didn't match (replay, race, stale click) or the state moved beyond
+   * awaiting-consent.
+   */
+  async grantConsent(nonce: string): Promise<boolean> {
+    if (!this._pendingConsent) return false;
+    if (this._pendingConsent.nonce !== nonce) return false;
+    if (this.lifecycle.state !== 'awaiting-consent') {
+      this.clearPendingConsent();
+      return false;
+    }
+    const { provider, episodeId } = this._pendingConsent;
+    if (this.lifecycle.episode?.episodeId !== episodeId) {
+      this.clearPendingConsent();
+      return false;
+    }
+    // Single-use: clear BEFORE starting so a replay loses cleanly.
+    this.clearPendingConsent();
+
+    try {
+      const handle = await provider.start(this.config.port);
+      const reachable = await this.probeReachability(handle.url).catch(() => false);
+      if (!reachable) {
+        try { await handle.stop(); } catch { /* best effort */ }
+        this.lifecycle.recordAttempt(provider.name, 'reachability-failed');
+        this.lifecycle.recordConsentRefusal();
+        const from = this.lifecycle.state;
+        if (from === 'awaiting-consent') {
+          this.lifecycle.transition('awaiting-consent', 'exhausted', { activeProvider: null });
+        }
+        if (this._autoReconnect && !this._stopped) {
+          this.scheduleBackgroundRetry();
+        }
+        return false;
+      }
+
+      this.currentHandle = handle;
+      this.currentProviderName = provider.name;
+      this._legacyState.url = handle.url;
+      this._legacyState.startedAt = new Date().toISOString();
+      // Set rotation-pending — entering relay-active is the persisted
+      // marker that says "credentials must rotate when this episode
+      // ends" (per spec Part 6 / verification finding V1).
+      this.lifecycle.setRotationPending(true);
+      this.lifecycle.transition('awaiting-consent', 'relay-active', {
+        activeProvider: provider.name,
+        lastFailureReason: null,
+        rotationPending: true,
+      });
+      this.persist();
+      this.emit('url', handle.url);
+      return true;
+    } catch (err) {
+      this.lifecycle.recordAttempt(provider.name, classifyFailure(err));
+      this.lifecycle.recordConsentRefusal();
+      const from = this.lifecycle.state;
+      if (from === 'awaiting-consent') {
+        this.lifecycle.transition('awaiting-consent', 'exhausted', { activeProvider: null });
+      }
+      if (this._autoReconnect && !this._stopped) {
+        this.scheduleBackgroundRetry();
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Public — called by the consent UX layer when the owner declines.
+   * Validates the nonce, applies the cross-episode cooldown, and
+   * transitions to `exhausted` + background retry.
+   */
+  declineConsent(nonce: string): boolean {
+    return this.recordConsentDecline(nonce, 'decline');
+  }
+
+  private recordConsentDecline(nonce: string, _reason: 'decline' | 'timeout'): boolean {
+    if (!this._pendingConsent) return false;
+    if (this._pendingConsent.nonce !== nonce) return false;
+    if (this.lifecycle.state !== 'awaiting-consent') {
+      this.clearPendingConsent();
+      return false;
+    }
+    this.clearPendingConsent();
+    this.lifecycle.recordConsentRefusal();
+    this.lifecycle.transition('awaiting-consent', 'exhausted', { activeProvider: null });
+    if (this._autoReconnect && !this._stopped) {
+      this.scheduleBackgroundRetry();
+    }
+    return true;
+  }
+
+  /**
+   * Public — the active pending-consent record (or null). Used by the
+   * consent UX layer (PR 6) to know what nonce to embed in the inline
+   * button.
+   */
+  get pendingConsent(): { episodeId: string; provider: ProviderName; nonce: string; issuedAt: number } | null {
+    if (!this._pendingConsent) return null;
+    return {
+      episodeId: this._pendingConsent.episodeId,
+      provider: this._pendingConsent.provider.name,
+      nonce: this._pendingConsent.nonce,
+      issuedAt: this._pendingConsent.issuedAt,
+    };
   }
 
   /**
