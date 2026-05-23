@@ -2419,7 +2419,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     // backwards-compat; INSTAR_FRAMEWORK=codex-cli routes through Codex.
     try {
       const { buildIntelligenceProvider, frameworkFromEnv } = await import('../core/intelligenceProviderFactory.js');
-      const framework = frameworkFromEnv() ?? 'claude-code';
+      // _defaultFramework is what the Telegram spawn path uses for any topic
+      // without an explicit per-topic override (resolveTopicFramework returns
+      // it). It MUST come from the agent's resolved runtime framework
+      // (config.sessions.framework — derived at load from
+      // sessions.framework | enabledFrameworks[0] | INSTAR_FRAMEWORK), NOT from
+      // INSTAR_FRAMEWORK alone. Before this fix it was `frameworkFromEnv() ??
+      // 'claude-code'`, so a codex-cli-only agent that didn't set the
+      // INSTAR_FRAMEWORK env var (the common case — the wizard sets
+      // enabledFrameworks, not the env) silently defaulted to claude-code and
+      // spawned a CLAUDE session on every Telegram message. The fresh-spawn
+      // path (spawnInteractiveSession's internal resolution) already read
+      // config.framework correctly; this aligns the Telegram path with it so
+      // both doors agree. See specs/dev-infrastructure/framework-spawn-portability.md.
+      const framework = config.sessions?.framework ?? frameworkFromEnv() ?? 'claude-code';
       resolvedFramework = framework;
       _defaultFramework = framework as 'claude-code' | 'codex-cli';
       _topicFrameworks = (config as { topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'> }).topicFrameworks ?? {};
