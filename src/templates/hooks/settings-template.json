@@ -33,6 +33,11 @@
           },
           {
             "type": "command",
+            "command": "node .instar/hooks/instar/slopcheck-guard.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
             "command": "node .instar/hooks/instar/external-communication-guard.js",
             "timeout": 5000
           }

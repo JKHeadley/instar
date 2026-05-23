@@ -1,33 +1,29 @@
 # Upgrade Guide — vNEXT
 
-<!-- bump: minor -->
+<!-- bump: patch -->
 
 ## What Changed
 
-**feat(skill): /verify-claim — 4-tier verification protocol (GSD cherry-pick).**
+**feat(hooks): slopcheck-guard — package-legitimacy check on installs (GSD cherry-pick).**
 
-New user-invocable skill that runs goal-backward verification of a claim that something is built/wired/working. Cherry-picked from the GSD verifier methodology — the spike's highest-leverage finding.
+New PreToolUse hook that catches install commands (npm/pnpm/yarn/pip/cargo) for packages not already known to the project, and nudges the agent to confirm the package is legitimate before installing. Defends against slopsquatted and hallucinated package names.
 
-Four levels, run in order, stop at the first failure:
-- EXISTENCE — does the artifact exist?
-- SUBSTANTIVE — is it real, not a stub?
-- WIRED — is it imported AND invoked from the real path? (the level green tests most often skip — a component can compile + pass unit tests yet never be instantiated in the boot path)
-- DATA-FLOW — does real data actually flow through it (not 503/empty/hardcoded)?
+When the staged Bash command is a package install, the hook extracts the package names, checks each against the project's manifests and lockfiles (package.json, package-lock.json, requirements.txt, Cargo.toml, etc.), and for any unfamiliar package injects a confirmation checklist (spelling, registry existence, deliberate-vs-hallucinated, established-alternative).
 
-Reports a status: VERIFIED / HOLLOW / ORPHANED / STUB / MISSING. Use before any "shipped" / "wired in" / "running" / "it works" message — directly addresses the "verify a component is actually wired" lesson (PR #334 shipped sentinels as dead code with a false wired-into-startup claim).
+Signal-only — never blocks. Borrowed from gsd-executor's Rule 3 exclusion (package installs are NOT auto-fixable precisely because a failed/typo'd install may be a slopsquat).
 
 ## Evidence
 
-6 unit tests, all green: installs SKILL.md, valid frontmatter, user-invocable, documents all four levels + the full status taxonomy, idempotent (does not overwrite a user-customized copy). TypeScript clean.
+10 unit tests, all green: non-install commands pass silently, unfamiliar npm install fires the nudge, packages in package.json/lockfile are familiar, version specifiers stripped, all five package managers recognized, multi-package commands flag only unfamiliar ones, flags stripped, malformed input never blocks, signal-only (never emits block). TypeScript clean.
 
-Migration parity: adding a new skill needs no migration — installBuiltinSkills() runs on every update and is non-destructive (writes missing SKILL.md only). Verified idempotency in the test.
+Migration parity verified: new agents get it via settings-template.json; existing agents get it via an explicit ensure-block in `migrateSettings()` (added the Bash-matcher slopcheck entry if absent). Hook script always-overwritten by `migrateHooks()`. Registered in builtin-manifest.json + known-builtin-hooks list.
 
-Side-effects review: `upgrades/side-effects/verify-claim-skill.md`.
+Side-effects review: `upgrades/side-effects/slopcheck-guard.md`.
 
 ## What to Tell Your User
 
-You have a new /verify-claim skill. When you want to be sure something is actually done — not just compiles, not just passes unit tests, but actually wired into the running system and carrying real data — invoke /verify-claim. It runs a four-step check and tells you plainly whether the thing is VERIFIED or only half-done.
+Nothing user-visible. The hook fires silently and only the agent sees the nudge, only when installing an unfamiliar package. Existing agents pick it up on next `instar upgrade`.
 
 ## Summary of New Capabilities
 
-One new user-invocable skill. The 4-tier protocol becomes a callable primitive any agent can run before claiming completion, and /build Phase 3 VERIFY can invoke it per must-have. Framework-agnostic (pure prompt skill, no code).
+One new PreToolUse hook on the Bash matcher. Catches the supply-chain risk that a hallucinated or typosquatted package name slips into an install. Framework-agnostic (pure Node, no Claude/Codex specifics).

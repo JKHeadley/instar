@@ -1376,6 +1376,13 @@ export class PostUpdateMigrator {
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'slopcheck-guard.js'), this.getSlopcheckGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/slopcheck-guard.js (package-legitimacy check on installs)');
+    } catch (err) {
+      result.errors.push(`slopcheck-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'post-action-reflection.js'), this.getPostActionReflectionHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/post-action-reflection.js (evolution awareness)');
     } catch (err) {
@@ -1540,6 +1547,7 @@ export class PostUpdateMigrator {
     const builtinHooks = [
       'session-start.sh', 'dangerous-command-guard.sh', 'grounding-before-messaging.sh',
       'compaction-recovery.sh', 'external-operation-gate.js', 'deferral-detector.js',
+      'slopcheck-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
@@ -3031,6 +3039,38 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     }
 
+    // Ensure PreToolUse Bash slopcheck-guard hook exists (cherry-pick 2026-05-23).
+    // Existing agents only get new Bash-matcher hooks through an explicit ensure
+    // block here — there is no wholesale settings-template refresh on migration.
+    {
+      const bashEntry = preToolUse.find(e => e.matcher === 'Bash') as
+        { matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> } | undefined;
+      const hasSlopcheck = bashEntry?.hooks?.some(h => h.command?.includes('slopcheck-guard'));
+      if (bashEntry && !hasSlopcheck) {
+        bashEntry.hooks = bashEntry.hooks ?? [];
+        bashEntry.hooks.push({
+          type: 'command',
+          command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js',
+          timeout: 5000,
+        });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added PreToolUse slopcheck-guard hook');
+      } else if (!bashEntry) {
+        // No Bash matcher at all — create one with just slopcheck (rare; most
+        // agents already have a Bash matcher with dangerous-command-guard).
+        preToolUse.push({
+          matcher: 'Bash',
+          hooks: [{
+            type: 'command',
+            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js',
+            timeout: 5000,
+          }] as never,
+        });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: created PreToolUse Bash matcher with slopcheck-guard');
+      }
+    }
+
     // Ensure PostToolUse skill-usage-telemetry hook exists
     {
       const postToolUse = (hooks.PostToolUse || []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -3652,12 +3692,13 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
+  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
       case 'deferral-detector': return this.getDeferralDetectorHook();
+      case 'slopcheck-guard': return this.getSlopcheckGuardHook();
       case 'post-action-reflection': return this.getPostActionReflectionHook();
       case 'external-communication-guard': return this.getExternalCommunicationGuardHook();
       case 'scope-coherence-collector': return this.getScopeCoherenceCollectorHook();
@@ -4796,6 +4837,124 @@ process.stdin.on('end', () => {
 
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
   } catch { /* don't break on errors */ }
+  process.exit(0);
+});
+`;
+  }
+
+  private getSlopcheckGuardHook(): string {
+    return `#!/usr/bin/env node
+// Slopcheck guard — package-legitimacy check on install commands.
+// PreToolUse hook for Bash. When the command is a package install
+// (npm/pnpm/yarn/pip/cargo), it extracts the package names and checks
+// whether each is already known to the project (present in a lockfile
+// or manifest). Unfamiliar packages get a confirmation nudge — does NOT
+// block, just surfaces the legitimacy question before a slopsquatted or
+// hallucinated package gets installed.
+//
+// Cherry-picked into Instar 2026-05-23 from the GSD-Instar integration
+// spike (gsd-executor Rule 3 exclusion: package installs are NOT
+// auto-fixable because a failed/typo'd install may be a slopsquat).
+// Signal-only — decision: approve + additionalContext. The agent decides.
+
+const fs = require('fs');
+const path = require('path');
+
+// Install-command patterns → capture the args portion after the verb.
+const INSTALL_PATTERNS = [
+  { re: /\\bnpm\\s+(?:i|install|add)\\s+([^&|;]+)/i, mgr: 'npm' },
+  { re: /\\bpnpm\\s+(?:i|install|add)\\s+([^&|;]+)/i, mgr: 'pnpm' },
+  { re: /\\byarn\\s+add\\s+([^&|;]+)/i, mgr: 'yarn' },
+  { re: /\\bpip3?\\s+install\\s+([^&|;]+)/i, mgr: 'pip' },
+  { re: /\\bcargo\\s+add\\s+([^&|;]+)/i, mgr: 'cargo' },
+];
+
+// Flags to strip when extracting package names.
+const FLAG_RE = /^-/;
+
+function parsePackages(argStr) {
+  return argStr
+    .trim()
+    .split(/\\s+/)
+    .filter(tok => tok && !FLAG_RE.test(tok))
+    // Strip version specifiers: pkg@1.2.3, pkg==1.2.3, pkg~=1.0
+    .map(tok => tok.replace(/[@=~<>!].*$/, '').replace(/\\[.*$/, ''))
+    .filter(Boolean);
+}
+
+// Returns the set of package names already known to the project from
+// any manifest/lockfile present in the project dir.
+function knownPackages(projectDir) {
+  const known = new Set();
+  const add = (name) => { if (name && typeof name === 'string') known.add(name.toLowerCase()); };
+
+  // package.json deps + devDeps + lock
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
+    for (const k of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+      if (pkg[k]) Object.keys(pkg[k]).forEach(add);
+    }
+  } catch { /* no package.json */ }
+  // package-lock.json — names appear as keys; cheap substring presence check via raw read
+  let lockRaw = '';
+  for (const lf of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'requirements.txt', 'Cargo.toml', 'Cargo.lock', 'Pipfile', 'pyproject.toml']) {
+    try { lockRaw += '\\n' + fs.readFileSync(path.join(projectDir, lf), 'utf-8'); } catch { /* absent */ }
+  }
+  return { known, lockRaw: lockRaw.toLowerCase() };
+}
+
+let data = '';
+process.stdin.on('data', chunk => data += chunk);
+process.stdin.on('end', () => {
+  try {
+    const input = JSON.parse(data);
+    if (input.tool_name !== 'Bash') process.exit(0);
+    const command = (input.tool_input || {}).command || '';
+    if (!command) process.exit(0);
+
+    let matched = null;
+    for (const p of INSTALL_PATTERNS) {
+      const m = command.match(p.re);
+      if (m) { matched = { mgr: p.mgr, args: m[1] }; break; }
+    }
+    if (!matched) process.exit(0);
+
+    const pkgs = parsePackages(matched.args);
+    if (pkgs.length === 0) process.exit(0);
+
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const { known, lockRaw } = knownPackages(projectDir);
+
+    // A package is "familiar" if it's in the manifest deps OR appears as a
+    // token in any lockfile (covers transitive + already-installed).
+    const unfamiliar = pkgs.filter(pkg => {
+      const low = pkg.toLowerCase();
+      if (known.has(low)) return false;
+      // Word-boundary-ish presence in lockfiles (quoted or pathed)
+      if (lockRaw.includes('"' + low + '"') || lockRaw.includes('/' + low) ||
+          lockRaw.includes(low + '@') || lockRaw.includes(low + ' ') || lockRaw.includes(low + '==')) return false;
+      return true;
+    });
+
+    if (unfamiliar.length === 0) process.exit(0);
+
+    const checklist = [
+      'SLOPCHECK — installing package(s) not already known to this project: ' + unfamiliar.join(', '),
+      '',
+      'Before installing an unfamiliar package, confirm it is legitimate (not a',
+      'slopsquat or a hallucinated name):',
+      '',
+      '1. Is the spelling exactly right? Typosquats differ by one or two characters.',
+      '2. Does the package actually exist on its registry, with real download counts',
+      '   and a credible publisher? (npmjs.com / pypi.org / crates.io)',
+      '3. Did YOU choose this package deliberately, or did it come from an LLM',
+      '   suggestion that might be hallucinated?',
+      '4. Is there a more-established alternative you already trust?',
+      '',
+      'This is a nudge, not a block. If the package is legitimate, proceed.',
+    ];
+    process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
+  } catch { /* never block on errors */ }
   process.exit(0);
 });
 `;
