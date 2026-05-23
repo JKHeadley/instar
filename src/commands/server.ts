@@ -4771,6 +4771,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         autoApply: config.updates?.autoApply ?? true,
         autoRestart: true,
         restartWindow: config.updates?.restartWindow ?? null,
+        restartCascadeDampenerWindowMs: config.updates?.restartCascadeDampenerWindowMs,
       },
       telegram,
       liveConfig,

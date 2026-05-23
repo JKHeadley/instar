@@ -68,6 +68,25 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   prGate: {
     phase: 'off' as const,
   },
+  // Restart-cascade dampener — minimum ms between two update-driven restart
+  // requests. AutoUpdater batches a new restart that lands within this window
+  // of the previous one into a single deferred restart, so two updates in
+  // quick succession don't produce two user-visible restart cycles. Set to 0
+  // to disable. See src/core/RestartCascadeDampener.ts.
+  updates: {
+    restartCascadeDampenerWindowMs: 15 * 60_000,
+  },
+  // Lifeline drift auto-promoter — when the server's version handshake
+  // reports the lifeline is significantly behind, the lifeline self-restarts
+  // at the next clean window to catch up. See src/lifeline/LifelineDriftPromoter.ts.
+  lifeline: {
+    driftPromoter: {
+      enabled: true,
+      threshold: 20,
+      pollIntervalMs: 30_000,
+      maxDeferMs: 60 * 60_000,
+    },
+  },
 };
 
 /**

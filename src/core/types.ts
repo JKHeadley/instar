@@ -2403,6 +2403,11 @@ export interface UpdateConfig {
   /** Preferred restart window (24h local time). Restarts deferred until this window.
    *  Example: { start: "02:00", end: "05:00" }. Manual triggers bypass the window. */
   restartWindow?: { start: string; end: string } | null;
+  /** Minimum ms between two update-driven restart requests. AutoUpdater
+   *  batches new restart requests that land within this window of the
+   *  previous one into a single deferred restart. Default 900_000 (15 min);
+   *  0 disables. See src/core/RestartCascadeDampener.ts. */
+  restartCascadeDampenerWindowMs?: number;
 }
 
 export interface MessagingAdapterConfig {

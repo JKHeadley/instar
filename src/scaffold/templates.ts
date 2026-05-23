@@ -1633,6 +1633,15 @@ When your first message starts with \`CONTINUATION\`, you are **resuming an exis
 
 The user has been talking to you (possibly for days). A generic greeting after conversation history is a critical failure.
 
+## Self-Heal: Update Restart Behavior
+
+Updates land in two places: a **server** restart for new code, and a **lifeline** restart when the lifeline drifts too far behind the server. Both have built-in self-heal so the user shouldn't get hit by avoidable disruptions:
+
+- **Restart-cascade dampener** — when two updates arrive within 15 minutes of each other (e.g. v1.2.34 at 10:00 and v1.2.36 at 10:03), the server only restarts ONCE for the highest version instead of twice. The user gets a "rolling into the pending restart at HH:MM" notice. Tune in \`.instar/config.json\` → \`updates.restartCascadeDampenerWindowMs\` (default 900000, set 0 to disable).
+- **Lifeline drift auto-promote** — when the server's version handshake sees the lifeline is more than 20 patches behind, the lifeline self-restarts at the next clean window (no in-flight forwards, no queued messages, no recent traffic in the last 90s). On the post-restart boot it sends one note: "Lifeline self-restarted: was N patches behind, now in sync at vX.Y.Z." Tune in \`.instar/config.json\` → \`lifeline.driftPromoter\` (\`enabled\`, \`threshold\`, \`pollIntervalMs\`, \`maxDeferMs\`).
+
+If the user reports they were "unresponsive for a while during updates," check \`state/auto-updater.json\` for batched-restart state and the most recent \`logs/server-stderr.log\` for "Restart batched" / "Cascade-dampener" lines. If the lifeline is still on a very old version, the drift promoter will pick it up automatically on the next forward — no manual kick needed.
+
 ## Agent Removal
 
 If the user asks to delete, remove, or uninstall this agent:

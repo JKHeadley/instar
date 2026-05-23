@@ -59,6 +59,7 @@ import {
 import { writeStartupMarker } from './startupMarker.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
+import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
 import {
   LifelineHealthWatchdog,
   DEFAULT_WATCHDOG_THRESHOLDS,
@@ -464,6 +465,10 @@ export class TelegramLifeline {
     // the orchestrator emits signals and logs but skips process.exit.
     this.installOrchestratorAndWatchdog();
 
+    // If a previous boot self-restarted due to patch drift, drain the
+    // marker file and send the one-shot user-facing notice.
+    this.consumeDriftRestartPendingMarker();
+
     // Replay any messages queued from previous lifeline runs
     if (this.queue.length > 0) {
       console.log(`  ${this.queue.length} queued messages from previous run`);
@@ -606,6 +611,136 @@ export class TelegramLifeline {
       },
       autoStart: process.env.NODE_ENV !== 'test',
     });
+
+    // Lifeline drift auto-promoter — installed alongside the orchestrator so
+    // the same restart pathway is used. The promoter only activates when the
+    // server's handshake surfaces drift via the X-Instar-Lifeline-Patch-Drift
+    // header; until then it's idle.
+    const driftConfig = this.loadDriftPromoterConfig();
+    if (driftConfig.enabled) {
+      this.driftPromoter = new LifelineDriftPromoter(
+        {
+          isCleanWindow: () => this.isCleanRestartWindow(),
+          requestSelfRestart: async (reason: string) => {
+            if (!this.orchestrator) {
+              console.warn(`[Lifeline] DriftPromoter wanted to restart (reason=${reason}) but no orchestrator installed`);
+              return;
+            }
+            await this.orchestrator.requestRestart({
+              reason,
+              bucket: 'versionSkew',
+              context: { source: 'drift-auto-promote' },
+            });
+          },
+          recordPendingNotice: (info) => this.writeDriftRestartPendingMarker(info),
+          log: (msg: string) => console.log(`[Lifeline][DriftPromoter] ${msg}`),
+        },
+        driftConfig,
+      );
+    }
+  }
+
+  /**
+   * Read drift-promoter config from .instar/config.json, falling back to
+   * defaults. Per the Migration Parity Standard (CLAUDE.md), defaults are
+   * also installed into existing agents' config files by PostUpdateMigrator.
+   */
+  private loadDriftPromoterConfig(): { enabled: boolean; threshold: number; pollIntervalMs: number; maxDeferMs: number } {
+    const raw = (this.projectConfig as unknown as {
+      lifeline?: { driftPromoter?: Record<string, unknown> };
+    }).lifeline?.driftPromoter ?? {};
+    const num = (v: unknown, fallback: number): number =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback;
+    return {
+      enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
+      threshold: num(raw.threshold, 20),
+      pollIntervalMs: num(raw.pollIntervalMs, 30_000),
+      maxDeferMs: typeof raw.maxDeferMs === 'number' ? raw.maxDeferMs : 60 * 60_000,
+    };
+  }
+
+  /**
+   * Clean-window predicate for the drift promoter:
+   *   - no in-flight forwards (`consecutiveForwardFailures` reflects current
+   *     in-flight state; we also require `lastForwardSuccessAt` to be at
+   *     least 90s old so we don't restart mid-conversation)
+   *   - no queued messages waiting to flush
+   *
+   * Conservative bias: when in doubt, defer rather than restart.
+   */
+  private isCleanRestartWindow(): boolean {
+    if (this.consecutiveForwardFailures > 0) return false;
+    if (this.queue.peek().length > 0) return false;
+    if (this.lastForwardSuccessAt > 0) {
+      const sinceLastForward = Date.now() - this.lastForwardSuccessAt;
+      if (sinceLastForward < 90_000) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Write a marker file the post-restart lifeline boot will read to send a
+   * one-shot user-facing note. Atomic write via rename so the marker can't
+   * exist in a partial state.
+   */
+  private writeDriftRestartPendingMarker(info: { observedDiff: number; observedAt: string; reason: string }): void {
+    const filePath = path.join(this.projectConfig.stateDir, DRIFT_RESTART_PENDING_NOTICE_FILE);
+    const payload = {
+      observedDiff: info.observedDiff,
+      observedAt: info.observedAt,
+      reason: info.reason,
+      previousVersion: this.lifelineVersion,
+      writtenAt: new Date().toISOString(),
+    };
+    try {
+      const tmp = `${filePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(payload, null, 2));
+      fs.renameSync(tmp, filePath);
+    } catch (err) {
+      console.error(`[Lifeline] Failed to write drift-restart marker: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * On boot, check for a drift-restart-pending marker. If present, send the
+   * post-restart user notice and delete the marker. Idempotent: a corrupt or
+   * missing file is silently treated as "no pending notice."
+   */
+  private consumeDriftRestartPendingMarker(): void {
+    const filePath = path.join(this.projectConfig.stateDir, DRIFT_RESTART_PENDING_NOTICE_FILE);
+    if (!fs.existsSync(filePath)) return;
+    let payload: { observedDiff?: number; previousVersion?: string; reason?: string } | null = null;
+    try {
+      payload = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch {
+      // Corrupt — drop the file and move on.
+    }
+    try { SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'TelegramLifeline.consumeDriftRestartPendingMarker' }); } catch { /* best-effort */ }
+    if (!payload || typeof payload.observedDiff !== 'number') return;
+    const topicId = this.lifelineTopicId ?? 1;
+    const prev = typeof payload.previousVersion === 'string' ? payload.previousVersion : 'an older version';
+    void this.sendToTopic(
+      topicId,
+      `Lifeline self-restarted: was ${payload.observedDiff} patches behind the server (was on v${prev}, now on v${this.lifelineVersion}). ` +
+      `This was an automatic catch-up — no action needed.`,
+    ).catch(() => { /* notice is best-effort; never block boot */ });
+  }
+
+  /**
+   * Observe the patch-drift header on a successful forward response and
+   * forward the signal to the drift promoter. Called from forwardToServer.
+   * Never throws.
+   */
+  private observeForwardResponseDriftHeader(response: Response): void {
+    if (!this.driftPromoter) return;
+    try {
+      const headerVal = response.headers.get('X-Instar-Lifeline-Patch-Drift');
+      if (headerVal === null) return;
+      const diff = parseInt(headerVal, 10);
+      if (Number.isFinite(diff)) this.driftPromoter.noteDrift(diff);
+    } catch {
+      // never let drift handling crash a forward
+    }
   }
 
   /** Extract oldest queue item's enqueue timestamp as ms, if any. */
@@ -1195,7 +1330,10 @@ export class TelegramLifeline {
             signal: controller.signal,
           }
         );
-        if (response.ok) return true;
+        if (response.ok) {
+          this.observeForwardResponseDriftHeader(response);
+          return true;
+        }
         if (response.status === 426) {
           const body = (await response.json().catch(() => ({}))) as VersionSkewBody;
           throw new ForwardVersionSkewError(426, body);
@@ -1376,6 +1514,7 @@ export class TelegramLifeline {
   private versionSkewAlertSentAt = 0;
 
   private orchestrator: RestartOrchestrator | null = null;
+  private driftPromoter: LifelineDriftPromoter | null = null;
   private watchdog: LifelineHealthWatchdog | null = null;
 
   // ── Lifeline Commands ─────────────────────────────────────

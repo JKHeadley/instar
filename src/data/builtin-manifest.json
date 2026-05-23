@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-05-21T16:30:45.675Z",
-  "instarVersion": "1.2.4",
+  "generatedAt": "2026-05-23T04:27:57.874Z",
+  "instarVersion": "1.2.46",
   "entryCount": 191,
   "entries": {
     "hook:session-start": {
@@ -11,7 +11,7 @@
       "domain": "identity",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/session-start.sh",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:dangerous-command-guard": {
@@ -20,7 +20,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/dangerous-command-guard.sh",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:grounding-before-messaging": {
@@ -29,7 +29,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/grounding-before-messaging.sh",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:compaction-recovery": {
@@ -38,7 +38,7 @@
       "domain": "identity",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/compaction-recovery.sh",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:external-operation-gate": {
@@ -47,7 +47,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/external-operation-gate.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:deferral-detector": {
@@ -56,17 +56,8 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/deferral-detector.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
-    },
-    "hook:slopcheck-guard": {
-      "id": "hook:slopcheck-guard",
-      "type": "hook",
-      "domain": "safety",
-      "sourcePath": "src/core/PostUpdateMigrator.ts",
-      "installedPath": ".instar/hooks/instar/slopcheck-guard.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
-      "since": "2026-05-23"
     },
     "hook:post-action-reflection": {
       "id": "hook:post-action-reflection",
@@ -74,7 +65,7 @@
       "domain": "evolution",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/post-action-reflection.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:external-communication-guard": {
@@ -83,7 +74,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/external-communication-guard.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:scope-coherence-collector": {
@@ -92,7 +83,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/scope-coherence-collector.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:scope-coherence-checkpoint": {
@@ -101,7 +92,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/scope-coherence-checkpoint.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:free-text-guard": {
@@ -110,7 +101,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/free-text-guard.sh",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:claim-intercept": {
@@ -119,7 +110,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/claim-intercept.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:claim-intercept-response": {
@@ -128,7 +119,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/claim-intercept-response.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "hook:auto-approve-permissions": {
@@ -137,7 +128,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/auto-approve-permissions.js",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "job:health-check": {
@@ -369,7 +360,7 @@
       "type": "skill",
       "domain": "skills",
       "sourcePath": ".claude/skills/build/skill.md",
-      "contentHash": "5b3557fa3662cf0c7b7bab85a252cc2e567b3fc64a04a92d430374ef1f264ca6",
+      "contentHash": "bdd16b784c3482372d442ff5986b271213f3d2a705784c7dbbd4345f217be2b2",
       "since": "2025-01-01"
     },
     "skill:instar-project": {
@@ -401,7 +392,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:agents": {
@@ -409,7 +400,7 @@
       "type": "route-group",
       "domain": "sessions",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:backups": {
@@ -417,7 +408,7 @@
       "type": "route-group",
       "domain": "operations",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:git": {
@@ -425,7 +416,7 @@
       "type": "route-group",
       "domain": "coordination",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:memory": {
@@ -433,7 +424,7 @@
       "type": "route-group",
       "domain": "memory",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:semantic": {
@@ -441,7 +432,7 @@
       "type": "route-group",
       "domain": "memory",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:status": {
@@ -449,7 +440,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:capabilities": {
@@ -457,7 +448,7 @@
       "type": "route-group",
       "domain": "mapping",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:project-map": {
@@ -465,7 +456,7 @@
       "type": "route-group",
       "domain": "mapping",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:coherence": {
@@ -473,7 +464,7 @@
       "type": "route-group",
       "domain": "coherence",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:topic-bindings": {
@@ -481,7 +472,7 @@
       "type": "route-group",
       "domain": "sessions",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:context": {
@@ -489,7 +480,7 @@
       "type": "route-group",
       "domain": "context",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:scope-coherence": {
@@ -497,7 +488,7 @@
       "type": "route-group",
       "domain": "coherence",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:canonical-state": {
@@ -505,7 +496,7 @@
       "type": "route-group",
       "domain": "state",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:ci": {
@@ -513,7 +504,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:sessions": {
@@ -521,7 +512,7 @@
       "type": "route-group",
       "domain": "sessions",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:jobs": {
@@ -529,7 +520,7 @@
       "type": "route-group",
       "domain": "scheduling",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:skip-ledger": {
@@ -537,7 +528,7 @@
       "type": "route-group",
       "domain": "scheduling",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:telegram": {
@@ -545,7 +536,7 @@
       "type": "route-group",
       "domain": "communication",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:attention": {
@@ -553,7 +544,7 @@
       "type": "route-group",
       "domain": "communication",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:relationships": {
@@ -561,7 +552,7 @@
       "type": "route-group",
       "domain": "relationships",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:feedback": {
@@ -569,7 +560,7 @@
       "type": "route-group",
       "domain": "feedback",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:updates": {
@@ -577,7 +568,7 @@
       "type": "route-group",
       "domain": "updates",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:dispatches": {
@@ -585,7 +576,7 @@
       "type": "route-group",
       "domain": "dispatches",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:quota": {
@@ -593,7 +584,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:publishing": {
@@ -601,7 +592,7 @@
       "type": "route-group",
       "domain": "publishing",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:private-views": {
@@ -609,7 +600,7 @@
       "type": "route-group",
       "domain": "publishing",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:tunnel": {
@@ -617,7 +608,7 @@
       "type": "route-group",
       "domain": "networking",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:events": {
@@ -625,7 +616,7 @@
       "type": "route-group",
       "domain": "networking",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:evolution": {
@@ -633,7 +624,7 @@
       "type": "route-group",
       "domain": "evolution",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:watchdog": {
@@ -641,7 +632,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:topic-memory": {
@@ -649,7 +640,7 @@
       "type": "route-group",
       "domain": "memory",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:state-sync": {
@@ -657,7 +648,7 @@
       "type": "route-group",
       "domain": "coordination",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:intent": {
@@ -665,7 +656,7 @@
       "type": "route-group",
       "domain": "intent",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:triage": {
@@ -673,7 +664,7 @@
       "type": "route-group",
       "domain": "safety",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:operations": {
@@ -681,7 +672,7 @@
       "type": "route-group",
       "domain": "safety",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:sentinel": {
@@ -689,7 +680,7 @@
       "type": "route-group",
       "domain": "safety",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:trust": {
@@ -697,7 +688,7 @@
       "type": "route-group",
       "domain": "safety",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:monitoring": {
@@ -705,7 +696,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:commitments": {
@@ -713,7 +704,7 @@
       "type": "route-group",
       "domain": "commitments",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:episodes": {
@@ -721,7 +712,7 @@
       "type": "route-group",
       "domain": "memory",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:messages": {
@@ -729,7 +720,7 @@
       "type": "route-group",
       "domain": "coordination",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:system-reviews": {
@@ -737,7 +728,7 @@
       "type": "route-group",
       "domain": "monitoring",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "route-group:machine-mesh": {
@@ -753,7 +744,7 @@
       "type": "route-group",
       "domain": "security",
       "sourcePath": "src/server/routes.ts",
-      "contentHash": "909be5f4c0f174f688356cc66c804b363e61b118a7a4e754a3d5bc1474c8839b",
+      "contentHash": "7102c5ff87b67d49d55725bfb2f0631c700eb481ff49e0adaff25873c5f80c09",
       "since": "2025-01-01"
     },
     "cli:init": {
@@ -761,7 +752,7 @@
       "type": "cli-command",
       "domain": "setup",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:setup": {
@@ -769,7 +760,7 @@
       "type": "cli-command",
       "domain": "setup",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:add": {
@@ -777,7 +768,7 @@
       "type": "cli-command",
       "domain": "setup",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:backup": {
@@ -785,7 +776,7 @@
       "type": "cli-command",
       "domain": "operations",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:git": {
@@ -793,7 +784,7 @@
       "type": "cli-command",
       "domain": "coordination",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:memory": {
@@ -801,7 +792,7 @@
       "type": "cli-command",
       "domain": "memory",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:knowledge": {
@@ -809,7 +800,7 @@
       "type": "cli-command",
       "domain": "memory",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:semantic": {
@@ -817,7 +808,7 @@
       "type": "cli-command",
       "domain": "memory",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:intent": {
@@ -825,7 +816,7 @@
       "type": "cli-command",
       "domain": "intent",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:feedback": {
@@ -833,7 +824,7 @@
       "type": "cli-command",
       "domain": "feedback",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:server": {
@@ -841,7 +832,7 @@
       "type": "cli-command",
       "domain": "server",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:status": {
@@ -849,7 +840,7 @@
       "type": "cli-command",
       "domain": "monitoring",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:user": {
@@ -857,7 +848,7 @@
       "type": "cli-command",
       "domain": "users",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:relationship": {
@@ -865,7 +856,7 @@
       "type": "cli-command",
       "domain": "relationships",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:job": {
@@ -873,7 +864,7 @@
       "type": "cli-command",
       "domain": "scheduling",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:lifeline": {
@@ -881,7 +872,7 @@
       "type": "cli-command",
       "domain": "communication",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:list": {
@@ -889,7 +880,7 @@
       "type": "cli-command",
       "domain": "monitoring",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:autostart": {
@@ -897,7 +888,7 @@
       "type": "cli-command",
       "domain": "operations",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:migrate": {
@@ -905,7 +896,7 @@
       "type": "cli-command",
       "domain": "updates",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:machines": {
@@ -913,7 +904,7 @@
       "type": "cli-command",
       "domain": "coordination",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:whoami": {
@@ -921,7 +912,7 @@
       "type": "cli-command",
       "domain": "identity",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:pair": {
@@ -929,7 +920,7 @@
       "type": "cli-command",
       "domain": "coordination",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:join": {
@@ -937,7 +928,7 @@
       "type": "cli-command",
       "domain": "coordination",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:wakeup": {
@@ -945,7 +936,7 @@
       "type": "cli-command",
       "domain": "coordination",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:leave": {
@@ -953,7 +944,7 @@
       "type": "cli-command",
       "domain": "coordination",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:doctor": {
@@ -961,7 +952,7 @@
       "type": "cli-command",
       "domain": "monitoring",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:review": {
@@ -969,7 +960,7 @@
       "type": "cli-command",
       "domain": "monitoring",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:nuke": {
@@ -977,7 +968,7 @@
       "type": "cli-command",
       "domain": "operations",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "cli:playbook": {
@@ -985,7 +976,7 @@
       "type": "cli-command",
       "domain": "context",
       "sourcePath": "src/cli.ts",
-      "contentHash": "ef620787cb2d40a51831b00ba7071e67aa0d4cac86027dc3a04635d344608d29",
+      "contentHash": "eba93ab5240154f808f97b72ffaf6dc2a11b36c426811ee3c08018c9a651a84a",
       "since": "2025-01-01"
     },
     "template:build-stop-hook.sh": {
@@ -1049,7 +1040,7 @@
       "type": "template",
       "domain": "safety",
       "sourcePath": "src/templates/hooks/settings-template.json",
-      "contentHash": "557133aed5a8c543affac6df7a959bfb573df9b1e8197b0d29809e1de9d00aec",
+      "contentHash": "2cc950f0635f9c3412b768610f690288b466e7ace280285aee2481fbe514f230",
       "since": "2025-01-01"
     },
     "template:skill-usage-telemetry.sh": {
@@ -1073,7 +1064,7 @@
       "type": "template",
       "domain": "safety",
       "sourcePath": "src/templates/hooks/telegram-topic-context.sh",
-      "contentHash": "8a80976731dd5dd6b981834f0c4e18d495ee0efd350adc7b88a65c1aa6356b5d",
+      "contentHash": "57cfb744bbffcd21f6290c5f38726b105b93258bf09cc539c24d66aebed9c40e",
       "since": "2025-01-01"
     },
     "template:convergence-check.sh": {
@@ -1113,7 +1104,7 @@
       "type": "template",
       "domain": "operations",
       "sourcePath": "src/templates/scripts/instar-watchdog.sh",
-      "contentHash": "364033171d32f6458b0ebe6c757a55efd578260c3211b2bfe80c5cf56e0ce0ef",
+      "contentHash": "d81ed54264fbb6091f2b29365c6dd318f491f2acfabbbb5ff20582336867f53d",
       "since": "2025-01-01"
     },
     "template:instar-worktree-create.sh": {
@@ -1449,7 +1440,7 @@
       "type": "subsystem",
       "domain": "server",
       "sourcePath": "src/server/AgentServer.ts",
-      "contentHash": "6e996e6ea45338ffe019e539eaa738af05d5ad9a1ca35c9d93a8ba198599f759",
+      "contentHash": "0c4f63b37d72bc85415e464e181507b66bb247df1e903da2fe27c5d6539dab0f",
       "since": "2025-01-01"
     },
     "subsystem:session-manager": {
@@ -1457,7 +1448,7 @@
       "type": "subsystem",
       "domain": "sessions",
       "sourcePath": "src/core/SessionManager.ts",
-      "contentHash": "b6817bdf6872a71f351ff61e60d95143c553198d05d8f75b3aa9545f5b9dac44",
+      "contentHash": "caf5980117359821e0523c8358a0eea102d4b1c63f592d9dce8462411232cedd",
       "since": "2025-01-01"
     },
     "subsystem:auto-updater": {
@@ -1465,7 +1456,7 @@
       "type": "subsystem",
       "domain": "updates",
       "sourcePath": "src/core/AutoUpdater.ts",
-      "contentHash": "95e616ce2f3f1417780fac0b9d56acdfeefd5890386395e1e641551a2b761f9b",
+      "contentHash": "dfa040a4df276061d64fd2bacc31463c25d8446873b770aa1524205c5601abc9",
       "since": "2025-01-01"
     },
     "subsystem:auto-dispatcher": {
@@ -1481,7 +1472,7 @@
       "type": "subsystem",
       "domain": "updates",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
-      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "contentHash": "9c72c33b0ef2f4713675c0fbf446468b68a5cccef87e7539b63adb0fd578084f",
       "since": "2025-01-01"
     },
     "subsystem:scheduler": {
@@ -1513,7 +1504,7 @@
       "type": "subsystem",
       "domain": "communication",
       "sourcePath": "src/lifeline/TelegramLifeline.ts",
-      "contentHash": "45cd2b449e34134cae67859e79e378ccc131f481b4d5701faf26913b8a3a26e2",
+      "contentHash": "792bafba6fb25e34341a3b73cb8c9cb882b946530b652d8d271af09d1242a93e",
       "since": "2025-01-01"
     },
     "subsystem:orphan-process-reaper": {
@@ -1529,7 +1520,7 @@
       "type": "subsystem",
       "domain": "memory",
       "sourcePath": "src/memory/SemanticMemory.ts",
-      "contentHash": "8c52d2f13d79d36d43c7439b9bde0cc2d10739bf098c7d95eeeb7f3404d606c5",
+      "contentHash": "6b1c7b18e1d8e35036cccc9d3cf80d29eea2435138c67a5640dbf5fbf2658e82",
       "since": "2025-01-01"
     },
     "subsystem:multi-machine-coordinator": {

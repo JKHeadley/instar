@@ -29,6 +29,7 @@ import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
 import type { SessionManagerLike, SessionMonitorLike } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
+import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -50,6 +51,15 @@ export interface AutoUpdaterConfig {
    * Example: { start: "02:00", end: "05:00" }
    */
   restartWindow?: { start: string; end: string } | null;
+  /**
+   * Minimum milliseconds between two update-driven restart requests. When the
+   * AutoUpdater wants to fire a restart for a NEW version within this window
+   * of the previous restart, it batches: a single deferred restart fires at
+   * `lastRestart + restartCascadeDampenerWindowMs`, with the latest queued
+   * version as the target. Crash, health-fail, and version-skew restarts
+   * are NOT dampened. Default: 900_000 (15 minutes). Set to 0 to disable.
+   */
+  restartCascadeDampenerWindowMs?: number;
 }
 
 export interface AutoUpdaterStatus {
@@ -117,6 +127,17 @@ export class AutoUpdater {
   // a local shadow directory, so npx cache location is irrelevant.
   private isNpxCached = false;
 
+  // Restart-cascade dampener — minimum interval between two update-driven
+  // restart requests. See RestartCascadeDampener.ts for rationale.
+  private dampener: RestartCascadeDampener;
+  // Active batch: when the dampener says "batch", we set this timer and store
+  // the latest queued version. Subsequent calls within the window update the
+  // version but never spawn a second timer.
+  private batchedRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  private batchedRestartTargetVersion: string | null = null;
+  private batchedRestartEligibleAt: number | null = null;
+  private batchedRestartOriginalVersion: string | null = null;
+
   constructor(
     updateChecker: UpdateChecker,
     state: StateManager,
@@ -140,9 +161,11 @@ export class AutoUpdater {
       applyDelayMinutes: config?.applyDelayMinutes ?? 5,
       preRestartDelaySecs: config?.preRestartDelaySecs ?? 60,
       restartWindow: config?.restartWindow ?? null,
+      restartCascadeDampenerWindowMs: config?.restartCascadeDampenerWindowMs ?? 15 * 60_000,
     };
 
     this.gate = new UpdateGate();
+    this.dampener = new RestartCascadeDampener(this.config.restartCascadeDampenerWindowMs);
 
     // npx cache detection is no longer needed — updates install to a local
     // shadow directory ({stateDir}/shadow-install/) instead of globally.
@@ -541,6 +564,27 @@ export class AutoUpdater {
       }
     }
 
+    // Restart-cascade dampener — minimum interval between two distinct
+    // update-driven restart requests. Protects users from back-to-back
+    // user-visible restart cycles when two updates arrive within minutes
+    // of each other (e.g., v1.2.34 then v1.2.36 a few minutes later).
+    //
+    // Only consult the dampener when there IS a recorded previous restart
+    // for a DIFFERENT version — the same-version cooldown above already
+    // covers the loop case, and the dampener is allowed to fire fresh
+    // on first-ever restart.
+    if (!bypassWindow && this.lastRestartRequestedAt && this.lastRestartRequestedVersion !== newVersion) {
+      const decision = this.dampener.decide({
+        requestedVersion: newVersion,
+        lastRequestedAt: this.lastRestartRequestedAt,
+      });
+      if (decision.kind === 'batch') {
+        await this.handleDampenerBatch(newVersion, decision.eligibleAt);
+        return;
+      }
+      console.log(`[AutoUpdater] Cascade dampener: ${decision.reason}`);
+    }
+
     // Restart window gate — defer restart until the configured window unless bypassed.
     // Updates are already downloaded; only the restart is held.
     if (!bypassWindow && !this.isInRestartWindow()) {
@@ -651,6 +695,110 @@ export class AutoUpdater {
       await this.gatedRestart(newVersion);
     }, result.retryInMs ?? 300_000);
     this.deferralTimer.unref();
+  }
+
+  /**
+   * Handle a "batch" decision from the cascade dampener.
+   *
+   * If no batch is already pending: schedule a deferred restart at
+   * `eligibleAt`, notify the user that the next restart was queued, and
+   * remember the target version. If a batch IS already pending: update
+   * the target to the newer version (compared as semver) and re-notify
+   * with the rolled-up batch line. Never spawn a second timer.
+   *
+   * On batch fire: re-enter gatedRestart with bypassWindow=false so the
+   * normal session-aware gating still applies. The dampener does not
+   * re-engage because the elapsed-time check will succeed by then.
+   */
+  private async handleDampenerBatch(newVersion: string, eligibleAt: number): Promise<void> {
+    const now = Date.now();
+    const waitMs = Math.max(0, eligibleAt - now);
+    const fireAt = new Date(eligibleAt);
+
+    // First time entering batch state for this window.
+    if (!this.batchedRestartTimer) {
+      this.batchedRestartOriginalVersion = this.lastRestartRequestedVersion;
+      this.batchedRestartTargetVersion = newVersion;
+      this.batchedRestartEligibleAt = eligibleAt;
+
+      console.log(
+        `[AutoUpdater] Restart batched: v${newVersion} queued (firing at ` +
+        `${formatLocalTimeHHMM(eligibleAt, fireAt)}, ~${Math.max(1, Math.round(waitMs / 60_000))}m). ` +
+        `Previous restart was v${this.lastRestartRequestedVersion ?? '?'} at ${this.lastRestartRequestedAt ?? '?'}.`
+      );
+
+      // Only notify the user when a session is active — silent batches
+      // during idle periods (matching the existing silent-restart pattern
+      // at gatedRestart line ~612). Reuses lastNotifiedRestartVersion as
+      // a guard against re-notifying for the same batched version.
+      const hasActive = this.sessionManager
+        ? this.sessionManager.listRunningSessions().length > 0
+        : false;
+      if (hasActive && this.lastNotifiedRestartVersion !== newVersion) {
+        this.lastNotifiedRestartVersion = newVersion;
+        await this.notify(
+          `Update v${newVersion} queued — rolling into the pending restart at ` +
+          `${formatLocalTimeHHMM(eligibleAt, fireAt)} (about ${Math.max(1, Math.round(waitMs / 60_000))}m) so you don't get hit by two back-to-back restarts.`
+        );
+      }
+
+      this.batchedRestartTimer = setTimeout(() => {
+        const target = this.batchedRestartTargetVersion ?? newVersion;
+        this.batchedRestartTimer = null;
+        this.batchedRestartTargetVersion = null;
+        this.batchedRestartEligibleAt = null;
+        this.batchedRestartOriginalVersion = null;
+        console.log(`[AutoUpdater] Cascade-dampener batch window elapsed — restarting for v${target}`);
+        void this.gatedRestart(target, false);
+      }, waitMs);
+      this.batchedRestartTimer.unref();
+      return;
+    }
+
+    // Already batching — roll the new version in. Pick the higher semver as
+    // the target so we don't roll BACK to an older version.
+    const currentTarget = this.batchedRestartTargetVersion ?? newVersion;
+    const nextTarget = this.pickHigherVersion(currentTarget, newVersion);
+    if (nextTarget !== currentTarget) {
+      console.log(
+        `[AutoUpdater] Cascade-dampener batch updated: target v${currentTarget} → v${nextTarget} ` +
+        `(firing at ${formatLocalTimeHHMM(this.batchedRestartEligibleAt ?? eligibleAt, new Date(this.batchedRestartEligibleAt ?? eligibleAt))})`
+      );
+      this.batchedRestartTargetVersion = nextTarget;
+    } else {
+      console.log(`[AutoUpdater] Cascade-dampener batch ignored v${newVersion} (current target v${currentTarget} is higher or equal)`);
+    }
+  }
+
+  /**
+   * Return whichever of two semver strings is higher. Falls back to the
+   * second when comparison is ambiguous so the newest-detected version wins.
+   */
+  private pickHigherVersion(a: string, b: string): string {
+    const pa = a.split('.').map(n => parseInt(n, 10));
+    const pb = b.split('.').map(n => parseInt(n, 10));
+    for (let i = 0; i < 3; i++) {
+      const av = Number.isFinite(pa[i]) ? pa[i] : 0;
+      const bv = Number.isFinite(pb[i]) ? pb[i] : 0;
+      if (av > bv) return a;
+      if (av < bv) return b;
+    }
+    return b;
+  }
+
+  /** Test helper — exposes batch state without forcing the timer to fire. */
+  public _getBatchedRestartState(): {
+    targetVersion: string | null;
+    eligibleAt: number | null;
+    originalVersion: string | null;
+    timerActive: boolean;
+  } {
+    return {
+      targetVersion: this.batchedRestartTargetVersion,
+      eligibleAt: this.batchedRestartEligibleAt,
+      originalVersion: this.batchedRestartOriginalVersion,
+      timerActive: this.batchedRestartTimer !== null,
+    };
   }
 
   /**

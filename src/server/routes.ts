@@ -8283,8 +8283,12 @@ export function createRoutes(ctx: RouteContext): Router {
           primary: 'Informational — lifeline patch drift beyond policy',
           fallback: 'No behavior change; forward accepted',
           reason: `patch drift ${decision.patchDiff} between lifeline and server`,
-          impact: 'Lifeline hasn’t restarted in a while; consider manual kick.',
+          impact: 'LifelineDriftPromoter will self-restart the lifeline at the next clean window.',
         });
+        // Signal-vs-authority: surface the observed drift to the lifeline.
+        // The header is the signal; the lifeline's LifelineDriftPromoter
+        // is the authority that decides whether to self-restart and when.
+        res.setHeader('X-Instar-Lifeline-Patch-Drift', String(decision.patchDiff));
       }
     } else if (lifelineVersion === undefined && authEnabled) {
       // Backward-compat: pre-Stage-B lifelines don't send the field. Accept
