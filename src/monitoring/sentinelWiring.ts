@@ -129,9 +129,22 @@ export function looksActivelyWorking(
  * recent frame shows active-work signatures are surfaced as candidates; an
  * idle-at-prompt session is marked `paused` so the sentinel skips it — it is
  * not "actively working then stopped".
+ *
+ * Observed-change requirement (incident 2026-05-22): the tracker reports
+ * `lastOutputAt: 0` for any session it has NOT yet watched produce a real
+ * output change. A first sighting only records the baseline hash — it is never
+ * treated as an output event. This is the critical discriminator between
+ * "frozen mid-task" and "frozen since before I started watching": on a server
+ * restart the tracker re-sees every leftover tmux session fresh, and a long-
+ * dead session whose frozen last frame happens to contain "esc to interrupt"
+ * would otherwise be misread as "was producing output at restart, then
+ * stopped" — and flagged en masse 15 minutes later. By requiring an OBSERVED
+ * active→silent transition (hash changes once, THEN stops), a session that was
+ * already frozen before boot can never trip the silence threshold, because its
+ * `lastOutputAt` stays 0 and the sentinel's `lastOutputAt <= 0` guard skips it.
  */
 export class OutputActivityTracker {
-  private readonly last = new Map<string, { hash: string; at: number }>();
+  private readonly last = new Map<string, { hash: string; lastChangeAt: number }>();
 
   constructor(
     private readonly sessions: SentinelSessionSurface,
@@ -148,12 +161,26 @@ export class OutputActivityTracker {
       const output = this.sessions.captureOutput(s.tmuxSession, SILENCE_CAPTURE_LINES) ?? '';
       const hash = cheapHash(output);
       const prev = this.last.get(s.tmuxSession);
-      if (!prev || prev.hash !== hash) {
-        this.last.set(s.tmuxSession, { hash, at: t });
+      let lastChangeAt: number;
+      if (!prev) {
+        // First sighting: record the baseline hash but DO NOT count it as an
+        // output event. We have no evidence this session was ever producing
+        // output — it may have been frozen since before we started watching.
+        // lastChangeAt 0 → the silence sentinel skips it (lastOutputAt <= 0).
+        lastChangeAt = 0;
+        this.last.set(s.tmuxSession, { hash, lastChangeAt });
+      } else if (prev.hash !== hash) {
+        // Observed a real output change → this session is genuinely producing
+        // output. Stamp the change time; from here it is silence-eligible.
+        lastChangeAt = t;
+        this.last.set(s.tmuxSession, { hash, lastChangeAt });
+      } else {
+        // Unchanged since the last tick → hold the prior lastChangeAt (which is
+        // still 0 if we have never yet observed a change for this session).
+        lastChangeAt = prev.lastChangeAt;
       }
-      const lastOutputAt = this.last.get(s.tmuxSession)!.at;
       const active = looksActivelyWorking(output, s.framework);
-      out.push({ sessionName: s.tmuxSession, lastOutputAt, paused: !active });
+      out.push({ sessionName: s.tmuxSession, lastOutputAt: lastChangeAt, paused: !active });
     }
     // Drop tracking for sessions that have ended so the map can't grow without bound.
     for (const key of Array.from(this.last.keys())) {

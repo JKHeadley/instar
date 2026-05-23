@@ -182,26 +182,47 @@ describe('OutputActivityTracker — per-session framework is honored', () => {
 });
 
 describe('OutputActivityTracker — change detection + active/idle filtering', () => {
-  it('lastOutputAt holds steady while output is unchanged', () => {
-    let now = 1_000_000;
+  it('reports lastOutputAt 0 on first sighting (no observed change yet → sentinel skips it)', () => {
+    // Regression guard for the 2026-05-22 flood: a session we have only seen
+    // once must NOT be treated as "was producing output". lastOutputAt 0 means
+    // the silence sentinel's `lastOutputAt <= 0` guard skips it.
     const surface = makeSurface({ output: '⠹ working', sessions: [{ tmuxSession: 'agent-1' }] });
-    const tracker = new OutputActivityTracker(surface, () => now);
-    const first = tracker.snapshot()[0];
-    now += 60_000;
-    const second = tracker.snapshot()[0];
-    expect(second.lastOutputAt).toBe(first.lastOutputAt);
+    const tracker = new OutputActivityTracker(surface, () => 1_000_000);
+    expect(tracker.snapshot()[0].lastOutputAt).toBe(0);
   });
 
-  it('lastOutputAt advances when output changes', () => {
+  it('a never-changing active-looking frame stays at lastOutputAt 0 (frozen-since-before-start guard)', () => {
+    // This is the exact flood scenario: a long-dead session whose frozen last
+    // frame contains "esc to interrupt". looksActivelyWorking is true, but the
+    // hash never changes — so it must never become silence-eligible.
+    let now = 1_000_000;
+    const surface = makeSurface({
+      output: 'Running Bash(npm test) (esc to interrupt)',
+      sessions: [{ tmuxSession: 'zombie-1' }],
+    });
+    const tracker = new OutputActivityTracker(surface, () => now);
+    for (let i = 0; i < 30; i++) { now += 60_000; }
+    // Even after 30 minutes of ticks, the never-changed frame is still 0.
+    expect(tracker.snapshot()[0].lastOutputAt).toBe(0);
+    now += 60_000;
+    expect(tracker.snapshot()[0].lastOutputAt).toBe(0);
+  });
+
+  it('lastOutputAt is set only after an observed change, then holds steady until the next change', () => {
     let now = 1_000_000;
     let frame = '⠹ working step 1';
     const surface = makeSurface({ output: () => frame, sessions: [{ tmuxSession: 'agent-1' }] });
     const tracker = new OutputActivityTracker(surface, () => now);
-    const first = tracker.snapshot()[0];
+    // First sighting → 0 (unconfirmed).
+    expect(tracker.snapshot()[0].lastOutputAt).toBe(0);
+    // Observed change → stamped at the change time.
     now += 60_000;
     frame = '⠹ working step 2';
-    const second = tracker.snapshot()[0];
-    expect(second.lastOutputAt).toBeGreaterThan(first.lastOutputAt);
+    const changed = tracker.snapshot()[0];
+    expect(changed.lastOutputAt).toBe(now);
+    // Unchanged again → holds steady at the last change time (does NOT advance).
+    now += 60_000;
+    expect(tracker.snapshot()[0].lastOutputAt).toBe(changed.lastOutputAt);
   });
 
   it('marks an active (mid-task) frame as not paused', () => {
