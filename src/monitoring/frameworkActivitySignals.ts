@@ -62,15 +62,27 @@ const CLAUDE_CODE_SIGNAL: FrameworkActivitySignal = {
 
 const CODEX_CLI_SIGNAL: FrameworkActivitySignal = {
   displayName: 'Codex CLI',
-  // Codex CLI renders its tool surface differently — the wrapper name
-  // appears in the title and prompt, and it uses a dot-spinner during
-  // generation. Patterns are best-effort: refine empirically as the
-  // first stalled Codex sessions are triaged.
-  toolCallOrSpinner: /codex|exec\(|shell\(|patch\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b|\bworking\b/i,
-  escapeToInterrupt: /(press|hit)\s+(esc|ctrl\+c|ctrl-c)\s+to\s+(cancel|interrupt|stop)/i,
-  runningIndicator: /\((running|executing|streaming)\)/i,
+  // Empirically derived from live gpt-5.3-codex panes (2026-05-23 harness).
+  // The canonical "actively working" indicator is the status line Codex
+  // renders during generation: `• Working (Ns • esc to interrupt)`, plus
+  // action bullets (`• Ran ...`) and the dot-spinner.
+  //
+  // CRITICAL: do NOT match the bare word "codex". The model name
+  // "gpt-5.3-codex" is ALWAYS present in Codex's IDLE status line
+  // (`gpt-5.3-codex medium · ~/project`), so matching it made every idle
+  // Codex session read as "actively working" — the false positive that hid
+  // genuinely-stuck sessions from the silence sentinel and let the presence
+  // proxy default to "still working" forever (the 2026-05-23 stuck-session
+  // incident). The placeholder prompt "Find and fix a bug in @filename" is
+  // likewise an IDLE indicator, not work.
+  toolCallOrSpinner: /Working\s*\(\d+\s*s|•\s*Ran\b|exec\(|shell\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b/i,
+  // Codex shows a BARE "esc to interrupt" (no "press"/"hit" prefix) inside
+  // its working status line, so the Claude-style prefixed pattern never
+  // matched a real Codex pane. Match the bare form.
+  escapeToInterrupt: /esc to interrupt/i,
+  runningIndicator: /\((running|executing|streaming)\)|background terminal running/i,
   promptSignaturesLine:
-    'spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏), Codex tool names ("exec", "shell", "patch", "apply_patch"), "generating"/"working" indicators, streaming response chunks.',
+    'the working status line "Working (Ns • esc to interrupt)", action bullets ("• Ran ..."), spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏), "generating". IDLE (NOT work): the model-name status line "gpt-5.3-codex medium · <dir>" and the placeholder prompt "Find and fix a bug in @filename".',
 };
 
 const ACTIVITY_SIGNALS: Record<IntelligenceFramework, FrameworkActivitySignal> = {

@@ -29,3 +29,17 @@ Three coordinated fixes:
 ## Rollback
 
 Revert the `selectDurableNode` extraction + `nodeCanLoadNativeModule`, the `ensureStableNodeSymlink` ABI anchor, the boot-wrapper check, and remove `migrateBootWrapperAbiCheck`. The prior durability-only behavior returns.
+
+---
+
+### Codex activity-signal correction (stuck-session detection)
+
+The framework activity signal used to detect "is this session actively working vs idle/stuck" was non-functional for Codex:
+- `toolCallOrSpinner` matched the bare word `codex` — but "gpt-5.3-codex" is ALWAYS in Codex's idle status line, so every idle Codex session read as "actively working".
+- `escapeToInterrupt` required a "press/hit" prefix Codex never renders (Codex shows a bare "esc to interrupt").
+
+Net effect: the detector couldn't tell idle/working/stuck apart on Codex, so genuinely-stuck sessions stayed invisible to the silence sentinel and the presence proxy defaulted to "still working" forever (the 2026-05-23 stuck-session incident Justin hit).
+
+Fixed empirically from live gpt-5.3-codex panes: the canonical work indicator is the `Working (Ns • esc to interrupt)` status line plus `• Ran` action bullets and the dot-spinner. The model-name status line and placeholder prompt are now correctly treated as IDLE.
+
+Tests: `codex-activity-signal.test.ts` (10) — idle pane false, working pane true, `• Ran` bullet, bare esc-to-interrupt, model-name-alone false, placeholder-alone false, spinner, + Claude regression guard.
