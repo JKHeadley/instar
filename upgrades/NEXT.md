@@ -99,3 +99,19 @@ Empirical (codey, live): reproduced the exact stderr (`Database corrupt (probe r
 ## Rollback (vec0 probe)
 
 Revert the `SemanticMemory.open()` probe-loop change (restore the single `try` over all tables including virtual ones). The false-corruption quarantine loop returns on any DB with a vec0 table.
+
+---
+
+### Codex model tier mapping → light/medium/heavy (subscription-aware)
+
+Per Justin (2026-05-23, after deep research into how the ChatGPT subscription meters usage): the Codex tier→model map now reads **light=`gpt-5.2` · medium=`gpt-5.4-mini` · heavy=`gpt-5.5`** in both resolution surfaces (`TIER_TO_MODEL` in `openai-codex/models.ts` and `resolveModelForFramework` in `frameworkSessionLaunch.ts`). Was `balanced`=gpt-5.5 / `capable`=gpt-5.4.
+
+Why this mapping despite the names: the subscription meters by **token-weighted credits** (rolling 5h + weekly window), so token-burn is the real cost metric, not just an API dollar-proxy. `gpt-5.2` is **non-reasoning** (≈0 thinking tokens on trivial calls) → genuinely the lightest, correct for high-frequency internal checks. `gpt-5.4-mini`, despite "mini," is a small **reasoning** model (emits reasoning tokens even on trivial prompts) → the cheapest *reasoning* option, right for medium work, wrong for the light tier. `gpt-5.5` is the frontier reasoning model → heavy. Use base `gpt-5.2`, **not** `gpt-5.2-codex` (the latter is a reasoning model).
+
+The user's main interactive session is unaffected — it resolves via the `?? 'gpt-5.5'` literal (not a tier lookup) and stays on gpt-5.5 (verified live against the deployed dist). Internal tier callers shift sensibly: `balanced` consumers (drift check, upgrade-notify chain, stall diagnosis) drop to the cheaper medium reasoning model; `capable` consumers (reflection, security evaluation, conflict resolution) move up to gpt-5.5. `/sessions/create` allowlist gains `gpt-5.4-mini`.
+
+Tests: `frameworkSessionLaunch.test.ts` + `StallTriageNurse.test.ts` updated (104 pass); 127 codex adapter/canary tests pass. Also corrected a stale StallTriageNurse fixture that fed a fabricated Codex hint (`press Ctrl+C to cancel`) — Codex's real interrupt hint is `esc to interrupt`.
+
+## Rollback (tier mapping)
+
+Revert the two map entries in both files (`balanced`→gpt-5.5, `capable`→gpt-5.4) and drop `gpt-5.4-mini` from the `/sessions/create` allowlist. No data/schema/migration involved.

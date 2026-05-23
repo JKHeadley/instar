@@ -23,7 +23,7 @@ import type { ModelTier } from '../../types.js';
  * RE-PROBED 2026-05-23 against Justin's ChatGPT subscription via
  * codex-cli 0.133.0 (live, during the codex test harness):
  *
- *   ✅ working on ChatGPT account:  gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.5 (NEW)
+ *   ✅ working on ChatGPT account:  gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5
  *   ❌ rejected on ChatGPT account: gpt-5.5-codex, gpt-5.4-codex
  *                                   ("not supported when using Codex with a
  *                                   ChatGPT account"), and the older
@@ -39,15 +39,26 @@ import type { ModelTier } from '../../types.js';
  *   — MUST stay on gpt-5.2: routing those through a reasoning model would
  *   torch quota. The reasoning burn is only worth it for real session work.
  *
- * Default tier choices below favor the subscription path:
- *   - fast:     gpt-5.2 (cheapest working; NO reasoning overhead — keep for
- *                all cheap internal LLM calls; ~50-70x cheaper than the
- *                reasoning models even on a trivial prompt)
- *   - balanced: gpt-5.5 (the session default as of 2026-05-23, per Justin —
- *                newest generalist + Codex CLI's own default. Was
- *                gpt-5.3-codex, the coding-specialist; gpt-5.3-codex is
- *                still available via a raw per-call model name.)
- *   - capable:  gpt-5.4 (heaviest older tier; high burn, use sparingly)
+ * Default tier choices below favor the subscription path. The light/medium/
+ * heavy mapping was confirmed by Justin on 2026-05-23 after deep research into
+ * how the ChatGPT subscription meters usage (token-weighted credits in a 5h +
+ * weekly window — so token-burn IS the right metric, not just an API proxy):
+ *   - fast:     gpt-5.2 (LIGHT — non-reasoning, answers directly with ~0
+ *                thinking tokens; cheapest working model; keep for all cheap
+ *                internal LLM calls — gates, tone, classification. ~50-70x
+ *                cheaper than the reasoning models even on a trivial prompt.
+ *                Use the BASE gpt-5.2, NOT gpt-5.2-codex — the latter is a
+ *                reasoning model and loses the non-reasoning cost advantage.)
+ *   - balanced: gpt-5.4-mini (MEDIUM — the cheapest *reasoning* model; a
+ *                small worker gear for real-but-light work, e.g. searching a
+ *                codebase or skimming a file. "mini" = small *within the
+ *                reasoning tier*, not lighter than non-reasoning gpt-5.2 — it
+ *                still emits reasoning tokens on trivial prompts, so it is the
+ *                WRONG choice for the fast tier. Confirmed working on the
+ *                ChatGPT subscription, live-tested 2026-05-23.)
+ *   - capable:  gpt-5.5 (HEAVY — newest frontier reasoning model + Codex CLI's
+ *                own default; the main interactive session resolves here.
+ *                Reserve for hard problems + the user's main chat.)
  *
  * Reasoning effort (model_reasoning_effort): low | medium | high | xhigh.
  * 'minimal' is GPT-5-only (errors on gpt-5.5). Empirically, on a TRIVIAL
@@ -70,12 +81,12 @@ import type { ModelTier } from '../../types.js';
  * follow-up.
  */
 const TIER_TO_MODEL: Record<ModelTier, string> = {
+  // light — non-reasoning, ~0 thinking tokens; all cheap internal calls.
   fast: 'gpt-5.2',
-  // balanced is the session default. gpt-5.5 (Codex CLI's own default +
-  // newest generalist, confirmed working on the ChatGPT subscription
-  // 2026-05-23) per Justin's call. Was gpt-5.3-codex (coding-specialist).
-  balanced: 'gpt-5.5',
-  capable: 'gpt-5.4',
+  // medium — cheapest reasoning model; everyday light work / worker subagents.
+  balanced: 'gpt-5.4-mini',
+  // heavy — frontier reasoning model; hard problems + the user's main chat.
+  capable: 'gpt-5.5',
 };
 
 /**

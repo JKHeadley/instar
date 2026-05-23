@@ -157,7 +157,7 @@ describe('StallTriageNurse', () => {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'balanced' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-5.3-codex');
+        .toBe('gpt-5.4-mini');
     });
     it('codex-cli: legacy Claude tier name maps to Codex equivalent', () => {
       const nurse = new StallTriageNurse(deps, {
@@ -221,9 +221,15 @@ describe('StallTriageNurse', () => {
       expect(result?.summary).toContain('Codex CLI');
     });
 
-    it('codex-cli: Ctrl+C-to-cancel hint visible for 3+ min → interrupt', () => {
+    it('codex-cli: "esc to interrupt" hint visible for 3+ min → interrupt', () => {
+      // Codex's real interrupt hint is a bare "esc to interrupt" inside its
+      // working status line (empirically derived from live gpt-5.x-codex panes,
+      // see frameworkActivitySignals.ts CODEX_CLI_SIGNAL). The prior fixture
+      // ("press Ctrl+C to cancel") was a fabricated hint Codex never renders, so
+      // signal.escapeToInterrupt (/esc to interrupt/i) never matched and Pattern 6
+      // returned null.
       const nurse = new StallTriageNurse(deps, { config: { ...TEST_CONFIG, framework: 'codex-cli' } });
-      const output = 'streaming response\npress Ctrl+C to cancel';
+      const output = 'streaming response\nWorking (210s • esc to interrupt)';
       const result = nurse.heuristicDiagnose(ctx(output, 4));
       expect(result?.action).toBe('interrupt');
     });
