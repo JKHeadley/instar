@@ -440,6 +440,54 @@ export class TelegramAdapter implements MessagingAdapter {
   private pendingPromptReply = new Map<number, PendingPromptReply>(); // topicId → pending
   private promptGateDisclosureSent = new Set<number>(); // topicIds that have seen the disclosure
 
+  /**
+   * Tunnel-consent callback handler. Registered by TunnelManager via
+   * `setTunnelConsentHandler`. Receives the parsed action ('grant' |
+   * 'decline') + the nonce; returns a short status string for the
+   * answerCallbackQuery toast. The owner-principal check happens in
+   * processCallbackQuery BEFORE this is invoked, so the handler can
+   * trust the click came from the owner.
+   */
+  private tunnelConsentHandler: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null = null;
+
+  /** Wire the tunnel-consent callback handler (called by TunnelManager). */
+  setTunnelConsentHandler(fn: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null): void {
+    this.tunnelConsentHandler = fn;
+  }
+
+  /**
+   * Send a consent prompt to the owner DM with two inline buttons
+   * (approve / decline). The buttons carry callback_data of the form
+   * `tc:g:<nonce>` / `tc:d:<nonce>` (well under Telegram's 64-byte
+   * callback_data limit — `tc:g:` is 5 chars + a 32-hex nonce = 37).
+   * Returns the message id on success, null on failure (no owner,
+   * owner hasn't DM'd the bot, network error) — fire-and-forget.
+   */
+  async sendOwnerConsentPrompt(text: string, nonce: string): Promise<number | null> {
+    const owner = this.getOwnerUserId();
+    if (!owner) {
+      console.warn('[telegram] sendOwnerConsentPrompt called but no ownerUserId is configured');
+      return null;
+    }
+    try {
+      const result = await this.apiCall('sendMessage', {
+        chat_id: owner,
+        text,
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Yes, use a backup', callback_data: `tc:g:${nonce}` },
+            { text: 'No, keep waiting', callback_data: `tc:d:${nonce}` },
+          ]],
+        },
+      }) as { message_id: number };
+      return result.message_id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[telegram] sendOwnerConsentPrompt failed: ${msg}`);
+      return null;
+    }
+  }
+
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
@@ -3901,6 +3949,60 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // ── Tunnel-consent buttons (separate, security-sensitive path) ────
+    // callback_data shape: `tc:g:<nonce>` (grant) | `tc:d:<nonce>`
+    // (decline). The owner-principal check is MANDATORY here — the
+    // GPT external review's CRITICAL finding is that only the owner
+    // may approve routing private traffic through a third-party relay.
+    // We use getOwnerUserId() (the explicit owner principal), NOT the
+    // broader authorizedUserIds set.
+    if (query.data.startsWith('tc:')) {
+      const owner = this.getOwnerUserId();
+      if (owner && query.from.id !== owner) {
+        await this.apiCall('answerCallbackQuery', {
+          callback_query_id: query.id,
+          text: 'Only the owner can approve this',
+        }).catch(() => {});
+        return; // do NOT consume — preserve for the real owner
+      }
+      const m = /^tc:([gd]):([0-9a-f]{32})$/.exec(query.data);
+      if (!m) {
+        await this.apiCall('answerCallbackQuery', {
+          callback_query_id: query.id,
+          text: 'Invalid consent button',
+        }).catch(() => {});
+        return;
+      }
+      const action: 'grant' | 'decline' = m[1] === 'g' ? 'grant' : 'decline';
+      const nonce = m[2]!;
+      let statusText = 'Got it';
+      if (this.tunnelConsentHandler) {
+        try {
+          statusText = await this.tunnelConsentHandler(action, nonce);
+        } catch {
+          statusText = 'Could not process — try the dashboard';
+        }
+      }
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: statusText,
+      }).catch(() => {});
+      // Clear the inline keyboard so the (now-consumed) button can't be
+      // tapped again — the consent nonce is single-use on the manager
+      // side, but removing the keyboard is the visible confirmation.
+      // The prompt lives in the owner's private DM, so the edit must
+      // target that chat — NOT config.chatId (the group/supergroup).
+      if (query.message) {
+        await this.editMessageWithRetry(
+          query.message.message_id,
+          action === 'grant' ? '✅ Backup approved.' : '❌ Backup declined.',
+          3,
+          query.message.chat?.id,
+        ).catch(() => {});
+      }
+      return;
+    }
+
     // Authorization check: verify sender is the configured owner
     const ownerId = this.config.promptGate?.ownerId;
     if (ownerId && query.from.id !== ownerId) {
@@ -4069,11 +4171,11 @@ export class TelegramAdapter implements MessagingAdapter {
    * Edit a Telegram message with retry on failure.
    * Uses exponential backoff (1s, 2s, 4s) for up to 3 attempts.
    */
-  private async editMessageWithRetry(messageId: number, text: string, retries = 3): Promise<void> {
+  private async editMessageWithRetry(messageId: number, text: string, retries = 3, chatId?: number | string): Promise<void> {
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
         await this.apiCall('editMessageText', {
-          chat_id: this.config.chatId,
+          chat_id: chatId ?? this.config.chatId,
           message_id: messageId,
           text,
         });

@@ -85,12 +85,22 @@ export interface TunnelNotifierOptions {
   stateChangeMinIntervalMs?: number;
   /** Flap threshold — N connect/drop cycles within an episode → noise-collapse. */
   flapThreshold?: number;
+  /**
+   * When true, the notifier does NOT emit the owner-DM consent PROMPT
+   * for the awaiting-consent transition (the group pointer still
+   * fires). Set by the manager when an adapter capable of sending the
+   * button-bearing prompt is attached — the manager sends that prompt
+   * itself (with the nonce + inline keyboard) so the notifier's plain-
+   * text version would be a duplicate.
+   */
+  suppressConsentDM?: boolean;
 }
 
 export class TunnelNotifier {
   private readonly sink: NotifierSink;
   private readonly clock: NotifierClock;
   private readonly credentialProvider: (() => CredentialSnapshot) | undefined;
+  private readonly suppressConsentDM: boolean;
   private readonly stateChangeMinIntervalMs: number;
   private readonly flapThreshold: number;
 
@@ -115,6 +125,7 @@ export class TunnelNotifier {
     this.sink = opts.sink;
     this.clock = opts.clock ?? { now: () => Date.now() };
     this.credentialProvider = opts.credentialProvider;
+    this.suppressConsentDM = opts.suppressConsentDM ?? false;
     this.stateChangeMinIntervalMs = opts.stateChangeMinIntervalMs ?? 15 * 60_000;
     this.flapThreshold = opts.flapThreshold ?? 3;
   }
@@ -249,13 +260,15 @@ export class TunnelNotifier {
           episodeId: ep,
           epoch: e.epoch,
         });
-        messages.push({
-          channel: 'owner-dm',
-          class: 'action-required',
-          text: this.composeConsentPromptDM(),
-          episodeId: ep,
-          epoch: e.epoch,
-        });
+        if (!this.suppressConsentDM) {
+          messages.push({
+            channel: 'owner-dm',
+            class: 'action-required',
+            text: this.composeConsentPromptDM(),
+            episodeId: ep,
+            epoch: e.epoch,
+          });
+        }
         break;
 
       case 'relay-active':

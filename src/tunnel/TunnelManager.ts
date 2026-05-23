@@ -114,6 +114,18 @@ export interface TunnelMessagingAdapter {
   sendToOwnerDM(text: string): Promise<unknown>;
   getDashboardTopicId(): number | undefined;
   getLifelineTopicId(): number | undefined;
+  /**
+   * Send the consent prompt to the owner with approve/decline inline
+   * buttons carrying the nonce. Returns the message id or null on
+   * failure. Optional — when the adapter doesn't implement it, the
+   * manager falls back to sending the consent prompt as plain text
+   * via sendToOwnerDM (degraded: the owner would reply in words,
+   * which PR 6 doesn't wire — so the button path is the supported
+   * one).
+   */
+  sendOwnerConsentPrompt?(text: string, nonce: string): Promise<number | null>;
+  /** Register the grant/decline callback handler (inline-button clicks). */
+  setTunnelConsentHandler?(fn: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null): void;
 }
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -169,6 +181,8 @@ export class TunnelManager extends EventEmitter {
     issuedAt: number;
     timer: ReturnType<typeof setTimeout>;
   } | null = null;
+  /** Adapter ref captured by attachTelegram — used to send the button prompt. */
+  private _consentAdapter: TunnelMessagingAdapter | null = null;
 
   constructor(config: TunnelConfig, injections?: TunnelManagerInjections) {
     super();
@@ -291,6 +305,7 @@ export class TunnelManager extends EventEmitter {
    * messages; the credentials NEVER appear in group messages.
    */
   attachTelegram(adapter: TunnelMessagingAdapter, dashboardPin: () => string | undefined): void {
+    this._consentAdapter = adapter;
     const sink: NotifierSink = {
       sendGroup: async (text: string) => {
         const topicId = adapter.getDashboardTopicId() ?? adapter.getLifelineTopicId();
@@ -305,7 +320,22 @@ export class TunnelManager extends EventEmitter {
       url: this._legacyState.url,
       pin: dashboardPin(),
     });
-    this.notifier = new TunnelNotifier({ sink, credentialProvider });
+    // The notifier handles the GROUP pointer for awaiting-consent; the
+    // owner-DM consent PROMPT (with buttons) is sent by the manager
+    // directly in requestConsent so it can carry the nonce + inline
+    // keyboard. Suppress the notifier's plain-text consent DM to avoid
+    // a double send.
+    this.notifier = new TunnelNotifier({ sink, credentialProvider, suppressConsentDM: true });
+
+    // Register the grant/decline callback handler for inline-button clicks.
+    adapter.setTunnelConsentHandler?.(async (action, nonce) => {
+      if (action === 'grant') {
+        const ok = await this.grantConsent(nonce);
+        return ok ? 'Backup approved — bringing it up now' : 'That request is no longer active';
+      }
+      const ok = this.declineConsent(nonce);
+      return ok ? 'Okay — staying on Cloudflare' : 'That request is no longer active';
+    });
   }
 
   // ── Internals ──────────────────────────────────────────────────
@@ -483,6 +513,34 @@ export class TunnelManager extends EventEmitter {
       issuedAt: Date.now(),
       timer,
     };
+
+    // Send the button-bearing consent prompt to the owner DM (the
+    // notifier sends only the group pointer for awaiting-consent;
+    // suppressConsentDM avoids a double owner-DM). Fire-and-forget.
+    if (this._consentAdapter?.sendOwnerConsentPrompt) {
+      void this._consentAdapter.sendOwnerConsentPrompt(
+        this.consentPromptText(provider.name),
+        nonce,
+      ).catch(() => { /* adapter logs its own failures */ });
+    } else if (this._consentAdapter?.sendToOwnerDM) {
+      // Degraded: no inline-button support — send the text only.
+      void this._consentAdapter.sendToOwnerDM(this.consentPromptText(provider.name))
+        .catch(() => { /* best effort */ });
+    }
+  }
+
+  /** Owner-facing consent prompt text. Honest about third-party exposure + rotation cost. */
+  private consentPromptText(provider: ProviderName): string {
+    const relayDesc = provider === 'bore'
+      ? 'an unencrypted third-party relay (its operator and the network path can see your traffic)'
+      : 'a third-party relay (its operator can see your dashboard traffic while it is in use)';
+    return [
+      `Cloudflare is unavailable and I can't get you a dashboard link the usual way.`,
+      ``,
+      `I can bring up a backup through ${relayDesc}. Your dashboard PIN and any private view links would be visible to that operator while the backup is active. After the backup is no longer needed, I'll rotate your PIN and access token — that signs you out of any open dashboard tabs and invalidates any private view links you've already shared.`,
+      ``,
+      `Tap a button below. If you don't respond, I'll keep waiting for Cloudflare and won't use a backup.`,
+    ].join('\n');
   }
 
   private clearPendingConsent(): void {
