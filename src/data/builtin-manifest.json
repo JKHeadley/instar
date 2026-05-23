@@ -59,6 +59,15 @@
       "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
       "since": "2025-01-01"
     },
+    "hook:analysis-paralysis-guard": {
+      "id": "hook:analysis-paralysis-guard",
+      "type": "hook",
+      "domain": "safety",
+      "sourcePath": "src/core/PostUpdateMigrator.ts",
+      "installedPath": ".instar/hooks/instar/analysis-paralysis-guard.js",
+      "contentHash": "e32c85f03cb2d4d440172949fb5f7654c7c224a7cd64c78ed1c7b83759e1c2c9",
+      "since": "2026-05-23"
+    },
     "hook:post-action-reflection": {
       "id": "hook:post-action-reflection",
       "type": "hook",

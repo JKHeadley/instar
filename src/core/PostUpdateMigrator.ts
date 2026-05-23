@@ -1376,6 +1376,13 @@ export class PostUpdateMigrator {
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'analysis-paralysis-guard.js'), this.getAnalysisParalysisGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/analysis-paralysis-guard.js (act-or-report-blocked checklist)');
+    } catch (err) {
+      result.errors.push(`analysis-paralysis-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'post-action-reflection.js'), this.getPostActionReflectionHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/post-action-reflection.js (evolution awareness)');
     } catch (err) {
@@ -1540,6 +1547,7 @@ export class PostUpdateMigrator {
     const builtinHooks = [
       'session-start.sh', 'dangerous-command-guard.sh', 'grounding-before-messaging.sh',
       'compaction-recovery.sh', 'external-operation-gate.js', 'deferral-detector.js',
+      'analysis-paralysis-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
@@ -3652,12 +3660,13 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
+  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
       case 'deferral-detector': return this.getDeferralDetectorHook();
+      case 'analysis-paralysis-guard': return this.getAnalysisParalysisGuardHook();
       case 'post-action-reflection': return this.getPostActionReflectionHook();
       case 'external-communication-guard': return this.getExternalCommunicationGuardHook();
       case 'scope-coherence-collector': return this.getScopeCoherenceCollectorHook();
@@ -4796,6 +4805,103 @@ process.stdin.on('end', () => {
 
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
   } catch { /* don't break on errors */ }
+  process.exit(0);
+});
+`;
+  }
+
+  private getAnalysisParalysisGuardHook(): string {
+    return `#!/usr/bin/env node
+// Analysis-Paralysis Guard — catches agents stuck in a read-loop without acting.
+// PostToolUse hook. Tracks a sliding window of recent tool calls in a small
+// state file. If READ_ONLY tools (Read/Grep/Glob/WebFetch) fire 5+ times
+// in a row without an ACTION tool (Edit/Write/Bash/NotebookEdit) in between,
+// injects a "act or report blocked" checklist.
+//
+// Borrowed from gsd-executor's prompt — proven to kill a known failure mode
+// where agents spend the whole session researching and never commit.
+//
+// Cherry-picked into Instar's hook layer 2026-05-23 from the GSD-Instar
+// integration spike (docs/specs/topic-intent-layer.md + the spike report).
+// Signal-only — never blocks. Decision: approve + additionalContext.
+
+const fs = require('fs');
+const path = require('path');
+
+const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch']);
+const ACTION_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit']);
+const PARALYSIS_THRESHOLD = 5;
+const STATE_FILE_REL = '.instar/state/analysis-paralysis-state.json';
+
+let data = '';
+process.stdin.on('data', chunk => data += chunk);
+process.stdin.on('end', () => {
+  try {
+    const input = JSON.parse(data);
+    const toolName = input.tool_name || '';
+    if (!toolName) process.exit(0);
+
+    // Locate state file. CLAUDE_PROJECT_DIR is set by Claude Code on every hook.
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const stateFile = path.join(projectDir, STATE_FILE_REL);
+    let state = { recent: [] };
+    try {
+      if (fs.existsSync(stateFile)) {
+        state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+        if (!Array.isArray(state.recent)) state.recent = [];
+      }
+    } catch { state = { recent: [] }; }
+
+    const sessionId = input.session_id || 'default';
+    const now = new Date().toISOString();
+
+    // Action tool → reset the per-session window
+    if (ACTION_TOOLS.has(toolName)) {
+      state.recent = state.recent.filter(e => e.sessionId !== sessionId);
+      try {
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      } catch { /* best effort */ }
+      process.exit(0);
+    }
+
+    // Read-only tool → append to the window
+    if (READ_ONLY_TOOLS.has(toolName)) {
+      state.recent.push({ sessionId, tool: toolName, at: now });
+      // Cap total entries across sessions to bound state file size
+      if (state.recent.length > 200) state.recent = state.recent.slice(-200);
+      try {
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      } catch { /* best effort */ }
+
+      // Count contiguous read-only entries for THIS session
+      const sessionEntries = state.recent.filter(e => e.sessionId === sessionId);
+      const consecutiveRO = sessionEntries.length;
+
+      if (consecutiveRO >= PARALYSIS_THRESHOLD) {
+        const checklist = [
+          'ANALYSIS-PARALYSIS DETECTED — ' + consecutiveRO + ' consecutive read-only tool calls (' +
+            sessionEntries.slice(-5).map(e => e.tool).join(' → ') + ') without an Edit / Write / Bash.',
+          '',
+          'You have been researching without acting. Two paths from here:',
+          '',
+          '1. ACT — pick the smallest concrete action you can take with what you already know and DO it.',
+          '   The next Edit / Write / Bash resets this counter.',
+          '',
+          '2. REPORT BLOCKED — if you genuinely cannot proceed, state precisely what is missing:',
+          '   - a specific file or value you need access to',
+          '   - a decision only the user can make',
+          '   - an external dependency that has not been provisioned',
+          '',
+          'If neither path is true, you are avoiding the hard part. Pick option 1.',
+        ];
+        process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
+        process.exit(0);
+      }
+    }
+    // Other tools (TaskCreate, etc.) — pass through unchanged
+  } catch { /* never block on errors */ }
   process.exit(0);
 });
 `;
