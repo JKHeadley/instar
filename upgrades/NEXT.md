@@ -16,7 +16,7 @@ Stops the silently-stopped-sentinel topic-spam flood (incident 2026-05-22, where
 
 - The watchdog will no longer flag long-dead tmux sessions as "stuck" after a server restart — the noise stops at the source.
 - By default, sentinel events are housekeeping and stay in the logs. You won't see Telegram messages for them.
-- If you ever DO want a heads-up when a real session freezes mid-task, ask your agent to flip `monitoring.sentinelTelegramEscalation` to true. You'll get one consolidated message in the existing system topic, never new topics.
+- If you ever DO want a heads-up when a real session freezes mid-task, just ask your agent to turn on Telegram heads-ups for sentinel events. You'll get one consolidated message in the existing system topic, never new topics.
 
 ## Summary of New Capabilities
 

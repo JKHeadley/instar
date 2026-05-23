@@ -166,6 +166,16 @@ describe('Feature Delivery Completeness', () => {
       '/api/files/',              // alternate check for File Viewer
       'instar-boot.js',           // plist content check (migrateBootWrapperToCjs), NOT a CLAUDE.md section
       'instar-boot.cjs',          // plist content check (migrateBootWrapperToCjs), NOT a CLAUDE.md section
+      // Operational-knowledge sections — runtime self-heal / housekeeping that
+      // agents need awareness of, but that don't represent user-invokable
+      // capabilities. They live in migrator only, no templates.ts parity required.
+      'Version-Skew Self-Recovery',                       // major.minor lifeline coordination
+      'coordinated lifeline restart',                     // alternate phrase for Version-Skew
+      'restart-cascade dampener',                         // patch-level update self-heal
+      'Restart-cascade dampener',                         // alternate case for restart-cascade
+      'ORG-INTENT.md (Organizational Intent at Runtime)', // org-intent runtime contract
+      'sentinelTelegramEscalation',                       // silently-stopped sentinel delivery gate
+      'Sentinel Notifications (silently-stopped trio)',   // alternate heading phrase
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {
