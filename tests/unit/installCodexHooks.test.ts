@@ -60,6 +60,9 @@ describe('installCodexHooks', () => {
     // The external-operation gate is wired into both PreToolUse and PermissionRequest.
     expect(cfg.hooks.PreToolUse[0].hooks.some((h: any) => h.command.includes('external-operation-gate.js'))).toBe(true);
     expect(cfg.hooks.PermissionRequest[0].hooks.some((h: any) => h.command.includes('external-operation-gate.js'))).toBe(true);
+    // The shell-safety gate MUST be in PreToolUse — Codex's native shell/exec/apply_patch
+    // are the main destructive surface and external-operation-gate only covers mcp__*.
+    expect(cfg.hooks.PreToolUse[0].hooks.some((h: any) => h.command.includes('dangerous-command-guard.sh'))).toBe(true);
   });
 
   it('is idempotent — running twice yields identical config (no duplicate instar groups)', () => {

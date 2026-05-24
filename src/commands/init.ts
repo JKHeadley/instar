@@ -3855,7 +3855,12 @@ function installHooks(stateDir: string): void {
 # Dangerous command guard — safety infrastructure for autonomous agents.
 # Supports safety.level in .instar/config.json:
 #   Level 1 (default): Block and ask user. Level 2: Agent self-verifies.
+# Input: Claude passes the command as arg \$1; Codex (stdin-only) delivers the
+# hook event as JSON on stdin, so fall back to its tool_input.command.
 INPUT="$1"
+if [ -z "$INPUT" ]; then
+  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command','') or '')" 2>/dev/null)"
+fi
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
 
 # Read safety level from config

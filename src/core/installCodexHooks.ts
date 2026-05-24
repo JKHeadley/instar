@@ -67,10 +67,13 @@ export function buildInstarCodexHookGroups(
   });
 
   return {
-    // Pre-action gate: external-operation safety + grounding-before-messaging.
-    // matcher '*' = all tool calls; the script classifies and decides.
+    // Pre-action gate. matcher '*' = all tool calls; each script classifies and
+    // decides. dangerous-command-guard covers Codex's native shell/exec/apply_patch
+    // (the main destructive surface); external-operation-gate covers mcp__* tools;
+    // grounding-before-messaging gates messaging commands. All read tool_input.command
+    // from Codex's stdin payload (the scripts shim arg→stdin).
     PreToolUse: [
-      { matcher: '*', hooks: [node('external-operation-gate.js'), sh('grounding-before-messaging.sh')] },
+      { matcher: '*', hooks: [sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh')] },
     ],
     // Codex-only checkpoint. Routes to the same gate; the trust system
     // auto-decides (allow/deny) with NO human prompt so autonomy is preserved.

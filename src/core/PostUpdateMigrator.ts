@@ -4605,7 +4605,12 @@ echo "=== END SESSION START ==="
 # Dangerous command guard — safety infrastructure for autonomous agents.
 # Supports safety.level in .instar/config.json:
 #   Level 1 (default): Block and ask user. Level 2: Agent self-verifies.
+# Input: Claude passes the command as arg \$1; Codex (stdin-only) delivers the
+# hook event as JSON on stdin, so fall back to its tool_input.command.
 INPUT="$1"
+if [ -z "$INPUT" ]; then
+  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command','') or '')" 2>/dev/null)"
+fi
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
 
 # Read safety level from config
@@ -4683,9 +4688,13 @@ done
 # The 164th Lesson (Dawn): Advisory hooks are insufficient.
 # Grounding must be automatic — content injected, not pointed to.
 #
-# Installed by instar during setup. Runs as a Claude Code PreToolUse hook on Bash.
+# Installed by instar during setup. Runs as a PreToolUse hook (Claude: Bash arg;
+# Codex: stdin JSON tool_input.command).
 
 INPUT="$1"
+if [ -z "$INPUT" ]; then
+  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command','') or '')" 2>/dev/null)"
+fi
 
 # Detect messaging commands (telegram-reply, email sends, API message posts, etc.)
 if echo "$INPUT" | grep -qE "(telegram-reply|send-email|send-message|POST.*/telegram/reply|POST.*/message|/reply)"; then
