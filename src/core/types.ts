@@ -1758,6 +1758,11 @@ export interface InstarConfig {
   onboarding?: OnboardingConfig;
   /** Adaptive Autonomy — unified autonomy profile that coordinates all subsystems */
   autonomyProfile?: AutonomyProfileLevel;
+  /** Multi-session autonomy — concurrent per-topic autonomous jobs */
+  autonomousSessions?: {
+    /** Max concurrent autonomous jobs (default 5). New starts beyond this are refused. */
+    maxConcurrent?: number;
+  };
   /** Notification preferences for autonomy events */
   notifications?: NotificationPreferences;
   /** Response Review Pipeline (Coherence Gate) configuration */

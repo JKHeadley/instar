@@ -33,6 +33,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -3538,6 +3539,13 @@ export class TelegramAdapter implements MessagingAdapter {
             if (this.onSentinelKillSession) {
               this.onSentinelKillSession(sessionName);
             }
+            // Also clear this topic's autonomous job so it doesn't zombie-resume
+            // when a fresh session spawns. (Multi-session: per-topic state file.)
+            try {
+              if (stopAutonomousTopic(this.stateDir, String(numericTopicId))) {
+                console.log(`[sentinel] Cleared autonomous job for topic ${numericTopicId}`);
+              }
+            } catch { /* best-effort */ }
             // Never include raw sentinel reasons in user-facing messages.
             // Log the full reason server-side, show only clean messages to users.
             if (classification.reason) {

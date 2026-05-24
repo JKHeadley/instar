@@ -19,14 +19,23 @@ concurrency cap, quota gate, stop-all/per-topic stop, and the list API.
 
 ## Decision-point inventory
 
-- `autonomous-stop-hook.sh` — state-file selection + ownership — **modify**: per-topic file
-  preferred, legacy fallback + migrate; ownership implicit for per-topic files, v1.2.55
-  topic-or-liveness backstop retained for the legacy path. (`.claude/`, not `src/`.)
-- `setup-autonomous.sh` — state-file write path — **modify**: per-topic when a report topic
-  is present, legacy single-file otherwise. (`.claude/`, not `src/`.)
-- `PostUpdateMigrator.migrateAutonomousStopHookTopicKeyed` — **modify**: marker changed to
-  the multi-session signature so v1.2.55 installs upgrade; now also re-copies the setup
-  script. Idempotent + stock-fingerprint guarded. No new gating/decision authority.
+- `autonomous-stop-hook.sh` — state-file selection + ownership + paused-check — **modify**:
+  per-topic file preferred, legacy fallback + migrate; implicit ownership for per-topic
+  files; honors `paused: true` (allow exit). (`.claude/`, not `src/`.)
+- `setup-autonomous.sh` — write path + start gate — **modify**: per-topic write; refuses a
+  new start when `GET /autonomous/can-start` denies (cap/quota), local cap backstop. (`.claude/`.)
+- `src/core/AutonomousSessions.ts` — **add**: list/count/cap+quota/stop/pause control layer.
+  `canStartAutonomousJob` is the only decision point (cap-then-quota, refuse-new) — it reads
+  config + the live quota result (full context), not a brittle filter.
+- `src/server/routes.ts` — **add** four `/autonomous/*` routes (list, can-start, stop-all,
+  stop-topic) — thin wrappers over the module.
+- `src/server/CapabilityIndex.ts` — **add** the `/autonomous` capability entry (discoverability
+  lint requires every route prefix be claimed; this is agent-facing).
+- `src/messaging/TelegramAdapter.ts` — **modify**: on a sentinel emergency-stop, also clear
+  that topic's autonomous job so it can't zombie-resume on the next session.
+- `src/core/types.ts` — **add** optional `autonomousSessions.maxConcurrent` (default 5 in code).
+- `PostUpdateMigrator.migrateAutonomousStopHookTopicKeyed` — **modify** (Phase 1): multi-session
+  marker; re-copies hook + setup. No new decision authority.
 
 ## 1. Over-block (trapping a session that should exit)
 
@@ -48,9 +57,10 @@ dedicated-migration pattern (`migrateBuildSkillMethodology`).
 
 ## 4. Blocking authority
 
-- [x] The hook remains a consumer of the topic registry + per-topic state — no new brittle
-  authority in this phase. (The cap/quota gate in Phase 2 will be a full-context gate, not a
-  low-context filter.)
+- [x] The hook remains a consumer of the topic registry + per-topic state. The one new
+  authority is `canStartAutonomousJob` (the cap/quota start gate): it refuses NEW starts only,
+  reading config (`maxConcurrent`) + the live `QuotaTracker` result — a full-context gate, not
+  a brittle low-context filter. It never preempts a running job (that's the pause path).
 
 ## 5. Interactions
 
@@ -64,8 +74,11 @@ dedicated-migration pattern (`migrateBuildSkillMethodology`).
 ## 6. External surfaces
 
 - **Filesystem:** new directory `.instar/autonomous/` holding per-topic state files. The
-  legacy file is moved (not copied) on migration. No reads outside the project dir.
-- No new network/endpoint surface in this phase.
+  legacy file is moved (not copied) on migration. `autonomous-emergency-stop` flag written by
+  stop-all. No reads outside the project dir.
+- **HTTP:** four new authed routes under `/autonomous/*` (list / can-start / stop-all /
+  stop-topic), registered in the capability index. Read + control over local state files only;
+  no new external/credentialed calls.
 
 ## 7. Rollback cost
 

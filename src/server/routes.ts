@@ -16,7 +16,7 @@ import type { SessionManager } from '../core/SessionManager.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
-import type { InstarConfig } from '../core/types.js';
+import type { InstarConfig, JobPriority } from '../core/types.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
@@ -147,6 +147,13 @@ import type { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
 import type { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import type { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import type { AutonomyProfileLevel } from '../core/types.js';
+import {
+  listAutonomousJobs,
+  canStartAutonomousJob,
+  stopAutonomousTopic,
+  stopAllAutonomousJobs,
+  DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
+} from '../core/AutonomousSessions.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
@@ -2900,6 +2907,39 @@ export function createRoutes(ctx: RouteContext): Router {
   // Returns a structured self-portrait of what this agent has available.
   // Agents should query this at session start rather than guessing
   // about what infrastructure exists.
+
+  // ── Multi-session autonomy: list / start-gate / stop ──────────────────
+  // Per-topic autonomous jobs live at .instar/autonomous/<topicId>.local.md.
+  // These routes are the management surface; the stop hook is the per-session enforcer.
+  router.get('/autonomous/sessions', (_req, res) => {
+    res.json({ sessions: listAutonomousJobs(ctx.config.stateDir) });
+  });
+
+  router.get('/autonomous/can-start', (req, res) => {
+    const priority = req.query.priority as JobPriority | undefined;
+    const maxConcurrent =
+      ctx.config.autonomousSessions?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_AUTONOMOUS;
+    const result = canStartAutonomousJob({
+      stateDir: ctx.config.stateDir,
+      maxConcurrent,
+      priority,
+      quotaCanStart: ctx.quotaTracker
+        ? (p) => ctx.quotaTracker!.shouldSpawnSession(p)
+        : undefined,
+    });
+    res.json(result);
+  });
+
+  router.post('/autonomous/stop-all', (_req, res) => {
+    const result = stopAllAutonomousJobs(ctx.config.stateDir);
+    res.json({ ok: true, ...result });
+  });
+
+  router.post('/autonomous/sessions/:topic/stop', (req, res) => {
+    const topic = req.params.topic;
+    const stopped = stopAutonomousTopic(ctx.config.stateDir, topic);
+    res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
+  });
 
   router.get('/capabilities', (_req, res) => {
     // /capabilities used to be a 440-line hand-curated object literal — the

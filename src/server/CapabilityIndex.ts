@@ -27,6 +27,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { activeAutonomousJobs, DEFAULT_MAX_CONCURRENT_AUTONOMOUS } from '../core/AutonomousSessions.js';
 import type { SecretDrop } from './SecretDrop.js';
 import type { RouteContext } from './routes.js';
 
@@ -628,6 +629,27 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             ],
           }
         : { enabled: false },
+  },
+  {
+    key: 'autonomousSessions',
+    prefixes: ['/autonomous'],
+    description: 'Multi-session autonomy — concurrent per-topic autonomous jobs (list / start-gate / stop)',
+    build: ({ ctx }) => {
+      const maxConcurrent =
+        ctx.config.autonomousSessions?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_AUTONOMOUS;
+      const active = activeAutonomousJobs(ctx.config.stateDir);
+      return {
+        maxConcurrent,
+        activeCount: active.length,
+        activeTopics: active.map((j) => j.topic ?? 'legacy'),
+        endpoints: [
+          'GET /autonomous/sessions — list all autonomous jobs (topic, goal, iteration, paused)',
+          'GET /autonomous/can-start?priority= — cap + quota gate to consult before starting a new job',
+          'POST /autonomous/stop-all — stop every autonomous job ("stop everything")',
+          'POST /autonomous/sessions/:topic/stop — stop one topic\'s job',
+        ],
+      };
+    },
   },
 ];
 
