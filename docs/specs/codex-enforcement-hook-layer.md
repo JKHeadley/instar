@@ -93,6 +93,12 @@ These are the **same field names Claude Code uses**. So the gate scripts' stdin 
 
 This materially shrinks P2 from "translation shim" to "small path-resolution fallback + PermissionRequest output check."
 
+**FURTHER VERIFIED (audit of the gate-script sources in PostUpdateMigrator):** the scripts ALREADY carry the path fallback. Bash gate scripts use `${CLAUDE_PROJECT_DIR:-.}/.instar` and the JS gates use `process.env.CLAUDE_PROJECT_DIR || process.cwd()` (or `|| '.'`). Because Codex runs each hook with `cwd` = the project dir, the `:-.`/`process.cwd()` fallbacks resolve **correctly** when `CLAUDE_PROJECT_DIR` is unset. So no script edit is required for path resolution. **P2 collapses to verification, not modification:**
+- (a) Confirm `PermissionRequest` honors exit-2 to block (the doc says hooks block via exit-2 + stderr OR `permissionDecision: deny`); if exit-2 alone is insufficient for PermissionRequest, add a tiny per-event emit of the `permissionDecision` JSON.
+- (b) An integration test piping a Codex-shaped PreToolUse payload (CLAUDE_PROJECT_DIR unset, cwd=projectDir) into `external-operation-gate.js` → asserts correct allow/deny via the server gate.
+- (c) The live codey block-test (P5) is the ultimate proof.
+This means the enforcement layer is substantially closer than the spec originally assumed — the gates are near-framework-agnostic already; P1 supplied the missing registration, and P2 is mostly proving the scripts run correctly under Codex.
+
 ### 4.3 Script I/O reconciliation
 
 The gate scripts currently assume Claude's hook stdin/stdout/exit contract. Codex's is Claude-compatible but not identical (event names, `hookSpecificOutput` shape). Two options:
