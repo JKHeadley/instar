@@ -4,25 +4,22 @@
 # Prevents session exit when autonomous mode is active.
 # Feeds the goal and task list back to continue working.
 #
-# TOPIC-KEYED OWNERSHIP (primary): the autonomous job is identified by the
-# TOPIC it serves, not by the Claude session UUID. The topic is a stable
-# "street address" — when a session hits the memory limit and restarts, its
-# UUID rotates (a new badge) but instar respawns it into the SAME tmux session
-# name, and the topic-session registry still maps that name to the same topic.
-# So whoever is running in the topic's session is recognized as continuing the
-# job, restart or no restart. This fixes the silent-failure bug where a restart
-# rotated the UUID, mismatched the state file, and let autonomy die unnoticed.
+# MULTI-SESSION (per-topic state): each autonomous job has its own state file at
+# .instar/autonomous/<topicId>.local.md, so multiple topics can run autonomous
+# jobs concurrently without colliding. This session resolves its own topic (from
+# its tmux session name via the topic-session registry) and reads THAT topic's
+# state file. Ownership is therefore implicit: if my topic's file exists and is
+# active, I am its worker. A legacy single-file job (.instar/autonomous-state.local.md)
+# is still honored for back-compat and migrated to the per-topic path on first touch.
 #
-# LIVENESS-GATED BACKSTOP (rare): when topic resolution is unavailable (no tmux,
-# or the topic isn't in the registry) the hook falls back to session-id matching.
-# A session-id mismatch is then gated by a liveness check on the recorded owner
-# (is its transcript still growing?) — a dead owner is adopted, a live one is
-# left alone. This is the demoted role of the old liveness idea: a thin edge
-# guard, not the main mechanism.
+# TOPIC-KEYED OWNERSHIP survives restarts: a memory-limit restart rotates the
+# Claude session UUID but instar respawns into the SAME tmux name, which still
+# maps to the same topic — so the restarted session reads the same per-topic file
+# and keeps going. (Legacy-file path keeps the v1.2.55 topic-or-liveness backstop.)
 #
-# RECOVERY NOTE: on an actual restart-and-resume (topic verified, but the
-# session UUID changed) the hook emits ONE user-facing one-line note and an
-# audit record, then records the new UUID so the note never repeats.
+# RECOVERY NOTE: on a real restart-and-resume (topic file found but the recorded
+# session UUID changed) the hook emits ONE channel-neutral recovery note + audit
+# record, then records the new UUID so it never repeats.
 #
 # RESPECTS: emergency stop, duration expiry, genuine completion (promise).
 
@@ -33,29 +30,11 @@ set -uo pipefail   # NOTE: -e intentionally omitted; field lookups for optional
 # Read hook input from stdin
 HOOK_INPUT=$(cat)
 
-STATE_FILE=".instar/autonomous-state.local.md"
 REGISTRY_FILE=".instar/topic-session-registry.json"
 RECOVERY_AUDIT=".instar/autonomous-recovery.jsonl"
+LEGACY_STATE=".instar/autonomous-state.local.md"
+MULTI_DIR=".instar/autonomous"
 LIVENESS_SECS="${INSTAR_AUTONOMOUS_LIVENESS_SECS:-120}"
-
-if [[ ! -f "$STATE_FILE" ]]; then
-  # No active autonomous session — allow exit
-  exit 0
-fi
-
-# Parse YAML frontmatter (between the first two --- lines)
-FRONTMATTER=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE")
-
-# Safe frontmatter field reader — never trips pipefail when a key is absent.
-fm_get() {
-  local key="$1"
-  printf '%s\n' "$FRONTMATTER" | grep "^${key}:" | head -1 | sed "s/^${key}: *//" | tr -d '"' || true
-}
-
-ACTIVE=$(fm_get active)
-if [[ "$ACTIVE" != "true" ]]; then
-  exit 0
-fi
 
 # ── Inputs from the hook ──────────────────────────────────────────────
 HOOK_SESSION=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
@@ -67,7 +46,88 @@ if [[ -z "$HOOK_SESSION" ]]; then
   exit 0
 fi
 
-# ── State fields ──────────────────────────────────────────────────────
+# ── Resolve MY tmux session name (the stable address) ─────────────────
+# Test/override seam: INSTAR_HOOK_TMUX_SESSION (if the var is set at all, even
+# empty, it wins — empty means "no tmux"). INSTAR_HOOK_NO_TMUX=1 forces empty.
+resolve_my_tmux() {
+  if [[ "${INSTAR_HOOK_NO_TMUX:-}" == "1" ]]; then
+    echo ""
+    return
+  fi
+  if [[ -n "${INSTAR_HOOK_TMUX_SESSION+x}" ]]; then
+    echo "${INSTAR_HOOK_TMUX_SESSION}"
+    return
+  fi
+  tmux display-message -p '#S' 2>/dev/null || echo ""
+}
+MY_TMUX=$(resolve_my_tmux)
+
+# Reverse-lookup: which topic does MY tmux session serve? (topicToSession is
+# topic→tmux; we invert it to find my topic.)
+MY_TOPIC=""
+if [[ -n "$MY_TMUX" ]] && [[ -f "$REGISTRY_FILE" ]]; then
+  MY_TOPIC=$(INSTAR_MY_TMUX="$MY_TMUX" python3 -c "
+import json, os
+try:
+    reg = json.load(open('$REGISTRY_FILE'))
+    me = os.environ['INSTAR_MY_TMUX']
+    t2s = reg.get('topicToSession') or {}
+    hit = [k for k, v in t2s.items() if v == me]
+    print(hit[0] if hit else '')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+fi
+
+# Helper: read a frontmatter field from an arbitrary state file (pipefail-safe).
+fm_get_from() {
+  local file="$1" key="$2"
+  sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$file" 2>/dev/null | grep "^${key}:" | head -1 | sed "s/^${key}: *//" | tr -d '"' || true
+}
+
+# ── Select the state file (per-topic preferred; legacy fallback + migrate) ──
+STATE_FILE=""
+OWNED_VIA_TOPIC="false"
+PER_TOPIC_FILE=""
+[[ -n "$MY_TOPIC" ]] && PER_TOPIC_FILE="$MULTI_DIR/${MY_TOPIC}.local.md"
+
+if [[ -n "$PER_TOPIC_FILE" ]] && [[ -f "$PER_TOPIC_FILE" ]]; then
+  STATE_FILE="$PER_TOPIC_FILE"
+  OWNED_VIA_TOPIC="true"
+elif [[ -f "$LEGACY_STATE" ]]; then
+  # A legacy single-file job exists. If it belongs to MY topic, migrate it to the
+  # per-topic path (idempotent, never disrupts the running job — same content).
+  LEGACY_TOPIC=$(fm_get_from "$LEGACY_STATE" report_topic)
+  if [[ -n "$MY_TOPIC" ]] && [[ "$LEGACY_TOPIC" == "$MY_TOPIC" ]]; then
+    mkdir -p "$MULTI_DIR"
+    if mv "$LEGACY_STATE" "$PER_TOPIC_FILE" 2>/dev/null; then
+      STATE_FILE="$PER_TOPIC_FILE"; OWNED_VIA_TOPIC="true"
+      echo "[autonomous] migrated legacy state → $PER_TOPIC_FILE" >&2
+    else
+      STATE_FILE="$LEGACY_STATE"
+    fi
+  else
+    # Legacy job for a different/unknown topic — honor it via the legacy
+    # ownership logic below (preserves v1.2.55 behavior for in-flight jobs).
+    STATE_FILE="$LEGACY_STATE"
+  fi
+else
+  # No autonomous job for this session anywhere — allow exit.
+  exit 0
+fi
+
+# ── Read the selected state file ──────────────────────────────────────
+FRONTMATTER=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE")
+fm_get() {
+  local key="$1"
+  printf '%s\n' "$FRONTMATTER" | grep "^${key}:" | head -1 | sed "s/^${key}: *//" | tr -d '"' || true
+}
+
+ACTIVE=$(fm_get active)
+if [[ "$ACTIVE" != "true" ]]; then
+  exit 0
+fi
+
 REPORT_TOPIC=$(fm_get report_topic)
 # Channel that owns this job — recovery note routes here. Default telegram for
 # back-compat (state files written before channel-neutral delivery existed).
@@ -88,26 +148,24 @@ if [[ -n "$STATE_SESSION" ]] && ! [[ "$STATE_SESSION" =~ $UUID_REGEX ]]; then
   STATE_SESSION=""
 fi
 
-# ── Resolve MY topic (the stable address) ─────────────────────────────
-# Test/override seam: INSTAR_HOOK_TMUX_SESSION (if the var is set at all, even
-# empty, it wins — empty means "no tmux"). INSTAR_HOOK_NO_TMUX=1 forces empty.
-resolve_my_tmux() {
-  if [[ "${INSTAR_HOOK_NO_TMUX:-}" == "1" ]]; then
-    echo ""
-    return
-  fi
-  if [[ -n "${INSTAR_HOOK_TMUX_SESSION+x}" ]]; then
-    echo "${INSTAR_HOOK_TMUX_SESSION}"
-    return
-  fi
-  tmux display-message -p '#S' 2>/dev/null || echo ""
-}
-MY_TMUX=$(resolve_my_tmux)
+# ── Ownership decision ────────────────────────────────────────────────
+# OWNER=true means: this session IS the autonomous worker; block its exit.
+# OWNER_METHOD: topic (per-topic file) | topic-legacy | session | bootstrap | adopt-dead.
+OWNER="false"
+OWNER_METHOD=""
+RESTART_DETECTED="false"
 
-# Reverse-lookup: which tmux session owns REPORT_TOPIC per the registry?
-OWNER_TMUX=""
-if [[ -n "$REPORT_TOPIC" ]] && [[ -f "$REGISTRY_FILE" ]]; then
-  OWNER_TMUX=$(REPORT_TOPIC="$REPORT_TOPIC" python3 -c "
+if [[ "$OWNED_VIA_TOPIC" == "true" ]]; then
+  # Reading MY topic's own file — ownership is implicit and unambiguous.
+  OWNER="true"; OWNER_METHOD="topic"
+  if [[ -n "$STATE_SESSION" ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
+    RESTART_DETECTED="true"
+  fi
+else
+  # ── Legacy single-file path: v1.2.55 topic-keyed-or-liveness-backstop ──
+  OWNER_TMUX=""
+  if [[ -n "$REPORT_TOPIC" ]] && [[ -f "$REGISTRY_FILE" ]]; then
+    OWNER_TMUX=$(REPORT_TOPIC="$REPORT_TOPIC" python3 -c "
 import json, os
 try:
     reg = json.load(open('$REGISTRY_FILE'))
@@ -115,60 +173,46 @@ try:
 except Exception:
     print('')
 " 2>/dev/null || echo "")
-fi
+  fi
 
-# ── Ownership decision ────────────────────────────────────────────────
-# OWNER=true means: this session IS the autonomous worker; block its exit.
-# OWNER_METHOD records how we decided (topic | session | bootstrap | adopt-dead).
-OWNER="false"
-OWNER_METHOD=""
-RESTART_DETECTED="false"
-
-if [[ -n "$MY_TMUX" ]] && [[ -n "$OWNER_TMUX" ]]; then
-  # Topic resolution is conclusive.
-  if [[ "$MY_TMUX" == "$OWNER_TMUX" ]]; then
-    OWNER="true"; OWNER_METHOD="topic"
-    # Restart? Recorded UUID is a real UUID but differs from the live one.
-    if [[ -n "$STATE_SESSION" ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
-      RESTART_DETECTED="true"
+  if [[ -n "$MY_TMUX" ]] && [[ -n "$OWNER_TMUX" ]]; then
+    if [[ "$MY_TMUX" == "$OWNER_TMUX" ]]; then
+      OWNER="true"; OWNER_METHOD="topic-legacy"
+      if [[ -n "$STATE_SESSION" ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
+        RESTART_DETECTED="true"
+      fi
+    else
+      exit 0   # legacy job belongs to a different session's topic
     fi
   else
-    # Registry says topic T is served by a different session → not me.
-    exit 0
-  fi
-else
-  # ── Backstop: topic unresolved (no tmux, or topic not in registry) ──
-  if [[ -z "$STATE_SESSION" ]]; then
-    # Self-bootstrap: first session to fire claims the job.
-    OWNER="true"; OWNER_METHOD="bootstrap"
-  elif [[ "$STATE_SESSION" == "$HOOK_SESSION" ]]; then
-    OWNER="true"; OWNER_METHOD="session"
-  else
-    # Session-id mismatch with no topic signal. Gate on recorded owner liveness.
-    OWNER_ALIVE="false"
-    if [[ -n "$TRANSCRIPT_PATH" ]]; then
-      OWNER_TRANSCRIPT="$(dirname "$TRANSCRIPT_PATH")/${STATE_SESSION}.jsonl"
-      if [[ -f "$OWNER_TRANSCRIPT" ]]; then
-        NOW_E=$(date +%s)
-        # GNU stat (-c %Y) first — Linux is the common host (and CI). BSD stat
-        # (-f %m) second for macOS. NOTE: GNU `stat -f` is filesystem mode and
-        # SUCCEEDS with non-numeric output, so BSD-first would mask the GNU path
-        # on Linux and feed garbage into the arithmetic below. The numeric guard
-        # is the backstop: a non-numeric mtime is treated as 0 (very old → dead).
-        MTIME=$(stat -c %Y "$OWNER_TRANSCRIPT" 2>/dev/null || stat -f %m "$OWNER_TRANSCRIPT" 2>/dev/null || echo 0)
-        [[ "$MTIME" =~ ^[0-9]+$ ]] || MTIME=0
-        AGE=$(( NOW_E - MTIME ))
-        if [[ $MTIME -gt 0 ]] && [[ $AGE -lt $LIVENESS_SECS ]]; then
-          OWNER_ALIVE="true"
+    # Topic unresolved — session-id backstop, liveness-gated.
+    if [[ -z "$STATE_SESSION" ]]; then
+      OWNER="true"; OWNER_METHOD="bootstrap"
+    elif [[ "$STATE_SESSION" == "$HOOK_SESSION" ]]; then
+      OWNER="true"; OWNER_METHOD="session"
+    else
+      OWNER_ALIVE="false"
+      if [[ -n "$TRANSCRIPT_PATH" ]]; then
+        OWNER_TRANSCRIPT="$(dirname "$TRANSCRIPT_PATH")/${STATE_SESSION}.jsonl"
+        if [[ -f "$OWNER_TRANSCRIPT" ]]; then
+          NOW_E=$(date +%s)
+          # GNU stat (-c %Y) first (Linux/CI); BSD stat (-f %m) fallback (macOS).
+          # GNU `stat -f` is filesystem mode and succeeds with non-numeric output,
+          # so BSD-first would mask the GNU path on Linux; numeric guard treats a
+          # bad mtime as 0 (very old → dead) rather than crashing the arithmetic.
+          MTIME=$(stat -c %Y "$OWNER_TRANSCRIPT" 2>/dev/null || stat -f %m "$OWNER_TRANSCRIPT" 2>/dev/null || echo 0)
+          [[ "$MTIME" =~ ^[0-9]+$ ]] || MTIME=0
+          AGE=$(( NOW_E - MTIME ))
+          if [[ $MTIME -gt 0 ]] && [[ $AGE -lt $LIVENESS_SECS ]]; then
+            OWNER_ALIVE="true"
+          fi
         fi
       fi
+      if [[ "$OWNER_ALIVE" == "true" ]]; then
+        exit 0   # a genuinely different, live session owns this — don't steal
+      fi
+      OWNER="true"; OWNER_METHOD="adopt-dead"; RESTART_DETECTED="true"
     fi
-    if [[ "$OWNER_ALIVE" == "true" ]]; then
-      # A genuinely different, live session owns this — don't steal.
-      exit 0
-    fi
-    # Recorded owner is dead/unknown → adopt the job.
-    OWNER="true"; OWNER_METHOD="adopt-dead"; RESTART_DETECTED="true"
   fi
 fi
 
@@ -207,11 +251,12 @@ if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
   fi
 fi
 
-# Emergency stop
+# Emergency stop (global — halts every autonomous job on its next fire)
 if [[ -f ".instar/autonomous-emergency-stop" ]]; then
   echo "🛑 Autonomous mode: Emergency stop detected."
   rm -f "$STATE_FILE"
-  rm -f ".instar/autonomous-emergency-stop"
+  # NOTE: the emergency flag is left in place so OTHER topics' hooks also see it
+  # and clear their own per-topic files; stop-all clears the flag when complete.
   exit 0
 fi
 
@@ -235,9 +280,6 @@ if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
 fi
 
 # ── Not terminal: we are continuing. Handle restart-resume recovery note. ──
-# Always reconcile the recorded session_id to the live one (so the backstop and
-# restart-detection stay accurate). Emit the one-line note exactly once, only
-# when a real restart was detected (topic-verified or dead-owner adoption).
 record_session_id() {
   local new_id="$1"
   local tmp="${STATE_FILE}.sid.$$"
@@ -246,11 +288,8 @@ record_session_id() {
   fi
 }
 
-# Channel-neutral delivery seam. The hook does NOT assume Telegram — it routes
-# the note to whatever channel owns the job. Telegram is wired here; the other
-# channels are owned by the unified notification layer tracked in the Channel
-# Parity initiative. Either way the durable audit record below is the source of
-# truth, so a not-yet-wired channel never silently misfires to Telegram.
+# Channel-neutral delivery seam (no Telegram assumption). Telegram wired; other
+# channels owned by the Channel Parity initiative. Audit record is the source of truth.
 deliver_recovery_note() {
   local channel="$1" target="$2" text="$3"
   [[ -z "$target" ]] && return 0
@@ -263,8 +302,6 @@ deliver_recovery_note() {
       fi
       ;;
     *)
-      # slack | whatsapp | imessage | future — delivered by the unified notify
-      # layer (Channel Parity initiative). Recorded to the audit trail above.
       echo "[autonomous] recovery note for channel '$channel' recorded to audit; live delivery pending the Channel Parity initiative" >&2
       ;;
   esac
@@ -273,11 +310,9 @@ deliver_recovery_note() {
 if [[ "$RESTART_DETECTED" == "true" ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
   ITER_LABEL="${ITERATION:-?}"
   NOTE="Heads up — my session restarted mid-run and I've picked the autonomous job back up (topic ${REPORT_TOPIC:-?}, iteration ${ITER_LABEL}). No action needed."
-  # Durable, channel-neutral audit record (always).
   TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '{"ts":"%s","event":"restart-resume","channel":"%s","topic":"%s","oldSession":"%s","newSession":"%s","method":"%s","iteration":"%s"}\n' \
     "$TS" "$REPORT_CHANNEL" "${REPORT_TOPIC:-}" "$STATE_SESSION" "$HOOK_SESSION" "$OWNER_METHOD" "$ITER_LABEL" >> "$RECOVERY_AUDIT" 2>/dev/null || true
-  # Best-effort user-facing delivery via the channel that owns the job.
   deliver_recovery_note "$REPORT_CHANNEL" "$REPORT_TOPIC" "$NOTE"
   echo "[autonomous] restart-resume: channel=$REPORT_CHANNEL topic=${REPORT_TOPIC:-?} old=$STATE_SESSION new=$HOOK_SESSION method=$OWNER_METHOD" >&2
 fi

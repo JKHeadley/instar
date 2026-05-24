@@ -36,7 +36,8 @@ let home: string;
 let transcriptsDir: string;
 
 function statePath() {
-  return path.join(home, '.instar', 'autonomous-state.local.md');
+  // Multi-session: the job lives in its per-topic state file.
+  return path.join(home, '.instar', 'autonomous', `${TOPIC}.local.md`);
 }
 function auditPath() {
   return path.join(home, '.instar', 'autonomous-recovery.jsonl');
@@ -84,7 +85,7 @@ function fire(sessionId: string, lastText = ''): { decision: string | null; exit
 describe('E2E: autonomous restart-resume lifecycle', () => {
   beforeAll(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-restart-e2e-'));
-    fs.mkdirSync(path.join(home, '.instar'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.instar', 'autonomous'), { recursive: true });
     transcriptsDir = path.join(home, 'transcripts');
     fs.mkdirSync(transcriptsDir, { recursive: true });
     // Topic 9984 is served by the TMUX session — the stable address.

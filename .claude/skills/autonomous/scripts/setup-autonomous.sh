@@ -93,10 +93,19 @@ if [[ -z "$COMPLETION_PROMISE" ]]; then
   COMPLETION_PROMISE="ALL_TASKS_COMPLETE"
 fi
 
-# Create state file
+# Create state file. Multi-session: each topic gets its own state file at
+# .instar/autonomous/<topicId>.local.md so multiple topics run concurrent
+# autonomous jobs without collision. With no report topic, fall back to the
+# legacy single-file path (one-at-a-time, back-compat).
 mkdir -p .instar
+if [[ -n "$REPORT_TOPIC" ]]; then
+  mkdir -p .instar/autonomous
+  STATE_PATH=".instar/autonomous/${REPORT_TOPIC}.local.md"
+else
+  STATE_PATH=".instar/autonomous-state.local.md"
+fi
 
-cat > .instar/autonomous-state.local.md <<EOF
+cat > "$STATE_PATH" <<EOF
 ---
 active: true
 iteration: 1
