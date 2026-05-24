@@ -28,8 +28,8 @@ the run exits. This is the loop's continue/stop authority, a full-context model 
 When I work autonomously now, I don't get to declare myself finished — a separate judge checks
 a real finish-line you set (like "all tests pass") and only lets me stop when it's actually
 true. If that judge can't be reached, I keep working rather than risk a false "done." It's the
-same idea as the new `/goal` feature, built into our autonomous mode so it works on any
-framework. Nothing to set up; existing agents get it on their next update.
+same idea as the new goal feature in Claude Code and Codex, built into our autonomous mode so it
+works on any framework. Nothing to set up; existing agents get it on their next update.
 
 ## Summary of New Capabilities
 
