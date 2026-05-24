@@ -145,6 +145,7 @@ ITERATION=$(fm_get iteration)
 DURATION_SECONDS=$(fm_get duration_seconds)
 STARTED_AT=$(fm_get started_at)
 COMPLETION_PROMISE=$(fm_get completion_promise)
+COMPLETION_CONDITION=$(fm_get completion_condition)
 
 # Validate recorded session_id is a real UUID. Claude sometimes writes a custom
 # string instead of $CLAUDE_CODE_SESSION_ID; non-UUID values are treated as
@@ -267,7 +268,37 @@ if [[ -f ".instar/autonomous-emergency-stop" ]]; then
   exit 0
 fi
 
-# Completion promise (genuine completion)
+# Completion CONDITION — independent evaluator (mirrors /goal). Authoritative when
+# set; the self-declared promise below is the legacy fallback. FAIL-SAFE: if the
+# evaluator is unreachable or unsure, we keep working — never a false "done".
+EVAL_REASON=""
+if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
+  EVAL_MET=""
+  if [[ -n "${INSTAR_HOOK_EVAL_OVERRIDE:-}" ]]; then
+    # Test seam: "met" | "not-met" short-circuits the live evaluator call.
+    [[ "$INSTAR_HOOK_EVAL_OVERRIDE" == "met" ]] && EVAL_MET="true"
+    EVAL_REASON="override:$INSTAR_HOOK_EVAL_OVERRIDE"
+  else
+    EVAL_TAIL=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -6 \
+      | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
+      | tail -c 8000 || echo "")
+    EVAL_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+    EVAL_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+    EVAL_RESP=$(jq -nc --arg c "$COMPLETION_CONDITION" --arg t "$EVAL_TAIL" '{condition:$c,transcriptTail:$t}' \
+      | curl -s -m 35 -H "Authorization: Bearer $EVAL_AUTH" -H 'Content-Type: application/json' \
+        --data-binary @- "http://localhost:${EVAL_PORT}/autonomous/evaluate-completion" 2>/dev/null || echo "")
+    EVAL_MET=$(printf '%s' "$EVAL_RESP" | jq -r '.met // empty' 2>/dev/null || echo "")
+    EVAL_REASON=$(printf '%s' "$EVAL_RESP" | jq -r '.reason // empty' 2>/dev/null || echo "")
+  fi
+  if [[ "$EVAL_MET" == "true" ]]; then
+    echo "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+    rm -f "$STATE_FILE"
+    exit 0
+  fi
+  # Not met / unreachable → keep working; EVAL_REASON (if any) becomes next-turn guidance.
+fi
+
+# Completion promise (genuine completion — legacy/self-declared fallback)
 if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
   LAST_LINE=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 || echo "")
   if [[ -n "$LAST_LINE" ]]; then
@@ -393,7 +424,16 @@ else
   TIME_MSG="no time limit"
 fi
 
-SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise> | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
+# When a completion CONDITION is set, an independent judge decides "done" — steer
+# toward the condition + feed back the judge's latest reason (mirrors /goal). When
+# only a legacy promise is set, keep the self-declared-promise directive.
+if [[ -n "$COMPLETION_CONDITION" ]]; then
+  GUIDANCE=""
+  [[ -n "$EVAL_REASON" ]] && GUIDANCE=" | Not done yet: ${EVAL_REASON}"
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Keep working until this is TRUE: ${COMPLETION_CONDITION}${GUIDANCE} | An independent check decides done from what you SURFACE — run the real checks and show the evidence. Do NOT defer — do it now${REPORT_DIRECTIVE}"
+else
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise> | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
+fi
 
 # Block exit and feed prompt back
 jq -n \

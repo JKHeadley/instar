@@ -12,6 +12,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import express from 'express';
 import { createRoutes } from '../../src/server/routes.js';
+import { CompletionEvaluator } from '../../src/core/CompletionEvaluator.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,7 +55,16 @@ describe('Multi-session autonomy API (integration)', () => {
       commitmentTracker: null, semanticMemory: null, activitySentinel: null, workingMemory: null,
       quotaManager: null, systemReviewer: null, capabilityMapper: null, topicResumeMap: null,
       autonomyManager: null as any, trustElevationTracker: null as any, autonomousEvolution: null,
-      discoveryEvaluator: null, startTime: new Date(),
+      discoveryEvaluator: null,
+      // Stub IntelligenceProvider: "MET" only when the transcript mentions "passed".
+      completionEvaluator: new CompletionEvaluator({
+        intelligence: {
+          async evaluate(prompt: string) {
+            return /passed/i.test(prompt) ? 'MET\nthe transcript shows tests passed' : 'NOT_MET\nno passing evidence yet';
+          },
+        },
+      }),
+      startTime: new Date(),
     } as any);
     app.use(router);
     await new Promise<void>((resolve) => {
@@ -113,5 +123,32 @@ describe('Multi-session autonomy API (integration)', () => {
     expect((await res.json()).ok).toBe(true);
     const list = await (await fetch(`${baseUrl}/autonomous/sessions`)).json();
     expect(list.sessions).toEqual([]);
+  });
+
+  it('POST /autonomous/evaluate-completion returns met:true when the transcript shows success', async () => {
+    const res = await fetch(`${baseUrl}/autonomous/evaluate-completion`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ condition: 'all tests pass', transcriptTail: 'npm test → 42 passed' }),
+    });
+    expect(res.status).toBe(200);
+    const v = await res.json();
+    expect(v.met).toBe(true);
+    expect(v.reason).toBeTruthy();
+  });
+
+  it('POST /autonomous/evaluate-completion returns met:false when there is no success evidence', async () => {
+    const res = await fetch(`${baseUrl}/autonomous/evaluate-completion`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ condition: 'all tests pass', transcriptTail: 'still writing code' }),
+    });
+    const v = await res.json();
+    expect(v.met).toBe(false);
+  });
+
+  it('POST /autonomous/evaluate-completion 400s without a condition', async () => {
+    const res = await fetch(`${baseUrl}/autonomous/evaluate-completion`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
   });
 });

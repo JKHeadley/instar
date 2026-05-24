@@ -14,6 +14,7 @@ REPORT_CHANNEL="telegram"   # channel that owns this job; recovery note routes h
 LEVEL_UP="false"
 TASKS=""
 COMPLETION_PROMISE=""
+COMPLETION_CONDITION=""   # verifiable end-state; an independent judge decides "done" (mirrors /goal). Preferred over the self-declared promise.
 REPORT_INTERVAL="30m"
 
 while [[ $# -gt 0 ]]; do
@@ -44,6 +45,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --completion-promise)
       COMPLETION_PROMISE="$2"
+      shift 2
+      ;;
+    --completion-condition)
+      COMPLETION_CONDITION="$2"
       shift 2
       ;;
     --report-interval)
@@ -153,6 +158,7 @@ report_interval: "$REPORT_INTERVAL"
 last_report_at: ""
 level_up: $LEVEL_UP
 completion_promise: "$COMPLETION_PROMISE"
+completion_condition: "$COMPLETION_CONDITION"
 ---
 
 # Autonomous Session

@@ -7101,6 +7101,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow('  Discovery evaluator: inactive (no IntelligenceProvider)'));
     }
 
+    // Independent autonomous-completion judge (mirrors /goal). Reuses the
+    // framework-aware sharedIntelligence; falls back to the self-declared promise
+    // when absent (the stop-hook handles that).
+    let completionEvaluator: import('../core/CompletionEvaluator.js').CompletionEvaluator | undefined;
+    if (sharedIntelligence) {
+      const { CompletionEvaluator } = await import('../core/CompletionEvaluator.js');
+      completionEvaluator = new CompletionEvaluator({ intelligence: sharedIntelligence });
+      console.log(pc.green('  Completion evaluator: active (independent /goal-style judge)'));
+    }
+
     // Register feature-discovery probe for self-knowledge tree (Phase 4: Agent Integration)
     if (selfKnowledgeTree && featureRegistry) {
       selfKnowledgeTree.probes.register('feature-discovery', async () => {
@@ -7464,7 +7474,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
