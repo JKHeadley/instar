@@ -648,6 +648,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
           'POST /autonomous/stop-all — stop every autonomous job ("stop everything")',
           'POST /autonomous/sessions/:topic/stop — stop one topic\'s job',
           'POST /autonomous/evaluate-completion — independent /goal-style judge: is a verifiable condition met?',
+          'POST /autonomous/native-goal/set — delegate completion to the framework native /goal (injects /goal <condition>)',
+          'POST /autonomous/native-goal/clear — clear the native /goal for a topic',
         ],
       };
     },

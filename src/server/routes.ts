@@ -2967,6 +2967,48 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Native /goal delegation (Phase 2): drive the framework's own /goal loop by
+  // INJECTING the slash command into the session (instar's core mechanism —
+  // SessionManager.sendInput / tmux send-keys), and mark the job goal_mode:native so
+  // the stop-hook defers completion to native /goal (still enforcing emergency/duration).
+  const resolveTopicSession = (topic: string): string | null => {
+    try {
+      const reg = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'topic-session-registry.json'), 'utf8'));
+      return (reg.topicToSession || {})[topic] ?? null;
+    } catch { return null; }
+  };
+  const setGoalMode = (topic: string, mode: 'native' | '') => {
+    const f = path.join(ctx.config.stateDir, 'autonomous', `${topic}.local.md`);
+    if (!fs.existsSync(f)) return;
+    let c = fs.readFileSync(f, 'utf8');
+    c = /^goal_mode:/m.test(c) ? c.replace(/^goal_mode:.*$/m, `goal_mode: "${mode}"`)
+                              : c.replace(/^(active:.*)$/m, `$1\ngoal_mode: "${mode}"`);
+    fs.writeFileSync(f, c);
+  };
+
+  router.post('/autonomous/native-goal/set', (req, res) => {
+    const { topicId, condition } = req.body ?? {};
+    if (!topicId || !condition || typeof condition !== 'string') {
+      res.status(400).json({ error: '"topicId" and "condition" (string) required' });
+      return;
+    }
+    const tmux = resolveTopicSession(String(topicId));
+    if (!tmux) { res.status(404).json({ error: `no session for topic ${topicId}` }); return; }
+    const ok = ctx.sessionManager.sendInput(tmux, `/goal ${condition}`);
+    if (ok) setGoalMode(String(topicId), 'native');
+    res.status(ok ? 200 : 502).json({ ok, topicId, mode: ok ? 'native' : 'unchanged' });
+  });
+
+  router.post('/autonomous/native-goal/clear', (req, res) => {
+    const { topicId } = req.body ?? {};
+    if (!topicId) { res.status(400).json({ error: '"topicId" required' }); return; }
+    const tmux = resolveTopicSession(String(topicId));
+    if (!tmux) { res.status(404).json({ error: `no session for topic ${topicId}` }); return; }
+    const ok = ctx.sessionManager.sendInput(tmux, '/goal clear');
+    if (ok) setGoalMode(String(topicId), '');
+    res.status(ok ? 200 : 502).json({ ok, topicId });
+  });
+
   router.get('/capabilities', (_req, res) => {
     // /capabilities used to be a 440-line hand-curated object literal — the
     // documented self-discovery primitive, but the only structural enforcement

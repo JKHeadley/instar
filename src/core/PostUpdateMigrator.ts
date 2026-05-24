@@ -1217,15 +1217,15 @@ export class PostUpdateMigrator {
     // completion evaluator (mirrors /goal). Absent from multi-session-only installs.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'independent evaluator (mirrors /goal)',
+      'Native /goal delegation',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal)',
     );
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'completion_condition:',
+      'native-goal/set',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (per-topic + completion-condition)',
+      'skills/autonomous/scripts/setup-autonomous.sh (per-topic + completion-condition + native /goal)',
     );
   }
 
