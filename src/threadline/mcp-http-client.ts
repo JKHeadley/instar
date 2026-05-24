@@ -55,6 +55,12 @@ export async function sendMessageViaHttp(
         // Forward the originating Telegram topic so the reply can be routed
         // back to that session (THREAD-TOPIC-LINKAGE-SPEC.md).
         originTopicId: params.originTopicId,
+        // Threadline Phase 1 structural binding: forward the origin session
+        // name (injected at the spawn boundary as INSTAR_SESSION_NAME). When
+        // the caller did not stamp originTopicId by hand, relay-send resolves
+        // this session name → owning topic so the binding is captured WITHOUT
+        // any caller discipline (kills fragmentation structurally).
+        originSessionName: process.env.INSTAR_SESSION_NAME || undefined,
         // Forward the caller's intent string; relay-send stamps it onto the
         // local commitment record so context is available when the reply lands.
         purpose: params.purpose,

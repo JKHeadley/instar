@@ -91,6 +91,7 @@ class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
     // push that used to live here is removed by design.
     const sessionEnv = buildCodexTmuxSessionEnv({
       sessionId,
+      sessionName: tmuxName,
       codexHome: this.config.codexHome,
       extraEnv: options.env,
     });

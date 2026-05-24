@@ -12406,6 +12406,7 @@ export function createRoutes(ctx: RouteContext): Router {
       waitForReply,
       timeoutSeconds,
       originTopicId,
+      originSessionName,
       purpose,
       priority,
     } = req.body;
@@ -12442,6 +12443,23 @@ export function createRoutes(ctx: RouteContext): Router {
       const asNum = typeof originTopicId === 'number' ? originTopicId : Number(originTopicId);
       if (Number.isFinite(asNum) && Number.isInteger(asNum) && asNum > 0) {
         resolvedOriginTopicId = asNum;
+      }
+    }
+    // Threadline Phase 1 structural binding: when the caller did NOT stamp an
+    // originTopicId by hand, resolve the origin session name (forwarded from the
+    // spawn-boundary INSTAR_SESSION_NAME env) to its owning topic. This captures
+    // the conversation↔topic binding without any caller discipline — the fix for
+    // fragmentation (THREADLINE-CONVERSATION-KEYSTONE-SPEC §2). Never trusted
+    // from a remote peer: originSessionName only ever comes from THIS agent's own
+    // co-located MCP process env, on its own outbound send.
+    if (resolvedOriginTopicId === undefined && typeof originSessionName === 'string' && originSessionName.trim()) {
+      try {
+        const topicId = ctx.telegram?.getTopicForSession?.(originSessionName.trim());
+        if (typeof topicId === 'number' && Number.isInteger(topicId) && topicId > 0) {
+          resolvedOriginTopicId = topicId;
+        }
+      } catch {
+        // Best-effort — send still proceeds, just without auto-bound linkage.
       }
     }
     const resolvedPurpose = typeof purpose === 'string' && purpose.trim().length > 0

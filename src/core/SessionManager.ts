@@ -886,6 +886,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
           : []),
         '-e', `INSTAR_SESSION_ID=${sessionId}`, // Expose instar session ID to hook events
+        '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
@@ -1566,6 +1567,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
           : []),
         '-e', `INSTAR_SESSION_ID=${interactiveSessionId}`, // Expose instar session ID to hook events
+        '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_FRAMEWORK=${framework}`,
@@ -1799,6 +1801,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-x', '200', '-y', '50',
         '-e', 'CLAUDECODE=',
         '-e', `INSTAR_SESSION_ID=${triageSessionId}`,
+        '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', 'ANTHROPIC_API_KEY=',

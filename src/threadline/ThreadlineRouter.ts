@@ -373,6 +373,33 @@ export class ThreadlineRouter {
       }
     }
 
+    // SECURITY (KEYSTONE §2 / acceptance #8): a threadId is NOT a bearer token.
+    // If an UNVERIFIED peer presents a threadId that already resolves to a
+    // conversation owned by a DIFFERENT participant, it must NOT be resumed into
+    // / routed to that owner session — that is the hijack surface
+    // ContextThreadMap.agentIdentity defends. Crypto-verified peers are exempt
+    // (identity is already established); for unverified peers the inbound
+    // identity must match the thread's known participant, else we isolate the
+    // sender to a fresh first-contact thread and the victim's conversation is
+    // left untouched.
+    {
+      const presented = this.threadResumeMap.get(message.threadId);
+      if (presented) {
+        const cryptoVerified = relayContext?.trust.kind === 'verified';
+        const inboundFp = relayContext?.senderFingerprint || message.from.agent || '';
+        const inboundName = relayContext?.senderName || '';
+        const peer = presented.remoteAgent || '';
+        const identityMatches = !!peer && (peer === inboundFp || peer === inboundName);
+        if (!cryptoVerified && !identityMatches) {
+          const freshId = crypto.randomUUID();
+          console.warn(
+            `[ThreadlineRouter] Anti-hijack: unverified sender ${inboundName || inboundFp || 'unknown'} presented threadId ${message.threadId.slice(0, 8)} owned by ${peer.slice(0, 16)}; isolating to fresh thread ${freshId.slice(0, 8)}`,
+          );
+          message.threadId = freshId;
+        }
+      }
+    }
+
     const threadId = message.threadId;
     // Record affinity (no-op for non-verified trust kinds).
     this.recordAffinity(relayContext, threadId);

@@ -212,6 +212,8 @@ const SESSION_EXTRA_HARD_BLOCK: ReadonlySet<string> = new Set([
 
 export interface BuildCodexTmuxSessionEnvOptions {
   sessionId: string;
+  /** tmux session name — exposed as INSTAR_SESSION_NAME for Threadline binding. */
+  sessionName?: string;
   codexHome?: string;
   extraEnv?: Readonly<Record<string, string>>;
 }
@@ -222,6 +224,10 @@ export function buildCodexTmuxSessionEnv(
   const out: Array<[string, string]> = [
     ['INSTAR_SESSION_ID', options.sessionId],
   ];
+  if (options.sessionName) {
+    // Threadline binding: attributes a relay-send to its origin session.
+    out.push(['INSTAR_SESSION_NAME', options.sessionName]);
+  }
   if (options.codexHome) {
     out.push(['CODEX_HOME', options.codexHome]);
   }
