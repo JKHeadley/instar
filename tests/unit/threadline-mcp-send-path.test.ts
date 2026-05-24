@@ -13,9 +13,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { sendMessageViaHttp } from '../../../src/threadline/mcp-http-client.js';
-import { DEFAULT_RELAY_URL, DEFAULT_RELAY_HOST } from '../../../src/threadline/constants.js';
-import type { SendMessageParams } from '../../../src/threadline/ThreadlineMCPServer.js';
+import { sendMessageViaHttp } from '../../src/threadline/mcp-http-client.js';
+import { DEFAULT_RELAY_URL, DEFAULT_RELAY_HOST } from '../../src/threadline/constants.js';
+import type { SendMessageParams } from '../../src/threadline/ThreadlineMCPServer.js';
 
 const PORT = 4042;
 const TOKEN = 'test-token';
@@ -132,15 +132,20 @@ describe('sendMessageViaHttp — honest error surfacing', () => {
     expect(result.error).toContain('ECONNREFUSED');
   });
 
-  it('forwards originTopicId to relay-send (THREAD-TOPIC-LINKAGE)', async () => {
+  it('forwards originTopicId and purpose to relay-send (THREAD-TOPIC-LINKAGE)', async () => {
     fetchMock.mockResolvedValueOnce(
       fakeResponse(200, { success: true, messageId: 'm', threadId: 't', deliveryPath: 'local' }),
     );
 
-    await sendMessageViaHttp(baseParams({ originTopicId: 12304 }), PORT, TOKEN);
+    await sendMessageViaHttp(
+      baseParams({ originTopicId: 12304, purpose: 'ask dawn for the Q3 numbers' }),
+      PORT,
+      TOKEN,
+    );
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.originTopicId).toBe(12304);
+    expect(body.purpose).toBe('ask dawn for the Q3 numbers');
     expect(body.targetAgent).toBe('dawn');
   });
 

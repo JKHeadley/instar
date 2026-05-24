@@ -53,9 +53,11 @@ export async function sendMessageViaHttp(
         waitForReply: params.waitForReply,
         timeoutSeconds: params.timeoutSeconds,
         // Forward the originating Telegram topic so the reply can be routed
-        // back to that session (THREAD-TOPIC-LINKAGE-SPEC.md). The previous
-        // implementation dropped this field.
+        // back to that session (THREAD-TOPIC-LINKAGE-SPEC.md).
         originTopicId: params.originTopicId,
+        // Forward the caller's intent string; relay-send stamps it onto the
+        // local commitment record so context is available when the reply lands.
+        purpose: params.purpose,
       }),
     });
 
