@@ -79,6 +79,20 @@ Verified against `developers.openai.com/codex/hooks` (2026-05-23) — **not assu
 - Hook command points at the **same** `.instar/hooks/instar/*` scripts (they're framework-neutral: they read stdin JSON, POST to the local server, exit 2 to block). Adaptation layer normalizes Codex's event-payload JSON shape to what the scripts expect (the contract is already close; a thin shim or a `--framework codex` flag on the scripts handles any delta).
 - Called from the Codex init/refresh path alongside `renderNonClaudeIdentityShadows()`.
 
+### 4.2c VERIFIED: Codex hook payload is Claude-identical (P2 re-scope)
+
+Verified per-event input fields (developers.openai.com/codex/hooks, 2026-05-23):
+- **PreToolUse / PermissionRequest:** `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, `turn_id`, `tool_name`, `tool_use_id`, `tool_input` (Bash/apply_patch → `tool_input.command`), `permission_mode`. PermissionRequest adds optional `tool_input.description`.
+- **Stop:** `stop_hook_active`, `last_assistant_message` (+ common).
+- **UserPromptSubmit:** `prompt` (+ common).
+
+These are the **same field names Claude Code uses**. So the gate scripts' stdin parsing (`tool_name`, `tool_input`, `tool_input.command`, etc.) works on Codex **as-is** — P2 is NOT a payload-translation layer. The remaining deltas are small:
+1. **`$CLAUDE_PROJECT_DIR` → `cwd` fallback:** any script that internally relies on the `CLAUDE_PROJECT_DIR` env var must fall back to the payload's `cwd` (Codex sets `cwd` in the JSON, not that env var). Audit each gate script for `CLAUDE_PROJECT_DIR` usage.
+2. **PermissionRequest output:** confirm exit-2 blocks, or emit the `permissionDecision: "deny"` JSON for that event.
+3. **`turn_id`** is a harmless Codex extension (ignore).
+
+This materially shrinks P2 from "translation shim" to "small path-resolution fallback + PermissionRequest output check."
+
 ### 4.3 Script I/O reconciliation
 
 The gate scripts currently assume Claude's hook stdin/stdout/exit contract. Codex's is Claude-compatible but not identical (event names, `hookSpecificOutput` shape). Two options:
