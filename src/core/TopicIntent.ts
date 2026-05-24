@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,8 @@ export interface PendingConfirmation {
 
 export interface TopicIntentFile {
   topicId: number;
+  /** Per-topic monotonic user-turn counter (v1: single arc per topic). Additive; defaulted on read. */
+  turn?: number;
   refs: Record<string, EstablishedRef>;  // refId → ref
   pending: {
     outstanding: PendingConfirmation | null;
@@ -101,6 +104,38 @@ export interface TelemetryCounters {
   pending_confirm_abandoned_total: number;
   pending_confirm_expired_total: number;
   pending_confirm_answered_total: Record<string, number>; // keyed by verdict
+  /**
+   * Capture-loop funnel counters (spec §10 — observability across the WHOLE
+   * loop: captured → surfaced → used → corrected). Additive; defaulted on read
+   * for back-compat with pre-capture-loop files.
+   */
+  capture?: CaptureCounters;
+}
+
+/**
+ * Whole-loop capture funnel (spec §10). Capture side meters what we extracted;
+ * surface side meters whether what we captured actually reached the agent and
+ * changed anything. Pairing this with the HumanAsDetectorLog miss-heat-map is
+ * the effectiveness read.
+ */
+export interface CaptureCounters {
+  // ── capture side (did we extract?) ──
+  turns_seen: number;                  // turns the capture loop observed
+  prefilter_skipped: number;           // turns the deterministic pre-filter dropped before the LLM
+  extractions_attempted: number;       // turns that reached the extractor (LLM call attempted)
+  extractions_emitted: number;         // turns that produced ≥1 evidence event
+  refs_created: number;                // new refs created (cumulative)
+  degraded_no_intelligence: number;    // extractor degraded because no provider was configured
+  degraded_cap_or_error: number;       // extractor degraded on cap breach / provider error
+  degraded_shed: number;               // turns skipped under QuotaTracker load-shedding
+  rate_limited: number;                // turns skipped by the per-topic rate ceiling
+  // ── surface + use side (did it reach the agent / change anything?) ──
+  briefing_served: number;             // session-start briefing fetched for this topic
+  briefing_refs_settled: number;       // cumulative authoritative refs carried by briefings
+  briefing_refs_tentative: number;     // cumulative tentative refs carried by briefings
+  arccheck_fired: number;              // ArcCheck ran on a pre-send draft
+  arccheck_signalled: number;          // ArcCheck emitted a confirm-signal (changed next move)
+  last_capture_at: string | null;      // ISO8601 of the most recent extraction attempt
 }
 
 // ── Constants from spec ──────────────────────────────────────────────────
@@ -352,6 +387,8 @@ export class TopicIntentStore {
         if (!parsed.pending) parsed.pending = { outstanding: null, queue: [] };
         if (!parsed.telemetry) parsed.telemetry = emptyTelemetry();
         if (parsed.schemaVersion === undefined) parsed.schemaVersion = 1;
+        if (parsed.turn === undefined) parsed.turn = 0;
+        if (!parsed.telemetry.capture) parsed.telemetry.capture = defaultCaptureCounters();
         return parsed;
       }
     } catch (err) {
@@ -360,11 +397,18 @@ export class TopicIntentStore {
     return emptyFile(topicId);
   }
 
-  /** Persist the topic's intent file. */
+  /**
+   * Persist the topic's intent file ATOMICALLY (write to a unique temp file +
+   * rename — rename is atomic on POSIX, so a concurrent reader never sees a
+   * torn/half-written file). This is the corruption-safety half of the
+   * concurrent-write guard; appendEvidence adds the lost-update guard (CAS).
+   */
   save(file: TopicIntentFile): void {
     const fp = this.filePath(file.topicId);
     try {
-      fs.writeFileSync(fp, JSON.stringify(file, null, 2));
+      const tmp = `${fp}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      fs.writeFileSync(tmp, JSON.stringify(file, null, 2));
+      fs.renameSync(tmp, fp);
     } catch (err) {
       console.error(`[TopicIntentStore] Failed to save ${fp}: ${err}`);
     }
@@ -376,7 +420,56 @@ export class TopicIntentStore {
    * Updates telemetry counters.
    */
   appendEvidence(topicId: number, refId: string, ev: EvidenceEvent, refInit?: Partial<EstablishedRef>): TopicIntentFile {
+    // Hold a cross-process lock around load→mutate→atomic-save so two sessions
+    // capturing the same topic can't lose each other's events (the lost-update
+    // race). mkdir is atomic across processes; save() is atomic against torn
+    // reads. Together they make the append concurrency-safe.
+    return this.withTopicLock(topicId, () => this.applyEvidence(topicId, refId, ev, refInit));
+  }
+
+  /**
+   * Acquire a per-topic lock (atomic mkdir), run fn, release. Bounded spin with
+   * stale-lock steal so a crashed holder can't wedge the file forever. Capture
+   * runs off the delivery path (queued), so brief contention spin is acceptable.
+   */
+  private withTopicLock<T>(topicId: number, fn: () => T): T {
+    const lockPath = this.filePath(topicId) + '.lock';
+    const deadline = Date.now() + 2000;
+    let held = false;
+    while (Date.now() < deadline) {
+      try {
+        fs.mkdirSync(lockPath);
+        held = true;
+        break;
+      } catch {
+        try {
+          if (Date.now() - fs.statSync(lockPath).mtimeMs > 5000) {
+            SafeFsExecutor.safeRmdirSync(lockPath, { operation: 'TopicIntentStore.withTopicLock:steal-stale' });
+            continue;
+          }
+        } catch { /* lock vanished — retry acquire */ }
+        const until = Date.now() + 15;
+        while (Date.now() < until) { /* brief spin */ }
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      if (held) {
+        try {
+          SafeFsExecutor.safeRmdirSync(lockPath, { operation: 'TopicIntentStore.withTopicLock:release' });
+        } catch { /* best-effort release */ }
+      }
+    }
+  }
+
+  /** Single load→mutate→atomic-save pass (runs under withTopicLock). */
+  private applyEvidence(topicId: number, refId: string, ev: EvidenceEvent, refInit?: Partial<EstablishedRef>): TopicIntentFile {
     const file = this.load(topicId);
+    // Idempotency: never append the same event twice (defends retries / replays).
+    for (const existing of Object.values(file.refs)) {
+      if (existing.evidence.some(e => e.eventId === ev.eventId)) return file;
+    }
     let ref = file.refs[refId];
     if (!ref) {
       ref = {
@@ -415,6 +508,54 @@ export class TopicIntentStore {
 
     this.save(file);
     return file;
+  }
+
+  /** The (single, v1) arc id for a topic. */
+  arcIdFor(topicId: number): string {
+    return `arc-${topicId}`;
+  }
+
+  /** Atomically increment and return the per-topic user-turn counter. */
+  bumpTurn(topicId: number): number {
+    return this.withTopicLock(topicId, () => {
+      const file = this.load(topicId);
+      file.turn = (file.turn ?? 0) + 1;
+      this.save(file);
+      return file.turn;
+    });
+  }
+
+  /**
+   * Atomically increment one or more capture-funnel counters (spec §10).
+   * Runs under the per-topic lock so concurrent captures / briefing fetches /
+   * arccheck calls don't clobber each other's counter writes. Best-effort —
+   * metering must never throw into the path that calls it, so all failures are
+   * swallowed (the counter is a diagnostic, not correctness-critical).
+   *
+   * `at` (when provided) sets `last_capture_at`.
+   */
+  bumpCaptureCounters(
+    topicId: number,
+    deltas: Partial<Record<NumericCaptureKey, number>>,
+    at?: string,
+  ): void {
+    try {
+      this.withTopicLock(topicId, () => {
+        const file = this.load(topicId);
+        if (!file.telemetry.capture) file.telemetry.capture = defaultCaptureCounters();
+        const c = file.telemetry.capture;
+        for (const [k, v] of Object.entries(deltas)) {
+          if (typeof v === 'number' && Number.isFinite(v)) {
+            const key = k as NumericCaptureKey;
+            c[key] = (c[key] ?? 0) + v;
+          }
+        }
+        if (at) c.last_capture_at = at;
+        this.save(file);
+      });
+    } catch (err) {
+      console.error(`[TopicIntentStore] bumpCaptureCounters(${topicId}) failed: ${err}`);
+    }
   }
 
   /** Get the live projection for a refId (recomputed from evidence). */
@@ -458,12 +599,37 @@ function emptyTelemetry(): TelemetryCounters {
     pending_confirm_abandoned_total: 0,
     pending_confirm_expired_total: 0,
     pending_confirm_answered_total: {},
+    capture: defaultCaptureCounters(),
   };
 }
+
+export function defaultCaptureCounters(): CaptureCounters {
+  return {
+    turns_seen: 0,
+    prefilter_skipped: 0,
+    extractions_attempted: 0,
+    extractions_emitted: 0,
+    refs_created: 0,
+    degraded_no_intelligence: 0,
+    degraded_cap_or_error: 0,
+    degraded_shed: 0,
+    rate_limited: 0,
+    briefing_served: 0,
+    briefing_refs_settled: 0,
+    briefing_refs_tentative: 0,
+    arccheck_fired: 0,
+    arccheck_signalled: 0,
+    last_capture_at: null,
+  };
+}
+
+/** Numeric (additive) capture-counter keys — excludes the timestamp field. */
+export type NumericCaptureKey = Exclude<keyof CaptureCounters, 'last_capture_at'>;
 
 function emptyFile(topicId: number): TopicIntentFile {
   return {
     topicId,
+    turn: 0,
     refs: {},
     pending: { outstanding: null, queue: [] },
     telemetry: emptyTelemetry(),
