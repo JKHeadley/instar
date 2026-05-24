@@ -175,20 +175,26 @@ if [[ ! "$ITERATION" =~ ^[0-9]+$ ]]; then
   exit 0
 fi
 
-# Duration expiry
+# Duration expiry. Fail-SAFE: if started_at can't be parsed (START_EPOCH falls
+# back to 0/empty), do NOT expire — an unparseable timestamp must never cause a
+# premature exit (that is the very failure class this hook exists to prevent).
 REMAINING_MIN=""
 if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
   START_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo "0")
-  NOW_EPOCH=$(date +%s)
-  ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
-  if [[ $ELAPSED -ge $DURATION_SECONDS ]]; then
-    echo "⏰ Autonomous mode: Duration expired ($ELAPSED seconds elapsed)."
-    echo "   Session is free to exit."
-    rm -f "$STATE_FILE"
-    exit 0
+  if [[ "$START_EPOCH" =~ ^[0-9]+$ ]] && [[ $START_EPOCH -gt 0 ]]; then
+    NOW_EPOCH=$(date +%s)
+    ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
+    if [[ $ELAPSED -ge $DURATION_SECONDS ]]; then
+      echo "⏰ Autonomous mode: Duration expired ($ELAPSED seconds elapsed)."
+      echo "   Session is free to exit."
+      rm -f "$STATE_FILE"
+      exit 0
+    fi
+    REMAINING=$(( DURATION_SECONDS - ELAPSED ))
+    REMAINING_MIN=$(( REMAINING / 60 ))
+  else
+    echo "[autonomous] started_at unparseable ('$STARTED_AT') — skipping duration-expiry check (fail-safe: keep running)" >&2
   fi
-  REMAINING=$(( DURATION_SECONDS - ELAPSED ))
-  REMAINING_MIN=$(( REMAINING / 60 ))
 fi
 
 # Emergency stop

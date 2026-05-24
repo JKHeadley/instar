@@ -277,4 +277,38 @@ describe('T3 — liveness-gated backstop when topic resolution unavailable', () 
     expect(r.decision).not.toBe('block');
     expect(r.exitCode).toBe(0);
   });
+
+  it('topic set but ABSENT from the registry degrades to the session backstop', () => {
+    // Registry exists with a tmux name but no entry for our report_topic.
+    writeState({ sessionId: OLD_UUID, reportTopic: '9984' });
+    writeRegistry({ '5555': 'some-other-session' }); // 9984 not present
+    // Same session id → backstop session-match → block (not a foreign exit).
+    const r = runHook({ sessionId: OLD_UUID, tmuxSession: 'echo-claude-agent-sdk' });
+    expect(r.decision).toBe('block');
+  });
+});
+
+describe('Robustness — fail-safe on bad inputs (review-driven)', () => {
+  it('does NOT prematurely expire when started_at is unparseable', () => {
+    // Malformed started_at must never cause a premature exit (review finding).
+    fs.writeFileSync(
+      path.join(tmpDir, '.instar', 'autonomous-state.local.md'),
+      `---\nactive: true\niteration: 1\nsession_id: "${OLD_UUID}"\nduration_seconds: 10\nstarted_at: "not-a-timestamp"\nreport_topic: "9984"\ncompletion_promise: "X"\n---\n\ntask\n`,
+    );
+    writeRegistry({ '9984': 'echo-claude-agent-sdk' });
+    const r = runHook({ sessionId: OLD_UUID, tmuxSession: 'echo-claude-agent-sdk' });
+    expect(r.decision).toBe('block'); // keeps running, not a false expiry
+  });
+
+  it('degrades to the backstop when the registry is malformed JSON', () => {
+    writeState({ sessionId: OLD_UUID, reportTopic: '9984' });
+    fs.writeFileSync(
+      path.join(tmpDir, '.instar', 'topic-session-registry.json'),
+      '{ this is not valid json',
+    );
+    // Topic unresolved → backstop; same session id → block (no crash, no foreign exit).
+    const r = runHook({ sessionId: OLD_UUID, tmuxSession: 'echo-claude-agent-sdk' });
+    expect(r.decision).toBe('block');
+    expect(r.exitCode).toBe(0);
+  });
 });
