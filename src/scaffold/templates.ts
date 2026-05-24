@@ -404,6 +404,13 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
 - Spawn: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/spawn -d '{"name":"task","prompt":"do something"}'\`
 
+**Multi-Session Autonomy** — I can run multiple autonomous jobs at once, one per topic (default cap 5, set \`autonomousSessions.maxConcurrent\` in config). Each topic's job is isolated, survives restarts, and is keyed on its topic.
+- What's running: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/sessions\`
+- The cap + budget gate is checked automatically when a job starts (\`GET /autonomous/can-start\`); a start is refused when at the cap or under budget pressure.
+- Stop one topic's job: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/sessions/TOPIC/stop\`
+- Stop every job: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/stop-all\`
+- Proactive: user asks "what autonomous jobs are running?" → GET /autonomous/sessions. "stop everything" → POST /autonomous/stop-all. "stop the job on topic X" → POST /autonomous/sessions/X/stop.
+
 **Relationships** — Track people I interact with.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/relationships\`
 

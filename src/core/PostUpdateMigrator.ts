@@ -2264,6 +2264,26 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Multi-Session Autonomy awareness (Agent Awareness Standard). Existing
+    // agents need to know they can run concurrent per-topic autonomous jobs and
+    // how to list/stop them, even if initialized before this capability existed.
+    if (!content.includes('Multi-Session Autonomy')) {
+      const multiSessionSection = `
+### Multi-Session Autonomy
+
+**Multi-Session Autonomy** — I can run multiple autonomous jobs at once, one per topic (default cap 5, set \`autonomousSessions.maxConcurrent\` in config). Each topic's job is isolated, survives restarts (keyed on its topic), and lives at \`.instar/autonomous/<topicId>.local.md\`.
+
+- What's running: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/sessions\`
+- The cap + budget gate is checked automatically when a job starts (\`GET /autonomous/can-start\`); a start is refused at the cap or under budget pressure.
+- Stop one topic's job: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/sessions/TOPIC/stop\`
+- Stop every job: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/stop-all\`
+- Proactive: "what autonomous jobs are running?" → GET /autonomous/sessions. "stop everything" → POST /autonomous/stop-all. "stop the job on topic X" → POST /autonomous/sessions/X/stop.
+`;
+      content += '\n' + multiSessionSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Multi-Session Autonomy awareness section');
+    }
+
     // Version-Skew Self-Recovery section
     // Tells the agent what's happening when the lifeline+server temporarily
     // mismatch versions during an auto-update. Without this, agents diagnose
@@ -3050,6 +3070,7 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '### Playbook — Adaptive Context Engineering',
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
+      '**Multi-Session Autonomy**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

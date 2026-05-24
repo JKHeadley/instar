@@ -36,6 +36,11 @@ concurrency cap, quota gate, stop-all/per-topic stop, and the list API.
 - `src/core/types.ts` — **add** optional `autonomousSessions.maxConcurrent` (default 5 in code).
 - `PostUpdateMigrator.migrateAutonomousStopHookTopicKeyed` — **modify** (Phase 1): multi-session
   marker; re-copies hook + setup. No new decision authority.
+- `src/scaffold/templates.ts` (`generateClaudeMd`) — **add** the Multi-Session Autonomy
+  capability block (Agent Awareness Standard — new agents).
+- `PostUpdateMigrator.migrateClaudeMd` — **add** the awareness section for existing agents
+  (content-sniff guarded); + shadow-capability marker so Codex/Gemini agents learn it too.
+  No decision logic — documentation parity only.
 
 ## 1. Over-block (trapping a session that should exit)
 
