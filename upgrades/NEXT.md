@@ -62,3 +62,45 @@ guarded (leaves customized hooks untouched). No action required.
 New tuning knobs (env, optional): `INSTAR_AUTONOMOUS_LIVENESS_SECS` (backstop liveness
 threshold, default 120) and `INSTAR_HOOK_TMUX_SESSION` (test/override seam for the
 session's tmux name).
+
+## What to Tell Your User
+
+Autonomous mode used to go silently dead if a long run restarted mid-job — it would
+just stop working and you'd only notice when you poked it. That's fixed: a restarted
+session now keeps going on its own, and you get one short heads-up ("I restarted
+mid-run and picked the job back up — no action needed") only when it actually happens.
+Nothing to do; it's automatic, and existing agents get the fix on their next update.
+
+## Summary of New Capabilities
+
+- Autonomous-mode ownership is keyed on the job's **topic** (stable across restarts),
+  not the session UUID — restarts no longer silently kill autonomy.
+- Liveness-gated **backstop** for the rare case where topic resolution is unavailable.
+- One **channel-neutral recovery note** per restart (audit trail + best-effort delivery
+  to whatever channel owns the job; Telegram wired, others via the Channel Parity
+  initiative).
+- Idempotent migration so existing agents receive the new hook.
+- Collateral: timezone fix, pipefail-safe frontmatter parsing, fail-safe duration expiry.
+
+## Evidence
+
+**Reproduced before fixing (RED).** A behavioral test drives the *old* hook with a
+simulated memory-limit restart — state recorded under session UUID `04db2de7…`, hook
+fires with a new UUID `a13495fb…` while still serving the same topic (registry maps the
+topic to the session's tmux name). Observed: the old hook sees the UUID mismatch, fails
+open, and returns no block decision (exit 0) — i.e. it **allows the restarted autonomous
+session to exit**. That is the silent death, reproduced deterministically.
+
+**After the fix (GREEN).** Same inputs: the hook resolves the topic from the tmux name,
+matches it against the job's `report_topic`, and returns `{"decision":"block"}` — autonomy
+survives. The end-to-end lifecycle test (`tests/e2e/autonomous-restart-resume-lifecycle`)
+runs the real hook through bootstrap → restart (rotated UUID) → exactly one recovery note
+→ dedup → completion, asserting the audit trail has exactly one restart-resume entry.
+
+**Timezone bug** verified directly: `date -j -f "%Y-%m-%dT%H:%M:%SZ" "2026-05-23T23:44:25Z"`
+returned `1779605065` (parsed as local), vs `date -u -j -f …` → `1779579865`, matching
+Python's UTC epoch — a 7-hour (local-offset) skew, now corrected with `-u`.
+
+Test tiers: 14 unit (incl. the RED→GREEN restart case + channel-seam cases), 5 migrator
+integration (incl. a wiring/anti-dead-code guard), 1 e2e lifecycle — all green; 36
+PostUpdateMigrator-related tests green (no regression).
