@@ -153,6 +153,12 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 **Earned from.** Deterministic pipelines that failed silently or produced subtly wrong output with no intelligent check in the loop.
 **Traces to the goal.** Self-evolution needs judgment in the loop, not just mechanism.
 
+### Observability — you can't tune what you can't see
+**Rule.** Every feature ships with metrics that make its effectiveness auditable and gradable, and that observability is itself an input to how the agent evolves. Meter the *whole* loop, not just the half that's easy to count.
+**In practice.** Counters at every stage of a pipeline, exposed on a read-only operator surface — and the metering covers the full funnel, not just the front of it. The topic-intent capture loop is the model: it meters captured → surfaced → used → corrected, so we can see exactly where the loop leaks (capturing nothing? capturing but never surfacing? surfacing but never acted on?). Metrics feed the evolution loop rather than just decorating a dashboard: the human-as-detector heat map grades what the guardians *missed*, and a recurrence count can itself become the data-driven trigger to propose a new standard. A capture-only metering set is a half-measure — it can't tell you whether what you captured ever changed anything.
+**Earned from.** The topic-intent capture-loop design (2026-05-24). Because there were many ways to build it and no obviously-right one, flying blind wasn't an option — we needed to *see* what it captured, surfaced, and especially **missed**, or we'd be tuning a machine we couldn't look inside. Convergence (iteration 3) caught a draft that metered only the capture half and missed the surface/use half — exactly the blind spot this standard exists to forbid.
+**Traces to the goal.** A self-evolving agent tunes itself, and it can only tune what it can measure. Observability is the sense organ of self-evolution — without it, every "improvement" is a guess. Pairs with [Never-Waste Feedback](#never-waste-feedback--corrections-compound) (the miss-measure) and [Signal vs. Authority](#signal-vs-authority) (metrics signal; they never gate).
+
 ### Migration Parity
 **Rule.** Any change to agent-installed files (hooks, config defaults, CLAUDE.md template, built-in skills) must reach *existing* agents through the update path — not only new agents via `init`.
 **In practice.** Hook-template changes get a `migrateSettings()` patch; config defaults get existence-checked additions; built-in hooks are *always overwritten* on migration; every migration is idempotent.
@@ -198,6 +204,12 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 **Earned from.** Capabilities that shipped but were never surfaced because the briefing never mentioned them (the inward half of the same drift the codey finding exposed).
 **Traces to the goal.** Self-awareness is half of coherence: the agent must know its own shape.
 
+### Never-Waste Feedback — corrections compound
+**Rule.** User feedback is never allowed to evaporate. When the user corrects, contradicts, or points out something the agent should have caught, built-in infrastructure detects it, ingests it, and turns it into a durable signal that improves the system — it is never merely fixed-in-the-moment and forgotten.
+**In practice.** A human correction is treated as evidence that some *guardian* should have caught it and didn't — logged as a guardian-failure signal that builds a heat map of where the human is doing the system's job. The capture is automatic (per [No Manual Work](#no-manual-work-user-or-agent)); the richest grading signal — what the automated layers *missed* — is never left to the agent to remember to write down. Over time the heat map tells us which guardrails are weak and which are dead weight, and the data points toward where the next standard or fix should go.
+**Earned from.** Dawn's "human-as-detector" lesson (2026-04-26): *"Justin pointing things out = guardian failure."* Shipped as `HumanAsDetectorLog` (v1.2.60). The deeper root is older: corrections that got fixed-and-forgotten in the moment, so the same class of miss recurred — the correction's value spent once instead of compounding. (This very registry was seeded by exactly such a correction.)
+**Traces to the goal.** An agent that wastes the user's corrections forces the human to keep being its memory and its QA — the opposite of a self-evolving system. Capitalizing on every correction is how the agent stops repeating the failures the human already flagged. Pairs with [Observability](#observability--you-cant-tune-what-you-cant-see) — the heat map is the miss-measure that makes "where are we weak?" answerable.
+
 ### Signal vs. Authority
 **Rule.** Brittle, low-context filters detect and emit *signals*. Only a higher-level, full-context intelligent gate has *blocking* authority.
 **In practice.** A fast regex or a cheap classifier may flag, never veto. The expensive, well-grounded gate makes the final call. Topic-intent's ArcCheck (signal) + the outbound gate (authority) is the model.
@@ -230,7 +242,7 @@ So the answer to "do these belong in the constitution?" is: **not as articles �
 2. **An application with no article of its own** — a tactical standard that *implements* a principle without being one. (Worktree / parallel-dev → *Structure beats Willpower*; the pre-push CI-scope gate, graceful-update batching, and others.)
 3. **A candidate for promotion** — an application that has recurred so often it earns its own article (the path in *How a new standard joins*, below). Parallel-dev isolation is a borderline case worth watching.
 
-**On "how many are there?"** A first scan of the repo found ~57 specs in `docs/specs/` and ~25 standards-flavored docs in `docs/` — far more than the 19 articles here, which is the whole point: a handful of principles, many applications. Completing the full cross-link — every operational spec tagged with its parent principle, every principle listing its applications — rides along with moving this registry to its canonical `docs/` home (the already-stated next step); it is bound to that milestone, not parked as a someday-task.
+**On "how many are there?"** A first scan of the repo found ~57 specs in `docs/specs/` and ~25 standards-flavored docs in `docs/` — far more than the 21 articles here, which is the whole point: a handful of principles, many applications. Completing the full cross-link — every operational spec tagged with its parent principle, every principle listing its applications — rides along with moving this registry to its canonical `docs/` home (the already-stated next step); it is bound to that milestone, not parked as a someday-task.
 
 ---
 
