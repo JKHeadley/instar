@@ -200,6 +200,16 @@ The AI systems we build today set precedents for how AI is treated tomorrow. **T
 
 > **Deep dive:** [Philosophy](https://instar.sh/concepts/philosophy/)
 
+## The Living Constitution
+
+Instar's engineering principles aren't a static style guide — they're a **living constitution**. The [Standards Registry](https://instar.sh/foundations/standards-registry/) codifies each one as a rule, what it means in practice, the *failure it was earned from*, and its trace back to the one founding goal: a coherent, self-evolving agent. Nineteen articles across five families (Root, Substrate, Building, Shipping, Interaction), plus the Genesis story and the AWG positioning on the ethics of instantiating agents.
+
+It's not decoration — it's a working part of the machine. The spec-review conformance gate checks every draft against it, and the registry grows the same way the framework was built: the agent proposes a new standard with its story, the operator ratifies it.
+
+The registry is the first tangible artifact of a larger vision: the [North Star — Continuous Working Awareness](https://instar.sh/foundations/north-star/). The aim is an agent that never silently loses track of something that mattered — capturing relevant context automatically, keeping it warm while it matters, re-surfacing it the moment it's needed, and letting it fade when it stops — across three facets that are really one: awareness of the world, of itself, and of its own standards.
+
+> **Read the constitution:** [Standards Registry](https://instar.sh/foundations/standards-registry/) · [North Star](https://instar.sh/foundations/north-star/)
+
 ## iMessage Setup (macOS)
 
 iMessage support lets your agent send and receive iMessages on macOS. Messages are read directly from the native Messages database and sent via the [`imsg`](https://github.com/steipete/imsg) CLI.

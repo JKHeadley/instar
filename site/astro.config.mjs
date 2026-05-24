@@ -60,6 +60,13 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Foundations',
+          items: [
+            { label: 'Standards Registry (Living Constitution)', slug: 'foundations/standards-registry' },
+            { label: 'North Star — Continuous Working Awareness', slug: 'foundations/north-star' },
+          ],
+        },
+        {
           label: 'Features',
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
