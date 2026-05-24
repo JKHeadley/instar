@@ -647,6 +647,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
           'GET /autonomous/can-start?priority= — cap + quota gate to consult before starting a new job',
           'POST /autonomous/stop-all — stop every autonomous job ("stop everything")',
           'POST /autonomous/sessions/:topic/stop — stop one topic\'s job',
+          'POST /autonomous/evaluate-completion — independent /goal-style judge: is a verifiable condition met?',
         ],
       };
     },

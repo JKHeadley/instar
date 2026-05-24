@@ -1212,18 +1212,20 @@ export class PostUpdateMigrator {
         result.errors.push(`${relPath} migration: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
-    // Marker = the multi-session signature (absent from v1.2.55 topic-keyed installs).
+    // Marker = the latest capability signature (bumped each time the bundled hook/
+    // setup gains a feature, so prior installs upgrade): now the independent
+    // completion evaluator (mirrors /goal). Absent from multi-session-only installs.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'MULTI-SESSION (per-topic state)',
+      'independent evaluator (mirrors /goal)',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session per-topic state)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator)',
     );
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'STATE_PATH=".instar/autonomous/',
+      'completion_condition:',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (per-topic state path)',
+      'skills/autonomous/scripts/setup-autonomous.sh (per-topic + completion-condition)',
     );
   }
 

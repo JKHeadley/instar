@@ -168,6 +168,7 @@ export class AgentServer {
     soulManager?: import('../core/SoulManager.js').SoulManager;
     featureRegistry?: import('../core/FeatureRegistry.js').FeatureRegistry;
     discoveryEvaluator?: import('../core/DiscoveryEvaluator.js').DiscoveryEvaluator;
+    completionEvaluator?: import('../core/CompletionEvaluator.js').CompletionEvaluator;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
     liveConfig?: { set(path: string, value: unknown): void };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
@@ -484,6 +485,7 @@ export class AgentServer {
       soulManager: options.soulManager ?? null,
       featureRegistry: options.featureRegistry ?? null,
       discoveryEvaluator: options.discoveryEvaluator ?? null,
+      completionEvaluator: options.completionEvaluator ?? null,
       unifiedTrust: options.unifiedTrust ?? null,
       threadlineReplyWaiters: options.threadlineReplyWaiters ?? new Map(),
       proxyCoordinator: options.proxyCoordinator ?? null,

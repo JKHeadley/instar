@@ -592,6 +592,8 @@ export interface RouteContext {
   soulManager: import('../core/SoulManager.js').SoulManager | null;
   featureRegistry: import('../core/FeatureRegistry.js').FeatureRegistry | null;
   discoveryEvaluator: import('../core/DiscoveryEvaluator.js').DiscoveryEvaluator | null;
+  /** Independent autonomous-completion judge (mirrors /goal). Null if no IntelligenceProvider. */
+  completionEvaluator: import('../core/CompletionEvaluator.js').CompletionEvaluator | null;
   unifiedTrust: UnifiedTrustSystem | null;
   /** Shared proxy coordinator — mutex + /build heartbeat record for the
    *  PresenceProxy ↔ PromiseBeacon ↔ /build-heartbeat three-way deconfliction
@@ -2939,6 +2941,30 @@ export function createRoutes(ctx: RouteContext): Router {
     const topic = req.params.topic;
     const stopped = stopAutonomousTopic(ctx.config.stateDir, topic);
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
+  });
+
+  // Independent completion judge for the autonomous stop-hook (mirrors /goal):
+  // given a verifiable condition + the recent transcript, decide met/not-met.
+  // The hook treats 503/unreachable as "keep working" (fail-safe — never a false done).
+  router.post('/autonomous/evaluate-completion', async (req, res) => {
+    if (!ctx.completionEvaluator) {
+      res.status(503).json({ error: 'No completion evaluator (IntelligenceProvider not configured)' });
+      return;
+    }
+    const { condition, transcriptTail } = req.body ?? {};
+    if (!condition || typeof condition !== 'string') {
+      res.status(400).json({ error: '"condition" (string) required' });
+      return;
+    }
+    try {
+      const verdict = await ctx.completionEvaluator.evaluate(
+        condition,
+        typeof transcriptTail === 'string' ? transcriptTail : '',
+      );
+      res.json(verdict);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get('/capabilities', (_req, res) => {

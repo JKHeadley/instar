@@ -162,7 +162,16 @@ The stop hook will catch every attempt to exit and feed your task list back. Eac
 
 ## Step 4: Completion
 
-When ALL tasks are genuinely done:
+**Preferred: a verifiable completion CONDITION (independent judge, like /goal).**
+Pass `--completion-condition "<measurable end-state>"` when starting (e.g. "all tests in
+test/auth pass and `npm test` exits 0"). Each turn, an INDEPENDENT model judges the condition
+against what you've SURFACED in the conversation — so *run the real checks and show the
+evidence in your output*. When the judge confirms it, the hook exits automatically. You do not
+self-declare done. If the judge can't be reached, the run keeps going (fail-safe). This mirrors
+the framework `/goal` feature and is harder to fool than a self-declared promise.
+
+**Legacy fallback: self-declared promise.** If no condition is set, when ALL tasks are
+genuinely done:
 
 1. Verify every task is complete (re-read the list)
 2. Run `npx tsc --noEmit` — zero errors
@@ -171,7 +180,7 @@ When ALL tasks are genuinely done:
 5. Send final report via messaging
 6. Output: `<promise>ALL_TASKS_COMPLETE</promise>`
 
-The stop hook will detect the promise and allow exit.
+The stop hook detects the promise and allows exit.
 
 ---
 
