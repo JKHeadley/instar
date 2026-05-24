@@ -96,6 +96,7 @@ import { pickupGitSyncMessages } from '../messaging/GitSyncTransport.js';
 import { DeliveryRetryManager } from '../messaging/DeliveryRetryManager.js';
 import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
+import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
 import { SystemReviewer } from '../monitoring/SystemReviewer.js';
@@ -2374,7 +2375,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const sessionManager = new SessionManager(config.sessions, state);
+    // Per-agent Codex threadline MCP override. Codex reads a SHARED
+    // ~/.codex/config.toml whose [mcp_servers."threadline"] is last-writer-wins
+    // across every codex agent on the machine — so a codex worker could load a
+    // DIFFERENT agent's threadline identity and its threadline_send would be
+    // misaddressed. Pin this agent's own entry per-spawn (the launch builders
+    // emit `-c mcp_servers.threadline.*`). Only when threadline is configured;
+    // ignored by non-codex launches. See CODEX-MULTIAGENT-THREADLINE-SPEC.
+    const codexThreadlineMcp = config.threadline
+      ? resolveThreadlineMcpEntry(config.sessions.projectDir, config.stateDir, config.projectName)
+      : undefined;
+    const sessionManager = new SessionManager(
+      codexThreadlineMcp ? { ...config.sessions, codexThreadlineMcp } : config.sessions,
+      state,
+    );
 
     // Input Guard is constructed later (after sharedIntelligence is available)
     // so the topic coherence reviewer can route through the IntelligenceProvider
@@ -6487,6 +6501,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §4.5: honor SpawnRequestManager's provenance tag so drain-spawned
           // sessions are distinguishable from inline-spawned ones in logs/stream.
           triggeredBy: opts?.triggeredBy ?? 'spawn-request',
+          // This is the Threadline inbound-reply spawn: the worker must call
+          // the threadline_send MCP tool to reply, which a codex worker can only
+          // do under full bypass (codex cancels MCP calls in any sandbox). Jobs
+          // do NOT set this and stay sandboxed. Bounded: Threadline only accepts
+          // messages from trusted agents.
+          codexAllowMcpTools: true,
         });
         return session.id;
       },
@@ -6675,6 +6695,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           minIqsBand: pipeConfig?.minIqsBand ?? 70,
           framework: pipeFramework,
           binaryPath: pipeBinaryPath,
+          // Same per-agent codex threadline MCP override as SessionManager, so a
+          // codex pipe-reply worker uses THIS agent's threadline MCP.
+          ...(codexThreadlineMcp ? { codexThreadlineMcp } : {}),
         });
         console.log(pc.dim(`  Pipe sessions: enabled (model: ${pipeConfig?.model ?? 'sonnet'}, max: ${pipeConfig?.maxConcurrent ?? 5})`));
       } catch (err) {

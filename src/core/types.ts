@@ -89,6 +89,15 @@ export interface SessionManagerConfig {
    *  @deprecated naming — value semantics correct; prefer `frameworkBinaryPaths`. */
   claudePath: string;
   /**
+   * Per-agent Codex threadline MCP override `{command, args}`. When set, codex
+   * spawns receive `-c mcp_servers.threadline.{command,args}=...` so this
+   * agent's codex sessions use THEIR OWN threadline MCP rather than whichever
+   * agent last wrote the shared `~/.codex/config.toml`
+   * (`[mcp_servers."threadline"]`, last-writer-wins). Computed once at server
+   * boot via resolveThreadlineMcpEntry when the agent has threadline + codex.
+   * Ignored by non-codex launches. See CODEX-MULTIAGENT-THREADLINE-SPEC. */
+  codexThreadlineMcp?: { command: string; args: string[] };
+  /**
    * Per-framework binary path map. Populated from detection at load
    * time so spawnInteractiveSession can dispatch to any framework
    * without re-running detection. Missing keys mean that framework

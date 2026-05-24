@@ -56,6 +56,13 @@ export interface PipeSessionConfig {
    * is set explicitly; defaults to 'claude' for back-compat (PATH lookup).
    */
   binaryPath: string;
+  /**
+   * Per-agent Codex threadline MCP override `{command, args}` (from
+   * resolveThreadlineMcpEntry). When set, a codex pipe-reply worker uses THIS
+   * agent's threadline MCP instead of whichever agent last won the shared
+   * ~/.codex/config.toml. Ignored for non-codex frameworks.
+   */
+  codexThreadlineMcp?: { command: string; args: string[] };
 }
 
 export interface PipeSpawnRequest {
@@ -297,6 +304,12 @@ export class PipeSessionSpawner {
       binaryPath: this.config.binaryPath,
       prompt: PROMPT_PLACEHOLDER,
       model: this.config.model,
+      // Pipe replies instruct the worker to "Reply ONLY via the threadline_send
+      // tool" — a codex worker can only call MCP under full bypass, and must use
+      // THIS agent's threadline MCP. Claude ignores both (it scopes via
+      // --allowedTools threadline_send below).
+      codexAllowMcpTools: true,
+      ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
     });
     const quotedArgv = launchSpec.argv.map(a => {
       if (a === PROMPT_PLACEHOLDER) {
