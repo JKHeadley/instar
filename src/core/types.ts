@@ -1694,6 +1694,16 @@ export interface InstarConfig {
    */
   topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'>;
   /**
+   * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
+   * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
+   * loop. See docs/specs/topic-intent-capture-loop.md.
+   */
+  topicIntent?: {
+    capture?: {
+      enabled?: boolean;
+    };
+  };
+  /**
    * Agent-level set of frameworks this install actively uses. Drives
    * which framework-specific migration steps run on update: a
    * codex-cli-only install should not receive `.claude/`-specific

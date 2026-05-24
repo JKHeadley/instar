@@ -63,6 +63,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     visibility: 'public',
     capabilities: ['chat'],
   },
+  // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
+  // ON by default (ratified): every substantive conversation turn gets a cheap
+  // fast-tier "anything worth filing?" read so the per-topic briefing/ArcCheck
+  // have real material. Bounded by a deterministic pre-filter + per-topic rate
+  // ceiling + the shared LlmQueue daily cap + QuotaTracker load-shedding, and
+  // fire-and-forget so it never slows message delivery. enabled:false is the
+  // kill-switch (store + read routes remain, capture goes inert).
+  // See docs/specs/topic-intent-capture-loop.md.
+  topicIntent: {
+    capture: {
+      enabled: true,
+    },
+  },
   // Scheduler default-on. Autonomous-continuity tasks (org-intent drift
   // audits, threadline sync, post-update self-healing) only fire when the
   // scheduler runs, so agents shipping without it lose silent infrastructure

@@ -30,10 +30,19 @@ import {
   buildInternalPrefixSet,
 } from '../../src/server/CapabilityIndex.js';
 
-const routesSource = fs.readFileSync(
-  path.join(process.cwd(), 'src/server/routes.ts'),
-  'utf-8',
-);
+// Primary route surface (routes.ts) plus mounted sub-routers whose top-level
+// prefixes also need discoverability classification. topic-intent routes live
+// in their own router file (topicIntentRoutes.ts), mounted by AgentServer.ts —
+// without this the lint has a blind spot and an INTERNAL_PREFIXES entry for a
+// sub-router prefix looks like a "dead allowlist entry" even though the route
+// genuinely exists.
+const ROUTE_SOURCE_FILES = [
+  'src/server/routes.ts',
+  'src/server/topicIntentRoutes.ts',
+];
+const routesSource = ROUTE_SOURCE_FILES
+  .map((rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf-8'))
+  .join('\n');
 
 /**
  * INTERNAL_ALLOWLIST lives in src/server/CapabilityIndex.ts now (exported as

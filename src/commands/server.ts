@@ -5882,6 +5882,66 @@ export async function startServer(options: StartOptions): Promise<void> {
           observeInboundMessage(humanAsDetectorLog, entry);
         };
 
+        // ── Topic-Intent capture loop (rung 0 of continuous-working-awareness) ─
+        // The "clerk" that fills the topic-intent store from live conversation so
+        // the per-topic briefing + ArcCheck have real material (closes the
+        // shipped-but-asleep gap — the store/routes/briefing all existed but
+        // nothing ever invoked ingest()). Chains the prior callback; capture is
+        // fire-and-forget + degrade-safe so it NEVER blocks or slows delivery.
+        // Spec: docs/specs/topic-intent-capture-loop.md.
+        if (sharedIntelligence && (config.topicIntent?.capture?.enabled ?? true)) {
+          try {
+            const { TopicIntentExtractor, createLlmExtractFn } = await import('../core/TopicIntentExtractor.js');
+            const { createCaptureLoop, createQueuedIntelligence } = await import('../core/TopicIntentCapture.js');
+            // Transport: route every extraction through sharedLlmQueue (background
+            // lane → yields to interactive work, respects the daily cap), with the
+            // call itself delegating to sharedIntelligence (subscription/REPL-pool,
+            // never raw API — acceptance #6).
+            const queuedIntelligence = createQueuedIntelligence(
+              sharedIntelligence,
+              (lane, fn, costCents) => sharedLlmQueue.enqueue(lane, fn, costCents),
+            );
+            const captureExtractFn = createLlmExtractFn(queuedIntelligence, (reason, topicId) => {
+              topicIntentStore.bumpCaptureCounters(
+                topicId,
+                reason === 'no-intelligence'
+                  ? { degraded_no_intelligence: 1 }
+                  : { degraded_cap_or_error: 1 },
+              );
+            });
+            const captureExtractor = new TopicIntentExtractor(topicIntentStore, captureExtractFn);
+            const captureLoop = createCaptureLoop({
+              extractor: captureExtractor,
+              store: topicIntentStore,
+              topicMemory,
+              // Skip capture under sustained quota pressure (load-shedding).
+              shouldShed: () => {
+                const r = quotaTracker?.getRecommendation();
+                return r === 'critical' || r === 'stop';
+              },
+              // Per-topic runaway guard beyond the pre-filter.
+              rateCeiling: { maxPerWindow: 30, windowMs: 60_000 },
+            });
+            const beforeCaptureCb = telegram.onMessageLogged;
+            telegram.onMessageLogged = (entry) => {
+              if (beforeCaptureCb) beforeCaptureCb(entry);
+              // Fire-and-forget — capture latency must never reach the delivery path.
+              void captureLoop({
+                messageId: entry.messageId,
+                topicId: entry.topicId ?? undefined,
+                text: entry.text,
+                fromUser: entry.fromUser,
+                timestamp: entry.timestamp,
+              });
+            };
+            // Anti-"shipped-but-asleep" marker for the wiring-integrity test.
+            (globalThis as Record<string, unknown>).__instarTopicIntentCaptureWired = true;
+            console.log(pc.green('  Topic-intent capture loop wired (per-turn extraction → store)'));
+          } catch (err) {
+            console.warn('[TopicIntentCapture] init failed:', (err as Error).message);
+          }
+        }
+
         presenceProxy.start();
 
         // ── PromiseBeacon ────────────────────────────────────────────────

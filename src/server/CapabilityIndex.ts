@@ -731,6 +731,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'prompt-gate', reason: 'operator-only prompt-gate observability' },
   { prefix: 'scope-coherence', reason: 'operator-only scope-coherence observability' },
   { prefix: 'human-as-detector', reason: 'operator-only observability — the heat map of human-caught guardian failures; the agent-facing payoff is the silent capture + future evolution use, not a discoverable endpoint' },
+  { prefix: 'topic-intent', reason: 'operator-only observability — per-topic captured facts/decisions + the capture-loop funnel; the agent-facing payoff is the silent session-start briefing + ArcCheck, not a discoverable endpoint' },
   { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
