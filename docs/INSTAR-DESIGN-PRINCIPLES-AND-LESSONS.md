@@ -18,7 +18,7 @@ The catalog is structured so a reviewer (human or LLM) can answer one question f
 
 ---
 
-## Part 1 — Foundational Principles (P1-P10)
+## Part 1 — Foundational Principles (P1-P11)
 
 These are the principles every Instar design must engage with explicitly. Violating one without explicit justification is a critical convergence-blocker.
 
@@ -279,6 +279,26 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 - Multiple "v0.2 deferred" items in the same spec without paired ETAs/owners
 - NEXT.md "Deferred" section longer than NEXT.md "What Changed" section
 - Specs marked `approved: true` with no `principal-deferral-approval` despite carrying recurrence-risking deferrals
+
+---
+
+### P11. A Wall Is a Hypothesis (verify feasibility against your own toolkit)
+
+**Statement:** Before declaring a path infeasible, blocked, or impossible — "no API", "can't be done", "we hit a wall" — first inventory the mechanisms the agent already has that could reach it. A limitation is a hypothesis to test against your own capabilities, not a verdict to accept.
+
+**Source:** `docs/specs/wall-is-a-hypothesis-standard.md`; constitution standard "A Wall Is a Hypothesis" (The Substrate family). Earned 2026-05-24 (topic 12143).
+
+**Translation:**
+- "No clean API" is not "impossible." A defeat-word is a trigger to enumerate the primitives already in hand (session injection, server endpoints, registries, providers, file-based state) before "infeasible" ships.
+- A real constraint, named honestly *after* the inventory, is good engineering. The failure is surrendering *without* it.
+- Counterweight (so this is not reckless never-give-up): the whole test is whether the wall was checked against the toolkit first. A wall that survives the check is exactly where "The Right to Stand Ground" applies — name it and stop.
+- The wider form of "Know Before You Claim / Self-Discovery", extended from capability claims ("I can't") to feasibility judgments ("this path is blocked").
+
+**Enforcement (structural):**
+- `B16_UNVERIFIED_WALL` in `MessagingToneGate` (sibling to B15): an outbound message declaring infeasibility from a missing interface is blocked unless a capability inventory is shown. Favors false-negatives — genuinely-external limits and walls-after-inventory pass.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags specs that accept an untested wall.
+
+**Earned from:** an instance declared native `/goal` delegation "infeasible — no programmatic API" while overlooking that driving interactive sessions by injecting text (`SessionManager.sendInput`) is a core capability. Both facts in hand, never connected. The crystallizing instance of every "I can't" that was really "I didn't check."
 
 ---
 

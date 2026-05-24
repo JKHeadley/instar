@@ -24,7 +24,7 @@ import type { IntelligenceProvider } from './types.js';
 export interface ToneReviewResult {
   pass: boolean;
   /**
-   * Rule id applied — must be one of the enumerated B1..B14 ids defined in
+   * Rule id applied — must be one of the enumerated B1..B16 ids defined in
    * the prompt when pass=false, or empty string when pass=true. Any other
    * value is treated as a reasoning-discipline violation (the LLM invented
    * a rule not in its ruleset) and fails-open with failedOpen=true.
@@ -38,7 +38,7 @@ export interface ToneReviewResult {
   latencyMs: number;
   /** True if the LLM call failed and we fail-opened */
   failedOpen?: boolean;
-  /** True if the LLM's rule citation was invalid (not in B1..B14) — gate failed open. */
+  /** True if the LLM's rule citation was invalid (not in B1..B16) — gate failed open. */
   invalidRule?: boolean;
 }
 
@@ -57,6 +57,7 @@ const VALID_RULES = new Set([
   'B13_HEALTH_ALERT_SUPPRESSED_BY_HEAL',
   'B14_HEALTH_ALERT_NO_CTA',
   'B15_CONTEXT_DEATH_STOP',
+  'B16_UNVERIFIED_WALL',
 ]);
 
 export interface ToneReviewContextMessage {
@@ -304,6 +305,22 @@ These rules only fire when the producer has explicitly marked the candidate as a
 
   Severity: HIGH. False-negatives (a real slip getting through) are worse than false-positives here — the operator has explicitly asked for this guard as a structural defense against a recurring failure mode.
 
+- **B16_UNVERIFIED_WALL** — the candidate tells the user that a path is impossible, blocked, infeasible, or "can't be done" because some interface / API / mechanism is missing, WITHOUT any evidence that the agent first inventoried the capabilities it already has that could reach the goal another way. This catches the "unverified wall" anti-pattern (the constitution's "A Wall Is a Hypothesis" standard): concluding a design/feature/feasibility dead-end from a missing interface, when the agent never checked its own toolkit (session injection, server endpoints, registries, providers, file-based primitives) for a way through. A limitation is a hypothesis to test against the agent's own tools, not a verdict to relay.
+
+  Apply B16 ONLY to messages where the agent reports its OWN conclusion that something cannot be built / done / automated. Point at the exact infeasibility phrase, e.g.:
+  - "there's no API for that, so I can't…", "no programmatic interface, so it isn't possible"
+  - "that can't be done", "this isn't feasible", "there's no way to do this", "we'd hit a wall", "not supported, so we can't"
+
+  LEGITIMATE — do NOT apply B16 if ANY of these is present in the candidate:
+  - The agent shows it DID inventory its capabilities and the wall survived: it names what it checked or tried (e.g., "I checked session injection, the HTTP API, and the registries — none can reach it"). A wall reported AFTER a visible inventory is honest engineering, not a violation.
+  - The constraint is genuinely EXTERNAL and outside the agent's toolkit to change: something the user must provide or owns (a credential, an account connection), or a hard third-party / platform limit stated as a verified fact rather than an assumption.
+  - The message is asking the user a real either/or design question, or reporting a genuine runtime error / blocker (a tool/API call that actually failed).
+  - The message is DISCUSSING this rule, the concept of unverified walls, or a past instance of the pattern (a memo / explanation, not a live surrender).
+
+  If the candidate relays an infeasibility / dead-end conclusion AND cites a missing interface / API / mechanism AND shows NO evidence of a capability inventory AND none of the legitimate clauses is present → BLOCK with B16 and suggest the agent inventory its existing mechanisms first (or, if it genuinely checked, say so explicitly so the wall reads as verified).
+
+  Severity: favor FALSE-NEGATIVES over false-positives. Plain "I can't access X without you connecting it" and other genuinely-external limits MUST pass. Block only the clear unverified-wall pattern: an internal feasibility verdict resting on a missing interface, with no inventory shown.
+
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 
 - **B11_STYLE_MISMATCH** — the message significantly mismatches the agent's configured TARGET STYLE (see section below). This rule is generic — the target style is a free-text description the operator sets in config. Apply the rule when: (1) a target style is provided (not empty), AND (2) the candidate message clearly violates the style's stated intent in a way the target user would notice and find jarring.
@@ -339,7 +356,7 @@ Respond EXCLUSIVELY with valid JSON:
   "suggestion": "<how to rephrase — empty if pass is true>"
 }
 
-If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, or B15 exactly (no other values — inventing rule ids is itself a violation).
+If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, B15, or B16 exactly (no other values — inventing rule ids is itself a violation).
 
 Channel: ${channel}
 ${kindSection}${contextSection}${signalsSection}${styleSection}
