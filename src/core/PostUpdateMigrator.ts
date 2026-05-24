@@ -49,6 +49,7 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { installCodexHooks } from './installCodexHooks.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import {
   MigratorStepEngine,
@@ -1509,6 +1510,21 @@ export class PostUpdateMigrator {
       result.upgraded.push('hooks/instar/external-operation-gate.js (MCP tool safety gate)');
     } catch (err) {
       result.errors.push(`external-operation-gate.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Codex enforcement-hook registration (migration parity): existing Codex
+    // agents get the per-project .codex/hooks.json on update. installCodexHooks
+    // otherwise runs only via init's refreshHooksAndSettings — so without this an
+    // existing Codex agent would receive the updated gate SCRIPTS but never the
+    // registration that makes Codex actually fire them. Idempotent; preserves
+    // any user-added Codex hooks. The referenced gate scripts are written above.
+    if (this.getEnabledFrameworks().includes('codex-cli')) {
+      try {
+        installCodexHooks(this.config.projectDir);
+        result.upgraded.push('.codex/hooks.json (Codex enforcement-hook registration)');
+      } catch (err) {
+        result.errors.push(`codex hooks: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     try {
