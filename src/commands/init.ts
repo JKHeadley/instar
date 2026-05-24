@@ -59,6 +59,7 @@ import type { InstarConfig } from '../core/types.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
+import { installCodexHooks } from '../core/installCodexHooks.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -3445,6 +3446,17 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
     installClaudeSettings(projectDir, serverPort);
     refreshClaudeMd(projectDir, stateDir);
   }
+
+  // Codex enforcement-hook layer: wire instar's safety gates into the Codex
+  // agent's native (Claude-compatible, blocking) hook system. Mirror of
+  // installClaudeSettings for the codex-cli framework. Writes the per-project
+  // <projectDir>/.codex/hooks.json (NOT the global ~/.codex — that would leak
+  // gates into the operator's personal Codex). Spec: docs/specs/codex-enforcement-hook-layer.md
+  const codexEnabled = enabledFrameworks.includes('codex-cli');
+  if (codexEnabled) {
+    installCodexHooks(projectDir);
+  }
+
   refreshJobs(stateDir);
   refreshScripts(projectDir, stateDir);
 
