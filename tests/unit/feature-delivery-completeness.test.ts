@@ -130,6 +130,7 @@ describe('Feature Delivery Completeness', () => {
       'Threadline Network',
       'Playbook',
       'Worktree Convention',
+      'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
     ];
 
     for (const section of featureSections) {
@@ -208,6 +209,7 @@ describe('Feature Delivery Completeness', () => {
       'ORG-INTENT.md (Organizational Intent at Runtime)', // org-intent runtime contract
       'sentinelTelegramEscalation',                       // silently-stopped sentinel delivery gate
       'Sentinel Notifications (silently-stopped trio)',   // alternate heading phrase
+      'Cross-Agent Communication Discipline (anti-confabulation)', // migrator-only behavioral guard, no template parity
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {
