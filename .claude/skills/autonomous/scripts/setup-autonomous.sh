@@ -93,6 +93,37 @@ if [[ -z "$COMPLETION_PROMISE" ]]; then
   COMPLETION_PROMISE="ALL_TASKS_COMPLETE"
 fi
 
+# ── Multi-session start gate: concurrency cap + quota (refuse-new) ──
+# Primary check is the server (precise active-count + QuotaTracker). If the
+# server is unreachable, fall back to a local file-count cap so the cap still
+# holds. Starting/restarting THIS topic's own job is always allowed.
+if [[ -n "$REPORT_TOPIC" ]]; then
+  PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+  AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  CAN_START=$(curl -s -m 3 -H "Authorization: Bearer $AUTH" "http://localhost:${PORT}/autonomous/can-start?priority=medium" 2>/dev/null || echo "")
+  ALLOWED=$(printf '%s' "$CAN_START" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('allowed'))
+except Exception: print('unknown')" 2>/dev/null || echo "unknown")
+  ALREADY_RUNNING="false"
+  [[ -f ".instar/autonomous/${REPORT_TOPIC}.local.md" ]] && ALREADY_RUNNING="true"
+  if [[ "$ALLOWED" == "False" ]] && [[ "$ALREADY_RUNNING" != "true" ]]; then
+    REASON=$(printf '%s' "$CAN_START" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('reason',''))
+except Exception: print('')" 2>/dev/null || echo "")
+    echo "❌ Autonomous start refused: ${REASON:-cap or quota}" >&2
+    echo "   Stop a running job (POST /autonomous/sessions/<topic>/stop) or raise autonomousSessions.maxConcurrent." >&2
+    exit 1
+  fi
+  if [[ "$ALLOWED" == "unknown" ]] && [[ "$ALREADY_RUNNING" != "true" ]]; then
+    MAX_CONCURRENT=$(python3 -c "import json;print((json.load(open('.instar/config.json')).get('autonomousSessions') or {}).get('maxConcurrent',5))" 2>/dev/null || echo 5)
+    COUNT=$(ls .instar/autonomous/*.local.md 2>/dev/null | grep -cv "/${REPORT_TOPIC}\.local\.md$" || echo 0)
+    if [[ "$COUNT" =~ ^[0-9]+$ ]] && [[ "$MAX_CONCURRENT" =~ ^[0-9]+$ ]] && [[ $COUNT -ge $MAX_CONCURRENT ]]; then
+      echo "❌ Autonomous start refused: concurrency cap reached ($COUNT/$MAX_CONCURRENT) [server unreachable; local check]." >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Create state file. Multi-session: each topic gets its own state file at
 # .instar/autonomous/<topicId>.local.md so multiple topics run concurrent
 # autonomous jobs without collision. With no report topic, fall back to the

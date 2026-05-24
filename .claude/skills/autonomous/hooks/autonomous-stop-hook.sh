@@ -128,6 +128,13 @@ if [[ "$ACTIVE" != "true" ]]; then
   exit 0
 fi
 
+# Paused (e.g. by quota-pressure load-shedding) — allow exit until resumed.
+PAUSED=$(fm_get paused)
+if [[ "$PAUSED" == "true" ]]; then
+  echo "[autonomous] job paused — allowing exit until resumed" >&2
+  exit 0
+fi
+
 REPORT_TOPIC=$(fm_get report_topic)
 # Channel that owns this job — recovery note routes here. Default telegram for
 # back-compat (state files written before channel-neutral delivery existed).

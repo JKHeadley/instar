@@ -60,12 +60,19 @@ prompt discipline.
 
 ### Quota awareness (decision: refuse-new; pause-running only under hard pressure)
 
-- At autonomous-start: call `QuotaTracker.canRunJob(priority)`. If it returns false →
-  **refuse the new start** (do not preempt running jobs for a new one).
-- Under hard budget pressure (quota tracker signals load-shed), pause the **lowest-priority
-  running** autonomous job (mark its per-topic file `paused: true` so its hook allows exit
-  until resumed) and send the user one heads-up. Resume when pressure clears. Pausing is the
-  exception, not the routine path.
+- At autonomous-start: consult `GET /autonomous/can-start` which checks
+  `QuotaTracker.shouldSpawnSession(priority)`. If not allowed → **refuse the new start**
+  (do not preempt running jobs for a new one). This is the primary protection and is
+  wired structurally (`setup-autonomous.sh` refuses on a deny; local cap backstop if the
+  server is unreachable).
+- **Pause mechanism** (shipped): `paused: true` on a per-topic file makes its hook allow
+  exit until resumed; `pauseAutonomousTopic()` + `POST` stop/pause expose it.
+- **Automatic pressure-triggered pause** (follow-on, mechanism ready): a periodic monitor
+  that, under hard budget pressure, pauses the lowest-priority running job + notifies. This
+  needs a small new monitor and a per-job priority field; the pause mechanism it relies on
+  is already in place. Deferred to a tight follow-on because refuse-new is the primary guard
+  and multi-session-with-refuse-new is already strictly better than the prior single-session
+  behavior (which never auto-paused). Tracked in NEXT.md.
 
 ### Stop semantics (decision: per-topic stop ships in v1)
 
