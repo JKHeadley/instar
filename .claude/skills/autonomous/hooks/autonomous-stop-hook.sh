@@ -150,9 +150,15 @@ else
       OWNER_TRANSCRIPT="$(dirname "$TRANSCRIPT_PATH")/${STATE_SESSION}.jsonl"
       if [[ -f "$OWNER_TRANSCRIPT" ]]; then
         NOW_E=$(date +%s)
-        MTIME=$(stat -f %m "$OWNER_TRANSCRIPT" 2>/dev/null || stat -c %Y "$OWNER_TRANSCRIPT" 2>/dev/null || echo 0)
+        # GNU stat (-c %Y) first — Linux is the common host (and CI). BSD stat
+        # (-f %m) second for macOS. NOTE: GNU `stat -f` is filesystem mode and
+        # SUCCEEDS with non-numeric output, so BSD-first would mask the GNU path
+        # on Linux and feed garbage into the arithmetic below. The numeric guard
+        # is the backstop: a non-numeric mtime is treated as 0 (very old → dead).
+        MTIME=$(stat -c %Y "$OWNER_TRANSCRIPT" 2>/dev/null || stat -f %m "$OWNER_TRANSCRIPT" 2>/dev/null || echo 0)
+        [[ "$MTIME" =~ ^[0-9]+$ ]] || MTIME=0
         AGE=$(( NOW_E - MTIME ))
-        if [[ $AGE -lt $LIVENESS_SECS ]]; then
+        if [[ $MTIME -gt 0 ]] && [[ $AGE -lt $LIVENESS_SECS ]]; then
           OWNER_ALIVE="true"
         fi
       fi
