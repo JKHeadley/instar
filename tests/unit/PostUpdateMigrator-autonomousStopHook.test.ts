@@ -19,6 +19,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
 const HOOK_REL = path.join('.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh');
+const SETUP_REL = path.join('.claude', 'skills', 'autonomous', 'scripts', 'setup-autonomous.sh');
 
 // A representative OLD (session-UUID-keyed) hook: carries the stock fingerprint
 // but lacks the topic-session-registry marker.
@@ -34,6 +35,30 @@ if [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
 fi
 rm "$STATE_FILE"
 `;
+
+// A v1.2.55 topic-keyed hook: has topic-session-registry but NOT the
+// multi-session marker — must still be upgraded.
+const TOPIC_KEYED_V1255_HOOK = `#!/bin/bash
+# Autonomous Mode Stop Hook
+# TOPIC-KEYED OWNERSHIP ...
+REGISTRY_FILE=".instar/topic-session-registry.json"
+exit 0
+`;
+
+// An old setup script: writes the single legacy state file, lacks the per-topic marker.
+const OLD_SETUP = `#!/bin/bash
+# setup-autonomous.sh
+cat > .instar/autonomous-state.local.md <<EOF
+active: true
+EOF
+`;
+
+function deploySetup(projectDir: string, content: string): string {
+  const dst = path.join(projectDir, SETUP_REL);
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.writeFileSync(dst, content);
+  return dst;
+}
 
 function newMigrator(projectDir: string): PostUpdateMigrator {
   return new PostUpdateMigrator({
@@ -117,6 +142,30 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     const result = runMigration(newMigrator(projectDir));
     expect(fs.existsSync(path.join(projectDir, HOOK_REL))).toBe(false);
     expect(result.upgraded).toEqual([]);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('upgrades a v1.2.55 topic-keyed hook to multi-session (per-topic state)', () => {
+    const dst = deployHook(projectDir, TOPIC_KEYED_V1255_HOOK);
+    expect(fs.readFileSync(dst, 'utf8')).not.toContain('MULTI-SESSION (per-topic state)');
+
+    const result = runMigration(newMigrator(projectDir));
+
+    const updated = fs.readFileSync(dst, 'utf8');
+    expect(updated).toContain('MULTI-SESSION (per-topic state)'); // now multi-session
+    expect(result.upgraded.some(u => u.includes('autonomous-stop-hook.sh'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('upgrades an old setup-autonomous.sh to the per-topic state path', () => {
+    const dst = deploySetup(projectDir, OLD_SETUP);
+    expect(fs.readFileSync(dst, 'utf8')).not.toContain('.instar/autonomous/');
+
+    const result = runMigration(newMigrator(projectDir));
+
+    const updated = fs.readFileSync(dst, 'utf8');
+    expect(updated).toContain('STATE_PATH=".instar/autonomous/'); // per-topic path
+    expect(result.upgraded.some(u => u.includes('setup-autonomous.sh'))).toBe(true);
     expect(result.errors).toEqual([]);
   });
 
