@@ -68,6 +68,23 @@ export function resolveModelForFramework(
   return modelOrTier;
 }
 
+/**
+ * Build the Codex `-c` config overrides that pin the threadline MCP server to
+ * a specific agent's stdio entry. This wins over whatever `[mcp_servers."threadline"]`
+ * the SHARED ~/.codex/config.toml currently holds — fixing the multi-agent
+ * last-writer-wins collision where the most-recently-booted codex agent's
+ * registration clobbered everyone else's. Empty when no override is requested
+ * (e.g. claude-code launches, or codex agents without threadline configured).
+ */
+function codexThreadlineMcpFlags(mcp?: { command: string; args: string[] }): string[] {
+  if (!mcp) return [];
+  return [
+    '-c', `mcp_servers.threadline.command=${JSON.stringify(mcp.command)}`,
+    '-c', `mcp_servers.threadline.args=${JSON.stringify(mcp.args)}`,
+    '-c', `mcp_servers.threadline.kind=${JSON.stringify('stdio')}`,
+  ];
+}
+
 export interface InteractiveLaunchOptions {
   /** Absolute path to the CLI binary for the selected framework. */
   binaryPath: string;
@@ -97,6 +114,14 @@ export interface InteractiveLaunchOptions {
    * talks to a local Ollama/LM Studio instance.
    */
   codexLocalProvider?: 'ollama' | 'lmstudio';
+  /**
+   * Per-spawn Codex threadline MCP override. When set on a codex-cli launch,
+   * emits `-c mcp_servers.threadline.{command,args}=...` so THIS agent's codex
+   * session uses ITS OWN threadline MCP regardless of which agent last won the
+   * SHARED ~/.codex/config.toml (last-writer-wins collision). See
+   * resolveThreadlineMcpEntry / CODEX-MULTIAGENT-THREADLINE-SPEC.
+   */
+  codexThreadlineMcp?: { command: string; args: string[] };
 }
 
 export interface InteractiveLaunchSpec {
@@ -194,6 +219,7 @@ const codexCliBuilder: Builder = (options) => {
   } else {
     argv.push('--dangerously-bypass-approvals-and-sandbox');
   }
+  argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
   return {
     argv,
     envOverrides: {
@@ -265,9 +291,10 @@ export interface HeadlessLaunchOptions {
    */
   model?: string;
   /**
-   * Codex sandbox mode override. Defaults to
-   * `--dangerously-bypass-approvals-and-sandbox` (Claude's
-   * `--dangerously-skip-permissions` parity) when absent.
+   * Codex sandbox mode override. When set → `-s <mode> --ask-for-approval
+   * never`. When absent, the headless default is `-s workspace-write` (jobs
+   * stay sandboxed) unless `codexAllowMcpTools` is set, which selects
+   * `--dangerously-bypass-approvals-and-sandbox` for reply workers.
    */
   codexSandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
   /**
@@ -280,6 +307,22 @@ export interface HeadlessLaunchOptions {
    * vocabulary.
    */
   codexLocalProvider?: 'ollama' | 'lmstudio';
+  /**
+   * Per-spawn Codex threadline MCP override — see InteractiveLaunchOptions.
+   * Emits `-c mcp_servers.threadline.{command,args}=...` so this agent's
+   * headless codex worker (notably Threadline inbound-reply spawns) uses ITS
+   * OWN threadline MCP, not whichever agent last won the shared config.
+   */
+  codexThreadlineMcp?: { command: string; args: string[] };
+  /**
+   * When true, a codex-cli headless spawn launches with
+   * `--dangerously-bypass-approvals-and-sandbox` so it can make MCP tool calls
+   * (e.g. threadline_send to reply). Required for Threadline inbound-reply
+   * workers — codex cancels MCP calls under any sandbox. Leave false for jobs:
+   * they keep the workspace-write sandbox (they ingest external content and
+   * don't use MCP). No effect on non-codex frameworks.
+   */
+  codexAllowMcpTools?: boolean;
 }
 
 export interface HeadlessLaunchSpec {
@@ -313,11 +356,10 @@ const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
 
 const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   // Mirror the openai-codex adapter's transport spawn shape:
-  //   `codex exec --json --skip-git-repo-check -s <sandbox> -m <model> <prompt>`
+  //   `codex exec --json --skip-git-repo-check <approval/sandbox> -m <model> <prompt>`
   // The `--json` flag makes Codex emit a JSONL event stream on stdout
   // instead of TUI output — same data the agenticSessionHeadless path
   // already consumes for normalization.
-  const sandbox = options.codexSandboxMode ?? 'workspace-write';
   // Phase 6 local-provider branch — when codexLocalProvider is set,
   // emit `--oss --local-provider <p>` and pass the model verbatim
   // (local models like `llama3.2:latest` don't map through the
@@ -332,11 +374,31 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
     'exec',
     '--json',
     '--skip-git-repo-check',
-    '-s', sandbox,
   ];
   if (isLocal) {
     argv.push('--oss', '--local-provider', options.codexLocalProvider!);
   }
+  // Sandbox/approval selection:
+  //   • explicit codexSandboxMode  → `-s <mode> --ask-for-approval never`
+  //   • codexAllowMcpTools (reply)  → `--dangerously-bypass-approvals-and-sandbox`
+  //   • default (jobs)              → `-s workspace-write`
+  //
+  // Why bypass is required for MCP: under ANY `-s <sandbox>` + `--ask-for-
+  // approval never`, `codex exec` cancels MCP tool calls ("user cancelled MCP
+  // tool call"), AND the sandbox blocks the MCP server's localhost transport —
+  // both verified against codex 0.133. So a Threadline reply worker (which MUST
+  // call threadline_send) can only succeed under full bypass. We scope that to
+  // reply spawns (codexAllowMcpTools) and keep scheduled JOBS sandboxed under
+  // workspace-write, since jobs ingest external content and don't use MCP.
+  if (options.codexSandboxMode) {
+    argv.push('-s', options.codexSandboxMode, '--ask-for-approval', 'never');
+  } else if (options.codexAllowMcpTools) {
+    argv.push('--dangerously-bypass-approvals-and-sandbox');
+  } else {
+    argv.push('-s', 'workspace-write');
+  }
+  // -c overrides must precede the positional prompt in `codex exec`.
+  argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
   argv.push('-m', model, options.prompt);
   return {
     argv,

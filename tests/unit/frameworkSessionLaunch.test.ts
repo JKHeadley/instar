@@ -208,7 +208,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
   });
 
   describe('codex-cli', () => {
-    it('builds codex exec --json with default sandbox + model', () => {
+    it('defaults headless codex JOBS to the workspace-write sandbox (no bypass)', () => {
       const spec = buildHeadlessLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
         prompt: 'analyze this',
@@ -217,20 +217,39 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('exec');
       expect(spec.argv).toContain('--json');
       expect(spec.argv).toContain('--skip-git-repo-check');
+      // Jobs keep the sandbox (they ingest external content + don't use MCP).
       expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('workspace-write');
+      expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).toContain('-m');
       expect(spec.argv).toContain('gpt-5.5');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
     });
 
-    it('honors codexSandboxMode override', () => {
+    it('codexAllowMcpTools (reply workers) → full bypass so MCP calls are permitted', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'reply to peer',
+        codexAllowMcpTools: true,
+      });
+      // Reply workers MUST call threadline_send; codex cancels MCP under any
+      // sandbox, so the reply path uses full bypass. Jobs (above) do not.
+      expect(spec.argv).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(spec.argv).not.toContain('workspace-write');
+    });
+
+    it('explicit codexSandboxMode wins over codexAllowMcpTools', () => {
       const spec = buildHeadlessLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
         prompt: 'p',
         codexSandboxMode: 'read-only',
+        codexAllowMcpTools: true,
       });
+      expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('read-only');
+      expect(spec.argv).toContain('--ask-for-approval');
+      expect(spec.argv).toContain('never');
+      expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).not.toContain('workspace-write');
     });
 
@@ -380,5 +399,74 @@ describe('frameworkSessionLaunch — Phase 6 local-provider (codex --oss)', () =
     });
     expect(spec.argv).not.toContain('--oss');
     expect(spec.argv).not.toContain('--local-provider');
+  });
+});
+
+describe('frameworkSessionLaunch — per-agent codex threadline MCP override', () => {
+  const mcp = {
+    command: 'node',
+    args: [
+      '/agents/echo/.instar/shadow-install/node_modules/instar/dist/threadline/mcp-stdio-entry.js',
+      '--state-dir',
+      '/agents/echo/.instar',
+      '--agent-name',
+      'echo',
+    ],
+  };
+
+  it('headless codex emits -c mcp_servers.threadline overrides when set', () => {
+    const spec = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      prompt: 'reply to peer',
+      codexThreadlineMcp: mcp,
+    });
+    const joined = spec.argv.join(' ');
+    expect(spec.argv).toContain('-c');
+    expect(joined).toContain('mcp_servers.threadline.command="node"');
+    expect(joined).toContain('mcp_servers.threadline.args=');
+    expect(joined).toContain('--agent-name');
+    expect(joined).toContain('mcp_servers.threadline.kind="stdio"');
+    // The -c overrides must precede the positional prompt.
+    const lastCIdx = spec.argv.lastIndexOf('-c');
+    expect(spec.argv[spec.argv.length - 1]).toBe('reply to peer');
+    expect(lastCIdx).toBeLessThan(spec.argv.length - 1);
+  });
+
+  it('headless codex omits the override when not set', () => {
+    const spec = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      prompt: 'p',
+    });
+    expect(spec.argv.join(' ')).not.toContain('mcp_servers.threadline');
+  });
+
+  it('interactive codex emits the override when set', () => {
+    const spec = buildInteractiveLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      codexThreadlineMcp: mcp,
+    });
+    expect(spec.argv.join(' ')).toContain('mcp_servers.threadline.command="node"');
+  });
+
+  it('claude-code ignores the codex threadline override', () => {
+    const spec = buildHeadlessLaunch('claude-code', {
+      binaryPath: '/usr/local/bin/claude',
+      prompt: 'p',
+      codexThreadlineMcp: mcp,
+    });
+    expect(spec.argv.join(' ')).not.toContain('mcp_servers.threadline');
+  });
+
+  it('override args are valid JSON (TOML-array compatible)', () => {
+    const spec = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      prompt: 'p',
+      codexThreadlineMcp: mcp,
+    });
+    const argsFlag = spec.argv.find((a) => a.startsWith('mcp_servers.threadline.args='));
+    expect(argsFlag).toBeDefined();
+    const jsonPart = argsFlag!.slice('mcp_servers.threadline.args='.length);
+    expect(() => JSON.parse(jsonPart)).not.toThrow();
+    expect(JSON.parse(jsonPart)).toEqual(mcp.args);
   });
 });

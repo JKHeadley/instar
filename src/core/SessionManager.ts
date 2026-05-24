@@ -737,6 +737,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  When an empty array, no `--allowedTools` flag is emitted —
      *  callers must explicitly pass at least one tool name to scope. */
     allowedTools?: string[];
+    /** When true, a codex-cli spawn launches with full bypass so it can make
+     *  MCP tool calls (e.g. threadline_send). Set ONLY by Threadline
+     *  inbound-reply spawns — codex cancels MCP calls under any sandbox.
+     *  Jobs leave this false and keep the workspace-write sandbox. No effect
+     *  on non-codex frameworks. */
+    codexAllowMcpTools?: boolean;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -814,6 +820,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
       prompt: options.prompt,
       model: options.model,
       ...(options.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
+      // Per-agent codex threadline MCP override (ignored by non-codex builders).
+      // Ensures a headless codex worker — notably a Threadline inbound-reply
+      // spawn — uses THIS agent's threadline MCP, not whichever agent last won
+      // the shared ~/.codex/config.toml.
+      ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
+      // Reply spawns set this so the codex worker can call threadline_send;
+      // jobs leave it unset and keep the workspace-write sandbox.
+      ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
     });
 
     // Per-job tool allowlist (INSTAR-JOBS-AS-AGENTMD spec §5): when the
@@ -1533,6 +1547,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
       ...(defaultModel ? { defaultModel } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
+      // Per-agent codex threadline MCP override (ignored by non-codex builders).
+      ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
