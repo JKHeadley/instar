@@ -14,7 +14,7 @@ import type { RegistryClient } from '../ThreadlineMCPServer.js';
 import type { IdentityInfo } from './IdentityManager.js';
 
 export interface RegistryRestClientConfig {
-  /** Relay WebSocket URL (e.g., wss://relay.threadline.dev/v1/connect) */
+  /** Relay WebSocket URL (e.g., wss://threadline-relay.fly.dev/v1/connect) */
   relayUrl: string;
   /** Agent identity (Ed25519 keys) */
   identity: IdentityInfo;

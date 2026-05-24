@@ -23,6 +23,7 @@ import { HandshakeManager } from './HandshakeManager.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { AgentDiscovery } from './AgentDiscovery.js';
 import { generateIdentityKeyPair } from './ThreadlineCrypto.js';
+import { DEFAULT_RELAY_URL } from './constants.js';
 import type { KeyPair } from './ThreadlineCrypto.js';
 import { ThreadlineClient } from './client/ThreadlineClient.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
@@ -200,7 +201,7 @@ export async function bootstrapThreadline(
   if (relayEnabled) {
     const relayUrl = config.relayUrl
       ?? process.env.THREADLINE_RELAY_URL
-      ?? 'wss://threadline-relay.fly.dev/v1/connect';
+      ?? DEFAULT_RELAY_URL;
 
     // Always create relay client for outbound messages.
     // When daemon handles inbound, we still need the client for sending.

@@ -105,6 +105,7 @@ import { createMessagingProbes } from '../monitoring/probes/MessagingProbe.js';
 import { createLifelineProbes } from '../monitoring/probes/LifelineProbe.js';
 import { createPlatformProbes } from '../monitoring/probes/PlatformProbe.js';
 import { bootstrapThreadline } from '../threadline/ThreadlineBootstrap.js';
+import { DEFAULT_RELAY_HOST } from '../threadline/constants.js';
 import { createUnifiedTrustSystem, type UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import type { PipelineMessage } from '../types/pipeline.js';
 import { toPipeline, toInjection, toLogEntry, formatHistoryLine } from '../types/pipeline.js';
@@ -6999,7 +7000,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         // Relay client is passed to AgentServer → RouteContext for the /threadline/relay-send endpoint
 
-        console.log(pc.green(`  Threadline: relay connected to ${config.threadline?.relayUrl ?? 'threadline-relay.fly.dev'}`));
+        console.log(pc.green(`  Threadline: relay connected to ${config.threadline?.relayUrl ?? DEFAULT_RELAY_HOST}`));
       }
       console.log(pc.green(`  Threadline: enabled (MCP tools registered, discovery heartbeat active)`));
     } catch (err) {

@@ -30,6 +30,7 @@ import type { AgentDiscovery, ThreadlineAgentInfo } from './AgentDiscovery.js';
 import type { ThreadResumeMap, ThreadResumeEntry } from './ThreadResumeMap.js';
 import type { AgentTrustManager, AgentTrustLevel } from './AgentTrustManager.js';
 import type { MCPAuth, MCPTokenInfo, MCPTokenScope } from './MCPAuth.js';
+import { DEFAULT_RELAY_URL } from './constants.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -1042,7 +1043,7 @@ export class ThreadlineMCPServer {
               || process.env.THREADLINE_RELAY_ENABLED === 'true';
             const relayUrl = threadlineConfig?.relayUrl
               ?? process.env.THREADLINE_RELAY_URL
-              ?? 'wss://threadline-relay.fly.dev/v1/connect';
+              ?? DEFAULT_RELAY_URL;
             const visibility = threadlineConfig?.visibility ?? 'public';
 
             // Try to check relay health
@@ -1095,7 +1096,7 @@ export class ThreadlineMCPServer {
             return jsonResult({
               action: 'enabled',
               visibility,
-              relayUrl: config.threadline.relayUrl ?? 'wss://threadline-relay.fly.dev/v1/connect',
+              relayUrl: config.threadline.relayUrl ?? DEFAULT_RELAY_URL,
               note: 'Relay enabled in config. Restart the server to connect.',
               userMessage: `I've enabled the Threadline relay. Your agent will connect to the network on next restart. ` +
                 `Visibility is set to "${visibility}" — ` +

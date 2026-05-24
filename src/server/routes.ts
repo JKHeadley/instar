@@ -170,6 +170,7 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
+import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
@@ -12221,7 +12222,7 @@ export function createRoutes(ctx: RouteContext): Router {
       relay: {
         connected,
         fingerprint: relayClient?.fingerprint ?? null,
-        url: ctx.config.threadline?.relayUrl ?? 'wss://threadline-relay.fly.dev/v1/connect',
+        url: ctx.config.threadline?.relayUrl ?? DEFAULT_RELAY_URL,
         visibility: ctx.config.threadline?.visibility ?? 'unlisted',
       },
       listener: listenerState,
