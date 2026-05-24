@@ -74,6 +74,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
@@ -2164,6 +2165,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       stateDir: config.stateDir,
       agentName: config.projectName,
       instarVersion: startupVersion,
+    });
+
+    // HumanAsDetectorLog — treats a human-caught coherence break (a correction,
+    // a "you already said", a "why didn't you catch this") as evidence that some
+    // automated guardian failed. Configured early; the inbound-message observe()
+    // is chained onto telegram.onMessageLogged once telegram is up (see below).
+    const humanAsDetectorLog = HumanAsDetectorLog.getInstance();
+    humanAsDetectorLog.configure({
+      stateDir: config.stateDir,
+      agentName: config.projectName,
     });
 
     // Clean up stale Telegram temp files on startup
@@ -5846,6 +5857,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             senderUsername: entry.senderUsername,
             platformUserId: entry.telegramUserId?.toString(),
           });
+        };
+
+        // Human-as-Detector: observe inbound HUMAN messages for coherence-break
+        // corrections — a correction the user had to make is evidence a guardian
+        // failed. Chains the prior callback; best-effort (observe never throws).
+        const beforeHadCallback = telegram.onMessageLogged;
+        telegram.onMessageLogged = (entry) => {
+          if (beforeHadCallback) beforeHadCallback(entry);
+          observeInboundMessage(humanAsDetectorLog, entry);
         };
 
         presenceProxy.start();

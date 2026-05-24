@@ -22,6 +22,7 @@ import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js'
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import {
   GATE_ROUTE_VERSION,
@@ -3986,6 +3987,19 @@ export function createRoutes(ctx: RouteContext): Router {
       sinceMs,
       summary: ctx.tokenLedger.summary({ sinceMs }),
       codex: ctx.tokenLedger.codexSummary({ sinceMs }),
+    });
+  });
+
+  // ── Human-as-Detector heat map ───────────────────────────────────────
+  // "Where the human is doing the system's job": coherence breaks a human had
+  // to surface, grouped by the automated layer that should plausibly have
+  // caught each. Observability-only, read-only. The singleton is always
+  // configured at startup, so no availability guard is needed.
+  router.get('/human-as-detector/summary', (_req, res) => {
+    const log = HumanAsDetectorLog.getInstance();
+    res.json({
+      byLayer: log.summarizeByLayer(),
+      recent: log.getRecent().slice(-50),
     });
   });
 
