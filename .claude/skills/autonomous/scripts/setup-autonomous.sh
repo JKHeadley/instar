@@ -116,7 +116,8 @@ except Exception: print('')" 2>/dev/null || echo "")
   fi
   if [[ "$ALLOWED" == "unknown" ]] && [[ "$ALREADY_RUNNING" != "true" ]]; then
     MAX_CONCURRENT=$(python3 -c "import json;print((json.load(open('.instar/config.json')).get('autonomousSessions') or {}).get('maxConcurrent',5))" 2>/dev/null || echo 5)
-    COUNT=$(ls .instar/autonomous/*.local.md 2>/dev/null | grep -cv "/${REPORT_TOPIC}\.local\.md$" || echo 0)
+    COUNT=$(ls .instar/autonomous/*.local.md 2>/dev/null | grep -cv "/${REPORT_TOPIC}\.local\.md$")
+    COUNT=${COUNT:-0}
     if [[ "$COUNT" =~ ^[0-9]+$ ]] && [[ "$MAX_CONCURRENT" =~ ^[0-9]+$ ]] && [[ $COUNT -ge $MAX_CONCURRENT ]]; then
       echo "❌ Autonomous start refused: concurrency cap reached ($COUNT/$MAX_CONCURRENT) [server unreachable; local check]." >&2
       exit 1
