@@ -18,10 +18,10 @@ const HOOK = path.join(process.cwd(), '.claude', 'skills', 'autonomous', 'hooks'
 const UUID = '04db2de7-8e82-4baf-9136-7a067bb2ec53';
 let tmp: string;
 
-function writeState(opts: { condition?: string; promise?: string }) {
-  const started = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+function writeState(opts: { condition?: string; promise?: string; goalMode?: string; durationSeconds?: number; startedAt?: string }) {
+  const started = opts.startedAt ?? new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   fs.writeFileSync(path.join(tmp, '.instar', 'autonomous-state.local.md'),
-    `---\nactive: true\niteration: 2\nsession_id: "${UUID}"\nduration_seconds: 0\nstarted_at: "${started}"\nreport_topic: ""\ncompletion_promise: "${opts.promise ?? ''}"\ncompletion_condition: "${opts.condition ?? ''}"\n---\n\nKeep going.\n`);
+    `---\nactive: true\niteration: 2\nsession_id: "${UUID}"\nduration_seconds: ${opts.durationSeconds ?? 0}\nstarted_at: "${started}"\nreport_topic: "9984"\ngoal_mode: "${opts.goalMode ?? ''}"\ncompletion_promise: "${opts.promise ?? ''}"\ncompletion_condition: "${opts.condition ?? ''}"\n---\n\nKeep going.\n`);
 }
 function writeTranscript(): string {
   const p = path.join(tmp, 'transcript.jsonl');
@@ -77,5 +77,33 @@ describe('completion condition — independent evaluator', () => {
     writeState({ promise: 'ALL_DONE' }); // no condition
     const r = runHook();
     expect(r.decision).toBe('block'); // promise not in transcript → keep working
+  });
+});
+
+describe('native /goal delegation (goal_mode: native)', () => {
+  it('defers to native /goal — approves/exits (no block) so native /goal stays in control', () => {
+    // goal_mode:native means the framework's own /goal hook owns completion. instar must
+    // NOT block (block would override native /goal); it approves and lets native decide.
+    writeState({ condition: 'all tests pass', goalMode: 'native' });
+    const r = runHook(); // even with the instar evaluator unreachable, native mode defers
+    expect(r.decision).not.toBe('block');
+    expect(r.exit).toBe(0);
+    expect(statePresent()).toBe(true); // job continues (native /goal enforces)
+  });
+
+  it('still enforces emergency-stop in native mode (clears state + exits)', () => {
+    writeState({ condition: 'x', goalMode: 'native' });
+    fs.writeFileSync(path.join(tmp, '.instar', 'autonomous-emergency-stop'), 'stop\n');
+    const r = runHook();
+    expect(r.exit).toBe(0);
+    expect(statePresent()).toBe(false); // instar cleared its state (+ best-effort native clear)
+  });
+
+  it('still enforces duration expiry in native mode (clears state + exits)', () => {
+    const past = new Date(Date.now() - 3600_000).toISOString().replace(/\.\d+Z$/, 'Z');
+    writeState({ condition: 'x', goalMode: 'native', durationSeconds: 10, startedAt: past });
+    const r = runHook();
+    expect(r.exit).toBe(0);
+    expect(statePresent()).toBe(false);
   });
 });

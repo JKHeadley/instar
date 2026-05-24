@@ -20,6 +20,7 @@ import path from 'node:path';
 let project: TempProject;
 let server: Server;
 let baseUrl: string;
+const sentInputs: Array<{ tmux: string; input: string }> = [];
 
 function writeJob(stateDir: string, topic: string) {
   fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
@@ -45,7 +46,8 @@ describe('Multi-session autonomy API (integration)', () => {
     app.use(express.json());
     const router = createRoutes({
       config, state,
-      sessionManager: null as any, scheduler: null, telegram: null, relationships: null,
+      sessionManager: { sendInput: (tmux: string, input: string) => { sentInputs.push({ tmux, input }); return true; } } as any,
+      scheduler: null, telegram: null, relationships: null,
       feedback: null, dispatches: null, updateChecker: null, autoUpdater: null,
       autoDispatcher: null, quotaTracker: null, publisher: null, viewer: null, tunnel: null,
       evolution: null, watchdog: null, triageNurse: null, topicMemory: null,
@@ -150,5 +152,42 @@ describe('Multi-session autonomy API (integration)', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('POST /autonomous/native-goal/set injects /goal <condition> and flips goal_mode', async () => {
+    // registry maps topic 9984 -> tmux 'sess-x'; a per-topic job file exists.
+    fs.writeFileSync(path.join(project.stateDir, 'topic-session-registry.json'),
+      JSON.stringify({ topicToSession: { '9984': 'sess-x' }, topicToName: {} }));
+    writeJob(project.stateDir, '9984');
+    sentInputs.length = 0;
+
+    const res = await fetch(`${baseUrl}/autonomous/native-goal/set`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '9984', condition: 'all tests pass' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).mode).toBe('native');
+    // injected the native /goal command into the topic's session
+    expect(sentInputs).toContainEqual({ tmux: 'sess-x', input: '/goal all tests pass' });
+    // goal_mode flipped in the per-topic state file
+    const stateFile = path.join(project.stateDir, 'autonomous', '9984.local.md');
+    expect(fs.readFileSync(stateFile, 'utf8')).toMatch(/goal_mode:\s*"native"/);
+  });
+
+  it('POST /autonomous/native-goal/clear injects /goal clear', async () => {
+    sentInputs.length = 0;
+    const res = await fetch(`${baseUrl}/autonomous/native-goal/clear`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topicId: '9984' }),
+    });
+    expect(res.status).toBe(200);
+    expect(sentInputs).toContainEqual({ tmux: 'sess-x', input: '/goal clear' });
+  });
+
+  it('POST /autonomous/native-goal/set 404s for an unknown topic', async () => {
+    const res = await fetch(`${baseUrl}/autonomous/native-goal/set`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: 'nope', condition: 'x' }),
+    });
+    expect(res.status).toBe(404);
   });
 });

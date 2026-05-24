@@ -146,6 +146,7 @@ DURATION_SECONDS=$(fm_get duration_seconds)
 STARTED_AT=$(fm_get started_at)
 COMPLETION_PROMISE=$(fm_get completion_promise)
 COMPLETION_CONDITION=$(fm_get completion_condition)
+GOAL_MODE=$(fm_get goal_mode)   # "native" = the framework's own /goal loop drives completion
 
 # Validate recorded session_id is a real UUID. Claude sometimes writes a custom
 # string instead of $CLAUDE_CODE_SESSION_ID; non-UUID values are treated as
@@ -225,6 +226,36 @@ except Exception:
 fi
 
 if [[ "$OWNER" != "true" ]]; then
+  exit 0
+fi
+
+# ── Native /goal delegation: the framework's own /goal loop owns completion. ──
+# instar injected "/goal <condition>" at start (goal_mode=native), so we DEFER the
+# continue/stop decision to native /goal's own Stop hook (we approve/exit; its hook
+# blocks until the condition is met — block wins over approve, so it stays in control).
+# instar still owns its terminal STOP concerns (emergency-stop, duration) and enforces
+# them by CLEARING native /goal first (inject "/goal clear" via the server).
+if [[ "$GOAL_MODE" == "native" ]]; then
+  native_goal_clear() {
+    local port auth
+    port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+    auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+    jq -nc --arg t "$REPORT_TOPIC" '{topicId:$t}' \
+      | curl -s -m 10 -H "Authorization: Bearer $auth" -H 'Content-Type: application/json' \
+        --data-binary @- "http://localhost:${port}/autonomous/native-goal/clear" >/dev/null 2>&1 || true
+  }
+  if [[ -f ".instar/autonomous-emergency-stop" ]]; then
+    native_goal_clear; rm -f "$STATE_FILE"
+    echo "[autonomous] emergency stop — native /goal cleared" >&2; exit 0
+  fi
+  if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
+    NG_START=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo 0)
+    if [[ "$NG_START" =~ ^[0-9]+$ ]] && [[ $NG_START -gt 0 ]] && [[ $(( $(date +%s) - NG_START )) -ge $DURATION_SECONDS ]]; then
+      native_goal_clear; rm -f "$STATE_FILE"
+      echo "[autonomous] duration expired — native /goal cleared" >&2; exit 0
+    fi
+  fi
+  # Not terminal → let native /goal decide completion. Approve (its hook keeps control).
   exit 0
 fi
 

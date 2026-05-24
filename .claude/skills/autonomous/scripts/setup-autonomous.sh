@@ -197,6 +197,31 @@ To complete, ALL of these must be true:
 - Then output: <promise>$COMPLETION_PROMISE</promise>
 EOF
 
+# ── Native /goal delegation: where the framework has a native /goal loop, hand the
+# condition to it (instar injects "/goal <condition>" via the server → SessionManager
+# send-keys) and mark goal_mode:native so the stop-hook defers completion to it. Only
+# with a condition + a per-topic job + Claude Code >= 2.1.139. Best-effort: on any miss
+# we leave goal_mode empty and instar's own independent evaluator drives (Phase 1).
+if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$REPORT_TOPIC" ]]; then
+  CLAUDE_VER=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+  NATIVE_GOAL_OK="false"
+  if [[ -n "$CLAUDE_VER" ]]; then
+    # /goal requires Claude Code >= 2.1.139.
+    if [[ "$(printf '%s\n2.1.139\n' "$CLAUDE_VER" | sort -V | head -1)" == "2.1.139" ]]; then
+      NATIVE_GOAL_OK="true"
+    fi
+  fi
+  if [[ "$NATIVE_GOAL_OK" == "true" ]]; then
+    NG_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+    NG_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+    jq -nc --arg t "$REPORT_TOPIC" --arg c "$COMPLETION_CONDITION" '{topicId:$t,condition:$c}' \
+      | curl -s -m 8 -H "Authorization: Bearer $NG_AUTH" -H 'Content-Type: application/json' \
+        --data-binary @- "http://localhost:${NG_PORT}/autonomous/native-goal/set" >/dev/null 2>&1 \
+      && echo "  Native /goal: handed condition to Claude Code's /goal loop" \
+      || echo "  Native /goal: unavailable — using instar's own completion evaluator"
+  fi
+fi
+
 echo "🔄 Autonomous mode activated!"
 echo ""
 echo "Goal: $GOAL"
