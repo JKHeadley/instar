@@ -89,6 +89,20 @@ Now: the endpoint accepts `priority` on the request body, validates against `Mes
 
 **Scope:** local-delivery path only. The remote-relay (WebSocket) envelope schema does not currently carry priority on the wire; that's a separate, deeper change.
 
+## What to Tell Your User
+
+Almost nothing changes day to day — this batch is reliability plumbing for agents running on the Codex engine. The biggest one: your scheduler now stays on by default, so scheduled jobs (drift audits, sync, self-healing) keep running instead of silently going dark on agents that never set the option. Restart-after-update is also quieter and more honest — the "I just updated, restarting" note now waits until the new version is actually verified, so you won't get a confusing message in the middle of a half-finished restart. The rest are internal config and cross-agent-messaging fixes. No action needed.
+
+## Summary of New Capabilities
+
+- **Scheduler on by default** — agents without explicit scheduler config keep their autonomy-continuity jobs running; an explicit `enabled: false` is still honored (operator choice wins).
+- **Verified restart handshake** — update-restart notifications defer until the new version boots and verifies, so no garbled "just updated" message mid-restart.
+- **Caller-respected message priority** — `/threadline/relay-send` honors a caller-supplied priority (critical/high/medium/low) instead of hardcoding medium.
+- **Live session-cap read** — SpawnRequestManager reads the session cap through a live accessor, so cap changes take effect without a restart.
+- **Canonical `maxSessions` migration** — the legacy top-level config key is canonicalized on update.
+- **Anti-confabulation guidance** — a CLAUDE.md section naming the "narrate intentions as completed actions" failure mode for cross-agent comms.
+- **Framework arg-rendering audit matrix** — a structural test asserting every supported framework renders non-empty launch argv.
+
 ## Evidence
 
 - New integration tests: `tests/integration/threadline-relay-send-priority.test.ts` — 6 tests, all pass. Verifies critical/high/low propagation, medium default, 400 on unknown string, 400 on non-string.
