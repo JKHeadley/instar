@@ -51,6 +51,7 @@ function writeState(opts: {
   active?: boolean;
   sessionId?: string;
   reportTopic?: string;
+  reportChannel?: string;
   iteration?: number;
   durationSeconds?: number;
   completionPromise?: string;
@@ -61,6 +62,7 @@ function writeState(opts: {
     active = true,
     sessionId = OLD_UUID,
     reportTopic = '9984',
+    reportChannel,
     iteration = 1,
     durationSeconds = 0,
     completionPromise = 'ALL_DONE',
@@ -68,6 +70,7 @@ function writeState(opts: {
     task = 'Keep building the thing until done.',
   } = opts;
   const started = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const channelLine = reportChannel ? `\nreport_channel: "${reportChannel}"` : '';
   const content = `---
 active: ${active}
 iteration: ${iteration}
@@ -75,7 +78,7 @@ session_id: "${sessionId}"
 goal: "test goal"
 duration_seconds: ${durationSeconds}
 started_at: "${started}"
-report_topic: "${reportTopic}"
+report_topic: "${reportTopic}"${channelLine}
 report_interval: "2h"
 completion_promise: "${completionPromise}"${extraFrontmatter ? '\n' + extraFrontmatter : ''}
 ---
@@ -215,6 +218,43 @@ describe('T4 — one-line recovery note, exactly once', () => {
     expect(r2.decision).toBe('block');
     const after2 = fs.readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
     expect(after2.length).toBe(1);
+  });
+});
+
+describe('Channel-neutral delivery seam (recovery note routes by channel)', () => {
+  function readAudit(): any[] {
+    const p = path.join(tmpDir, '.instar', 'autonomous-recovery.jsonl');
+    if (!fs.existsSync(p)) return [];
+    return fs.readFileSync(p, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  it('records channel=telegram by default (back-compat, no report_channel)', () => {
+    writeState({ sessionId: OLD_UUID, reportTopic: '9984' }); // no report_channel
+    writeRegistry({ '9984': 'echo-claude-agent-sdk' });
+    const r = runHook({
+      sessionId: NEW_UUID, tmuxSession: 'echo-claude-agent-sdk',
+      transcriptPath: writeTranscript(NEW_UUID, 0),
+    });
+    expect(r.decision).toBe('block');
+    const audit = readAudit();
+    expect(audit.length).toBe(1);
+    expect(audit[0].channel).toBe('telegram');
+  });
+
+  it('routes a non-Telegram channel without erroring and records that channel', () => {
+    // A Slack-owned job: the hook must NOT assume Telegram. It records channel=slack
+    // and continues (live Slack delivery is owned by the Channel Parity initiative).
+    writeState({ sessionId: OLD_UUID, reportTopic: 'C123', reportChannel: 'slack' });
+    writeRegistry({ C123: 'echo-claude-agent-sdk' });
+    const r = runHook({
+      sessionId: NEW_UUID, tmuxSession: 'echo-claude-agent-sdk',
+      transcriptPath: writeTranscript(NEW_UUID, 0),
+    });
+    expect(r.decision).toBe('block'); // autonomy still survives the restart
+    const audit = readAudit();
+    expect(audit.length).toBe(1);
+    expect(audit[0].channel).toBe('slack');
+    expect(audit[0].topic).toBe('C123');
   });
 });
 

@@ -26,11 +26,18 @@ adopted, a live one is left alone.
 
 **New: one-line recovery note on restart-resume.** When a real restart-and-resume
 happens (topic verified, UUID changed), the hook writes one audit record to
-`.instar/autonomous-recovery.jsonl` and best-effort delivers a single Telegram line to
-the job's topic — *"Heads up — my session restarted mid-run and I've picked the
-autonomous job back up. No action needed."* — exactly once per restart. A silent
-self-heal would have left "recovered cleanly" indistinguishable from "died unnoticed";
-the note closes that blind spot.
+`.instar/autonomous-recovery.jsonl` and best-effort delivers a single line to the job's
+owner — *"Heads up — my session restarted mid-run and I've picked the autonomous job
+back up. No action needed."* — exactly once per restart. A silent self-heal would have
+left "recovered cleanly" indistinguishable from "died unnoticed"; the note closes that
+blind spot.
+
+**Channel-neutral delivery.** The recovery note routes to whichever channel owns the job
+(`report_channel` in the autonomous state, default `telegram`) via a `deliver_recovery_note`
+seam — the hook makes no Telegram assumption. Telegram is wired now; Slack/WhatsApp/iMessage
+delivery is owned by the Channel Parity initiative and is recorded to the channel-neutral
+audit trail until that lands (never a silent Telegram misfire). `setup-autonomous.sh` accepts
+`--report-channel`.
 
 **Collateral fixes in the same hook:**
 

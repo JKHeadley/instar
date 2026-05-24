@@ -10,6 +10,7 @@ set -euo pipefail
 GOAL=""
 DURATION="4h"
 REPORT_TOPIC=""
+REPORT_CHANNEL="telegram"   # channel that owns this job; recovery note routes here (telegram|slack|whatsapp|imessage)
 LEVEL_UP="false"
 TASKS=""
 COMPLETION_PROMISE=""
@@ -27,6 +28,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --report-topic)
       REPORT_TOPIC="$2"
+      shift 2
+      ;;
+    --report-channel)
+      REPORT_CHANNEL="$2"
       shift 2
       ;;
     --level-up)
@@ -102,6 +107,7 @@ duration_seconds: $DURATION_SECONDS
 started_at: "$STARTED_AT"
 end_at: "$END_AT"
 report_topic: "$REPORT_TOPIC"
+report_channel: "$REPORT_CHANNEL"
 report_interval: "$REPORT_INTERVAL"
 last_report_at: ""
 level_up: $LEVEL_UP

@@ -69,6 +69,10 @@ fi
 
 # ── State fields ──────────────────────────────────────────────────────
 REPORT_TOPIC=$(fm_get report_topic)
+# Channel that owns this job — recovery note routes here. Default telegram for
+# back-compat (state files written before channel-neutral delivery existed).
+REPORT_CHANNEL=$(fm_get report_channel)
+[[ -z "$REPORT_CHANNEL" ]] && REPORT_CHANNEL="telegram"
 STATE_SESSION=$(fm_get session_id)
 ITERATION=$(fm_get iteration)
 DURATION_SECONDS=$(fm_get duration_seconds)
@@ -236,22 +240,40 @@ record_session_id() {
   fi
 }
 
+# Channel-neutral delivery seam. The hook does NOT assume Telegram — it routes
+# the note to whatever channel owns the job. Telegram is wired here; the other
+# channels are owned by the unified notification layer tracked in the Channel
+# Parity initiative. Either way the durable audit record below is the source of
+# truth, so a not-yet-wired channel never silently misfires to Telegram.
+deliver_recovery_note() {
+  local channel="$1" target="$2" text="$3"
+  [[ -z "$target" ]] && return 0
+  case "$channel" in
+    telegram)
+      if [[ -x ".instar/scripts/telegram-reply.sh" ]]; then
+        printf '%s\n' "$text" | .instar/scripts/telegram-reply.sh "$target" >/dev/null 2>&1 || true
+      elif [[ -x ".claude/scripts/telegram-reply.sh" ]]; then
+        printf '%s\n' "$text" | .claude/scripts/telegram-reply.sh "$target" >/dev/null 2>&1 || true
+      fi
+      ;;
+    *)
+      # slack | whatsapp | imessage | future — delivered by the unified notify
+      # layer (Channel Parity initiative). Recorded to the audit trail above.
+      echo "[autonomous] recovery note for channel '$channel' recorded to audit; live delivery pending the Channel Parity initiative" >&2
+      ;;
+  esac
+}
+
 if [[ "$RESTART_DETECTED" == "true" ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
   ITER_LABEL="${ITERATION:-?}"
   NOTE="Heads up — my session restarted mid-run and I've picked the autonomous job back up (topic ${REPORT_TOPIC:-?}, iteration ${ITER_LABEL}). No action needed."
-  # Durable audit record (always).
+  # Durable, channel-neutral audit record (always).
   TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf '{"ts":"%s","event":"restart-resume","topic":"%s","oldSession":"%s","newSession":"%s","method":"%s","iteration":"%s"}\n' \
-    "$TS" "${REPORT_TOPIC:-}" "$STATE_SESSION" "$HOOK_SESSION" "$OWNER_METHOD" "$ITER_LABEL" >> "$RECOVERY_AUDIT" 2>/dev/null || true
-  # Best-effort user-facing delivery (structural — the hook sends, not the agent).
-  if [[ -n "$REPORT_TOPIC" ]]; then
-    if [[ -x ".instar/scripts/telegram-reply.sh" ]]; then
-      printf '%s\n' "$NOTE" | .instar/scripts/telegram-reply.sh "$REPORT_TOPIC" >/dev/null 2>&1 || true
-    elif [[ -x ".claude/scripts/telegram-reply.sh" ]]; then
-      printf '%s\n' "$NOTE" | .claude/scripts/telegram-reply.sh "$REPORT_TOPIC" >/dev/null 2>&1 || true
-    fi
-  fi
-  echo "[autonomous] restart-resume: topic=${REPORT_TOPIC:-?} old=$STATE_SESSION new=$HOOK_SESSION method=$OWNER_METHOD" >&2
+  printf '{"ts":"%s","event":"restart-resume","channel":"%s","topic":"%s","oldSession":"%s","newSession":"%s","method":"%s","iteration":"%s"}\n' \
+    "$TS" "$REPORT_CHANNEL" "${REPORT_TOPIC:-}" "$STATE_SESSION" "$HOOK_SESSION" "$OWNER_METHOD" "$ITER_LABEL" >> "$RECOVERY_AUDIT" 2>/dev/null || true
+  # Best-effort user-facing delivery via the channel that owns the job.
+  deliver_recovery_note "$REPORT_CHANNEL" "$REPORT_TOPIC" "$NOTE"
+  echo "[autonomous] restart-resume: channel=$REPORT_CHANNEL topic=${REPORT_TOPIC:-?} old=$STATE_SESSION new=$HOOK_SESSION method=$OWNER_METHOD" >&2
 fi
 
 # Reconcile recorded session_id to live (covers restart, bootstrap, adopt).
