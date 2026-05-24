@@ -88,8 +88,6 @@ export interface WarrantsReplyInput {
   humanInLoop: boolean;
   /** Sender hint — forces past suppression, but NOT past the turn budget. */
   expectsReply?: boolean;
-  /** Authority layer; when absent the gate uses deterministic signals only. */
-  intelligence?: IntelligenceProvider;
   /** Override the soft cap (tests). */
   softCap?: number;
 }
@@ -121,6 +119,13 @@ export interface WarrantsReplyVerdict {
   budgetExhausted: boolean;
   /** Normalized inbound form the caller stores as `lastInboundHash`. */
   normalizedInbound: string;
+  /**
+   * Whether this inbound was NOVEL vs the conversation's last inbound (forward
+   * progress). The caller uses this to reset the no-progress counter: a novel
+   * turn resets it (a 30-turn novel collaboration never trips the budget), a
+   * non-novel turn accrues toward the backstop.
+   */
+  novel: boolean;
 }
 
 // ── Normalization helpers (exported for tests) ──────────────────
@@ -193,9 +198,25 @@ export class WarrantsReplyGate {
     const normalizedInbound = normalizeForNovelty(text);
     const softCap = input.softCap ?? this.softCap;
 
+    const conv = input.conversation;
+    const turnCount = conv?.turnCount ?? 0;
+    const firstContact = !conv || turnCount === 0 || !conv.lastInboundHash;
+
+    // Novelty: forward progress vs the last inbound (computed up-front so it is
+    // reported on EVERY verdict — the caller resets its no-progress counter on
+    // a novel turn regardless of which signal decided the reply).
+    let novel: boolean;
+    if (firstContact || !conv?.lastInboundHash) {
+      novel = true;
+    } else {
+      const sim = tokenSetSimilarity(tokenSet(normalizedInbound), tokenSet(conv.lastInboundHash));
+      novel = sim < NOVELTY_SIM_THRESHOLD;
+    }
+
     const base = (v: Partial<WarrantsReplyVerdict> & { warrants: boolean; signal: WarrantsReplySignal; reason: string }): WarrantsReplyVerdict => ({
       budgetExhausted: false,
       normalizedInbound,
+      novel,
       ...v,
     });
 
@@ -203,19 +224,6 @@ export class WarrantsReplyGate {
     //     human-in-loop flag came from our own verified records (caller's job).
     if (input.humanInLoop) {
       return base({ warrants: true, signal: 'human-in-loop', reason: 'verified human in thread — always responsive' });
-    }
-
-    const conv = input.conversation;
-    const turnCount = conv?.turnCount ?? 0;
-    const firstContact = !conv || turnCount === 0 || !conv.lastInboundHash;
-
-    // Novelty: forward progress vs the last inbound.
-    let novel: boolean;
-    if (firstContact || !conv?.lastInboundHash) {
-      novel = true;
-    } else {
-      const sim = tokenSetSimilarity(tokenSet(normalizedInbound), tokenSet(conv.lastInboundHash));
-      novel = sim < NOVELTY_SIM_THRESHOLD;
     }
 
     const control = isControlToken(text);

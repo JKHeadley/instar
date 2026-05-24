@@ -99,6 +99,8 @@ import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
+import { ConversationStore } from '../threadline/ConversationStore.js';
+import { WarrantsReplyGate } from '../threadline/WarrantsReplyGate.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
 import { SystemReviewer } from '../monitoring/SystemReviewer.js';
 import { createSessionProbes } from '../monitoring/probes/SessionProbe.js';
@@ -6477,6 +6479,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     const messageStore = new MessageStore(path.join(config.stateDir, 'messages'));
     await messageStore.initialize();
     const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir);
+    // Threadline Phase 1 keystone: the Conversation single-source-of-truth +
+    // the warrants-a-reply gate. The gate runs once at the relay inbound funnel
+    // (below), upstream of all three routing branches, with turn/novelty state
+    // living on the Conversation (the one-shot worker can't self-police a loop).
+    const conversationStore = new ConversationStore(config.stateDir);
+    const warrantsReplyGate = new WarrantsReplyGate({ intelligence: sharedIntelligence });
     const messageFormatter = new MessageFormatter();
     const tmuxBin = config.sessions.tmuxPath;
     const tmuxOps: TmuxOperations = {
@@ -7057,6 +7065,76 @@ export async function startServer(options: StartOptions): Promise<void> {
                 messageId: msg.messageId,
               })
               .catch(err => console.warn(`[tg-bridge] mirrorInbound: ${err instanceof Error ? err.message : err}`));
+          }
+
+          // Phase 1 keystone: warrants-a-reply gate. Runs ONCE here, UPSTREAM of
+          // all three routing branches (pipe-spawn / warm-listener / cold-spawn),
+          // so a no-reply verdict short-circuits ALL of them — the observed
+          // ack-loop rides the pipe/listener branches, which never reach
+          // ThreadlineRouter, so a router-only gate would not stop it. Turn +
+          // novelty state lives on the Conversation, not the one-shot worker.
+          {
+            const gateThreadId = msg.threadId ?? getSyntheticThreadId(senderFingerprint);
+            const existingConv = conversationStore.get(gateThreadId);
+            // Relay inbound is agent-to-agent → autonomous (stricter). The
+            // human-in-loop exemption is derived ONLY from our own records and
+            // is never set from anything the peer sends (unforgeable).
+            const humanInLoop = false;
+            let gateVerdict: import('../threadline/WarrantsReplyGate.js').WarrantsReplyVerdict | null = null;
+            try {
+              gateVerdict = await warrantsReplyGate.evaluate({
+                threadId: gateThreadId,
+                text: textContent,
+                conversation: existingConv,
+                humanInLoop,
+              });
+            } catch (gateErr) {
+              // Gate failure → fail toward responsive (never silently drop a message).
+              console.warn(`[relay] warrants-reply gate error (defaulting responsive): ${gateErr instanceof Error ? gateErr.message : gateErr}`);
+            }
+
+            if (gateVerdict) {
+              // Record the inbound on the Conversation — turn state lives here.
+              // A NOVEL turn resets the no-progress counter (a 30-turn novel
+              // collaboration never trips the budget); a non-novel turn accrues
+              // toward the backstop.
+              const verdict = gateVerdict;
+              try {
+                await conversationStore.mutate(gateThreadId, d => {
+                  d.turnCount = verdict.novel ? 0 : d.turnCount + 1;
+                  d.messageCount += 1;
+                  d.lastInboundHash = verdict.normalizedInbound;
+                  d.lastActivityAt = new Date().toISOString();
+                  if (senderFingerprint && !d.participants.peers.includes(senderFingerprint)) d.participants.peers.push(senderFingerprint);
+                  if (!d.remoteAgent) d.remoteAgent = senderName;
+                  d.trustLevel = trustLevel;
+                  if (!verdict.warrants) {
+                    d.state = 'idle';
+                  } else if (d.state === 'open' || d.state === 'idle') {
+                    d.state = 'active';
+                  }
+                  return d;
+                });
+              } catch (convErr) {
+                console.warn(`[relay] ConversationStore mutate failed (non-fatal): ${convErr instanceof Error ? convErr.message : convErr}`);
+              }
+
+              if (!verdict.warrants) {
+                console.log(`[relay] warrants-reply gate suppressed reply (${verdict.signal}) for ${senderName} thread ${gateThreadId.slice(0, 8)}`);
+                // On budget exhaustion, escalate ONE attention item — never silently drop.
+                if (verdict.budgetExhausted && telegram) {
+                  telegram.createAttentionItem({
+                    id: `threadline-loop-${gateThreadId.slice(0, 12)}`,
+                    title: `Threadline conversation loop wound down (${senderName})`,
+                    summary: `Stopped auto-replying to an agent-to-agent thread that kept going with no new content.`,
+                    description: `An agent-to-agent thread with ${senderName} kept exchanging messages with no new content, so I stopped auto-replying to keep it from looping. Thread ${gateThreadId.slice(0, 8)}. Let me know if you want me to re-engage.`,
+                    category: 'threadline-loop-gate',
+                    priority: 'LOW',
+                  }).catch(escErr => console.warn(`[relay] loop-gate attention escalation failed: ${escErr instanceof Error ? escErr.message : escErr}`));
+                }
+                return; // short-circuit ALL three routing branches
+              }
+            }
           }
 
           // Phase 2a: Pipe-mode session for simple queries (lightweight, auto-exit)
