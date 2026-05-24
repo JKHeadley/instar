@@ -40,7 +40,7 @@ Three phases, each complete with its own tests: (1) the per-topic notepads + saf
 
 ## The decisions (settled)
 
-You picked: cap of **5** (configurable), **per-topic stop ships now**, and for budget pressure you left it my call — I'm going with refuse-new-starts always, and only pause a running low-priority job when we're genuinely over budget (with a heads-up when I do).
+You picked: cap of **5** (configurable), **per-topic stop ships now**, and for budget pressure you left it my call — v1 refuses to START new jobs when we're near the limit (the main protection), and any running job can be paused under pressure (the off-switch is built in). Whether to add a fully-automatic "pause a running job on its own under heavy pressure" monitor on top of that is a separate judgment call, not part of this first version.
 
 ## What you need to decide now
 

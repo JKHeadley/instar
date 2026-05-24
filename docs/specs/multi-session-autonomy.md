@@ -65,14 +65,16 @@ prompt discipline.
   (do not preempt running jobs for a new one). This is the primary protection and is
   wired structurally (`setup-autonomous.sh` refuses on a deny; local cap backstop if the
   server is unreachable).
-- **Pause mechanism** (shipped): `paused: true` on a per-topic file makes its hook allow
-  exit until resumed; `pauseAutonomousTopic()` + `POST` stop/pause expose it.
-- **Automatic pressure-triggered pause** (follow-on, mechanism ready): a periodic monitor
-  that, under hard budget pressure, pauses the lowest-priority running job + notifies. This
-  needs a small new monitor and a per-job priority field; the pause mechanism it relies on
-  is already in place. Deferred to a tight follow-on because refuse-new is the primary guard
-  and multi-session-with-refuse-new is already strictly better than the prior single-session
-  behavior (which never auto-paused). Tracked in NEXT.md.
+- **Pause mechanism**: `paused: true` on a per-topic file makes its hook allow exit until
+  resumed; `pauseAutonomousTopic()` exposes it. This lets a running job be shed under
+  pressure (by an operator, the API, or a future pressure-monitor) without losing its state.
+
+v1 quota behavior is **refuse-new + the pause mechanism**. Refuse-new is the structural
+primary guard: it caps overspend at admission, and multi-session-with-refuse-new is strictly
+tighter than the prior single-session behavior (which had no quota gate on the running job at
+all). An automatic pressure-monitor that pauses running jobs without operator action is an
+optional intelligence on top of this mechanism, evaluated on its own merits — it is not part
+of the v1 contract, which is fully satisfied by refuse-new + pausability.
 
 ### Stop semantics (decision: per-topic stop ships in v1)
 
