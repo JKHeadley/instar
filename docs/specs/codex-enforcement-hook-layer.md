@@ -99,6 +99,16 @@ This materially shrinks P2 from "translation shim" to "small path-resolution fal
 - (c) The live codey block-test (P5) is the ultimate proof.
 This means the enforcement layer is substantially closer than the spec originally assumed — the gates are near-framework-agnostic already; P1 supplied the missing registration, and P2 is mostly proving the scripts run correctly under Codex.
 
+### 4.2d CORRECTION (deeper gate-source audit — P2 has real work after all)
+
+The "collapses to pure verification" claim above is **too optimistic** and is corrected here (intellectual honesty over a tidy story). Two real gaps found auditing the actual gate sources:
+
+1. **Arg-reading scripts break under Codex (stdin-only).** `dangerous-command-guard.sh` and `grounding-before-messaging.sh` read their input from a command-line **arg** (`INPUT="$1"`); Claude invokes them as `... dangerous-command-guard.sh "$TOOL_INPUT"`. **Codex passes NO args — it delivers JSON on stdin.** So under Codex these scripts receive an empty `$1` and gate nothing. **Real P2 work:** shim them to fall back to reading `tool_input.command` from stdin JSON when no arg is present (`INPUT="${1:-$(extract from stdin)}"`). (The stdin-reading JS gates like `external-operation-gate.js` are unaffected — verified §4.2c.)
+
+2. **P1 mapping gap — shell-safety gate missing from Codex.** `external-operation-gate.js` only gates `mcp__*` tools (exits 0 for everything else). Codex's destructive class is native `shell`/`exec`/`apply_patch`, NOT `mcp__*`. Claude gates those via `dangerous-command-guard.sh` on the `Bash` matcher — but `installCodexHooks` (P1) mapped only `external-operation-gate` + `grounding` to PreToolUse, **omitting `dangerous-command-guard`**. As wired, Codex shell commands would pass ungated. **P2 fix:** add `dangerous-command-guard.sh` to the Codex PreToolUse mapping (with the stdin shim from #1), so shell/exec/apply_patch get the dangerous-command check.
+
+**Corrected P2 scope:** (a) stdin-shim `dangerous-command-guard.sh` + `grounding-before-messaging.sh`; (b) add `dangerous-command-guard` to `buildInstarCodexHookGroups` PreToolUse; (c) confirm PermissionRequest exit-2 block; (d) integration test with a Codex shell-command payload proving a destructive command is blocked. This is the careful-verification payoff: as-wired, the layer would have looked installed but NOT gated Codex's main destructive surface — exactly the false-sense-of-safety the live E2E (P5) exists to catch.
+
 ### 4.3 Script I/O reconciliation
 
 The gate scripts currently assume Claude's hook stdin/stdout/exit contract. Codex's is Claude-compatible but not identical (event names, `hookSpecificOutput` shape). Two options:
