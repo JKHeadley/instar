@@ -32,6 +32,7 @@ import { RelayClient } from './client/RelayClient.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { MessageEncryptor } from './client/MessageEncryptor.js';
 import type { RelayClientConfig, MessageEnvelope } from './relay/types.js';
+import { DEFAULT_RELAY_URL } from './constants.js';
 import type { IdentityInfo } from './client/IdentityManager.js';
 import type { InboxEntry } from './ListenerSessionManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -594,7 +595,7 @@ export class ListenerDaemon extends EventEmitter {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let stateDir = '.instar';
-  let relayUrl = 'wss://threadline-relay.fly.dev/v1/connect';
+  let relayUrl = DEFAULT_RELAY_URL;
   let agentName = 'unknown';
 
   for (let i = 0; i < args.length; i++) {
@@ -612,7 +613,7 @@ async function main(): Promise<void> {
   if (fs.existsSync(configPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      if (!relayUrl || relayUrl === 'wss://threadline-relay.fly.dev/v1/connect') {
+      if (!relayUrl || relayUrl === DEFAULT_RELAY_URL) {
         relayUrl = config?.threadline?.relayUrl || config?.relay?.url || relayUrl;
       }
       if (agentName === 'unknown') {

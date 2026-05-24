@@ -12,6 +12,7 @@ import type { AgentFingerprint, RelayClientConfig, MessageEnvelope } from '../re
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { RelayClient } from './RelayClient.js';
+import { DEFAULT_RELAY_URL } from '../constants.js';
 
 export interface ThreadlineClientConfig {
   name: string;
@@ -42,8 +43,6 @@ export interface ReceivedMessage {
   timestamp: string;
   envelope: MessageEnvelope;
 }
-
-const DEFAULT_RELAY_URL = 'wss://relay.threadline.dev/v1/connect';
 
 /**
  * Client-side session affinity TTLs and cap (§4.1).
