@@ -12,6 +12,14 @@ export interface TokenLedgerPollerOptions {
   intervalMs?: number;
   /** Optional logger (defaults to console.warn for errors only). */
   onError?: (err: unknown) => void;
+  /**
+   * When set, each tick ALSO scans this agent's Codex rollouts (attributed by
+   * cwd) into the ledger's separate codex_token_sessions table. Leave unset on
+   * Claude-only hosts — the Codex scan is then skipped entirely.
+   */
+  codexProjectDir?: string;
+  /** Skip Codex rollouts older than this when scanning. Mirrors the Claude window. */
+  codexMaxFileAgeMs?: number;
 }
 
 export class TokenLedgerPoller {
@@ -20,10 +28,16 @@ export class TokenLedgerPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private onError: (err: unknown) => void;
+  private codexProjectDir: string | null;
+  private codexMaxFileAgeMs: number;
 
   constructor(opts: TokenLedgerPollerOptions) {
     this.ledger = opts.ledger;
     this.intervalMs = opts.intervalMs ?? 60_000;
+    this.codexProjectDir = opts.codexProjectDir ?? null;
+    this.codexMaxFileAgeMs = opts.codexMaxFileAgeMs && opts.codexMaxFileAgeMs > 0
+      ? opts.codexMaxFileAgeMs
+      : 30 * 24 * 60 * 60 * 1000;
     this.onError = opts.onError ?? ((err) => {
       console.warn('[token-ledger] scan error:', err);
     });
@@ -50,9 +64,18 @@ export class TokenLedgerPoller {
     // Fire-and-forget the async scan; reentry guard above prevents stacking.
     // We do NOT await — setInterval already drives cadence, and awaiting
     // here would block other interval callbacks in this microtask queue.
+    // The Codex scan (when configured) runs after the Claude scan; a failure
+    // in either is reported but never stops the other or stacks ticks.
     this.ledger
       .scanAllAsync()
       .catch((err) => this.onError(err))
+      .then(() => {
+        if (!this.codexProjectDir) return undefined;
+        return this.ledger
+          .scanCodexRolloutsAsync({ projectDir: this.codexProjectDir, maxFileAgeMs: this.codexMaxFileAgeMs })
+          .then(() => undefined)
+          .catch((err) => this.onError(err));
+      })
       .finally(() => {
         this.running = false;
       });

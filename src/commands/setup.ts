@@ -841,35 +841,89 @@ function resolveNodeCandidates(): string[] {
 }
 
 /**
+ * Test whether a given node binary can actually load a native module
+ * (e.g. better-sqlite3's compiled .node binary). Returns false on any
+ * failure — wrong ABI, missing file, spawn error.
+ *
+ * This is the empirical ABI check: rather than hardcoding which Node
+ * majors better-sqlite3 supports, we ask the actual binary to load the
+ * actual module. A Node whose NODE_MODULE_VERSION doesn't match the
+ * prebuilt fails here.
+ */
+function nodeCanLoadNativeModule(nodePath: string, nativeModulePath: string): boolean {
+  try {
+    execFileSync(nodePath, ['-e', `require(${JSON.stringify(nativeModulePath)})`], {
+      stdio: 'ignore',
+      timeout: 10_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pick the most durable node path from candidates.
  *
  * Prefers stable, non-versioned paths (e.g. /opt/homebrew/bin/node) over
  * version-specific paths (e.g. /opt/homebrew/opt/node@20/bin/node) because
  * version-specific paths disappear when that version is uninstalled — causing
  * the symlink to break and the agent to become unrecoverable.
+ *
+ * ABI-AWARENESS (the recurring-SQLite-bane fix): when `nativeModulePath`
+ * is given and exists, candidates are first filtered to those that can
+ * actually LOAD that native module. This prevents the durability heuristic
+ * from picking a node major (e.g. Node 25 via the stable /opt/homebrew/bin
+ * symlink) that has no matching better-sqlite3 prebuilt and won't compile
+ * from source — the failure that broke SQLite on every `brew upgrade`.
+ * Durability is still preferred, but only WITHIN the ABI-compatible set.
+ * If NO candidate is compatible, we fall back to the durability-only choice
+ * (better a present-but-degraded node than no node at all).
  */
-function pickDurableNodePath(candidates: string[]): string | undefined {
-  // Stable paths that survive version switches (ordered by preference)
+/**
+ * Pure, testable core of durable-node selection.
+ *
+ * @param candidates   ordered candidate node paths
+ * @param isUsable     predicate: does this path exist + run? (IO injected)
+ * @param isCompatible optional predicate: can this node load the native
+ *                     module? When provided and at least one candidate is
+ *                     compatible, the pool is narrowed to compatible nodes
+ *                     BEFORE the durability heuristic runs. When NO candidate
+ *                     is compatible, the durability-only pool is used (better
+ *                     a present-but-degraded node than none).
+ */
+export function selectDurableNode(
+  candidates: string[],
+  isUsable: (nodePath: string) => boolean,
+  isCompatible?: (nodePath: string) => boolean,
+): string | undefined {
   const stablePrefixes = [
     '/opt/homebrew/bin/',        // Apple Silicon homebrew — updated by `brew upgrade`
     '/usr/local/bin/',           // Intel homebrew / manual installs
   ];
-
-  // Version-specific patterns that should be avoided
   const versionSpecificPattern = /node@\d|\/Cellar\/node\/|\/\.asdf\/installs\/|\/\.nvm\/versions\//;
 
-  // First pass: find a stable, non-versioned path
-  for (const prefix of stablePrefixes) {
-    const match = candidates.find(c => c.startsWith(prefix) && !versionSpecificPattern.test(c));
-    if (match && fs.existsSync(match)) return match;
+  let pool = candidates.filter(isUsable);
+  if (isCompatible) {
+    const compatible = pool.filter(isCompatible);
+    if (compatible.length > 0) pool = compatible;
   }
 
-  // Second pass: any candidate that isn't version-specific
-  const nonVersioned = candidates.find(c => !versionSpecificPattern.test(c) && fs.existsSync(c));
+  for (const prefix of stablePrefixes) {
+    const match = pool.find(c => c.startsWith(prefix) && !versionSpecificPattern.test(c));
+    if (match) return match;
+  }
+  const nonVersioned = pool.find(c => !versionSpecificPattern.test(c));
   if (nonVersioned) return nonVersioned;
+  return pool[0];
+}
 
-  // Last resort: any valid candidate
-  return candidates.find(c => fs.existsSync(c));
+function pickDurableNodePath(candidates: string[], nativeModulePath?: string): string | undefined {
+  const isUsable = (p: string) => fs.existsSync(p);
+  const isCompatible = nativeModulePath && fs.existsSync(nativeModulePath)
+    ? (p: string) => nodeCanLoadNativeModule(p, nativeModulePath)
+    : undefined;
+  return selectDurableNode(candidates, isUsable, isCompatible);
 }
 
 /**
@@ -887,16 +941,38 @@ export function ensureStableNodeSymlink(projectDir: string): string {
 
   fs.mkdirSync(binDir, { recursive: true });
 
-  // Resolve all available node paths and pick the most durable one
-  const candidates = resolveNodeCandidates();
-  const durablePath = pickDurableNodePath(candidates) ?? findNodePath();
+  // The shadow-install's better-sqlite3 native binary — the ABI anchor.
+  // pickDurableNodePath uses it to avoid selecting a node major that can't
+  // load it (the recurring-SQLite-bane fix).
+  const nativeModulePath = path.join(
+    projectDir, '.instar', 'shadow-install', 'node_modules',
+    'better-sqlite3', 'build', 'Release', 'better_sqlite3.node',
+  );
+  const nativeModuleExists = fs.existsSync(nativeModulePath);
 
-  // Check if symlink exists and already points to a valid, durable target
+  // Resolve all available node paths and pick the most durable ABI-compatible one
+  const candidates = resolveNodeCandidates();
+  const durablePath = pickDurableNodePath(candidates, nativeModulePath) ?? findNodePath();
+
+  // Check if symlink exists and already points to a valid target.
   try {
     const target = fs.readlinkSync(symlinkPath);
     if (fs.existsSync(target)) {
-      // Symlink works — only update if we found a more durable path
-      if (target === durablePath) return symlinkPath;
+      // Already on the chosen durable path — but ALSO verify it can load the
+      // native module. A symlink whose `node --version` works but which can't
+      // load better-sqlite3 (Node-major drift after `brew upgrade`) must be
+      // re-pointed, even though it "works" in the naive sense. This is the
+      // gap that let SQLite silently break: the old check only compared paths.
+      if (target === durablePath) {
+        if (!nativeModuleExists || nodeCanLoadNativeModule(target, nativeModulePath)) {
+          return symlinkPath;
+        }
+        // target === durablePath but it can't load the module AND a better
+        // candidate isn't available (pickDurableNodePath already preferred
+        // compatible ones). Fall through to rewrite + record; the degradation
+        // surfaces separately. Re-pointing to the same path is a harmless no-op
+        // but we still refresh node-candidates.json below.
+      }
     }
   } catch { /* symlink doesn't exist or is broken */ }
 
@@ -1168,12 +1244,31 @@ function selfHealNodeSymlink() {
 
     // If symlink exists and works, don't touch it — changing node major version
     // breaks native modules compiled for the previous version.
+    //
+    // "Works" means TWO things: (1) node --version runs, AND (2) if the
+    // shadow-install's better-sqlite3 native binary exists, this node can
+    // actually load it. The second check is the recurring-SQLite-bane fix:
+    // a symlink pointing at a node major that drifted forward (e.g. Node 25
+    // after a brew upgrade) still passes --version but can no longer load
+    // better-sqlite3 -- and the old check left it alone, so SQLite stayed
+    // broken until a human intervened. Now we treat that as broken and fall
+    // through to the ABI-compatible candidate search below.
     try {
       const target = fs.readlinkSync(NODE_SYMLINK);
       if (fs.existsSync(target)) {
         const { execFileSync } = require('child_process');
         const result = execFileSync(target, ['--version'], { encoding: 'utf-8', timeout: 5000 });
-        if (result.trim()) return; // symlink works, leave it alone
+        if (result.trim()) {
+          const sqliteCheck = path.join(${JSON.stringify(stateDir)}, 'shadow-install', 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+          if (!fs.existsSync(sqliteCheck)) return; // no native module to worry about — leave it alone
+          try {
+            execFileSync(target, ['-e', "require('" + sqliteCheck.replace(/'/g, "\\\\'") + "')"], { stdio: 'ignore', timeout: 10000 });
+            return; // node works AND can load better-sqlite3 — leave it alone
+          } catch {
+            process.stderr.write('[instar-boot] Current node cannot load better-sqlite3 (ABI drift) — re-healing to a compatible node\\n');
+            // fall through to candidate search
+          }
+        }
       }
     } catch { /* broken — proceed to fix */ }
 

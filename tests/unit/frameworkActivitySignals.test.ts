@@ -76,19 +76,26 @@ describe('frameworkActivitySignals', () => {
     it('matches Codex tool-call display strings', () => {
       expect(signal.toolCallOrSpinner.test('exec(npm test)')).toBe(true);
       expect(signal.toolCallOrSpinner.test('shell(ls)')).toBe(true);
-      expect(signal.toolCallOrSpinner.test('patch(diff)')).toBe(true);
       expect(signal.toolCallOrSpinner.test('apply_patch(...)')).toBe(true);
+      // Bare "patch(" is NOT a Codex render token — Codex emits apply_patch(.
+      expect(signal.toolCallOrSpinner.test('patch(diff)')).toBe(false);
     });
 
     it('matches Codex-style activity verbs', () => {
       expect(signal.toolCallOrSpinner.test('Generating response...')).toBe(true);
-      expect(signal.toolCallOrSpinner.test('working on it')).toBe(true);
+      // The canonical working status line.
+      expect(signal.toolCallOrSpinner.test('• Working (3s • esc to interrupt)')).toBe(true);
+      // Casual "working on it" is NOT a Codex render string. Matching it caused
+      // idle panes to read as working — the 2026-05-23 stuck-session false positive.
+      expect(signal.toolCallOrSpinner.test('working on it')).toBe(false);
     });
 
-    it('matches a Codex interrupt-hint variant', () => {
-      expect(signal.escapeToInterrupt.test('press Ctrl+C to cancel')).toBe(true);
-      expect(signal.escapeToInterrupt.test('hit ESC to interrupt')).toBe(true);
-      expect(signal.escapeToInterrupt.test('Press Ctrl-C to stop')).toBe(true);
+    it('matches the bare Codex interrupt hint, not Claude-style prefixed forms', () => {
+      // Codex renders a BARE "esc to interrupt" inside its working status line.
+      expect(signal.escapeToInterrupt.test('• Working (3s • esc to interrupt)')).toBe(true);
+      // Claude-style prefixed phrasings are not what Codex renders.
+      expect(signal.escapeToInterrupt.test('press Ctrl+C to cancel')).toBe(false);
+      expect(signal.escapeToInterrupt.test('Press Ctrl-C to stop')).toBe(false);
     });
 
     it('matches Codex running indicator variants', () => {

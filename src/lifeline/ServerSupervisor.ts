@@ -294,9 +294,19 @@ export class ServerSupervisor extends EventEmitter {
       return false;
     }
 
-    // Check if already running
-    if (this.isServerSessionAlive()) {
-      console.log(`[Supervisor] Server already running in tmux session: ${this.serverSessionName}`);
+    // Check if already running.
+    //
+    // A bare `tmux has-session` check races with a dying session right after a
+    // `kickstart -k` of the lifeline: the old server is SIGKILLed but its tmux
+    // session lingers for a beat, so has-session returns true and this branch
+    // would trust it — setting isRunning=true and never respawning. Observed
+    // 2026-05-23: the server then fully exits, the supervisor believes it is
+    // running, and it stays dead ~3min until a second kickstart spawns it
+    // cleanly. Verify the server actually answers /health before trusting the
+    // session; a stale/dying session short-circuits and falls through to a
+    // fresh spawn (spawnServer kills the lingering session first).
+    if (this.isServerSessionAlive() && (await this.verifyServerResponding())) {
+      console.log(`[Supervisor] Server already running and healthy in tmux session: ${this.serverSessionName}`);
       this.isRunning = true;
       this.lastHealthy = Date.now();
       // Set spawnedAt so the startup grace period applies. Without this, a fresh
@@ -932,6 +942,21 @@ export class ServerSupervisor extends EventEmitter {
       // which fails the health check and produces a runaway restart loop. tmux
       // `-e` is per-session and survives an existing tmux server (process.env
       // alone does not propagate once tmux is already running).
+      //
+      // Kill any pre-existing session of this name first. `tmux new-session`
+      // fails on a duplicate name, so a lingering/stale session (e.g. a dying
+      // server still registered after `kickstart -k`) would otherwise make
+      // every respawn attempt throw "duplicate session" and leave the server
+      // down. Killing first makes respawn idempotent and race-safe — this is
+      // the second half of the P1 fix (the first being start()'s health gate).
+      if (this.isServerSessionAlive()) {
+        try {
+          execFileSync(this.tmuxPath, ['kill-session', '-t', `=${this.serverSessionName}`], {
+            stdio: 'ignore', timeout: 5000,
+          });
+          console.log(`[Supervisor] Killed lingering tmux session before respawn: ${this.serverSessionName}`);
+        } catch { /* best-effort — new-session below will surface a real failure */ }
+      }
       execFileSync(this.tmuxPath, [
         'new-session', '-d',
         '-s', this.serverSessionName,
@@ -1154,6 +1179,27 @@ export class ServerSupervisor extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Verify the server actually answers /health, retrying a few times so a
+   * momentarily-stalled-but-healthy server is not needlessly respawned.
+   *
+   * Used by start() to distinguish a genuinely-running server (lifeline
+   * self-restart while the server stays up → no-op) from a dying/stale tmux
+   * session that merely still registers with `has-session` right after a
+   * `kickstart -k` (→ must respawn). A live server answers on the first probe;
+   * a dead/dying one fails every attempt. Bias: prefer respawning a possibly
+   * stalled server over leaving a dead one running invisibly (the P1 bug).
+   */
+  private async verifyServerResponding(attempts = 3, delayMs = 1500): Promise<boolean> {
+    for (let i = 0; i < attempts; i++) {
+      if (await this.checkHealth()) return true;
+      if (i < attempts - 1) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+    return false;
   }
 
   // ── Restart request handling ──────────────────────────────────────

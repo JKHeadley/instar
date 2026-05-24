@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
+import { parseCodexRollout, type ParsedCodexSession } from './CodexRolloutParser.js';
 
 /**
  * Compute a small content fingerprint for a JSONL file. Used to detect
@@ -77,6 +78,33 @@ const SCHEMA = [
   // Migration for installs that pre-date attribution_key (idempotent — duplicate-column
   // errors are swallowed in init below).
   `ALTER TABLE token_events ADD COLUMN attribution_key TEXT NOT NULL DEFAULT 'unknown::pre-attribution'`,
+  // Codex (OpenAI) sessions live in a SEPARATE table — deliberately NOT
+  // token_events. Codex's persisted rollouts report a CUMULATIVE per-session
+  // total (one growing number), not Claude's per-request events, so they don't
+  // fit the request-keyed token_events model. Keeping them separate also means
+  // the BurnDetector (which reads token_events via summary()/byAttributionKey())
+  // is provably unaffected by Codex ingest — this table is read-only
+  // observability surfaced only through the /tokens Codex routes. Whether burn
+  // detection should consume Codex usage is a separate, behavioural decision.
+  `CREATE TABLE IF NOT EXISTS codex_token_sessions (
+     session_id              TEXT PRIMARY KEY,
+     project_path            TEXT,
+     model                   TEXT,
+     plan_type               TEXT,
+     input_tokens            INTEGER NOT NULL DEFAULT 0,
+     cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+     output_tokens           INTEGER NOT NULL DEFAULT 0,
+     reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+     total_tokens            INTEGER NOT NULL DEFAULT 0,
+     primary_used_percent    REAL,
+     secondary_used_percent  REAL,
+     token_count_events      INTEGER NOT NULL DEFAULT 0,
+     first_ts                INTEGER NOT NULL DEFAULT 0,
+     last_ts                 INTEGER NOT NULL DEFAULT 0,
+     updated_at              INTEGER NOT NULL DEFAULT 0
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_codex_sessions_last_ts ON codex_token_sessions(last_ts)`,
+  `CREATE INDEX IF NOT EXISTS idx_codex_sessions_project ON codex_token_sessions(project_path)`,
 ];
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -140,6 +168,44 @@ export interface OrphanRow {
   idleMs: number;
 }
 
+export interface CodexSessionRow {
+  sessionId: string;
+  projectPath: string | null;
+  model: string | null;
+  planType: string | null;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  primaryUsedPercent: number | null;
+  secondaryUsedPercent: number | null;
+  tokenCountEvents: number;
+  firstTs: number;
+  lastTs: number;
+}
+
+export interface CodexSummaryRow {
+  totalTokens: number;
+  totalInput: number;
+  totalCachedInput: number;
+  totalOutput: number;
+  totalReasoning: number;
+  sessionCount: number;
+  oldestTs: number | null;
+  newestTs: number | null;
+  /** Highest short-window subscription usage % across sessions (latest reading). */
+  maxPrimaryUsedPercent: number | null;
+  /** Highest long-window subscription usage % across sessions (latest reading). */
+  maxSecondaryUsedPercent: number | null;
+}
+
+export interface CodexIngestResult {
+  ingested: boolean;
+  sessionId?: string;
+  reason?: string;
+}
+
 export interface TokenLedgerOptions {
   /** SQLite DB path. Use `:memory:` for tests. */
   dbPath: string;
@@ -201,6 +267,7 @@ export class TokenLedger {
     insertEvent: ReturnType<BetterSqliteDatabase['prepare']>;
     getOffset: ReturnType<BetterSqliteDatabase['prepare']>;
     upsertOffset: ReturnType<BetterSqliteDatabase['prepare']>;
+    upsertCodexSession: ReturnType<BetterSqliteDatabase['prepare']>;
   };
 
   constructor(opts: TokenLedgerOptions) {
@@ -264,6 +331,37 @@ export class TokenLedger {
           size = excluded.size,
           head_hash = excluded.head_hash,
           last_read = excluded.last_read
+      `),
+      // Codex sessions report a CUMULATIVE total per session, so re-ingesting a
+      // grown rollout must REPLACE the prior totals (latest wins), not sum.
+      // first_ts is preserved (earliest known); everything else takes the
+      // newest reading. This makes re-scans idempotent without a byte cursor.
+      upsertCodexSession: this.db.prepare(`
+        INSERT INTO codex_token_sessions
+          (session_id, project_path, model, plan_type,
+           input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
+           primary_used_percent, secondary_used_percent, token_count_events,
+           first_ts, last_ts, updated_at)
+        VALUES
+          (@sessionId, @projectPath, @model, @planType,
+           @inputTokens, @cachedInputTokens, @outputTokens, @reasoningOutputTokens, @totalTokens,
+           @primaryUsedPercent, @secondaryUsedPercent, @tokenCountEvents,
+           @firstTs, @lastTs, @updatedAt)
+        ON CONFLICT(session_id) DO UPDATE SET
+          project_path = excluded.project_path,
+          model = excluded.model,
+          plan_type = excluded.plan_type,
+          input_tokens = excluded.input_tokens,
+          cached_input_tokens = excluded.cached_input_tokens,
+          output_tokens = excluded.output_tokens,
+          reasoning_output_tokens = excluded.reasoning_output_tokens,
+          total_tokens = excluded.total_tokens,
+          primary_used_percent = excluded.primary_used_percent,
+          secondary_used_percent = excluded.secondary_used_percent,
+          token_count_events = excluded.token_count_events,
+          first_ts = MIN(codex_token_sessions.first_ts, excluded.first_ts),
+          last_ts = excluded.last_ts,
+          updated_at = excluded.updated_at
       `),
     };
   }
@@ -490,6 +588,61 @@ export class TokenLedger {
     return this.scanInternal({
       yieldFn: () => new Promise<void>(resolve => setImmediate(resolve)),
     });
+  }
+
+  /**
+   * Scan Codex (OpenAI) rollout files under `$CODEX_HOME/sessions` and upsert
+   * the sessions belonging to this agent into codex_token_sessions. Read-only.
+   *
+   * Codex's session store is per-machine and GLOBAL (every Codex agent on the
+   * box writes there), so we attribute by cwd: only rollouts whose working
+   * directory is `projectDir` (or a subdirectory) are counted as ours. Without
+   * a projectDir filter, all rollouts are ingested (project_path preserved for
+   * downstream filtering). Cumulative-total semantics make this idempotent.
+   */
+  async scanCodexRolloutsAsync(opts: {
+    projectDir?: string;
+    codexHome?: string;
+    limit?: number;
+    maxFileAgeMs?: number;
+  } = {}): Promise<{ filesScanned: number; ingested: number }> {
+    let listAllRollouts: (codexHome?: string, limit?: number) => Promise<ReadonlyArray<{ path: string; mtime: number }>>;
+    try {
+      ({ listAllRollouts } = await import('../providers/adapters/openai-codex/observability/sessionPaths.js'));
+    } catch {
+      return { filesScanned: 0, ingested: 0 };
+    }
+    const limit = opts.limit && opts.limit > 0 ? opts.limit : 500;
+    const ageCutoff = opts.maxFileAgeMs && opts.maxFileAgeMs > 0 ? Date.now() - opts.maxFileAgeMs : 0;
+    const targetDir = opts.projectDir ? path.resolve(opts.projectDir) : null;
+    let rollouts: ReadonlyArray<{ path: string; mtime: number }>;
+    try {
+      rollouts = await listAllRollouts(opts.codexHome, limit);
+    } catch {
+      return { filesScanned: 0, ingested: 0 };
+    }
+    let filesScanned = 0;
+    let ingested = 0;
+    for (const { path: rolloutPath, mtime } of rollouts) {
+      if (ageCutoff && mtime < ageCutoff) continue;
+      filesScanned += 1;
+      let content: string;
+      try {
+        content = fs.readFileSync(rolloutPath, 'utf-8');
+      } catch {
+        continue;
+      }
+      const parsed = parseCodexRollout(content);
+      if (!parsed) continue;
+      if (targetDir) {
+        const cwd = parsed.cwd ? path.resolve(parsed.cwd) : null;
+        if (!cwd || (cwd !== targetDir && !cwd.startsWith(targetDir + path.sep))) continue;
+      }
+      // mtime is the last-write time → use as last activity (token_count events
+      // carry no per-event timestamp).
+      if (this.ingestCodexSession(parsed, mtime).ingested) ingested += 1;
+    }
+    return { filesScanned, ingested };
   }
 
   private scanInternal(opts: { yieldFn: (() => Promise<void>) | null }): ScanAllResult;
@@ -745,6 +898,143 @@ export class TokenLedger {
       lastTs: Number(r.lastTs) || 0,
       totalTokens: Number(r.totalTokens) || 0,
       idleMs: now - Number(r.lastTs),
+    }));
+  }
+
+  // ── Codex (OpenAI) sessions ─────────────────────────────────────────
+  // Read-only observability for Codex's persisted rollouts. Stored in the
+  // separate codex_token_sessions table; the BurnDetector never sees these.
+
+  /**
+   * Ingest one Codex rollout file. Reads the whole file (rollouts are small
+   * relative to Claude transcripts), parses the cumulative session total, and
+   * upserts a single row keyed on the Codex session UUID. Idempotent: re-ingest
+   * of a grown rollout replaces the totals with the latest reading.
+   *
+   * `last_ts` is taken from the file mtime because Codex's token_count events
+   * carry no per-event timestamp. Returns ingested=false (with a reason) for
+   * unreadable/empty/usage-less rollouts — never throws.
+   */
+  ingestCodexRollout(filePath: string): CodexIngestResult {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      return { ingested: false, reason: 'stat-failed' };
+    }
+    if (!stat.isFile()) return { ingested: false, reason: 'not-a-file' };
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      return { ingested: false, reason: 'read-failed' };
+    }
+    const parsed = parseCodexRollout(content);
+    if (!parsed) return { ingested: false, reason: 'no-usage' };
+    return this.ingestCodexSession(parsed, stat.mtimeMs);
+  }
+
+  /**
+   * Upsert an already-parsed Codex session. Exposed separately so callers (and
+   * tests) can ingest without touching the filesystem. `lastTs` is the
+   * last-activity time (file mtime); `firstTs` falls back to it when the
+   * rollout lacked a session_meta timestamp, so first_ts is never 0.
+   */
+  ingestCodexSession(parsed: ParsedCodexSession, lastTs: number): CodexIngestResult {
+    if (!parsed.sessionId) return { ingested: false, reason: 'no-session-id' };
+    const now = Date.now();
+    const firstTs = parsed.firstTs > 0 ? parsed.firstTs : lastTs;
+    try {
+      const result = this.stmts.upsertCodexSession.run({
+        sessionId: parsed.sessionId,
+        projectPath: parsed.cwd ?? null,
+        model: parsed.model ?? null,
+        planType: parsed.planType ?? null,
+        inputTokens: parsed.inputTokens,
+        cachedInputTokens: parsed.cachedInputTokens,
+        outputTokens: parsed.outputTokens,
+        reasoningOutputTokens: parsed.reasoningOutputTokens,
+        totalTokens: parsed.totalTokens,
+        primaryUsedPercent: parsed.primaryUsedPercent,
+        secondaryUsedPercent: parsed.secondaryUsedPercent,
+        tokenCountEvents: parsed.tokenCountEvents,
+        firstTs,
+        lastTs,
+        updatedAt: now,
+      });
+      return { ingested: result.changes > 0, sessionId: parsed.sessionId, reason: result.changes > 0 ? undefined : 'no-change' };
+    } catch {
+      return { ingested: false, reason: 'upsert-error' };
+    }
+  }
+
+  /** Aggregate Codex usage. Optionally filter to sessions active since `sinceMs`. */
+  codexSummary({ sinceMs }: { sinceMs?: number } = {}): CodexSummaryRow {
+    const since = sinceMs ?? 0;
+    const row = this.db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(total_tokens), 0) AS totalTokens,
+           COALESCE(SUM(input_tokens), 0) AS totalInput,
+           COALESCE(SUM(cached_input_tokens), 0) AS totalCachedInput,
+           COALESCE(SUM(output_tokens), 0) AS totalOutput,
+           COALESCE(SUM(reasoning_output_tokens), 0) AS totalReasoning,
+           COUNT(*) AS sessionCount,
+           MIN(first_ts) AS oldestTs,
+           MAX(last_ts) AS newestTs,
+           MAX(primary_used_percent) AS maxPrimaryUsedPercent,
+           MAX(secondary_used_percent) AS maxSecondaryUsedPercent
+         FROM codex_token_sessions
+         WHERE last_ts >= ?`
+      )
+      .get(since) as Record<string, number | null>;
+    return {
+      totalTokens: Number(row.totalTokens) || 0,
+      totalInput: Number(row.totalInput) || 0,
+      totalCachedInput: Number(row.totalCachedInput) || 0,
+      totalOutput: Number(row.totalOutput) || 0,
+      totalReasoning: Number(row.totalReasoning) || 0,
+      sessionCount: Number(row.sessionCount) || 0,
+      oldestTs: row.oldestTs ?? null,
+      newestTs: row.newestTs ?? null,
+      maxPrimaryUsedPercent: row.maxPrimaryUsedPercent ?? null,
+      maxSecondaryUsedPercent: row.maxSecondaryUsedPercent ?? null,
+    };
+  }
+
+  /** Per-session Codex rows, biggest first. Optionally filter by recency. */
+  codexSessions({ limit = 50, sinceMs }: { limit?: number; sinceMs?: number } = {}): CodexSessionRow[] {
+    const since = sinceMs ?? 0;
+    const rows = this.db
+      .prepare(
+        `SELECT
+           session_id AS sessionId, project_path AS projectPath, model, plan_type AS planType,
+           input_tokens AS inputTokens, cached_input_tokens AS cachedInputTokens,
+           output_tokens AS outputTokens, reasoning_output_tokens AS reasoningOutputTokens,
+           total_tokens AS totalTokens, primary_used_percent AS primaryUsedPercent,
+           secondary_used_percent AS secondaryUsedPercent, token_count_events AS tokenCountEvents,
+           first_ts AS firstTs, last_ts AS lastTs
+         FROM codex_token_sessions
+         WHERE last_ts >= ?
+         ORDER BY total_tokens DESC
+         LIMIT ?`
+      )
+      .all(since, limit) as Array<Record<string, unknown>>;
+    return rows.map(r => ({
+      sessionId: String(r.sessionId),
+      projectPath: (r.projectPath as string) ?? null,
+      model: (r.model as string) ?? null,
+      planType: (r.planType as string) ?? null,
+      inputTokens: Number(r.inputTokens) || 0,
+      cachedInputTokens: Number(r.cachedInputTokens) || 0,
+      outputTokens: Number(r.outputTokens) || 0,
+      reasoningOutputTokens: Number(r.reasoningOutputTokens) || 0,
+      totalTokens: Number(r.totalTokens) || 0,
+      primaryUsedPercent: r.primaryUsedPercent != null ? Number(r.primaryUsedPercent) : null,
+      secondaryUsedPercent: r.secondaryUsedPercent != null ? Number(r.secondaryUsedPercent) : null,
+      tokenCountEvents: Number(r.tokenCountEvents) || 0,
+      firstTs: Number(r.firstTs) || 0,
+      lastTs: Number(r.lastTs) || 0,
     }));
   }
 

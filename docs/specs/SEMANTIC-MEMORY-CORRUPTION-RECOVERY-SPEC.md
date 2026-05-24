@@ -39,3 +39,21 @@ Mirror TopicMemory's resilience pattern in SemanticMemory:
 - `src/core/types.ts` — Add optional `autoRebuildMaxBytes` to `SemanticMemoryConfig`
 - `src/memory/SemanticMemory.ts` — Add `quarantineCorruptDb()`, integrity check in `open()`, size-gated rebuild
 - `tests/unit/semantic-memory-corruption-recovery.test.ts` — 11 contract tests covering all recovery paths
+
+## Refinement (2026-05-23): probe must not misread a missing extension as corruption
+
+The secondary probe-read MUST distinguish disk corruption from an unavailable
+loadable extension. The probe runs before `initVectorSearch()` loads sqlite-vec, so
+`SELECT * FROM entity_embeddings` (a vec0 *virtual* table) throws
+`no such module: vec0` — which is an extension-availability signal, never page
+corruption. Misclassifying it caused a quarantine + rebuild on every boot.
+
+Contract additions:
+- The probe excludes virtual tables (`sql NOT LIKE 'CREATE VIRTUAL TABLE%'`). Vector
+  data lives in vec0 *shadow* tables (plain tables), which remain probed, so
+  embedding-storage corruption is still detected.
+- Any `no such module` error during the probe is treated as a missing loadable
+  extension (skip + warn once, continue FTS5-only), never corruption.
+- Failure to read `sqlite_master` itself remains genuine corruption.
+
+Tests: `tests/unit/semantic-memory-vec0-probe.test.ts`.

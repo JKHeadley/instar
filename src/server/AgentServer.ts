@@ -626,9 +626,17 @@ export class AgentServer {
         // ── Token Ledger Poller ─────────────────────────────────────────
         // 60s tick scans `~/.claude/projects/*/*.jsonl` and rolls up into
         // the token_events table. Strictly read-only against source files.
+        // On Codex-engine hosts it ALSO scans this agent's Codex rollouts
+        // (`$CODEX_HOME/sessions`, attributed by cwd) into the separate
+        // codex_token_sessions table — closing the "ledger blind to Codex"
+        // gap. process.cwd() is the agent's project dir (launchd sets the
+        // server's working directory to it), matching session_meta.cwd.
         if (this.tokenLedger) {
           try {
-            this.tokenLedgerPoller = new TokenLedgerPoller({ ledger: this.tokenLedger });
+            this.tokenLedgerPoller = new TokenLedgerPoller({
+              ledger: this.tokenLedger,
+              codexProjectDir: process.cwd(),
+            });
             this.tokenLedgerPoller.start();
           } catch (err) {
             console.warn('[instar] token-ledger poller start failed:', err);

@@ -44,22 +44,23 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   });
 
   describe('codex-cli', () => {
-    it('passes --model gpt-5.3-codex + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
+    it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
       });
-      // The `--model gpt-5.3-codex` flag is required to avoid Codex
-      // CLI's default `gpt-5.2-codex`, which OpenAI retired from
-      // ChatGPT-subscription auth on 2026-04-14. See models.ts comment
-      // block for the empirically-verified working-model list.
+      // The explicit `--model` flag avoids Codex CLI's own historical
+      // default `gpt-5.2-codex` (retired from ChatGPT-subscription auth
+      // 2026-04-14). The session default is gpt-5.5 as of 2026-05-23
+      // (Justin's call) — newest generalist + Codex CLI's own default,
+      // confirmed working on the subscription. See models.ts comment block.
       // The bypass flag is the single-flag parity for Claude's
-      // `--dangerously-skip-permissions` — both removes approval
-      // prompts AND drops the sandbox (which would otherwise block the
-      // agent from reaching localhost where instar's server lives).
+      // `--dangerously-skip-permissions` — removes approval prompts AND
+      // drops the sandbox (which would otherwise block the agent from
+      // reaching localhost where instar's server lives).
       expect(spec.argv).toEqual([
         '/usr/local/bin/codex',
         '--model',
-        'gpt-5.3-codex',
+        'gpt-5.5',
         '--dangerously-bypass-approvals-and-sandbox',
       ]);
     });
@@ -219,7 +220,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('workspace-write');
       expect(spec.argv).toContain('-m');
-      expect(spec.argv).toContain('gpt-5.3-codex');
+      expect(spec.argv).toContain('gpt-5.5');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
     });
 
@@ -292,14 +293,17 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
+      // Confirmed light/medium/heavy mapping (Justin, 2026-05-23):
+      // light=gpt-5.2 (non-reasoning), medium=gpt-5.4-mini (cheapest reasoning),
+      // heavy=gpt-5.5 (frontier). See models.ts for the subscription rationale.
       expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.2');
-      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.3-codex');
-      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.4');
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.5');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
       expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.2');
-      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.3-codex');
-      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.4');
+      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.4-mini');
+      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.5');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
@@ -314,7 +318,7 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   it('codex headless builder rewrites generic tier to gpt-5.x', () => {
     const balanced = buildHeadlessLaunch('codex-cli', { binaryPath: '/x/codex', prompt: 'p', model: 'balanced' });
-    expect(balanced.argv).toContain('gpt-5.3-codex');
+    expect(balanced.argv).toContain('gpt-5.4-mini'); // medium tier
     expect(balanced.argv).not.toContain('balanced');
   });
 });

@@ -27,6 +27,7 @@ import { AgentServer } from '../server/AgentServer.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
+import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import { DispatchManager } from '../core/DispatchManager.js';
@@ -2414,6 +2415,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
+    // Codex-only enforcement (Justin 2026-05-23 absolute requirement): if
+    // this agent's enabledFrameworks excludes 'claude-code', forbid ALL
+    // Claude provider construction process-wide. Any internal LLM path that
+    // tries to fall back to Claude (relationships, summaries, gates) then
+    // throws ClaudeForbiddenError instead of silently using Claude on a
+    // machine where the claude binary happens to be installed. Set BEFORE
+    // any provider is built so the guard is active for the whole boot.
+    try {
+      const { setClaudeForbidden, isCodexOnly } = await import('../core/claudeForbiddenGuard.js');
+      const ef = (config as { enabledFrameworks?: string[] }).enabledFrameworks;
+      if (isCodexOnly(ef)) {
+        setClaudeForbidden(`enabledFrameworks=${JSON.stringify(ef)} (no claude-code)`);
+        console.log(pc.cyan('  Codex-only mode: Claude provider construction is forbidden process-wide.'));
+      }
+    } catch (err) {
+      console.warn(`[server] codex-only guard init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Provider-portability v1.0.0: pick the IntelligenceProvider that
     // matches the configured framework. Defaults to claude-code for
     // backwards-compat; INSTAR_FRAMEWORK=codex-cli routes through Codex.
@@ -2564,9 +2583,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (sharedIntelligence) {
         config.relationships.intelligence = sharedIntelligence;
         intelligenceMode = `LLM-supervised (${intelligenceSource})`;
-      } else if (config.sessions.claudePath) {
+      } else if (config.sessions.claudePath && !isClaudeForbidden()) {
         // Last-ditch fallback for installs where sharedIntelligence couldn't
-        // be built but a claude binary path is still configured.
+        // be built but a claude binary path is still configured. Skipped on
+        // codex-only agents (isClaudeForbidden) — there, relationships run
+        // without LLM intelligence rather than silently using Claude.
         config.relationships.intelligence = new ClaudeCliIntelligenceProvider(config.sessions.claudePath);
         intelligenceMode = 'LLM-supervised (Claude CLI subscription, fallback)';
       }
@@ -4113,13 +4134,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       // get Codex-summarized topics. Last-ditch ClaudeCli fallback
       // preserves v0.x behavior when sharedIntelligence couldn't be
       // built but a claude binary is still on disk.
-      let summaryIntelligence: IntelligenceProvider;
+      let summaryIntelligence: IntelligenceProvider | null = null;
       if (sharedIntelligence) {
         summaryIntelligence = sharedIntelligence;
-      } else {
+      } else if (!isClaudeForbidden()) {
         const { ClaudeCliIntelligenceProvider } = await import('../core/ClaudeCliIntelligenceProvider.js');
         summaryIntelligence = new ClaudeCliIntelligenceProvider(config.sessions.claudePath);
       }
+      // On a codex-only agent without a built Codex provider, summaryIntelligence
+      // stays null — topic summaries are skipped rather than run on Claude.
+      if (summaryIntelligence) {
       const summarizer = new TopicSummarizer(summaryIntelligence, topicMemory);
 
       sessionManager.on('sessionComplete', (session) => {
@@ -4137,6 +4161,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       });
       console.log(pc.green('  Topic auto-summarization enabled (on session end)'));
+      } else {
+        console.log(pc.dim('  Topic auto-summarization skipped (no LLM provider; codex-only without Codex provider)'));
+      }
     }
 
     // Session Activity Sentinel — episodic memory digestion.
@@ -5620,6 +5647,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           stateDir: config.stateDir,
           intelligence: sharedIntelligence,
           agentName: config.projectName ?? 'the agent',
+          // Resolved default framework so idle/stall detection uses the right
+          // pane signals (Codex panes don't match Claude prompt patterns).
+          agentFramework: _defaultFramework,
           hasAgentRespondedSince: (topicId, sinceMs) => {
             const sinceIso = new Date(sinceMs).toISOString();
             // Check Telegram log

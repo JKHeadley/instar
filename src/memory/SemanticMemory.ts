@@ -586,18 +586,58 @@ export class SemanticMemory {
 
       // Secondary probe: integrity_check can miss torn interior pages that aren't
       // reachable from the B-tree schema walk. A probe read on existing tables catches these.
+      //
+      // Two correctness rules learned the hard way (codex-live-test, vec0 loop):
+      //  1. Skip VIRTUAL tables (e.g. the vec0 `entity_embeddings` table). The
+      //     sqlite-vec extension is NOT loaded yet at this point in open() —
+      //     initVectorSearch() runs later (line ~613) — so probing a vec0 table
+      //     throws "no such module: vec0". That is an extension-availability
+      //     signal, NOT disk corruption. A virtual table is not storage anyway;
+      //     its real data lives in shadow tables (entity_embeddings_chunks,
+      //     _rowids, _vector_chunks00, ...) which ARE plain tables and remain in
+      //     the probe set below, so vector-data corruption is still caught.
+      //  2. Even with (1), classify any "no such module" error as a missing
+      //     loadable extension, never corruption. Quarantining on it caused a
+      //     rebuild-on-every-boot loop (semantic.db.corrupt.* churn) and silently
+      //     defeated the FTS5-only graceful-degradation path this class promises.
       if (!this._needsRebuild) {
+        let tables: Array<{ name: string }> = [];
         try {
-          const tables = this.db!.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%'"
+          tables = this.db!.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' " +
+            "AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%' " +
+            "AND (sql IS NULL OR sql NOT LIKE 'CREATE VIRTUAL TABLE%')"
           ).all() as Array<{ name: string }>;
-          for (const t of tables) {
-            this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
-          }
         } catch (err) {
-          this.quarantineCorruptDb(`probe read failed: ${(err as Error).message}`);
+          // Failing to read sqlite_master itself is genuine corruption.
+          this.quarantineCorruptDb(`schema read failed: ${(err as Error).message}`);
           this.db = constructor(this.config.dbPath) as Database;
           this._needsRebuild = true;
+        }
+
+        if (!this._needsRebuild) {
+          for (const t of tables) {
+            try {
+              this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
+            } catch (err) {
+              const msg = (err as Error).message || '';
+              if (/no such module/i.test(msg)) {
+                // Loadable extension unavailable (e.g. vec0) — capability gap,
+                // not corruption. Skip this object, keep probing the rest, and
+                // let initVectorSearch() degrade to FTS5-only. NO quarantine.
+                console.warn(
+                  `[SemanticMemory] Probe skipped "${t.name}": ${msg}. ` +
+                  `Loadable extension unavailable — continuing FTS5-only (no quarantine).`
+                );
+                continue;
+              }
+              // Genuine corruption (torn page, malformed image).
+              this.quarantineCorruptDb(`probe read failed on "${t.name}": ${msg}`);
+              this.db = constructor(this.config.dbPath) as Database;
+              this._needsRebuild = true;
+              break;
+            }
+          }
         }
       }
     }

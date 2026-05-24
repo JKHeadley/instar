@@ -433,7 +433,14 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Cancel: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending/TOKEN\`
 - **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.
 - **Multi-field support**: Request multiple values at once by passing a \`fields\` array (e.g., username + password).
-- **When to use**: Any time you need a secret from the user. NEVER ask users to paste secrets into Telegram or chat.
+- **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it — that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files (which you must never do). Always issue a Secret Drop one-time link instead.
+
+**Commitments & Follow-Through** — Durable tracking for any promise you make to the user. When you say "I'll report back when X", "I'll check in after N minutes", or otherwise commit to a future action, register it so the follow-through survives session turnover, restarts, and compaction.
+- Open a commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what you promised>","type":"follow-up","topicId":TOPIC_ID}'\`
+- List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
+- Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
+- The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through (and surfaces atRisk items), and the commitment-check job surfaces overdue ones.
+- **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment. NEVER improvise the follow-through with a raw \`sleep\`/background timer or by "remembering" — those do not survive a session ending, a restart, or compaction, so the promise is silently dropped. A registered commitment is the ONLY durable path. (This is distinct from the Evolution Action Queue / \`/commit-action\`, which tracks self-improvement items, not promises to the user.)
 
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`

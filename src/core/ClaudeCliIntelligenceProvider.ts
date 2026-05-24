@@ -12,6 +12,7 @@
 import { execFile } from 'node:child_process';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
+import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -20,6 +21,14 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
   private claudePath: string;
 
   constructor(claudePath: string) {
+    // Codex-only enforcement (Structure > Willpower): on a codex-only agent
+    // (enabledFrameworks without 'claude-code'), constructing a Claude
+    // intelligence provider is forbidden. Throw loudly here rather than
+    // letting a fallback path silently use Claude on a machine where the
+    // claude binary happens to be installed. Callers with a legitimate
+    // "no LLM available" degradation catch ClaudeForbiddenError and disable
+    // the LLM-backed feature instead of reaching for Claude.
+    assertClaudeAllowed('ClaudeCliIntelligenceProvider');
     this.claudePath = claudePath;
   }
 

@@ -162,6 +162,88 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(result.skipped.some(s => s.includes('Secret Drop already documents hardened helper'))).toBe(true);
   });
 
+  it('ADDS the full Secret Drop section when a stale CLAUDE.md lacks it entirely', () => {
+    // codey's exact situation: CLAUDE.md predates the Secret Drop template
+    // section, so it has Private Viewing + Tunnel but no Secret Drop at all.
+    // The retrieve-line patch only touches an EXISTING section; this ensures
+    // the section is injected when absent (the root of J-secret-drop: codey
+    // never learned the capability and improvised a plaintext-file handoff).
+    const stale = [
+      '# CLAUDE.md — test',
+      '',
+      '**Private Viewing** — auth-gated HTML pages.',
+      '- Create: POST /view',
+      '',
+      '**Cloudflare Tunnel** — expose the server.',
+      '- Status: GET /tunnel',
+      '',
+      '**Scripts** — helper scripts.',
+      '',
+    ].join('\n');
+    fs.writeFileSync(claudeMdPath, stale);
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('**Secret Drop**');
+    expect(after).toContain('POST');
+    expect(after).toContain('/secrets/request');
+    // The proactive trigger that prevents codey's exact failure mode:
+    expect(after).toContain('NEVER create a local file');
+    expect(after).toContain('one-time link');
+    expect(result.upgraded.some(u => u.includes('added Secret Drop section'))).toBe(true);
+    // Inserted before the Cloudflare Tunnel marker (template document order).
+    expect(after.indexOf('**Secret Drop**')).toBeLessThan(after.indexOf('**Cloudflare Tunnel**'));
+    // Neighbors preserved, not duplicated.
+    expect(after.match(/\*\*Cloudflare Tunnel\*\*/g)?.length).toBe(1);
+    expect(after.match(/\*\*Private Viewing\*\*/g)?.length).toBe(1);
+  });
+
+  it('ADDS the Commitments & Follow-Through section when a stale CLAUDE.md lacks it', () => {
+    // codey live (2026-05-24): improvised a raw `sleep` for "report back in 3 min"
+    // instead of registering a durable commitment, because the follow-through
+    // capability was never agent-facing. Ensure the section is injected when absent.
+    const stale = [
+      '# CLAUDE.md — test',
+      '',
+      '**Private Viewing** — auth-gated HTML pages.',
+      '- Create: POST /view',
+      '',
+      '**Cloudflare Tunnel** — expose the server.',
+      '- Status: GET /tunnel',
+      '',
+    ].join('\n');
+    fs.writeFileSync(claudeMdPath, stale);
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('**Commitments & Follow-Through**');
+    expect(after).toContain('/commitments');
+    // The proactive trigger that prevents codey's exact failure mode:
+    expect(after).toContain('NEVER improvise the follow-through with a raw');
+    // Inserted before Cloudflare Tunnel (document order), neighbors not duplicated.
+    expect(after.indexOf('**Commitments & Follow-Through**')).toBeLessThan(after.indexOf('**Cloudflare Tunnel**'));
+    expect(after.match(/\*\*Cloudflare Tunnel\*\*/g)?.length).toBe(1);
+    expect(result.upgraded.some(u => u.includes('added Commitments & Follow-Through section'))).toBe(true);
+  });
+
+  it('is idempotent — re-running does not add a second Secret Drop section', () => {
+    const stale = '# CLAUDE.md — test\n\n**Cloudflare Tunnel** — expose.\n- Status: GET /tunnel\n';
+    fs.writeFileSync(claudeMdPath, stale);
+
+    runMigrateClaudeMd(createMigrator(projectDir));
+    const first = fs.readFileSync(claudeMdPath, 'utf-8');
+    const result2 = runMigrateClaudeMd(createMigrator(projectDir));
+    const second = fs.readFileSync(claudeMdPath, 'utf-8');
+
+    expect(second).toBe(first);
+    expect(second.match(/\*\*Secret Drop\*\*/g)?.length).toBe(1);
+    expect(result2.skipped.some(s => s.includes('Secret Drop section already present'))).toBe(true);
+  });
+
   it('tolerates a port that does not match the agent\'s configured port', () => {
     // Older agent installed when port was 4040; the line literal uses 4040,
     // but the migrator now runs at 4042. The port-tolerant regex should

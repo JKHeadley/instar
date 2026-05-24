@@ -22,6 +22,8 @@ import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessa
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { LlmAbortedError } from './LlmQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
+import { looksActivelyWorking } from './sentinelWiring.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -29,6 +31,15 @@ export interface PresenceProxyConfig {
   stateDir: string;
   intelligence: IntelligenceProvider;
   agentName: string;
+  /**
+   * The agent's resolved framework (codex-cli / claude-code). Used to pick
+   * the correct pane activity-signal when the assessment LLM is unavailable
+   * or returns an unparseable classification — so a stuck Codex session is
+   * NOT blindly assumed "still working" forever (the 2026-05-23 incident,
+   * where the LLM couldn't read the Codex pane and defaulted to active).
+   * Absent → defaults to claude-code behavior (back-compat).
+   */
+  agentFramework?: IntelligenceFramework;
 
   // Callbacks
   captureSessionOutput: (sessionName: string, lines?: number) => string | null;
@@ -343,6 +354,48 @@ export function detectSessionIdle(snapshot: string): boolean {
   // Check the last 5 lines for an idle prompt indicator
   const tail = lines.slice(-5);
   return tail.some(line => IDLE_PROMPT_PATTERNS.some(p => p.test(line.trim())));
+}
+
+/**
+ * Framework-aware "session has finished and is parked at idle" detector.
+ *
+ * claude-code keeps the prompt-pattern detector (back-compat). For codex-cli
+ * the idle composer (›) also renders WHILE the model is working, so prompt
+ * presence is NOT a valid idle discriminator — the session is idle iff it does
+ * NOT show the framework's active-work signal. Absent framework → claude-code
+ * behavior. (2026-05-23: stuck Codex sessions were invisible to the
+ * finished-check because the Claude prompt patterns never matched their pane,
+ * so the "agent finished → stop heartbeats" early-exit never triggered — the
+ * standby-flood half of the silently-stopped bug.)
+ */
+export function detectSessionFinished(
+  snapshot: string,
+  framework?: IntelligenceFramework,
+): boolean {
+  if (!snapshot) return false;
+  if (framework === 'codex-cli') {
+    return !looksActivelyWorking(snapshot, framework);
+  }
+  return detectSessionIdle(snapshot);
+}
+
+/**
+ * Deterministic stall assessment used when the tier-3 LLM is unavailable or
+ * returns an unparseable classification. Instead of blindly assuming the
+ * session is still "working" (which left stuck sessions escalating never — the
+ * 2026-05-23 Codex incident, where the LLM couldn't read the Codex pane and the
+ * fallback defaulted to active forever), fall back to the framework-aware
+ * active-work signal: a pane with no active-work indicator is treated as
+ * stalled so it surfaces to the user.
+ */
+export function deterministicStallAssessment(
+  snapshot: string | null,
+  framework?: IntelligenceFramework,
+): 'working' | 'stalled' {
+  if (snapshot && looksActivelyWorking(snapshot, framework)) {
+    return 'working';
+  }
+  return 'stalled';
 }
 
 // ─── Brief-Ack Detection ────────────────────────────────────────────────────
@@ -1089,7 +1142,7 @@ export class PresenceProxy {
     // ── Session idle: agent completed work but didn't relay response ──
     // If the terminal is at an idle prompt with no child processes, the agent
     // has finished. Tier 1 already summarized the work — further updates are noise.
-    if (snapshot && detectSessionIdle(snapshot)) {
+    if (snapshot && detectSessionFinished(snapshot, this.config.agentFramework)) {
       const processes = this.config.getProcessTree(state.sessionName);
       if (processes.length === 0) {
         state.cancelled = true;
@@ -1145,7 +1198,7 @@ export class PresenceProxy {
     {
       const idleRaw = this.config.captureSessionOutput(state.sessionName, 10);
       const idleSnapshot = idleRaw ? sanitizeTmuxOutput(idleRaw, this.config.credentialPatterns) : null;
-      if (idleSnapshot && detectSessionIdle(idleSnapshot)) {
+      if (idleSnapshot && detectSessionFinished(idleSnapshot, this.config.agentFramework)) {
         const processes = this.config.getProcessTree(state.sessionName);
         if (processes.length === 0) {
           state.cancelled = true;
@@ -1330,17 +1383,24 @@ export class PresenceProxy {
         state.llmCallCount++;
         state.lastLlmCallAt = Date.now();
 
-        // Parse classification
+        // Parse classification. If the model returns no recognizable class,
+        // fall back to the deterministic framework-aware signal rather than
+        // blindly assuming "working" (which hid stuck Codex sessions forever).
         const classMatch = llmResult.match(/\b(working|waiting|stalled|dead)\b/i);
-        assessment = (classMatch?.[1]?.toLowerCase() as any) ?? 'working'; // Default to working
+        assessment = (classMatch?.[1]?.toLowerCase() as any) ?? deterministicStallAssessment(snapshot, this.config.agentFramework);
 
         // Extract summary (first line after classification or full text)
         const lines = llmResult.split('\n').filter(l => l.trim());
         summary = lines.find(l => !l.match(/^(working|waiting|stalled|dead)$/i)) || llmResult.slice(0, 200);
       } catch {
-        // LLM failed — default to working (safe)
-        assessment = 'working';
-        summary = 'Unable to assess — defaulting to active.';
+        // LLM failed — fall back to the deterministic framework-aware signal
+        // instead of blindly assuming "working". The old "default to active"
+        // is exactly what kept stuck sessions silent forever (the silently-
+        // stopped failure mode), and it was fully blind on Codex.
+        assessment = deterministicStallAssessment(snapshot, this.config.agentFramework);
+        summary = assessment === 'working'
+          ? 'Model assessment unavailable — session still shows an active-work signal, treating as working.'
+          : 'Model assessment unavailable and no active-work signal in the session — flagging as possibly stuck.';
       }
     }
 

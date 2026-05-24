@@ -32,7 +32,7 @@ import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-te
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
-import { installAutoStart } from '../commands/setup.js';
+import { installAutoStart, installBootWrapper } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -197,9 +197,54 @@ export class PostUpdateMigrator {
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
     this.migrateBootWrapperToCjs(result);
+    this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
 
     return result;
+  }
+
+  /**
+   * Regenerate the boot wrapper when it predates the ABI-aware node
+   * self-heal (recurring-SQLite-bane fix).
+   *
+   * The `.js → .cjs` migration above only regenerates the wrapper when the
+   * plist still references the old `.js` name — agents already on `.cjs`
+   * (the majority) are skipped, so they'd never receive the new
+   * selfHealNodeSymlink logic that detects "node runs but can't load
+   * better-sqlite3" and re-points to an ABI-compatible node. This migration
+   * closes that gap: if the on-disk `instar-boot.cjs` lacks the ABI-check
+   * marker, regenerate it via installBootWrapper.
+   *
+   * Idempotent: once the marker is present, it skips.
+   */
+  private migrateBootWrapperAbiCheck(result: MigrationResult): void {
+    if (process.platform !== 'darwin') {
+      result.skipped.push('boot-wrapper ABI-check: non-darwin');
+      return;
+    }
+    const bootWrapperPath = path.join(this.config.stateDir, 'instar-boot.cjs');
+    if (!fs.existsSync(bootWrapperPath)) {
+      result.skipped.push('boot-wrapper ABI-check: no instar-boot.cjs present');
+      return;
+    }
+    let content: string;
+    try {
+      content = fs.readFileSync(bootWrapperPath, 'utf-8');
+    } catch (err) {
+      result.errors.push(`boot-wrapper ABI-check read: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Marker string emitted by the new selfHealNodeSymlink ABI branch.
+    if (content.includes('cannot load better-sqlite3 (ABI drift)')) {
+      result.skipped.push('boot-wrapper ABI-check: already current');
+      return;
+    }
+    try {
+      installBootWrapper(this.config.projectDir);
+      result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal');
+    } catch (err) {
+      result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── Boot-wrapper .js → .cjs plist migration ─────────────────────────
@@ -2316,6 +2361,121 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Private Viewer section already present');
     }
 
+    // Secret Drop section. Pre-existing agents whose CLAUDE.md predates the
+    // Secret Drop template section never received it — and because
+    // migrateFrameworkShadowCapabilities copies sections FROM CLAUDE.md, a
+    // missing source section also means Codex/Gemini shadows (AGENTS.md) never
+    // learn the capability, so those agents improvise a weaker plaintext-file
+    // handoff and even ask the user to edit a file (observed live on codey,
+    // 2026-05-24). Content-sniff and inject the full section if absent. Inserted
+    // immediately before the Cloudflare Tunnel marker (template document order)
+    // so the shadow-capability slicer bounds the section cleanly at the next
+    // marker. The retrieve-line hardening below patches an existing section; this
+    // block ensures the section exists in the first place.
+    if (!content.includes('**Secret Drop**')) {
+      const section = `
+**Secret Drop** — Securely collect secrets (API keys, passwords, tokens) from users without exposing them in chat history.
+- Request a secret: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/request -H 'Content-Type: application/json' -d '{"label":"OpenAI API Key","description":"Needed for GPT integration","topicId":TOPIC_ID}'\`
+- The response includes a one-time URL (\`localUrl\` and \`tunnelUrl\`). Send this link to the user.
+- When the user submits the secret through the form, you receive a Telegram confirmation in the specified topic.
+- **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Discover available fields with \`... TOKEN --names\`.
+- **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript.
+- List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
+- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.
+- **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it — that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files (which you must never do). Always issue a Secret Drop one-time link instead.
+`;
+      const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
+      const scriptsIdx = content.indexOf('**Scripts**');
+      const insertBefore = tunnelIdx >= 0 ? tunnelIdx : scriptsIdx;
+      if (insertBefore >= 0) {
+        content = content.slice(0, insertBefore) + section.trimStart() + '\n' + content.slice(insertBefore);
+      } else {
+        content += '\n' + section;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Secret Drop section');
+    } else {
+      result.skipped.push('CLAUDE.md: Secret Drop section already present');
+    }
+
+    // Commitments & Follow-Through section. The durable follow-through
+    // mechanism (CommitmentTracker + PromiseBeacon, `/commitments`) had no
+    // agent-facing documentation in the template — only the dev/architecture
+    // section mentions it. Result: agents (Codex observed live on codey,
+    // 2026-05-24) improvise a raw `sleep`/background timer for "I'll report
+    // back" promises, which does not survive session turnover. Inject the
+    // agent-facing section if absent, before the Cloudflare Tunnel marker so
+    // the shadow-capability slicer bounds it cleanly.
+    if (!content.includes('**Commitments & Follow-Through**')) {
+      const section = `
+**Commitments & Follow-Through** — Durable tracking for any promise you make to the user. When you say "I'll report back when X", "I'll check in after N minutes", or otherwise commit to a future action, register it so the follow-through survives session turnover, restarts, and compaction.
+- Open a commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what you promised>","type":"follow-up","topicId":TOPIC_ID}'\`
+- List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
+- Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
+- The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through, and the commitment-check job surfaces overdue ones.
+- **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment. NEVER improvise the follow-through with a raw \`sleep\`/background timer or by "remembering" — those do not survive a session ending, a restart, or compaction, so the promise is silently dropped. A registered commitment is the ONLY durable path. (Distinct from the Evolution Action Queue / \`/commit-action\`, which tracks self-improvement items, not promises to the user.)
+`;
+      const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
+      const scriptsIdx = content.indexOf('**Scripts**');
+      const insertBefore = tunnelIdx >= 0 ? tunnelIdx : scriptsIdx;
+      if (insertBefore >= 0) {
+        content = content.slice(0, insertBefore) + section.trimStart() + '\n' + content.slice(insertBefore);
+      } else {
+        content += '\n' + section;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Commitments & Follow-Through section');
+    } else {
+      result.skipped.push('CLAUDE.md: Commitments & Follow-Through section already present');
+    }
+
+    // Publishing (Telegraph public pages). Awareness-parity pass: add the
+    // agent-facing section if absent so it reaches Codex/Gemini shadows via
+    // the markers list. Inserted before Private Viewing (template doc order).
+    if (!content.includes('**Publishing**')) {
+      const section = `
+**Publishing** — Share content as PUBLIC web pages via Telegraph. Instant, zero-config, accessible from anywhere.
+- Publish: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/publish -H 'Content-Type: application/json' -d '{"title":"Page Title","markdown":"# Content here"}'\`
+- List published: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/published\`
+- **⚠ CRITICAL: All Telegraph pages are PUBLIC.** Anyone with the URL can view the content — no auth, no access control. NEVER publish sensitive/private/confidential info via Telegraph; use Private Viewing for that. Always tell the user a Telegraph link is publicly accessible.
+`;
+      const pvIdx = content.indexOf('**Private Viewing**');
+      const scriptsIdx = content.indexOf('**Scripts**');
+      const insertBefore = pvIdx >= 0 ? pvIdx : scriptsIdx;
+      if (insertBefore >= 0) {
+        content = content.slice(0, insertBefore) + section.trimStart() + '\n' + content.slice(insertBefore);
+      } else {
+        content += '\n' + section;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Publishing section');
+    } else {
+      result.skipped.push('CLAUDE.md: Publishing section already present');
+    }
+
+    // Attention Queue. Awareness-parity pass — agent-facing capability for
+    // signalling items the user must see. Inserted before Dashboard (doc order).
+    if (!content.includes('**Attention Queue**')) {
+      const section = `
+**Attention Queue** — Signal important items to the user. When something needs their attention — a decision, a review, an anomaly — queue it here instead of hoping they see a chat message.
+- Queue: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention -H 'Content-Type: application/json' -d '{"title":"...","body":"...","priority":"medium","source":"agent"}'\`
+- View / resolve: \`GET /attention\` · \`PATCH /attention/ATT-ID\` with \`{"status":"resolved"}\`
+- **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.
+`;
+      const dashIdx = content.indexOf('**Dashboard**');
+      const scriptsIdx = content.indexOf('**Scripts**');
+      const insertBefore = dashIdx >= 0 ? dashIdx : scriptsIdx;
+      if (insertBefore >= 0) {
+        content = content.slice(0, insertBefore) + section.trimStart() + '\n' + content.slice(insertBefore);
+      } else {
+        content += '\n' + section;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention Queue section');
+    } else {
+      result.skipped.push('CLAUDE.md: Attention Queue section already present');
+    }
+
     // Tunnel-failure-resilience awareness (spec Part 7). Existing agents
     // already have the Cloudflare Tunnel section but not the resilience
     // text — content-sniff and append a bullet so they can explain a link
@@ -2781,8 +2941,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Self-Discovery',
+      '**Publishing**',
       '**Private Viewing**',
+      '**Secret Drop**',
+      '**Commitments & Follow-Through**',
       '**Cloudflare Tunnel**',
+      '**Attention Queue**',
       '**Dashboard**',
       '**File Viewer',
       '### Coherence Gate',
@@ -2811,18 +2975,32 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
         const start = claudeMd.indexOf(marker);
         if (start < 0) continue;
         // Slice from the marker through the start of the next top-level
-        // heading (##/### line) or EOF. The leading "\n" guard avoids
-        // matching headings inside fenced code blocks at column 0 only
-        // when they begin a line.
+        // heading (##/### line) OR the next capability marker, whichever comes
+        // first. The leading "\n" guard avoids matching headings inside fenced
+        // code blocks at column 0 only when they begin a line. Bounding at the
+        // next marker (not only the next heading) is required because these
+        // capability sections are `**bold**` blocks with NO intervening
+        // heading — without it, slicing one bold section over-grabs every
+        // following bold section up to the next ### and duplicates them in the
+        // shadow. (Regression context: `**Secret Drop**` sits between
+        // `**Private Viewing**` and `**Cloudflare Tunnel**`; a heading-only
+        // bound would have copied Tunnel + everything after into the Secret
+        // Drop slice.)
         const after = claudeMd.slice(start);
         // Skip past the marker's own header line, then look for the next
-        // heading. Without this, a marker that itself starts with "###"
+        // boundary. Without this, a marker that itself starts with "###"
         // would zero-length match.
         const nlAfterMarker = after.indexOf('\n');
         const searchFrom = nlAfterMarker >= 0 ? nlAfterMarker + 1 : 0;
         const tail = after.slice(searchFrom);
-        const nextRel = tail.search(/(^|\n)(##|###) [^#\n]/);
-        const sectionEnd = nextRel >= 0 ? searchFrom + nextRel : after.length;
+        let nextRel = tail.search(/(^|\n)(##|###) [^#\n]/);
+        if (nextRel < 0) nextRel = tail.length;
+        for (const other of markers) {
+          if (other === marker) continue;
+          const oi = tail.indexOf(other);
+          if (oi >= 0 && oi < nextRel) nextRel = oi;
+        }
+        const sectionEnd = searchFrom + nextRel;
         const section = after.slice(0, sectionEnd).trimEnd();
         appended = appended.trimEnd() + '\n\n' + section + '\n';
         mirrored++;

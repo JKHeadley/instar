@@ -120,7 +120,11 @@ describe('Feature Delivery Completeness', () => {
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
       'Self-Discovery',
+      'Publishing',
       'Private Viewing',
+      'Secret Drop',
+      'Commitments & Follow-Through',
+      'Attention Queue',
       'Dashboard',
       'File Viewer',
       'Threadline Network',
@@ -137,6 +141,30 @@ describe('Feature Delivery Completeness', () => {
         expect(migratorSource).toContain(section);
       });
     }
+
+    // STRUCTURAL GUARD (2026-05-24, codex-live-test): every agent-facing
+    // capability MUST also reach non-Claude frameworks (Codex AGENTS.md,
+    // GEMINI.md) via the migrateFrameworkShadowCapabilities markers[] allowlist.
+    // Two live findings on codey proved the cost of a gap here: Secret Drop and
+    // Commitments were in the Claude template but NOT in markers[], so Codex
+    // agents never learned them and improvised weaker workarounds (a plaintext
+    // file the user edits; a raw `sleep` timer). This guard turns "remember to
+    // add the marker" into a guarantee — a featureSection with no shadow marker
+    // fails CI, so the class of bug cannot recur. (Structure > Willpower.)
+    const shadowMarkersMatch = migratorSource.match(/const markers = \[([\s\S]*?)\];/);
+    const shadowMarkersBlock = shadowMarkersMatch ? shadowMarkersMatch[1] : '';
+    // A featureSection is covered if its phrase appears inside any marker string.
+    // (Markers carry markdown decoration like `**X**` / `### X`; substring match
+    // tolerates that.)
+    it('every agent-facing capability is in migrateFrameworkShadowCapabilities markers[] (reaches Codex/Gemini)', () => {
+      expect(shadowMarkersBlock, 'could not locate the markers[] array in PostUpdateMigrator.ts').not.toBe('');
+      for (const section of featureSections) {
+        expect(
+          shadowMarkersBlock.includes(section),
+          `Capability "${section}" is in the Claude template but NOT in the shadow-capability markers[] — Codex/Gemini agents will never learn it (they will improvise a weaker workaround). Add a marker for it in migrateFrameworkShadowCapabilities.`,
+        ).toBe(true);
+      }
+    });
 
     // Auto-detect: if the migrator adds a CLAUDE.md section we haven't listed, fail.
     // Pattern: `if (!content.includes('SectionName'))` in migrateClaudeMd
@@ -156,6 +184,10 @@ describe('Feature Delivery Completeness', () => {
       'POST /view',               // alternate check for Private Viewing
       '/dashboard',               // alternate check for Dashboard
       '**Dashboard**',            // alternate check for Dashboard (bold markdown variant)
+      '**Secret Drop**',          // alternate check for Secret Drop (bold markdown variant — migrateClaudeMd ensure-section)
+      '**Commitments & Follow-Through**', // alternate check for Commitments (bold markdown variant — migrateClaudeMd ensure-section)
+      '**Publishing**',           // alternate check for Publishing (bold markdown variant — migrateClaudeMd ensure-section)
+      '**Attention Queue**',      // alternate check for Attention Queue (bold markdown variant — migrateClaudeMd ensure-section)
       '/coherence/check',         // alternate check for Coherence Gate
       '/operations/evaluate',     // alternate check for External Operation Safety
       'instar playbook',          // alternate check for Playbook

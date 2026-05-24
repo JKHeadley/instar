@@ -57,9 +57,12 @@ export function resolveModelForFramework(
     // sensible Codex equivalent (haiku→fast, sonnet→balanced,
     // opus→capable) so an unported call site doesn't immediately
     // crash for a Codex agent.
-    if (key === 'fast' || key === 'haiku') return 'gpt-5.2';
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.3-codex';
-    if (key === 'capable' || key === 'opus') return 'gpt-5.4';
+    // Confirmed light/medium/heavy mapping (Justin, 2026-05-23): the ChatGPT
+    // subscription meters by token-weighted credits, so non-reasoning gpt-5.2
+    // is genuinely the lightest. See models.ts for the full rationale.
+    if (key === 'fast' || key === 'haiku') return 'gpt-5.2';        // light — non-reasoning
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.4-mini'; // medium — cheapest reasoning
+    if (key === 'capable' || key === 'opus') return 'gpt-5.5';      // heavy — frontier reasoning
     return modelOrTier;
   }
   return modelOrTier;
@@ -158,7 +161,7 @@ const codexCliBuilder: Builder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const resolvedModel = isLocal
     ? (options.defaultModel ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.defaultModel) ?? 'gpt-5.3-codex');
+    : (resolveModelForFramework('codex-cli', options.defaultModel) ?? 'gpt-5.5');
 
   // Codex's `resume` is a subcommand (`codex resume <SESSION_ID>`), not a
   // flag. When resuming, insert it as the first argument after the binary
@@ -323,7 +326,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.3-codex');
+    : (resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.5');
   const argv: string[] = [
     options.binaryPath,
     'exec',
