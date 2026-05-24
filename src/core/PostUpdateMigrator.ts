@@ -188,6 +188,7 @@ export class PostUpdateMigrator {
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
+    this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
@@ -1166,6 +1167,51 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/build/SKILL.md methodology migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed autonomous stop hook to the topic-keyed version.
+   *
+   * The old hook keyed autonomous-session ownership on the Claude session UUID;
+   * a memory-limit restart rotated the UUID, mismatched the state file, and let
+   * the still-running session exit — autonomy died silently. The new hook keys
+   * on the TOPIC (a stable address that survives restarts), demotes session-id
+   * matching to a liveness-gated backstop, and emits a one-line recovery note.
+   *
+   * installAutonomousSkill() is install-if-missing, so existing agents never get
+   * this through init — a dedicated migration is the only path (Migration Parity
+   * Standard, "updating existing skill content").
+   *
+   * Idempotent + conservative: only re-copies the bundled hook when the installed
+   * copy (a) lacks the new "topic-session-registry" marker AND (b) still looks
+   * like the stock hook (contains "Autonomous Mode Stop Hook"). A customized hook
+   * that no longer matches the stock fingerprint is left untouched.
+   */
+  private migrateAutonomousStopHookTopicKeyed(result: MigrationResult): void {
+    try {
+      const deployed = path.join(
+        this.config.projectDir, '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh',
+      );
+      if (!fs.existsSync(deployed)) return; // installAutonomousSkill handles fresh installs
+      const current = fs.readFileSync(deployed, 'utf8');
+      if (current.includes('topic-session-registry')) return; // already topic-keyed — idempotent
+      if (!current.includes('Autonomous Mode Stop Hook')) {
+        result.skipped.push('skills/autonomous/hooks/autonomous-stop-hook.sh: customized — left untouched');
+        return;
+      }
+      const bundled = path.join(
+        __dirname, '..', '..', '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh',
+      );
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes('topic-session-registry')) {
+        fs.writeFileSync(deployed, next);
+        fs.chmodSync(deployed, 0o755);
+        result.upgraded.push('skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed ownership + recovery note)');
+      }
+    } catch (err) {
+      result.errors.push(`autonomous stop hook topic-keying migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

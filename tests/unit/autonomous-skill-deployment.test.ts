@@ -135,7 +135,7 @@ describe('Autonomous stop hook source analysis', () => {
     expect(content).toContain('duration_seconds');
     expect(content).toContain('ELAPSED');
     // Must remove state file on expiry
-    expect(content).toContain('rm "$STATE_FILE"');
+    expect(content).toContain('rm -f "$STATE_FILE"');
   });
 
   it('checks for completion promise', () => {
