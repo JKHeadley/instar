@@ -22,7 +22,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer.js';
 import { MCPAuth } from '../../../src/threadline/MCPAuth.js';
-import { ThreadResumeMap } from '../../../src/threadline/ThreadResumeMap.js';
+import { TestThreadResumeMap } from '../../helpers/TestThreadResumeMap.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import { AgentDiscovery } from '../../../src/threadline/AgentDiscovery.js';
 import type {
@@ -45,17 +45,7 @@ function cleanupDir(dir: string): void {
   try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/threadline/ThreadlineMCPE2E.test.ts:45' }); } catch { /* ignore */ }
 }
 
-/**
- * Test-friendly ThreadResumeMap that skips the JSONL file-existence check.
- * Phase 2a (CMT-497): ThreadResumeMap is a view over ConversationStore; the only
- * thing tests need to bypass is the JSONL guard (no real Claude session files in
- * tests), so override just that and use the real view logic.
- */
-class TestThreadResumeMap extends ThreadResumeMap {
-  protected jsonlExists(): boolean {
-    return true;
-  }
-}
+// TestThreadResumeMap is the shared helper in tests/helpers/ (imported above).
 
 // ── In-Memory Message System ─────────────────────────────────────────
 

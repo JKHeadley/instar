@@ -28,23 +28,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer.js';
 import { MCPAuth } from '../../../src/threadline/MCPAuth.js';
 import { ThreadResumeMap } from '../../../src/threadline/ThreadResumeMap.js';
+import { TestThreadResumeMap } from '../../helpers/TestThreadResumeMap.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-
-/**
- * Test-friendly ThreadResumeMap that skips JSONL file existence checks.
- * In production, ThreadResumeMap.get() verifies the Claude JSONL file exists.
- * In tests, those files don't exist, so we override to skip that check.
- */
-class TestThreadResumeMap extends ThreadResumeMap {
-  /**
-   * Phase 2a: ThreadResumeMap is a view over ConversationStore. The only thing
-   * tests need to bypass is the JSONL-existence guard (no real Claude session
-   * files in tests); the rest of get() uses the real view logic.
-   */
-  protected jsonlExists(): boolean {
-    return true;
-  }
-}
 import { AgentDiscovery } from '../../../src/threadline/AgentDiscovery.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import type {

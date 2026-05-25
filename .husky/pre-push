@@ -38,9 +38,11 @@ else
 fi
 
 # Try up to 2 times — flaky tests may fail intermittently
+SMOKE_OK=0
 for attempt in 1 2; do
   if $TEST_CMD; then
-    exit 0
+    SMOKE_OK=1
+    break
   fi
   if [ "$attempt" -eq 1 ]; then
     echo ""
@@ -49,5 +51,19 @@ for attempt in 1 2; do
   fi
 done
 
-echo "❌ Tests failed on both attempts. Debug with: $TEST_CMD"
-exit 1
+if [ "$SMOKE_OK" != "1" ]; then
+  echo "❌ Tests failed on both attempts. Debug with: $TEST_CMD"
+  exit 1
+fi
+
+# ── Path-scoped e2e gate ──────────────────────────────────────────────
+# Both the smoke tier AND test:push use vitest.push.config.ts, which EXCLUDES
+# tests/e2e/**. So a change can pass everything above yet break the separate
+# `E2E Tests` CI job (PR #381 turned main red this way). When the push touches
+# an e2e-load-bearing area, run that area's e2e suite now. Path-scoped, so
+# unrelated pushes pay nothing. Opt out: INSTAR_PRE_PUSH_E2E_SKIP=1 git push
+echo "🔒 Running path-scoped e2e gate..."
+if ! node scripts/pre-push-e2e-scope.mjs; then
+  exit 1
+fi
+exit 0
