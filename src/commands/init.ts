@@ -3461,7 +3461,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
     // init: a brand-new agent may not be Codex-logged-in yet (auth lives in CODEX_HOME), in
     // which case arming can't complete and the first update's migration re-arms. Idempotent.
     const codexBin = detectCodexPath();
-    if (codexBin) {
+    if (codexBin && !process.env.VITEST) {
       try {
         armCodexHooks({
           projectDir,

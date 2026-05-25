@@ -1668,6 +1668,9 @@ export class PostUpdateMigrator {
           const cfg = JSON.parse(fs.readFileSync(path.join(this.config.stateDir, 'config.json'), 'utf-8')) as { codex?: { autoArmHooks?: boolean } };
           if (cfg.codex?.autoArmHooks === false) autoArm = false;
         } catch { /* default ON */ }
+        // Never spawn a real codex TUI under the test runner (armCodexHooks is unit-tested
+        // directly + live-proven; spawning here during vitest would be a slow side-effect).
+        if (process.env.VITEST) autoArm = false;
         const codexBinary = detectCodexPath();
         if (autoArm && codexBinary) {
           try {
@@ -1687,7 +1690,9 @@ export class PostUpdateMigrator {
             result.errors.push(`codex hook auto-arm: ${armErr instanceof Error ? armErr.message : String(armErr)}`);
           }
         } else if (autoArm && !codexBinary) {
-          result.errors.push('codex hook auto-arm skipped: no codex binary resolved (guards registered but not yet trusted)');
+          // Not an error — expected on hosts/CI without a codex binary. The guards are
+          // registered; they get armed on a host where codex resolves (or on the next update).
+          result.skipped.push('codex hook auto-arm: no codex binary resolved (guards registered, will arm when codex is available)');
         }
       } catch (err) {
         result.errors.push(`codex hooks: ${err instanceof Error ? err.message : String(err)}`);
