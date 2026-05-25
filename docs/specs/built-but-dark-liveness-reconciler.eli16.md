@@ -31,4 +31,18 @@ Normally: silence. Occasionally: one tidy message — "heads up, this safety fea
 
 ## Proof it works
 
-It isn't finished until it can look at the two switched-off safety nets we already found and correctly shout "these are dark!" If it can't catch the exact bugs that inspired it, it failed.
+It isn't finished until it can look at the two switched-off safety nets we already found and correctly shout "these are dark!" — AND, on that same first run, stay completely quiet about the hundred-plus things that are off perfectly on purpose. If it can't catch the exact bugs that inspired it without burying them in false alarms, it failed.
+
+## What the review round caught (and how we fixed it)
+
+I had several independent reviewers tear into the first draft. They found a genuinely serious problem: as first written, the walkthrough would have flooded you on its very first run. The repo has well over a hundred things that are switched "off" — but most of them are off *correctly* (optional features you simply haven't asked for, plus a pile of design documents that aren't features at all). The first draft would have flagged all of them as "dark," dumped them in your lap, and called it a day. That's the exact flood you said to avoid.
+
+Two fixes close that hole:
+
+1. **Tell apart "off on purpose" from "off by mistake."** Every feature now declares what it's *supposed* to be: a thing that must always be running (a safety net), or a thing that's correctly off until you ask for it (an optional extra). Only the first kind, when it's off, is ever a problem worth raising. Optional-and-off is just... fine, and stays silent.
+
+2. **Draw a line in the sand on day one.** The first time the walkthrough runs, it takes a snapshot and accepts the current state as the baseline — so it doesn't drag you through years of history at once. From then on it only speaks up about things that *change* or that we've explicitly marked as "this one really needs finishing" (like our two switched-off safety nets).
+
+They also caught that the first draft leaned on *me remembering* to write down why something got turned off — which is exactly the kind of "rely on willpower" mistake we're not allowed to make. Fixed: turning something off now *requires* a reason at the moment you do it, so there's nothing for me to forget.
+
+Honest caveat: all my reviewers were Claude-family. The outside opinions (other AI models) sometimes catch things we don't, so I'd recommend one more review round with those before you give the final yes.
