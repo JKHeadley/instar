@@ -16,5 +16,15 @@ Codex has the **same kind of checkpoint system Claude does** — little programs
 ## How we'll know it works
 We'll test it live on codey (the sandbox Codex agent): trigger a bad action and watch the guardrail actually block it, and a normal action sail through. Not a mock — a real block on the real agent.
 
+## What we found when we actually tested it (the fix that matters)
+The first time we plugged the guardrails in and ran real Codex, nothing blocked — the agent happily ran a "wipe the disk" command. It turned out we'd wired it almost right but got two small details wrong, and both had to be fixed before anything worked:
+
+1. **We told Codex "watch which tools?" with the wrong symbol.** We wrote `*` meaning "everything," but Codex reads that as a pattern, and a lone `*` actually matches *nothing*. Changed it to `.*` (the real "everything" pattern) and the guardrail started firing.
+2. **Codex hands over the command under a different label than Claude.** Our guard looked for a command labelled "command"; Codex labels it "cmd." So even once the guard ran, it saw an empty command. We taught it to read either label.
+
+After both fixes, we rebuilt from clean source, drove a real Codex session, and told it to run a disk-wipe command — and it got **blocked on the spot**. First time the Codex guard has truly fired in the real tool.
+
+One honest caveat we're handling next: Codex still pops a one-time "do you trust these guardrails?" question, and there's no flag that fully skips it. That would freeze an unattended run, and worse, the agent could choose "don't trust them" and switch its own guards off. The clean fix is "managed" guardrails — ones that run by policy and the agent can't disable. That's a separate design decision, so it's the next step, not part of this fix.
+
 ## The bigger principle
 This closes the single biggest gap between Claude and Codex agents: structural safety. After this, "Structure > Willpower" holds on both engines, not just one.

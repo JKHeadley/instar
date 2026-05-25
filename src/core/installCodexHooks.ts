@@ -67,18 +67,24 @@ export function buildInstarCodexHookGroups(
   });
 
   return {
-    // Pre-action gate. matcher '*' = all tool calls; each script classifies and
-    // decides. dangerous-command-guard covers Codex's native shell/exec/apply_patch
-    // (the main destructive surface); external-operation-gate covers mcp__* tools;
-    // grounding-before-messaging gates messaging commands. All read tool_input.command
-    // from Codex's stdin payload (the scripts shim arg→stdin).
+    // Pre-action gate. matcher '.*' = all tool calls (Codex treats the matcher as
+    // a regex against the tool name; a bare '*' is an invalid quantifier that
+    // matches NOTHING, so the gate silently never fires — '.*' is required.
+    // Verified live 2026-05-24: with '.*', dangerous-command-guard fires on Codex's
+    // exec_command tool and blocks `rm -rf /`; with '*'/'' it did not fire at all).
+    // Each script classifies and decides: dangerous-command-guard covers Codex's
+    // native shell/exec_command (the main destructive surface); external-operation-gate
+    // covers mcp__* tools; grounding-before-messaging gates messaging commands. All
+    // read the command from Codex's stdin payload — Codex's exec_command puts it in
+    // tool_input.cmd (Claude uses tool_input.command); the scripts shim arg→stdin and
+    // accept both field names.
     PreToolUse: [
-      { matcher: '*', hooks: [sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh')] },
+      { matcher: '.*', hooks: [sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh')] },
     ],
     // Codex-only checkpoint. Routes to the same gate; the trust system
     // auto-decides (allow/deny) with NO human prompt so autonomy is preserved.
     PermissionRequest: [
-      { matcher: '*', hooks: [node('external-operation-gate.js')] },
+      { matcher: '.*', hooks: [node('external-operation-gate.js')] },
     ],
     // End-of-turn review: coherence/tone + deferral detection.
     Stop: [

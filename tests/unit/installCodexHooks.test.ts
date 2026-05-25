@@ -65,6 +65,16 @@ describe('installCodexHooks', () => {
     expect(cfg.hooks.PreToolUse[0].hooks.some((h: any) => h.command.includes('dangerous-command-guard.sh'))).toBe(true);
   });
 
+  it("uses '.*' as the tool-call matcher, NOT '*' (regression: a bare '*' is an invalid regex that matches nothing, so the gate silently never fires)", () => {
+    installCodexHooks(projectDir);
+    const cfg = read();
+    // Verified live 2026-05-24: with matcher '.*' the dangerous-command-guard fires
+    // on Codex's exec_command tool and blocks `rm -rf /`; with '*' or '' it did not
+    // fire at all. Codex treats matcher as a regex against the tool name.
+    expect(cfg.hooks.PreToolUse[0].matcher).toBe('.*');
+    expect(cfg.hooks.PermissionRequest[0].matcher).toBe('.*');
+  });
+
   it('is idempotent — running twice yields identical config (no duplicate instar groups)', () => {
     installCodexHooks(projectDir);
     const first = fs.readFileSync(path.join(projectDir, '.codex', 'hooks.json'), 'utf-8');

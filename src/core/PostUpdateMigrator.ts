@@ -4622,10 +4622,16 @@ echo "=== END SESSION START ==="
 # Supports safety.level in .instar/config.json:
 #   Level 1 (default): Block and ask user. Level 2: Agent self-verifies.
 # Input: Claude passes the command as arg \$1; Codex (stdin-only) delivers the
-# hook event as JSON on stdin, so fall back to its tool_input.command.
+# hook event as JSON on stdin. Claude uses tool_input.command; Codex's exec_command
+# tool uses tool_input.cmd — accept either (verified live 2026-05-24).
 INPUT="$1"
 if [ -z "$INPUT" ]; then
-  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command','') or '')" 2>/dev/null)"
+  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json
+try:
+    d=json.load(sys.stdin); ti=d.get('tool_input',{}) or {}
+    print(ti.get('command') or ti.get('cmd') or '')
+except Exception:
+    print('')" 2>/dev/null)"
 fi
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
 
@@ -4705,11 +4711,17 @@ done
 # Grounding must be automatic — content injected, not pointed to.
 #
 # Installed by instar during setup. Runs as a PreToolUse hook (Claude: Bash arg;
-# Codex: stdin JSON tool_input.command).
+# Codex: stdin JSON — tool_input.command for Claude, tool_input.cmd for Codex's
+# exec_command tool; accept either).
 
 INPUT="$1"
 if [ -z "$INPUT" ]; then
-  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command','') or '')" 2>/dev/null)"
+  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json
+try:
+    d=json.load(sys.stdin); ti=d.get('tool_input',{}) or {}
+    print(ti.get('command') or ti.get('cmd') or '')
+except Exception:
+    print('')" 2>/dev/null)"
 fi
 
 # Detect messaging commands (telegram-reply, email sends, API message posts, etc.)
