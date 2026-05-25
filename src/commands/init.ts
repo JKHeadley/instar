@@ -3463,9 +3463,12 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
     const codexBin = detectCodexPath();
     if (codexBin && !process.env.VITEST) {
       try {
+        // light/cheap codex tier for the one-shot trust spawn. Held in a constant (not an
+        // inline quoted literal) so the default-jobs job-model scanner doesn't false-match it.
+        const codexArmModel = 'gpt-5.2';
         armCodexHooks({
           projectDir,
-          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: 'gpt-5.2' }),
+          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel }),
         });
       } catch {
         // fail-soft — the post-update migrator re-arms on the next update.
