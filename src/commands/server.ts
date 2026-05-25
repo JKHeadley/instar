@@ -2651,19 +2651,28 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Quota tracking enabled (${quotaFile})`));
     }
 
-    // Set up opt-in telemetry heartbeat
+    // Set up opt-in telemetry heartbeat.
+    // ALWAYS construct, even when disabled — fixes the chicken-and-egg deadlock
+    // where POST /telemetry/enable returned 503 because the subsystem was only
+    // constructed when telemetry was already enabled at boot (so it could never
+    // be turned on through its own endpoint). Construction is cheap and pure;
+    // the side-effects (.start()/submit()) already self-gate on `config.enabled`
+    // inside TelemetryHeartbeat, so an always-constructed-but-disabled heartbeat
+    // never starts a loop and never submits. Spec: docs/specs/enable-layer-coherence.md
     let telemetryHeartbeat: import('../monitoring/TelemetryHeartbeat.js').TelemetryHeartbeat | undefined;
-    if (config.monitoring?.telemetry?.enabled) {
+    {
       const { TelemetryHeartbeat } = await import('../monitoring/TelemetryHeartbeat.js');
       telemetryHeartbeat = new TelemetryHeartbeat(
-        config.monitoring.telemetry,
+        config.monitoring?.telemetry ?? { enabled: false },
         config.stateDir,
         config.projectDir,
         config.version || 'unknown',
       );
       // Note: .start() is deferred until after scheduler is available so
-      // TelemetryCollector can be wired for Baseline submissions.
-      console.log(pc.green(`  Telemetry: enabled (${config.monitoring.telemetry.level || 'basic'} level, every ${Math.round((config.monitoring.telemetry.intervalMs || 21600000) / 3600000)}h)`));
+      // TelemetryCollector can be wired; .start() itself no-ops when disabled.
+      if (config.monitoring?.telemetry?.enabled) {
+        console.log(pc.green(`  Telemetry: enabled (${config.monitoring.telemetry.level || 'basic'} level, every ${Math.round((config.monitoring.telemetry.intervalMs || 21600000) / 3600000)}h)`));
+      }
     }
 
     // ── Prompt Gate: detect and handle interactive prompts in sessions ──

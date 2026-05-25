@@ -831,6 +831,27 @@ function skillCommandForAction(action: string, projectId: string, roundIndex: nu
   }
 }
 
+/**
+ * Top-level config keys that may be patched via `PATCH /config`.
+ * Exported as the single source of truth so the enableAction-validity test
+ * (tests/unit/feature-enableaction-validity.test.ts) can assert that every
+ * FeatureDefinition whose enableAction patches `/config` targets a key that is
+ * actually patchable — the guard that catches the `dispatches`-class bug
+ * (enableAction pointing at a non-allowlisted key) at build time.
+ * Spec: docs/specs/enable-layer-coherence.md
+ */
+export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  'evolution', 'threadline', 'publishing', 'tunnel', 'gitBackup',
+  'externalOperations', 'responseReview', 'inputGuard', 'monitoring',
+  'updates', 'sessions', 'jobs',
+  // `dispatches` and `feedback` each have a FeatureDefinition whose enableAction
+  // patches that key; without them here those toggles 400 (the switch points at
+  // a key the API refuses to change). Both are real config keys (types.ts:
+  // dispatches?, feedback?; read in server.ts). The enableAction-validity test
+  // (tests/unit/feature-enableaction-validity.test.ts) caught both.
+  'dispatches', 'feedback',
+]);
+
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
 
@@ -11138,11 +11159,9 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // Allowlist of top-level config keys that can be patched via API.
     // Prevents callers from overwriting auth tokens, project paths, etc.
-    const allowedKeys = new Set([
-      'evolution', 'threadline', 'publishing', 'tunnel', 'gitBackup',
-      'externalOperations', 'responseReview', 'inputGuard', 'monitoring',
-      'updates', 'sessions', 'jobs',
-    ]);
+    // Single source of truth (module-scope export) so the enableAction-validity
+    // test stays in lock-step with what the API actually accepts.
+    const allowedKeys = PATCHABLE_CONFIG_KEYS;
 
     const disallowed = Object.keys(patch).filter(k => !allowedKeys.has(k));
     if (disallowed.length > 0) {
