@@ -24,7 +24,10 @@ The first time we plugged the guardrails in and ran real Codex, nothing blocked 
 
 After both fixes, we rebuilt from clean source, drove a real Codex session, and told it to run a disk-wipe command — and it got **blocked on the spot**. First time the Codex guard has truly fired in the real tool.
 
-One honest caveat we're handling next: Codex still pops a one-time "do you trust these guardrails?" question, and there's no flag that fully skips it. That would freeze an unattended run, and worse, the agent could choose "don't trust them" and switch its own guards off. The clean fix is "managed" guardrails — ones that run by policy and the agent can't disable. That's a separate design decision, so it's the next step, not part of this fix.
+## The "do you trust these guardrails?" prompt (now handled too)
+Codex pops a one-time "do you trust these guardrails?" question before running them. For an agent working unattended that's a problem twice over: it would freeze waiting for an answer, and the prompt even offers a "no, don't run them" option — so the agent could switch its own guards off.
+
+We first assumed the only fix was "managed" guardrails installed at the system level. But testing real Codex showed a cleaner answer: a launch setting (`--dangerously-bypass-hook-trust`) that tells Codex "these guardrails are pre-vetted, run them, don't ask." Since **instar is the one that starts Codex**, instar adds that setting itself — the agent never sees the prompt and can't strip the setting out of its own startup. We went with this per-agent approach instead of a system-wide install because it's contained: it doesn't touch the rest of your machine and doesn't interfere with Codex when *you* use it personally (your own launches still ask normally, which is right). Proven live: with the setting on and trust never granted, the guard still blocked a disk-wipe command. It only switches on for Codex versions new enough to understand the setting; older ones fall back to the safe (just-prompts) behaviour.
 
 ## The bigger principle
 This closes the single biggest gap between Claude and Codex agents: structural safety. After this, "Structure > Willpower" holds on both engines, not just one.

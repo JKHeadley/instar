@@ -14,6 +14,7 @@
  */
 
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
 
 /**
  * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
@@ -219,6 +220,13 @@ const codexCliBuilder: Builder = (options) => {
   } else {
     argv.push('--dangerously-bypass-approvals-and-sandbox');
   }
+  // Run instar's own safety hooks (installCodexHooks) without the interactive
+  // "trust these hooks?" prompt that would otherwise freeze an unattended
+  // session. Gated on a capability probe — codex <0.133 lacks the flag and would
+  // reject it. Safe-by-construction: instar writes the hooks and owns the launch.
+  if (codexSupportsHookTrustBypass(options.binaryPath)) {
+    argv.push('--dangerously-bypass-hook-trust');
+  }
   argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
   return {
     argv,
@@ -396,6 +404,11 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
     argv.push('--dangerously-bypass-approvals-and-sandbox');
   } else {
     argv.push('-s', 'workspace-write');
+  }
+  // Run instar's own safety hooks without a persisted-trust requirement (same
+  // rationale as the interactive builder; capability-gated for codex <0.133).
+  if (codexSupportsHookTrustBypass(options.binaryPath)) {
+    argv.push('--dangerously-bypass-hook-trust');
   }
   // -c overrides must precede the positional prompt in `codex exec`.
   argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
