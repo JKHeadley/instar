@@ -3,10 +3,12 @@ slug: cwa-unify-stores
 title: Unify the working-awareness stores under one ranked read path
 author: echo
 project: continuous-working-awareness
-status: draft-pending-ratification
-review-convergence: null
-approved: false
-approved-by: null
+status: approved
+review-convergence: "2026-05-25T08:48:00Z"
+review-iterations: 1
+review-note: "Claude-authored + manual standards/lessons self-review (single angle). Full /spec-converge + /crossreview multi-model convergence NOT run — tooling absent on this host. Ratified by Justin 2026-05-25 with that caveat explicit; this is the most architectural rung — fuller multi-model review especially advisable before/with merge."
+approved: true
+approved-by: justin
 eli16-overview: cwa-unify-stores.eli16.md
 ---
 
