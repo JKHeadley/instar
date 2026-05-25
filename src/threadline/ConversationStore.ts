@@ -1,24 +1,29 @@
 /**
  * ConversationStore — the single source of truth for a Threadline conversation.
  *
- * Phase 1 of the Threadline re-assessment (THREADLINE-CONVERSATION-KEYSTONE-SPEC.md).
- * Collapses the state previously smeared across `ThreadResumeMap`,
- * `ContextThreadMap`, the in-memory peer-affinity map and `inbox.jsonl` into one
- * durable record keyed by `threadId`. It is the ONLY place conversation turn
- * state lives — the one-shot reply worker provably cannot self-police a loop, so
- * the turn count + novelty hashes must live here, on the conversation.
+ * Phase 1 of the Threadline re-assessment (THREADLINE-CONVERSATION-KEYSTONE-SPEC.md)
+ * introduced this as a server-process in-memory store. Phase 2a
+ * (THREADLINE-SINGLE-STORE-SPEC.md / CMT-497) makes it **cross-process safe** so it
+ * can be the ONE authoritative store and the legacy `ThreadResumeMap` can become a
+ * view over it.
  *
- * Concurrency: every write goes through `mutate(threadId, fn)`, a single-writer
- * surface modeled on `CommitmentTracker.mutate()` — a per-threadId FIFO queue
- * plus optimistic CAS on the record's `version`. This is the fix for the
- * convergence-flagged race where two near-simultaneous inbound messages (or a
- * live-inject racing a resume) would clobber `turnCount`/`lastOutboundHash` under
- * the legacy last-writer-wins `load→mutate→persist`.
+ * Concurrency (Phase 2a): `conversations.json` on disk is the source of truth.
+ * Every write — async `mutate()` and sync `mutateSync()` — does reload-per-op +
+ * optimistic per-record version CAS + atomic tmp-write+rename, the same
+ * cross-process-safe pattern the legacy maps used (reload-per-op) hardened with a
+ * `version` token so a same-thread race loses no update (a strict improvement over
+ * the legacy last-writer-wins). A write reads the LATEST full file immediately
+ * before committing and rewrites it with only its own record changed, so a
+ * concurrent write to a DIFFERENT thread from another process is preserved — the
+ * only residual is the microsecond window between that final re-read and the
+ * atomic rename, which matches the (accepted, never-observed-as-a-problem) legacy
+ * full-file-rewrite behavior. Reads use a very-short-TTL snapshot cache so the
+ * loop gate's hot path doesn't re-read on every call; staleness only ever causes a
+ * redundant reload on the next mutate (which always re-reads), never a lost write.
  *
- * Storage: {stateDir}/threadline/conversations.json (server-write-only, atomic
- * tmp+rename). NOT relay-hosted — authoritative state stays local. The
- * append-only SharedStateLedger remains the audit trail; this is the live
- * mutable state it logs transitions from.
+ * Storage: {stateDir}/threadline/conversations.json. NOT relay-hosted —
+ * authoritative state stays local. The append-only SharedStateLedger remains the
+ * audit trail; this is the live mutable state it logs transitions from.
  */
 
 import fs from 'node:fs';
@@ -135,8 +140,10 @@ const MAX_ENTRIES = 1000;
 
 /** Max depth of the per-id mutate queue. Enqueue beyond this rejects. */
 const MUTATE_QUEUE_MAX_DEPTH = 256;
-/** Max CAS retries when the version drifts under an apply. */
-const MUTATE_CAS_MAX_RETRIES = 5;
+/** Max CAS retries when the version drifts under an apply (cross-process). */
+const MUTATE_CAS_MAX_RETRIES = 8;
+/** Read-snapshot cache TTL — keeps the gate's hot path off per-call disk reads. */
+const READ_CACHE_TTL_MS = 250;
 
 // ── Ephemeral verified-only peer-affinity (NOT persisted) ────────
 //
@@ -165,27 +172,43 @@ interface MutateQueueEntry {
 
 export class ConversationStore {
   private filePath: string;
-  private store: ConversationStoreFile;
 
-  /** Per-threadId FIFO mutate queues — serialize concurrent writers. */
+  /** Per-threadId FIFO mutate queues — serialize same-process concurrent writers. */
   private mutateQueues: Map<string, MutateQueueEntry[]> = new Map();
   private mutateRunning: Set<string> = new Set();
 
   /** Ephemeral verified-only peer-affinity hints (peerFingerprint → hint). */
   private affinity: Map<string, AffinityHint> = new Map();
 
+  /** Short-TTL read snapshot cache (disk is the source of truth). */
+  private cache: ConversationStoreFile | null = null;
+  private cacheAt = 0;
+
   constructor(stateDir: string) {
     const threadlineDir = path.join(stateDir, 'threadline');
     fs.mkdirSync(threadlineDir, { recursive: true });
     this.filePath = path.join(threadlineDir, 'conversations.json');
-    this.store = this.loadStore();
   }
 
-  // ── Reads (synchronous, from in-memory store) ──────────────────
+  // ── Reads (from disk, via a very-short-TTL snapshot cache) ─────
+
+  /** A cached snapshot of the on-disk file (reloaded after READ_CACHE_TTL_MS). */
+  private snapshot(): ConversationStoreFile {
+    const now = Date.now();
+    if (this.cache && now - this.cacheAt < READ_CACHE_TTL_MS) return this.cache;
+    this.cache = this.readFileFresh();
+    this.cacheAt = now;
+    return this.cache;
+  }
+
+  private invalidateCache(): void {
+    this.cache = null;
+    this.cacheAt = 0;
+  }
 
   /** Get a conversation by threadId. Returns null if missing or TTL-expired. */
   get(threadId: string): Conversation | null {
-    const c = this.store.conversations[threadId];
+    const c = this.snapshot().conversations[threadId];
     if (!c) return null;
     if (!c.pinned && this.isExpired(c)) return null;
     return c;
@@ -199,7 +222,7 @@ export class ConversationStore {
   /** Find conversations whose peer set includes the given fingerprint/name. */
   getByParticipant(participant: string): Conversation[] {
     const out: Conversation[] = [];
-    for (const c of Object.values(this.store.conversations)) {
+    for (const c of Object.values(this.snapshot().conversations)) {
       if (c.pinned || !this.isExpired(c)) {
         if (c.participants.peers.includes(participant) || c.remoteAgent === participant) {
           out.push(c);
@@ -211,7 +234,7 @@ export class ConversationStore {
 
   /** Find the conversation bound to a Telegram topic, if any. */
   getByTopicId(topicId: number): Conversation | null {
-    for (const c of Object.values(this.store.conversations)) {
+    for (const c of Object.values(this.snapshot().conversations)) {
       if (c.boundTopicId === topicId && (c.pinned || !this.isExpired(c))) return c;
     }
     return null;
@@ -219,7 +242,7 @@ export class ConversationStore {
 
   /** Reverse lookup: conversation owning an A2A contextId (identity-bound). */
   getByContextId(contextId: string, agentIdentity: string): Conversation | null {
-    for (const c of Object.values(this.store.conversations)) {
+    for (const c of Object.values(this.snapshot().conversations)) {
       if (c.contextId === contextId && (c.pinned || !this.isExpired(c))) {
         // Identity binding — prevents session smuggling (ContextThreadMap parity).
         if (c.agentIdentity && c.agentIdentity !== agentIdentity) return null;
@@ -232,7 +255,7 @@ export class ConversationStore {
   /** List active/idle conversations (not resolved/failed/archived). */
   listActive(): Conversation[] {
     const out: Conversation[] = [];
-    for (const c of Object.values(this.store.conversations)) {
+    for (const c of Object.values(this.snapshot().conversations)) {
       if ((c.state === 'active' || c.state === 'idle' || c.state === 'open' || c.state === 'awaiting-reply') &&
           (c.pinned || !this.isExpired(c))) {
         out.push(c);
@@ -243,7 +266,7 @@ export class ConversationStore {
 
   /** Total stored conversations (for monitoring). */
   size(): number {
-    return Object.keys(this.store.conversations).length;
+    return Object.keys(this.snapshot().conversations).length;
   }
 
   // ── Writes (single-writer CAS) ─────────────────────────────────
@@ -302,29 +325,22 @@ export class ConversationStore {
   private async applyMutationWithCAS(threadId: string, fn: ConversationMutateFn): Promise<Conversation> {
     let attempt = 0;
     while (attempt <= MUTATE_CAS_MAX_RETRIES) {
-      const current = this.store.conversations[threadId] ?? this.skeleton(threadId);
+      const file = this.readFileFresh();
+      const current = file.conversations[threadId] ?? this.skeleton(threadId);
       const observedVersion = current.version ?? 0;
 
       const draft: Conversation = { ...current, participants: { ...current.participants, peers: [...current.participants.peers] } };
       const next = await fn(draft);
 
-      // CAS: the record's version must not have drifted underneath us.
-      const latest = this.store.conversations[threadId];
-      const latestVersion = latest?.version ?? (latest ? 0 : observedVersion);
-      if (latest && latestVersion !== observedVersion) {
+      // Re-read fresh immediately before commit: CAS against the latest on-disk
+      // version, AND preserve any concurrent write to a DIFFERENT thread.
+      const latestFile = this.readFileFresh();
+      const latest = latestFile.conversations[threadId];
+      if (latest && (latest.version ?? 0) !== observedVersion) {
         attempt++;
-        continue;
+        continue; // someone else mutated THIS thread — reload and retry
       }
-
-      const committed: Conversation = {
-        ...next,
-        threadId,
-        version: observedVersion + 1,
-        savedAt: new Date().toISOString(),
-      };
-      this.store.conversations[threadId] = committed;
-      this.pruneIfNeeded();
-      this.saveStore();
+      const committed = this.commit(latestFile, threadId, next, observedVersion);
       return committed;
     }
     throw new Error(
@@ -333,29 +349,94 @@ export class ConversationStore {
   }
 
   /**
-   * Direct upsert of a full record WITHOUT going through the CAS queue. ONLY
-   * for migration / bulk import where there are no concurrent writers. Runtime
-   * writers MUST use mutate().
+   * Synchronous single-record mutate (Phase 2a). Used by the synchronous legacy
+   * interfaces (the `ThreadResumeMap` view's `save`/`remove`/etc.). Same file
+   * version-CAS as `mutate`, but the fn is synchronous so the re-read→write
+   * window has no await and is atomic within this process. Cross-process safety
+   * is identical to `mutate` (per-record version CAS + atomic rename).
+   *
+   * The fn MAY return null to signal "delete this record".
+   */
+  mutateSync(threadId: string, fn: (draft: Conversation) => Conversation | null): Conversation | null {
+    let attempt = 0;
+    while (attempt <= MUTATE_CAS_MAX_RETRIES) {
+      const file = this.readFileFresh();
+      const current = file.conversations[threadId] ?? this.skeleton(threadId);
+      const observedVersion = current.version ?? 0;
+      const draft: Conversation = { ...current, participants: { ...current.participants, peers: [...current.participants.peers] } };
+      const next = fn(draft);
+
+      const latestFile = this.readFileFresh();
+      const latest = latestFile.conversations[threadId];
+      if (latest && (latest.version ?? 0) !== observedVersion) {
+        attempt++;
+        continue;
+      }
+      if (next === null) {
+        if (latestFile.conversations[threadId]) {
+          delete latestFile.conversations[threadId];
+          this.writeFileAtomic(latestFile);
+          this.invalidateCache();
+        }
+        return null;
+      }
+      return this.commit(latestFile, threadId, next, observedVersion);
+    }
+    throw new Error(
+      `ConversationStore.mutateSync: CAS retry budget exhausted for ${threadId} after ${MUTATE_CAS_MAX_RETRIES} retries`,
+    );
+  }
+
+  /** Commit a record into the freshly-read file with version+1 (LOAD-BEARING:
+   *  both async and sync commit paths bump version so the CAS detects races). */
+  private commit(file: ConversationStoreFile, threadId: string, next: Conversation, observedVersion: number): Conversation {
+    const committed: Conversation = {
+      ...next,
+      threadId,
+      version: observedVersion + 1,
+      savedAt: new Date().toISOString(),
+    };
+    file.conversations[threadId] = committed;
+    this.pruneMapInPlace(file.conversations);
+    this.writeFileAtomic(file);
+    this.invalidateCache();
+    return committed;
+  }
+
+  /**
+   * Direct upsert of a full record. Used by migration / bulk import. Now does a
+   * read-merge-write so it is safe even if the file changed since construction.
    */
   importDirect(conversation: Conversation): void {
-    const existing = this.store.conversations[conversation.threadId];
-    this.store.conversations[conversation.threadId] = {
+    const file = this.pendingFile ?? this.readFileFresh();
+    const existing = file.conversations[conversation.threadId];
+    file.conversations[conversation.threadId] = {
       ...conversation,
       version: existing ? Math.max(existing.version ?? 0, conversation.version ?? 0) : (conversation.version ?? 0),
       savedAt: new Date().toISOString(),
     };
+    this.pendingFile = file;
   }
+
+  /** Holds an in-flight importDirect batch until flush(). */
+  private pendingFile: ConversationStoreFile | null = null;
 
   /** Persist after a batch of importDirect calls. */
   flush(): void {
-    this.saveStore();
+    if (this.pendingFile) {
+      this.writeFileAtomic(this.pendingFile);
+      this.pendingFile = null;
+      this.invalidateCache();
+    }
   }
 
   /** Remove a conversation. */
   remove(threadId: string): void {
-    if (this.store.conversations[threadId]) {
-      delete this.store.conversations[threadId];
-      this.saveStore();
+    const file = this.readFileFresh();
+    if (file.conversations[threadId]) {
+      delete file.conversations[threadId];
+      this.writeFileAtomic(file);
+      this.invalidateCache();
     }
   }
 
@@ -393,8 +474,10 @@ export class ConversationStore {
 
   /** Prune expired + resolved-past-grace + LRU-overflow (non-pinned). */
   prune(): void {
-    this.pruneMap();
-    this.saveStore();
+    const file = this.readFileFresh();
+    this.pruneMapInPlace(file.conversations);
+    this.writeFileAtomic(file);
+    this.invalidateCache();
   }
 
   // ── Private helpers ────────────────────────────────────────────
@@ -424,19 +507,13 @@ export class ConversationStore {
     return now - new Date(ref).getTime() > MAX_AGE_MS;
   }
 
-  private pruneIfNeeded(): void {
-    if (Object.keys(this.store.conversations).length > MAX_ENTRIES) this.pruneMap();
-  }
-
-  private pruneMap(): void {
-    const map = this.store.conversations;
-    // Phase 1: drop expired / resolved-past-grace (non-pinned).
+  /** Prune a conversations map in place (non-pinned expired + LRU overflow). */
+  private pruneMapInPlace(map: Record<string, Conversation>): void {
     for (const key of Object.keys(map)) {
       const c = map[key];
       if (c.pinned) continue;
       if (this.isExpired(c)) delete map[key];
     }
-    // Phase 2: LRU eviction if still over cap.
     const keys = Object.keys(map);
     if (keys.length <= MAX_ENTRIES) return;
     const unpinned: Array<{ key: string; t: number }> = [];
@@ -452,7 +529,8 @@ export class ConversationStore {
     }
   }
 
-  private loadStore(): ConversationStoreFile {
+  /** Read + parse the on-disk store fresh (the source of truth). */
+  private readFileFresh(): ConversationStoreFile {
     try {
       if (fs.existsSync(this.filePath)) {
         const data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
@@ -461,18 +539,19 @@ export class ConversationStore {
         }
       }
     } catch {
-      // Corrupted — start fresh.
+      // Corrupted / mid-write torn read — treat as empty; the next write heals it.
     }
     return { version: 1, conversations: {}, lastModified: new Date().toISOString() };
   }
 
-  private saveStore(): void {
-    this.store.lastModified = new Date().toISOString();
+  /** Atomic write (tmp + rename) — no reader ever sees a torn file. */
+  private writeFileAtomic(file: ConversationStoreFile): void {
+    file.lastModified = new Date().toISOString();
     try {
       const dir = path.dirname(this.filePath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${this.filePath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.store, null, 2) + '\n');
+      const tmpPath = `${this.filePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(file, null, 2) + '\n');
       fs.renameSync(tmpPath, this.filePath);
     } catch {
       // @silent-fallback-ok — state persistence failure, retried on next write.

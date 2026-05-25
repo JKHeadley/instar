@@ -192,4 +192,45 @@ describe('ConversationStore', () => {
     await store.mutate('c', d => { d.state = 'archived'; return d; });
     expect(store.listActive().map(c => c.threadId).sort()).toEqual(['a']);
   });
+
+  it('CROSS-PROCESS: two store instances on one file lose no same-thread update', async () => {
+    // Phase 2a: disk-backed per-record version-CAS — two instances (simulating
+    // the server + the MCP child) mutating the SAME thread must not clobber.
+    const a = new ConversationStore(stateDir);
+    const b = new ConversationStore(stateDir);
+    await a.mutate('shared', d => { d.state = 'active'; d.turnCount = 0; return d; });
+    await Promise.all([
+      ...Array.from({ length: 25 }, () => a.mutate('shared', d => { d.turnCount += 1; return d; })),
+      ...Array.from({ length: 25 }, () => b.mutate('shared', d => { d.turnCount += 1; return d; })),
+    ]);
+    expect(new ConversationStore(stateDir).get('shared')?.turnCount).toBe(50);
+  });
+
+  it('mutateSync racing async mutate loses no update (both bump version)', async () => {
+    const store = new ConversationStore(stateDir);
+    await store.mutate('t', d => { d.turnCount = 0; d.messageCount = 0; return d; });
+    await Promise.all([
+      store.mutate('t', async d => { await new Promise(r => setTimeout(r, 3)); d.turnCount += 1; return d; }),
+      (async () => { store.mutateSync('t', d => { d.messageCount += 1; return d; }); })(),
+      store.mutate('t', d => { d.turnCount += 1; return d; }),
+      (async () => { store.mutateSync('t', d => { d.messageCount += 1; return d; }); })(),
+    ]);
+    const c = new ConversationStore(stateDir).get('t')!;
+    expect(c.turnCount).toBe(2);
+    expect(c.messageCount).toBe(2);
+  });
+
+  it('mutateSync returning null deletes the record', () => {
+    const store = new ConversationStore(stateDir);
+    store.mutateSync('gone', d => { d.state = 'active'; return d; });
+    expect(store.get('gone')?.state).toBe('active');
+    expect(store.mutateSync('gone', () => null)).toBeNull();
+    expect(new ConversationStore(stateDir).get('gone')).toBeNull();
+  });
+
+  it('a write by one instance is visible to a fresh instance (disk is source of truth)', async () => {
+    const a = new ConversationStore(stateDir);
+    await a.mutate('x', d => { d.subject = 'hello'; return d; });
+    expect(new ConversationStore(stateDir).get('x')?.subject).toBe('hello');
+  });
 });
