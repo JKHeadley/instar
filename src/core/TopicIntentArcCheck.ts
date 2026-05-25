@@ -27,6 +27,7 @@
 
 import {
   TopicIntentStore,
+  isTaskContextKind,
   type EstablishedRef,
   type ProjectionResult,
 } from './TopicIntent.js';
@@ -42,7 +43,7 @@ export type ArcCheckVerdict =
   | { fire: false }
   | {
       fire: true;
-      kind: 'acting-on-tentative' | 'contradicts-settled';
+      kind: 'acting-on-tentative' | 'contradicts-settled' | 'contradicts-frame';
       refId: string;
       refText: string;
       currentTier: 'tentative' | 'authoritative';
@@ -83,8 +84,11 @@ export class ArcCheck {
    * return from an HTTP route or consumption by a hook.
    *
    * Verdict priority (when multiple conditions fire):
-   *   1. contradicts-settled (highest — wrong direction on a decided item)
-   *   2. acting-on-tentative (lower — uncertain, but not wrong)
+   *   1. contradicts-settled (highest — wrong direction on a decided fact/decision)
+   *   2. contradicts-frame (drifting from the active task frame — method/audience/
+   *      goal — fires at tentative OR authoritative, because a frame is exactly the
+   *      thing worth catching early; this is the rung-1 founding-incident catch)
+   *   3. acting-on-tentative (lowest — uncertain, but not wrong)
    *
    * If the draft engages multiple refs, the first matching one of the
    * highest-priority kind wins. Subsequent fires are deferred to a
@@ -96,10 +100,11 @@ export class ArcCheck {
 
     const classification = await this.classifyFn(input.draftText, refs);
 
-    // Priority 1: contradicts settled item
+    // Priority 1: contradicts a settled fact/decision (task-frame kinds are
+    // handled by the frame rule below, which fires at tentative-or-above).
     for (const refId of classification.contradicts) {
       const ref = refs.find(r => r.refId === refId);
-      if (ref && ref.projection.tier === 'authoritative') {
+      if (ref && !isTaskContextKind(ref.kind) && ref.projection.tier === 'authoritative') {
         return {
           fire: true,
           kind: 'contradicts-settled',
@@ -116,7 +121,31 @@ export class ArcCheck {
       }
     }
 
-    // Priority 2: acting on tentative item
+    // Priority 2: drifting from the active task frame (method/audience/goal).
+    // Unlike a settled proposition, a frame fires at tentative-or-above — frames
+    // decay fast and are often only tentative, but drifting from one is exactly
+    // the founding-incident failure we exist to catch. Signal only.
+    for (const refId of classification.contradicts) {
+      const ref = refs.find(r => r.refId === refId);
+      if (ref && isTaskContextKind(ref.kind)) {
+        const label = ref.kind; // method | audience | goal
+        return {
+          fire: true,
+          kind: 'contradicts-frame',
+          refId,
+          refText: ref.text,
+          currentTier: ref.projection.tier === 'authoritative' ? 'authoritative' : 'tentative',
+          currentConfidence: ref.projection.confidence,
+          reason: `draft appears to drift from the active ${label} of this task: "${ref.text}"`,
+          suggestedRewriteHint:
+            `Pause and surface the drift in plain English: note that we've been working with the ` +
+            `${label} "${ref.text}", flag that the current draft would move off it, and confirm the ` +
+            `change with the user before proceeding (or realign to the frame).`,
+        };
+      }
+    }
+
+    // Priority 3: acting on tentative item
     for (const refId of classification.actsOn) {
       const ref = refs.find(r => r.refId === refId);
       if (ref && ref.projection.tier === 'tentative') {

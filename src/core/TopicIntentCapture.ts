@@ -303,6 +303,7 @@ export async function captureTurn(
         refs_created: result.createdRefs.length,
       },
       at,
+      result.createdRefs.map(r => r.kind),
     );
     return { status: 'captured', emitted: result.emitted.length, createdRefs: result.createdRefs.length };
   } catch (err) {

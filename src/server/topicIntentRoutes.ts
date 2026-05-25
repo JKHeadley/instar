@@ -215,6 +215,7 @@ export function createTopicIntentRoutes(deps: {
         arccheck_fired: c.arccheck_fired,
         arccheck_signalled: c.arccheck_signalled,
         refs_decayed,
+        refkind_created: c.refkind_created ?? {},
         last_capture_at: c.last_capture_at,
       },
       refsLive: refs.length,

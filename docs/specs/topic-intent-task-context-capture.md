@@ -3,10 +3,12 @@ slug: topic-intent-task-context-capture
 title: Generalize topic-intent capture to task contexts (method / audience / goal)
 author: echo
 project: continuous-working-awareness
-status: draft-pending-ratification
-review-convergence: null
-approved: false
-approved-by: null
+status: approved
+review-convergence: "2026-05-25T01:16:00Z"
+review-iterations: 1
+review-note: "Claude-authored + manual standards/lessons self-review (single angle). Full /spec-converge + /crossreview multi-model convergence NOT run — tooling absent on this host. Ratified by Justin 2026-05-25 with that caveat explicit; fuller review to precede/accompany code merge. See 'Convergence note (honest)' in body."
+approved: true
+approved-by: justin
 eli16-overview: topic-intent-task-context-capture.eli16.md
 ---
 

@@ -41,7 +41,7 @@ describe('renderTopicIntentBriefing — empty cases', () => {
     const result = renderTopicIntentBriefing(store, 100);
     expect(result.hasContent).toBe(false);
     expect(result.text).toBe('');
-    expect(result.counts).toEqual({ authoritative: 0, tentative: 0, pendingOutstanding: false });
+    expect(result.counts).toEqual({ authoritative: 0, tentative: 0, frame: 0, pendingOutstanding: false });
   });
 
   it('returns empty result when only observation-tier refs exist (not surfaced)', () => {

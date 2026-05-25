@@ -22,7 +22,19 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
-export type RefKind = 'fact' | 'decision';
+export type RefKind = 'fact' | 'decision' | 'method' | 'audience' | 'goal';
+
+/**
+ * Task-context kinds (rung 1) describe the *working frame* of the active task
+ * — how it's being done, who it's for, what it's trying to achieve — as opposed
+ * to facts/decisions the conversation asserts. They are the category that caused
+ * the founding methodology-drift incident ("we're testing over Telegram").
+ */
+export const TASK_CONTEXT_KINDS: ReadonlySet<RefKind> = new Set<RefKind>(['method', 'audience', 'goal']);
+
+export function isTaskContextKind(kind: RefKind): boolean {
+  return TASK_CONTEXT_KINDS.has(kind);
+}
 export type RefStatus = 'live' | 'conflicted';
 
 export type EvidenceKind =
@@ -136,6 +148,9 @@ export interface CaptureCounters {
   arccheck_fired: number;              // ArcCheck ran on a pre-send draft
   arccheck_signalled: number;          // ArcCheck emitted a confirm-signal (changed next move)
   last_capture_at: string | null;      // ISO8601 of the most recent extraction attempt
+  // rung 1: per-RefKind created breakdown (fact/decision/method/audience/goal) so
+  // we can see whether task-frame capture is actually working and tune its decay.
+  refkind_created?: Record<string, number>;
 }
 
 // ── Constants from spec ──────────────────────────────────────────────────
@@ -143,6 +158,32 @@ export interface CaptureCounters {
 const DECAY_HALF_LIFE_DAYS = 180;
 const DECAY_GRACE_DAYS = 30;
 const DECAY_LAMBDA = Math.log(2) / DECAY_HALF_LIFE_DAYS;
+
+/**
+ * Per-kind decay profiles (rung 1 — the short/medium/long horizon hierarchy).
+ * Facts/decisions keep the original long profile EXACTLY (grace 30 / half-life
+ * 180), so rung-0 confidence math is provably unchanged. Task-context kinds
+ * fade faster: a method ("testing over Telegram") matters intensely this task
+ * and should demote in days, not survive 180. Numbers are tunable knobs (the
+ * Observability funnel lets us tune them from real data); the per-kind
+ * *mechanism* is the design. Spec: docs/specs/topic-intent-task-context-capture.md §3.
+ */
+export interface DecayProfile { graceDays: number; halfLifeDays: number }
+
+const LONG_PROFILE: DecayProfile = { graceDays: DECAY_GRACE_DAYS, halfLifeDays: DECAY_HALF_LIFE_DAYS };
+
+const DECAY_PROFILES: Record<RefKind, DecayProfile> = {
+  fact: LONG_PROFILE,
+  decision: LONG_PROFILE,
+  method: { graceDays: 1, halfLifeDays: 7 },     // short — the active how
+  goal: { graceDays: 2, halfLifeDays: 14 },      // short–medium — the active what
+  audience: { graceDays: 3, halfLifeDays: 30 },  // medium — who it's for, persists across a task cluster
+};
+
+/** Resolve the decay profile for a kind; missing/unknown kind → long profile (rung-0 default). */
+export function decayProfileFor(kind?: RefKind): DecayProfile {
+  return (kind && DECAY_PROFILES[kind]) || LONG_PROFILE;
+}
 
 const AUTHORITY_THRESHOLD = 0.7;
 const AUTHORITY_CLAMP = 0.69;
@@ -220,7 +261,8 @@ export interface ProjectionResult {
 export function projectConfidence(
   evidence: EvidenceEvent[],
   lastReinforcedAt: string,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  refKind?: RefKind,
 ): ProjectionResult {
   // Step 1: per-message dedup — keep largest applicable delta per (refId, sourceMessageId)
   const dedupedByMsg = new Map<string, EvidenceEvent>();
@@ -280,13 +322,16 @@ export function projectConfidence(
     }
   }
 
-  // Step 5: time decay
+  // Step 5: time decay — per-kind horizon (rung 1). Omitted kind → long profile
+  // (rung-0 behavior, byte-for-byte unchanged for fact/decision).
+  const profile = decayProfileFor(refKind);
+  const lambda = Math.log(2) / profile.halfLifeDays;
   let preDecaySum = Math.max(0, Math.min(1, runningSum));
   const daysSince = Math.max(0, (nowMs - new Date(lastReinforcedAt).getTime()) / MS_PER_DAY);
   let decayApplied = 0;
-  if (daysSince > DECAY_GRACE_DAYS) {
-    const decayDays = daysSince - DECAY_GRACE_DAYS;
-    const decayed = preDecaySum * Math.exp(-DECAY_LAMBDA * decayDays);
+  if (daysSince > profile.graceDays) {
+    const decayDays = daysSince - profile.graceDays;
+    const decayed = preDecaySum * Math.exp(-lambda * decayDays);
     decayApplied = preDecaySum - decayed;
     preDecaySum = decayed;
   }
@@ -495,7 +540,7 @@ export class TopicIntentStore {
     ref.updatedAt = ev.at;
 
     // Recompute confidence + tier snapshot for visibility (projection runs on read regardless)
-    const proj = projectConfidence(ref.evidence, ref.lastReinforcedAt);
+    const proj = projectConfidence(ref.evidence, ref.lastReinforcedAt, undefined, ref.kind);
     ref.confidence = proj.confidence;
 
     // Telemetry
@@ -538,6 +583,7 @@ export class TopicIntentStore {
     topicId: number,
     deltas: Partial<Record<NumericCaptureKey, number>>,
     at?: string,
+    refKindsCreated?: RefKind[],
   ): void {
     try {
       this.withTopicLock(topicId, () => {
@@ -551,6 +597,10 @@ export class TopicIntentStore {
           }
         }
         if (at) c.last_capture_at = at;
+        if (refKindsCreated && refKindsCreated.length > 0) {
+          if (!c.refkind_created) c.refkind_created = {};
+          for (const k of refKindsCreated) c.refkind_created[k] = (c.refkind_created[k] ?? 0) + 1;
+        }
         this.save(file);
       });
     } catch (err) {
@@ -563,7 +613,7 @@ export class TopicIntentStore {
     const file = this.load(topicId);
     const ref = file.refs[refId];
     if (!ref) return null;
-    return projectConfidence(ref.evidence, ref.lastReinforcedAt, nowMs);
+    return projectConfidence(ref.evidence, ref.lastReinforcedAt, nowMs, ref.kind);
   }
 
   /** Get all refs for a topic at current tier or above. */
@@ -573,7 +623,7 @@ export class TopicIntentStore {
     const minRank = tierOrder[minTier];
     const out: Array<EstablishedRef & { projection: ProjectionResult }> = [];
     for (const ref of Object.values(file.refs)) {
-      const proj = projectConfidence(ref.evidence, ref.lastReinforcedAt, nowMs);
+      const proj = projectConfidence(ref.evidence, ref.lastReinforcedAt, nowMs, ref.kind);
       if (tierOrder[proj.tier] >= minRank) {
         out.push({ ...ref, projection: proj });
       }
@@ -620,11 +670,12 @@ export function defaultCaptureCounters(): CaptureCounters {
     arccheck_fired: 0,
     arccheck_signalled: 0,
     last_capture_at: null,
+    refkind_created: {},
   };
 }
 
 /** Numeric (additive) capture-counter keys — excludes the timestamp field. */
-export type NumericCaptureKey = Exclude<keyof CaptureCounters, 'last_capture_at'>;
+export type NumericCaptureKey = Exclude<keyof CaptureCounters, 'last_capture_at' | 'refkind_created'>;
 
 function emptyFile(topicId: number): TopicIntentFile {
   return {
