@@ -1701,6 +1701,14 @@ export interface InstarConfig {
   topicIntent?: {
     capture?: {
       enabled?: boolean;
+      /**
+       * Optional per-kind decay-horizon overrides (existence-checked). Any subset
+       * of refKinds (fact/decision/method/audience/goal), any subset of
+       * {graceDays, halfLifeDays}; omitted fields keep the built-in defaults.
+       * Lets operators tune the short/medium/long horizons from real data without
+       * a code change. See docs/specs/topic-intent-task-context-capture.md §3.
+       */
+      decayProfiles?: Record<string, { graceDays?: number; halfLifeDays?: number }>;
     };
   };
   /**

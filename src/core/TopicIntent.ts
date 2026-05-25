@@ -172,17 +172,67 @@ export interface DecayProfile { graceDays: number; halfLifeDays: number }
 
 const LONG_PROFILE: DecayProfile = { graceDays: DECAY_GRACE_DAYS, halfLifeDays: DECAY_HALF_LIFE_DAYS };
 
-const DECAY_PROFILES: Record<RefKind, DecayProfile> = {
-  fact: LONG_PROFILE,
-  decision: LONG_PROFILE,
+/** The built-in defaults (the code-constant baseline; config may override). */
+const DEFAULT_DECAY_PROFILES: Record<RefKind, DecayProfile> = {
+  fact: { ...LONG_PROFILE },
+  decision: { ...LONG_PROFILE },
   method: { graceDays: 1, halfLifeDays: 7 },     // short — the active how
   goal: { graceDays: 2, halfLifeDays: 14 },      // short–medium — the active what
   audience: { graceDays: 3, halfLifeDays: 30 },  // medium — who it's for, persists across a task cluster
 };
 
+/**
+ * The ACTIVE per-kind decay profiles. Starts as the defaults; an operator may
+ * override individual kinds via config (`topicIntent.capture.decayProfiles`)
+ * once, at startup, through `configureDecayProfiles`. Process-wide policy —
+ * decay is a global tuning knob, not per-call state. (Tracked refinement
+ * `cwa-decay-profile-config` of the rung-1 spec, docs/specs/topic-intent-task-context-capture.md §3.)
+ */
+let activeDecayProfiles: Record<RefKind, DecayProfile> = structuredCloneProfiles(DEFAULT_DECAY_PROFILES);
+
+function structuredCloneProfiles(p: Record<RefKind, DecayProfile>): Record<RefKind, DecayProfile> {
+  return {
+    fact: { ...p.fact }, decision: { ...p.decision }, method: { ...p.method },
+    goal: { ...p.goal }, audience: { ...p.audience },
+  };
+}
+
+/** A partial per-kind override: any subset of kinds, any subset of {graceDays, halfLifeDays}. */
+export type DecayProfileOverrides = Partial<Record<RefKind, Partial<DecayProfile>>>;
+
+/**
+ * Apply config overrides on top of the defaults (existence-checked: only the
+ * fields/kinds present are changed; everything else keeps the default). Invalid
+ * values (non-finite, ≤ 0) are ignored so a bad config can never break decay.
+ * Idempotent — always re-derives from DEFAULTS, so calling twice with different
+ * overrides doesn't compound. Returns the resolved active profiles.
+ */
+export function configureDecayProfiles(overrides?: DecayProfileOverrides): Record<RefKind, DecayProfile> {
+  const next = structuredCloneProfiles(DEFAULT_DECAY_PROFILES);
+  if (overrides) {
+    for (const kind of Object.keys(next) as RefKind[]) {
+      const o = overrides[kind];
+      if (!o) continue;
+      if (typeof o.graceDays === 'number' && Number.isFinite(o.graceDays) && o.graceDays > 0) {
+        next[kind].graceDays = o.graceDays;
+      }
+      if (typeof o.halfLifeDays === 'number' && Number.isFinite(o.halfLifeDays) && o.halfLifeDays > 0) {
+        next[kind].halfLifeDays = o.halfLifeDays;
+      }
+    }
+  }
+  activeDecayProfiles = next;
+  return structuredCloneProfiles(next);
+}
+
+/** Restore the built-in defaults (primarily for test isolation). */
+export function resetDecayProfiles(): void {
+  activeDecayProfiles = structuredCloneProfiles(DEFAULT_DECAY_PROFILES);
+}
+
 /** Resolve the decay profile for a kind; missing/unknown kind → long profile (rung-0 default). */
 export function decayProfileFor(kind?: RefKind): DecayProfile {
-  return (kind && DECAY_PROFILES[kind]) || LONG_PROFILE;
+  return (kind && activeDecayProfiles[kind]) || LONG_PROFILE;
 }
 
 const AUTHORITY_THRESHOLD = 0.7;

@@ -2417,8 +2417,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // TopicIntentStore (Layer 1 of the Topic Intent Layer): per-topic
     // confidence tracker. File-backed, framework-agnostic — works under
     // Claude Code AND Codex sessions. See docs/specs/topic-intent-layer.md.
-    const { TopicIntentStore } = await import('../core/TopicIntent.js');
+    const { TopicIntentStore, configureDecayProfiles } = await import('../core/TopicIntent.js');
     const topicIntentStore = new TopicIntentStore(config.stateDir);
+    // Apply any operator decay-horizon overrides (existence-checked; invalid
+    // values ignored). No-op when unset → built-in defaults. Tracked refinement
+    // cwa-decay-profile-config of the rung-1 task-context spec.
+    configureDecayProfiles(config.topicIntent?.capture?.decayProfiles);
 
     // Shared intelligence provider — lightweight LLM for internal classification tasks.
     // Subscription path only: routes through the Claude CLI (`claude -p`), which bills against
