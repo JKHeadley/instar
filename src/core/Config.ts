@@ -127,7 +127,8 @@ export type FrameworkBinary =
  *   2. Standard system paths (`/usr/local/bin`, `/opt/homebrew/bin`)
  *   3. npm global bin (where `npm install -g` lands)
  *   4. nvm-managed bin directories
- *   5. System PATH (via `which`)
+ *   5. asdf shims (`$ASDF_DATA_DIR/shims` or `~/.asdf/shims`) + `asdf which`
+ *   6. System PATH (via `which`)
  *
  * Returns the absolute path or null if not found.
  *
@@ -135,7 +136,26 @@ export type FrameworkBinary =
  * on what's installed on THIS machine, not where the binary lives on
  * the developer's machine.
  */
+// Per-process memo. Binary locations don't change within a process lifetime, and
+// loadConfig (the main caller) runs both detectClaudePath + detectCodexPath on every
+// invocation — uncached, a Claude-only host paid the full asdf/which subprocess cost
+// for codex on every config load. Cache positive AND negative results.
+const _frameworkBinaryCache = new Map<FrameworkBinary, string | null>();
+
+/** Test-only: clear the detection memo. */
+export function _resetFrameworkBinaryCache(): void {
+  _frameworkBinaryCache.clear();
+}
+
 export function detectFrameworkBinary(name: FrameworkBinary): string | null {
+  const cached = _frameworkBinaryCache.get(name);
+  if (cached !== undefined) return cached;
+  const result = detectFrameworkBinaryUncached(name);
+  _frameworkBinaryCache.set(name, result);
+  return result;
+}
+
+function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
   const home = process.env.HOME || '';
   const candidates: string[] = [];
 
@@ -176,8 +196,39 @@ export function detectFrameworkBinary(name: FrameworkBinary): string | null {
     candidates.push(path.join(process.env.NVM_BIN, name));
   }
 
+  // asdf-managed shims. asdf installs CLIs as shims under its data dir, and
+  // the launchd/login PATH frequently excludes that dir — so a binary that
+  // works in the user's interactive terminal is invisible to instar without
+  // this. Prefer the SHIM (not the resolved install path) so asdf's per-dir
+  // version selection (`.tool-versions`) is respected at spawn time.
+  // Honors ASDF_DATA_DIR, else the default ~/.asdf.
+  const asdfDataDir = process.env.ASDF_DATA_DIR || path.join(home, '.asdf');
+  candidates.push(path.join(asdfDataDir, 'shims', name));
+
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
+  }
+
+  // asdf resolution probe — covers non-default shim layouts. Resolve the `asdf`
+  // binary by ABSOLUTE path first: in the launchd/login environment (the very case
+  // the shim search above exists for) `asdf` is itself off PATH, so `execFileSync('asdf'...)`
+  // would throw and the fallback would be dead weight. Only shell out if we can locate asdf.
+  const asdfBin = [
+    path.join(asdfDataDir, '..', 'bin', 'asdf'),
+    path.join(home, '.asdf', 'bin', 'asdf'),
+    '/opt/homebrew/bin/asdf',
+    '/usr/local/bin/asdf',
+  ].find((p) => fs.existsSync(p));
+  if (asdfBin) {
+    try {
+      const asdfResult = execFileSync(asdfBin, ['which', name], {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }).trim();
+      if (asdfResult && fs.existsSync(asdfResult)) return asdfResult;
+    } catch {
+      // @silent-fallback-ok — name not managed by asdf
+    }
   }
 
   // Last resort: PATH lookup.

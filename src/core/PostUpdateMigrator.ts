@@ -50,6 +50,8 @@ import {
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { installCodexHooks } from './installCodexHooks.js';
+import { armCodexHooks, makeTmuxTrustDriver } from './codexHookArm.js';
+import { detectCodexPath, detectTmuxPath } from './Config.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import {
   MigratorStepEngine,
@@ -1654,6 +1656,39 @@ export class PostUpdateMigrator {
       try {
         installCodexHooks(this.config.projectDir);
         result.upgraded.push('.codex/hooks.json (Codex enforcement-hook registration)');
+        // P0 (codex-full-parity): ARM the just-(re)written hooks so Codex actually runs
+        // them — registration alone leaves them untrusted/dark until a human clicks the
+        // trust prompt (which an autonomous agent can't). Atomic with the rewrite (B2):
+        // the hash changed → trust invalidated → re-arm now. Idempotent: armCodexHooks
+        // skips the spawn when the hooks are already trusted (unchanged), so this only
+        // drives Codex when the hook set actually changed. Fail-soft: a failure is logged,
+        // never aborts the migration. Opt-out: config.codex.autoArmHooks === false.
+        let autoArm = true; // default ON; opt-out via config.codex.autoArmHooks === false
+        try {
+          const cfg = JSON.parse(fs.readFileSync(path.join(this.config.stateDir, 'config.json'), 'utf-8')) as { codex?: { autoArmHooks?: boolean } };
+          if (cfg.codex?.autoArmHooks === false) autoArm = false;
+        } catch { /* default ON */ }
+        const codexBinary = detectCodexPath();
+        if (autoArm && codexBinary) {
+          try {
+            const outcome = armCodexHooks({
+              projectDir: this.config.projectDir,
+              trustDriver: makeTmuxTrustDriver({
+                tmuxPath: detectTmuxPath() || 'tmux',
+                codexBinary,
+                model: 'gpt-5.2',
+              }),
+            });
+            result.upgraded.push(`.codex hook auto-arm: ${outcome.status}`);
+            if (outcome.status === 'partial') {
+              result.errors.push(`codex hook auto-arm incomplete: untrusted=${outcome.untrusted.join(',')} disabled=${outcome.disabled.join(',')} — guards may not fire until re-armed`);
+            }
+          } catch (armErr) {
+            result.errors.push(`codex hook auto-arm: ${armErr instanceof Error ? armErr.message : String(armErr)}`);
+          }
+        } else if (autoArm && !codexBinary) {
+          result.errors.push('codex hook auto-arm skipped: no codex binary resolved (guards registered but not yet trusted)');
+        }
       } catch (err) {
         result.errors.push(`codex hooks: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -5379,7 +5414,8 @@ echo "=== END IDENTITY RECOVERY ==="
     return `#!/usr/bin/env node
 // Deferral detector — catches agents deferring work they could do themselves
 // AND catches agents proposing orphan-TODO follow-ups with no infrastructure.
-// PreToolUse hook for Bash commands. Scans outgoing messages for the patterns.
+// PreToolUse hook for shell commands (Claude 'Bash' | Codex 'exec_command').
+// Scans outgoing messages for the patterns.
 // When detected, injects a due diligence checklist (does NOT block).
 //
 // Born from two failure modes:
@@ -5405,9 +5441,12 @@ process.stdin.on('data', chunk => data += chunk);
 process.stdin.on('end', () => {
   try {
     const input = JSON.parse(data);
-    if (input.tool_name !== 'Bash') process.exit(0);
+    // Codex-aware: Codex's shell tool is 'exec_command' (not 'Bash') and puts the
+    // command in tool_input.cmd (Claude uses tool_input.command). Accept both so the
+    // detector fires on both engines (same fix class as dangerous-command-guard).
+    if (input.tool_name !== 'Bash' && input.tool_name !== 'exec_command') process.exit(0);
 
-    const command = (input.tool_input || {}).command || '';
+    const command = (input.tool_input || {}).command || (input.tool_input || {}).cmd || '';
     if (!command) process.exit(0);
 
     // Only check communication commands (messages to humans)
@@ -6479,6 +6518,18 @@ let data = '';
 process.stdin.on('data', chunk => data += chunk);
 process.stdin.on('end', async () => {
   try {
+    // Re-entry guard: if this Stop is a correction continuation (stop_hook_active),
+    // approve immediately — never re-block a continuation. Without this, a block →
+    // continue → still-deep → block loop could wedge an autonomous session (the cooldown
+    // mitigates but does not strictly prevent it). Mirrors claim-intercept-response.
+    let _input = {};
+    try { _input = JSON.parse(data); } catch {}
+    if (_input && _input.stop_hook_active) {
+      process.stdout.write(JSON.stringify({ decision: 'approve' }));
+      process.exit(0);
+      return;
+    }
+
     // Never block headless/job sessions — no human to dismiss the block.
     // INSTAR_SESSION_ID is set for all server-spawned sessions.
     if (process.env.INSTAR_SESSION_ID && !process.env.TERM_PROGRAM) {

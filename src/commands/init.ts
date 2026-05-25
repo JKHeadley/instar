@@ -36,7 +36,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
 import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
-import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
+import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
@@ -60,6 +60,7 @@ import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
+import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -3455,6 +3456,21 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
   const codexEnabled = enabledFrameworks.includes('codex-cli');
   if (codexEnabled) {
     installCodexHooks(projectDir);
+    // P0 (codex-full-parity): arm the hooks so Codex actually runs them on the first
+    // session — registration alone leaves them untrusted/dark. Best-effort + fail-soft at
+    // init: a brand-new agent may not be Codex-logged-in yet (auth lives in CODEX_HOME), in
+    // which case arming can't complete and the first update's migration re-arms. Idempotent.
+    const codexBin = detectCodexPath();
+    if (codexBin) {
+      try {
+        armCodexHooks({
+          projectDir,
+          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: 'gpt-5.2' }),
+        });
+      } catch {
+        // fail-soft — the post-update migrator re-arms on the next update.
+      }
+    }
   }
 
   refreshJobs(stateDir);

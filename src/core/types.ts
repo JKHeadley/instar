@@ -59,6 +59,10 @@ export interface Session {
    *  model id. Per-framework resolution happens in the headless/
    *  interactive launch builders, not at the session-state level. */
   model?: ModelTier | string;
+  /** The AI framework/engine powering this session. Carried so the dashboard
+   *  renders engine-aware (a Codex session must not display as a Claude one).
+   *  Populated at spawn from the resolved framework; undefined on legacy records. */
+  framework?: 'claude-code' | 'codex-cli';
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */

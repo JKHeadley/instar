@@ -15,6 +15,7 @@ import {
   detectClaudePath,
   detectCodexPath,
   detectTmuxPath,
+  _resetFrameworkBinaryCache,
 } from '../../src/core/Config.js';
 
 describe('detectFrameworkBinary', () => {
@@ -47,6 +48,48 @@ describe('detectFrameworkBinary', () => {
 
   it('detectCodexPath delegates to detectFrameworkBinary(codex)', () => {
     expect(detectCodexPath()).toBe(detectFrameworkBinary('codex'));
+  });
+
+  it('finds an asdf shim via ASDF_DATA_DIR when the binary lives nowhere else', async () => {
+    // Regression for the codey/asdf portability bug: a CLI installed only as
+    // an asdf shim was invisible to instar because the launchd PATH excludes
+    // the shims dir. detectFrameworkBinary must now find it.
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'asdf-shim-test-'));
+    const prevAsdf = process.env.ASDF_DATA_DIR;
+    try {
+      const shimsDir = path.join(tmp, 'shims');
+      fs.mkdirSync(shimsDir, { recursive: true });
+      // 'plandex' is exceedingly unlikely to be installed on the test host,
+      // so the ONLY way this resolves is via our temp asdf shim.
+      const shim = path.join(shimsDir, 'plandex');
+      fs.writeFileSync(shim, '#!/bin/sh\necho stub\n', { mode: 0o755 });
+      process.env.ASDF_DATA_DIR = tmp;
+      _resetFrameworkBinaryCache(); // detection is memoized — clear before asserting
+      expect(detectFrameworkBinary('plandex')).toBe(shim);
+    } finally {
+      if (prevAsdf === undefined) delete process.env.ASDF_DATA_DIR;
+      else process.env.ASDF_DATA_DIR = prevAsdf;
+      _resetFrameworkBinaryCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('memoizes detection — repeated calls do not re-resolve (caches positive + negative)', () => {
+    _resetFrameworkBinaryCache();
+    const first = detectFrameworkBinary('codex');
+    const second = detectFrameworkBinary('codex');
+    expect(second).toBe(first); // same cached result, no re-shell
+  });
+
+  it('source MUST search asdf shims (regression guard for the codey/asdf bug)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const projectRoot = path.resolve(__dirname, '..', '..');
+    const source = fs.readFileSync(path.join(projectRoot, 'src/core/Config.ts'), 'utf-8');
+    expect(source, 'Config.ts must search the asdf shims dir').toMatch(/asdf['"`)\s]*[,)]?.*shims|shims.*asdf|ASDF_DATA_DIR/);
   });
 
   it('source code MUST NOT hardcode the previously-leaked developer asdf path', async () => {

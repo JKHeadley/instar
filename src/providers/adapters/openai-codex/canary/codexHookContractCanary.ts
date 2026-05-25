@@ -58,6 +58,7 @@ export interface CodexHookContractCanaryResult {
     /** Layer A — deterministic invariant lock. */
     matcherIsRegex: boolean;
     dangerousGuardOnPreToolUse: boolean;
+    deferralOnPreToolUse: boolean;
     stopReviewTrioWired: boolean;
     /** Layer B — live-binary probe. */
     binaryProbed: boolean;
@@ -134,13 +135,27 @@ export function runCodexHookContractCanary(): CodexHookContractCanaryResult {
     failures.push('dangerous-command-guard.sh missing from PreToolUse — Codex shell/exec would pass ungated');
   }
 
+  // deferral-detector is a PreToolUse hook (inspects Bash/exec_command messaging
+  // commands), NOT a Stop hook. It was once wrongly wired onto Stop where its
+  // tool_name guard made it a silent no-op — this invariant locks it to PreToolUse.
+  const deferralOnPreToolUse = preCommands.some((c) => c.includes('deferral-detector.js'));
+  if (!deferralOnPreToolUse) {
+    failures.push('deferral-detector.js missing from PreToolUse — it is a PreToolUse hook (matches Claude); on Stop it no-ops');
+  }
+
   const stopCommands = (groups.Stop?.[0]?.hooks ?? []).map((h) => h.command);
+  // The Stop review trio MUST mirror the Claude Stop trio (settings-template.json):
+  // response-review + claim-intercept-response + scope-coherence-checkpoint.
   const stopReviewTrioWired =
     stopCommands.some((c) => c.includes('response-review.js')) &&
-    stopCommands.some((c) => c.includes('deferral-detector.js')) &&
+    stopCommands.some((c) => c.includes('claim-intercept-response.js')) &&
     stopCommands.some((c) => c.includes('scope-coherence-checkpoint.js'));
   if (!stopReviewTrioWired) {
-    failures.push('Stop review trio incomplete — expected response-review + deferral-detector + scope-coherence-checkpoint');
+    failures.push('Stop review trio incomplete — expected response-review + claim-intercept-response + scope-coherence-checkpoint (mirrors Claude)');
+  }
+  // Guard against the regression: deferral-detector must NOT be on Stop.
+  if (stopCommands.some((c) => c.includes('deferral-detector.js'))) {
+    failures.push('deferral-detector.js is wired on Stop — it is a PreToolUse hook and no-ops on a Stop payload (this was the bug)');
   }
 
   // ---- Layer B: best-effort live-binary contract probe ----
@@ -170,7 +185,7 @@ export function runCodexHookContractCanary(): CodexHookContractCanaryResult {
     }
   }
 
-  const layerASolid = matcherIsRegex && dangerousGuardOnPreToolUse && stopReviewTrioWired;
+  const layerASolid = matcherIsRegex && dangerousGuardOnPreToolUse && deferralOnPreToolUse && stopReviewTrioWired;
   let status: CodexHookContractCanaryResult['status'];
   let message: string;
 
@@ -194,6 +209,7 @@ export function runCodexHookContractCanary(): CodexHookContractCanaryResult {
     details: {
       matcherIsRegex,
       dangerousGuardOnPreToolUse,
+      deferralOnPreToolUse,
       stopReviewTrioWired,
       binaryProbed,
       binaryPath: binaryPath ?? undefined,

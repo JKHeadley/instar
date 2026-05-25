@@ -75,15 +75,27 @@ describe('installCodexHooks', () => {
     expect(cfg.hooks.PermissionRequest[0].matcher).toBe('.*');
   });
 
-  it('wires the full Stop-event review trio: response-review + deferral + scope-coherence', () => {
+  it('wires the Stop review trio mirroring Claude: response-review + claim-intercept-response + scope-coherence', () => {
     installCodexHooks(projectDir);
     const cfg = read();
     const stopCommands = cfg.hooks.Stop[0].hooks.map((h: any) => h.command);
-    // Parity with Claude's Stop chain + spec §4.1 (deferral / scope checkpoint → Stop).
-    // Codex honors {decision:'block', reason} on Stop, so these grounding checks apply.
+    // MUST mirror the Claude Stop trio (settings-template.json). Codex honors
+    // {decision:'block', reason} on Stop, so these grounding checks apply.
     expect(stopCommands.some((c: string) => c.includes('response-review.js'))).toBe(true);
-    expect(stopCommands.some((c: string) => c.includes('deferral-detector.js'))).toBe(true);
+    expect(stopCommands.some((c: string) => c.includes('claim-intercept-response.js'))).toBe(true);
     expect(stopCommands.some((c: string) => c.includes('scope-coherence-checkpoint.js'))).toBe(true);
+  });
+
+  it('keeps deferral-detector on PreToolUse, NOT Stop (regression: on Stop its tool_name guard no-ops)', () => {
+    installCodexHooks(projectDir);
+    const cfg = read();
+    const stopCommands = cfg.hooks.Stop[0].hooks.map((h: any) => h.command);
+    const preCommands = cfg.hooks.PreToolUse[0].hooks.map((h: any) => h.command);
+    // deferral-detector is a PreToolUse hook on Claude too. It was once wrongly
+    // swapped onto Codex Stop in place of claim-intercept-response, where it
+    // silently no-opped (no tool_name on a Stop payload).
+    expect(preCommands.some((c: string) => c.includes('deferral-detector.js'))).toBe(true);
+    expect(stopCommands.some((c: string) => c.includes('deferral-detector.js'))).toBe(false);
   });
 
   it('is idempotent — running twice yields identical config (no duplicate instar groups)', () => {

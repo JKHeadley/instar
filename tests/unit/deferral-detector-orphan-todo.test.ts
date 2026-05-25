@@ -76,6 +76,37 @@ function runHook(command: string): {
   };
 }
 
+/** Codex variant: the shell tool is 'exec_command' and the command is in tool_input.cmd. */
+function runHookCodex(cmd: string): { exitCode: number; parsed: { decision?: string; additionalContext?: string } | null } {
+  const input = JSON.stringify({ tool_name: 'exec_command', tool_input: { cmd } });
+  const result = spawnSync('node', [hookPath], { input, encoding: 'utf-8', timeout: 5000 });
+  let parsed: { decision?: string; additionalContext?: string } | null = null;
+  if (result.stdout && result.stdout.trim().length > 0) {
+    try { parsed = JSON.parse(result.stdout); } catch { parsed = null; }
+  }
+  return { exitCode: result.status ?? -1, parsed };
+}
+
+describe('deferral-detector — Codex payload shape (exec_command / cmd)', () => {
+  it('fires on a Codex exec_command payload with orphan-TODO language (regression: was Claude-only)', () => {
+    const result = runHookCodex(
+      'cat <<EOF | telegram-reply.sh 100\nI will handle the rest in a follow-up session later.\nEOF'
+    );
+    // Same detection as the Bash path — proves the detector reads exec_command + cmd.
+    expect(result.parsed).not.toBeNull();
+    expect(result.parsed!.decision).toBe('approve');
+    expect(result.parsed!.additionalContext).toMatch(/ORPHAN-TODO TRAP DETECTED|DEFERRAL DETECTED/);
+  });
+
+  it('ignores a Codex exec_command that is a clean message', () => {
+    const result = runHookCodex(
+      'cat <<EOF | telegram-reply.sh 100\nDone, shipped on main.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed).toBeNull();
+  });
+});
+
 describe('deferral-detector — orphan-TODO patterns', () => {
   it('does not fire on a clean message', () => {
     const result = runHook(

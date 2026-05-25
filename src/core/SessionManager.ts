@@ -54,6 +54,7 @@ import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
+  resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
 import { StateManager } from './StateManager.js';
@@ -924,7 +925,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       tmuxSession,
       startedAt: new Date().toISOString(),
       triggeredBy: options.triggeredBy,
-      model: options.model,
+      // Record the framework-RESOLVED model, not the raw tier alias. A Codex
+      // agent's session must show its real gpt-5.x model on the dashboard, not
+      // the Claude tier nickname (haiku/sonnet) the caller passed. Falls back
+      // to the raw value when no mapping applies. + carry the framework so the
+      // dashboard can render engine-aware.
+      model: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
+      framework: headlessFramework,
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
     };
@@ -1627,6 +1634,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       status: 'running',
       tmuxSession,
       startedAt: new Date().toISOString(),
+      // Carry the framework so the dashboard renders engine-aware (a Codex
+      // interactive session must not display as a Claude one). Model is the
+      // framework-resolved defaultModel when one is set; left undefined when
+      // the CLI uses its own account default.
+      framework,
+      ...(resolveModelForFramework(framework, defaultModel) ? { model: resolveModelForFramework(framework, defaultModel) } : {}),
       prompt: initialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
     };

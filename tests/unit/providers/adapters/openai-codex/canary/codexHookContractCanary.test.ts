@@ -15,12 +15,13 @@ import {
 } from '../../../../../../src/providers/adapters/openai-codex/canary/codexHookContractCanary.js';
 
 describe('runCodexHookContractCanary', () => {
-  it('locks the load-bearing invariants: regex matcher, shell guard, full Stop trio', () => {
+  it('locks the load-bearing invariants: regex matcher, shell guard, deferral on PreToolUse, correct Stop trio', () => {
     const result = runCodexHookContractCanary();
     // Layer A must never fail on a correctly-wired tree.
     expect(result.details.matcherIsRegex, '.* matcher').toBe(true);
     expect(result.details.dangerousGuardOnPreToolUse, 'dangerous-command-guard on PreToolUse').toBe(true);
-    expect(result.details.stopReviewTrioWired, 'response-review + deferral + scope-coherence on Stop').toBe(true);
+    expect(result.details.deferralOnPreToolUse, 'deferral-detector on PreToolUse (not Stop)').toBe(true);
+    expect(result.details.stopReviewTrioWired, 'response-review + claim-intercept-response + scope-coherence on Stop').toBe(true);
     expect(result.details.failures).toEqual([]);
   });
 

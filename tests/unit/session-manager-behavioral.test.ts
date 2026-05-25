@@ -164,7 +164,30 @@ describe('SessionManager behavioral tests', () => {
         model: 'opus',
       });
 
+      // claude-code is the default framework here; 'opus' passes through.
       expect(session.model).toBe('opus');
+      expect(session.framework).toBe('claude-code');
+    });
+
+    it('records the framework-RESOLVED model for a Codex session (not the raw tier)', async () => {
+      // Regression for the dashboard model-badge gap: a Codex agent's session
+      // showed "haiku"/"sonnet" (Claude tier aliases). It must store the real
+      // gpt-5.x model so the dashboard badge is correct.
+      const session = await manager.spawnSession({
+        name: 'codex-job',
+        prompt: 'Do work',
+        model: 'haiku',           // light tier
+        framework: 'codex-cli',
+      });
+
+      expect(session.framework).toBe('codex-cli');
+      expect(session.model).toBe('gpt-5.2'); // haiku → light → gpt-5.2 on Codex
+      // And it must NOT leak the Claude tier alias onto a Codex session.
+      expect(session.model).not.toBe('haiku');
+
+      const saved = state.getSession(session.id);
+      expect(saved!.model).toBe('gpt-5.2');
+      expect(saved!.framework).toBe('codex-cli');
     });
 
     it('includes jobSlug and triggeredBy when provided', async () => {
