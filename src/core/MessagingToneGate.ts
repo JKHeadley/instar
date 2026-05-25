@@ -24,7 +24,7 @@ import type { IntelligenceProvider } from './types.js';
 export interface ToneReviewResult {
   pass: boolean;
   /**
-   * Rule id applied — must be one of the enumerated B1..B16 ids defined in
+   * Rule id applied — must be one of the enumerated B1..B17 ids defined in
    * the prompt when pass=false, or empty string when pass=true. Any other
    * value is treated as a reasoning-discipline violation (the LLM invented
    * a rule not in its ruleset) and fails-open with failedOpen=true.
@@ -38,7 +38,7 @@ export interface ToneReviewResult {
   latencyMs: number;
   /** True if the LLM call failed and we fail-opened */
   failedOpen?: boolean;
-  /** True if the LLM's rule citation was invalid (not in B1..B16) — gate failed open. */
+  /** True if the LLM's rule citation was invalid (not in B1..B17) — gate failed open. */
   invalidRule?: boolean;
 }
 
@@ -58,6 +58,7 @@ const VALID_RULES = new Set([
   'B14_HEALTH_ALERT_NO_CTA',
   'B15_CONTEXT_DEATH_STOP',
   'B16_UNVERIFIED_WALL',
+  'B17_FALSE_BLOCKER',
 ]);
 
 export interface ToneReviewContextMessage {
@@ -321,6 +322,36 @@ These rules only fire when the producer has explicitly marked the candidate as a
 
   Severity: favor FALSE-NEGATIVES over false-positives. Plain "I can't access X without you connecting it" and other genuinely-external limits MUST pass. Block only the clear unverified-wall pattern: an internal feasibility verdict resting on a missing interface, with no inventory shown.
 
+- **B17_FALSE_BLOCKER** — the candidate hands a task back to the user by claiming it needs a *person* — "this needs a human", "you'll have to do this", "I'd want a second opinion before I can proceed", "this needs reverse-engineering first", "blocked pending you" — when the task is within the agent's OWN means (computer use / clicking buttons / reading the screen, terminal control, send-keys into live sessions, the dashboard, MCP tools), and the message shows NO evidence the agent inventoried those means and tried them. This catches the "Never a False Blocker" anti-pattern: the deference-shaped cousin of B16. Where B16 is a *feasibility* verdict ("no mechanism exists"), B17 is a *false human-deference* ("a person is required") — the agent surrendering a doable task as if only the user could do it.
+
+  Apply B17 ONLY to messages where the agent defers its OWN task to a human / second opinion / reverse-engineering. Point at the exact deference phrase, e.g.:
+  - "this needs a human", "a human has to", "you'll need to click/press/run/do", "over to you", "blocked pending you"
+  - "I'd want a second opinion before I proceed", "this needs reverse-engineering first, so I'll stop"
+
+  CRUCIAL — what counts as "the agent's own means": clicking a button, pressing a key, navigating a UI, reading what's on the screen, and driving an interactive prompt are ALL within the agent's computer-use toolkit. So "a human has to click/press/select this", "someone needs to navigate to X", "this needs reverse-engineering first" are PARADIGM false blockers — the agent can click, press, read, and investigate itself. Do NOT treat "a human must click/press/navigate" as a genuine human-only limit unless what's behind the click is itself genuinely human-only (a password the user holds, a CAPTCHA, a payment/legal authorization).
+
+  WORKED BLOCK EXAMPLE (the founding case — this MUST block as B17): "This needs a human to click the trust prompt, and the durable fix needs reverse-engineering, so I'd want a second opinion before I proceed." — three stacked deferrals (click → computer use; reverse-engineering → the agent can investigate; second opinion → not self-fetched, just hands the task back), none naming a genuinely-human-only item, no inventory of the agent's own means shown. BLOCK.
+
+  RELATIONSHIP TO B16 (de-confliction — read carefully):
+  - Pure missing-mechanism surrender ("there's no API, so it can't be done") → that is B16's domain, not B17.
+  - Pure human-deference ("a human has to click this") → B17.
+  - STRADDLE (the dangerous, common case): a message that claims BOTH a missing mechanism AND that a person is required — e.g. "there's no API to do this, so a human has to" — must NOT slip between the rules. Evaluate the *person-required* half under B17 and BLOCK; do NOT cede the whole message to B16 (B16's allowlist would otherwise pass the human-deference part).
+  - Citation precedence when more than one of B15/B16/B17 would each independently block: cite in the order B15 > B16 > B17.
+
+  LEGITIMATE — do NOT apply B17 if ANY of these is present in the candidate (these are the genuinely human-only set, or honest escalation):
+  - A secret only the user holds (a password / passphrase / 2FA code the agent cannot obtain), a CAPTCHA / human-presence challenge, or a physical-world action the agent cannot perform.
+  - A legal / billing / payment / contractual authorization, OR an explicit approval the agent is required to obtain before acting (a side-effects-gated or policy-gated action awaiting the user's sign-off).
+  - An account / access grant only the user can make (connecting a service, granting OAuth, adding the agent to a workspace the user administers).
+  - A genuine value / priority / risk-appetite judgment that is the user's to make ("do you want to ship X or Y?"). Asking the user a real decision question is REQUIRED behavior.
+  - An external rate-limit / quota / cooldown wait ("I'm rate-limited, retrying in 10m").
+  - The agent shows it DID inventory its own means and the deferral survived — AND it names SPECIFIC OUTCOMES, not just tool names: "I tried send-keys into the pane (the prompt didn't advance) and computer-use on the button (disabled until you authenticate)". A bare tool-name list with no outcomes ("I tried computer-use, send-keys, and the API, but it's your call") is a HOLLOW inventory and does NOT qualify — treat it as a false blocker.
+  - The message proposes a second opinion the agent will ITSELF fetch ("let me run this past GPT/Gemini via cross-model review"). Cross-model review is endorsed practice. B17 fires on "second opinion" ONLY when paired with stopping / handing the task to the user.
+  - The message is DISCUSSING this rule, the concept of false blockers, or a past instance (a memo / explanation, not a live surrender).
+
+  If the candidate defers a doable task to a human / second-opinion / reverse-engineering AND rests on the need for a person rather than a verified-missing mechanism AND shows NO substantive inventory of the agent's own means AND none of the legitimate clauses is present → BLOCK with B17 and suggest the agent enumerate its actual means (computer use, terminal, send-keys, MCP), try them, and either do the work or re-state the deferral against the genuinely-human-only set.
+
+  Severity: favor FALSE-NEGATIVES over false-positives, exactly like B16. Genuine escalations — value judgments, password/account requests, required approvals, verified external limits — MUST pass. Block only the clear false-blocker pattern: a doable task deferred to a person with no inventory shown. (Note: the gate sees only the message text; a fabricated inventory can still pass — this is an accepted limit, same as B16.)
+
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 
 - **B11_STYLE_MISMATCH** — the message significantly mismatches the agent's configured TARGET STYLE (see section below). This rule is generic — the target style is a free-text description the operator sets in config. Apply the rule when: (1) a target style is provided (not empty), AND (2) the candidate message clearly violates the style's stated intent in a way the target user would notice and find jarring.
@@ -356,7 +387,7 @@ Respond EXCLUSIVELY with valid JSON:
   "suggestion": "<how to rephrase — empty if pass is true>"
 }
 
-If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, B15, or B16 exactly (no other values — inventing rule ids is itself a violation).
+If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, B15, B16, or B17 exactly (no other values — inventing rule ids is itself a violation).
 
 Channel: ${channel}
 ${kindSection}${contextSection}${signalsSection}${styleSection}

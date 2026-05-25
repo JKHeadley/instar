@@ -5391,6 +5391,14 @@ echo "=== END IDENTITY RECOVERY ==="
 //      promised follow-through evaporate (incident: 2026-04-27, when
 //      Echo proposed exactly this pattern after Layer 1 of a multi-layer
 //      build shipped without infra to ensure follow-on layers landed).
+//   3) An agent deferring a doable task to a person — "needs a human",
+//      "second opinion", "needs reverse-engineering" — when computer use,
+//      terminal, send-keys, and MCP tools were right there (the B17
+//      "Never a False Blocker" signal; authority is MessagingToneGate B17).
+//      Self-fetched cross-model review (GPT/Gemini/etc.) is NOT flagged.
+//
+// SIGNAL ONLY — this hook never blocks. The authority that can hold an
+// outbound message is MessagingToneGate (B17_FALSE_BLOCKER).
 
 let data = '';
 process.stdin.on('data', chunk => data += chunk);
@@ -5420,6 +5428,9 @@ process.stdin.on('end', () => {
       { re: /(?:you (?:can|could|should|might want to) )(?:run|execute|navigate|open|click)/i, type: 'suggesting_human_action' },
       { re: /(?:want me to|should I|shall I|would you like me to) (?:proceed|continue|go ahead)/i, type: 'permission_seeking' },
       { re: /(?:blocker|blocking issue|can'?t proceed (?:without|until))/i, type: 'claimed_blocker' },
+      // B17 false-blocker shapes: deferring a doable task to a person / reverse-engineering.
+      { re: /(?:needs?|requires?) (?:a )?human to/i, type: 'needs_human_to' },
+      { re: /(?:needs?|requires?|need) (?:to )?reverse[- ]?engineer/i, type: 'needs_reverse_engineering' },
     ];
 
     // Orphan-TODO patterns — proposing future-self follow-up without infrastructure.
@@ -5450,6 +5461,15 @@ process.stdin.on('end', () => {
     const isInfrastructureBacked = infrastructureBackedPatterns.some(p => p.test(command));
 
     const inabilityMatches = inabilityPatterns.filter(p => p.re.test(command));
+
+    // B17 second-opinion: a false blocker ONLY when the agent hands the task to the
+    // user. Seeking a cross-model review the agent will fetch itself (GPT/Gemini/etc.)
+    // is endorsed practice, not a deferral — so suppress when a model/agent is named.
+    const selfFetchedReview = /\\b(?:gpt|gemini|grok|o3|cross[- ]?model|crossreview|another (?:agent|model))\\b/i.test(command);
+    if (!selfFetchedReview && /second opinion/i.test(command)) {
+      inabilityMatches.push({ re: /second opinion/i, type: 'wants_second_opinion' });
+    }
+
     const orphanMatches = isInfrastructureBacked
       ? []  // Backed by real infra — not an orphan TODO.
       : orphanPatterns.filter(p => p.re.test(command));
@@ -5466,11 +5486,11 @@ process.stdin.on('end', () => {
         '1. Did you check --help or docs for the tool you are using?',
         '2. Did you search for a token/API-based alternative to interactive auth?',
         '3. Do you already have credentials/tokens that might work? (env vars, CLI auth, saved configs)',
-        '4. Can you use browser automation to complete interactive flows?',
-        '5. Is this GENUINELY beyond your access? (e.g., typing a password, solving a CAPTCHA)',
+        '4. Did you try your OWN means? — computer use (read the screen, click buttons), terminal, send-keys into a live session, the dashboard, MCP tools. A button on screen is not a human-only blocker.',
+        '5. Is this GENUINELY human-only? The tiny set: a password only the user knows, a CAPTCHA, a legal/billing/payment authorization, an account only they can grant, or a judgment call that is theirs.',
         '',
-        'If ANY check might work — try it first.',
-        'The pattern: You are DESCRIBING work instead of DOING work.',
+        'If ANY check might work — try it first, naming what you actually tried and what happened.',
+        'The pattern: You are DESCRIBING work instead of DOING work. "Needs a human / a second opinion / reverse-engineering" is almost never true when you have computer use and a terminal.',
       );
     }
 

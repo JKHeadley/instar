@@ -3,9 +3,9 @@ title: "Never a False Blocker — constitution standard + B17 structural guard"
 date: 2026-05-24
 author: echo
 review-convergence: internal-adversarial-2026-05-24 (two parallel reviewers — instar-standards conformance + correctness/gameability — plus a manual MEMORY.md lessons-grep; revised for VALID_RULES registration, B16/B17 straddle, hollow-inventory guard, allowlist completeness, and "second opinion" over-breadth. External multi-model /crossreview round NOT run — the branded command is not wired on this checkout; offered to Justin as an optional pre-code add.)
-approved: false
-approved-by: pending
-approved-via: pending (proposed in Telegram topic 12896; Justin approved the design direction — "reuse the existing reviewer as decider, ship hold-and-redirect" — and asked for the full spec before code)
+approved: true
+approved-by: Justin
+approved-via: Telegram topic 12896 (2026-05-24/25 — approved the design direction "reuse the existing reviewer as decider, ship hold-and-redirect", then approved the full converged spec: "Yes" at 2026-05-24 23:43 PDT)
 eli16-overview: never-a-false-blocker-standard.eli16.md
 ---
 

@@ -18,7 +18,7 @@ The catalog is structured so a reviewer (human or LLM) can answer one question f
 
 ---
 
-## Part 1 — Foundational Principles (P1-P11)
+## Part 1 — Foundational Principles (P1-P12)
 
 These are the principles every Instar design must engage with explicitly. Violating one without explicit justification is a critical convergence-blocker.
 
@@ -299,6 +299,27 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 - This catalog entry, so the `/spec-converge` lessons-aware reviewer flags specs that accept an untested wall.
 
 **Earned from:** an instance declared native `/goal` delegation "infeasible — no programmatic API" while overlooking that driving interactive sessions by injecting text (`SessionManager.sendInput`) is a core capability. Both facts in hand, never connected. The crystallizing instance of every "I can't" that was really "I didn't check."
+
+---
+
+### P12. Never a False Blocker (try your own means before deferring to a person)
+
+**Statement:** Before handing a task back to the user as "needs a human / I can't / blocked pending you / I'd want a second opinion / this needs reverse-engineering," inventory the means already in hand (computer use, terminal, send-keys, dashboard, MCP) and try them. The genuinely human-only set is tiny: a password only the user knows, a CAPTCHA, a legal/billing/payment authorization, an account only they can grant, a physical action, and a judgment that is theirs.
+
+**Source:** `docs/specs/never-a-false-blocker-standard.md`; constitution standard "Never a False Blocker" (The Substrate family). Earned 2026-05-24 (topic 12896).
+
+**Translation:**
+- The deference-shaped sibling of P11. P11 surrenders on *feasibility* ("no mechanism exists"); P12 surrenders on *agency* ("a person is required"). P12 is more insidious — it wears the clothing of prudence/humility/escalation, so it slips past the agent's own guard.
+- A deferral named honestly *after* an inventory ("I tried send-keys and computer-use — the button is disabled until you authenticate, so I need your password") is honest escalation. The failure is deferring *without* the inventory.
+- Counterweight: required approvals, genuine value judgments, and verified external limits MUST pass. This is not "act without sign-off"; it is "stop faking blockers."
+- The structural enforcement of the **escalate-to-human gravity well** named in the constitution.
+
+**Enforcement (structural):**
+- `B17_FALSE_BLOCKER` in `MessagingToneGate` (sibling to B15/B16): an outbound message deferring a doable task to a person — no inventory shown, no genuinely-human-only item named — is held and handed back. De-conflicted from B16 (missing mechanism → B16; person required → B17; the straddle "no API so a human must" → B17). Favors false-negatives.
+- The `deferral-detector` PreToolUse hook primes the inventory checklist (signal only, never blocks; self-fetched cross-model review is not flagged).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags specs that accept a false blocker.
+
+**Earned from:** an instance stacked "needs a human to click, needs reverse-engineering, want a second opinion" in one sentence while looking at the very "Press t to trust all" prompt it claimed needed a human — in a dashboard it had open, with computer use available. It then drove the prompt itself, no human. The wall was a button.
 
 ---
 
