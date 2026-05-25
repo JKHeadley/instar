@@ -80,7 +80,7 @@ Two sources of truth for "is this feature on" — `config.json` and the `Feature
 
 **Adjacent (own follow-ups, flagged not fixed here):**
 - `UnjustifiedStopGate` / stop-gate → handled by `context-death-stop-gate-rollout-completion.md` (now known to also need `StopGateDb` construction).
-- `MessageSentinel` inbound wiring → **needs its own verification spec** (is the emergency-stop classifier actually on the live ingress path? safety-relevant).
+- `MessageSentinel` inbound wiring → **VERIFIED BROKEN for lifeline-owned agents (P0 safety).** The sentinel intercept lives ONLY in `TelegramAdapter.processUpdate()` (`TelegramAdapter.ts:3532`), the adapter's own poll loop. Echo runs **lifeline-owned polling** (`server.ts:1167` names "echo"): the lifeline polls and forwards via `POST /internal/telegram-forward`, which injects directly (`onTopicMessage`/`injectTelegramMessage`) with **zero** sentinel references (`routes.ts:8391–8700`); `src/lifeline/*` does no classification. So "stop everything" is NOT structurally honored for Echo — it's injected as a normal message. The classifier itself is fine (live-tested: "stop everything"/"stop" → emergency-stop). **Fix (P0):** hoist the `processUpdate` sentinel logic into `/internal/telegram-forward` (classify before inject; on emergency-stop kill session + clear autonomous job via existing `onSentinelKillSession`; on pause → pause) so it fires regardless of polling owner + a wiring-integrity test asserting the forward route classifies before injecting + an integration test that an emergency-stop through the forward route kills the session. This is the highest-priority item in this spec.
 
 ### Part 3 — Hand off to the Liveness Reconciler
 
