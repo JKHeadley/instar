@@ -212,6 +212,119 @@ export function buildActiveWorkSilenceDeps(opts: {
   };
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// RateLimitSentinel recovery deps — reachability under ALL session conditions.
+//
+// The original resume/notify closures in server.ts silently no-opped whenever
+// getTopicForSession returned null — which is exactly the case for a developer's
+// interactive Claude Code window (not bound to any Telegram topic). Detection +
+// backoff ran, then every output dropped on the floor, so the throttle never
+// recovered and nothing reached the user. Extracted here so the reachability
+// logic is unit-testable (it was previously inline + untestable, which is why
+// the bug shipped past green tests). Spec: Sentinel Reachability + Worktree
+// Isolation.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type RecoveryReachKind = 'recovery-reached' | 'recovery-unreachable';
+
+/** The neutral "continue" nudge — NOT a compaction-resume payload (which would
+ *  falsely tell the agent its memory was reset). */
+export const RATE_LIMIT_RESUME_NUDGE =
+  'The temporary server throttle should have cleared — please continue where you left off.';
+
+export interface RateLimitRecoverySurface {
+  isSessionAlive(sessionName: string): boolean;
+  /** Topic-tagged nudge through the provenance-checked injectMessage path. */
+  injectTopicNudge(sessionName: string, topicId: number, text: string): boolean;
+  /** Trusted internal nudge that bypasses the topic-prefix requirement. */
+  injectInternalNudge(sessionName: string, text: string): boolean;
+  getTopicForSession(sessionName: string): number | null | undefined;
+  /** The always-available system topic; null during initial setup. */
+  getLifelineTopicId(): number | null | undefined;
+  /** Deliver a user-facing notice to a topic. Returns success; never throws. */
+  deliverNotice(topicId: number, text: string): Promise<boolean>;
+  /** Audit sink — invoked on EVERY recovery attempt. Never throws. */
+  recordRecovery(
+    kind: RecoveryReachKind,
+    sessionName: string,
+    detail: string,
+    fallbackTried: string[],
+  ): void;
+}
+
+/**
+ * Build the resume/notify functions for RateLimitSentinel. Both paths ALWAYS
+ * record an audit event and never silently return:
+ *  - resumeFn: topic-bound → topic-tagged inject; non-topic-bound → internal inject.
+ *  - notifyFn: session topic → lifeline topic → recovery-unreachable audit.
+ */
+export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
+  resumeFn: (sessionName: string) => Promise<boolean>;
+  notifyFn: (sessionName: string, text: string) => Promise<void>;
+} {
+  return {
+    resumeFn: async (sessionName) => {
+      if (!s.isSessionAlive(sessionName)) return false;
+      const topicId = s.getTopicForSession(sessionName);
+      if (topicId != null) {
+        const ok = s.injectTopicNudge(sessionName, topicId, RATE_LIMIT_RESUME_NUDGE);
+        s.recordRecovery(
+          ok ? 'recovery-reached' : 'recovery-unreachable',
+          sessionName,
+          ok ? 'resume nudge injected via topic' : 'topic injectMessage returned false',
+          ['topic'],
+        );
+        return ok;
+      }
+      // Non-topic-bound (e.g. interactive dev window): internal injection path.
+      const ok = s.injectInternalNudge(sessionName, RATE_LIMIT_RESUME_NUDGE);
+      s.recordRecovery(
+        ok ? 'recovery-reached' : 'recovery-unreachable',
+        sessionName,
+        ok
+          ? 'resume nudge injected via internal path (session not topic-bound)'
+          : 'internal injection returned false',
+        ['internal-injection'],
+      );
+      return ok;
+    },
+    notifyFn: async (sessionName, text) => {
+      const topicId = s.getTopicForSession(sessionName);
+      if (topicId != null) {
+        const ok = await s.deliverNotice(topicId, text).catch(() => false);
+        s.recordRecovery(
+          ok ? 'recovery-reached' : 'recovery-unreachable',
+          sessionName,
+          ok ? 'notice delivered to session topic' : 'topic delivery failed',
+          ['topic'],
+        );
+        return;
+      }
+      // No topic for this session — fall back to the lifeline (system) topic.
+      const lifelineId = s.getLifelineTopicId();
+      if (lifelineId != null) {
+        const ok = await s.deliverNotice(lifelineId, text).catch(() => false);
+        s.recordRecovery(
+          ok ? 'recovery-reached' : 'recovery-unreachable',
+          sessionName,
+          ok
+            ? 'notice delivered to lifeline topic (session not topic-bound)'
+            : 'lifeline delivery failed',
+          ['topic', 'lifeline'],
+        );
+        return;
+      }
+      // Neither a session topic nor a lifeline topic is available. Never silent.
+      s.recordRecovery(
+        'recovery-unreachable',
+        sessionName,
+        `no topic and no lifeline; notice not delivered: ${text.slice(0, 120)}`,
+        ['topic', 'lifeline', 'audit'],
+      );
+    },
+  };
+}
+
 /** FNV-1a — enough to detect that captured output changed. Not security-sensitive. */
 function cheapHash(s: string): string {
   let h = 0x811c9dc5;

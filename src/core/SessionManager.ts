@@ -2154,6 +2154,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Internal-only injection for trusted in-process recovery agents (the
+   * sentinels). Bypasses InputGuard's topic-prefix provenance requirement so a
+   * recovery nudge can reach a session that is NOT bound to any Telegram topic
+   * (e.g. a developer's interactive Claude Code window). Without this path, the
+   * rate-limit / socket-disconnect / silence sentinels silently no-op for
+   * non-topic-bound sessions — the exact bug behind "the throttle never
+   * recovered in my dev window."
+   *
+   * SECURITY BOUNDARY: this method is NOT exposed over HTTP. The only callers
+   * are in-process sentinel recovery deps wired in server.ts. HTTP injection
+   * continues to flow through injectMessage(), which enforces topic prefixing.
+   * Every internal injection is recorded with source 'sentinel-recovery' so the
+   * audit log can distinguish trusted recovery nudges from user/topic traffic.
+   *
+   * @param source - audit label for the trusted caller (e.g. 'sentinel-recovery')
+   */
+  injectInternalMessage(tmuxSession: string, text: string, source = 'sentinel-recovery'): boolean {
+    if (!this.isSessionAlive(tmuxSession)) return false;
+    if (this.inputGuard) {
+      // Record the trusted bypass so it's distinguishable in the security log.
+      try {
+        this.inputGuard.logSecurityEvent({
+          event: 'internal-recovery-injection',
+          session: tmuxSession,
+          source,
+          messagePreview: text.slice(0, 100),
+        });
+      } catch { /* logging must never block a recovery nudge */ }
+    }
+    return this.rawInject(tmuxSession, text);
+  }
+
+  /**
    * Raw tmux send-keys injection. No validation — just sends text to the session.
    * Used by injectMessage after provenance checks pass.
    */

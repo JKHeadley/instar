@@ -5192,27 +5192,65 @@ export async function startServer(options: StartOptions): Promise<void> {
     const getClaudeSessionIdForName = (sessionName: string): string | undefined =>
       sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId;
 
-    // Neutral "continue" nudge — NOT the compaction-resume payload (which would
-    // falsely tell the agent its memory was reset). Topic-tagged so InputGuard
-    // accepts it.
-    const rateLimitResume = async (sessionName: string): Promise<boolean> => {
-      if (!sessionManager.isSessionAlive(sessionName)) return false;
-      const topicId = telegram?.getTopicForSession(sessionName);
-      if (topicId == null) return false;
-      const tagged = `[telegram:${topicId}] The temporary server throttle should have cleared — please continue where you left off.`;
-      return sessionManager.injectMessage(sessionName, tagged);
+    // Recovery-reachability audit trail. Both recovery paths below ALWAYS leave
+    // a record: a recovery-reached/recovery-unreachable line in the sentinel
+    // audit log, and — when delivery to the user fails entirely — an entry in
+    // .instar/sentinel-alerts.json so the dashboard surfaces it even without
+    // Telegram. The defining bug this closes: a non-topic-bound session (e.g. a
+    // developer's interactive Claude Code window) used to make both recovery
+    // paths silently no-op, so the throttle never recovered and nothing reached
+    // the user. Reachability is now unconditional — see the Sentinel
+    // Reachability spec.
+    const rlReachLogPath = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+    const rlAlertsPath = path.join(config.stateDir, 'sentinel-alerts.json');
+    const recordRecovery = (
+      kind: 'recovery-reached' | 'recovery-unreachable',
+      sessionName: string,
+      detail: string,
+      fallbackTried: string[],
+    ): void => {
+      const entry = { timestamp: new Date().toISOString(), kind, sentinel: 'rate-limit', sessionName, detail, fallbackTried };
+      console.log(`[sentinel:${kind}] rate-limit/${sessionName} — ${detail}`);
+      try { fs.appendFileSync(rlReachLogPath, JSON.stringify(entry) + '\n'); } catch { /* best-effort */ }
+      if (kind === 'recovery-unreachable') {
+        // Append-only alert log the dashboard reads when Telegram can't be reached.
+        try {
+          let alerts: unknown[] = [];
+          if (fs.existsSync(rlAlertsPath)) {
+            try { alerts = JSON.parse(fs.readFileSync(rlAlertsPath, 'utf-8')) as unknown[]; } catch { alerts = []; }
+            if (!Array.isArray(alerts)) alerts = [];
+          }
+          alerts.push(entry);
+          fs.writeFileSync(rlAlertsPath, JSON.stringify(alerts.slice(-200), null, 2));
+        } catch { /* best-effort */ }
+      }
     };
-    // Route a user-facing notice for the session's topic (Telegram).
-    const rateLimitNotify = async (sessionName: string, text: string): Promise<void> => {
-      const topicId = telegram?.getTopicForSession(sessionName);
-      if (topicId == null) return;
-      const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-        body: JSON.stringify({ text }),
-      });
-      if (!resp.ok) throw new Error(`rate-limit notify failed: ${resp.status}`);
-    };
+
+    // Reachability deps (extracted to sentinelWiring.buildRateLimitRecoveryDeps
+    // so the topic / lifeline / audit branching is unit-testable). Topic-bound
+    // sessions get a topic-tagged nudge + topic notice; non-topic-bound sessions
+    // (e.g. an interactive dev window) get a trusted internal nudge + a lifeline
+    // notice; if no channel is reachable, a recovery-unreachable audit event is
+    // recorded instead of a silent no-op.
+    const { buildRateLimitRecoveryDeps } = await import('../monitoring/sentinelWiring.js');
+    const { resumeFn: rateLimitResume, notifyFn: rateLimitNotify } = buildRateLimitRecoveryDeps({
+      isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+      injectTopicNudge: (name, topicId, text) =>
+        sessionManager.injectMessage(name, `[telegram:${topicId}] ${text}`),
+      injectInternalNudge: (name, text) =>
+        sessionManager.injectInternalMessage(name, text, 'sentinel-recovery'),
+      getTopicForSession: (name) => telegram?.getTopicForSession(name),
+      getLifelineTopicId: () => telegram?.getLifelineTopicId?.(),
+      deliverNotice: async (topicId, text) => {
+        const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
+          body: JSON.stringify({ text }),
+        });
+        return resp.ok;
+      },
+      recordRecovery,
+    });
     const rlsCfg = config.monitoring?.rateLimitSentinel ?? { enabled: true };
     const rateLimitSentinel = new RateLimitSentinel(
       {
