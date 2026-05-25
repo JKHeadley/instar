@@ -76,6 +76,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: true,
     },
   },
+  // Spec-review standards-conformance gate (rung-3 normative slice). Default-on:
+  // the gate reads docs/STANDARDS-REGISTRY.md and signals possible standard
+  // violations in a draft spec. Signal-only (never blocks); 503-stubs where the
+  // constitution isn't present. See docs/specs/standards-conformance-gate.md.
+  specReview: {
+    conformance: {
+      enabled: true,
+    },
+  },
   // Scheduler default-on. Autonomous-continuity tasks (org-intent drift
   // audits, threadline sync, post-update self-healing) only fire when the
   // scheduler runs, so agents shipping without it lose silent infrastructure
