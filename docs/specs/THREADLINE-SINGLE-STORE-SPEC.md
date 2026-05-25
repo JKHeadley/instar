@@ -1,7 +1,9 @@
 ---
 title: Threadline Single-Store Collapse (Phase 2a / CMT-497)
-status: draft
-approved: false
+status: approved
+approved: true
+approver: justin
+approved-at: "2026-05-25T08:49:00Z"
 created: 2026-05-24
 revised: 2026-05-24
 owner: echo
