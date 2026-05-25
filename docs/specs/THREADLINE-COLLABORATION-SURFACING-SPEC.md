@@ -90,13 +90,19 @@ conversation: <gist> — reply in-thread or say 'open this' to engage."
 (If the operator later engages a parentless conversation, "promote to its own
 topic on demand" is the tracked CMT-493-2c follow-on.)
 
-### 3. Single-writer-per-topic for topic-originated replies
+### 3. Single user-facing post per reply (implementation finding: no code change)
 
-Resolve the current either/or cleanly: when the topic's session is LIVE,
-live-inject (and let that session relay) — do NOT also post a standalone surface
-(avoids the §6 interleave). When NO live session exists, post the user-facing
-surface directly. This also closes the incident's "live-inject posted nothing"
-gap: on a `user-visible` verdict with no live session, the post is guaranteed.
+Reconsidered during implementation against the live code + tests. The original
+"skip the surface on live-inject (let the session relay)" would have REGRESSED
+visibility — it re-introduces the "trust the session to relay" assumption that
+CAUSED the incident, and breaks the existing contract (the code already posts a
+`user-visible` surface even on live-inject, by design, so the user always sees it
+regardless of whether the session relays). The current behavior is the desired
+*complementary* one: the inject hands the reply to the agent to ACT on, and the
+surface tells the USER a reply arrived — and it is at most ONE Telegram post per
+reply (not a literal double-post). So §3 is satisfied by the existing code; §1
+(commitment gating) + §2 (parentless surfacing) close the real "vanished / never
+resolved" gaps. No change here.
 
 ### 4. Bind surfacing to the existing novelty / turn-budget
 
@@ -135,8 +141,10 @@ readable field or skip surfacing).
    topic (created-on-demand + reused, NOT the generic attention list, NOT
    per-thread). A pure-ack/no-op (per the gate) produces none; follow-ups on a
    parentless thread don't stack. Test the parent-vs-parentless split + dedupe.
-3. Topic-originated reply: live session present → inject only (no double post);
-   no live session + user-visible → exactly one user-facing post. Test both.
+3. Topic-originated reply produces at most ONE user-facing Telegram post per
+   reply (inject into the session is not a Telegram post); a user-visible verdict
+   always surfaces so the user sees it regardless of relay. (Existing behavior;
+   no regression.)
 4. Surfacing never emits raw envelope/JSON or a transport placeholder.
 5. Surfacing only fires on novel/user-relevant turns (bound to the gate's signal);
    an N-turn novel-then-acks exchange does not produce N pings.

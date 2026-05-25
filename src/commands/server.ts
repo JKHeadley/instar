@@ -101,6 +101,7 @@ import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
 import { ConversationStore } from '../threadline/ConversationStore.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
+import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
 import { SystemReviewer } from '../monitoring/SystemReviewer.js';
 import { createSessionProbes } from '../monitoring/probes/SessionProbe.js';
@@ -6539,6 +6540,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // living on the Conversation (the one-shot worker can't self-police a loop).
     const conversationStore = new ConversationStore(config.stateDir);
     const warrantsReplyGate = new WarrantsReplyGate({ intelligence: sharedIntelligence });
+    // CMT-509 §2: surface PARENTLESS Threadline conversations into a single
+    // dedicated topic so a peer reaching out cold is visible (not an invisible
+    // side channel). Topic-bound conversations surface via TopicLinkageHandler.
+    const collaborationSurfacer = telegram
+      ? new CollaborationSurfacer({ telegram, stateDir: config.stateDir })
+      : undefined;
     const messageFormatter = new MessageFormatter();
     const tmuxBin = config.sessions.tmuxPath;
     const tmuxOps: TmuxOperations = {
@@ -7156,6 +7163,22 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
                 return; // short-circuit ALL three routing branches
               }
+
+              // CMT-509 §2: warranted + PARENTLESS conversation (no bound topic)
+              // → surface to the dedicated Threadline topic so the operator sees
+              // a peer reaching out cold. Topic-bound conversations are surfaced by
+              // TopicLinkageHandler instead, so we skip them here. Best-effort,
+              // non-blocking; never breaks the inbound path.
+              if (collaborationSurfacer) {
+                const hasParentTopic = conversationStore.get(gateThreadId)?.boundTopicId != null;
+                void collaborationSurfacer.surface({
+                  threadId: gateThreadId,
+                  senderName,
+                  text: textContent,
+                  hasParentTopic,
+                  warrants: !decision.suppress,
+                });
+              }
             } catch (gateErr) {
               // Gate failure → fail toward responsive (never silently drop a message).
               console.warn(`[relay] warrants-reply gate error (defaulting responsive): ${gateErr instanceof Error ? gateErr.message : gateErr}`);
@@ -7718,7 +7741,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
