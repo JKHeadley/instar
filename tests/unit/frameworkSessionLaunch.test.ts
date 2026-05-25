@@ -7,13 +7,31 @@
  * silently break existing Claude-installed agents.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
   resolveModelForFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
+import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+/** Fake `codex` binary whose --help text we control, so the capability probe is deterministic. */
+const _fakeCodexDirs: string[] = [];
+function fakeCodexBinary(supportsHookTrustBypass: boolean): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fsl-codex-'));
+  _fakeCodexDirs.push(dir);
+  const bin = path.join(dir, 'codex');
+  const flagLine = supportsHookTrustBypass ? '  --dangerously-bypass-hook-trust  bypass\n' : '';
+  fs.writeFileSync(bin, `#!/bin/bash\ncat <<'HELP'\nUsage: codex\n${flagLine}  -m, --model <M>\nHELP\n`, { mode: 0o755 });
+  __resetCodexCapabilityCache();
+  return bin;
+}
+afterAll(() => { for (const d of _fakeCodexDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/frameworkSessionLaunch.test.ts:cleanup' }); });
 
 describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   describe('claude-code', () => {
@@ -63,6 +81,21 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
         'gpt-5.5',
         '--dangerously-bypass-approvals-and-sandbox',
       ]);
+    });
+
+    it('appends --dangerously-bypass-hook-trust when the codex binary supports it (>=0.133)', () => {
+      const bin = fakeCodexBinary(true);
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
+      expect(spec.argv).toContain('--dangerously-bypass-hook-trust');
+      // It comes after the sandbox bypass, before any threadline -c overrides.
+      expect(spec.argv.indexOf('--dangerously-bypass-hook-trust'))
+        .toBeGreaterThan(spec.argv.indexOf('--dangerously-bypass-approvals-and-sandbox'));
+    });
+
+    it('omits --dangerously-bypass-hook-trust when the codex binary lacks it (<0.133) — would otherwise fail the launch', () => {
+      const bin = fakeCodexBinary(false);
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
+      expect(spec.argv).not.toContain('--dangerously-bypass-hook-trust');
     });
 
     it('honors a custom codexSandboxMode by switching to the flag-pair form (safer profile, no bypass)', () => {
@@ -224,6 +257,22 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('-m');
       expect(spec.argv).toContain('gpt-5.5');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
+    });
+
+    it('appends --dangerously-bypass-hook-trust before the prompt when the codex binary supports it', () => {
+      const bin = fakeCodexBinary(true);
+      const spec = buildHeadlessLaunch('codex-cli', { binaryPath: bin, prompt: 'do the thing' });
+      expect(spec.argv).toContain('--dangerously-bypass-hook-trust');
+      // Prompt must remain the final positional arg (flag precedes it).
+      expect(spec.argv[spec.argv.length - 1]).toBe('do the thing');
+      expect(spec.argv.indexOf('--dangerously-bypass-hook-trust'))
+        .toBeLessThan(spec.argv.length - 1);
+    });
+
+    it('omits --dangerously-bypass-hook-trust when the codex binary lacks it', () => {
+      const bin = fakeCodexBinary(false);
+      const spec = buildHeadlessLaunch('codex-cli', { binaryPath: bin, prompt: 'do the thing' });
+      expect(spec.argv).not.toContain('--dangerously-bypass-hook-trust');
     });
 
     it('codexAllowMcpTools (reply workers) → full bypass so MCP calls are permitted', () => {
