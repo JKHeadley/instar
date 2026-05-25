@@ -486,6 +486,23 @@ worktreeCmd
     }
   });
 
+// ── Spec review (standards-conformance gate) ─────────────────────
+
+const specCmd = program
+  .command('spec')
+  .description('Spec-authoring tools (the standards-conformance gate).');
+
+specCmd
+  .command('conformance <path>')
+  .description('Check a draft spec against the living constitution and print a rule-by-rule report (signal only — never blocks).')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--port <port>', 'Server port (defaults to config.port, else 4040)', (v: string) => parseInt(v, 10))
+  .option('--json', 'Emit the raw JSON report instead of formatted output')
+  .action(async (specPath: string, opts: { dir?: string; port?: number; json?: boolean }) => {
+    const { runSpecConformance } = await import('./commands/spec.js');
+    await runSpecConformance({ specPath, dir: opts.dir, port: opts.port, json: opts.json });
+  });
+
 // ── Backup ───────────────────────────────────────────────────────
 
 const backupCmd = program
