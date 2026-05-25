@@ -86,9 +86,14 @@ export function buildInstarCodexHookGroups(
     PermissionRequest: [
       { matcher: '.*', hooks: [node('external-operation-gate.js')] },
     ],
-    // End-of-turn review: coherence/tone + deferral detection.
+    // End-of-turn review: coherence/tone + deferral + scope-coherence checkpoint.
+    // All three are framework-neutral (read stdin, POST to the local server). Codex
+    // honors `{decision:"block", reason}` on Stop (verified in the 0.133 binary's
+    // StopCommandOutputWire) — the same grounding-pause semantics as Claude, NOT a
+    // hard termination. scope-coherence defaults to `approve` and self-throttles
+    // (depth threshold + 30-min cooldown), so it can't loop an autonomous Codex run.
     Stop: [
-      { matcher: '', hooks: [{ ...node('response-review.js'), timeout: 10000 }, node('deferral-detector.js')] },
+      { matcher: '', hooks: [{ ...node('response-review.js'), timeout: 10000 }, node('deferral-detector.js'), node('scope-coherence-checkpoint.js')] },
     ],
     // Identity/context injection.
     SessionStart: [

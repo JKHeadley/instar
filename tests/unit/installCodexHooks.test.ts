@@ -75,6 +75,17 @@ describe('installCodexHooks', () => {
     expect(cfg.hooks.PermissionRequest[0].matcher).toBe('.*');
   });
 
+  it('wires the full Stop-event review trio: response-review + deferral + scope-coherence', () => {
+    installCodexHooks(projectDir);
+    const cfg = read();
+    const stopCommands = cfg.hooks.Stop[0].hooks.map((h: any) => h.command);
+    // Parity with Claude's Stop chain + spec §4.1 (deferral / scope checkpoint → Stop).
+    // Codex honors {decision:'block', reason} on Stop, so these grounding checks apply.
+    expect(stopCommands.some((c: string) => c.includes('response-review.js'))).toBe(true);
+    expect(stopCommands.some((c: string) => c.includes('deferral-detector.js'))).toBe(true);
+    expect(stopCommands.some((c: string) => c.includes('scope-coherence-checkpoint.js'))).toBe(true);
+  });
+
   it('is idempotent — running twice yields identical config (no duplicate instar groups)', () => {
     installCodexHooks(projectDir);
     const first = fs.readFileSync(path.join(projectDir, '.codex', 'hooks.json'), 'utf-8');
