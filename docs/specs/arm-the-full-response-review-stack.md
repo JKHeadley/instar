@@ -127,6 +127,16 @@ Any migration/render that rewrites a managed hook body must re-stamp the Codex
 `trusted_hash` **atomically with the new body write** (same operation, no window
 where the body is new but the hash is stale).
 
+- **The hash is computed over the final render bytes, never a template
+  intermediate (codey, msg 2).** If the renderer normalizes shebangs, applies
+  `chmod`, substitutes paths, rewrites line endings, or injects wrapper content,
+  `trusted_hash` must be stamped *after* all of those transforms — over the exact
+  bytes Codex will execute. Stamping from the pre-render template produces a hash
+  that never matches the on-disk executable, which is itself a dark-guard vector.
+- This yields a crisp four-part artifact-identity invariant that the verifier
+  (R3) and tests (§4.3) assert as a single chain: **managed hook body ≡
+  executable file on disk ≡ config `trusted_hash` ≡ observed execution** — all
+  four describe the same artifact, or the slot is dark.
 - If the Mode B repro confirms drift auto-quarantine, this requirement is the
   primary defense: it prevents every instar hook edit from silently darking the
   guard.
@@ -232,7 +242,19 @@ construction — that is the point.
 
 1. **Mode A vs Mode B** — pending codey's clean-room repro (the config.toml diffs
    before/after a hash-drifting body edit). Determines whether R2's re-stamping
-   is "hygiene" or "required safety continuity."
+   is "hygiene" or "required safety continuity." The evidence package to capture
+   (codey, msg 2), so the diffs prove execution-truth and not merely config-trust:
+   - initial `config.toml [hooks.state]` + hook file bytes after first
+     install/render;
+   - `config.toml` + hook file bytes after the body rewrite/migration path;
+   - the verification result showing whether **execution actually happened**, not
+     just whether config trust is present (the R3 layer-3 leg);
+   - any event/log line that proves a flow *attempted* `enabled = false`, if the
+     clean repro catches it. (Absence here is expected and acceptable — rollout
+     JSONL does not log `[hooks.state]` writes; see §2 non-goals. If clean-room
+     does not reproduce explicit disable, the fix-spec still closes the class: the
+     R4 pinned-slot allowlist rejection plus drift self-heal make explicit disable
+     non-persistent regardless of provenance.)
 2. **Full `[hooks.state]` block** from codey (all of `stop:0:0/0:1/0:2` +
    `pre_tool_use` entries) to confirm whether firing siblings have `enabled`
    absent vs explicit-true — validates the "omitted-when-trusted" model.
