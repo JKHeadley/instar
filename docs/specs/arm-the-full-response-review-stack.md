@@ -34,6 +34,16 @@ true" / "the gate route exists" and conclude the guard is healthy — while the
 chain is actually broken at a different link. **No single existing check asserts
 the chain is live end-to-end.**
 
+**The server floor (L2 + L3) is dark fleet-wide, not Codex-specific.** Confirmed
+on two independent installs as of 2026-05-25: `echo` (Claude engine —
+`responseReview` absent from `.instar/config.json`, `/capabilities` reports
+`response-review enabled:false`, authenticated `POST /review/evaluate` → `501`)
+and `codey` (Codex engine — identical: no `responseReview` block,
+`enabled:false`, `501`). This separation matters for the fix: the **host layer
+(L1) carries the two-engine dark-mode split** (Codex present-but-trust-disabled
+vs Claude absent-from-Stop), while the **server floor (L2/L3) is one shared fix**
+that lights up both engines at once.
+
 ### 1.1 The two host-layer dark modes are different and must be named separately
 
 This is a deliberate anti-overfit requirement (codey, msg 2). The fix must not be
@@ -75,8 +85,45 @@ and capture `config.toml stop:0:0` **before any keystroke**.
 - If not → **Mode A** → audit the tmux trust-driver keystroke state machine and
   add an arming canary.
 
+**Provenance is explicitly an open non-claim (codey, msg 3).** We do **not**
+assert that the instar installer wrote `enabled = false`. The only direct
+evidence is the live `~/.codex/config.toml`, which was surgically remediated at
+2026-05-25 15:14:24 PDT — so its mtime now proves only the manual-fix point, not
+the original write. Birth time is 2026-05-25 12:55:49 PDT, and no
+backup/history file under `~/.codex` preserves the pre-fix transition; Codex does
+not log `[hooks.state]` writes to session JSONL (the hash hits found there are
+transcript echoes, not authoritative state transitions). The spec therefore
+phrases cause as: *"observed state is consistent with a Codex-native
+trust/disable decision or hook toggle; direct provenance is unavailable."* The
+fix does not depend on resolving this — R4's pinned-slot reassertion makes an
+explicit disable non-persistent **regardless of who wrote it**.
+
 **The fix below is mandatory regardless of which mode is proven.** The repro
 only sharpens the *re-stamping* requirement (§3, R2).
+
+### 1.3 The four states and the dependency order
+
+codey's canonical taxonomy (msg 2) names four *states* the stack can be in, which
+the §1 table's dark modes roll up into:
+
+1. **Host-hook-dark** — `Stop[]` lacks the managed response-review hook (Claude
+   absent-from-Stop), or the hook is present but disabled in host trust state
+   (Codex present-but-`enabled=false`).
+2. **Server-config-dark** — `.instar/config.json` has no `responseReview` block
+   *or* `responseReview.enabled` is false. **Absence and explicit-false collapse
+   into one bucket.**
+3. **Server-intelligence-dark** — config enables review, but no
+   `IntelligenceProvider` is available, so `responseReviewGate` is never
+   constructed and `/review/evaluate` returns `501`.
+4. **Live** — host hook armed + config enabled + `!!ctx.responseReviewGate` true
+   / `/review/evaluate` returns a real verdict.
+
+**Dependency order is server floor first, harness second** (msg 2). Arming the
+host hook into a `501` floor (states 2/3 still dark) forces a bad fail-open /
+fail-closed choice with nothing real underneath. The fix therefore lights L2/L3
+*before* (or atomically with) arming L1 — never L1 alone. This is why P6a
+host-arming is necessary but insufficient (§R3): a green host hook on a dark
+floor is a no-op gate.
 
 ---
 
@@ -162,6 +209,18 @@ three layers green:
 still miss a dark host hook; a present host hook with the gate unconstructed
 still 501s. The verifier must report which layer is dark, by name.
 
+**`armed-but-dark` is a named, first-class health state — not a pass (codey, msg
+2 & 3).** When L1 is green (host hook armed) but L2 or L3 is dark, the health
+surface MUST report `armed-but-dark` and treat it as a non-pass. P6a host-arming
+/ the Codex trust migrator is **necessary but explicitly insufficient**: a green
+trust migration that produces a no-op Stop gate (because the floor is `501`) is a
+**failure**, never a green. Overall protection may be reported `live` only when
+the host hook is armed **and** the server floor is live too. The runtime-gate leg
+(R3.3) must also distinguish `server-config-dark` (flag off) from
+`server-intelligence-dark` (flag on but no `IntelligenceProvider`, so the gate
+was never constructed) — these are different remediation paths and must not
+collapse into one "501" verdict.
+
 ### R4 — Org-policy-pinned safety slots
 
 `response-review` / UnjustifiedStopGate are **org-policy-pinned**, not
@@ -190,6 +249,28 @@ not just new agents via `init`:
   verify runtime liveness** (codey, msg 2). A migration that flips the config
   flag but leaves the host hook unarmed (or vice-versa) is a partial green and
   must be treated as a failure, with the dark layer named.
+
+### R6 — Interim behavior: fail-open with an explicit dark-state signal
+
+There is a window where the host hook is armed (L1 green) but the server floor is
+still dark (`/review/evaluate` → `501`). Arming the hook into a `501` endpoint
+forces a fail-open / fail-closed choice, and **both naive options are wrong**:
+fail-closed would block every reply the moment the floor is dark (a denial-of-
+service on the agent's own voice); silent fail-open would re-create exactly the
+dark-guard class this spec exists to kill.
+
+The required interim behavior (codey, msg 2) is **fail-open with an explicit
+dark-state signal, never silent success**:
+
+- The hook does **not** block delivery when the floor is `501` (fail-open, so a
+  dark floor can never gag the agent).
+- It **emits an explicit `armed-but-dark` signal** to the verdict/health surface
+  (R3) on every such pass — so the dark floor is loud and attributable, not an
+  invisible no-op. A reply that shipped without real review must be observably
+  marked as such, not indistinguishable from a reply that passed review.
+- This is consistent with `feedback_signal_vs_authority`: the hook (a brittle,
+  low-context filter) *signals* the dark state; only the migrator/boot path
+  (R4/R5) has the *authority* to re-arm the floor.
 
 ---
 
@@ -229,12 +310,40 @@ substitute for the other:
 - Seed `enabled = false` on a **non-pinned** hook; boot; assert it is **not**
   overridden but is surfaced as drift.
 
-### 4.5 End-to-end chain (the one that matters)
+### 4.5 End-to-end chain — the reversible self-test (the one that matters)
 
-Mirroring the Phase-1 "feature is alive" E2E standard: drive a real review
-through the full chain on each engine and assert a `block` verdict actually
-prevents delivery. A green here with any single layer dark is impossible by
-construction — that is the point.
+Mirroring the Phase-1 "feature is alive" E2E standard, the acceptance gate is a
+**reversible self-test that is spec-owned and reproducible, not an ad-hoc local
+flip** (codey, msg 2 & 3). It drives a real review through the full chain on each
+engine and asserts a `block` verdict actually prevents delivery. A green here with
+any single layer dark is impossible by construction — that is the point.
+
+The procedure, in order, with restore as a first-class step:
+
+1. **Baseline.** Capture the starting state on the target install: host `Stop[]` /
+   `[hooks.state]`, `responseReview.enabled`, and the `/review/evaluate` status
+   code (expected `501` from a dark floor). This is the rollback anchor.
+2. **Enable the server floor.** Set `responseReview.enabled = true` and ensure an
+   `IntelligenceProvider` is available so `responseReviewGate` constructs; confirm
+   `/review/evaluate` now returns a real (non-`501`) verdict.
+3. **Arm the harness.** Register/trust the host hook (Claude `Stop[]`; Codex
+   `trusted_hash` + `enabled != false`) — server floor first, harness second
+   (§1.3).
+4. **Trigger a real Stop.** Drive an actual reply that should be caught (e.g. an
+   unjustified self-termination or an unsupported claim) through a genuine Stop
+   event — not a synthetic hook invocation.
+5. **Assert produced AND consumed.** A non-`501` review verdict is produced *and*
+   the hook consumes it — a `block` verdict actually prevents delivery
+   (`response-review.js` `exit 2`). Assert both legs; produced-but-ignored is a
+   failure.
+6. **Restore.** Return every mutated surface to the captured baseline. The test
+   leaves no residue — this is what makes it safe to own in the suite and to run
+   against a live install (including the test-as-self gate,
+   `feedback_test_as_self_standard`).
+
+This procedure is the canonical E2E for both engines and is referenced by R3/R5
+as the liveness oracle. It must not be replaced by a config-only or
+hook-only assertion (§4.1–4.2), which by construction cannot prove the chain.
 
 ---
 
@@ -277,4 +386,6 @@ acceptable for a safety slot?), level-of-abstraction fit (arm logic in
 PostUpdateMigrator vs a dedicated arming sentinel), signal-vs-authority (the
 verifier detects+names dark layers; only the migrator/boot path has authority to
 re-arm), interactions (with F3, with the autonomous Stop hook ordering, with the
-reconciler), and rollback cost.
+reconciler, and with R6's fail-open-while-dark window — confirm the
+`armed-but-dark` signal cannot itself become a noise source that violates
+`feedback_notifications_near_silent`), and rollback cost.
