@@ -1,6 +1,6 @@
 {
   "name": "instar",
-  "version": "1.2.79",
+  "version": "1.2.80",
   "description": "Coherence infrastructure for self-evolving AI agents — on the Claude Code or Codex subscription you already have.",
   "type": "module",
   "main": "dist/index.js",
