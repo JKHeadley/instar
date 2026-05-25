@@ -575,6 +575,8 @@ export interface RouteContext {
    *  this, same-machine agents bypass the loop gate (caught in test-as-self). */
   conversationStore?: import('../threadline/ConversationStore.js').ConversationStore;
   warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
+  /** CMT-509: surface parentless Threadline conversations to a dedicated topic. */
+  collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer;
   /** ThreadResumeMap — exposed on ctx so /threadline/relay-send can stamp
    *  originTopicId on outbound sends. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
   threadResumeMap: import('../threadline/ThreadResumeMap.js').ThreadResumeMap | null;
@@ -11885,6 +11887,20 @@ export function createRoutes(ctx: RouteContext): Router {
                 console.log(`[relay-agent] warrants-reply gate suppressed reply (${decision.verdict.signal}) from ${senderAgentName} thread ${gThreadId.slice(0, 8)}`);
                 res.json({ ok: true, threadline: { handled: true, threadId: gThreadId, spawned: false, suppressed: true, signal: decision.verdict.signal } });
                 return;
+              }
+              // CMT-509 §2: warranted + parentless (no bound topic) → surface to
+              // the dedicated Threadline topic (the incident was a co-located peer
+              // delivering here). Topic-bound conversations surface via
+              // TopicLinkageHandler. Best-effort, non-blocking.
+              if (ctx.collaborationSurfacer) {
+                const hasParentTopic = ctx.conversationStore.get(gThreadId)?.boundTopicId != null;
+                void ctx.collaborationSurfacer.surface({
+                  threadId: gThreadId,
+                  senderName: senderAgentName,
+                  text: gText,
+                  hasParentTopic,
+                  warrants: !decision.suppress,
+                });
               }
             }
           } catch (gateErr) {

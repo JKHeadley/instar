@@ -157,6 +157,7 @@ export class AgentServer {
      *  so the local co-located inbound path gates like the relay funnel. */
     conversationStore?: import('../threadline/ConversationStore.js').ConversationStore;
     warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
+    collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer; // CMT-509
     /** ThreadResumeMap — for topic-linkage outbound capture on /threadline/relay-send.
      *  Per THREAD-TOPIC-LINKAGE-SPEC.md. */
     threadResumeMap?: import('../threadline/ThreadResumeMap.js').ThreadResumeMap;
@@ -483,6 +484,7 @@ export class AgentServer {
       threadlineRouter: options.threadlineRouter ?? null,
       conversationStore: options.conversationStore,
       warrantsReplyGate: options.warrantsReplyGate,
+      collaborationSurfacer: options.collaborationSurfacer,
       threadResumeMap: options.threadResumeMap ?? null,
       topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,

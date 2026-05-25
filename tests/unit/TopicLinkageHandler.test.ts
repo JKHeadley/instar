@@ -445,6 +445,41 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     try { SafeFsExecutor.safeRmSync(claudeDir, { recursive: true, force: true, operation: 'tests/unit/TopicLinkageHandler.test.ts:cleanup' }); } catch { /* noop */ }
   });
 
+  it('CMT-509 §1: resume-pending whose surface does NOT fire leaves the commitment OPEN', async () => {
+    // The exact 2026-05-25 incident class: a reply arrived, was durably stored
+    // (resume-pending), but NO user-facing surface posted (here: no
+    // sendTelegramToTopic) — so the user saw nothing. The commitment must NOT
+    // resolve. (Previously resume-pending resolved unconditionally.)
+    const deps = makeDeps(stateDir, {
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      getSessionForTopic: vi.fn().mockReturnValue(null),
+      sendTelegramToTopic: undefined, // surface cannot fire
+    });
+    // Seed the topic-resume-map + JSONL so the topic is NOT considered expired
+    // (mirrors the sibling resume-pending test).
+    fs.writeFileSync(path.join(stateDir, 'topic-resume-map.json'), JSON.stringify({
+      '9210': { uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', sessionName: 'echo-topic-9210', savedAt: new Date().toISOString() },
+    }, null, 2));
+    const claudeDir = path.join(os.homedir(), '.claude', 'projects', stateDir.replace(/[\/\.]/g, '-'));
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl'), '');
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-noSurface', remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' });
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-noSurface' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' },
+    });
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') {
+      expect(out.deliveryMode).toBe('resume-pending');
+      expect(out.telegramSent).toBe(false);
+      expect(out.commitmentDelivered).toBe(false); // NOT resolved — user saw nothing
+    }
+    // The commitment is still open (findByThreadId skips delivered ones).
+    expect(deps.commitmentTracker.findByThreadId('t-noSurface')).not.toBeNull();
+    try { SafeFsExecutor.safeRmSync(claudeDir, { recursive: true, force: true, operation: 'tests/unit/TopicLinkageHandler.test.ts:cleanup' }); } catch { /* noop */ }
+  });
+
   it('fires Telegram surface on user-visible first reply', async () => {
     const sendTg = vi.fn().mockResolvedValue(undefined);
     const deps = makeDeps(stateDir, {

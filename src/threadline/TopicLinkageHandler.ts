@@ -462,18 +462,24 @@ export class TopicLinkageHandler {
       }
     }
 
-    // Mark commitment delivered on live-inject AND resume-pending — both
-    // paths represent successful awaited-reply resolution from the user's
-    // point of view. live-inject hands the payload to a running session;
-    // resume-pending durably stored the reply and the topic's standard wake
-    // path will surface it on next interaction. In both cases PromiseBeacon
-    // should stop heartbeating "still waiting" — the wait is over.
-    //
-    // Only `failure-visible` (the actually-wedged path: injection error or
-    // delivery breakdown) leaves the commitment open, so the beacon keeps
-    // surfacing the unresolved state.
+    // CMT-509 §1: a "report back" commitment must NOT resolve until the reply was
+    // actually surfaced TO THE USER. The user is surfaced when either:
+    //   - `telegramSent` — a user-facing post landed in the topic, OR
+    //   - `live-inject`  — the payload went into the topic's LIVE session, which
+    //                      relays to the user per the Telegram-reply rule.
+    // Previously this also resolved on `resume-pending` unconditionally — but a
+    // resume-pending whose Telegram surface failed or was rate-limited (so
+    // `telegramSent === false`) means the user saw NOTHING, yet the commitment
+    // closed. That is the premature-resolution bug the 2026-05-25 incident
+    // exposed. Now resume-pending only resolves if its surface actually posted.
+    // `failure-visible` (and any un-surfaced path) leaves the commitment OPEN so
+    // PromiseBeacon keeps heartbeating; the 7-day commitment TTL +
+    // expireCommitments() sweep is the backstop against a permanent hang.
+    const surfacedToUser =
+      deliveryMode === 'live-inject' ||
+      (deliveryMode === 'resume-pending' && telegramSent);
     let commitmentDelivered = false;
-    if (commitment && (deliveryMode === 'live-inject' || deliveryMode === 'resume-pending')) {
+    if (commitment && surfacedToUser) {
       try {
         commitmentTracker.deliver(commitment.id);
         commitmentDelivered = true;
