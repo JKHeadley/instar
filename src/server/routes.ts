@@ -8481,6 +8481,72 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // ── Sentinel intercept (P0 safety: emergency-stop on the LIFELINE path) ──
+    // The sentinel emergency-stop/pause intercept also lives in
+    // TelegramAdapter.processUpdate(), but lifeline-owned-polling agents (e.g.
+    // echo, server.ts ~"lifeline-owned polling mode") never run processUpdate —
+    // their inbound arrives here, via the lifeline forward. Without this block
+    // "stop everything" would be injected as a normal message and nothing would
+    // structurally halt a running (or wedged, mid-tool-call) session.
+    // Spec: docs/specs/emergency-stop-forward-path-wiring.md
+    // FAIL-OPEN: any sentinel error falls through to normal routing — the safety
+    // check must never block message delivery. Mirrors processUpdate's behavior.
+    if (ctx.sentinel) {
+      try {
+        const classification = await ctx.sentinel.classify(text);
+        if (classification.category === 'emergency-stop' || classification.category === 'pause') {
+          // Resolve the topic's session. Prefer the on-disk registry (the
+          // persistent source of truth that both polling modes maintain) since
+          // a lifeline-owned adapter's in-memory topicToSession map may be empty;
+          // fall back to the adapter map.
+          let sessionName: string | null = null;
+          try {
+            const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+            if (fs.existsSync(registryPath)) {
+              const reg = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+              sessionName = reg.topicToSession?.[String(topicId)] ?? null;
+            }
+          } catch { /* registry read failed — fall through to adapter map */ }
+          if (!sessionName) {
+            sessionName = ctx.telegram?.getSessionForTopic(Number(topicId)) ?? null;
+          }
+          if (classification.category === 'emergency-stop') {
+            if (sessionName) {
+              if (ctx.telegram?.onSentinelKillSession) {
+                ctx.telegram.onSentinelKillSession(sessionName); // saves resume UUID + kills
+              } else {
+                try { ctx.sessionManager?.killSession(sessionName); } catch { /* best-effort */ }
+              }
+              // Clear this topic's autonomous job so it doesn't zombie-resume.
+              try { stopAutonomousTopic(ctx.config.stateDir, String(topicId)); } catch { /* best-effort */ }
+              console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
+            }
+            if (classification.reason) {
+              console.log(`[telegram-forward] sentinel stop reason: ${classification.reason}`);
+            }
+            ctx.telegram?.sendToTopic(Number(topicId), sessionName
+              ? 'Session terminated.\n\nSend a new message to start a fresh session.'
+              : 'No active session to stop.').catch(() => { /* best-effort */ });
+            res.json({ ok: true, sentinel: 'emergency-stop', killed: !!sessionName });
+            return;
+          }
+          // pause
+          if (sessionName && ctx.telegram?.onSentinelPauseSession) {
+            ctx.telegram.onSentinelPauseSession(sessionName);
+            console.log(`[telegram-forward] sentinel pause: paused session "${sessionName}" for topic ${topicId}`);
+          }
+          ctx.telegram?.sendToTopic(Number(topicId), sessionName
+            ? 'Session paused.\n\nSend a message to resume.'
+            : 'No active session to pause.').catch(() => { /* best-effort */ });
+          res.json({ ok: true, sentinel: 'pause', paused: !!sessionName });
+          return;
+        }
+      } catch (err) {
+        // FAIL-OPEN — never block message delivery on a sentinel hiccup.
+        console.error(`[telegram-forward] sentinel intercept error (fail-open, routing normally): ${err}`);
+      }
+    }
+
     // Log the message so it appears in JSONL + TopicMemory even when
     // the normal polling handler didn't receive it (Lifeline forwarding).
     // Only log if we have a real Telegram messageId — re-deliveries from
