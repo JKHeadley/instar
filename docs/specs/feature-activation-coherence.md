@@ -5,6 +5,7 @@ status: draft
 approved: false
 date: 2026-05-24
 author: echo
+review-convergence: "internal-independent-review-2026-05-25 — one focused critical reviewer over the grounded draft; findings in reports/feature-activation-coherence-convergence.md. NOT YET RATIFIED (approved:false); blocking findings B1/B2 + recommended split (M5) must be resolved before implementation. External cross-model round still recommended."
 related:
   - docs/specs/built-but-dark-liveness-reconciler.md
   - docs/specs/context-death-stop-gate-rollout-completion.md
@@ -12,6 +13,16 @@ eli16-overview: feature-activation-coherence.eli16.md
 ---
 
 # Feature Activation Coherence
+
+> **CONVERGENCE NOTE (2026-05-25, iter-1).** An independent critical review found the core thesis sound but flagged must-fix items before implementation (full report: `reports/feature-activation-coherence-convergence.md`):
+> - **B1 (factual correction):** `response-review` is NOT "dead/unregistered plumbing." It IS registered as a Stop hook for **new** agents (`init.ts:4668`, codex hooks, always-overwritten by the migrator), gated on `responseReview.enabled` (off by default — correct opt-in). Echo (an **existing** agent) shows zero references → the real issue is a **migration-parity gap** (existing agents never got it added to `Stop[]`), plus off-by-default. So its disposition (MERGE → MessagingToneGate) must be re-justified on **redundancy** grounds (CoherenceGate duplicates the always-on tone gate), acknowledging it is a behavior change to a *working, opt-in* gate — not the removal of a dead path. (This corrects my earlier external-diagnosis error — same class as the MessageSentinel false-negative; verify liveness from the full code path, not the deployed artifact.)
+> - **B2 (blocking):** Part 1.1's "runtime probe" is under-specified. Needs a concrete `featureRuntimeProbe: Record<featureId, () => boolean>` map built in `server.ts` (where the 13 subsystem instances are in scope) and passed into `RouteContext`, with a per-feature probe-expression table (e.g. publishing→`ctx.publisher!=null`, telemetry→`ctx.telemetryHeartbeat!=null`, inputGuard→set on sessionManager). Part 1.5's catalog-truth test should reuse this probe (assert a new `FeatureDefinition.defaultState` matches the probe under empty config) rather than brittle static idiom-inference.
+> - **M4:** Migration: retired keys (`evolution.enabled`, `evolution.autoImplement`) are left on disk untouched; **`autoImplement` must NOT be mapped to `evolutionApprovalMode`** (it's inert today — mapping it would retroactively grant autonomy the user never had). Catalog ships in-package (reaches existing agents automatically).
+> - **M5 (recommended split):** split into (1) **enable-layer coherence** (Part 1 + the always-on-three catalog fixes + telemetry deadlock — low-risk, declarative/additive) and (2) a **behavior-disposition** spec for the only two surface-reducing changes (autonomous-evolution execution retirement + response-review merge), which warrant their own side-effects + cross-model review.
+> - **m7:** PR1's "red-first tests across PRs" violates the green-main standard — use `.skip`/`it.todo` (un-skipped in the disposition PR) or fold each truth-test into the PR that makes it pass.
+> - **m6/m8:** use existing `LiveConfig` EventEmitter for hot-reload (Part 1.4); add Agent-Awareness template edits for publishing/response-review changes too, not just input-guard.
+>
+> **Sound (don't touch):** the core thesis, the enableAction-validity test (Part 1.2), always-construct/gate-effects for telemetry (Part 1.3), evolution-system retire-the-flag, autonomous-evolution execution retirement, and the signal-vs-authority framing.
 
 ## One-paragraph summary
 
@@ -24,7 +35,7 @@ Justin's directive: dogfood every instar feature so we know it works coherently.
 ## Evidence (all live-verified on main v1.2.62 / the running agent)
 
 **Four enable-path failure classes (from the dogfood autopsy):**
-- **A — flag with no plumbing:** `response-review` (Stop-hook never registered), `dispatches` (and see inversion below).
+- **A — flag with no plumbing:** `dispatches` (enableAction targets a non-allowlisted key; see D + inversion below). *(Correction per convergence B1: `response-review` was previously listed here in error — it IS registered for new agents and is correctly opt-in/off; its real issue is a migration-parity gap for existing agents + redundancy with the tone gate, not "no plumbing." See the convergence note above.)*
 - **B — config ↔ registry desync + no hot-reload:** `PATCH /config {evolution|publishing}` sets the flag on disk but `FeatureRegistry.discoveryState` stays `undiscovered` until a restart re-runs `bootstrap()`; the running subsystem doesn't hot-reload.
 - **C — chicken-and-egg:** `POST /telemetry/enable` 503s because `telemetryHeartbeat` is only constructed at boot `if (config.monitoring?.telemetry?.enabled)` (`server.ts:2642`) — it can't be enabled through its own endpoint.
 - **D — enableAction targets a non-allowlisted key:** `dispatches`'s `enableAction` patches `dispatches`, absent from the `PATCH /config` allowlist (`routes.ts:11066-11070`) → 400.
@@ -80,7 +91,7 @@ Two sources of truth for "is this feature on" — `config.json` and the `Feature
 
 **Adjacent (own follow-ups, flagged not fixed here):**
 - `UnjustifiedStopGate` / stop-gate → handled by `context-death-stop-gate-rollout-completion.md` (now known to also need `StopGateDb` construction).
-- `MessageSentinel` inbound wiring → **VERIFIED BROKEN for lifeline-owned agents (P0 safety).** The sentinel intercept lives ONLY in `TelegramAdapter.processUpdate()` (`TelegramAdapter.ts:3532`), the adapter's own poll loop. Echo runs **lifeline-owned polling** (`server.ts:1167` names "echo"): the lifeline polls and forwards via `POST /internal/telegram-forward`, which injects directly (`onTopicMessage`/`injectTelegramMessage`) with **zero** sentinel references (`routes.ts:8391–8700`); `src/lifeline/*` does no classification. So "stop everything" is NOT structurally honored for Echo — it's injected as a normal message. The classifier itself is fine (live-tested: "stop everything"/"stop" → emergency-stop). **Fix (P0):** hoist the `processUpdate` sentinel logic into `/internal/telegram-forward` (classify before inject; on emergency-stop kill session + clear autonomous job via existing `onSentinelKillSession`; on pause → pause) so it fires regardless of polling owner + a wiring-integrity test asserting the forward route classifies before injecting + an integration test that an emergency-stop through the forward route kills the session. This is the highest-priority item in this spec.
+- `MessageSentinel` inbound wiring → **✅ DONE — SHIPPED** in PR #377 (`b3a8cf8f6`, released v1.2.72, 2026-05-25) via dedicated spec `emergency-stop-forward-path-wiring.md`. Entry retained for the record. Original finding: **VERIFIED BROKEN for lifeline-owned agents (P0 safety).** The sentinel intercept lived ONLY in `TelegramAdapter.processUpdate()` (`TelegramAdapter.ts:3532`), the adapter's own poll loop. Echo runs **lifeline-owned polling** (`server.ts:1167` names "echo"): the lifeline polls and forwards via `POST /internal/telegram-forward`, which injects directly (`onTopicMessage`/`injectTelegramMessage`) with **zero** sentinel references (`routes.ts:8391–8700`); `src/lifeline/*` does no classification. So "stop everything" is NOT structurally honored for Echo — it's injected as a normal message. The classifier itself is fine (live-tested: "stop everything"/"stop" → emergency-stop). **Fix (P0):** hoist the `processUpdate` sentinel logic into `/internal/telegram-forward` (classify before inject; on emergency-stop kill session + clear autonomous job via existing `onSentinelKillSession`; on pause → pause) so it fires regardless of polling owner + a wiring-integrity test asserting the forward route classifies before injecting + an integration test that an emergency-stop through the forward route kills the session. This is the highest-priority item in this spec.
 
 ### Part 3 — Hand off to the Liveness Reconciler
 
