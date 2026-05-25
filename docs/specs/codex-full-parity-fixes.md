@@ -112,7 +112,7 @@ before build/merge — RECOMMEND Justin triggers it on this P0 now.
 
 **Fix:** accept `tool_name` ∈ {`Bash`, `exec_command`} and read `tool_input.cmd || tool_input.command` — the same pattern already applied to dangerous-command-guard and grounding-before-messaging. Migration via PostUpdateMigrator (always-overwrite instar hook).
 
-### P1 — response-review Codex Stop-payload correctness — 🟡 SCHEMA-OK, RUNTIME-UNVERIFIED
+### P1 — response-review Codex Stop-payload correctness — ✅ RUNTIME-VERIFIED (B1, no code change)
 
 **Finding:** `response-review.js:45` (and `claim-intercept-response.js:120`) read
 `input.last_assistant_message`. The codex 0.133 Rust binary's embedded Stop-hook input
@@ -181,9 +181,12 @@ all incorporated below. Resolutions become hard gates on the P0 build + the P1/P
 
 ### BLOCKING (must resolve before the relevant code merges)
 
-- **B1 — response-review "RESOLVED" was schema≠runtime.** Corrected above to
-  SCHEMA-OK/RUNTIME-UNVERIFIED. Gate: capture a real codey Stop payload, assert
-  `last_assistant_message` non-empty, drive incoherent-reply→hold. (lessons-aware, adversarial)
+- **B1 — ✅ DONE 2026-05-25 (runtime-verified, no code change).** Captured a REAL Codex 0.133 Stop
+  payload live (scratch agent, trusted Stop logger, real `codex exec` turn). Payload keys:
+  `session_id, turn_id, transcript_path, cwd, hook_event_name, model, permission_mode,
+  stop_hook_active, last_assistant_message`; `last_assistant_message` held the EXACT reply. So
+  response-review.js + claim-intercept-response.js genuinely receive the reply at runtime on
+  Codex — the schema≠runtime gap is closed, NO code change needed. (was the lessons-aware/adversarial blocking item)
 - **B2 — P1-before-P0 dark-guard window.** The P1 migration always-overwrites `.codex/hooks.json`
   → hash change → Codex untrusts every guard until re-armed. If P1 releases before P0's
   auto-arm, existing Codex agents lose WORKING guards (incl. dangerous-command-guard) on update

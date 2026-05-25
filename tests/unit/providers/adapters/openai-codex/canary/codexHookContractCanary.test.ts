@@ -7,12 +7,19 @@
  * (NEVER 'fail' for a missing binary).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   runCodexHookContractCanary,
   resolveCodexBinaryForCanary,
   REQUIRED_CODEX_HOOK_EVENTS,
+  checkInstalledCodexHookTrust,
 } from '../../../../../../src/providers/adapters/openai-codex/canary/codexHookContractCanary.js';
+import { installCodexHooks, buildInstarCodexHookGroups } from '../../../../../../src/core/installCodexHooks.js';
+import { expectedHookSlots } from '../../../../../../src/core/codexHookTrust.js';
+import { SafeFsExecutor } from '../../../../../../src/core/SafeFsExecutor.js';
 
 describe('runCodexHookContractCanary', () => {
   it('locks the load-bearing invariants: regex matcher, shell guard, deferral on PreToolUse, correct Stop trio', () => {
@@ -61,5 +68,80 @@ describe('runCodexHookContractCanary', () => {
   it('resolveCodexBinaryForCanary returns a string path or null (never throws)', () => {
     const p = resolveCodexBinaryForCanary();
     expect(p === null || typeof p === 'string').toBe(true);
+  });
+});
+
+describe('checkInstalledCodexHookTrust (Layer C — live-config drift)', () => {
+  let projectDir: string;
+  let codexHome: string;
+  let hooksJsonPath: string;
+  let slots: string[];
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canaryC-proj-'));
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'canaryC-home-'));
+    installCodexHooks(projectDir);
+    hooksJsonPath = path.join(fs.realpathSync(projectDir), '.codex', 'hooks.json');
+    slots = expectedHookSlots(buildInstarCodexHookGroups(projectDir) as any);
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'canaryC:proj' });
+    SafeFsExecutor.safeRmSync(codexHome, { recursive: true, force: true, operation: 'canaryC:home' });
+  });
+
+  function writeTrust(trustedSlots: string[], disabled: string[] = []): void {
+    let body = '';
+    for (const s of trustedSlots) {
+      body += `[hooks.state."${hooksJsonPath}:${s}"]\ntrusted_hash = "sha256:x-${s}"\n`;
+      if (disabled.includes(s)) body += 'enabled = false\n';
+      body += '\n';
+    }
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), body);
+  }
+
+  it('skips when the project has no .codex/hooks.json', () => {
+    const r = checkInstalledCodexHookTrust(fs.mkdtempSync(path.join(os.tmpdir(), 'empty-')), codexHome);
+    expect(r.status).toBe('skip');
+    expect(r.hooksJsonPresent).toBe(false);
+  });
+
+  it("reports 'drift' when the installed trio is present but UNtrusted (dark agent)", () => {
+    // hooks.json installed (correct trio) but config.toml has no trust entries
+    const r = checkInstalledCodexHookTrust(projectDir, codexHome);
+    expect(r.stopTrioInstalled).toBe(true);
+    expect(r.status).toBe('drift');
+    expect(r.allArmed).toBe(false);
+    expect(r.untrusted.length).toBeGreaterThan(0);
+  });
+
+  it("reports 'ok' when the trio is installed AND all slots are trusted", () => {
+    writeTrust(slots);
+    const r = checkInstalledCodexHookTrust(projectDir, codexHome);
+    expect(r.status).toBe('ok');
+    expect(r.stopTrioInstalled).toBe(true);
+    expect(r.allArmed).toBe(true);
+  });
+
+  it("reports 'drift' when a slot is explicitly disabled (enabled=false)", () => {
+    writeTrust(slots, [slots[0]]);
+    const r = checkInstalledCodexHookTrust(projectDir, codexHome);
+    expect(r.status).toBe('drift');
+    expect(r.disabled).toContain(slots[0]);
+  });
+
+  it("detects a clobbered hooks.json where deferral-detector wrongly sits on Stop", () => {
+    // Simulate the historical bug: rewrite Stop with deferral-detector instead of claim-intercept-response
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectDir, '.codex', 'hooks.json'), 'utf-8'));
+    cfg.hooks.Stop[0].hooks = [
+      { type: 'command', command: `node ${projectDir}/.instar/hooks/instar/response-review.js` },
+      { type: 'command', command: `node ${projectDir}/.instar/hooks/instar/deferral-detector.js` },
+      { type: 'command', command: `node ${projectDir}/.instar/hooks/instar/scope-coherence-checkpoint.js` },
+    ];
+    fs.writeFileSync(path.join(projectDir, '.codex', 'hooks.json'), JSON.stringify(cfg));
+    writeTrust(expectedHookSlots(cfg.hooks));
+    const r = checkInstalledCodexHookTrust(projectDir, codexHome);
+    expect(r.status).toBe('drift');
+    expect(r.stopTrioInstalled).toBe(false); // claim-intercept-response missing
+    expect(r.issues.join(' ')).toMatch(/deferral-detector\.js is on Stop|Stop trio incomplete/);
   });
 });

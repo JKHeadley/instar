@@ -48,3 +48,9 @@ After I drafted this plan, I ran it past five reviewers (security, adversarial, 
 - Two real bugs in already-shipped code got fixed on the spot: a fallback that silently did nothing in the real environment, and a missing cache that made startup do extra work.
 
 Net: the plan is the same shape, but honest about what's proven vs not, and safer about how it ships. The full reviewer findings are in the convergence report linked in the frontmatter.
+
+## Update: the two follow-ups, done (2026-05-25)
+
+Both small follow-ups are now closed:
+- **Soup check (B1):** I drove a real Codex turn and grabbed exactly what the two end-of-turn checkers receive. The "last thing the agent said" field came back filled in with the real reply — so those checkers genuinely get fed on Codex. Confirmed, no code change needed.
+- **Real-building canary (C4):** the drift alarm now also reads the ACTUAL installed config on an agent and confirms the safety guards are present AND switched on (trusted) — catching a clobbered config or a dark/untrusted agent, not just blueprint mistakes.

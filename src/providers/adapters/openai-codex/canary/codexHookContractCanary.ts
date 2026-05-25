@@ -41,6 +41,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { buildInstarCodexHookGroups } from '../../../../core/installCodexHooks.js';
+import { codexHooksArmingStatus, expectedHookSlots } from '../../../../core/codexHookTrust.js';
 
 /** Hook events instar's enforcement layer registers and depends on. */
 export const REQUIRED_CODEX_HOOK_EVENTS = [
@@ -216,5 +217,66 @@ export function runCodexHookContractCanary(): CodexHookContractCanaryResult {
       missingEventsInBinary,
       failures,
     },
+  };
+}
+
+/**
+ * Layer C — installed-config drift check (C4). Unlike Layer A (which asserts the BUILDER
+ * output) this reads what is ACTUALLY on disk for a specific agent and confirms the gates are
+ * present AND trusted: the project `.codex/hooks.json` carries instar's Stop review trio
+ * (response-review + claim-intercept-response + scope-coherence) AND every instar hook slot has
+ * a `trusted_hash` (and isn't `enabled = false`) in `$CODEX_HOME/config.toml [hooks.state]`.
+ * Catches reality drifting from the blueprint — a hand-edited/clobbered hooks.json, an untrusted
+ * (dark) agent, or a user-disabled guard — which Layer A cannot see. Runtime/health use
+ * (per-agent), not a CI invariant: returns 'skip' when no hooks.json exists.
+ */
+export interface InstalledCodexHookTrustCheck {
+  status: 'ok' | 'drift' | 'skip';
+  hooksJsonPresent: boolean;
+  stopTrioInstalled: boolean;
+  allArmed: boolean;
+  untrusted: string[];
+  disabled: string[];
+  issues: string[];
+}
+
+const STOP_TRIO = ['response-review.js', 'claim-intercept-response.js', 'scope-coherence-checkpoint.js'];
+
+export function checkInstalledCodexHookTrust(projectDir: string, codexHome?: string): InstalledCodexHookTrustCheck {
+  const home = codexHome || path.join(os.homedir(), '.codex');
+  const issues: string[] = [];
+
+  let realProjectDir = projectDir;
+  try { realProjectDir = fs.realpathSync(projectDir); } catch { /* use as-is */ }
+  const hooksJsonPath = path.join(realProjectDir, '.codex', 'hooks.json');
+
+  let hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+  try {
+    hooks = (JSON.parse(fs.readFileSync(hooksJsonPath, 'utf-8')).hooks) ?? {};
+  } catch {
+    return { status: 'skip', hooksJsonPresent: false, stopTrioInstalled: false, allArmed: false, untrusted: [], disabled: [], issues: ['no .codex/hooks.json'] };
+  }
+
+  const stopCmds = (hooks.Stop?.[0]?.hooks ?? []).map((h) => h.command ?? '');
+  const stopTrioInstalled = STOP_TRIO.every((s) => stopCmds.some((c) => c.includes(s)));
+  if (!stopTrioInstalled) issues.push(`installed Stop trio incomplete: have [${stopCmds.map((c) => c.split('/').pop()).join(', ')}], want ${STOP_TRIO.join(' + ')}`);
+  if (stopCmds.some((c) => c.includes('deferral-detector.js'))) issues.push('deferral-detector.js is on Stop in the installed config (it belongs on PreToolUse)');
+
+  let configBody = '';
+  try { configBody = fs.readFileSync(path.join(home, 'config.toml'), 'utf-8'); } catch { /* none = nothing trusted */ }
+  const slots: string[] = expectedHookSlots(hooks);
+  const status = codexHooksArmingStatus(configBody, hooksJsonPath, slots) as { untrusted: string[]; disabled: string[]; allArmed: boolean };
+  if (status.untrusted.length) issues.push(`untrusted (dark) slots: ${status.untrusted.join(', ')}`);
+  if (status.disabled.length) issues.push(`explicitly disabled slots: ${status.disabled.join(', ')}`);
+
+  const ok = stopTrioInstalled && status.allArmed && !stopCmds.some((c) => c.includes('deferral-detector.js'));
+  return {
+    status: ok ? 'ok' : 'drift',
+    hooksJsonPresent: true,
+    stopTrioInstalled,
+    allArmed: status.allArmed,
+    untrusted: status.untrusted,
+    disabled: status.disabled,
+    issues,
   };
 }
