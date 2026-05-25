@@ -4271,13 +4271,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Initialize WorkingMemoryAssembler — token-budgeted context assembly for session-start hooks.
     // Placed after activitySentinel so episodicMemory can be wired from the sentinel.
     // Skipped in minimal-config setups where neither memory system is available.
-    if (semanticMemory || activitySentinel) {
+    if (semanticMemory || activitySentinel || topicIntentStore) {
       workingMemory = new WorkingMemoryAssembler({
         semanticMemory,
         episodicMemory: activitySentinel?.getEpisodicMemory(),
+        // rung 2 — unified read path: topic-intent refs + Playbook manifest items
+        // join the assembled working set (both read-only, degrade-safe).
+        topicIntentStore,
+        stateDir: config.stateDir,
       });
       const epStatus = activitySentinel ? 'yes' : 'no';
-      console.log(pc.green(`  WorkingMemoryAssembler: ready (semantic: ${semanticMemory ? 'yes' : 'no'}, episodic: ${epStatus})`));
+      console.log(pc.green(`  WorkingMemoryAssembler: ready (semantic: ${semanticMemory ? 'yes' : 'no'}, episodic: ${epStatus}, topic-intent: ${topicIntentStore ? 'yes' : 'no'})`));
     }
 
     // Session Watchdog — auto-remediation for stuck commands
