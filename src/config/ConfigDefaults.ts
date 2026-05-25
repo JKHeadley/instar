@@ -85,6 +85,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: true,
     },
   },
+  // Usher (rung 4) — signal-only mid-task re-surface watcher. Default-on: it only
+  // writes suggestions to a read-only pull surface (never injects, never pushes to
+  // chat), so safe-on. enabled:false stops the watcher. See docs/specs/cwa-usher.md.
+  usher: {
+    enabled: true,
+  },
   // Scheduler default-on. Autonomous-continuity tasks (org-intent drift
   // audits, threadline sync, post-update self-healing) only fire when the
   // scheduler runs, so agents shipping without it lose silent infrastructure
