@@ -44,6 +44,7 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
@@ -185,6 +186,8 @@ export class AgentServer {
     worktreeManager?: WorktreeManager;
     /** Layer 1 of the Topic Intent Layer — per-topic confidence tracker. Null/undefined when disabled. */
     topicIntentStore?: TopicIntentStore;
+    /** Shared intelligence provider (subscription/REPL-pool) for the standards-conformance gate. */
+    intelligence?: import('../core/types.js').IntelligenceProvider | null;
     /** OIDC verification function for the GH-check endpoint (injected for testability). */
     oidcVerify?: (token: string) => Promise<{ repository: string; workflow_ref: string; ref: string }>;
     /** Enrolled GitHub repos allowed to call the GH-check endpoint. */
@@ -559,6 +562,24 @@ export class AgentServer {
       topicIntentStore: options.topicIntentStore ?? null,
     });
     this.app.use(topicIntentRoutes);
+
+    // Standards-conformance gate (rung-3 normative slice): the spec-review gate
+    // reads docs/STANDARDS-REGISTRY.md and signals possible standard violations.
+    // Mounted unconditionally; 503-stubs when disabled or the constitution is
+    // unreadable (e.g. a deployed agent without the repo's docs/). Signal-only.
+    // Spec: docs/specs/standards-conformance-gate.md.
+    try {
+      const projectDir = options.config.projectDir;
+      this.app.use(createSpecReviewRoutes({
+        intelligence: options.intelligence ?? null,
+        registryPath: path.join(projectDir, 'docs', 'STANDARDS-REGISTRY.md'),
+        specsDir: path.join(projectDir, 'docs', 'specs'),
+        stateDir: options.config.stateDir,
+        enabled: options.config.specReview?.conformance?.enabled !== false,
+      }));
+    } catch (err) {
+      console.warn('[agent-server] failed to register spec-review routes:', err);
+    }
 
     // Error handler (must be last)
     this.app.use(errorHandler);

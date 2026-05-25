@@ -3,10 +3,12 @@ slug: standards-conformance-gate
 title: Wire the spec-review gate to read the living constitution
 author: echo
 project: continuous-working-awareness
-status: draft-pending-ratification
-review-convergence: null
-approved: false
-approved-by: null
+status: approved
+review-convergence: "2026-05-25T02:53:00Z"
+review-iterations: 1
+review-note: "Claude-authored + manual standards/lessons self-review (single angle). Full /spec-converge + /crossreview multi-model convergence NOT run — tooling absent on this host. Ratified by Justin 2026-05-25 ('Approved please proceed') with that caveat explicit; fuller review to precede/accompany merge."
+approved: true
+approved-by: justin
 eli16-overview: standards-conformance-gate.eli16.md
 ---
 
@@ -47,6 +49,10 @@ the constitution and checks a spec against it, turning the conformance pass from
 - **A full markdown→AST parser.** v1 parses the registry's known, stable structure
   (`### article` + `**Rule.**`/`**In practice.**`); a richer parser is a refinement
   <!-- tracked: scg-richer-parser -->.
+- **The `instar spec conformance` CLI** is a thin convenience wrapper over the
+  exported `runConformanceCheck`; the HTTP route is the structural deliverable
+  (the `/spec-converge` skill and curl both use it), so the CLI rides a follow-up
+  <!-- tracked: scg-cli --> rather than expanding this PR's surface.
 
 ## Proposed design
 

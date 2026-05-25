@@ -1704,6 +1704,16 @@ export interface InstarConfig {
     };
   };
   /**
+   * Spec-review standards-conformance gate (rung-3 normative slice).
+   * `conformance.enabled` (default true) toggles the route that checks a spec
+   * against docs/STANDARDS-REGISTRY.md. See docs/specs/standards-conformance-gate.md.
+   */
+  specReview?: {
+    conformance?: {
+      enabled?: boolean;
+    };
+  };
+  /**
    * Agent-level set of frameworks this install actively uses. Drives
    * which framework-specific migration steps run on update: a
    * codex-cli-only install should not receive `.claude/`-specific

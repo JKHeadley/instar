@@ -39,6 +39,7 @@ import {
 const ROUTE_SOURCE_FILES = [
   'src/server/routes.ts',
   'src/server/topicIntentRoutes.ts',
+  'src/server/specReviewRoutes.ts',
 ];
 const routesSource = ROUTE_SOURCE_FILES
   .map((rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf-8'))
