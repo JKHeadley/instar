@@ -131,8 +131,10 @@ describe('TopicLinkageHandler.captureOriginOnSend', () => {
     const entry = deps.threadResumeMap.get('t-2') as ThreadResumeEntry | null;
     // Note: ThreadResumeMap.get verifies JSONL existence — entry may be null
     // because no real Claude session JSONL exists. Read the raw file instead.
-    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'threadline', 'thread-resume-map.json'), 'utf-8'));
-    expect(raw['t-2'].originTopicId).toBe(9210);
+    // Phase 2a: ThreadResumeMap is a view over conversations.json (originTopicId
+    // → boundTopicId via the field bridge).
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'threadline', 'conversations.json'), 'utf-8')).conversations;
+    expect(raw['t-2'].boundTopicId).toBe(9210);
     expect(raw['t-2'].originSessionName).toBe('echo-topic-9210');
     // get() may return null because of the JSONL existence guard; that's expected
     // in this synthetic test — the raw-file assertion above is the source of truth.

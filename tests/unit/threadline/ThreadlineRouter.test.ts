@@ -386,8 +386,8 @@ describe('ThreadlineRouter', () => {
 
       // The entry should be saved (though get() checks JSONL existence)
       // We check the file directly
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId]).toBeDefined();
       expect(data[threadId].subject).toBe('Saved Thread');
       expect(data[threadId].state).toBe('active');
@@ -460,8 +460,8 @@ describe('ThreadlineRouter', () => {
       const envelope = makeEnvelope({ threadId });
       await router.handleInboundMessage(envelope);
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId].state).toBe('active');
       expect(data[threadId].messageCount).toBe(6); // 5 + 1
     });
@@ -632,11 +632,11 @@ describe('ThreadlineRouter', () => {
 
       router.onSessionEnd(threadId, newUuid, 'updated-tmux-session');
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(data[threadId].uuid).toBe(newUuid);
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
+      expect(data[threadId].sessionUuid).toBe(newUuid);
       expect(data[threadId].state).toBe('idle');
-      expect(data[threadId].sessionName).toBe('updated-tmux-session');
+      expect(data[threadId].boundSessionName).toBe('updated-tmux-session');
     });
 
     it('does nothing for unknown thread', () => {
@@ -651,8 +651,8 @@ describe('ThreadlineRouter', () => {
 
       router.onThreadResolved(threadId);
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId].state).toBe('resolved');
       expect(data[threadId].resolvedAt).toBeDefined();
     });
@@ -665,8 +665,8 @@ describe('ThreadlineRouter', () => {
 
       router.onThreadFailed(threadId);
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId].state).toBe('failed');
     });
 

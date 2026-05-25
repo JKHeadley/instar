@@ -1,461 +1,319 @@
 /**
- * ThreadResumeMap — Persistent mapping from thread IDs to Claude session UUIDs.
+ * ThreadResumeMap — persistent mapping from thread IDs to Claude/Codex session
+ * UUIDs, for `--resume`.
  *
- * Analogous to TopicResumeMap but for inter-agent conversation threads.
- * When a thread's session is killed idle, the Claude session UUID is persisted
- * so it can be resumed (--resume UUID) when the next message arrives on that thread.
+ * Phase 2a (THREADLINE-SINGLE-STORE-SPEC.md / CMT-497): this is now a **view over
+ * `ConversationStore`** — the single source of truth. Every method maps the legacy
+ * `ThreadResumeEntry` shape onto a `Conversation` record via the field bridge
+ * below. `save` MERGES (it never clobbers the loop gate's `turnCount`/
+ * `lastInboundHash`/`lastOutboundHash`). The on-disk `thread-resume-map.json` is no
+ * longer written; a one-release dual-read window falls back to it on a miss and
+ * writes through, so threads written by a pre-2a version are not lost.
  *
- * Key differences from TopicResumeMap:
- * - Maps threadId (string UUID) → extended session info
- * - 7-day TTL (vs. 24 hours)
- * - Max 1,000 entries with LRU eviction of non-pinned entries
- * - Resolved threads get a 7-day grace period before removal
- * - Pinned threads are never evicted
- *
- * Storage: {stateDir}/threadline/thread-resume-map.json
+ * Field bridge (ThreadResumeEntry ↔ Conversation):
+ *   uuid↔sessionUuid · sessionName↔boundSessionName · lastAccessedAt↔lastActivityAt
+ *   originTopicId↔boundTopicId · originSessionName↔originSessionName · the rest 1:1.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { ConversationStore, type Conversation } from './ConversationStore.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
-/** Thread lifecycle state */
+/** Thread lifecycle state (legacy subset of ConversationState). */
 export type ThreadState = 'active' | 'idle' | 'resolved' | 'failed' | 'archived';
 
-/** A single thread resume mapping entry */
+/** A single thread resume mapping entry. */
 export interface ThreadResumeEntry {
-  /** Claude session UUID */
   uuid: string;
-  /** tmux session name */
   sessionName: string;
-  /** When thread was created */
   createdAt: string;
-  /** When this mapping was last saved */
   savedAt: string;
-  /** When thread was last accessed */
   lastAccessedAt: string;
-  /** The other agent in this conversation */
   remoteAgent: string;
-  /** Thread subject */
   subject: string;
-  /** Thread lifecycle state */
   state: ThreadState;
-  /** When thread was resolved (only set if state === 'resolved') */
   resolvedAt?: string;
-  /** Pinned threads are never evicted */
   pinned: boolean;
-  /** Total messages in thread */
   messageCount: number;
-  /** Machine that owns this thread (for cross-machine sync) */
   machineOrigin?: string;
-  /** If migrated to another machine, which one */
   migratedTo?: string;
-  /** Spawn mode: interactive (default) or pipe */
   spawnMode?: 'interactive' | 'pipe';
-  /**
-   * Thread↔Topic linkage (THREAD-TOPIC-LINKAGE-SPEC.md).
-   * If this thread was initiated by a topic-bound session, the Telegram topic
-   * that owns it. Set on outbound send; used by inbound dispatch to route the
-   * reply back to the originating topic session instead of a sibling worker.
-   */
   originTopicId?: number;
-  /**
-   * Session name of the originating topic at send time. Fast-path cache so the
-   * inbound dispatcher doesn't have to query CommitmentTracker on every reply.
-   * The source of truth for "what topic owns this thread" is the commitment
-   * record with `verificationMethod: 'threadline-reply'`.
-   */
   originSessionName?: string;
 }
 
-/** Serialized map format */
-interface ThreadResumeMapData {
-  [threadId: string]: ThreadResumeEntry;
+// ── Field bridge ────────────────────────────────────────────────
+
+/** Map a Conversation lifecycle state onto the legacy ThreadState subset. */
+function toThreadState(s: Conversation['state']): ThreadState {
+  if (s === 'open' || s === 'awaiting-reply') return 'active';
+  return s;
+}
+
+/** Conversation → ThreadResumeEntry (read direction). */
+function conversationToEntry(c: Conversation): ThreadResumeEntry {
+  return {
+    uuid: c.sessionUuid ?? '',
+    sessionName: c.boundSessionName ?? '',
+    createdAt: c.createdAt,
+    savedAt: c.savedAt,
+    lastAccessedAt: c.lastActivityAt,
+    remoteAgent: c.remoteAgent ?? c.participants.peers[0] ?? '',
+    subject: c.subject ?? '',
+    state: toThreadState(c.state),
+    resolvedAt: c.resolvedAt,
+    pinned: c.pinned,
+    messageCount: c.messageCount,
+    machineOrigin: c.machineOrigin,
+    migratedTo: c.migratedTo,
+    spawnMode: c.spawnMode,
+    originTopicId: c.boundTopicId,
+    originSessionName: c.originSessionName,
+  };
+}
+
+/**
+ * Apply a ThreadResumeEntry onto a Conversation draft (write direction) —
+ * MERGING: resume fields are set from the entry, but the loop gate's
+ * `turnCount`/`lastInboundHash`/`lastOutboundHash` are LEFT INTACT (convergence
+ * finding — a legacy save must not wipe turn state).
+ */
+function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation): Conversation {
+  if (entry.uuid) draft.sessionUuid = entry.uuid;
+  if (entry.sessionName) draft.boundSessionName = entry.sessionName;
+  if (entry.remoteAgent) {
+    draft.remoteAgent = entry.remoteAgent;
+    if (!draft.participants.peers.includes(entry.remoteAgent)) draft.participants.peers.push(entry.remoteAgent);
+  }
+  if (entry.subject) draft.subject = entry.subject;
+  draft.state = entry.state; // legacy state is authoritative on an explicit save
+  if (entry.resolvedAt !== undefined) draft.resolvedAt = entry.resolvedAt;
+  draft.pinned = entry.pinned;
+  // messageCount is shared with the gate — never go backwards.
+  draft.messageCount = Math.max(draft.messageCount ?? 0, entry.messageCount ?? 0);
+  if (entry.machineOrigin !== undefined) draft.machineOrigin = entry.machineOrigin;
+  if (entry.migratedTo !== undefined) draft.migratedTo = entry.migratedTo;
+  if (entry.spawnMode !== undefined) draft.spawnMode = entry.spawnMode;
+  if (entry.originTopicId !== undefined) draft.boundTopicId = entry.originTopicId;
+  if (entry.originSessionName !== undefined) draft.originSessionName = entry.originSessionName;
+  if (entry.createdAt && draft.version === 0) draft.createdAt = entry.createdAt;
+  draft.lastActivityAt = entry.lastAccessedAt || new Date().toISOString();
+  // turnCount / lastInboundHash / lastOutboundHash: intentionally untouched.
+  return draft;
 }
 
 // ── Constants ───────────────────────────────────────────────────
 
-/** Entries older than 7 days are pruned (non-pinned only) */
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Resolved threads get a 7-day grace period before removal */
 const RESOLVED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Maximum number of entries before LRU eviction */
-const MAX_ENTRIES = 1000;
 
 // ── Implementation ──────────────────────────────────────────────
 
 export class ThreadResumeMap {
-  private filePath: string;
+  private store: ConversationStore;
+  private legacyPath: string;
   private projectDir: string;
   private tmuxPath: string;
 
-  constructor(stateDir: string, projectDir: string, tmuxPath?: string) {
-    const threadlineDir = path.join(stateDir, 'threadline');
-    fs.mkdirSync(threadlineDir, { recursive: true });
-    this.filePath = path.join(threadlineDir, 'thread-resume-map.json');
+  constructor(stateDir: string, projectDir: string, tmuxPath?: string, store?: ConversationStore) {
+    this.store = store ?? new ConversationStore(stateDir);
+    this.legacyPath = path.join(stateDir, 'threadline', 'thread-resume-map.json');
     this.projectDir = projectDir;
     this.tmuxPath = tmuxPath || 'tmux';
   }
 
   /**
-   * Save or update a thread resume mapping.
-   * Triggers pruning if the map exceeds MAX_ENTRIES.
-   */
-  save(threadId: string, entry: ThreadResumeEntry): void {
-    const map = this.load();
-
-    map[threadId] = {
-      ...entry,
-      savedAt: new Date().toISOString(),
-    };
-
-    // Prune if needed
-    this.pruneMap(map);
-    this.persist(map);
-  }
-
-  /**
-   * Look up a thread resume entry. Returns null if not found,
-   * expired, or the JSONL file no longer exists.
+   * Look up a thread resume entry. Returns null if not found, expired, or the
+   * session JSONL no longer exists. Dual-read: on a ConversationStore miss, fall
+   * back to the legacy file and write through (one-release transition window).
    */
   get(threadId: string): ThreadResumeEntry | null {
-    const map = this.load();
-    const entry = map[threadId];
-    if (!entry) return null;
-
-    // Check if expired (non-pinned only)
-    if (!entry.pinned && this.isExpired(entry)) {
-      return null;
+    let c = this.store.get(threadId);
+    if (!c) {
+      const legacy = this.readLegacyEntry(threadId);
+      if (legacy) {
+        this.save(threadId, legacy); // write-through to ConversationStore
+        c = this.store.get(threadId);
+      }
     }
-
-    // Verify the JSONL file still exists
-    if (!this.jsonlExists(entry.uuid)) {
-      return null;
-    }
-
+    if (!c) return null;
+    const entry = conversationToEntry(c);
+    // Resume guard: the session JSONL must still exist (unless pinned).
+    if (!entry.pinned && !this.jsonlExists(entry.uuid)) return null;
     return entry;
   }
 
-  /**
-   * Remove a thread entry.
-   */
+  /** Save or update a thread resume mapping (MERGES — preserves gate turn state). */
+  save(threadId: string, entry: ThreadResumeEntry): void {
+    this.store.mutateSync(threadId, draft => applyEntryToConversation({ ...entry, savedAt: new Date().toISOString() }, draft));
+  }
+
+  /** Remove a thread entry (cross-process safe via ConversationStore). */
   remove(threadId: string): void {
-    const map = this.load();
-    delete map[threadId];
-    this.persist(map);
+    this.store.mutateSync(threadId, () => null);
   }
 
-  /**
-   * Mark a thread as resolved — sets state to 'resolved' and records resolvedAt.
-   * Resolved threads get a grace period before being removed by prune().
-   */
+  /** Mark a thread resolved (grace period before removal). */
   resolve(threadId: string): void {
-    const map = this.load();
-    const entry = map[threadId];
-    if (!entry) return;
-
-    entry.state = 'resolved';
-    entry.resolvedAt = new Date().toISOString();
-    entry.savedAt = new Date().toISOString();
-
-    this.persist(map);
+    if (!this.store.get(threadId)) return;
+    this.store.mutateSync(threadId, draft => {
+      draft.state = 'resolved';
+      draft.resolvedAt = new Date().toISOString();
+      return draft;
+    });
   }
 
-  /**
-   * Mark entries from a specific machine as migrated (Phase 4: cross-machine sync).
-   * Called during failover when this machine takes over from another.
-   * The migrated entries can be used to resume threads with --resume UUID.
-   */
-  migrateFrom(sourceMachine: string, targetMachine: string): { migrated: number; skipped: number } {
-    const map = this.load();
-    let migrated = 0;
-    let skipped = 0;
+  /** Pin — never evicted. */
+  pin(threadId: string): void {
+    if (!this.store.get(threadId)) return;
+    this.store.mutateSync(threadId, draft => { draft.pinned = true; return draft; });
+  }
 
-    for (const [threadId, entry] of Object.entries(map)) {
-      if (entry.machineOrigin === sourceMachine && entry.state === 'active') {
-        entry.migratedTo = targetMachine;
-        entry.state = 'idle'; // Demote to idle — will be resumed on next message
-        entry.savedAt = new Date().toISOString();
+  /** Unpin — allow normal TTL/LRU eviction. */
+  unpin(threadId: string): void {
+    if (!this.store.get(threadId)) return;
+    this.store.mutateSync(threadId, draft => { draft.pinned = false; return draft; });
+  }
+
+  /** Find all (non-expired) threads with a specific remote agent. */
+  getByRemoteAgent(agentName: string): Array<{ threadId: string; entry: ThreadResumeEntry }> {
+    return this.store.getByParticipant(agentName)
+      .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }));
+  }
+
+  /** List all active or idle threads. */
+  listActive(): Array<{ threadId: string; entry: ThreadResumeEntry }> {
+    return this.store.listActive()
+      .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }))
+      .filter(({ entry }) => entry.state === 'active' || entry.state === 'idle');
+  }
+
+  /** Cross-machine failover: demote a source machine's active threads to idle. */
+  migrateFrom(sourceMachine: string, targetMachine: string): { migrated: number; skipped: number } {
+    let migrated = 0; let skipped = 0;
+    // Iterate ALL conversations (not just active) so resolved/failed threads from
+    // the source machine are counted as skipped, matching legacy semantics.
+    for (const c of this.store.all()) {
+      if (c.machineOrigin !== sourceMachine) continue;
+      if (c.state === 'active') {
+        this.store.mutateSync(c.threadId, draft => {
+          draft.migratedTo = targetMachine;
+          draft.state = 'idle';
+          return draft;
+        });
         migrated++;
-      } else if (entry.machineOrigin === sourceMachine) {
+      } else {
         skipped++;
       }
     }
-
-    if (migrated > 0) this.persist(map);
     return { migrated, skipped };
   }
 
-  /**
-   * Get entries that were migrated to this machine (for resume capability).
-   */
+  /** Get entries migrated to this machine (for resume capability). */
   getMigratedEntries(targetMachine: string): Array<{ threadId: string; entry: ThreadResumeEntry }> {
-    const map = this.load();
-    const results: Array<{ threadId: string; entry: ThreadResumeEntry }> = [];
-    for (const [threadId, entry] of Object.entries(map)) {
-      if (entry.migratedTo === targetMachine) {
-        results.push({ threadId, entry });
-      }
-    }
-    return results;
+    return this.store.all()
+      .filter(c => c.migratedTo === targetMachine)
+      .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }));
   }
 
-  /**
-   * Pin a thread — pinned threads are never evicted by LRU or TTL.
-   */
-  pin(threadId: string): void {
-    const map = this.load();
-    const entry = map[threadId];
-    if (!entry) return;
-
-    entry.pinned = true;
-    entry.savedAt = new Date().toISOString();
-
-    this.persist(map);
+  /** Total stored entries (for monitoring). */
+  size(): number {
+    return this.store.size();
   }
 
-  /**
-   * Unpin a thread — allows normal TTL and LRU eviction.
-   */
-  unpin(threadId: string): void {
-    const map = this.load();
-    const entry = map[threadId];
-    if (!entry) return;
-
-    entry.pinned = false;
-    entry.savedAt = new Date().toISOString();
-
-    this.persist(map);
-  }
-
-  /**
-   * Find all threads with a specific remote agent.
-   * Returns entries that are not expired.
-   */
-  getByRemoteAgent(agentName: string): Array<{ threadId: string; entry: ThreadResumeEntry }> {
-    const map = this.load();
-    const results: Array<{ threadId: string; entry: ThreadResumeEntry }> = [];
-
-    for (const [threadId, entry] of Object.entries(map)) {
-      if (entry.remoteAgent === agentName && (entry.pinned || !this.isExpired(entry))) {
-        results.push({ threadId, entry });
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * List all active or idle threads (not resolved, failed, or archived).
-   */
-  listActive(): Array<{ threadId: string; entry: ThreadResumeEntry }> {
-    const map = this.load();
-    const results: Array<{ threadId: string; entry: ThreadResumeEntry }> = [];
-
-    for (const [threadId, entry] of Object.entries(map)) {
-      if (
-        (entry.state === 'active' || entry.state === 'idle') &&
-        (entry.pinned || !this.isExpired(entry))
-      ) {
-        results.push({ threadId, entry });
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * Prune expired entries, resolved entries past grace period,
-   * and LRU overflow entries. Called automatically on save, but
-   * can be called manually for maintenance.
-   */
+  /** Prune expired / resolved-past-grace / LRU overflow. */
   prune(): void {
-    const map = this.load();
-    this.pruneMap(map);
-    this.persist(map);
+    this.store.prune();
   }
 
   /**
-   * Proactive resume heartbeat: scan all active thread-linked tmux sessions
-   * and update the thread→UUID mapping. Should be called periodically.
-   *
-   * This ensures that even if a session crashes unexpectedly, we already have
-   * its UUID on file for --resume.
+   * Proactive resume heartbeat: scan active thread-linked tmux sessions and
+   * update the thread→UUID mapping so a crash leaves the UUID on file.
    */
   refreshResumeMappings(threadSessions: Map<string, string>): void {
     try {
       if (!threadSessions || threadSessions.size === 0) return;
-
       const projectHash = this.projectDir.replace(/\//g, '-');
       const projectJsonlDir = path.join(os.homedir(), '.claude', 'projects', projectHash);
-
       if (!fs.existsSync(projectJsonlDir)) return;
 
-      // Get all JSONL files with their stats
       const jsonlFiles = fs.readdirSync(projectJsonlDir)
         .filter(f => f.endsWith('.jsonl'))
         .map(f => {
           try {
             const stat = fs.statSync(path.join(projectJsonlDir, f));
-            return { name: f, mtimeMs: stat.mtimeMs, uuid: f.replace('.jsonl', '') };
+            return { mtimeMs: stat.mtimeMs, uuid: f.replace('.jsonl', '') };
           } catch { return null; }
         })
-        .filter((f): f is { name: string; mtimeMs: number; uuid: string } => f !== null && f.uuid.length >= 30)
+        .filter((f): f is { mtimeMs: number; uuid: string } => f !== null && f.uuid.length >= 30)
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
       if (jsonlFiles.length === 0) return;
 
-      const map = this.load();
-      let updated = 0;
       const claimedUuids = new Set<string>();
-
       for (const [threadId, sessionName] of threadSessions) {
-        // Verify the tmux session is actually alive
         const hasSession = spawnSync(this.tmuxPath, ['has-session', '-t', `=${sessionName}`]);
         if (hasSession.status !== 0) continue;
-
-        // Find the JSONL for this session (most recently modified, not already claimed)
         const availableJsonl = jsonlFiles.find(f => !claimedUuids.has(f.uuid));
         if (!availableJsonl) continue;
-
         claimedUuids.add(availableJsonl.uuid);
 
-        const existingEntry = map[threadId];
-
-        // Update if UUID changed, entry doesn't exist, or entry is stale (>2 hours)
-        const entryAge = existingEntry ? Date.now() - new Date(existingEntry.savedAt).getTime() : Infinity;
-        if (existingEntry && (existingEntry.uuid !== availableJsonl.uuid || entryAge > 2 * 60 * 60 * 1000)) {
-          existingEntry.uuid = availableJsonl.uuid;
-          existingEntry.savedAt = new Date().toISOString();
-          existingEntry.lastAccessedAt = new Date().toISOString();
-          existingEntry.sessionName = sessionName;
-          updated++;
+        const existing = this.store.get(threadId);
+        const entryAge = existing ? Date.now() - new Date(existing.savedAt).getTime() : Infinity;
+        if (existing && (existing.sessionUuid !== availableJsonl.uuid || entryAge > 2 * 60 * 60 * 1000)) {
+          this.store.mutateSync(threadId, draft => {
+            draft.sessionUuid = availableJsonl.uuid;
+            draft.boundSessionName = sessionName;
+            draft.lastActivityAt = new Date().toISOString();
+            return draft;
+          });
         }
-      }
-
-      if (updated > 0) {
-        this.persist(map);
       }
     } catch (err) {
       console.error('[ThreadResumeMap] Resume heartbeat error:', err);
     }
   }
 
-  /**
-   * Get the total number of entries in the map (for monitoring).
-   */
-  size(): number {
-    return Object.keys(this.load()).length;
-  }
+  // ── Private helpers ──────────────────────────────────────────
 
-  // ── Private Helpers ──────────────────────────────────────────
-
-  private load(): ThreadResumeMapData {
+  /** Dual-read: read a single entry from the frozen legacy file, if present + fresh. */
+  private readLegacyEntry(threadId: string): ThreadResumeEntry | null {
     try {
-      if (fs.existsSync(this.filePath)) {
-        return JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-      }
+      if (!fs.existsSync(this.legacyPath)) return null;
+      const map = JSON.parse(fs.readFileSync(this.legacyPath, 'utf-8')) as Record<string, ThreadResumeEntry>;
+      const entry = map[threadId];
+      if (!entry) return null;
+      if (!entry.pinned && this.isExpired(entry)) return null;
+      return entry;
     } catch {
-      // Corrupted file — start fresh
-    }
-    return {};
-  }
-
-  private persist(map: ThreadResumeMapData): void {
-    try {
-      fs.writeFileSync(this.filePath, JSON.stringify(map, null, 2));
-    } catch (err) {
-      console.error(`[ThreadResumeMap] Failed to save: ${err}`);
+      return null;
     }
   }
 
-  /**
-   * Check if an entry is expired based on its state and age.
-   * - Active/idle: expire after MAX_AGE_MS from lastAccessedAt
-   * - Resolved: expire after RESOLVED_GRACE_MS from resolvedAt
-   * - Failed/archived: expire after MAX_AGE_MS from savedAt
-   */
   private isExpired(entry: ThreadResumeEntry): boolean {
     const now = Date.now();
-
     if (entry.state === 'resolved' && entry.resolvedAt) {
       return now - new Date(entry.resolvedAt).getTime() > RESOLVED_GRACE_MS;
     }
-
-    // For active/idle threads, use lastAccessedAt
-    const referenceTime = entry.lastAccessedAt || entry.savedAt;
-    return now - new Date(referenceTime).getTime() > MAX_AGE_MS;
+    const ref = entry.lastAccessedAt || entry.savedAt;
+    return now - new Date(ref).getTime() > MAX_AGE_MS;
   }
 
-  /**
-   * Prune a map in-place: remove expired entries, resolved-past-grace entries,
-   * and LRU overflow (non-pinned) entries.
-   */
-  private pruneMap(map: ThreadResumeMapData): void {
-    // Phase 1: Remove expired and resolved-past-grace entries
-    for (const key of Object.keys(map)) {
-      const entry = map[key];
-      if (entry.pinned) continue;
-
-      if (this.isExpired(entry)) {
-        delete map[key];
-      }
-    }
-
-    // Phase 2: LRU eviction if still over MAX_ENTRIES
-    const keys = Object.keys(map);
-    if (keys.length <= MAX_ENTRIES) return;
-
-    // Separate pinned from unpinned
-    const pinned: string[] = [];
-    const unpinned: Array<{ key: string; lastAccessedAt: number }> = [];
-
-    for (const key of keys) {
-      const entry = map[key];
-      if (entry.pinned) {
-        pinned.push(key);
-      } else {
-        unpinned.push({
-          key,
-          lastAccessedAt: new Date(entry.lastAccessedAt || entry.savedAt).getTime(),
-        });
-      }
-    }
-
-    // Sort unpinned by lastAccessedAt ascending (oldest first = evict first)
-    unpinned.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
-
-    // Evict oldest unpinned entries until we're at or under MAX_ENTRIES
-    const toEvict = keys.length - MAX_ENTRIES;
-    for (let i = 0; i < toEvict && i < unpinned.length; i++) {
-      delete map[unpinned[i].key];
-    }
-  }
-
-  /**
-   * Check if a JSONL file exists for the given UUID.
-   */
+  /** Check if a JSONL file exists for the given session UUID. */
   private jsonlExists(uuid: string): boolean {
-    const homeDir = os.homedir();
-    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
-
+    if (!uuid) return false;
+    const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
     if (!fs.existsSync(claudeProjectsDir)) return false;
-
     try {
-      const projectDirs = fs.readdirSync(claudeProjectsDir);
-      for (const dir of projectDirs) {
-        const jsonlPath = path.join(claudeProjectsDir, dir, `${uuid}.jsonl`);
-        if (fs.existsSync(jsonlPath)) return true;
+      for (const dir of fs.readdirSync(claudeProjectsDir)) {
+        if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
       }
     } catch {
-      // Can't check — assume not found
+      // Can't check — assume not found.
     }
-
     return false;
   }
 }

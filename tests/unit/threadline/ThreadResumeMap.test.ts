@@ -323,9 +323,8 @@ describe('ThreadResumeMap', () => {
         pinned: true,
       });
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data: Record<string, ThreadResumeEntry> = { [threadId]: entry };
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      // Phase 2a: the store is conversations.json; seed via the API.
+      map.save(threadId, entry);
 
       const result = map.getByRemoteAgent('agent-pinned');
       expect(result).toHaveLength(1);
@@ -419,83 +418,57 @@ describe('ThreadResumeMap', () => {
   // ── Prune behavior ──────────────────────────────────────────
 
   describe('prune', () => {
+    // Phase 2a: the store is conversations.json — seed via the API, assert there.
+    const convKeys = (): string[] => {
+      const p = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      if (!fs.existsSync(p)) return [];
+      return Object.keys(JSON.parse(fs.readFileSync(p, 'utf-8')).conversations ?? {});
+    };
+
     it('removes expired entries', () => {
       const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-      const data: Record<string, ThreadResumeEntry> = {
-        'thread-old': makeEntry({
-          lastAccessedAt: eightDaysAgo,
-          savedAt: eightDaysAgo,
-        }),
-        'thread-new': makeEntry(),
-      };
-
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      map.save('thread-old', makeEntry({ lastAccessedAt: eightDaysAgo, savedAt: eightDaysAgo }));
+      map.save('thread-new', makeEntry());
 
       map.prune();
 
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-old']).toBeUndefined();
-      expect(raw['thread-new']).toBeDefined();
+      expect(convKeys()).not.toContain('thread-old');
+      expect(convKeys()).toContain('thread-new');
     });
 
     it('removes resolved entries past grace period', () => {
       const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-      const data: Record<string, ThreadResumeEntry> = {
-        'thread-resolved-old': makeEntry({
-          state: 'resolved',
-          resolvedAt: eightDaysAgo,
-          savedAt: new Date().toISOString(),
-        }),
-        'thread-resolved-recent': makeEntry({
-          state: 'resolved',
-          resolvedAt: new Date().toISOString(),
-          savedAt: new Date().toISOString(),
-          lastAccessedAt: new Date().toISOString(),
-        }),
-      };
-
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      map.save('thread-resolved-old', makeEntry({ state: 'resolved', resolvedAt: eightDaysAgo, lastAccessedAt: eightDaysAgo }));
+      map.save('thread-resolved-recent', makeEntry({ state: 'resolved', resolvedAt: new Date().toISOString(), lastAccessedAt: new Date().toISOString() }));
 
       map.prune();
 
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-resolved-old']).toBeUndefined();
-      expect(raw['thread-resolved-recent']).toBeDefined();
+      expect(convKeys()).not.toContain('thread-resolved-old');
+      expect(convKeys()).toContain('thread-resolved-recent');
     });
 
     it('does not prune pinned entries even if expired', () => {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const data: Record<string, ThreadResumeEntry> = {
-        'thread-pinned-old': makeEntry({
-          lastAccessedAt: thirtyDaysAgo,
-          savedAt: thirtyDaysAgo,
-          pinned: true,
-        }),
-      };
-
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      map.save('thread-pinned-old', makeEntry({ lastAccessedAt: thirtyDaysAgo, savedAt: thirtyDaysAgo, pinned: true }));
 
       map.prune();
 
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-pinned-old']).toBeDefined();
+      expect(convKeys()).toContain('thread-pinned-old');
     });
   });
 
   // ── Persistence ──────────────────────────────────────────────
 
   describe('persistence', () => {
-    it('persists data to JSON file', () => {
+    it('persists data to the conversations store', () => {
       map.save('thread-persist', makeEntry());
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
+      // Phase 2a: ThreadResumeMap is a view over conversations.json.
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
       expect(fs.existsSync(filePath)).toBe(true);
 
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-persist']).toBeDefined();
+      expect(raw.conversations['thread-persist']).toBeDefined();
     });
 
     it('survives reconstruction from file', () => {

@@ -264,6 +264,15 @@ export class ConversationStore {
     return out;
   }
 
+  /** All non-expired (or pinned) conversations, any lifecycle state. */
+  all(): Conversation[] {
+    const out: Conversation[] = [];
+    for (const c of Object.values(this.snapshot().conversations)) {
+      if (c.pinned || !this.isExpired(c)) out.push(c);
+    }
+    return out;
+  }
+
   /** Total stored conversations (for monitoring). */
   size(): number {
     return Object.keys(this.snapshot().conversations).length;
