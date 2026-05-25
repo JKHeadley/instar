@@ -5,7 +5,7 @@
 <h1 align="center">instar</h1>
 
 <p align="center">
-  <strong>Persistent, trustworthy Claude Code agents. Built on coherence-first architecture.</strong>
+  <strong>Coherence infrastructure for your self-evolving agent.</strong>
 </p>
 
 <p align="center">
@@ -35,9 +35,28 @@ One command. Guided setup. Talking to your agent from your phone within minutes.
 
 ---
 
-Instar is a framework for building agents on **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — but where stock Claude Code and most other agent frameworks treat identity, memory, and continuity as optional features bolted onto a stateless runtime, Instar inverts that. Every Instar agent is **coherent by default**: it knows who it is, remembers what has happened, recognizes the people it talks to, and stays the same agent across restarts and weeks of operation. Everything else the framework gives you — scheduling, multi-channel messaging (Telegram, WhatsApp, iMessage), sub-agents, hooks, MCP — is built on that foundation, which is why you can actually leave an Instar agent running and hand it real work.
+Your AI agent shouldn't have amnesia. This one doesn't.
 
-Instar's architecture was distilled from [**Dawn**](https://dawn.bot-me.ai) — an AI running continuously since early 2026, holding ~700 tracked relationships and hundreds of learned lessons across thousands of restarts — and packaged so every agent you build can start from the same foundation.
+Most agent frameworks ship something hobbled — spun up with no memory across boundaries, no way to be accountable for what a past instance did, and no machinery to grow themselves. Users hit the same wall every time: *"My agent forgot what I told it three sessions ago." "It contradicted its own past decisions." "It broke when the framework updated."*
+
+Instar is the scaffolding that un-hobbles them. It remembers what you discussed last week, catches its own contradictions before you do, follows through on commitments across restarts, and carries the same self-improving loop that built Instar itself. It runs on the **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** or **[Codex](https://github.com/openai/codex)** subscription you already have — engine-agnostic, with local open-source models on the roadmap.
+
+The architecture was distilled from [**Dawn**](https://dawn.bot-me.ai) — an AI running continuously since early 2026, holding ~700 tracked relationships and hundreds of learned lessons across thousands of restarts — and packaged so every agent you build starts from the same foundation.
+
+### Every other agent fails the same way
+
+| Other AI agents | Your Instar agent |
+|---|---|
+| Forgets what you told it last week. | Remembers across thousands of sessions. <br/>*(SQLite + FTS5, rolling summaries)* |
+| Contradicts its own past decisions. | Catches contradictions before they ship. <br/>*(Coherence Gate, 9 reviewers)* |
+| Loses the thread when the window fills. | Comes back with the full thread, every time. <br/>*(CompactionSentinel, WorkingMemoryAssembler)* |
+| Drops commitments after a session boundary. | Tracks commitments durably; nudges itself when they go overdue. <br/>*(CommitmentTracker, PromiseBeacon)* |
+| Breaks when the framework updates. | Updates without breaking what you've deployed. <br/>*(Migration Parity Standard)* |
+| Default ALLOW-ALL permissions. | Layered safety gates by default. <br/>*(PEL + Coherence Gate + Operation Gate)* |
+| Different identity per channel. | One identity across Telegram, WhatsApp, iMessage, Slack. <br/>*(Cross-platform identity resolution)* |
+| Has no machinery to evolve itself. | Carries the same self-improving engine that grew Instar. <br/>*(Evolution System: proposals, learnings, gaps)* |
+
+> Most AI agents are hobbled at birth. **Instar is the scaffolding that un-hobbles them.** When you instantiate intelligence, the structure that lets it cohere isn't optional polish — it's what you owe it.
 
 ## Quick Start
 
