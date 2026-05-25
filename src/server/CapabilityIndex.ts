@@ -733,6 +733,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'human-as-detector', reason: 'operator-only observability — the heat map of human-caught guardian failures; the agent-facing payoff is the silent capture + future evolution use, not a discoverable endpoint' },
   { prefix: 'topic-intent', reason: 'operator-only observability — per-topic captured facts/decisions + the capture-loop funnel; the agent-facing payoff is the silent session-start briefing + ArcCheck, not a discoverable endpoint' },
   { prefix: 'spec', reason: 'build-time tool — the standards-conformance gate checks a draft spec against the constitution; used during spec authoring, not a discoverable runtime capability' },
+  { prefix: 'usher', reason: 'operator-only observability — the mid-task re-surface signal pull surface + its precision metrics; signal-only, the agent-facing payoff is the future gated injection (rung 5), not a discoverable endpoint' },
   { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },

@@ -3,10 +3,12 @@ slug: cwa-usher
 title: The Usher — a signal-only mid-task watcher that re-surfaces faded-but-relevant context
 author: echo
 project: continuous-working-awareness
-status: draft-pending-ratification
-review-convergence: null
-approved: false
-approved-by: null
+status: approved
+review-convergence: "2026-05-25T18:00:00Z"
+review-iterations: 1
+review-note: "Claude-authored + manual standards/lessons self-review (single angle). Full /spec-converge + /crossreview multi-model convergence NOT run — tooling absent on this host. Ratified by Justin 2026-05-25 with that caveat explicit; fuller review (esp. the usher_acted precision definition that gates rung 5) advisable before/with merge."
+approved: true
+approved-by: justin
 eli16-overview: cwa-usher.eli16.md
 ---
 

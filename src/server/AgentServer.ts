@@ -45,6 +45,7 @@ import { registerRemediationProposalsRoutes } from './routes/remediation-proposa
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
+import { createUsherRoutes } from './usherRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
@@ -188,6 +189,8 @@ export class AgentServer {
     topicIntentStore?: TopicIntentStore;
     /** Shared intelligence provider (subscription/REPL-pool) for the standards-conformance gate. */
     intelligence?: import('../core/types.js').IntelligenceProvider | null;
+    /** Usher signal store (rung 4) — the read-only pull surface for re-surface signals. */
+    usherSignalStore?: import('../core/UsherSignalStore.js').UsherSignalStore | null;
     /** OIDC verification function for the GH-check endpoint (injected for testability). */
     oidcVerify?: (token: string) => Promise<{ repository: string; workflow_ref: string; ref: string }>;
     /** Enrolled GitHub repos allowed to call the GH-check endpoint. */
@@ -580,6 +583,11 @@ export class AgentServer {
     } catch (err) {
       console.warn('[agent-server] failed to register spec-review routes:', err);
     }
+
+    // Usher (rung 4) — read-only pull surface for mid-task re-surface signals.
+    // Mounted unconditionally; 503-stubs when the store is absent. Signal-only.
+    // Spec: docs/specs/cwa-usher.md.
+    this.app.use(createUsherRoutes({ signalStore: options.usherSignalStore ?? null }));
 
     // Error handler (must be last)
     this.app.use(errorHandler);

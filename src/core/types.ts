@@ -1722,6 +1722,14 @@ export interface InstarConfig {
     };
   };
   /**
+   * Usher (rung 4) — the signal-only mid-task re-surface watcher. `enabled`
+   * (default true; signal-only is safe-on) is the kill-switch. See
+   * docs/specs/cwa-usher.md.
+   */
+  usher?: {
+    enabled?: boolean;
+  };
+  /**
    * Agent-level set of frameworks this install actively uses. Drives
    * which framework-specific migration steps run on update: a
    * codex-cli-only install should not receive `.claude/`-specific

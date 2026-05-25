@@ -2424,6 +2424,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // cwa-decay-profile-config of the rung-1 task-context spec.
     configureDecayProfiles(config.topicIntent?.capture?.decayProfiles);
 
+    // Usher (rung 4) — signal store for mid-task re-surface signals. Constructed
+    // unless explicitly disabled; the read-only routes 503 when it's null.
+    const { UsherSignalStore } = await import('../core/UsherSignalStore.js');
+    const usherSignalStore = (config.usher?.enabled !== false)
+      ? new UsherSignalStore(config.stateDir)
+      : null;
+
     // Shared intelligence provider — lightweight LLM for internal classification tasks.
     // Subscription path only: routes through the Claude CLI (`claude -p`), which bills against
     // the Agent SDK credit pot and falls back to the Max subscription. Components that need
@@ -5985,6 +5992,45 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Anti-"shipped-but-asleep" marker for the wiring-integrity test.
             (globalThis as Record<string, unknown>).__instarTopicIntentCaptureWired = true;
             console.log(pc.green('  Topic-intent capture loop wired (per-turn extraction → store)'));
+
+            // ── Usher (rung 4) ──────────────────────────────────────────────
+            // Signal-only mid-task watcher: chained AFTER capture so it sees the
+            // freshly-filed turn, queries the faded tail, and emits re-surface
+            // signals to the pull surface. Never injects. Fire-and-forget,
+            // degrade-safe. Spec: docs/specs/cwa-usher.md.
+            if (usherSignalStore) {
+              const { createUsherLoop, createUsherCheckFn } = await import('../core/Usher.js');
+              const usherQueued = createQueuedIntelligence(
+                sharedIntelligence,
+                (lane, fn, costCents) => sharedLlmQueue.enqueue(lane, fn, costCents),
+              );
+              const usherCheckFn = createUsherCheckFn(usherQueued, (reason) => {
+                console.warn(`[Usher] degraded: ${reason}`);
+              });
+              const usherLoop = createUsherLoop({
+                store: topicIntentStore,
+                signalStore: usherSignalStore,
+                checkFn: usherCheckFn,
+                shouldShed: () => {
+                  const r = quotaTracker?.getRecommendation();
+                  return r === 'critical' || r === 'stop';
+                },
+                rateCeiling: { maxPerWindow: 20, windowMs: 60_000 },
+              });
+              const beforeUsherCb = telegram.onMessageLogged;
+              telegram.onMessageLogged = (entry) => {
+                if (beforeUsherCb) beforeUsherCb(entry);
+                void usherLoop({
+                  messageId: entry.messageId,
+                  topicId: entry.topicId ?? undefined,
+                  text: entry.text,
+                  fromUser: entry.fromUser,
+                  timestamp: entry.timestamp,
+                });
+              };
+              (globalThis as Record<string, unknown>).__instarUsherWired = true;
+              console.log(pc.green('  Usher wired (signal-only mid-task re-surface watcher)'));
+            }
           } catch (err) {
             console.warn('[TopicIntentCapture] init failed:', (err as Error).message);
           }
@@ -7672,7 +7718,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
