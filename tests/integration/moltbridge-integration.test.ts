@@ -1,8 +1,16 @@
 /**
- * MoltBridge Integration Test — Real API calls against running server.
+ * MoltBridge Integration Test — Real API calls against a running server.
  *
- * REQUIRES: MoltBridge server running at localhost:3040
- * Skip if server is unavailable (test is conditional).
+ * OPT-IN ONLY. Set MOLTBRIDGE_TEST_URL to a DEDICATED TEST instance to run this:
+ *   MOLTBRIDGE_TEST_URL=http://localhost:3040 npm run test:integration
+ * If the env var is unset, the suite SKIPS entirely and touches no server.
+ *
+ * WHY OPT-IN (do not revert to a hardcoded URL): this test registers agents and
+ * there is NO agent-deregister endpoint to clean up through. It previously pointed
+ * unconditionally at localhost:3040 — the PRODUCTION MoltBridge registry — so every
+ * local run on a machine where prod was up registered fake "instar-test" agents that
+ * never got torn down. That accumulated 691 junk agents in the production graph
+ * (purged 2026-05-26). Never point this at production; use a throwaway instance.
  *
  * Tests the full flow: health → verify → register → discover → attest → IQS
  * using the real MoltBridge SDK (no mocks).
@@ -13,7 +21,9 @@ import { MoltBridgeClient, type MoltBridgeConfig } from '../../src/moltbridge/Mo
 import type { CanonicalIdentity } from '../../src/identity/types.js';
 import crypto from 'node:crypto';
 
-const MOLTBRIDGE_URL = 'http://localhost:3040';
+// Opt-in only: no default. Unset => suite skips and contacts no server (prevents
+// silently polluting whatever happens to be on localhost:3040, e.g. production).
+const MOLTBRIDGE_URL = process.env.MOLTBRIDGE_TEST_URL;
 
 // Generate a test identity
 function createTestIdentity(): CanonicalIdentity {
@@ -36,8 +46,9 @@ function createTestIdentity(): CanonicalIdentity {
   };
 }
 
-// Check if MoltBridge server is reachable
+// Check if a TEST MoltBridge server was opted into and is reachable.
 async function isServerAvailable(): Promise<boolean> {
+  if (!MOLTBRIDGE_URL) return false; // opt-in not set => never contact any server
   try {
     const res = await fetch(`${MOLTBRIDGE_URL}/health`, { signal: AbortSignal.timeout(3000) });
     const data = await res.json() as any;
@@ -54,7 +65,9 @@ describe('MoltBridge Integration (real server)', () => {
 
   const config: MoltBridgeConfig = {
     enabled: true,
-    apiUrl: MOLTBRIDGE_URL,
+    // Only used when serverAvailable (which requires MOLTBRIDGE_URL set). The
+    // invalid fallback keeps this type-correct and unable to reach a real host.
+    apiUrl: MOLTBRIDGE_URL ?? 'http://moltbridge.invalid',
     autoRegister: false,
     enrichmentMode: 'manual',
     agentName: 'instar-integration-test',
@@ -64,7 +77,11 @@ describe('MoltBridge Integration (real server)', () => {
   beforeAll(async () => {
     serverAvailable = await isServerAvailable();
     if (!serverAvailable) {
-      console.log('  ⏭ MoltBridge server not available at localhost:3040 — skipping integration tests');
+      console.log(
+        MOLTBRIDGE_URL
+          ? `  ⏭ MoltBridge test server not reachable at ${MOLTBRIDGE_URL} — skipping integration tests`
+          : '  ⏭ MOLTBRIDGE_TEST_URL not set — skipping MoltBridge integration tests (opt-in; never point at production)',
+      );
       return;
     }
 
