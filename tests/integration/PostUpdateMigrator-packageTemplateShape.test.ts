@@ -39,6 +39,11 @@ describe('PostUpdateMigrator package template shape', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-template-shape-'));
     tempDirs.push(tmp);
 
+    execFileSync('npx', ['tsc'], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
     const raw = execFileSync('npm', ['pack', '--json', '--pack-destination', tmp], {
       cwd: repoRoot,
       encoding: 'utf-8',
