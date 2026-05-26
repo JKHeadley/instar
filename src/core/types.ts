@@ -2558,6 +2558,28 @@ export interface MonitoringConfig {
     verifyWindowMs?: number;
   };
   /**
+   * SessionReaper — pressure-aware reaper of idle-but-alive sessions. The only
+   * monitor that *kills* on a heuristic, so it ships OFF + dry-run by default.
+   * See docs/specs/SESSION-REAPER-SPEC.md and DEFAULT_SESSION_REAPER_CONFIG.
+   */
+  sessionReaper?: {
+    enabled: boolean;
+    dryRun?: boolean;
+    tickIntervalSec?: number;
+    minAgeMinutes?: number;
+    confirmObservations?: number;
+    confirmWindowMinutes?: number;
+    paneCaptureLines?: number;
+    recentUserWindowMinutes?: number;
+    idleThresholdModerateMinutes?: number;
+    idleThresholdCriticalMinutes?: number;
+    normalTierReaps?: boolean;
+    maxReapsPerTick?: number;
+    maxReapsPerHour?: number;
+    finalGraceSec?: number;
+    protectOpenCommitments?: boolean;
+  };
+  /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations
    * (SentinelNotifier). Default false → sentinel notices are logged to the
    * server log + .instar/../logs/sentinel-events.jsonl only; the user never

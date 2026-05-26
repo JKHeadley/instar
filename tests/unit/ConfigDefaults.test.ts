@@ -34,6 +34,35 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
+    it('ships SessionReaper OFF + dry-run by default (the only kill-on-heuristic monitor)', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const sr = (getInitDefaults(t).monitoring as any).sessionReaper;
+        expect(sr).toBeDefined();
+        expect(sr.enabled).toBe(false);
+        expect(sr.dryRun).toBe(true);
+        expect(sr.normalTierReaps).toBe(false);
+        expect(sr.protectOpenCommitments).toBe(true);
+      }
+      // Migration parity: existing agents receive the (off) block on update.
+      const mig = getMigrationDefaults('managed-project');
+      expect((mig.monitoring as any).sessionReaper?.enabled).toBe(false);
+    });
+
+    it('migrates the sessionReaper block into a config that lacks it (existence-checked)', () => {
+      const config: any = { monitoring: { watchdog: { enabled: true } } };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(config.monitoring.sessionReaper.enabled).toBe(false);
+      expect(changes.some((c: string) => c.includes('sessionReaper'))).toBe(true);
+    });
+
+    it('does NOT overwrite an operator-enabled sessionReaper on migration', () => {
+      const config: any = { monitoring: { sessionReaper: { enabled: true, dryRun: false } } };
+      applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(config.monitoring.sessionReaper.enabled).toBe(true);
+      expect(config.monitoring.sessionReaper.dryRun).toBe(false);
+    });
+
     it('includes externalOperations', () => {
       const defaults = getInitDefaults('managed-project');
       expect(defaults.externalOperations).toBeDefined();
