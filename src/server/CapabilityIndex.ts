@@ -738,7 +738,11 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
   { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },
-  { prefix: 'initiatives', reason: 'surfaced inside `evolution` subsystems' },
+  // NOTE: `initiatives` is intentionally NOT suppressed. The Graduated Feature
+  // Rollout standard (GRADUATED-FEATURE-ROLLOUT-SPEC §4.5) requires the agent to
+  // reach for /initiatives reflexively for "what are we working on" — the prior
+  // suppression ("surfaced inside evolution subsystems") left the tracker
+  // un-discoverable, which is why it was never used. Surfaced directly now.
   { prefix: 'triage', reason: 'surfaced inside `evolution` subsystems' },
   { prefix: 'intent', reason: 'surfaced inside `evolution` subsystems' },
   { prefix: 'self-knowledge', reason: 'surfaced inside `capability-map`' },
