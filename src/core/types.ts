@@ -69,6 +69,10 @@ export interface Session {
   maxDurationMinutes?: number;
   /** Claude Code's own session UUID (from hook events). Populated lazily on first hook event. */
   claudeSessionId?: string;
+  /** Why the session ended. Set by the single-writer terminateSession() path
+   *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
+   *  ended before this field existed. */
+  endedReason?: string;
 }
 
 export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'killed';
