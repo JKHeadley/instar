@@ -50,7 +50,7 @@ So the tracker is a **passive ledger that depends on an agent remembering to reg
 
 **What's missing (the active layer):**
 1. **No auto-registration** — §1's gap.
-2. **No recurring driver** — the InitiativeTracker spec itself promised a "daily digest job that pings the user when a card goes stale / needs a decision / is ready to advance" and it was **never shipped** (the endpoint exists; nothing calls it). This is the deferred piece this spec resurrects.
+2. **No recurring driver** — the InitiativeTracker spec itself promised a "daily digest job that pings the user when a card goes stale / needs a decision / is ready to advance" and it was **never shipped** (the endpoint exists; nothing calls it). This is the unshipped piece this spec resurrects.
 3. **No post-ship rollout semantics** — when all phases are `done`, the initiative auto-`completed`s and drops off; there's no first-class "shipped but still maturing (dry-run → live → default-on)" lifecycle.
 
 ## 3. Verdict on Justin's question
@@ -74,7 +74,7 @@ Registration is triggered by artifacts that already exist in the workflow, so th
 
 ### 4.2 Layer B — The recurring rollout-review driver (one job for all)
 
-A single scheduled job (the InitiativeTracker spec's long-deferred digest job, finally shipped), running **twice weekly** (e.g. Mon + Thu; user-ratified cadence 2026-05-26) that each run:
+A single scheduled job (the InitiativeTracker spec's long-promised-but-unshipped digest job, finally shipped), running **twice weekly** (e.g. Mon + Thu; user-ratified cadence 2026-05-26) that each run:
 1. Calls `GET /initiatives/digest` for `stale` / `needs-user` / `ready-to-advance`.
 2. For rollout-stage initiatives, gathers evidence from the declared `evidenceSource` (e.g. `logs/sentinel-events.jsonl` filtered by feature), checks `promotionCriteria`, and sets `needsUser:true` + a `needsUserReason` recommendation when a stage is ready (or flags an anomaly immediately).
 3. Posts a single consolidated, plain-English digest to the user (near-silent: only when something needs a decision, is anomalous, or is stale — matching `feedback_notifications_near_silent`).
@@ -87,7 +87,7 @@ This **generalizes** the bespoke `session-reaper-promotion-review.md` job to eve
 The tracker's auto-completion is **phase-based, not stage-based**: `setPhaseStatus` flips the initiative to `completed` only when *every* `phases[]` entry is `done` (`InitiativeTracker.ts:918-923,1136-1142`); `pipelineStage` is never read by the status machine. So the v1 worry ("auto-completes at `merged`, drops off") was wrong — modelling rollout stages as real `phases[]` (§4.1) is *exactly* what keeps the initiative `active` through `dry-run → live`, since those phases aren't `done` yet.
 
 The **real** hazard the code imposes: when the *last* phase goes `done`, the initiative → `completed`, and the backing TaskFlow record goes terminal `succeeded`, which is **immutable** (`:592,640-647`) — no later `update()` can reopen it. A `default-on` feature that later **regresses** could not reuse the record. Therefore:
-- `default-on` is represented by the **flag observation** (§4.2.4), and the track is **archived** (not driven to all-phases-`done`) when the flag reaches default-on — keeping the record reopenable if the feature is rolled back (which writes the existing `regressed` pipelineStage and reactivates the track).
+- `default-on` is represented by the **flag observation** (§4.2.4), and the track is **parked as `paused`** (a NON-terminal status — *not* `archived`, which maps to TaskFlow's terminal `cancelled` and would seal it; and not driven to all-phases-`done`) when the flag reaches default-on — keeping the record reopenable if the feature is rolled back (which writes the existing `regressed` pipelineStage and reactivates the track).
 - This is the §4.7 termination path, not an auto-complete.
 
 ### 4.4 The standard (docs/STANDARDS-REGISTRY.md entry)

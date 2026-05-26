@@ -36,3 +36,5 @@ The reason I had to hand-write SessionReaper's review job, and the reason I had 
 ## Where this is
 
 This is now a **converged draft spec**, not code. I ran it through the same three-way review SessionReaper got (a different AI model plus two passes that read the actual code), and it caught real problems — the biggest being that I'd misread how the tracker marks things "done," and that the way I planned to auto-add items couldn't actually carry the data it needed. All fixed; the most important safety fix is that a feature can now *never* flip itself to fully-on — the system only ever notices that you flipped the switch, never flips it for you. Per our rule, nothing gets built until you sign off on this converged version. A short list of remaining choices is at the end of the full spec.
+
+_(Build note: "fully-on" parks a feature's board entry in a paused/reopenable state rather than sealing it shut — so if you ever turn the feature back off, the system can reopen and notice. A code review caught the original sealing bug before merge.)_
