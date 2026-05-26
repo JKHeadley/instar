@@ -815,6 +815,31 @@ export class TokenLedger {
     }));
   }
 
+  /**
+   * Token activity for ONE session since a timestamp — gate F of the
+   * SessionReaper (SESSION-REAPER-SPEC §3.1(3)). A lagging corroborator only:
+   * the poller scans flushed JSONL on a ~60s cadence, so a positive result is
+   * reliable but absence does NOT prove idleness. Keyed on the Claude Code
+   * session_id; callers pass `claudeSessionId` (absent ⇒ they must KEEP).
+   */
+  sessionActivitySince(sessionId: string, sinceMs: number): { eventCount: number; tokens: number; lastTs: number } {
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS eventCount,
+           COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS tokens,
+           COALESCE(MAX(ts), 0) AS lastTs
+         FROM token_events
+         WHERE session_id = ? AND ts >= ?`,
+      )
+      .get(sessionId, sinceMs) as { eventCount: number; tokens: number; lastTs: number };
+    return {
+      eventCount: Number(row?.eventCount) || 0,
+      tokens: Number(row?.tokens) || 0,
+      lastTs: Number(row?.lastTs) || 0,
+    };
+  }
+
   /** Aggregate by project (cwd). */
   byProject({ sinceMs }: { sinceMs?: number } = {}): ProjectRow[] {
     const since = sinceMs ?? 0;

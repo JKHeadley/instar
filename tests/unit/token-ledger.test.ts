@@ -382,3 +382,32 @@ describe('TokenLedger.scanAll bounded behavior', () => {
     ledger.close();
   });
 });
+
+describe('TokenLedger.sessionActivitySince (SessionReaper gate F)', () => {
+  let ledger: TokenLedger;
+  beforeEach(() => { ledger = makeLedger(); });
+  afterEach(() => { ledger.close(); });
+
+  it('returns counts/tokens/lastTs for events at or after sinceMs', () => {
+    const oldTs = '2026-04-29T20:00:00.000Z';
+    const newTs = '2026-04-29T21:00:00.000Z';
+    ledger.ingestLine(assistantLine({ requestId: 'r1', sessionId: 'sx', ts: oldTs, output: 10 }));
+    ledger.ingestLine(assistantLine({ requestId: 'r2', sessionId: 'sx', ts: newTs, output: 20 }));
+    const cutoff = Date.parse('2026-04-29T20:30:00.000Z');
+    const res = ledger.sessionActivitySince('sx', cutoff);
+    expect(res.eventCount).toBe(1); // only the newTs event
+    expect(res.tokens).toBeGreaterThan(0);
+    expect(res.lastTs).toBe(Date.parse(newTs));
+  });
+
+  it('returns zeros for an unknown session (caller must KEEP on absence)', () => {
+    const res = ledger.sessionActivitySince('never-seen', 0);
+    expect(res).toEqual({ eventCount: 0, tokens: 0, lastTs: 0 });
+  });
+
+  it('returns zeros when all events predate sinceMs', () => {
+    ledger.ingestLine(assistantLine({ requestId: 'r3', sessionId: 'sy', ts: '2026-04-29T20:00:00.000Z' }));
+    const res = ledger.sessionActivitySince('sy', Date.parse('2026-04-29T23:00:00.000Z'));
+    expect(res.eventCount).toBe(0);
+  });
+});
