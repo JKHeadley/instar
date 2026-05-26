@@ -88,6 +88,7 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     specFrontmatter: string;
     specBody: string;
     artifactBody?: string;
+    touchedRel?: string;
   }): { specPath: string; artifactPath: string; tracePath: string } {
     const specRel = path.join('docs', 'specs', 'fixture.md');
     const eli16Rel = path.join('docs', 'specs', 'fixture.eli16.md');
@@ -110,16 +111,17 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
 
     const sha = crypto.createHash('sha256').update(artifactBody).digest('hex');
 
-    // Add a benign staged file under src/ to satisfy the "in-scope" check.
-    const srcRel = 'src/touched.ts';
-    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n');
+    // Add a benign staged file under an in-scope path to exercise the gate.
+    const touchedRel = opts.touchedRel ?? 'src/touched.ts';
+    fs.mkdirSync(path.dirname(path.join(sandbox, touchedRel)), { recursive: true });
+    fs.writeFileSync(path.join(sandbox, touchedRel), '// touched\n');
 
     fs.writeFileSync(
       path.join(sandbox, traceRel),
       JSON.stringify({
         phase: 'complete',
         slug: 'fixture',
-        coveredFiles: [srcRel],
+        coveredFiles: [touchedRel],
         artifactPath: artifactRel,
         artifactSha256: sha,
         specPath: specRel,
@@ -127,7 +129,7 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       }, null, 2),
     );
 
-    execFileSync('git', ['add', srcRel, specRel, eli16Rel, artifactRel], { cwd: sandbox });
+    execFileSync('git', ['add', touchedRel, specRel, eli16Rel, artifactRel], { cwd: sandbox });
     return { specPath: specRel, artifactPath: artifactRel, tracePath: traceRel };
   }
 
@@ -252,5 +254,16 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     const result = await runHook(process.env, sandbox);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/deferrals/i);
+  });
+
+  it('treats workflow descriptors as in-scope behavioral surfaces', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Descriptor spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody: 'Descriptor updates are reviewed through the same gate as skill and script changes.',
+      touchedRel: 'skills/instar-dev/workflow.descriptor.json',
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/covers 1 in-scope file/);
   });
 });

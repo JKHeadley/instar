@@ -76,6 +76,7 @@ function inScope(file) {
   if (file.startsWith('src/')) return true;
   if (file.startsWith('scripts/')) return true;
   if (file.startsWith('.husky/')) return true;
+  if (file.startsWith('skills/') && file.endsWith('/workflow.descriptor.json')) return true;
   if (file.startsWith('skills/') && file.endsWith('SKILL.md')) return true;
   if (file.startsWith('skills/') && (file.endsWith('.sh') || file.endsWith('.mjs') || file.endsWith('.js'))) return true;
   return false;

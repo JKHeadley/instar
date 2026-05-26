@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "robust-development",
+  "title": "Robust Project Development",
+  "audience": "Any agent doing substantial project development work",
+  "scope": "generic-project",
+  "activation": {
+    "mode": "risk-based",
+    "suggestWhen": [
+      "source behavior changes",
+      "persistence or state changes",
+      "external service integration",
+      "shared runtime behavior",
+      "security or privacy surface",
+      "release or deployment mechanics",
+      "multi-file architecture"
+    ],
+    "lightweightWhen": [
+      "documentation-only edit",
+      "single-file local script tweak with no behavior change",
+      "quick lookup or explanation"
+    ]
+  },
+  "phases": [
+    "scope-and-context",
+    "isolation-strategy",
+    "provider-placement-constraints",
+    "spec-first-plan",
+    "side-effects-review",
+    "tracked-later-work",
+    "implementation",
+    "evidence",
+    "verification",
+    "delivery"
+  ],
+  "worktreePolicy": {
+    "default": "prefer-for-substantial-work",
+    "ifNotUsed": "explain why the lightweight path is safe",
+    "placement": "provider-conditional"
+  },
+  "authority": "workflow guidance only; project gates and human approvals remain authoritative"
+}
+

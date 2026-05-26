@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "instar-dev",
+  "title": "Instar Development Overlay",
+  "audience": "Instar-developing agents in a recognized Instar source checkout",
+  "scope": "instar-source",
+  "sourceOfIntent": "skills/instar-dev/SKILL.md",
+  "requires": [
+    "recognized Instar source checkout via existing SourceTreeGuard/coherence infrastructure",
+    "approved spec with ELI16 overview",
+    "side-effects artifact",
+    "fresh trace from skills/instar-dev/scripts/write-trace.mjs"
+  ],
+  "phases": [
+    "spec-prerequisite",
+    "principle-check",
+    "planning",
+    "build",
+    "side-effects-review",
+    "tracked-later-work-check",
+    "second-pass-review-when-high-risk",
+    "trace-commit-verify"
+  ],
+  "scripts": {
+    "writeTrace": "skills/instar-dev/scripts/write-trace.mjs",
+    "preCommitGate": "scripts/instar-dev-precommit.js"
+  },
+  "humanAuthority": [
+    "approved: true in spec frontmatter"
+  ],
+  "providerNotes": {
+    "codex": "Surface as phase guidance plus callable repo scripts; do not depend on Claude slash command invocation."
+  }
+}
+

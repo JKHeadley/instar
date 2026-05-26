@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "spec-converge",
+  "title": "Instar Spec Convergence",
+  "audience": "Instar-developing agents preparing an Instar source change",
+  "scope": "instar-source",
+  "sourceOfIntent": "skills/spec-converge/SKILL.md",
+  "requires": [
+    "spec file under docs/specs",
+    "ELI16 overview companion",
+    "reviewer findings resolved to convergence"
+  ],
+  "phases": [
+    "initial-review-round",
+    "spec-update",
+    "convergence-check",
+    "convergence-report",
+    "frontmatter-tag",
+    "user-handoff"
+  ],
+  "scripts": {
+    "writeConvergenceTag": "skills/spec-converge/scripts/write-convergence-tag.mjs"
+  },
+  "outputs": [
+    "review-convergence frontmatter tag",
+    "review report under docs/specs/reports",
+    "user approval handoff"
+  ],
+  "humanAuthority": [
+    "approved: true is not written by this workflow"
+  ]
+}
+

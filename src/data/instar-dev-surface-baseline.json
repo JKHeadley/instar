@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-26T16:24:56Z",
+  "description": "Baseline manifest for the Instar developer drift audit. It lists provider-neutral development surfaces that should not silently regress into Echo-only practice.",
+  "surfaces": [
+    {
+      "id": "workflow:robust-development",
+      "kind": "workflow-descriptor",
+      "path": "skills/robust-development/workflow.descriptor.json",
+      "scope": "generic-project"
+    },
+    {
+      "id": "workflow:instar-dev",
+      "kind": "workflow-descriptor",
+      "path": "skills/instar-dev/workflow.descriptor.json",
+      "scope": "instar-source"
+    },
+    {
+      "id": "workflow:spec-converge",
+      "kind": "workflow-descriptor",
+      "path": "skills/spec-converge/workflow.descriptor.json",
+      "scope": "instar-source"
+    },
+    {
+      "id": "script:instar-dev-write-trace",
+      "kind": "script",
+      "path": "skills/instar-dev/scripts/write-trace.mjs",
+      "scope": "instar-source"
+    },
+    {
+      "id": "script:spec-converge-write-tag",
+      "kind": "script",
+      "path": "skills/spec-converge/scripts/write-convergence-tag.mjs",
+      "scope": "instar-source"
+    },
+    {
+      "id": "gate:instar-dev-precommit",
+      "kind": "gate",
+      "path": "scripts/instar-dev-precommit.js",
+      "scope": "instar-source"
+    }
+  ]
+}
+
