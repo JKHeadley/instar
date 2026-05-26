@@ -134,8 +134,13 @@ export class FeatureRolloutReconciler {
           ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria }
           : undefined,
       });
-      // Archive at default-on OR for terminal backfill (reopenable, off the active list).
-      if (!isActive || (observedStage && shouldArchiveAtStage(observedStage))) {
+      // default-on parks the track as 'paused' (NON-terminal → reopenable on a
+      // later regression; 'archived' maps to TaskFlow's terminal `cancelled`
+      // which would seal it). Historical non-rollout backfill uses 'archived'
+      // (genuinely terminal provenance, never reopened).
+      if (observedStage && shouldArchiveAtStage(observedStage)) {
+        await this.deps.tracker.update(art.id, { status: 'paused', ifMatch: this.deps.tracker.get(art.id)?.version });
+      } else if (!isActive) {
         await this.deps.tracker.update(art.id, { status: 'archived', ifMatch: this.deps.tracker.get(art.id)?.version });
       }
       summary.created.push(art.id);
@@ -187,7 +192,10 @@ export class FeatureRolloutReconciler {
     const fresh = this.deps.tracker.get(id);
     await this.deps.tracker.update(id, {
       rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
-      status: shouldArchiveAtStage(stage as never) ? 'archived' : 'active',
+      // 'paused' (non-terminal, reopenable) at default-on — NOT 'archived'
+      // (which maps to TaskFlow's terminal `cancelled` and would seal the
+      // record against a later regression). 'active' for live/dry-run.
+      status: shouldArchiveAtStage(stage as never) ? 'paused' : 'active',
       ifMatch: fresh?.version,
     });
   }

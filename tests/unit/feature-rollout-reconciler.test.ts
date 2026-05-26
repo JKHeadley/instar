@@ -108,11 +108,13 @@ describe('FeatureRolloutReconciler', () => {
     expect(got.phases.find(p => p.id === 'live')?.status).toBe('in-progress');
   });
 
-  it('default-on ARCHIVES (reopenable) and never marks all phases done', async () => {
+  it('default-on PARKS as paused (non-terminal/reopenable) and never marks all phases done', async () => {
     const specs = [art({ merged: true, shipsStaged: true, flagPath: 'monitoring.featX' })];
     await makeReconciler(specs, { defaultEnabled: true }).reconcile();
     const got = tracker.get('feat-x')!;
-    expect(got.status).toBe('archived');
+    // 'paused' not 'archived' — archived maps to TaskFlow's terminal cancelled,
+    // which would seal the record against a later regression.
+    expect(got.status).toBe('paused');
     expect(got.phases.every(p => p.status === 'done')).toBe(false); // not sealed
   });
 

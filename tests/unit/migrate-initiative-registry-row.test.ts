@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let tmp: string;
 let projectDir: string;
@@ -19,7 +20,7 @@ beforeEach(() => {
   projectDir = tmp;
   fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
 });
-afterEach(() => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5 }));
+afterEach(() => SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/migrate-initiative-registry-row.test.ts' }));
 
 function migrator(): { migrateClaudeMd: (r: { upgraded: string[]; skipped: string[]; errors: string[] }) => void } {
   return new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4242, hasTelegram: false, projectName: 'test' }) as never;

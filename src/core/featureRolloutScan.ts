@@ -51,7 +51,9 @@ function indexTraces(tracesDir: string): Map<string, TraceInfo> {
     try {
       const t = JSON.parse(fs.readFileSync(path.join(tracesDir, f), 'utf8'));
       if (typeof t.specPath === 'string') {
-        byPath.set(t.specPath, { prNumber: typeof t.prNumber === 'number' ? t.prNumber : undefined, createdAtMs: t.createdAt ? Date.parse(t.createdAt) : undefined });
+        // Traces carry the timestamp as `createdAt` (newer) or `timestamp` (older).
+        const ts = t.createdAt ?? t.timestamp;
+        byPath.set(t.specPath, { prNumber: typeof t.prNumber === 'number' ? t.prNumber : undefined, createdAtMs: ts ? Date.parse(ts) : undefined });
       }
     } catch { /* skip malformed trace */ }
   }
@@ -109,12 +111,15 @@ function readPath(obj: unknown, dotted: string): unknown {
  */
 export function makeFlagObserver(liveConfig: unknown, shippedDefaults: unknown): (flagPath: string) => RolloutFlagObservation {
   return (flagPath: string) => {
-    const live = readPath(liveConfig, flagPath) as { enabled?: boolean; dryRun?: boolean } | undefined;
-    const def = readPath(shippedDefaults, flagPath) as { enabled?: boolean } | undefined;
+    const live = readPath(liveConfig, flagPath);
+    const def = readPath(shippedDefaults, flagPath);
+    // A flag may be an object ({enabled,dryRun}) or a bare boolean.
+    const liveObj = typeof live === 'boolean' ? { enabled: live } : (live as { enabled?: boolean; dryRun?: boolean } | undefined);
+    const defObj = typeof def === 'boolean' ? { enabled: def } : (def as { enabled?: boolean } | undefined);
     return {
-      flagEnabled: live?.enabled,
-      flagDryRun: live?.dryRun,
-      defaultEnabled: def?.enabled === true,
+      flagEnabled: liveObj?.enabled,
+      flagDryRun: liveObj?.dryRun,
+      defaultEnabled: defObj?.enabled === true,
     };
   };
 }

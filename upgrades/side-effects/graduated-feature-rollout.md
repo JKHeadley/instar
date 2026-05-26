@@ -31,3 +31,9 @@ The `rollout` schema field is additive/optional. The reconciler + driver ship of
 ## Tests
 
 3-tier incl. the dogfood backfill e2e (SessionReaper retroactive), near-silent edge dedupe, flag-never-flipped, wiring-integrity. Live test-as-self before merge.
+
+## Post-build review fixes (multi-agent code review)
+
+Independent review (correctness + wiring/regression passes) confirmed the wiring is clean and the no-silent-default-on invariant holds, and caught one BLOCKER + minors, all fixed:
+- **BLOCKER — default-on seal:** `status:'archived'` maps to TaskFlow's TERMINAL `cancelled`, which would seal a default-on rollout track against a later regression (tests missed it by not enabling TaskFlow). Fixed: default-on now parks the track as **`paused`** (non-terminal → reopenable, and off the active/stale list); historical non-rollout backfill keeps `archived` (genuinely terminal). A new TaskFlow-enabled regression test proves default-on→live reopens (would fail pre-fix).
+- **MINOR:** `makeFlagObserver` now handles bare-boolean flags (not just `{enabled,dryRun}` objects). Scanner reads `createdAt ?? timestamp` (trace timestamp field drift). Test uses `SafeFsExecutor` (destructive-tool lint).

@@ -110,4 +110,9 @@ describe('wiring integrity — reconciler is constructed + run at boot', () => {
     expect(src).toContain('featureRolloutReconciler.reconcile()');
     expect(src).toContain('scanSpecArtifacts(config.projectDir)');
   });
+  it('handles a bare-boolean flag (not just {enabled,dryRun} objects)', () => {
+    const obs = makeFlagObserver({ monitoring: { flat: true } }, { monitoring: { flat: false } })('monitoring.flat');
+    expect(obs.flagEnabled).toBe(true);
+    expect(obs.defaultEnabled).toBe(false);
+  });
 });
