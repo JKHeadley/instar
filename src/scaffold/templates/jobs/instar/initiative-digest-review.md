@@ -1,6 +1,6 @@
 ---
 name: Initiative Digest Review
-description: Twice-weekly review of the initiative board. The self-driving half of the InitiativeTracker — surfaces initiatives that need a decision, and for ships-staged features in rollout (dry-run → live → default-on) gathers promotion evidence and posts an explicit, evidence-gated recommendation. Near-silent: posts ONLY when a genuinely-new decision is waiting. Operator-gated and flag-derived — it recommends, it never flips a config flag. GRADUATED-FEATURE-ROLLOUT-SPEC §4.2.
+description: Twice-weekly review of the initiative board. The self-driving half of the InitiativeTracker — surfaces initiatives that need a decision, and for ships-staged features in rollout (dry-run to live to default-on) gathers promotion evidence and posts an explicit, evidence-gated recommendation. Near-silent — posts ONLY when a genuinely-new decision is waiting. Operator-gated and flag-derived; it recommends, it never flips a config flag. See GRADUATED-FEATURE-ROLLOUT-SPEC section 4.2.
 schedule: "0 11 * * 1,4"
 priority: medium
 expectedDurationMinutes: 3
