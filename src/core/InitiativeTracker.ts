@@ -72,6 +72,27 @@ export type InitiativeStatus =
 
 export type InitiativeKind = 'task' | 'project';
 
+/** Post-ship rollout stages for a ships-staged feature. The stage is DERIVED
+ *  from observing the feature's config flag (never written by the driver) —
+ *  GRADUATED-FEATURE-ROLLOUT-SPEC §4.2-4.3. */
+export type RolloutStage = 'dark' | 'dry-run' | 'live' | 'default-on';
+
+/** Typed rollout metadata for a ships-staged feature task. Operational criteria
+ *  live here (typed), NOT in free-form phase summaries. */
+export interface RolloutInfo {
+  /** Dotted config key whose observed value derives the stage, e.g.
+   *  'monitoring.sessionReaper'. The driver NEVER writes this. */
+  flagPath: string;
+  /** Stage derived from the last observed flag value. */
+  stage: RolloutStage;
+  /** Where the twice-weekly driver gathers promotion evidence. */
+  evidenceSource?: { type: 'log-filter' | 'endpoint'; ref: string; filter?: string };
+  /** Human-readable promotion gate (e.g. "≥2wk + ≥3 genuinely-idle would-reaps"). */
+  promotionCriteria?: string;
+  /** Near-silent edge dedupe: last time a needs-user line was surfaced for this track. */
+  lastDigestNotifiedAt?: string;
+}
+
 export type PipelineStage =
   | 'outline'
   | 'spec-drafted'
@@ -187,6 +208,9 @@ export interface Initiative {
   unskippedAt?: string;
   /** Default true at runtime; false marks infrastructure-of-tracker specs. */
   driftCheck?: boolean;
+  /** Post-ship rollout track (ships-staged features). Present only when the
+   *  feature matures behind a flag. Stage is derived from observing flagPath. */
+  rollout?: RolloutInfo;
 
   // Project-only fields (only meaningful when `kind === 'project'`):
   rounds?: InitiativeRound[];
@@ -233,6 +257,7 @@ export interface InitiativeCreateInput {
   mergeCommitOid?: string;
   ciCheckedAt?: string;
   driftCheck?: boolean;
+  rollout?: RolloutInfo;
   rounds?: InitiativeRound[];
   sourceDocs?: string[];
   autoAdvance?: boolean;
@@ -273,6 +298,7 @@ export interface InitiativeUpdateInput {
   skippedReason?: string | null;
   unskippedAt?: string | null;
   driftCheck?: boolean;
+  rollout?: RolloutInfo | null;
   rounds?: InitiativeRound[];
   sourceDocs?: string[];
   autoAdvance?: boolean;
@@ -948,6 +974,7 @@ export class InitiativeTracker {
     if (input.mergeCommitOid !== undefined) initiative.mergeCommitOid = input.mergeCommitOid;
     if (input.ciCheckedAt !== undefined) initiative.ciCheckedAt = input.ciCheckedAt;
     if (input.driftCheck !== undefined) initiative.driftCheck = input.driftCheck;
+    if (input.rollout !== undefined) initiative.rollout = input.rollout;
     if (input.rounds !== undefined) initiative.rounds = input.rounds;
     if (input.sourceDocs !== undefined) initiative.sourceDocs = input.sourceDocs;
     if (input.autoAdvance !== undefined) initiative.autoAdvance = input.autoAdvance;
@@ -1050,6 +1077,9 @@ export class InitiativeTracker {
       next.unskippedAt = input.unskippedAt === null ? undefined : input.unskippedAt;
     }
     if (input.driftCheck !== undefined) next.driftCheck = input.driftCheck;
+    if (input.rollout !== undefined) {
+      next.rollout = input.rollout === null ? undefined : input.rollout;
+    }
     if (input.rounds !== undefined) next.rounds = input.rounds;
     if (input.sourceDocs !== undefined) next.sourceDocs = input.sourceDocs;
     if (input.autoAdvance !== undefined) next.autoAdvance = input.autoAdvance;

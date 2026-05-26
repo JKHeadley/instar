@@ -269,6 +269,26 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'initiatives',
+    prefixes: ['/initiatives'],
+    description: 'Initiative & project tracker — what we are working on, plus graduated feature rollouts (auto-populated from approved specs). Check this for "what are we working on" — never answer from memory.',
+    build: ({ ctx }) => {
+      const tracker = (ctx as { initiativeTracker?: { list?: () => Array<{ status: string }> } }).initiativeTracker;
+      if (!tracker?.list) return { enabled: false };
+      const items = tracker.list();
+      return {
+        enabled: true,
+        activeCount: items.filter(i => i.status === 'active').length,
+        endpoints: [
+          'get /initiatives — all initiatives (what are we working on)',
+          'get /initiatives/digest — what needs a decision / is stale / ready to advance',
+          'get /initiatives/:id — one initiative',
+          'get /projects — project rollups',
+        ],
+      };
+    },
+  },
+  {
     key: 'autonomy',
     prefixes: ['/autonomy'],
     description: 'Autonomy profile — how much freedom the agent has',
@@ -738,7 +758,11 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
   { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },
-  { prefix: 'initiatives', reason: 'surfaced inside `evolution` subsystems' },
+  // NOTE: `initiatives` is intentionally NOT suppressed. The Graduated Feature
+  // Rollout standard (GRADUATED-FEATURE-ROLLOUT-SPEC §4.5) requires the agent to
+  // reach for /initiatives reflexively for "what are we working on" — the prior
+  // suppression ("surfaced inside evolution subsystems") left the tracker
+  // un-discoverable, which is why it was never used. Surfaced directly now.
   { prefix: 'triage', reason: 'surfaced inside `evolution` subsystems' },
   { prefix: 'intent', reason: 'surfaced inside `evolution` subsystems' },
   { prefix: 'self-knowledge', reason: 'surfaced inside `capability-map`' },

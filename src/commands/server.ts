@@ -7657,6 +7657,29 @@ export async function startServer(options: StartOptions): Promise<void> {
     initiativeTracker.setDigestCacheInvalidator(() => projectDigestCache.writeDigestCache());
     projectDigestCache.writeDigestCache();
 
+    // ── Graduated Feature Rollout — self-populating tracker ──────────────
+    // The reconciler turns approved specs + traces + merge state into tracker
+    // initiatives automatically (GRADUATED-FEATURE-ROLLOUT-SPEC §4.1), so no
+    // ship-dark feature relies on anyone remembering to register it. Runs once
+    // at boot + on a bounded cadence. Observation-only w.r.t. config flags.
+    const { FeatureRolloutReconciler } = await import('../core/FeatureRolloutReconciler.js');
+    const { scanSpecArtifacts, makeFlagObserver } = await import('../core/featureRolloutScan.js');
+    const { getInitDefaults: _getRolloutDefaults } = await import('../config/ConfigDefaults.js');
+    const _shippedDefaults = _getRolloutDefaults(
+      (config as { agentType?: string }).agentType === 'standalone' ? 'standalone' : 'managed-project',
+    );
+    const featureRolloutReconciler = new FeatureRolloutReconciler({
+      tracker: initiativeTracker,
+      listSpecArtifacts: () => scanSpecArtifacts(config.projectDir),
+      observeFlag: makeFlagObserver(config, _shippedDefaults),
+    });
+    void featureRolloutReconciler.reconcile().catch(err =>
+      console.warn('[instar] feature-rollout reconcile failed (non-fatal):', err instanceof Error ? err.message : String(err)));
+    const _rolloutReconcileTimer = setInterval(() => {
+      void featureRolloutReconciler.reconcile().catch(() => { /* non-fatal */ });
+    }, 6 * 60 * 60 * 1000);
+    if (typeof _rolloutReconcileTimer.unref === 'function') _rolloutReconcileTimer.unref();
+
     // Project-scope Phase 1b PR 3 — round runner (single chokepoint for
     // /advance, /halt, /ack, /accept-partial; lock-protected; future
     // autonomous-delegating run loop).
