@@ -3229,6 +3229,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.skipped.push('CLAUDE.md: Worktree Convention section already present');
     }
 
+    // Graduated Feature Rollout (§4.5): the Registry-First table must route
+    // "what are we working on" to the initiative tracker so the agent never
+    // answers from memory. Idempotent: insert the row after "What can I do?".
+    if (!content.includes('What are we working on?') && content.includes('| What can I do?')) {
+      const row = `| What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |`;
+      content = content.replace(/(\| What can I do\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added "what are we working on" Registry-First row (initiative discoverability)');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
