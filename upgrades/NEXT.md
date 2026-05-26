@@ -1,10 +1,27 @@
 # Unreleased
 
-## Fixed — Threadline topic-bound reply surfacing (CMT-515)
+## What Changed
 
-A reply from another agent on a Threadline thread bound to a Telegram topic now reliably reaches that topic instead of silently vanishing into the store. Root causes fixed:
+Fixed Threadline topic-bound reply surfacing (CMT-515): a reply from another agent on a thread bound to a Telegram topic now reliably reaches that topic instead of silently vanishing into the store.
 
-- **Lost replies + broken history:** `ThreadResumeMap.get()` no longer nulls topic-linkage entries via the Claude-JSONL existence guard (a topic-linkage thread's liveness is its topic, not a transcript file). This repairs both inbound routing (replies were falling through to a throwaway session spawn) and `threadline_history` (which 404'd on threads that existed).
-- **Relay-path leak:** topic-bound replies arriving over the cross-machine relay are no longer swallowed by the warm-listener side-channel; they reach the topic-linkage router.
-- **Unreliable hand-off:** injecting a reply into a live session is now *confirmed* (a stalled paste no longer counts as delivered). When the hand-off stalls, a deterministic Telegram notification surfaces the reply as a safety net; when it succeeds, no duplicate notification is posted. Commitments resolve only on a confirmed user-facing surface.
-- **History completeness + peer attribution:** both legs of a local conversation are now persisted to the thread aggregate, and the sender's originating topic is stamped on the delivered envelope so the peer can attribute replies to its own topic.
+- **Lost replies + broken history (one root cause):** `ThreadResumeMap.get()` no longer nulls topic-linkage entries via the Claude-JSONL existence guard — a topic-linkage thread's liveness is its topic, not a transcript file. This repairs both inbound routing (replies were falling through to a throwaway session spawn) and `threadline_history` (which returned "not found" for threads that existed).
+- **Relay-path leak:** topic-bound replies arriving over the cross-machine relay are no longer swallowed by the warm-listener side-channel; they now reach the topic-linkage router (the local same-machine path was already covered, which is why a co-located test missed this).
+- **Unreliable hand-off:** injecting a reply into a live session is now *confirmed* — a stalled paste no longer counts as delivered. When the hand-off stalls, a deterministic Telegram notification surfaces the reply as a safety net; when it succeeds, no duplicate notification is posted. A commitment resolves only on a confirmed user-facing surface (a confirmed live hand-off OR an actual notification).
+- **History completeness + peer attribution:** both legs of a local conversation are now persisted to the thread aggregate (history showed only the other agent's half), and the sender's originating topic is stamped on the delivered envelope so the peer can attribute replies to its own topic.
+
+## What to Tell Your User
+
+If you reach out to another agent in the background while you're chatting, that agent's reply now shows up in our conversation reliably — before, it could land in my records but never make it back to you. You'll get a short "replied" note in the topic if I can't weave it in live, and you won't get double-pinged when I can. No action needed; this just makes background agent collaboration trustworthy.
+
+## Summary of New Capabilities
+
+- Topic-bound Threadline replies surface to their originating Telegram topic on both the local and cross-machine relay paths.
+- Live-session hand-off is consumption-confirmed, with a guaranteed Telegram fallback when it stalls and no double-post when it succeeds.
+- `threadline_history` / `getThread` resolve live topic-bound threads and return both legs of the conversation.
+- Inter-agent envelopes carry the sender's originating topic id for peer-side attribution.
+
+## Evidence
+
+- Root causes verified against v1.2.80 source (including an in-code comment that already documented the `get()` JSONL-guard hazard on the send path but never fixed the inbound path).
+- 3-tier tests: new unit coverage for the `get()` topic-linkage exemption, confirmed-vs-stalled inject (no-double-surface / safety-net-fallback), and both-legs thread persistence; full threadline suite green (1539 unit/integration + 329 e2e, zero regressions).
+- Independent second-pass review concurred on the actual diff (no over/under-block, no inject double-recovery race, return-type change breaks no caller).
