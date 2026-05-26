@@ -212,6 +212,9 @@ export class AgentServer {
       api: import('../core/MachineHeartbeat.js').MachineHeartbeat;
       config: { machineId: string };
     };
+    /** SessionReaper — pressure-aware idle-session reaper (off/dry-run by
+     *  default). Powers GET /sessions/reaper. */
+    sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper;
     /** Threadline → Telegram bridge config — toggles + allow/deny list. */
     telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
     /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
@@ -512,6 +515,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      sessionReaper: options.sessionReaper ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
       threadlineObservability: options.threadlineObservability ?? null,

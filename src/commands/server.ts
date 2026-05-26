@@ -5324,6 +5324,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // is OFF for Telegram by default and, when enabled, coalesces into ONE
     // consolidated message to the existing system topic. No new-topic-per-event.
     // Spec: docs/specs/silently-stopped-trio.md.
+    //
+    // Captured out of the trio block so the SessionReaper's recovery veto can
+    // compose socket + silence in too (SESSION-REAPER-SPEC §4 "compose, don't
+    // replace"). undefined when the corresponding sentinel is disabled.
+    let socketRecoveryActive: ((sessionName: string) => boolean) | undefined;
+    let silenceRecoveryActive: ((sessionName: string) => boolean) | undefined;
     {
       const { SocketDisconnectSentinel } = await import('../monitoring/SocketDisconnectSentinel.js');
       const { ActiveWorkSilenceSentinel } = await import('../monitoring/ActiveWorkSilenceSentinel.js');
@@ -5391,6 +5397,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         socketSentinel.on('recovery-error', (e: { sessionName: string; err: unknown }) =>
           notifier.record('recovery-error', 'socket-disconnect', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         socketSentinel.start();
+        socketRecoveryActive = (s: string) => socketSentinel.isRecoveryActive(s);
         console.log(pc.green('  SocketDisconnectSentinel enabled (connection-drop recovery)'));
       }
 
@@ -5410,6 +5417,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         silenceSentinel.on('nudge-error', (e: { sessionName: string; err: unknown }) =>
           notifier.record('nudge-error', 'active-silence', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         silenceSentinel.start();
+        silenceRecoveryActive = (s: string) => silenceSentinel.isRecoveryActive(s);
         console.log(pc.green(
           telegramEscalation
             ? '  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — Telegram escalation ON, consolidated)'
@@ -5417,6 +5425,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         ));
       }
     }
+
+    // Recompose the zombie-kill veto to include ALL four recovery sentinels now
+    // that socket + silence exist (the interim set above covered only compaction
+    // + rate-limit, before those two were constructed). This single composed
+    // predicate is the superset — it drops none — and is reused as the
+    // SessionReaper's recovery gate (G) so the reaper never kills a session any
+    // sentinel is reviving. SESSION-REAPER-SPEC §4 "compose, don't replace".
+    const composedRecoveryActive = (session: import('../core/types.js').Session): boolean =>
+      compactionSentinel.isRecoveryActive(session.tmuxSession) ||
+      rateLimitSentinel.isRecoveryActive(session.tmuxSession) ||
+      (socketRecoveryActive?.(session.tmuxSession) ?? false) ||
+      (silenceRecoveryActive?.(session.tmuxSession) ?? false);
+    sessionManager.setActiveRecoveryChecker(composedRecoveryActive);
 
     // Trigger 1: PreCompact hook event — report to sentinel.
     hookEventReceiver.on('PreCompact', () => {
@@ -7764,7 +7785,78 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge });
+    // ── SessionReaper (SESSION-REAPER-SPEC) ──────────────────────────────
+    // Pressure-aware reaper of idle-but-alive sessions. Ships OFF + dry-run by
+    // default; the classifier's positive-evidence + confidence-contract is what
+    // guarantees it never reaps a working session. Reuses composedRecoveryActive
+    // (gate G) so it defers to every recovery sentinel. Pressure is freemem-tiered
+    // for v1 (advisory; spawn-denial-primary is a tracked follow-up) — and note
+    // an over-eager tier can only reap a GENUINELY-idle session sooner, never a
+    // working one (the classifier protects working sessions regardless of tier).
+    const { SessionReaper, fileAuditSink } = await import('../monitoring/SessionReaper.js');
+    const _os = await import('node:os');
+    const _resolveTopic = (tmuxSession: string): number | null => {
+      const t = telegram?.getTopicForSession(tmuxSession);
+      if (t == null) return null;
+      const n = typeof t === 'number' ? t : Number(t);
+      return Number.isFinite(n) ? n : null;
+    };
+    const sessionReaper = new SessionReaper(
+      {
+        listRunningSessions: () => sessionManager.listRunningSessions(),
+        captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
+        hasActiveProcesses: (s) => sessionManager.hasActiveProcesses(s),
+        frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,
+        isRecoveryActive: (session) => composedRecoveryActive(session),
+        isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
+        hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
+        topicBinding: _resolveTopic,
+        // Gate I is a v1 stub (returns false): active conversation is already
+        // covered by the relay-lease + pending-injection gates and by render
+        // stasis (a session being talked to is not render-static for the full
+        // hysteresis+threshold window). Promoting to a real message-recency
+        // query is a tracked tuning follow-up.
+        recentUserMessage: () => false,
+        activeCommitmentForTopic: (topicId) => {
+          try { return commitmentTracker.getActive().some(c => c.topicId === topicId); }
+          catch { return true; } // cannot tell → protect
+        },
+        activeSubagentCount: (csid) => {
+          try { return csid ? subagentTracker.getActiveSubagents(csid).length : 0; }
+          catch { return 1; } // cannot tell → protect
+        },
+        buildOrAutonomousActive: (topicId) => {
+          const fresh = (p: string): boolean => {
+            try { return fs.existsSync(p) && (Date.now() - fs.statSync(p).mtimeMs) < 30 * 60_000; }
+            catch { return false; }
+          };
+          if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
+          return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
+        },
+        protectedSessions: () => config.sessions?.protectedSessions ?? [],
+        pressure: () => {
+          const total = _os.totalmem();
+          const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;
+          const tier = freePct < 5 ? 'critical' : freePct < 12 ? 'moderate' : 'normal';
+          return { tier, inputs: { freePct: Math.round(freePct * 10) / 10 } };
+        },
+        terminate: (id, reason) => sessionManager.terminateSession(id, reason),
+        markReaping: (id) => sessionManager.markReaping(id),
+        clearReaping: (id) => sessionManager.clearReaping(id),
+        audit: fileAuditSink(config.stateDir),
+      },
+      config.monitoring?.sessionReaper,
+    );
+    sessionReaper.start();
+    if (config.monitoring?.sessionReaper?.enabled) {
+      console.log(pc.green(
+        config.monitoring.sessionReaper.dryRun === false
+          ? '  SessionReaper enabled (idle-session reaper — LIVE)'
+          : '  SessionReaper enabled (idle-session reaper — dry-run, logs only)',
+      ));
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
