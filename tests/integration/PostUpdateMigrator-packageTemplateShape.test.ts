@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +36,7 @@ describe('PostUpdateMigrator package template shape', () => {
   });
 
   it('runs the packed compiled migrator with only the packaged source-template layout', async () => {
-    const tmp = fs.mkdtempSync(path.join(repoRoot, 'tmp-pack-template-shape-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-template-shape-'));
     tempDirs.push(tmp);
 
     const raw = execFileSync('npm', ['pack', '--json', '--pack-destination', tmp], {
@@ -57,14 +58,16 @@ describe('PostUpdateMigrator package template shape', () => {
     const packageDir = path.join(extractDir, 'package');
     const agentDir = path.join(tmp, 'agent');
     fs.mkdirSync(agentDir, { recursive: true });
+    fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(packageDir, 'node_modules'), 'dir');
     expect(fs.existsSync(path.join(packageDir, 'src', 'templates', 'hooks', 'free-text-guard.sh'))).toBe(true);
     expect(fs.existsSync(path.join(packageDir, 'dist', 'templates'))).toBe(false);
 
     const originalCwd = process.cwd();
     process.chdir(tmp);
     try {
+      const migratorUrl = pathToFileURL(path.join(packageDir, 'dist', 'core', 'PostUpdateMigrator.js')).href;
       const { PostUpdateMigrator } = await import(
-        `${path.join(packageDir, 'dist', 'core', 'PostUpdateMigrator.js')}?packagedSmoke=${Date.now()}`
+        `${migratorUrl}?packagedSmoke=${Date.now()}`
       );
       const result = { upgraded: [], skipped: [], errors: [] };
       const migrator = new PostUpdateMigrator({
