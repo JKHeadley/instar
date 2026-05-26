@@ -274,6 +274,30 @@ describe('SessionReaper — dry-run and blast radius', () => {
     await driveToReap(h);
     expect(h.terminate).toHaveBeenCalledTimes(1); // budget caps the 2nd
   });
+
+  it('releases the reaping lease when a matured reap is budget-gated (no idle-kill lockout)', async () => {
+    const sessions = [mkSession({ id: 'a', tmuxSession: 'ta' }), mkSession({ id: 'b', tmuxSession: 'tb' })];
+    const h = harness({ sessions, cfg: { maxReapsPerHour: 1, maxReapsPerTick: 5 } });
+    await driveToReap(h);
+    // One reaped; the budget-gated one must NOT keep its reaping lease.
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    expect(h.reaping.size).toBe(0); // both leases released — no permanent lockout
+  });
+});
+
+describe('SessionReaper — robustness', () => {
+  it('KEEPs (never reaps) when a protect-signal throws during evaluation', async () => {
+    const h = harness({ deps: { isRecoveryActive: () => { throw new Error('boom'); } } });
+    for (let i = 0; i < 4; i++) { h.setNow(1_000_000 + i * 120_000); await h.reaper.tick(); }
+    expect(h.terminate).not.toHaveBeenCalled();
+  });
+
+  it('snapshot never throws when a protect-signal throws', () => {
+    const h = harness({ deps: { isRecoveryActive: () => { throw new Error('boom'); } } });
+    const snap = h.reaper.snapshot();
+    expect(snap.sessions[0].verdict).toBe('keep');
+    expect(snap.sessions[0].keptBy).toBe('eval-error');
+  });
 });
 
 describe('SessionReaper — observability', () => {

@@ -168,12 +168,14 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(manager.isRelayLeaseActive(s.id)).toBe(false);
   });
 
-  it('killSession sets endedReason and is CAS-guarded against an already-terminated session', async () => {
+  it('killSession sets endedReason and preserves its unconditional-kill contract', async () => {
     const s = await spawn('job-g');
     expect(manager.killSession(s.id)).toBe(true);
     expect(state.getSession(s.id)!.status).toBe('killed');
     expect(state.getSession(s.id)!.endedReason).toBe('manual-kill');
-    // second kill is a no-op (already terminal)
-    expect(manager.killSession(s.id)).toBe(false);
+    // Contract preserved: killSession destroys the pane regardless of status
+    // (it does NOT early-return on terminal status — only the in-flight guard
+    // protects against racing terminateSession).
+    expect(manager.killSession(s.id)).toBe(true);
   });
 });

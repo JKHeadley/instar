@@ -383,6 +383,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return expiry != null && expiry > Date.now();
   }
 
+  /** The resolved protected-session list (incl. the `<project>-server` default).
+   *  Exposed so the SessionReaper's gate A uses the SAME list the idle-kill /
+   *  terminateSession guards enforce, rather than re-reading raw file config. */
+  getProtectedSessions(): string[] {
+    return this.config.protectedSessions;
+  }
+
   /** Mark a session as being reaped (two-phase reap window). The idle-kill path
    *  skips reaping sessions so the reaper is the single actor on them. */
   markReaping(sessionId: string): void {
@@ -1122,10 +1129,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`Cannot kill protected session: ${session.tmuxSession}`);
     }
 
-    // Share the single-writer CAS guard so an explicit kill can't double with an
+    // Share the in-flight guard so an explicit kill can't double with an
     // in-flight terminateSession() from the idle-kill / reaper path (§3.6).
+    // NB: unlike terminateSession we do NOT early-return on terminal status —
+    // killSession's contract is to destroy the pane unconditionally (a caller
+    // may kill a session whose status already drifted while its pane lives).
     if (this.terminating.has(sessionId)) return false;
-    if (session.status !== 'running' && session.status !== 'starting') return false;
     this.terminating.add(sessionId);
     try {
       // Emit beforeSessionKill BEFORE destroying the tmux session so

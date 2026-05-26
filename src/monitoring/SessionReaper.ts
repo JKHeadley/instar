@@ -296,7 +296,17 @@ export class SessionReaper extends EventEmitter {
 
       let reapedThisTick = 0;
       for (const session of sessions) {
-        const evaln = this.evaluate(session);
+        let evaln: SessionEvaluation;
+        try {
+          evaln = this.evaluate(session);
+        } catch {
+          // A protect-signal threw — we cannot reason about this session, so
+          // KEEP it (abort any reap-pending) and reset candidacy. Never reap on
+          // a failed evaluation.
+          this.deps.clearReaping(session.id);
+          this.obs.set(session.id, { candidateSince: 0, consecutive: 0, lastFrame: '', lastTranscript: { resolved: false, path: '', size: 0, mtime: 0 } });
+          continue;
+        }
         const prior = this.obs.get(session.id);
         const now = this.now();
 
@@ -332,9 +342,15 @@ export class SessionReaper extends EventEmitter {
           if (now - next.reapPendingSince >= this.cfg.finalGraceSec * 1000) {
             // Final confirmation already passed THIS tick's full classifier
             // (we're here ⇒ still reap-eligible + render-static). Terminate.
-            if (threshold != null && reapedThisTick < this.cfg.maxReapsPerTick && this.hourlyBudgetRemaining() > 0) {
-              await this.performReap(session, pressure, next);
+            const canReap = threshold != null && reapedThisTick < this.cfg.maxReapsPerTick && this.hourlyBudgetRemaining() > 0;
+            if (canReap) {
+              await this.performReap(session, pressure, next); // clears the lease on every path
               reapedThisTick++;
+            } else {
+              // Grace elapsed but the reap is gated (tier dropped / budget spent).
+              // Release the reaping lease so the idle-kill safety net is not
+              // permanently disabled for this session.
+              this.deps.clearReaping(session.id);
             }
             this.obs.set(session.id, { ...next, reapPendingSince: undefined });
           } else {
@@ -407,10 +423,16 @@ export class SessionReaper extends EventEmitter {
     const threshold = this.thresholdMs(pressure.tier);
     const now = this.now();
     const sessions = this.deps.listRunningSessions().map(s => {
-      const e = this.evaluate(s);
       const o = this.obs.get(s.id);
+      let verdict: Verdict = 'keep';
+      let keptBy = 'eval-error';
+      let confidence: Confidence = 'low';
+      try {
+        const e = this.evaluate(s);
+        verdict = e.verdict; keptBy = e.keptBy; confidence = e.confidence;
+      } catch { /* a protect-signal threw — report as kept, never crash the route */ }
       return {
-        name: s.name, sessionId: s.id, verdict: e.verdict, keptBy: e.keptBy, confidence: e.confidence,
+        name: s.name, sessionId: s.id, verdict, keptBy, confidence,
         consecutive: o?.consecutive ?? 0, idleMs: o?.candidateSince ? now - o.candidateSince : 0,
         reapPending: o?.reapPendingSince != null,
       };

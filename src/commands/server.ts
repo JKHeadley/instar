@@ -7833,7 +7833,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
           return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
         },
-        protectedSessions: () => config.sessions?.protectedSessions ?? [],
+        protectedSessions: () => sessionManager.getProtectedSessions(),
         pressure: () => {
           const total = _os.totalmem();
           const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;

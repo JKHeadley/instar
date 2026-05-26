@@ -31,3 +31,12 @@ Set `monitoring.sessionReaper.enabled:false` (the default) — fully inert. No d
 ## Tests
 
 3-tier: unit (transcript prober, terminateSession CAS, classifier incl. every false-reap vector, config/migration), integration (`/sessions/reaper` + dry-run), e2e (feature-alive + dangerous cases). Wiring-integrity guards the construct→start→pass chain. Live test-as-self on a real in-flight build + a real Codex session precedes merge.
+
+## Phase-3 review fixes (post multi-agent code review)
+
+Independent review confirmed NO blocker to the hard requirement (cannot reap a working session) and surfaced safety-net hardening, all applied:
+- **Reaping-lease leak:** when a matured reap is budget/tier-gated, the reaping lease is now released — previously it could permanently disable the fast idle-kill for that session.
+- **Protected-list wiring:** gate A now reads `SessionManager.getProtectedSessions()` (the resolved list including the `<project>-server` default) rather than the raw config field, preventing spurious auto-disable when the server session goes idle.
+- **Robustness:** `tick()` and `snapshot()` treat a throwing protect-signal as KEEP — never reap on a failed evaluation, and the `/sessions/reaper` route never 500s.
+- **`killSession` contract preserved:** unconditional pane kill retained (only the in-flight guard added; no terminal-status early-return).
+- **Known v1 gap (documented, not a false-reap vector):** the optional `mainProcessActive` CPU/IO-delta signal is not wired in v1; render-stasis is the real-time liveness channel that covers in-process work. Promoting `mainProcessActive` is a tracked enhancement, validated during the dry-run rollout.
