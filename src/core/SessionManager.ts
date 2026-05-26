@@ -170,6 +170,15 @@ export class SessionManager extends EventEmitter {
   /** Sessions with active relay leases (prompt relayed, waiting for response) — extends idle timeout */
   private relayLeases = new Map<string, number>(); // session ID → lease expiry timestamp
 
+  /** Sessions the SessionReaper has leased for a two-phase reap (the transient
+   *  'reaping' state of SESSION-REAPER-SPEC §3.6). While a session id is here,
+   *  the idle-kill path skips it so only the reaper acts on it. */
+  private reapingSessions = new Set<string>();
+
+  /** Sessions whose termination is currently in flight — guards terminateSession()
+   *  against re-entrant double-kill / double-event emission within a tick. */
+  private terminating = new Set<string>();
+
   /** Track pending Telegram injections awaiting agent response.
    *  Key = tmuxSession name. Cleared when agent replies via /telegram/reply/:topicId. */
   private pendingInjections = new Map<string, { topicId: number; injectedAt: number; text: string }>();
@@ -362,6 +371,91 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   clearRelayLease(sessionId: string): void {
     this.relayLeases.delete(sessionId);
+  }
+
+  /**
+   * True if the session has an unexpired relay lease (a prompt was relayed and
+   * we are waiting on the user). Gate H of the SessionReaper — keyed on the
+   * instar session id, not the tmux name. (SESSION-REAPER-SPEC §3.1(4)H.)
+   */
+  isRelayLeaseActive(sessionId: string): boolean {
+    const expiry = this.relayLeases.get(sessionId);
+    return expiry != null && expiry > Date.now();
+  }
+
+  /** The resolved protected-session list (incl. the `<project>-server` default).
+   *  Exposed so the SessionReaper's gate A uses the SAME list the idle-kill /
+   *  terminateSession guards enforce, rather than re-reading raw file config. */
+  getProtectedSessions(): string[] {
+    return this.config.protectedSessions;
+  }
+
+  /** Mark a session as being reaped (two-phase reap window). The idle-kill path
+   *  skips reaping sessions so the reaper is the single actor on them. */
+  markReaping(sessionId: string): void {
+    this.reapingSessions.add(sessionId);
+  }
+
+  /** Clear the reaping lease (reap completed or aborted). */
+  clearReaping(sessionId: string): void {
+    this.reapingSessions.delete(sessionId);
+  }
+
+  /** True if a reap is in flight for this session. */
+  isReaping(sessionId: string): boolean {
+    return this.reapingSessions.has(sessionId);
+  }
+
+  /**
+   * Single-writer session termination (SESSION-REAPER-SPEC §3.6). Both the
+   * idle-kill path and the SessionReaper funnel through this so a session is
+   * killed at most once with exactly-once `beforeSessionKill`/`sessionComplete`
+   * emission and a correct `endedReason`.
+   *
+   * Compare-and-set semantics: a session that is not in a live state
+   * ('starting'/'running'), or whose termination is already in flight, is a
+   * no-op — this is what prevents the idle-kill ↔ reaper double-kill race.
+   *
+   * @returns `{ terminated: true }` on a kill performed by THIS call, or
+   *          `{ terminated: false, skipped }` describing why it was a no-op.
+   */
+  async terminateSession(
+    sessionId: string,
+    reason: string,
+    opts?: { finalStatus?: 'completed' | 'killed' },
+  ): Promise<{ terminated: boolean; skipped?: string }> {
+    const session = this.state.getSession(sessionId);
+    if (!session) return { terminated: false, skipped: 'not-found' };
+    // CAS: only live sessions are terminable. Idempotent for already-terminal ones.
+    if (session.status !== 'running' && session.status !== 'starting') {
+      return { terminated: false, skipped: `already-${session.status}` };
+    }
+    if (this.config.protectedSessions.includes(session.tmuxSession)) {
+      return { terminated: false, skipped: 'protected' };
+    }
+    // In-flight guard: a concurrent terminate already owns this session.
+    if (this.terminating.has(sessionId)) {
+      return { terminated: false, skipped: 'in-flight' };
+    }
+    this.terminating.add(sessionId);
+    try {
+      // Emit BEFORE destroying tmux so listeners (TopicResumeMap, SlackAdapter)
+      // can capture resume UUIDs while the session is still alive.
+      this.emit('beforeSessionKill', session);
+      try {
+        await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
+      } catch { /* session may already be dead */ }
+      session.status = opts?.finalStatus ?? 'completed';
+      session.endedAt = new Date().toISOString();
+      session.endedReason = reason;
+      this.state.saveSession(session);
+      this.emit('sessionComplete', session);
+      this.idlePromptSince.delete(session.id);
+      this.reapingSessions.delete(session.id);
+      return { terminated: true };
+    } finally {
+      this.terminating.delete(sessionId);
+    }
   }
 
   /**
@@ -562,7 +656,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // AND (2) no non-baseline child processes are running. This is the ground
         // truth — no exemptions needed for subagents, topic bindings, or relay leases.
         // If the process tree shows work, the session is active. Period.
-        if (!this.config.protectedSessions.includes(session.tmuxSession)) {
+        // Skip sessions the SessionReaper has leased for a two-phase reap — it
+        // is the single actor on them while reaping (§3.6).
+        if (!this.config.protectedSessions.includes(session.tmuxSession) && !this.isReaping(session.id)) {
           const output = this.captureOutput(session.tmuxSession, 5);
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
@@ -659,15 +755,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 }
                 const bindingNote = binding != null ? ` (topic-bound, threshold ${killThresholdMinutes}m)` : ` (threshold ${killThresholdMinutes}m)`;
                 console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
-                this.emit('beforeSessionKill', session);
-                try {
-                  await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
-                } catch { /* ignore */ }
-                session.status = 'completed';
-                session.endedAt = new Date().toISOString();
-                this.state.saveSession(session);
-                this.emit('sessionComplete', session);
-                this.idlePromptSince.delete(session.id);
+                // Funnel through the single-writer path so the reaper and this
+                // idle-kill can never double-kill or double-emit (§3.6).
+                await this.terminateSession(session.id, 'idle-zombie');
                 continue;
               }
             }
@@ -1039,23 +1129,40 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`Cannot kill protected session: ${session.tmuxSession}`);
     }
 
-    // Emit beforeSessionKill BEFORE destroying the tmux session so
-    // listeners (e.g. TopicResumeMap) can discover the Claude UUID
-    // while the session is still alive.
-    this.emit('beforeSessionKill', session);
-
+    // Share the in-flight guard so an explicit kill can't double with an
+    // in-flight terminateSession() from the idle-kill / reaper path (§3.6).
+    // NB: unlike terminateSession we do NOT early-return on terminal status —
+    // killSession's contract is to destroy the pane unconditionally (a caller
+    // may kill a session whose status already drifted while its pane lives).
+    if (this.terminating.has(sessionId)) return false;
+    this.terminating.add(sessionId);
     try {
-      execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
-        encoding: 'utf-8',
-      });
-    } catch {
-      // Session might already be dead
-    }
+      // Emit beforeSessionKill BEFORE destroying the tmux session so
+      // listeners (e.g. TopicResumeMap) can discover the Claude UUID
+      // while the session is still alive.
+      this.emit('beforeSessionKill', session);
 
-    session.status = 'killed';
-    session.endedAt = new Date().toISOString();
-    this.state.saveSession(session);
-    return true;
+      try {
+        execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`], {
+          encoding: 'utf-8',
+        });
+      } catch {
+        // Session might already be dead
+      }
+
+      session.status = 'killed';
+      session.endedAt = new Date().toISOString();
+      session.endedReason = 'manual-kill';
+      this.state.saveSession(session);
+      // NB: killSession historically does NOT emit 'sessionComplete' (only
+      // beforeSessionKill). Preserved to avoid changing listener semantics —
+      // the CAS guard + endedReason are the only additions here.
+      this.idlePromptSince.delete(session.id);
+      this.reapingSessions.delete(session.id);
+      return true;
+    } finally {
+      this.terminating.delete(sessionId);
+    }
   }
 
   /**

@@ -404,6 +404,12 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
 - Spawn: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/spawn -d '{"name":"task","prompt":"do something"}'\`
 
+**SessionReaper** — Pressure-aware cleanup of idle-but-alive sessions (sessions parked at a ready prompt, doing nothing, holding memory). Distinct from the crash/zombie reapers: it only acts when the machine is under memory pressure, and it NEVER reaps a session that might be working — it requires positive proof a session is idle (turn complete + at a ready prompt + screen byte-static across several checks + no running process + no transcript growth), and KEEPs on any ambiguity. Ships OFF + dry-run by default (the only monitor that kills on a heuristic).
+- Why it matters: idle sessions pile up across agents until the machine starves and new sessions get "spawn denied" — silently breaking cross-agent messaging. This sweeps them, but only under real pressure.
+- See current state / why each session is kept or flagged: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/reaper\`
+- Enable (after reviewing the dry-run log): in \`.instar/config.json\` set \`{"monitoring": {"sessionReaper": {"enabled": true, "dryRun": false}}}\`. Leave \`dryRun: true\` first to watch what it WOULD reap (logged to \`logs/sentinel-events.jsonl\`) without killing anything.
+- Proactive: user asks "why are sessions piling up?" / "clean up idle sessions" / "are we low on memory?" → GET /sessions/reaper for the pressure tier + per-session verdict.
+
 **Multi-Session Autonomy** — I can run multiple autonomous jobs at once, one per topic (default cap 5, set \`autonomousSessions.maxConcurrent\` in config). Each topic's job is isolated, survives restarts, and is keyed on its topic.
 - What's running: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/sessions\`
 - The cap + budget gate is checked automatically when a job starts (\`GET /autonomous/can-start\`); a start is refused when at the cap or under budget pressure.

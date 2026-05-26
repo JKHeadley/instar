@@ -659,6 +659,9 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
+   *  (older boot paths). Powers GET /sessions/reaper observability. */
+  sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
   /** TaskFlow registry — durable multi-step job records (OpenClaw import).
    *  Null when not enabled. Phase 1: no business consumers; admin endpoints
    *  only. */
@@ -3703,6 +3706,17 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch {
       res.json({ sessions: [] });
     }
+  });
+
+  // SessionReaper observability (SESSION-REAPER-SPEC §3.9). Answers
+  // "why did/didn't it reap X?" from a pull surface — pressure tier, active
+  // threshold, and every running session's verdict + the gate that kept it.
+  router.get('/sessions/reaper', (_req, res) => {
+    if (!ctx.sessionReaper) {
+      res.status(503).json({ error: 'session reaper unavailable' });
+      return;
+    }
+    res.json(ctx.sessionReaper.snapshot());
   });
 
   router.get('/sessions', (req, res) => {

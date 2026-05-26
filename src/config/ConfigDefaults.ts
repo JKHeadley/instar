@@ -40,6 +40,29 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     activeWorkSilenceSentinel: {
       enabled: true,
     },
+    // SessionReaper — pressure-aware reaper of idle-but-alive sessions.
+    // UNLIKE the sentinels above, default OFF + dry-run: it is the only monitor
+    // that *kills* sessions on a heuristic, so it ships dark and must be flipped
+    // on by an operator after validating the dry-run log over a real pressure
+    // event. enabled:false → never runs; dryRun:true → logs would-reap, kills
+    // nothing. See docs/specs/SESSION-REAPER-SPEC.md.
+    sessionReaper: {
+      enabled: false,
+      dryRun: true,
+      tickIntervalSec: 120,
+      minAgeMinutes: 30,
+      confirmObservations: 3,
+      confirmWindowMinutes: 10,
+      paneCaptureLines: 200,
+      recentUserWindowMinutes: 30,
+      idleThresholdModerateMinutes: 45,
+      idleThresholdCriticalMinutes: 15,
+      normalTierReaps: false,
+      maxReapsPerTick: 3,
+      maxReapsPerHour: 12,
+      finalGraceSec: 60,
+      protectOpenCommitments: true,
+    },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
     // in the logs (server.log + sentinel-events.jsonl). Set true to receive
