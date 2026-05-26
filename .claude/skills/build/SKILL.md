@@ -18,8 +18,13 @@ user_invocable: true
 ## Step 1: Initialize Build (MANDATORY)
 
 ```bash
-python3 playbook-scripts/build-state.py init "TASK DESCRIPTION" --size SMALL|STANDARD|LARGE
+python3 playbook-scripts/build-state.py init "TASK DESCRIPTION" --size SMALL|STANDARD|LARGE --owner-session "$CLAUDE_CODE_SESSION_ID"
 ```
+
+`--owner-session "$CLAUDE_CODE_SESSION_ID"` stamps this session as the build's
+owner so the stop-hook only blocks YOU, not your other concurrent sessions. Run
+it directly in the shell (not via a sub-script) so the variable expands; if it's
+empty the build still scopes correctly by tmux session name.
 
 Size determines protection level:
 - **SMALL** (light): 3 stop-hook reinforcements, basic observability

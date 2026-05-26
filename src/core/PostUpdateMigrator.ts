@@ -212,6 +212,7 @@ export class PostUpdateMigrator {
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
+    this.migrateBuildSkillOwnerSession(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -1286,6 +1287,41 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/build/SKILL.md methodology migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Make the /build skill stamp the owning session at init (ACT-155 fast-follow
+   * to BUILD-STOP-HOOK-SESSION-SCOPING). build-state.py accepts --owner-session
+   * (the Claude session UUID, which scopes the stop-hook precisely on top of the
+   * load-bearing tmux scoping), but the skill must actually pass it. installBuild
+   * is install-if-missing, so deployed agents need this surgical line-patch.
+   *
+   * Idempotent + surgical: finds the `build-state.py init ...` invocation line and,
+   * if it lacks `--owner-session`, appends `--owner-session "$CLAUDE_CODE_SESSION_ID"`.
+   * Skips if already present (idempotent) or if the line is absent (customized).
+   */
+  private migrateBuildSkillOwnerSession(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'build', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuildSkill handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      if (current.includes('--owner-session')) return; // already patched — idempotent
+      const lines = current.split('\n');
+      let patched = false;
+      for (let i = 0; i < lines.length; i++) {
+        // Match the init invocation line; leave anything else untouched.
+        if (/build-state\.py\s+init\b/.test(lines[i]) && !lines[i].includes('--owner-session')) {
+          lines[i] = `${lines[i].replace(/\s+$/, '')} --owner-session "$CLAUDE_CODE_SESSION_ID"`;
+          patched = true;
+        }
+      }
+      if (patched) {
+        fs.writeFileSync(skillFile, lines.join('\n'));
+        result.upgraded.push('skills/build/SKILL.md (session-scoping: init stamps --owner-session)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/build/SKILL.md owner-session migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

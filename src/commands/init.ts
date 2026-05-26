@@ -2827,7 +2827,7 @@ user_invocable: true
 
 > Structure > Willpower. The pipeline won't let you skip the parts that matter.
 
-Use \`python3 playbook-scripts/build-state.py init "TASK" --size STANDARD\` to start.
+Use \`python3 playbook-scripts/build-state.py init "TASK" --size STANDARD --owner-session "$CLAUDE_CODE_SESSION_ID"\` to start.
 
 See the full skill documentation at: https://github.com/sagemindai/instar
 `);
