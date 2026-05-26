@@ -97,6 +97,17 @@ describe('PostUpdateMigrator — build-stop-hook.sh deployment', () => {
     expect(onDisk).toBe(inline);
     expect(inline).toContain('#!/bin/bash');
   });
+
+  it('inline getBuildStopHook() is byte-identical to the canonical template file (drift guard)', () => {
+    // The inline twin in PostUpdateMigrator is the shipping artifact; the template
+    // file is the canonical reference + manifest fingerprint. They MUST stay in
+    // sync — this asserts it so an edit to one without the other fails CI.
+    const migrator = newMigrator(projectDir);
+    const inline = migrator.getHookContent('build-stop-hook');
+    const templatePath = path.resolve(__dirname, '../../src/templates/hooks/build-stop-hook.sh');
+    const template = fs.readFileSync(templatePath, 'utf8');
+    expect(inline).toBe(template);
+  });
 });
 
 describe('PostUpdateMigrator — validateHookReferences', () => {

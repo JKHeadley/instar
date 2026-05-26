@@ -206,6 +206,30 @@ def git_run(args, cwd=None):
     return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
 
 
+# ─── Owner identity (BUILD-STOP-HOOK-SESSION-SCOPING-SPEC) ────────────
+# A build is owned by the session that started it. We stamp the owner's stable
+# tmux session name (cwd-independent) at init so the Stop hook can scope its
+# "keep working" block to the OWNER alone — other concurrent sessions of the same
+# agent must approve-exit without draining the owner's reinforcement budget.
+# Test seams (shared with build-stop-hook.sh): INSTAR_HOOK_TMUX_SESSION (if set,
+# even empty, wins) and INSTAR_HOOK_NO_TMUX=1 (forces empty). Best-effort only —
+# resolution failure must never break `init`.
+
+def resolve_owner_tmux(explicit=None):
+    if explicit:
+        return explicit.strip()
+    if os.environ.get("INSTAR_HOOK_NO_TMUX") == "1":
+        return ""
+    if "INSTAR_HOOK_TMUX_SESSION" in os.environ:
+        return os.environ["INSTAR_HOOK_TMUX_SESSION"]
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "#S"],
+                           capture_output=True, text=True, timeout=3)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 # ─── Worktree Commands ──────────────────────────────────────────
 
 def cmd_worktree_create(args):
@@ -329,10 +353,16 @@ def cmd_init(args):
         out({"error": "Invalid size. Use SMALL, STANDARD, or LARGE"})
         sys.exit(1)
 
+    owner = {
+        "tmux": resolve_owner_tmux(getattr(args, "owner_tmux", None)),
+        "session": (getattr(args, "owner_session", None) or "").strip(),
+        "stampedAt": now_iso(),
+    }
     state = {
         "task": args.task, "phase": "idle", "size": size,
         "protection": PROTECTION_LEVELS[size],
         "startedAt": now_iso(), "completedAt": None,
+        "owner": owner,
         "currentStep": 0, "totalSteps": 0, "steps": [],
         "totalTests": 0, "allPassing": True,
         "fixIterations": 0, "maxFixIterations": 3,
@@ -341,7 +371,9 @@ def cmd_init(args):
         "worktree": None,
     }
     save_state(state)
-    append_audit("build.initialized", {"task": args.task, "size": size})
+    append_audit("build.initialized", {
+        "task": args.task, "size": size,
+        "ownerTmux": owner["tmux"], "ownerSession": owner["session"]})
     out({"status": "initialized", "task": args.task, "size": size,
          "protection": PROTECTION_LEVELS[size]["label"],
          "reinforcements": PROTECTION_LEVELS[size]["reinforcements"]})
@@ -583,6 +615,12 @@ def main():
     s.add_argument("task")
     s.add_argument("--size", choices=["SMALL", "STANDARD", "LARGE"],
                    default="STANDARD")
+    # Owner identity (session-scoping). --owner-session carries the Claude session
+    # UUID ($CLAUDE_CODE_SESSION_ID), which child processes don't inherit, so the
+    # SKILL passes it explicitly. --owner-tmux is an override seam (tests / unusual
+    # launches); normally the tmux name is self-resolved.
+    s.add_argument("--owner-session", default="")
+    s.add_argument("--owner-tmux", default="")
 
     s = sub.add_parser("transition")
     s.add_argument("phase")
