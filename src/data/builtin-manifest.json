@@ -1,7 +1,7 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-05-26T16:31:59.210Z",
+  "generatedAt": "2026-05-26T17:32:06.035Z",
   "instarVersion": "1.3.0",
   "entryCount": 192,
   "entries": {
@@ -11,7 +11,7 @@
       "domain": "identity",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/session-start.sh",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:dangerous-command-guard": {
@@ -20,7 +20,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/dangerous-command-guard.sh",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:grounding-before-messaging": {
@@ -29,7 +29,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/grounding-before-messaging.sh",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:compaction-recovery": {
@@ -38,7 +38,7 @@
       "domain": "identity",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/compaction-recovery.sh",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:external-operation-gate": {
@@ -47,7 +47,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/external-operation-gate.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:deferral-detector": {
@@ -56,7 +56,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/deferral-detector.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:post-action-reflection": {
@@ -65,7 +65,7 @@
       "domain": "evolution",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/post-action-reflection.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:external-communication-guard": {
@@ -74,7 +74,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/external-communication-guard.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:scope-coherence-collector": {
@@ -83,7 +83,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/scope-coherence-collector.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:scope-coherence-checkpoint": {
@@ -92,7 +92,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/scope-coherence-checkpoint.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:free-text-guard": {
@@ -101,7 +101,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/free-text-guard.sh",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:claim-intercept": {
@@ -110,7 +110,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/claim-intercept.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:claim-intercept-response": {
@@ -119,7 +119,7 @@
       "domain": "coherence",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/claim-intercept-response.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:stop-gate-router": {
@@ -128,7 +128,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/stop-gate-router.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "hook:auto-approve-permissions": {
@@ -137,7 +137,7 @@
       "domain": "safety",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
       "installedPath": ".instar/hooks/instar/auto-approve-permissions.js",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "job:health-check": {
@@ -993,7 +993,7 @@
       "type": "template",
       "domain": "safety",
       "sourcePath": "src/templates/hooks/build-stop-hook.sh",
-      "contentHash": "fec59280a0f8631daee042272bb919747521d1e2a10a93f6883ac6bed81c524b",
+      "contentHash": "5af759e07c687b3202dd65a941e1a32b9b53364987f02f0614672f1433b3cd6f",
       "since": "2025-01-01"
     },
     "template:compaction-recovery.sh": {
@@ -1193,7 +1193,7 @@
       "type": "playbook-script",
       "domain": "context",
       "sourcePath": "playbook-scripts/build-state.py",
-      "contentHash": "2fa7c09bfc43abe42a1691877c989058daebc885020688feb6ba399bbf352e74",
+      "contentHash": "1d772501d8179dcbdfafb5da3776ed781ec1302b4c07e80d67c9c7822169dc31",
       "since": "2025-01-01"
     },
     "playbook-script:playbook-annotate-context.py": {
@@ -1481,7 +1481,7 @@
       "type": "subsystem",
       "domain": "updates",
       "sourcePath": "src/core/PostUpdateMigrator.ts",
-      "contentHash": "b54d6e7d0f6f6e6b6ef1574e8ad4987c4055784a1b6dd51d3f3c8a45368a56c2",
+      "contentHash": "2e8fcd7b3b103e23e5ec42b844dfd225eed3ecd08e5b29ac19f794f80a2b6138",
       "since": "2025-01-01"
     },
     "subsystem:scheduler": {

@@ -7413,6 +7413,68 @@ if [ "\$PHASE" = "complete" ] || [ "\$PHASE" = "failed" ] || [ "\$PHASE" = "esca
   exit 0
 fi
 
+# ── Session-scope ownership (BUILD-STOP-HOOK-SESSION-SCOPING-SPEC) ───────────
+# build-state stamps the owning session (tmux name + Claude session UUID) at /build
+# start. Only the OWNER session's Stop should be blocked; any other concurrent
+# session of the same agent must approve-exit WITHOUT spending the owner's
+# reinforcement budget. This closes the cross-session stop-hook leak + budget drain.
+HOOK_INPUT=\$(cat 2>/dev/null || echo "")
+HOOK_SESSION=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json
+try: print((json.load(sys.stdin) or {}).get('session_id','') or '')
+except Exception: print('')" 2>/dev/null)
+
+# Resolve MY tmux session name (the stable, cwd-independent owner address).
+# Test seams: INSTAR_HOOK_TMUX_SESSION (if set, even empty, wins);
+# INSTAR_HOOK_NO_TMUX=1 forces empty.
+if [ "\${INSTAR_HOOK_NO_TMUX:-}" = "1" ]; then
+  MY_TMUX=""
+elif [ -n "\${INSTAR_HOOK_TMUX_SESSION+x}" ]; then
+  MY_TMUX="\${INSTAR_HOOK_TMUX_SESSION}"
+else
+  MY_TMUX=\$(tmux display-message -p '#S' 2>/dev/null || echo "")
+fi
+
+OWNERSHIP=\$(STATE_FILE="\$STATE_FILE" MY_TMUX="\$MY_TMUX" HOOK_SESSION="\$HOOK_SESSION" python3 -c "
+import json, os, sys
+try:
+    state = json.load(open(os.environ['STATE_FILE']))
+except Exception:
+    print('approve'); sys.exit(0)
+owner = state.get('owner') or {}
+o_tmux = owner.get('tmux') or ''
+o_sess = owner.get('session') or ''
+my_tmux = os.environ.get('MY_TMUX', '')
+my_sess = os.environ.get('HOOK_SESSION', '')
+
+# (a) No owner stamped -> conservative no-adopt: approve, never claim ownership.
+if not o_tmux and not o_sess:
+    print('approve'); sys.exit(0)
+
+# (b)/(c) Owner stamped: block only the proven owner. A session that cannot match
+# (including one with no resolvable identity) is approved -> never trap, no drain.
+is_owner = (bool(o_tmux) and o_tmux == my_tmux) or (bool(o_sess) and o_sess == my_sess)
+if not is_owner:
+    print('approve'); sys.exit(0)
+
+# Owner confirmed. Restart reconcile: ONLY on a confirmed tmux-owner match whose
+# session UUID rotated (restart) do we update owner.session. The write is gated
+# strictly behind the tmux match, so a non-owner can never clobber owner.session.
+if o_tmux and o_tmux == my_tmux and my_sess and o_sess != my_sess:
+    owner['session'] = my_sess
+    state['owner'] = owner
+    try:
+        with open(os.environ['STATE_FILE'], 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+print('owner')
+" 2>/dev/null)
+
+if [ "\$OWNERSHIP" != "owner" ]; then
+  echo '{"decision":"approve"}'
+  exit 0
+fi
+
 # Check and update reinforcement counter
 RESULT=\$(python3 -c "
 import json, sys
