@@ -117,4 +117,63 @@ describe('CollaborationSurfacer', () => {
     expect(r.surfaced).toBe(false);
     expect(r.reason).toBe('error');
   });
+
+  // ── CMT-519: notify() + bind helpers ──────────────────────────────
+
+  it('notify() posts a STATUS notice to the SILENT hub, reusing the one topic', async () => {
+    const opts: Array<{ silent?: boolean }> = [];
+    const tg = fakeTelegram();
+    const origSend = tg.sendToTopic;
+    tg.sendToTopic = async (topicId: number, text: string, o?: { silent?: boolean }) => { opts.push(o ?? {}); return origSend(topicId, text); };
+    const s = new CollaborationSurfacer({ telegram: tg, stateDir });
+    const r = await s.notify({ threadId: 'tx', title: 'Conversation loop paused', body: 'stopped a loop', peerName: 'codey' });
+    expect(r.surfaced).toBe(true);
+    expect(r.topicId).toBe(7777);
+    expect(tg.posts[0].text).toContain('Conversation loop paused');
+    expect(opts[0].silent).toBe(true); // hub is silent (D2)
+  });
+
+  it('notify() does NOT dedupe per thread (a status can legitimately recur)', async () => {
+    const tg = fakeTelegram();
+    const s = new CollaborationSurfacer({ telegram: tg, stateDir });
+    await s.notify({ threadId: 'tx', title: 'loop paused', body: 'one' });
+    await s.notify({ threadId: 'tx', title: 'loop paused', body: 'two' });
+    expect(tg.posts).toHaveLength(2);
+    expect(tg.created).toBe(1); // same single hub topic
+  });
+
+  it('mostRecentUnbound returns the latest unbound; ambiguous when >1', async () => {
+    const tg = fakeTelegram();
+    const s = new CollaborationSurfacer({ telegram: tg, stateDir });
+    await s.surface({ ...base, threadId: 't-a' });
+    let mru = s.mostRecentUnbound();
+    expect(mru.record?.threadId).toBe('t-a');
+    expect(mru.ambiguous).toBe(false);
+    await new Promise(r => setTimeout(r, 5));
+    await s.surface({ ...base, threadId: 't-b' });
+    mru = s.mostRecentUnbound();
+    expect(mru.ambiguous).toBe(true); // two unbound now
+  });
+
+  it('markBound excludes a conversation from mostRecentUnbound', async () => {
+    const tg = fakeTelegram();
+    const s = new CollaborationSurfacer({ telegram: tg, stateDir });
+    await s.surface({ ...base, threadId: 't-a' });
+    s.markBound('t-a');
+    expect(s.mostRecentUnbound().record).toBeNull();
+  });
+
+  it('migrates a legacy surfacedThreads string[] state file to records (dedupe still works)', async () => {
+    const tg = fakeTelegram();
+    // Plant a legacy-shaped state file.
+    const dir = path.join(stateDir, 'threadline');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'collaboration-surface.json'), JSON.stringify({ dedicatedTopicId: 7777, surfacedThreads: ['t-legacy'] }));
+    const s = new CollaborationSurfacer({ telegram: tg, stateDir });
+    // The legacy thread is treated as already-surfaced (dedupe survives migration).
+    const r = await s.surface({ ...base, threadId: 't-legacy' });
+    expect(r.surfaced).toBe(false);
+    expect(r.reason).toBe('already-surfaced');
+    expect(tg.created).toBe(0); // reused the persisted hub topic id, no re-create
+  });
 });

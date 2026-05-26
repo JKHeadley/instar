@@ -5598,6 +5598,28 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // CMT-519 — structural guard: threadline/agent-messaging-class attention
+    // items must NOT spawn a per-event Telegram topic (the "wall of topics").
+    // Redirect them through the SILENT Threadline hub (parent-or-hub routing).
+    // This makes the no-per-event-topic property structural — even an agent
+    // ad-hoc-posting a threadline alert can't regress into topic spam.
+    const threadlineClass =
+      /^(threadline|inter-agent|relay|spawn)/i.test(String(category || '')) ||
+      /\bthreadline\b|inter[- ]agent|spawn[- ]?storm|spawn to (receive|RECEIVE)|cannot spawn/i.test(candidate);
+    if (threadlineClass && ctx.collaborationSurfacer) {
+      const relatedThreadId =
+        (typeof req.body?.threadId === 'string' && req.body.threadId) ||
+        (typeof req.body?.relatedThreadId === 'string' && req.body.relatedThreadId) ||
+        `attn-${id}`;
+      const r = await ctx.collaborationSurfacer.notify({
+        threadId: relatedThreadId,
+        title: title || 'Threadline activity',
+        body: summary || description || title || '',
+      });
+      res.status(201).json({ redirected: 'threadline-hub', surfaced: r.surfaced, topicId: r.topicId });
+      return;
+    }
+
     try {
       const item = await ctx.telegram.createAttentionItem({
         id,
@@ -13079,6 +13101,77 @@ export function createRoutes(ctx: RouteContext): Router {
         success: false,
         error: err instanceof Error ? err.message : 'Send failed',
       });
+    }
+  });
+
+  // ── Threadline Hub: "open this" / "tie this to <topic>" ──────────────────
+  // CMT-519: promote a surfaced (parentless) Threadline conversation out of the
+  // hub into its own topic, or bind it to an existing one. AUTHORITATIVE bind —
+  // sets boundTopicId on the conversation AND the commitment's topicId, overriding
+  // captureOriginOnSend's first-write-wins (operator intent > heuristic). Once
+  // bound, future replies surface to that parent topic via TopicLinkageHandler.
+  router.post('/threadline/hub/bind', async (req, res) => {
+    if (!ctx.collaborationSurfacer || !ctx.conversationStore || !ctx.telegram) {
+      res.status(503).json({ error: 'Threadline hub not available (telegram/conversation store required)' });
+      return;
+    }
+    const action = req.body?.action;
+    if (action !== 'open' && action !== 'tie') {
+      res.status(400).json({ error: '"action" must be "open" or "tie"' });
+      return;
+    }
+    // Resolve the conversation: explicit threadId, else the hub's most-recent unbound.
+    let threadId: string | undefined =
+      typeof req.body?.threadId === 'string' && req.body.threadId ? req.body.threadId : undefined;
+    if (!threadId) {
+      const mru = ctx.collaborationSurfacer.mostRecentUnbound();
+      if (!mru.record) {
+        res.status(404).json({ error: 'No unbound Threadline conversation in the hub to open' });
+        return;
+      }
+      if (mru.ambiguous) {
+        res.status(409).json({ error: 'More than one unbound conversation in the hub — specify which threadId to open' });
+        return;
+      }
+      threadId = mru.record.threadId;
+    }
+    try {
+      // Resolve the target topic.
+      let topicId: number;
+      let topicName: string;
+      if (action === 'tie') {
+        if (typeof req.body?.targetTopicId === 'number') {
+          topicId = req.body.targetTopicId;
+          topicName = typeof req.body?.targetTopicName === 'string' ? req.body.targetTopicName : `topic ${topicId}`;
+        } else if (typeof req.body?.targetTopicName === 'string' && req.body.targetTopicName) {
+          const t = await ctx.telegram.findOrCreateForumTopic(req.body.targetTopicName);
+          topicId = t.topicId; topicName = t.name;
+        } else {
+          res.status(400).json({ error: 'tie requires targetTopicId or targetTopicName' });
+          return;
+        }
+      } else {
+        // open: create a uniquely-named topic for this conversation (peer + short
+        // threadId so two same-subject conversations never collide on the name).
+        const existing = ctx.conversationStore.get(threadId);
+        const peer = (existing?.participants?.peers?.[0] ?? 'agent').replace(/[^\w-]/g, '').slice(0, 24) || 'agent';
+        const name = `${peer} · ${threadId.slice(0, 8)}`;
+        const t = await ctx.telegram.findOrCreateForumTopic(name);
+        topicId = t.topicId; topicName = t.name;
+      }
+      // Authoritative bind.
+      await ctx.conversationStore.mutate(threadId, (c) => { c.boundTopicId = topicId; return c; });
+      const commitment = ctx.commitmentTracker?.findByThreadId(threadId);
+      if (commitment && ctx.commitmentTracker) {
+        try { await ctx.commitmentTracker.mutate(commitment.id, (c) => { c.topicId = topicId; return c; }); }
+        catch (e) { console.warn(`[hub/bind] commitment topicId update failed: ${e instanceof Error ? e.message : e}`); }
+      }
+      ctx.collaborationSurfacer.markBound(threadId);
+      await ctx.telegram.sendToTopic(topicId, `🧵 This Threadline conversation is now tied to this topic — updates will land here.`).catch(() => { });
+      await ctx.collaborationSurfacer.noteInHub(`Opened conversation ${threadId.slice(0, 8)} → "${topicName}".`);
+      res.json({ ok: true, action, threadId, topicId, topicName });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

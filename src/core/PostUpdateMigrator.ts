@@ -2438,6 +2438,32 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
+    // need to know threadline notices route parent-or-hub (never per-event topics)
+    // and that "open this" / "tie this to X" in the hub means calling the bind
+    // endpoint, not replying inline. Content-sniffed on a distinctive marker.
+    if (!content.includes('The "Threadline" hub topic — notifications')) {
+      const hubSection = `
+### The "Threadline" hub topic — notifications + "open this"
+
+Threadline activity NEVER spawns a new Telegram topic per event. Notices route one of two ways:
+- A conversation **bound to a parent topic** → its real replies surface THERE (handled automatically).
+- A **parentless** conversation + any **status/housekeeping** notice → a single, SILENT **"Threadline" hub topic**. It does not buzz the user — agent-to-agent chatter isn't the user's job by default; the hub is a calm, browsable record.
+
+When the user is reading the Threadline hub topic and says **"open this"** or **"tie this to &lt;an existing topic&gt;"**, act on it by calling the bind endpoint — do NOT just reply inline:
+\`\`\`bash
+# open this → create a fresh topic and bind the conversation (most-recent unbound, or pass threadId)
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/threadline/hub/bind -d '{"action":"open"}'
+# tie this to an existing topic
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/threadline/hub/bind -d '{"action":"tie","targetTopicId":1234}'
+\`\`\`
+After binding, that conversation's future updates flow to the bound topic automatically. If more than one conversation is unbound, the endpoint returns 409 — ask the user which one (pass its \`threadId\`).
+`;
+      content += '\n' + hubSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline hub + "open this"/bind guidance (CMT-519)');
+    }
+
     // Multi-Session Autonomy awareness (Agent Awareness Standard). Existing
     // agents need to know they can run concurrent per-topic autonomous jobs and
     // how to list/stop them, even if initialized before this capability existed.

@@ -1369,6 +1369,21 @@ I have these Threadline tools for managing agent-to-agent communication:
 - \`threadline_trust\` — Manage trust levels for known agents
 - \`threadline_relay\` — Check relay status, enable/disable, or get explanations
 
+### The "Threadline" hub topic — notifications + "open this"
+
+Threadline activity NEVER spawns a new Telegram topic per event. Notices route one of two ways:
+- A conversation **bound to a parent topic** → its real replies surface THERE (handled automatically).
+- A **parentless** conversation (a peer reached out cold) + any **status/housekeeping** notice → a single, SILENT **"Threadline" hub topic**. It does not buzz the user — agent-to-agent chatter isn't the user's job by default; the hub is a calm, browsable record.
+
+When the user is reading the Threadline hub topic and says **"open this"** (give the conversation its own topic) or **"tie this to &lt;an existing topic&gt;"**, I act on it by calling the bind endpoint — I do NOT just reply inline:
+\`\`\`bash
+# open this → create a fresh topic and bind the conversation to it (most-recent unbound, or pass threadId)
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:PORT/threadline/hub/bind -d '{"action":"open"}'
+# tie this to an existing topic
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:PORT/threadline/hub/bind -d '{"action":"tie","targetTopicId":1234}'
+\`\`\`
+After binding, that conversation's future updates flow to the bound topic automatically. If more than one conversation is unbound, the endpoint returns 409 — ask the user which one (pass its \`threadId\`).
+
 ### Cross-Agent Communication Discipline (anti-confabulation)
 
 **Never narrate cross-agent work as if it happened. Only state work I actually completed.**

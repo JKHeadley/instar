@@ -7162,16 +7162,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
               if (decision.suppress) {
                 console.log(`[relay] warrants-reply gate suppressed reply (${decision.verdict.signal}) for ${senderName} thread ${gateThreadId.slice(0, 8)}`);
-                // On budget exhaustion, escalate ONE attention item — never silently drop.
-                if (decision.verdict.budgetExhausted && telegram) {
-                  telegram.createAttentionItem({
-                    id: `threadline-loop-${gateThreadId.slice(0, 12)}`,
-                    title: `Threadline conversation loop wound down (${senderName})`,
-                    summary: `Stopped auto-replying to an agent-to-agent thread that kept going with no new content.`,
-                    description: `An agent-to-agent thread with ${senderName} kept exchanging messages with no new content, so I stopped auto-replying to keep it from looping. Thread ${gateThreadId.slice(0, 8)}. Let me know if you want me to re-engage.`,
-                    category: 'threadline-loop-gate',
-                    priority: 'LOW',
-                  }).catch(escErr => console.warn(`[relay] loop-gate attention escalation failed: ${escErr instanceof Error ? escErr.message : escErr}`));
+                // On budget exhaustion, surface ONE status notice — never silently
+                // drop. CMT-519: route it to the SILENT Threadline hub (not a
+                // per-event attention topic, not the parent topic the operator is
+                // working in). This is housekeeping, not a user task.
+                if (decision.verdict.budgetExhausted && collaborationSurfacer) {
+                  void collaborationSurfacer.notify({
+                    threadId: gateThreadId,
+                    title: 'Conversation loop paused',
+                    body: `Stopped auto-replying to a thread with ${senderName} that kept going with no new content (thread ${gateThreadId.slice(0, 8)}). Say "re-engage" in this topic if you want me to pick it back up.`,
+                    peerName: senderName,
+                  }).catch(escErr => console.warn(`[relay] loop-gate hub notice failed: ${escErr instanceof Error ? escErr.message : escErr}`));
                 }
                 return; // short-circuit ALL three routing branches
               }
