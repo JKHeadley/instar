@@ -84,7 +84,6 @@ describe('CodexCliIntelligenceProvider — spawn args', () => {
     expect(args).toContain('--sandbox');
     expect(args).toContain('read-only');
     expect(args).toContain('--cd');
-    expect(args).toContain(nonGitDir);
     expect(args).toContain('--skip-git-repo-check');
     // Prompt is the last positional.
     expect(args[args.length - 1]).toBe('classify: hello');
@@ -125,5 +124,99 @@ describe('CodexCliIntelligenceProvider — spawn args', () => {
     });
 
     await expect(provider.evaluate('hi')).rejects.toThrow(/Codex CLI error/);
+  });
+});
+
+describe('CodexCliIntelligenceProvider — clean-call (no identity, no hooks)', () => {
+  // Regression: judgment calls must NOT run in the agent's project dir, or
+  // codex loads the full ~26 KB AGENTS.md identity and fires the project's
+  // .codex/hooks.json (session_start / etc.) on every call. They must run in
+  // an empty instar-managed scratch dir — the Codex analog of the Claude
+  // provider's `--setting-sources user`.
+
+  function cdValue(args: string[]): string | undefined {
+    const i = args.indexOf('--cd');
+    return i >= 0 ? args[i + 1] : undefined;
+  }
+
+  it('runs in the instar scratch dir, NOT the passed workingDirectory', async () => {
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: fakeCodexPath,
+      workingDirectory: nonGitDir,
+    });
+
+    const args = parseArgs(await provider.evaluate('classify: hello'));
+    const cd = cdValue(args);
+
+    expect(cd).toBeDefined();
+    expect(cd).not.toBe(nonGitDir);
+    expect(cd).toContain('instar-codex-intel-scratch');
+  });
+
+  it('the scratch dir exists and is empty — no AGENTS.md, no .codex hooks dir', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const args = parseArgs(await provider.evaluate('hi'));
+    const cd = cdValue(args)!;
+
+    expect(fs.existsSync(cd)).toBe(true);
+    const entries = fs.readdirSync(cd);
+    expect(entries).not.toContain('AGENTS.md');
+    expect(entries).not.toContain('.codex');
+  });
+
+  it('hard-disables project-doc loading via -c project_doc_max_bytes=0', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const args = parseArgs(await provider.evaluate('hi'));
+    const ci = args.indexOf('-c');
+
+    expect(ci).toBeGreaterThanOrEqual(0);
+    expect(args[ci + 1]).toBe('project_doc_max_bytes=0');
+  });
+
+  it('uses the same scratch dir across calls (stable, not per-call)', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const cd1 = cdValue(parseArgs(await provider.evaluate('a')));
+    const cd2 = cdValue(parseArgs(await provider.evaluate('b')));
+
+    expect(cd1).toBe(cd2);
+  });
+
+  it('creates the scratch dir with private (0700) permissions — not group/other accessible', async () => {
+    // Security: a world-accessible scratch dir under /tmp could let another
+    // local user plant a .codex/hooks.json that codex would then fire. mkdtemp
+    // creates 0700; assert it stays that way.
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+    const cd = cdValue(parseArgs(await provider.evaluate('hi')))!;
+
+    const mode = fs.statSync(cd).mode & 0o777;
+    expect(mode).toBe(0o700);
+  });
+
+  it('uses an unguessable (random-suffixed) dir name, not a fixed path', async () => {
+    // A fixed name under world-writable /tmp could be pre-created/symlinked by
+    // an attacker. The mkdtemp suffix makes the path unpredictable.
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+    const cd = cdValue(parseArgs(await provider.evaluate('hi')))!;
+
+    expect(path.basename(cd)).toMatch(/^instar-codex-intel-scratch-.+/);
+    expect(cd).not.toBe(path.join(os.tmpdir(), 'instar-codex-intel-scratch'));
+  });
+
+  it('recreates the scratch dir if a tmp-reaper deleted it mid-process', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const cd1 = cdValue(parseArgs(await provider.evaluate('a')))!;
+    SafeFsExecutor.safeRmSync(cd1, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/CodexCliIntelligenceProvider.test.ts:tmp-reaper-recovery',
+    });
+    expect(fs.existsSync(cd1)).toBe(false);
+
+    const cd2 = cdValue(parseArgs(await provider.evaluate('b')))!;
+    expect(fs.existsSync(cd2)).toBe(true);
   });
 });
