@@ -8091,7 +8091,47 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
+    // ── ReleaseReadinessSentinel (Layer B of release-readiness-visibility) ──
+    // Repo-gated dev-environment watchdog: only constructed when the install has
+    // an analyzable instar git repo AND the feature is enabled in config. On a
+    // plain npm-installed agent (no instar repo) it stays null → routes 503,
+    // never a spurious signal. Not start()ed here — the off-by-default
+    // release-readiness-check job drives tick() via POST /release-readiness/tick.
+    let releaseReadinessSentinel: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel | null = null;
+    {
+      const rrCfg = config.monitoring?.releaseReadiness;
+      const repoPath = rrCfg?.repoPath ?? process.cwd();
+      if (rrCfg?.enabled) {
+        const { isAnalyzableRepo, buildReleaseReadinessDeps } = await import('../monitoring/releaseReadinessWiring.js');
+        if (isAnalyzableRepo(repoPath)) {
+          const { ReleaseReadinessSentinel } = await import('../monitoring/ReleaseReadinessSentinel.js');
+          const deps = buildReleaseReadinessDeps({
+            repoPath,
+            statePath: path.join(config.stateDir, 'release-readiness.json'),
+            auditPath: path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl'),
+            port: config.port,
+            authToken: config.authToken ?? '',
+            canonicalRemote: rrCfg.canonicalRemote,
+            fetchTimeoutMs: rrCfg.fetchTimeoutMs,
+          });
+          releaseReadinessSentinel = new ReleaseReadinessSentinel(deps, {
+            enabled: true,
+            tickIntervalMs: rrCfg.tickIntervalMs,
+            backlogAgeDaysSilent: rrCfg.backlogAgeDaysSilent,
+            backlogAgeDaysLow: rrCfg.backlogAgeDaysLow,
+            backlogAgeDaysMedium: rrCfg.backlogAgeDaysMedium,
+            backlogAgeDaysHigh: rrCfg.backlogAgeDaysHigh,
+            hysteresisHours: rrCfg.hysteresisHours,
+            staleEpisodeTtlDays: rrCfg.staleEpisodeTtlDays,
+          });
+          console.log(pc.green('  ReleaseReadinessSentinel enabled (release-hygiene watchdog — job-driven)'));
+        } else {
+          console.log(pc.dim('  ReleaseReadinessSentinel enabled in config but no analyzable instar repo found — staying inert'));
+        }
+      }
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

@@ -548,6 +548,9 @@ export interface RouteContext {
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
+  /** ReleaseReadinessSentinel (Layer B of release-readiness-visibility). Null on
+   *  installs with no analyzable instar git repo, or when disabled in config. */
+  releaseReadinessSentinel: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel | null;
   messageRouter: MessageRouter | null;
   summarySentinel: SessionSummarySentinel | null;
   spawnManager: SpawnRequestManager | null;
@@ -4153,6 +4156,65 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: ctx.tokenLedger.summary({ sinceMs }),
       codex: ctx.tokenLedger.codexSummary({ sinceMs }),
     });
+  });
+
+  // ── Release-readiness (Layer B of release-readiness-visibility) ──────
+  // Null when there's no analyzable instar git repo or the feature is off.
+  router.get('/release-readiness', (_req, res) => {
+    if (!ctx.releaseReadinessSentinel) {
+      res.status(503).json({ error: 'release-readiness watchdog not configured (no analyzable instar repo or disabled)' });
+      return;
+    }
+    const s = ctx.releaseReadinessSentinel.snapshot();
+    const openEpisode = s.episodes.find((e) => !e.resolvedMs && e.openedMs);
+    // Served from the local host's cache; on a multi-machine follower this may
+    // lag the leader by up to one lease-handoff (spec §4.2.7).
+    res.setHeader('X-Readiness-Source', 'leader');
+    res.json({
+      disabled: s.disabled ?? false,
+      lastTickAt: s.lastTickAt,
+      lastSignalAt: s.lastSignalAt,
+      cacheHeadSha: s.cacheHeadSha,
+      canonicalRemoteOverridden: s.canonicalRemoteOverridden ?? false,
+      openEpisodes: s.episodes.filter((e) => !e.resolvedMs).length,
+      oldestOpenSha: openEpisode?.oldestSha,
+      openAttentionId: openEpisode?.attentionId,
+      rollbackHistory: (s.rollbackHistory ?? []).slice(-5),
+    });
+  });
+
+  // The job (off by default) calls this on its cadence — tick() is the cron
+  // entry point. Runs one evaluation; the sentinel owns all signalling.
+  router.post('/release-readiness/tick', async (_req, res) => {
+    if (!ctx.releaseReadinessSentinel) {
+      res.status(503).json({ error: 'release-readiness watchdog not configured' });
+      return;
+    }
+    await ctx.releaseReadinessSentinel.tick();
+    res.json({ ok: true });
+  });
+
+  // Rollback is bearer-gated AND loud: it raises a HIGH-priority Attention item
+  // + audits, so it can't silently mute the alarm (spec §4.2.7 / iter-3 V5).
+  router.post('/release-readiness/rollback', async (req, res) => {
+    if (!ctx.releaseReadinessSentinel) {
+      res.status(503).json({ error: 'release-readiness watchdog not configured' });
+      return;
+    }
+    await ctx.releaseReadinessSentinel.rollback({
+      sessionId: typeof req.body?.sessionId === 'string' ? req.body.sessionId : undefined,
+      sourceIp: req.ip,
+    });
+    res.json({ ok: true, rolledBack: true });
+  });
+
+  router.post('/release-readiness/enable', (_req, res) => {
+    if (!ctx.releaseReadinessSentinel) {
+      res.status(503).json({ error: 'release-readiness watchdog not configured' });
+      return;
+    }
+    ctx.releaseReadinessSentinel.enable();
+    res.json({ ok: true, enabled: true });
   });
 
   // ── Human-as-Detector heat map ───────────────────────────────────────

@@ -2502,6 +2502,22 @@ When the user is reading the Threadline hub topic and says **"open this"** or **
       result.upgraded.push('CLAUDE.md: added Threadline hub + "open this" guidance (CMT-519)');
     }
 
+    // release-readiness-visibility §7 — Agent Awareness + Migration Parity:
+    // existing agents must learn the release-readiness watchdog endpoints, not
+    // just new agents via init. Content-sniff on the route marker.
+    if (!content.includes('/release-readiness')) {
+      const rrSection = `
+### Release Readiness (instar-dev / maintainer environments only)
+
+A repo-gated watchdog that makes a stalled instar release impossible to miss: it evaluates canonical \`main\` and, when finished work sits unreleased while publishing is blocked, raises ONE deduped, age-escalating item on the Attention queue. Ships OFF; the \`release-readiness-check\` job drives it. Null/503 on any install with no analyzable instar git repo.
+- Status: \`GET /release-readiness\` · Run one check: \`POST /release-readiness/tick\`
+- Disable (loud — raises a HIGH attention item + audits, never silent): \`POST /release-readiness/rollback\` · re-arm: \`POST /release-readiness/enable\`
+`;
+      content += '\n' + rrSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Release Readiness watchdog awareness (release-readiness-visibility)');
+    }
+
     // CMT-529 — agents migrated under CMT-519 got the OLD "call the bind endpoint"
     // wording; "open this" is now a STRUCTURAL intercept (handled before the agent).
     // Re-patch the stale sentence so the agent doesn't try to call the endpoint /

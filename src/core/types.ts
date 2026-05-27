@@ -2726,6 +2726,36 @@ export interface MonitoringConfig {
     insightTelegramEscalation?: boolean;
   };
   /**
+   * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)
+   * — Layer B. A repo-gated dev-environment watchdog: evaluates the canonical
+   * `main` of the instar checkout and surfaces a stalled/blocked release as a
+   * single, deduped, age-escalating Attention item. Ships OFF (Echo dogfoods
+   * first). Inert on any install with no analyzable instar git repo. Tier 0.
+   */
+  releaseReadiness?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Scan cadence (ms) (default: 21_600_000 = 6h). */
+    tickIntervalMs?: number;
+    /** Backlog age (days) below which the check is silent (default: 2). */
+    backlogAgeDaysSilent?: number;
+    /** Age thresholds (days) for LOW / MEDIUM / HIGH priority (default: 2 / 4 / 7). */
+    backlogAgeDaysLow?: number;
+    backlogAgeDaysMedium?: number;
+    backlogAgeDaysHigh?: number;
+    /** Hysteresis window (hours) before re-raising the same episode (default: 12). */
+    hysteresisHours?: number;
+    /** TTL (days) after which an abandoned open episode is reaped as stale (default: 30). */
+    staleEpisodeTtlDays?: number;
+    /** Bounded canonical-fetch timeout (ms) (default: 30_000). */
+    fetchTimeoutMs?: number;
+    /** Override the canonical remote NAME (default: auto-detect a JKHeadley/instar
+     *  remote; a non-canonical override raises a HIGH-priority signal). */
+    canonicalRemote?: string;
+    /** Override the instar repo path to analyze (default: the agent home). */
+    repoPath?: string;
+  };
+  /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations
    * (SentinelNotifier). Default false → sentinel notices are logged to the
    * server log + .instar/../logs/sentinel-events.jsonl only; the user never

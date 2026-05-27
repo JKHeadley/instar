@@ -69,7 +69,10 @@ export interface ReadinessState {
   lastSignalAt?: number;
   cacheHeadSha?: string;
   canonicalRemoteOverridden?: boolean;
-  rollbackHistory?: Array<{ ts: number; sessionId?: string; reason?: string }>;
+  /** Runtime kill-switch set by POST /release-readiness/rollback. When true,
+   *  tick() no-ops without evaluating. Cleared by /release-readiness/enable. */
+  disabled?: boolean;
+  rollbackHistory?: Array<{ ts: number; sessionId?: string; sourceIp?: string; reason?: string }>;
 }
 
 export type ReadinessPriority = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -172,6 +175,11 @@ export class ReleaseReadinessSentinel extends EventEmitter {
   async tick(): Promise<void> {
     const state = this.deps.loadState();
     state.lastTickAt = this.deps.now();
+    if (state.disabled) {
+      this.deps.audit({ kind: 'release-readiness', event: 'tick-skipped-disabled' });
+      this.deps.saveState(state);
+      return;
+    }
     try {
       await this.evaluate(state);
       this.deps.saveState(state);
@@ -181,6 +189,42 @@ export class ReleaseReadinessSentinel extends EventEmitter {
       await this.failLoud(state, 'tick', err);
       this.deps.saveState(state);
     }
+  }
+
+  /** Read-only snapshot of current state (for GET /release-readiness). */
+  snapshot(): ReadinessState {
+    return this.deps.loadState();
+  }
+
+  /**
+   * Runtime kill-switch (POST /release-readiness/rollback). Disables future
+   * ticks, resolves all open Attention items, and is ITSELF loud — raises a
+   * HIGH-priority Attention item + audits — so the rollback can never be a
+   * silent way to mute the alarm (iter-3 Adversarial V5).
+   */
+  async rollback(meta: { sessionId?: string; sourceIp?: string } = {}): Promise<void> {
+    const state = this.deps.loadState();
+    state.disabled = true;
+    await this.resolveAll(state, 'rolled-back');
+    state.rollbackHistory ??= [];
+    state.rollbackHistory.push({ ts: this.deps.now(), sessionId: meta.sessionId, sourceIp: meta.sourceIp, reason: 'rollback' });
+    this.deps.audit({ kind: 'release-readiness', event: 'rollback', sessionId: meta.sessionId, sourceIp: meta.sourceIp });
+    await this.deps.postAttention({
+      id: 'release-readiness-rolled-back',
+      title: 'Release-readiness alarm disabled',
+      summary: `The release-readiness watchdog was disabled via /release-readiness/rollback${meta.sessionId ? ` by session ${meta.sessionId}` : ''} at ${new Date(this.deps.now()).toISOString()}. Re-enable via POST /release-readiness/enable.`,
+      category: 'degradation',
+      priority: 'HIGH',
+    });
+    this.deps.saveState(state);
+  }
+
+  /** Re-arm after a rollback. */
+  enable(): void {
+    const state = this.deps.loadState();
+    state.disabled = false;
+    this.deps.audit({ kind: 'release-readiness', event: 'enabled' });
+    this.deps.saveState(state);
   }
 
   private async evaluate(state: ReadinessState): Promise<void> {

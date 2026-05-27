@@ -125,8 +125,14 @@ export function buildReleaseReadinessDeps(opts: ReleaseReadinessWiringOpts): Rel
       if (inflightFetch) return inflightFetch;
       inflightFetch = (async () => {
         try {
+          // Spec §4.2.2 originally said --depth=1; an E2E against a fixture (and
+          // by extension a real install with full local history) showed --depth=1
+          // turns the LOCAL repo shallow, which breaks `git log v0.0.1..ref` for
+          // analyze-release. --no-tags --no-recurse-submodules keeps the fetch
+          // bounded without shallowing; incremental fetches against an existing
+          // checkout transfer only new objects.
           SafeGitExecutor.run(
-            ['fetch', remote, 'main', '--depth=1', '--no-tags', '--no-recurse-submodules'],
+            ['fetch', remote, 'main', '--no-tags', '--no-recurse-submodules'],
             { cwd: opts.repoPath, operation: 'releaseReadinessWiring:fetch', timeout: fetchTimeoutMs },
           );
           const headSha = SafeGitExecutor.run(['rev-parse', 'FETCH_HEAD'], {

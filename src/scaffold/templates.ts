@@ -482,6 +482,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Resolve: \`curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/ATT-ID -H 'Content-Type: application/json' -d '{"status":"resolved","resolution":"Done"}'\`
 - **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.
 
+**Release Readiness** (instar-dev / maintainer environments only) — A repo-gated watchdog that makes a stalled instar release impossible to miss. It evaluates canonical \`main\`, and when finished work sits unreleased while publishing is blocked, raises ONE deduped, age-escalating item on the Attention queue. Ships OFF; the \`release-readiness-check\` job drives it. Null/503 on any install with no analyzable instar git repo.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness\` (state, open episodes, last tick/signal)
+- Run one check now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness/tick\`
+- Disable (loud — raises a HIGH attention item + audits, never silent): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness/rollback\` · re-arm: \`.../release-readiness/enable\`
+
 **Skip Ledger** — Track computational work to avoid repeating expensive operations. When a job or session processes items (files, messages, records), log what was processed so the next run can skip already-handled items.
 - View ledger: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger\`
 - View workloads: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger/workloads\`
