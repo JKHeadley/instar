@@ -174,3 +174,13 @@ the delivery path actually built + tested) before `mentor.mode` is flipped to `l
 graduated-rollout track gate `dry-run → live` on closing all three.
 
 BLOCKING CONCERNS: 0
+
+## Post-push CI fixes
+
+Two CI checks caught issues, both fixed:
+- `route-completeness.test.ts` requires every `catch (err)` to pair with an `err instanceof Error`
+  check; the `/mentor/tick` handler used `(err as Error).message`. Switched to
+  `err instanceof Error ? err.message : String(err)`.
+- `Docs Coverage` enforces a per-type floor; the new `mentor-onboarding` job dropped the `job`
+  floor (85%) since it was undocumented. Documented it in `reference/default-jobs.md` +
+  `architecture/the-living-system.md` (job coverage → 86%).

@@ -25,6 +25,7 @@ Instar ships with fourteen default jobs that run automatically on schedule. Each
 | `overseer-learning` | `0 3 */2 * *` (every other day 3am) | Sonnet | Learning oversight — knowledge consolidation, gap detection |
 | `docs-coverage-audit` | `0 10 * * 1` (Mondays 10am) | Haiku | Weekly walk of the instar source tree against the docs surface, surfaces newly-undocumented capabilities. Ships `enabled: false` by default; only useful on machines with the instar source repo locally |
 | `org-intent-drift-audit` | (configurable) | Sonnet | Periodic drift detection for organizational intent — compares recent decisions and outputs against the constraints and goals declared in `ORG-INTENT.md`, surfaces drift via the degradation channel |
+| `mentor-onboarding` | `*/15 * * * *` (every 15m) | Haiku | Framework-Onboarding Mentor heartbeat — a thin timer that pokes `POST /mentor/tick`; the in-process tick runs a leak-detector canary, a fail-closed budget gate, a safe-window check, a constrained Stage-A spawn, the leakage detector, Stage-B forensics, and ledger capture. Ships `enabled: false` and `mentor.mode: 'off'`; dormant until promoted off → dry-run → live |
 
 All jobs ship inside `src/scaffold/templates/jobs/instar/` and are installed on `instar init` plus refreshed on every update via `PostUpdateMigrator`.
 

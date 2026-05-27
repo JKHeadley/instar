@@ -4275,7 +4275,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const result = await ctx.mentorRunner.tick();
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

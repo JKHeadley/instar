@@ -71,6 +71,7 @@ The immune system is the most layered part of the organism. It has innate immuni
 | **memory-export** | Job (6h) | Memory consolidation. Regenerates MEMORY.md from the SemanticMemory knowledge graph. |
 | **identity-review** | Job (daily) | Self-model maintenance. Checks whether behavior aligns with AGENT.md and soul.md. |
 | **overseer-learning** | Job (2 days) | Meta-learning. Is the agent actually getting smarter, or is the learning pipeline busy-work? |
+| **mentor-onboarding** | Job (15m, off) | Framework-onboarding mentor heartbeat. Pokes the in-process mentor tick that drives a mentee framework as the user, runs the leak-detector, and captures behavioral issues to the framework ledger. Ships dormant. |
 
 **How it flows:** reflection-trigger captures raw learnings → insight-harvest finds patterns → EvolutionManager creates proposals → evolution-proposal-evaluate approves → evolution-proposal-implement builds → memory-hygiene prunes → memory-export consolidates → identity-review checks alignment. overseer-learning watches the whole pipeline.
 
