@@ -57,6 +57,7 @@ import {
   type VersionSkewBody,
 } from './forwardErrors.js';
 import { writeStartupMarker } from './startupMarker.js';
+import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
@@ -909,6 +910,13 @@ export class TelegramLifeline {
       this.consecutive409s = 0;
       this.consecutive429s = 0;
       this.pollBackoffMs = this.config.pollIntervalMs ?? 2000;
+      // Poll-ownership lease (Task 4 / 2026-05-27 silent-stalls postmortem):
+      // record that THIS lifeline owns the Telegram poll slot for this token,
+      // so a server starting on the same machine auto-demotes to send-only
+      // instead of double-polling and producing 409 Conflicts. Refreshed on
+      // every successful tick. Best-effort + non-throwing (writeLease swallows
+      // and warns on any I/O hiccup — polling is what matters).
+      writePollOwnerLease(this.projectConfig.stateDir, this.config.token, process.pid);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
