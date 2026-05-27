@@ -561,6 +561,12 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\` are always read-only regardless of config.
 - **Tunnel URL awareness**: Quick tunnel URLs change on restart. Frame file links as session-scoped unless using a named tunnel. Don't promise permanent URLs with quick tunnels.
 
+**Process Health (Dashboard Tab)** — A calm, human-readable window into the Failure-Learning Loop. The loop's findings are otherwise invisible (API-only); this tab shows, in plain English and large type, what's being watched, any patterns surfaced, and where the rollout sits.
+- **Where**: the "Process Health" tab in the dashboard. Refreshes itself quietly; nothing to run.
+- **What it shows**: an informational headline ("Watching — N issues recorded"), surfaced patterns (awareness-only — never auto-acted-on), recent captures as plain sentences, and the maturation track. A collapsed "Detail" drawer holds the aggregate counts.
+- **Proactive trigger**: when the user asks "is the loop noticing anything? / how's the rollout going? / what's it found?" → point them to the Process Health tab (give the dashboard URL + PIN). Do NOT paraphrase \`/failures*\` curl output at them — the tab IS the answer surface. Only read \`/failures/analysis\` yourself when you need the raw numbers for your own reasoning.
+- **Disabled note**: when \`monitoring.failureLearning.enabled\` is false the tab shows a friendly "not turned on yet" message, not an error.
+
 **Backup System** — Snapshot and restore agent state. Use before risky changes, after major progress, or to recover from corruption.
 - List snapshots: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/backups\`
 - Create snapshot: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/backups\`

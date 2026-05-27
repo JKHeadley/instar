@@ -4335,31 +4335,66 @@ export function createRoutes(ctx: RouteContext): Router {
   // detail.full NEVER crosses the boundary (§4.8). POST is the one mutating
   // route: requires X-Instar-Request intent + server-validated initiative.
 
+  // ETag/304 for the Process Health tab's diff-aware polling (tab spec §3/§4.3).
+  // Deterministic SHA over the fully-assembled body (incl. any rollout block);
+  // rely on V8 insertion order — do NOT sort keys.
+  const sendFailureJson = (req: ExpressRequest, res: ExpressResponse, body: unknown): void => {
+    const etag = `"${createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 16)}"`;
+    res.setHeader('ETag', etag);
+    if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
+    res.json(body);
+  };
+  // Parse a ?before=<ISO-ts> upper-bound param. Returns 400 sentinel on NaN.
+  const parseBeforeMs = (raw: unknown): { ok: true; ms?: number } | { ok: false } => {
+    if (typeof raw !== 'string') return { ok: true, ms: undefined };
+    const ms = Date.parse(raw);
+    return Number.isNaN(ms) ? { ok: false } : { ok: true, ms };
+  };
+
   router.get('/failures', (req, res) => {
     if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
     const q = req.query;
+    const before = parseBeforeMs(q.before);
+    if (!before.ok) { res.status(400).json({ error: 'invalid before= (expected an ISO timestamp)' }); return; }
     const records = ctx.failureLedger.list({
       source: typeof q.source === 'string' ? (q.source as never) : undefined,
       category: typeof q.category === 'string' ? (q.category as never) : undefined,
       initiativeId: typeof q.initiativeId === 'string' ? q.initiativeId : undefined,
       attribution: q.attribution === 'automatic' || q.attribution === 'one-tap' || q.attribution === 'inferred' ? q.attribution : undefined,
       status: typeof q.status === 'string' ? (q.status as never) : undefined,
+      beforeMs: before.ms,
       limit: typeof q.limit === 'string' && /^\d+$/.test(q.limit) ? Number(q.limit) : undefined,
     });
-    res.json({ failures: records.map((r) => FailureLedger.toApiView(r)) });
+    sendFailureJson(req, res, { failures: records.map((r) => FailureLedger.toApiView(r)) });
   });
 
   router.get('/failures/analysis', (req, res) => {
     if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
     const sinceDays = typeof req.query.sinceDays === 'string' ? Number(req.query.sinceDays) : undefined;
     const sinceMs = sinceDays && sinceDays > 0 ? Date.now() - sinceDays * 86400_000 : undefined;
-    res.json(ctx.failureLedger.analyze({ sinceMs }));
+    // rollout is assembled HERE (analyze() has no config access). Stage derives
+    // from the two failureLearning booleans; the 4th "default-on" stage has no
+    // per-agent flag and is never returned (tab renders it as a future step).
+    const fl = ctx.config.monitoring?.failureLearning;
+    const enabled = !!fl?.enabled;
+    const insightTelegramEscalation = !!fl?.insightTelegramEscalation;
+    const stage = !enabled ? 'dark' : insightTelegramEscalation ? 'insight-push' : 'capture-only';
+    const rollout = { stage, enabled, insightTelegramEscalation };
+    sendFailureJson(req, res, { ...ctx.failureLedger.analyze({ sinceMs }), rollout });
   });
 
   router.get('/failures/insights', (req, res) => {
     if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
-    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
-    res.json({ insights: ctx.failureLedger.listInsights(status ? { status: status as never } : {}) });
+    const q = req.query;
+    const before = parseBeforeMs(q.before);
+    if (!before.ok) { res.status(400).json({ error: 'invalid before= (expected an ISO timestamp)' }); return; }
+    const status = typeof q.status === 'string' ? q.status : undefined;
+    const insights = ctx.failureLedger.listInsights({
+      status: status ? (status as never) : undefined,
+      beforeMs: before.ms,
+      limit: typeof q.limit === 'string' && /^\d+$/.test(q.limit) ? Number(q.limit) : 50,
+    });
+    sendFailureJson(req, res, { insights });
   });
 
   // The analyzer + closed-loop tick (spec §4.4/§4.6.1). Invoked by the off-by-

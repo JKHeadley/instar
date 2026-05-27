@@ -3283,6 +3283,23 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added "what are we working on" Registry-First row (initiative discoverability)');
     }
 
+    // Process Health (Dashboard Tab) — Agent Awareness backfill for the
+    // Failure-Learning Loop's read surface. Fresh inits get this via
+    // generateClaudeMd; existing agents get it here on update. The copy mirrors
+    // the template exactly. Idempotent via content-sniff on the section title.
+    if (!content.includes('Process Health (Dashboard Tab)')) {
+      const section = `
+**Process Health (Dashboard Tab)** — A calm, human-readable window into the Failure-Learning Loop. The loop's findings are otherwise invisible (API-only); this tab shows, in plain English and large type, what's being watched, any patterns surfaced, and where the rollout sits.
+- **Where**: the "Process Health" tab in the dashboard. Refreshes itself quietly; nothing to run.
+- **What it shows**: an informational headline ("Watching — N issues recorded"), surfaced patterns (awareness-only — never auto-acted-on), recent captures as plain sentences, and the maturation track. A collapsed "Detail" drawer holds the aggregate counts.
+- **Proactive trigger**: when the user asks "is the loop noticing anything? / how's the rollout going? / what's it found?" → point them to the Process Health tab (give the dashboard URL + PIN). Do NOT paraphrase \`/failures*\` curl output at them — the tab IS the answer surface. Only read \`/failures/analysis\` yourself when you need the raw numbers for your own reasoning.
+- **Disabled note**: when \`monitoring.failureLearning.enabled\` is false the tab shows a friendly "not turned on yet" message, not an error.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Process Health dashboard tab awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -3348,6 +3365,7 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      '**Process Health (Dashboard Tab)**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

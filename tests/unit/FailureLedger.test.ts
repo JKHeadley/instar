@@ -111,6 +111,29 @@ describe('FailureLedger', () => {
     expect(ledger.list({ attribution: 'one-tap' })[0].source).toBe('agent-diagnosed');
   });
 
+  // Keyset pagination for the Process Health tab (spec §3): before= upper-bound
+  // + limit clamps on both list() and listInsights().
+  it('list() honors a limit and a before= upper bound (detected_at < beforeMs)', () => {
+    // Distinct causeCommitOid → distinct computed dedupeKey → 3 separate records.
+    for (const c of ['c1', 'c2', 'c3']) ledger.open(baseInput({ causeCommitOid: c }));
+    expect(ledger.list({}).length).toBe(3);
+    expect(ledger.list({ limit: 2 }).length).toBe(2); // LIMIT applied
+    expect(ledger.list({ beforeMs: Date.now() + 60_000 }).length).toBe(3); // all are before "now+1m"
+    expect(ledger.list({ beforeMs: Date.now() - 60_000 }).length).toBe(0); // none predate "now-1m"
+  });
+
+  it('listInsights() honors before= + limit and clamps within 1..1000', () => {
+    const seed = (k: string) =>
+      ledger.upsertInsight({ identityKey: k, summary: `pattern ${k}`, recommendation: 'r', supportingFailureIds: [], distinctSessions: 3, distinctCauseCommits: 3 });
+    seed('k1'); seed('k2');
+    expect(ledger.listInsights({}).length).toBe(2);
+    expect(ledger.listInsights({ limit: 1 }).length).toBe(1); // LIMIT applied
+    expect(ledger.listInsights({ beforeMs: Date.now() + 60_000 }).length).toBe(2); // discovered before "now+1m"
+    expect(ledger.listInsights({ beforeMs: Date.now() - 60_000 }).length).toBe(0); // none predate "now-1m"
+    // A non-positive limit falls back to the insight default (not 0 rows).
+    expect(ledger.listInsights({ limit: 0 }).length).toBe(2);
+  });
+
   it('open() is fail-open: a storage failure returns null, never throws', () => {
     ledger.close(); // force subsequent ops to fail on a closed DB
     expect(() => {

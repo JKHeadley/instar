@@ -121,6 +121,7 @@
     "@types/supertest": "^6.0.3",
     "@types/ws": "^8.18.1",
     "husky": "^9.1.7",
+    "jsdom": "^29.1.1",
     "supertest": "^7.2.2",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"

@@ -180,6 +180,17 @@ export interface ListFilter {
   attribution?: AttributionMode;
   status?: FailureStatus;
   sinceMs?: number;
+  /** Upper-bound (exclusive): detected_at < beforeMs. Drives keyset pagination (Process Health tab §3). */
+  beforeMs?: number;
+  limit?: number;
+}
+
+/** Filter for {@link FailureLedger.listInsights} — mirrors {@link ListFilter}'s before/limit shape. */
+export interface InsightListFilter {
+  status?: InsightStatus;
+  /** Upper-bound (exclusive): discovered_at < beforeMs. */
+  beforeMs?: number;
+  /** Clamped 50 default / 1000 max (insight-specific default; narrower than list()'s 200). */
   limit?: number;
 }
 
@@ -284,6 +295,8 @@ const SCHEMA = [
      updated_at             TEXT NOT NULL,
      version                INTEGER NOT NULL DEFAULT 1
    )`,
+  // Insight pagination index (Process Health tab §3): keyset on discovered_at DESC.
+  `CREATE INDEX IF NOT EXISTS idx_insights_discovered ON failure_insights(discovered_at)`,
 ];
 
 // ── FailureLedger ─────────────────────────────────────────────────────
@@ -438,6 +451,7 @@ export class FailureLedger {
     if (filter.attribution) { where.push('attribution = @attribution'); params.attribution = filter.attribution; }
     if (filter.status) { where.push('status = @status'); params.status = filter.status; }
     if (filter.sinceMs) { where.push('detected_at >= @since'); params.since = new Date(filter.sinceMs).toISOString(); }
+    if (filter.beforeMs) { where.push('detected_at < @before'); params.before = new Date(filter.beforeMs).toISOString(); }
     const limit = filter.limit && filter.limit > 0 ? Math.min(filter.limit, 1000) : 200;
     const sql =
       `SELECT * FROM failure_records` +
@@ -615,12 +629,20 @@ export class FailureLedger {
     return row ? this.rowToInsight(row as Record<string, unknown>) : null;
   }
 
-  listInsights(filter: { status?: InsightStatus } = {}): InsightRecord[] {
-    const sql = filter.status
-      ? `SELECT * FROM failure_insights WHERE status = ? ORDER BY discovered_at DESC`
-      : `SELECT * FROM failure_insights ORDER BY discovered_at DESC`;
-    const rows = (filter.status ? this.db.prepare(sql).all(filter.status) : this.db.prepare(sql).all()) as Record<string, unknown>[];
-    return rows.map((r) => this.rowToInsight(r));
+  listInsights(filter: InsightListFilter = {}): InsightRecord[] {
+    const where: string[] = [];
+    const params: Record<string, unknown> = {};
+    if (filter.status) { where.push('status = @status'); params.status = filter.status; }
+    if (filter.beforeMs) { where.push('discovered_at < @before'); params.before = new Date(filter.beforeMs).toISOString(); }
+    // Insight-specific clamp: 50 default / 1000 max (do NOT copy list()'s 200 default).
+    const limit = filter.limit && filter.limit > 0 ? Math.min(filter.limit, 1000) : 50;
+    const sql =
+      `SELECT * FROM failure_insights` +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY discovered_at DESC LIMIT ${limit}`;
+    return (this.db.prepare(sql).all(params) as Record<string, unknown>[]).map((r) =>
+      this.rowToInsight(r),
+    );
   }
 
   updateInsight(

@@ -138,3 +138,63 @@ describe('POST /failures/analyze (closed-loop execution over HTTP)', () => {
     expect(insights.body.insights[0].status).toBe('acted-on');
   });
 });
+
+// Process Health tab route extensions (spec §3 / §4.3): ETag/304 diff-aware
+// polling, before= keyset pagination validation, and the rollout block the tab
+// reads to draw the maturation track.
+describe('Process Health route extensions (ETag/304, before=, rollout)', () => {
+  function appWithConfig(fl: unknown) {
+    const ledger = new FailureLedger({ dbPath: ':memory:', machineId: 'tb' });
+    const app = express();
+    app.use(express.json());
+    const ctx = minimalCtx({ failureLedger: ledger, failureAttributionEngine: null });
+    (ctx.config as any).monitoring = { failureLearning: fl };
+    app.use('/', createRoutes(ctx));
+    return { app, ledger };
+  }
+
+  it('GET /failures returns an ETag and answers 304 to a matching If-None-Match', async () => {
+    const { app, ledger } = appWithConfig({ enabled: true });
+    try {
+      const res = await request(app).get('/failures').expect(200);
+      const etag = res.headers.etag;
+      expect(etag).toBeTruthy();
+      await request(app).get('/failures').set('If-None-Match', etag).expect(304);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it('GET /failures and /failures/insights reject a non-ISO before= with 400', async () => {
+    const { app, ledger } = appWithConfig({ enabled: true });
+    try {
+      await request(app).get('/failures?before=not-a-date').expect(400);
+      await request(app).get('/failures/insights?before=not-a-date').expect(400);
+      // A valid ISO timestamp is accepted.
+      await request(app).get(`/failures?before=${encodeURIComponent(new Date().toISOString())}`).expect(200);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it('GET /failures/analysis derives rollout.stage from the two failureLearning flags', async () => {
+    const cases: Array<[unknown, string]> = [
+      [undefined, 'dark'],
+      [{ enabled: false }, 'dark'],
+      [{ enabled: true }, 'capture-only'],
+      [{ enabled: true, insightTelegramEscalation: true }, 'insight-push'],
+    ];
+    for (const [fl, expectedStage] of cases) {
+      const { app, ledger } = appWithConfig(fl);
+      try {
+        const res = await request(app).get('/failures/analysis').expect(200);
+        expect(res.body.rollout).toBeDefined();
+        expect(res.body.rollout.stage).toBe(expectedStage);
+        // The per-agent flag never yields the 4th "default-on" stage (tab draws it as future).
+        expect(['dark', 'capture-only', 'insight-push']).toContain(res.body.rollout.stage);
+      } finally {
+        ledger.close();
+      }
+    }
+  });
+});
