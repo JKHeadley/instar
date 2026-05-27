@@ -36,6 +36,11 @@ const ROOT = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);
 const JSON_ONLY = args.includes('--json');
 const RECOMMEND_ONLY = args.includes('--recommend-only');
+// --draft-guide writes/merges upgrades/NEXT.md from the computed change-list
+// (Layer A of the release-readiness-visibility spec). Drafted content carries
+// `auto-draft-unreviewed` markers that BOTH publish gates reject until a human
+// reviews each section — so auto-fill can never ship un-reviewed notes.
+const DRAFT_GUIDE = args.includes('--draft-guide');
 
 // --ref=<rev> selects the tip the analysis runs against (default HEAD).
 // Layer B of the release-readiness-visibility spec passes --ref=FETCH_HEAD so the
@@ -584,6 +589,214 @@ function generateChangeDescriptions(analysis) {
   return descriptions;
 }
 
+// ── Auto-draft (Layer A of release-readiness-visibility spec) ────────
+//
+// Turns the computed change-list into a NEXT.md draft. Every drafted item
+// carries an `auto-draft-unreviewed` marker. The publish gates
+// (check-upgrade-guide.js validator + publish.yml skip predicate) refuse to
+// ship a guide that still has those markers, so auto-fill removes the "blank
+// guide" root cause WITHOUT defeating the human-review purpose of the gate.
+
+const UNREVIEWED_BLOCK_MARKER = '<!-- auto-draft-unreviewed-block -->';
+const UNCOVERED_BEGIN = '<!-- BEGIN auto-draft-uncovered (unreviewed) -->';
+const UNCOVERED_END = '<!-- END auto-draft-uncovered (unreviewed) -->';
+
+/**
+ * Neutralize commit-message-sourced text before it lands in a published guide:
+ *   - strip HTML comments (prevents forging `<!-- bump: -->` / unreviewed markers)
+ *   - collapse whitespace, cap length
+ *   - escape leading markdown control chars so an item can't break section bounds
+ */
+function sanitizeDraftText(s) {
+  let t = String(s ?? '')
+    .replace(/<!--[\s\S]*?-->/g, '') // strip HTML comments
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (t.length > 200) t = t.slice(0, 197).trimEnd() + '…';
+  // Escape leading control sequences (heading / hr) so a crafted message can't
+  // inject a new section boundary.
+  t = t.replace(/^(#{1,6}\s)/, '\\$1').replace(/^(-{3,})/, '\\$1');
+  return t;
+}
+
+const FALLBACK_USER_IMPACTS = new Set([
+  'Review the commit for user-facing changes',
+  'Review the commit for specifics',
+]);
+
+function unreviewed(slug) {
+  return `<!-- auto-draft-unreviewed: ${slug} -->`;
+}
+
+/** Does the existing guide already mention this change description? */
+function descriptionMentioned(desc, content) {
+  const lc = content.toLowerCase();
+  // Endpoint: the path token (e.g. "/release-readiness").
+  const ep = /:\s*[A-Z]+\s+(\/\S+)/.exec(desc.summary);
+  if (ep) return lc.includes(ep[1].toLowerCase());
+  // CLI command: "instar <cmd>".
+  const cmd = /instar\s+([a-z][\w:-]*)/i.exec(desc.summary);
+  if (cmd) return lc.includes(cmd[1].toLowerCase());
+  // Config field: "New config option: <field>".
+  const cfg = /config option:\s*(\w+)/i.exec(desc.summary);
+  if (cfg) return lc.includes(cfg[1].toLowerCase());
+  // Otherwise (commit-derived): any >4-char keyword from the summary.
+  const kws = desc.summary.replace(/^(feat|fix)[:(]?\s*/i, '').split(/\s+/).filter((w) => w.length > 4).slice(0, 4);
+  return kws.length > 0 && kws.some((k) => lc.includes(k.toLowerCase()));
+}
+
+/** One "## What Changed" bullet for a description. */
+function changedBullet(desc) {
+  return `- **${desc.type}**: ${sanitizeDraftText(desc.summary)} — ${sanitizeDraftText(desc.detail)}`;
+}
+
+/** Build the three required sections' bodies from the change-list. */
+function buildSectionBodies(changeDescriptions, hasFix) {
+  const whatChanged = changeDescriptions.length
+    ? changeDescriptions.map(changedBullet).join('\n')
+    : '- (no structurally-detected changes; describe the release manually)';
+
+  // "What to Tell Your User" must stay plain — no backticks/camelCase/code.
+  // Use the generic userImpact lines (already plain) and a HUMAN-REQUIRED note
+  // for any commit whose impact the analyzer couldn't infer.
+  const userLines = [];
+  const seen = new Set();
+  for (const d of changeDescriptions) {
+    const impact = FALLBACK_USER_IMPACTS.has(d.userImpact)
+      ? 'HUMAN-REQUIRED: describe what this means for the user'
+      : d.userImpact;
+    const line = `- ${sanitizeDraftText(impact)}`;
+    if (!seen.has(line)) { seen.add(line); userLines.push(line); }
+  }
+  const tellUser = userLines.length ? userLines.join('\n') : '- HUMAN-REQUIRED: summarize the user-facing impact';
+
+  const capRows = changeDescriptions
+    .filter((d) => d.type === 'feature' || d.type === 'enhancement')
+    .map((d) => `| ${sanitizeDraftText(d.summary)} | ${sanitizeDraftText(d.agentImpact)} |`)
+    .join('\n') || '| (none) | — |';
+
+  let out =
+`## What Changed
+
+${unreviewed('what-changed')}
+${whatChanged}
+
+## What to Tell Your User
+
+${unreviewed('tell-user')}
+${tellUser}
+
+## Summary of New Capabilities
+
+${unreviewed('capabilities')}
+| Capability | How to Use |
+|-----------|-----------|
+${capRows}
+`;
+
+  if (hasFix) {
+    out +=
+`
+## Evidence
+
+${unreviewed('evidence')}
+HUMAN-REQUIRED: reproduction + observed before/after, or "Not reproducible in dev — [concrete reason]". Unit tests passing is not evidence.
+`;
+  }
+  return out;
+}
+
+/** Full NEXT.md draft (used when the guide is absent or a pristine template). */
+function buildFullDraft(changeDescriptions, recommended, hasFix) {
+  return `# Upgrade Guide — vNEXT
+
+<!-- bump: ${recommended} -->
+${UNREVIEWED_BLOCK_MARKER}
+<!-- Auto-drafted from the classified commit range. Every section below carries an
+     auto-draft-unreviewed marker. A human reviews each section and replaces its
+     marker with a reviewed-by receipt before this guide can publish.
+     See docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.1.1. -->
+
+${buildSectionBodies(changeDescriptions, hasFix)}`;
+}
+
+/** The uncovered-delta block appended to a guide that already has human content. */
+function buildUncoveredBlock(changeDescriptions, existingContent) {
+  const uncovered = changeDescriptions.filter((d) => !descriptionMentioned(d, existingContent));
+  if (uncovered.length === 0) return '';
+  const items = uncovered.map((d) => `- ${unreviewed(slugifyDesc(d))} **${d.type}**: ${sanitizeDraftText(d.summary)}`).join('\n');
+  return `${UNCOVERED_BEGIN}
+<!-- These changes were detected in the commit range but not yet mentioned above.
+     Fold them into the sections above (or describe why they need no note), then
+     remove each marker with a reviewed-by receipt. -->
+${items}
+${UNCOVERED_END}`;
+}
+
+function slugifyDesc(d) {
+  return (d.summary || 'item').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'item';
+}
+
+const PRISTINE_TEMPLATE = (c) => c.includes('[Feature name]') && c.includes('[Capability]');
+
+/**
+ * Write or merge upgrades/NEXT.md. Race-guarded against publish finalize.
+ * Returns a short status string for logging.
+ */
+function writeOrMergeGuide(changeDescriptions, recommended, hasFix) {
+  const upgradesDir = path.join(ROOT, 'upgrades');
+  const nextPath = path.join(upgradesDir, 'NEXT.md');
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+  const versionGuide = path.join(upgradesDir, `${pkg.version}.md`);
+
+  fs.mkdirSync(upgradesDir, { recursive: true });
+
+  // Race guard against publish-finalize: refuse to draft once a finalize has
+  // produced upgrades/{version}.md. Per RELEASE-READINESS-VISIBILITY-SPEC §4.1.3
+  // this version-file check IS the cross-host guarantee (finalize renames
+  // NEXT.md → {version}.md in CI on a separate checkout; git's ref-update
+  // atomicity covers the merge). The intra-host O_EXCL advisory lock the spec
+  // also describes is intentionally omitted here: releasing it requires a
+  // destructive fs.unlink (forbidden by lint-no-direct-destructive in this
+  // dependency-free, test-copyable script), and the draft job is single-runner
+  // per the multi-machine lease, so concurrent local drafters don't occur.
+  if (fs.existsSync(versionGuide)) {
+    return `skipped: upgrades/${pkg.version}.md already finalized — not drafting`;
+  }
+
+  const existing = fs.existsSync(nextPath) ? fs.readFileSync(nextPath, 'utf-8') : '';
+
+  if (!existing.trim() || PRISTINE_TEMPLATE(existing)) {
+    fs.writeFileSync(nextPath, buildFullDraft(changeDescriptions, recommended, hasFix));
+    return 'wrote full draft (guide was absent or a pristine template)';
+  }
+
+  // Human content present — additive, never-clobber. Regenerate only the
+  // uncovered-delta block (idempotent). Coverage is measured against the
+  // HUMAN content only: strip any prior auto-block first, otherwise the
+  // block's own text would count as "coverage" and the block would
+  // oscillate (present on one run, absent the next).
+  const beginIdx = existing.indexOf(UNCOVERED_BEGIN);
+  const endIdx = existing.indexOf(UNCOVERED_END);
+  let tail = '';
+  let humanContent = existing;
+  if (beginIdx !== -1) {
+    tail = endIdx !== -1 ? existing.slice(endIdx + UNCOVERED_END.length) : '';
+    humanContent = existing.slice(0, beginIdx) + tail;
+  }
+  const block = buildUncoveredBlock(changeDescriptions, humanContent);
+  let body;
+  if (beginIdx !== -1) {
+    body = existing.slice(0, beginIdx).replace(/\s+$/, '') + (block ? `\n\n${block}` : '') + tail;
+  } else if (block) {
+    body = existing.replace(/\s+$/, '') + `\n\n${block}\n`;
+  } else {
+    return 'no uncovered changes — guide already covers the change-list';
+  }
+  fs.writeFileSync(nextPath, body);
+  return block ? 'merged uncovered-delta block into existing guide' : 'removed stale uncovered-delta block (now fully covered)';
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 const lastTag = getLastReleaseTag();
@@ -643,6 +856,14 @@ if (bumpRecommendation.minorSignals.length > 0) {
 if (bumpRecommendation.patchSignals.length > 0) {
   log(`    Patch signals:`);
   for (const s of bumpRecommendation.patchSignals) log(`      - ${s}`);
+}
+
+if (DRAFT_GUIDE) {
+  const hasFix = analysis.commits.fixes.length > 0;
+  const status = writeOrMergeGuide(changeDescriptions, bumpRecommendation.recommended, hasFix);
+  log(`\n  Draft guide: ${status}`);
+  console.log(status);
+  process.exit(0);
 }
 
 if (RECOMMEND_ONLY) {
