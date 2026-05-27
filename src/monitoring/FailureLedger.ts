@@ -428,6 +428,45 @@ export class FailureLedger {
     return { sessions: row?.sessions ?? 0, causeCommits: row?.commits ?? 0 };
   }
 
+  /**
+   * Analyzer query path (spec §4.4): indexed group-bys directly in SQL, never a
+   * full cache-rebuild + JS filter. Toolchain-blame counts are restricted to
+   * `verified`-provenance, `automatic`-attribution records (claimed / one-tap /
+   * inferred are excluded from blame aggregates). Also reports coverage so a
+   * low-attribution rate reads as low-confidence, not as the rate.
+   */
+  analyze(opts: { sinceMs?: number } = {}): {
+    total: number;
+    attributed: number;
+    byCategory: Record<string, number>;
+    byBuildSkill: Record<string, number>;
+    unknownToolchainByAuthor: Record<string, number>;
+    noFeatureLink: number;
+  } {
+    const sinceClause = opts.sinceMs ? ` AND detected_at >= @since` : '';
+    const params: Record<string, unknown> = opts.sinceMs ? { since: new Date(opts.sinceMs).toISOString() } : {};
+    const total = (this.db.prepare(`SELECT COUNT(*) c FROM failure_records WHERE 1=1${sinceClause}`).get(params) as { c: number }).c;
+    const attributed = (this.db.prepare(`SELECT COUNT(*) c FROM failure_records WHERE attribution = 'automatic'${sinceClause}`).get(params) as { c: number }).c;
+
+    const byCategory: Record<string, number> = {};
+    for (const r of this.db.prepare(`SELECT category, COUNT(*) c FROM failure_records WHERE 1=1${sinceClause} GROUP BY category`).all(params) as { category: string; c: number }[]) {
+      byCategory[r.category] = r.c;
+    }
+    // Toolchain-blame: verified provenance + automatic attribution only.
+    const byBuildSkill: Record<string, number> = {};
+    for (const r of this.db.prepare(`SELECT build_skill bs, COUNT(*) c FROM failure_records WHERE provenance = 'verified' AND attribution = 'automatic' AND build_skill IS NOT NULL${sinceClause} GROUP BY build_skill`).all(params) as { bs: string; c: number }[]) {
+      byBuildSkill[r.bs] = r.c;
+    }
+    // Coverage-integrity (spec §4.4, round-3 R2-sec-omit): unknown-toolchain by author.
+    const unknownToolchainByAuthor: Record<string, number> = {};
+    for (const r of this.db.prepare(`SELECT filed_by fb, COUNT(*) c FROM failure_records WHERE provenance = 'unknown'${sinceClause} GROUP BY filed_by`).all(params) as { fb: string; c: number }[]) {
+      unknownToolchainByAuthor[r.fb] = r.c;
+    }
+    const noFeatureLink = (this.db.prepare(`SELECT COUNT(*) c FROM failure_records WHERE initiative_id IS NULL${sinceClause}`).get(params) as { c: number }).c;
+
+    return { total, attributed, byCategory, byBuildSkill, unknownToolchainByAuthor, noFeatureLink };
+  }
+
   /** Strip detail.full — the ONLY shape that may cross an HTTP boundary (spec §4.8). */
   static toApiView(record: FailureRecord): FailureRecordApiView {
     const { detail, ...rest } = record;

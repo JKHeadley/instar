@@ -49,3 +49,15 @@ Builds the Failure-Learning Loop (instar-self-hosting dev-process forensics). Fi
 **Level-of-abstraction fit:** the receipt-writer enriches what it already stamps; no new tool.
 **Signal-vs-authority:** records provenance claims; no authority.
 **Rollback cost:** trivial — revert the script; existing v2 traces remain valid (readers ignore `toolchain`).
+
+### Commit 4 — /failures route module + FailureLedger.analyze() + integration tests
+
+- `FailureLedger.analyze()` (`src/monitoring/FailureLedger.ts`) — **add** — indexed group-by SQL (NOT cache-rebuild+JS-filter, round-3 R2-scale): counts by category, toolchain-blame by build_skill restricted to `provenance='verified' AND attribution='automatic'`, unknown-toolchain by author (coverage-integrity signal, R2-sec-omit), no-feature-link count, + coverage (total vs attributed).
+- `createFailureRoutes()` (`src/server/failureRoutes.ts`) — **add** — route module following the `topicIntentRoutes` 503-stub pattern (mounted unconditionally; 503s every route when disabled so the surface always exists). `GET /failures` (+ `/:id`, `/analysis`, `/insights`) serve `toApiView` ONLY — `detail.full` never crosses the boundary (§4.8). `POST /failures` (the one mutating route) requires `X-Instar-Request: 1` (intent marker, §4.2#B — NOT claimed as a transport boundary), server-validates the initiative via the attribution engine, stamps `filedBy`, and stays `one-tap` (never upgrades, B6).
+- `tests/integration/failure-routes.test.ts` — **add** — 7 supertest cases over real HTTP: 503-when-disabled, alive-200, redaction (full never leaks), intent-header required, nonexistent-initiative rejected, one-tap recorded + filedBy + queryable, 404.
+
+**Over/under-block:** the route is mounted unconditionally (surface always probeable) but every handler 503s when the ledger is null — no half-alive state. POST is gated by intent header + server-side initiative validation.
+**Level-of-abstraction fit:** sibling route module (like `topicIntentRoutes`/`worktreeRoutes`); deps injected (ledger + engine) — boot-wiring in AgentServer is the next commit.
+**Signal-vs-authority:** read surface + a validated one-tap write; no gating/authority over other systems.
+**Rollback cost:** trivial — unmount the router; the ledger table is inert.
+**Deferred (next commit, same branch):** AgentServer boot-wiring (construct FailureLedger + AttributionEngine behind `failureLearning.enabled`, inject InitiativeTracker `getInitiative` + git `commitTouchedFiles`, `app.use`) so the feature is alive on the production init path (the Phase-1 E2E).
