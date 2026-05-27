@@ -28,11 +28,42 @@
       recordYield are safe no-ops until the orchestration (C) registers a handler.
 - [x] **B** — holder-side LiveTailSource: ALREADY DONE (committed be65cb1ce, wired at
       server.ts:8146 — holder pushes the tail every liveTailPushRateMs when peers present).
-- [ ] **C** — handoff orchestration: HandoffSentinel (outgoing: flush → awaitAck → verify →
-      sendYield → demote) + HandoffReceiver (incoming: buildAck from buffer+ingress+threadHash;
-      sendAck via transport; `onYield` registers receiver's acquireOnYield via leaseCoordinator
-      consent path → transport.recordYield fires it) + `inProgress` race guard so
-      reaper/scheduler don't act mid-handoff. This is what makes a real baton-pass run.
+- [ ] **C** — handoff orchestration (CONCRETE DESIGN — execute this exactly):
+      The protocol gap the spec left open: the **begin** signal (outgoing→incoming). Design:
+      add `POST /api/handoff/begin` carrying the outgoing's `FlushManifest`
+      `{ tailSeq, ingressPosition, threadHistoryHash }`. Symmetric with ack/yield.
+      Wire flow (planned handoff, laptop=outgoing/awake → mini=incoming/standby):
+      1. Trigger: expose `initiate()` via an authenticated LOCAL route `POST /handoff/initiate`
+         (operator/test "hand off now"). NOT auto on sleep/wake (that's a later design).
+      2. Outgoing `HandoffSentinel.ops`:
+         - `flush()`: pushTick the LiveTailSource (so standby's buffer is current); capture
+           `tailSeq` = the live-tail wire seq just sent; `ingressPosition` =
+           `telegram.getIngressPosition()`; `threadHistoryHash` = sha256 of
+           `telegram.getTopicHistory(activeTopic,500)` formatted same as LiveTailSource.
+           POST the manifest to peer `/api/handoff/begin`. Return the manifest.
+         - `awaitAck(ms)` → `handoffWireTransport.awaitAck(ms)`.
+         - `validate(ack,manifest)` → Tier-1: deterministic readiness (ack.tailSeq===manifest
+           .tailSeq && hashes match — sentinel already does ackMatches; validate adds a
+           sharedIntelligence Haiku check IF available, else deterministic true). Timeout=abort.
+         - `sendYield()` → `handoffWireTransport.sendYield()`.
+         - `demoteSelf()` → `coordinator.demoteToStandby('planned handoff: yielded to peer')`.
+      3. Incoming `HandoffReceiver.ops` (constructed on EVERY mesh machine; acts when it's standby):
+         - begin route stores the received manifest, calls `receiver.onBeginHandoff()`.
+         - `buildAck()`: echo `manifest.tailSeq` + `manifest.ingressPosition`; compute OWN
+           `threadHistoryHash` from its loaded history (matches iff caught up via live-tail).
+         - `sendAck(ack)` → `handoffWireTransport.sendAck(ack)`.
+         - `acquireOnYield()` → `coordinator.acquireLeaseOnConsent(peerMachineId)`.
+         - register `handoffWireTransport.onYield(() => receiver.onYield())`.
+      4. Race guard: scheduler/reaper check `handoffSentinel.inProgress` (already on the class) —
+         wire a getter into the gates that already check holdsLease.
+      5. AgentServer: add `onHandoffBegin?` option (→ store manifest + receiver.onBeginHandoff).
+         machineRoutes: add `/api/handoff/begin` (authMiddleware, validates manifest shape).
+      6. Wiring-integrity test (spec §10 MANDATES): assert HandoffSentinel + HandoffReceiver
+         constructed in startup (not null/dead) + e2e planned-handoff over two booted servers.
+      Sub-increments (commit+push each): C1 begin route+AgentServer option+receiver wiring+
+      buildAck/acquireOnYield (incoming) ; C2 HandoffSentinel construction+ops+initiate route
+      (outgoing)+race-guard ; C3 full two-server e2e planned-handoff + wiring-integrity.
+      NOTE: LiveTailBuffer may need a public `getAppliedSeq(topic)` accessor for buildAck.
 - [ ] **D** — verify G3a message-ledger gates the REAL Telegram ingress (exactly-once) +
       CONTINUATION resume on the receiving machine (no re-greet).
 - [ ] **E** — integration + e2e + fault-injection tests for the wired path.
