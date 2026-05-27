@@ -69,8 +69,8 @@ issue he hits becomes a reusable lesson for onboarding the next framework.
   ratification (§6).
 - Not Codex-only — framework-parametric from day one (Codey is instance #1).
 - **Not cross-machine in v1.** Stage B forensics requires Echo and Codey co-located on the same
-  host (§3.3). Cross-machine forensics is explicitly out of scope until a Threadline log-fetch
-  primitive exists.
+  host (§3.3). Cross-machine forensics is explicitly excluded from v1 until a Threadline log-fetch
+  primitive exists. <!-- tracked: topic-13435 -->
 
 ## 3. The mentor loop (one heartbeat tick)
 
@@ -101,7 +101,8 @@ sentinel events, and the diff/PR he produced, and auto-writes bucket-tagged issu
 `framework_observations.evidence` holds local-filesystem references (rollout path + line,
 server-log ref). Echo can only dereference them if Codey runs on the **same host**. v1 asserts
 co-location; the job refuses to start if Codey's agent home is not local (a precondition check).
-Cross-machine support is deferred behind a Threadline log-fetch primitive (tracked deferral).
+Cross-machine support is deferred behind a Threadline log-fetch primitive (a later-PR scope of this
+same staged mentor-initiative rollout). <!-- tracked: topic-13435 -->
 
 ## 4. Two hats — STRUCTURAL separation (Structure > Willpower)
 
@@ -236,8 +237,8 @@ not create for this purpose, and difficulty rides on the artifact — not on Ech
 assignment time.
 
 **Primary source — the curated local feature backlog (preferred).** Planned/in-progress instar work
-that already exists as independent artifacts: tracked **deferral markers** (e.g. ACT-* follow-ups,
-deferred sub-phases), **InitiativeTracker / `/projects`** entries, and the **parity long-tail** (~48
+that already exists as independent artifacts: tracked **planned-work markers** (e.g. ACT-* action
+items, scoped sub-phases), **InitiativeTracker / `/projects`** entries, and the **parity long-tail** (~48
 unshipped primitive parity rules). These are already vetted and scoped, and each carries (or is
 assigned at planning time, by the artifact's author) a difficulty estimate. This is the better fuel
 precisely because it's curated and pre-tagged — the firehose isn't.
@@ -251,7 +252,7 @@ otherwise-reopened gaming vector: if Echo could triage feedback into the pool an
 that would hand back the exact lever §8 removed.
 
 **The non-Echo-difficulty admission invariant (covers BOTH sources).** The subtle gap the feedback
-gate alone leaves open: Echo *authors* a subset of the primary-source artifacts too (ACT-* deferrals
+gate alone leaves open: Echo *authors* a subset of the primary-source artifacts too (ACT-* action items
 via `commit-action`, auto-registered InitiativeTracker entries from its own merged specs), so for
 those, an "artifact-borne" difficulty is still an Echo-set difficulty. Therefore the structural rule
 is on the *difficulty attestation*, not the artifact's origin story:
@@ -526,7 +527,7 @@ set from evidence, not guesswork.
 3. **Stage A drive sub-agent** (fresh spawned context, tool-grant + PreToolUse deny) + leakage detector.
 4. **Mentor built-in job** (at `.instar/jobs/instar/`, §14.1) + safe-window state machine + budget
    pre-check + cross-agent termination discipline (persist-only delivery + fresh-thread-per-task).
-5. **Playbook route + graduation review job + observability surface/dashboard tab** (or tracked
-   deferral for the tab).
+5. **Playbook route + graduation review job + observability surface/dashboard tab** (the dashboard
+   tab may ship as a fast-follow). <!-- tracked: topic-13435 -->
 
 Ships staged (off → dry-run on Echo↔Codey → live) per the graduated-rollout standard.
