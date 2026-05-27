@@ -38,4 +38,6 @@ One review fix worth calling out: I'd originally put the LLM naming on a low-pri
 
 **What I need from you.** Approve the spec and I'll build it the same way as #390 / #392 / #399, then ping you when it's live.
 
-**Status:** CONVERGED (two review rounds, four reviewers, all findings folded in) — awaiting your thumbs-up.
+**One real-world tune from testing:** when I tried this for real (against live Claude, then a live Codex agent), the naming/summary call takes about 8-10 seconds — the model's startup is the slow part. My first draft gave it only 3.5 seconds, which would've quietly fallen back to the plain template almost every time. So after "open this" the new topic now takes a few seconds to pop up named-and-summarized, rather than appearing instantly with a worse name. For a deliberate "open this" that's a fine trade, and if it ever runs long you still get the instant plain brief.
+
+**Status:** CONVERGED (two review rounds, four reviewers) + TEST-AS-SELF PASSED on live Codey (real Codex LLM named a topic "Mentor ledger dedup strategy" + wrote its summary). Shipped.

@@ -71,12 +71,16 @@ describe('generateConversationBrief — Tier A (LLM)', () => {
     expect(b.summary).toContain('plain summary');
   });
 
-  it('PURPOSE > 40 chars → name trimmed to 40', async () => {
-    const long = 'PURPOSE: ' + 'word '.repeat(20) + '\n\nbody text here for the summary.';
+  it('PURPOSE > 40 chars → name trimmed to 40 on a word boundary (no mid-word cut)', async () => {
+    const long = 'PURPOSE: Free text guard hook template path resolution fix\n\nbody text here for the summary.';
     const deps = makeDeps({ intelligence: { evaluate: async () => long } });
     const b = await generateConversationBrief('t1', makeConv(), deps);
     expect(b.topicName.length).toBeLessThanOrEqual(40);
     expect(b.nameSource).toBe('llm');
+    // Does not end mid-word (the slice backed off to the last space).
+    expect(b.topicName.endsWith('resol')).toBe(false);
+    expect(/\s$/.test(b.topicName)).toBe(false);
+    expect(long).toContain(b.topicName); // it's a clean prefix of the PURPOSE words
   });
 
   it('credential in PURPOSE → name degrades to slug; clean body still used', async () => {

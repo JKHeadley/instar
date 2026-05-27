@@ -57,4 +57,16 @@ Files touched:
 - Unit (hubCommands): +4 — LLM summary posted (not marker), LLM-throws → template, Tier-C marker, tie does not invoke brief.
 - Integration (hub/bind route): +3 — LLM happy path names+summarizes; LLM-throws → 200 + template (regression guard: LLM failure NEVER fails the bind); intelligence:null → 200.
 - Full threadline suite: 1580 passing, zero regressions. Production build clean (`tsc --noEmit` + `pnpm build`).
-- Test-as-self on live Codey: pending pre-merge (fire a real "open this", confirm named topic + summary, restore).
+
+## Test-as-self (live, real LLM — completed 2026-05-27)
+
+Two-stage, real-dependency validation (no mocks):
+
+1. **Real-LLM harness (Echo's Claude provider, real threadline data).** Ran the BUILT `generateConversationBrief` against two real Echo threads with a real `ClaudeCliIntelligenceProvider`, real `LlmQueue`, real `ThreadlineObservability`. Produced clean LLM names + summaries (`reason: ok`). **This caught a production-breaking bug the mocks hid:** a real CLI call took ~8-10s, over the original 3.5s timeout — so the happy path would have silently fallen to the template in production. Fixed: default timeout 3.5s → 15s (+ word-boundary cap on the name so a long title doesn't read "…path resol"). Re-ran with the production default: `nameSource=llm`, ~9.7s, clean name "Arm the full response-review stack".
+
+2. **Live deploy on a real peer agent (instar-codey, Codex/gpt-5.2).** Backed up Codey's shadow-install dist + hub state, deployed this build, restarted via launchd, drove a real `POST /threadline/hub/bind action:open` against a 4-message unbound hub conversation. Result: topic 680 created, `topicName="Mentor ledger dedup strategy"` (LLM, not slug), server log `[hub/bind] open threadId=f3d471e9 topic=680 nameSource=llm summarySource=llm` — proving briefDeps booted non-null and the real Codex LLM produced both fields through the live server. Cleaned up: deleted test topic 680 (Bot API), restored dist + hub state, restarted Codey onto the released build, verified f3d471e9 reverted to unbound.
+
+## Post-test-as-self deviations (folded into this commit)
+
+- Default `timeoutMs` 3.5s → **15s** (spec §3a updated with the measured rationale). The LLM tier is now the common outcome; template covers overruns.
+- `scrubName` caps on a **word boundary** (no mid-word truncation in the chat-list title).
