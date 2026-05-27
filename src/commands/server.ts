@@ -67,9 +67,11 @@ import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
+import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
 import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
-import { decryptFromSync } from '../core/SecretStore.js';
-import { createPrivateKey } from 'node:crypto';
+import { LiveTailSource } from '../core/LiveTailSource.js';
+import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
+import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -2413,6 +2415,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let registrySyncDebouncer: RegistrySyncDebouncer | undefined;
     let leaseTransport: HttpLeaseTransport | undefined;
     let liveTailBuffer: LiveTailBuffer | undefined;
+    let liveTailSendTransport: HttpLiveTailTransport | undefined;
     let liveTailReceiver:
       | ((
           flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
@@ -2563,6 +2566,34 @@ export async function startServer(options: StartOptions): Promise<void> {
             return liveTailBufferRef.applyFlush({ topic: flush.topic, seq: flush.seq, content });
           };
           console.log(pc.dim('  Live-tail receiver active (standby decrypts + sequence-dedups holder stream)'));
+
+          // Holder-side SENDER transport (the LiveTailSource that drives it is
+          // constructed after the Telegram adapter is up — it needs the content
+          // provider). Built here because it needs idMgr (signing key + peer
+          // registry). No peers → broadcast is a reachable no-op.
+          let liveTailWireSeq = Date.now();
+          liveTailSendTransport = new HttpLiveTailTransport({
+            selfMachineId,
+            signingKeyPem: idMgr.loadSigningKey(),
+            peers: () => {
+              const reg = idMgr.loadRegistry();
+              const out: { machineId: string; url: string; encryptionPublicKey: string }[] = [];
+              for (const [id, e] of Object.entries(reg.machines ?? {})) {
+                if (id === selfMachineId || !e.lastKnownUrl || e.revokedAt) continue;
+                const pem = idMgr.getEncryptionPublicKeyPem(id);
+                if (!pem) continue; // can't encrypt for a peer whose X25519 key we lack
+                try {
+                  const encB64 = createPublicKey(pem).export({ type: 'spki', format: 'der' }).toString('base64');
+                  out.push({ machineId: id, url: e.lastKnownUrl, encryptionPublicKey: encB64 });
+                } catch { /* skip a peer with an unusable key */ }
+              }
+              return out;
+            },
+            nextSequence: () => ++liveTailWireSeq,
+            encryptFor: (content, recipientEncPubB64) => encryptForSync({ content }, recipientEncPubB64),
+            reachabilityWindowMs: seamlessness.leaseTtlMs,
+            logger: (m) => console.log(pc.dim(m)),
+          });
         }
       } catch (err) {
         // @silent-fallback-ok — git sync disabled gracefully
@@ -8103,6 +8134,38 @@ export async function startServer(options: StartOptions): Promise<void> {
           ? '  SessionReaper enabled (idle-session reaper — LIVE)'
           : '  SessionReaper enabled (idle-session reaper — dry-run, logs only)',
       ));
+    }
+
+    // ── Live-tail STREAMING (spec §8 G3b) ──────────────────────────
+    // The holder pushes the live conversation tail to the standby on a cadence,
+    // keeping the standby's persisted copy fresh (RPO = liveTailMaxStalenessMs).
+    // Gated on holding the lease, so only the awake machine streams. Solo agent
+    // (no peers) → the transport's broadcast is a reachable no-op. The sender
+    // transport was built in the lease block; the source + cadence are wired here
+    // because the content provider needs the Telegram adapter.
+    if (liveTailSendTransport && telegram && coordinator.enabled) {
+      const sendTransport = liveTailSendTransport;
+      const liveTailSource = new LiveTailSource({
+        // Full current tail for a topic — recent history formatted append-only.
+        // (A window shift past the limit triggers a one-off full resend, which the
+        // standby buffer dedups by seq + caps by bytes — correct, just occasional.)
+        getTopicContent: (topic) => {
+          const entries = telegram.getTopicHistory(Number(topic), 500);
+          return entries.map((e) => `[${e.timestamp}] ${e.text}`).join('\n') + (entries.length ? '\n' : '');
+        },
+        activeTopics: () => telegram.getKnownTopicIds().map((id) => String(id)),
+        transport: sendTransport,
+        logger: (m) => console.log(pc.dim(m)),
+      });
+      const liveTailTimer = setInterval(() => {
+        // Only the lease holder streams (mirrors the scheduler/sentinel gating).
+        if (!coordinator.holdsLease()) return;
+        liveTailSource.pushTick().catch((err) => {
+          console.error(`[live-tail] push tick failed: ${err instanceof Error ? err.message : err}`);
+        });
+      }, seamlessness.liveTailPushRateMs);
+      if (liveTailTimer.unref) liveTailTimer.unref();
+      console.log(pc.dim(`  Live-tail streaming active (holder pushes every ${seamlessness.liveTailPushRateMs}ms when peers present)`));
     }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
