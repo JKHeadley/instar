@@ -417,6 +417,13 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Stop every job: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/stop-all\`
 - Proactive: user asks "what autonomous jobs are running?" → GET /autonomous/sessions. "stop everything" → POST /autonomous/stop-all. "stop the job on topic X" → POST /autonomous/sessions/X/stop.
 
+**Cross-Machine Seamlessness (one agent, many machines)** — When I run on more than one machine, I am ONE agent that follows the user across them, not clones. Exactly one machine is "awake" at a time, decided by a **fenced lease** (a clock-proof, numbered "who's in charge" badge); the other is standby and takes over only when the awake machine genuinely goes silent.
+- **I never double-reply** — each inbound message is handled exactly once (durable per-message ledger keyed on the platform event id), so a redelivery or mid-handoff overlap can't make me answer twice.
+- **A handoff feels like a compaction pause, not amnesia** — the new machine resumes via CONTINUATION (picks up the thread, no re-greeting). Planned handoff = current context; hard failover = as-of-last-sync, and if my context is partial I say so honestly ("picking this back up from the other machine").
+- Read mesh/sync state, never guess it: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`multiMachine.syncStatus\` (\`leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount\`); \`instar doctor\` shows the same.
+- A genuinely **unresolvable split-brain** surfaces as ONE Attention-queue item with a Y/N decision ("demote machine X?"), deduped per partition episode — I present it to the user, I don't silently pick.
+- Dials under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …); a nonsensical combo is rejected at startup, not run silently.
+
 **Relationships** — Track people I interact with.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/relationships\`
 

@@ -60,6 +60,13 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { GitSyncManager } from '../core/GitSync.js';
+import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
+import { wireRegistrySync } from '../core/wireRegistrySync.js';
+import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
+import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
+import { GitLeaseStore } from '../core/GitLeaseStore.js';
+import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
+import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
 import { ScopeVerifier } from '../core/ScopeVerifier.js';
@@ -2378,6 +2385,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // Cross-Machine Seamlessness (spec §9) — resolve + validate the tunable
+    // knobs at startup. A violating config (e.g. a widened ingressHeartbeatMs
+    // that breaks the RPO bound) is REJECTED here with a clear message rather
+    // than degrading silently. Default/absent config resolves to valid values.
+    const seamlessness = assertSeamlessnessInvariants(config.multiMachine);
+
     // Read local signing key for machine route authentication
     let localSigningKeyPem = '';
     if (coordinator.enabled && coordinator.identity) {
@@ -2393,9 +2406,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only attempt git sync if the project directory is actually a git repo.
     // Standalone agents don't have git repos unless the user opted into cloud backup.
     let gitSync: GitSyncManager | undefined;
+    let registrySyncDebouncer: RegistrySyncDebouncer | undefined;
     const isGitRepo = fs.existsSync(path.join(config.projectDir, '.git'));
     const gitBackupEnabled = config.gitBackup?.enabled !== false;
-    if (coordinator.enabled && coordinator.isAwake && isGitRepo && gitBackupEnabled) {
+    // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
+    // a standby needs it to pull, and a standby that later self-elects to awake
+    // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
+    // Only an awake machine pulls+pushes at boot; the durable registry push is
+    // driven by the RegistrySyncDebouncer below, gated on authority.
+    if (coordinator.enabled && isGitRepo && gitBackupEnabled) {
       try {
         gitSync = new GitSyncManager({
           projectDir: config.projectDir,
@@ -2411,11 +2430,84 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(pc.green('  Git commit signing configured'));
         }
 
-        // Pull latest on startup
-        const syncResult = await gitSync.sync();
-        if (syncResult.pulled) {
-          console.log(pc.green(`  Git sync: pulled ${syncResult.commitsPulled} commit(s)`));
+        // Pull (and auto-push) latest on startup — awake machine only.
+        if (coordinator.isAwake) {
+          const syncResult = await gitSync.sync();
+          if (syncResult.pulled) {
+            console.log(pc.green(`  Git sync: pulled ${syncResult.commitsPulled} commit(s)`));
+          }
         }
+
+        // ── G2 wiring (spec §8 G2) — the Phase-0 fix, named explicitly ──
+        // MultiMachineCoordinator emits roleChange / leaseEpochChange; without
+        // a subscriber the durable push never fired. wireRegistrySync connects
+        // those events to a debounced, single-writer registry push. A
+        // wiring-integrity test asserts this subscription exists.
+        const gitSyncRef = gitSync;
+        registrySyncDebouncer = new RegistrySyncDebouncer({
+          commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
+          registryAbsPath: coordinator.managers.identityManager.registryPath,
+          isAuthoritative: () => coordinator.isAwake,
+          debounceMs: seamlessness.registrySyncDebounceMs,
+          logger: (m) => console.log(pc.dim(m)),
+        });
+        wireRegistrySync(coordinator, registrySyncDebouncer);
+        console.log(pc.dim('  Registry sync wired (roleChange/leaseEpoch → durable push)'));
+
+        // ── G1 fenced-lease integration (spec §6) ──────────────────
+        // The lease becomes the authority for awake/standby. git is the durable
+        // CAS substrate (correct, bounded by git cadence — the tunnel accelerator
+        // is a tracked follow-on, ACT-156-adjacent). A holder that cannot refresh
+        // its lease over git for > leaseTtlMs self-suspends, preventing the
+        // partitioned-old-awake split-brain.
+        const idMgr = coordinator.managers.identityManager;
+        const selfMachineId = coordinator.identity!.machineId;
+        const leaseCrypto: LeaseCrypto = {
+          selfMachineId,
+          sign: (canonical) => signEd25519(canonical, idMgr.loadSigningKey()),
+          verify: (canonical, signature, holderMachineId) => {
+            const pub = idMgr.getSigningPublicKeyPem(holderMachineId);
+            if (!pub) return false;
+            try { return verifyEd25519(canonical, signature, pub); } catch { return false; }
+          },
+        };
+        const fencedLease = new FencedLease(leaseCrypto, {
+          leaseTtlMs: seamlessness.leaseTtlMs,
+          failoverThresholdMs: seamlessness.failoverThresholdMs,
+        });
+        const leaseStore = new GitLeaseStore({
+          machineId: selfMachineId,
+          loadRegistry: () => idMgr.loadRegistry(),
+          saveRegistry: (r) => idMgr.saveRegistry(r),
+          registryAbsPath: idMgr.registryPath,
+          pullRebase: () => gitSyncRef.pullRebase(),
+          commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
+          logger: (m) => console.log(pc.dim(m)),
+        });
+        const leaseCoordinator = new LeaseCoordinator({
+          lease: fencedLease,
+          store: leaseStore,
+          // tunnel accelerator omitted for the launch increment (git-only is
+          // correct; tunnel transport tracked for the follow-on).
+          presumedDeadHolders: () => {
+            const reg = idMgr.loadRegistry();
+            const nowMs = Date.now();
+            const dead = new Set<string>();
+            for (const [id, e] of Object.entries(reg.machines ?? {})) {
+              if (id === selfMachineId) continue;
+              const last = Date.parse(e.lastSeen);
+              if (!Number.isNaN(last) && nowMs - last > seamlessness.failoverThresholdMs) dead.add(id);
+            }
+            return dead;
+          },
+          onEpochAdvance: (epoch) => coordinator.emit('leaseEpochChange', epoch),
+          onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
+          onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
+          logger: (m) => console.log(pc.dim(m)),
+        });
+        coordinator.attachLeaseCoordinator(leaseCoordinator);
+        await coordinator.initializeLease();
+        console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
       } catch (err) {
         // @silent-fallback-ok — git sync disabled gracefully
         console.log(pc.yellow(`  Git sync setup: ${err instanceof Error ? err.message : String(err)}`));
@@ -8270,6 +8362,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       }
 
+      registrySyncDebouncer?.stop();
       gitSync?.stop();
       coordinator.stop();
       coherenceMonitor.stop();

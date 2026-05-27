@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider } from '../core/types.js';
+import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
@@ -825,6 +825,59 @@ export class TelegramAdapter implements MessagingAdapter {
         console.error('[telegram] Failed to flush batcher on stop:', err);
       }
       this.batcher.stop();
+    }
+  }
+
+  // ── Channel Seamlessness Contract (spec §) — Telegram reference impl ──
+
+  /**
+   * Stable provider-level identity for an inbound update — the Telegram
+   * update_id. Used by the message-processing ledger so a redelivered update
+   * (retry / reconnect / transfer-window overlap) is recognized and not
+   * re-acted-on.
+   */
+  dedupeKey(rawEvent: unknown): string {
+    const u = rawEvent as { update_id?: number } | undefined;
+    if (u && typeof u.update_id === 'number') return `telegram:${u.update_id}`;
+    // Fallback for already-normalized Message objects carrying the id in metadata.
+    const m = rawEvent as { metadata?: { update_id?: number }; id?: string } | undefined;
+    if (m?.metadata?.update_id != null) return `telegram:${m.metadata.update_id}`;
+    return `telegram:${m?.id ?? 'unknown'}`;
+  }
+
+  /** The durable resumable position — the long-poll update_id offset. */
+  getIngressPosition(): IngressPosition {
+    return { platform: 'telegram', cursor: this.lastUpdateId, capturedAt: new Date().toISOString() };
+  }
+
+  /**
+   * Stop the inbound loop deterministically and return the durable position
+   * AFTER the stop (the persisted offset), so a handoff resumes from exactly
+   * where this machine left off — never replaying or skipping.
+   */
+  async stopConsuming(): Promise<IngressPosition> {
+    this.polling = false;
+    if (this.pollTimeout) {
+      clearTimeout(this.pollTimeout);
+      this.pollTimeout = null;
+    }
+    this.saveOffset(); // durable — the position is the persisted offset, not the in-memory cursor
+    return this.getIngressPosition();
+  }
+
+  /** Resume the inbound loop from exactly the given position. */
+  async resumeConsuming(position: IngressPosition): Promise<void> {
+    if (position.platform !== 'telegram') {
+      throw new Error(`resumeConsuming: wrong platform ${position.platform} for telegram adapter`);
+    }
+    const cursor = typeof position.cursor === 'number' ? position.cursor : Number(position.cursor);
+    if (Number.isFinite(cursor) && cursor >= 0) {
+      // Resume from exactly this offset (never lower than what we know, to avoid replay).
+      this.lastUpdateId = Math.max(this.lastUpdateId, cursor);
+      this.saveOffset();
+    }
+    if (!this.polling) {
+      await this.start();
     }
   }
 

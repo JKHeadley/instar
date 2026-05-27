@@ -549,6 +549,7 @@ export class AgentServer {
       threadlineObservability: options.threadlineObservability ?? null,
       taskFlowRegistry: options.taskFlowRegistry ?? null,
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
+      coordinator: options.coordinator ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
