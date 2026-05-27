@@ -73,3 +73,19 @@ Builds the Failure-Learning Loop (instar-self-hosting dev-process forensics). Fi
 **Signal-vs-authority:** wiring only.
 **Rollback cost:** trivial — flag stays false (default); unmount is a one-line revert. Typecheck clean; 26 failure tests + 27 config tests green.
 **Deferred (next, same branch):** the Phase-1 "feature alive" E2E that boots AgentServer with the flag ON and asserts /failures returns 200 (not 503) on the production init path; Process Health dashboard tab; the analyzer + closed loop; discoverability (capabilities + Registry-First + generateClaudeMd) + board self-registration.
+
+### Commit 6 — refactor routes inline (the /tokens convention) + discoverability
+
+- **Why:** the `capabilities-discoverability` lint scans `routes.ts` text for `router.<verb>('/prefix'` — surfaced capabilities must be INLINE in routes.ts (the `/tokens` convention), not a separate module. The commit-5 separate `failureRoutes.ts` tripped the lint (red suite). Refactored to match the established pattern.
+- `src/server/routes.ts` — **modify** — inline `GET /failures`, `/:id`, `/analysis`, `/insights` + `POST /failures` next to `/tokens`, backed by `ctx.failureLedger` + `ctx.failureAttributionEngine` (503-stub when null). Added the two optional fields to `RouteContext`. Same logic as the deleted module (toApiView-only, X-Instar-Request gate, server-validated one-tap).
+- `src/server/AgentServer.ts` — **modify** — construct `FailureLedger` + `FailureAttributionEngine` as instance fields next to `tokenLedger` (the blessed pattern: ledger built in AgentServer, passed via `routeCtx`), wired to `initiativeTracker.get()` + git `show --name-only`. Removed the commit-5 `app.use(createFailureRoutes)` block + import.
+- `src/server/failureRoutes.ts` — **DELETE** — logic moved inline; no separate module.
+- `src/server/CapabilityIndex.ts` — **add** — `failureLearning` capability entry (prefix `/failures`, enabled-from-config, endpoints) → surfaced in `/capabilities` (Agent Awareness Standard).
+- `src/scaffold/templates.ts` — **add** — Registry-First row routing "why do features keep breaking? / failure rate by build skill?" → `/failures/analysis`.
+- `tests/integration/failure-routes.test.ts` — **rewrite** — now exercises the REAL `createRoutes()` production path (not a bare module), 7 cases. **Verified: 117 tests green incl. the capabilities-discoverability lint; typecheck clean.**
+
+**Over/under-block:** routes 503 when the ledger is null (feature OFF), 200 when on — no half-alive state. Capability entry reports `enabled` from config so /capabilities tells the truth.
+**Level-of-abstraction fit:** now matches `/tokens` exactly (inline route + ctx-injected ledger constructed in AgentServer).
+**Signal-vs-authority:** read surface + validated one-tap write; no authority.
+**Rollback cost:** trivial — flag default false; routes 503 inert.
+**Deferred (next, same branch):** Phase-1 "feature alive" E2E (boot AgentServer flag-ON → 200); Process Health dashboard tab; the analyzer + closed loop (InsightRecord + by-construction guard); generateClaudeMd capability section; migrateConfig for existing agents; board self-registration.

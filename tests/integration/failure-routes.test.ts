@@ -1,29 +1,45 @@
 /**
  * Integration tests for the Failure-Learning Loop HTTP routes (spec §4.5).
  *
- * Exercises the real route module over HTTP (supertest + a bare express app)
- * wired to a real in-memory FailureLedger + AttributionEngine. Covers:
- *  - 503-stub when disabled (the surface always exists for capability probing)
- *  - GET /failures + /:id + /analysis return 200 (feature-alive, not 503)
+ * Exercises the REAL production path: the inline /failures routes in
+ * createRoutes(), wired to a real in-memory FailureLedger + AttributionEngine
+ * via the route context (the same way AgentServer wires them). Covers:
+ *  - 503-stub when disabled (ledger absent) — surface always exists
+ *  - GET /failures + /analysis + /insights alive (200, not 503)
  *  - detail.full NEVER appears in any response (§4.8 redaction)
  *  - POST /failures requires X-Instar-Request, validates the initiative,
- *    stamps filedBy, and stays one-tap (§4.2 #B)
+ *    stamps filedBy, stays one-tap (§4.2 #B / B6)
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { createRoutes } from '../../src/server/routes.js';
+import type { RouteContext } from '../../src/server/routes.js';
 import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../../src/monitoring/FailureAttributionEngine.js';
-import { createFailureRoutes } from '../../src/server/failureRoutes.js';
+
+function minimalCtx(extra: Partial<RouteContext>): RouteContext {
+  return {
+    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    sessionManager: { listRunningSessions: () => [] } as any,
+    state: { getJobState: () => null, getSession: () => null } as any,
+    scheduler: null, telegram: null, relationships: null, feedback: null,
+    dispatches: null, updateChecker: null, autoUpdater: null, autoDispatcher: null,
+    quotaTracker: null, publisher: null, viewer: null, tunnel: null, evolution: null,
+    watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
+    discoveryEvaluator: null, startTime: new Date(),
+    ...extra,
+  } as RouteContext;
+}
 
 function appWith(ledger: FailureLedger | null, engine: FailureAttributionEngine | null) {
   const app = express();
   app.use(express.json());
-  app.use(createFailureRoutes({ ledger, attributionEngine: engine, enabled: !!ledger }));
+  app.use('/', createRoutes(minimalCtx({ failureLedger: ledger, failureAttributionEngine: engine })));
   return app;
 }
 
-describe('failureRoutes', () => {
+describe('Failure-Learning routes (integration, real createRoutes path)', () => {
   let ledger: FailureLedger;
   let engine: FailureAttributionEngine;
   let app: express.Express;
@@ -38,10 +54,11 @@ describe('failureRoutes', () => {
   });
   afterEach(() => ledger.close());
 
-  it('503-stubs every route when disabled', async () => {
+  it('503-stubs every route when the feature is disabled (ledger absent)', async () => {
     const disabled = appWith(null, null);
     await request(disabled).get('/failures').expect(503);
-    await request(disabled).post('/failures').expect(503);
+    await request(disabled).get('/failures/analysis').expect(503);
+    await request(disabled).post('/failures').set('X-Instar-Request', '1').expect(503);
   });
 
   it('GET /failures, /analysis, /insights are alive (200, not 503)', async () => {
@@ -63,32 +80,23 @@ describe('failureRoutes', () => {
   });
 
   it('POST /failures requires the X-Instar-Request intent header (§4.2#B)', async () => {
-    await request(app)
-      .post('/failures')
-      .send({ summary: 'x', initiativeId: 'init-foo' })
-      .expect(403);
+    await request(app).post('/failures').send({ summary: 'x', initiativeId: 'init-foo' }).expect(403);
   });
 
   it('POST /failures rejects a nonexistent initiative (server-side validation, A2)', async () => {
-    await request(app)
-      .post('/failures')
-      .set('X-Instar-Request', '1')
-      .send({ summary: 'x', initiativeId: 'ghost' })
-      .expect(400);
+    await request(app).post('/failures').set('X-Instar-Request', '1')
+      .send({ summary: 'x', initiativeId: 'ghost' }).expect(400);
   });
 
   it('POST /failures records a one-tap diagnosis (never upgrades to automatic, B6) + stamps filedBy', async () => {
-    const res = await request(app)
-      .post('/failures')
-      .set('X-Instar-Request', '1')
-      .set('X-Instar-AgentId', 'echo')
+    const res = await request(app).post('/failures')
+      .set('X-Instar-Request', '1').set('X-Instar-AgentId', 'echo')
       .send({ summary: 'flaky thing', initiativeId: 'init-foo', causeCommitOid: 'c9', severity: 'low' })
       .expect(201);
     expect(res.body.attribution).toBe('one-tap');
     expect(res.body.filedBy).toBe('echo');
     expect(res.body.initiativeId).toBe('init-foo');
     expect(res.body.projectId).toBe('proj-1');
-    // and it's queryable
     await request(app).get(`/failures/${res.body.id}`).expect(200);
   });
 

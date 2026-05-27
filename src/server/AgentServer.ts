@@ -45,7 +45,6 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
-import { createFailureRoutes } from './failureRoutes.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
@@ -97,6 +96,8 @@ export class AgentServer {
   /** UTC day + run count for the per-day mentor cap (resets across days). */
   private mentorDayKey = '';
   private mentorRunsToday = 0;
+  private failureLedger: FailureLedger | null = null;
+  private failureAttributionEngine: FailureAttributionEngine | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -463,6 +464,47 @@ export class AgentServer {
       }
     }
 
+    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
+    // self-hosting dev-process forensics. Ships OFF; constructed only when
+    // enabled (else the inline /failures routes 503-stub via the null ledger).
+    // Toolchain attribution is instar-repo-local (§3 scope). Own try/catch so a
+    // failure here can never cascade into the other ledgers' init.
+    try {
+      if (options.config.monitoring?.failureLearning?.enabled === true && options.config.stateDir) {
+        this.failureLedger = new FailureLedger({
+          dbPath: path.join(options.config.stateDir, 'failure-ledger.db'),
+        });
+        const tracker = options.initiativeTracker ?? null;
+        const projectDir = options.config.projectDir;
+        this.failureAttributionEngine = new FailureAttributionEngine({
+          getInitiative: (id) => {
+            const i = tracker?.get(id);
+            if (!i) return null;
+            return {
+              id: i.id,
+              parentProjectId: i.parentProjectId ?? undefined,
+              specPath: i.specPath ?? undefined,
+              mergeCommitOid: i.mergeCommitOid ?? undefined,
+              // coveredFiles (bugfix-commit cross-check) joins from the trace
+              // when that ingestion source is wired (later rollout slice).
+            };
+          },
+          commitTouchedFiles: (oid) => {
+            try {
+              const out = execFileSync('git', ['show', '--name-only', '--pretty=format:', oid], {
+                cwd: projectDir, encoding: 'utf8', timeout: 5000,
+              });
+              return out.split('\n').map((s) => s.trim()).filter(Boolean);
+            } catch { return []; }
+          },
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] failure-learning init failed (non-fatal):', err);
+      this.failureLedger = null;
+      this.failureAttributionEngine = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -554,6 +596,8 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
+      failureLedger: this.failureLedger,
+      failureAttributionEngine: this.failureAttributionEngine,
       sessionReaper: options.sessionReaper ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
@@ -611,53 +655,6 @@ export class AgentServer {
       topicIntentStore: options.topicIntentStore ?? null,
     });
     this.app.use(topicIntentRoutes);
-
-    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
-    // self-hosting dev-process forensics. Mounted UNCONDITIONALLY; when the
-    // feature is OFF (default) every /failures route 503-stubs, so the surface
-    // always exists for capability probing. When on, the FailureLedger + the
-    // attribution engine come alive. Toolchain attribution is instar-repo-local
-    // (the trace machinery only exists in the dev checkout — §3 scope).
-    try {
-      const flEnabled = options.config.monitoring?.failureLearning?.enabled === true;
-      let failureLedger: FailureLedger | null = null;
-      let failureAttribution: FailureAttributionEngine | null = null;
-      if (flEnabled && options.config.stateDir) {
-        failureLedger = new FailureLedger({
-          dbPath: path.join(options.config.stateDir, 'failure-ledger.db'),
-        });
-        const tracker = options.initiativeTracker ?? null;
-        failureAttribution = new FailureAttributionEngine({
-          getInitiative: (id) => {
-            const i = tracker?.get(id);
-            if (!i) return null;
-            return {
-              id: i.id,
-              parentProjectId: i.parentProjectId ?? undefined,
-              specPath: i.specPath ?? undefined,
-              mergeCommitOid: i.mergeCommitOid ?? undefined,
-              // coveredFiles (for the bugfix-commit cross-check) is sourced from
-              // the trace join when that ingestion source is wired (later slice).
-            };
-          },
-          commitTouchedFiles: (oid) => {
-            try {
-              const out = execFileSync('git', ['show', '--name-only', '--pretty=format:', oid], {
-                cwd: options.config.projectDir, encoding: 'utf8', timeout: 5000,
-              });
-              return out.split('\n').map((s) => s.trim()).filter(Boolean);
-            } catch { return []; }
-          },
-        });
-      }
-      this.app.use(createFailureRoutes({
-        ledger: failureLedger,
-        attributionEngine: failureAttribution,
-        enabled: flEnabled,
-      }));
-    } catch (err) {
-      console.warn('[agent-server] failed to register failure-learning routes:', err);
-    }
 
     // Standards-conformance gate (rung-3 normative slice): the spec-review gate
     // reads docs/STANDARDS-REGISTRY.md and signals possible standard violations.
