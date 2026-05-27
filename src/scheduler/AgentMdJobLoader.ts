@@ -112,6 +112,9 @@ export interface PerSlugManifest {
   gate?: string;
   unrestrictedTools?: boolean;
   manifestVersion?: number;
+  /** SHA of the body at the time an operator disabled the default — preserved
+   *  across regeneration so a re-enabled default re-syncs intentionally. */
+  disabledAtBodyHash?: string;
 }
 
 // ── Load-problems surface ──────────────────────────────────────────────────

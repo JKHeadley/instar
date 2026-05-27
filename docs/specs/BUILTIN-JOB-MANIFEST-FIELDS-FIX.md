@@ -6,6 +6,9 @@ date: 2026-05-27
 slug: BUILTIN-JOB-MANIFEST-FIELDS-FIX
 eli16-overview: BUILTIN-JOB-MANIFEST-FIELDS-FIX.eli16.md
 kind: bug-fix
+approved: true
+approver: justin
+approved-at: "2026-05-27T15:18:20Z"
 review-convergence: "2026-05-27T14:52:32.409Z"
 review-iterations: 2
 review-completed-at: "2026-05-27T14:52:32.409Z"

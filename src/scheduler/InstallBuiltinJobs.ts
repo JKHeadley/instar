@@ -34,6 +34,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { buildPerSlugManifest, coerceDurationMinutes, coerceBool } from './buildPerSlugManifest.js';
+import { validateManifest } from './AgentMdJobLoader.js';
+import type { JobPriority, ModelTier } from '../core/types.js';
 
 export interface InstallBuiltinJobsOptions {
   /** Agent state directory root (typically `<projectDir>/.instar`). */
@@ -158,16 +161,47 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       continue;
     }
 
-    const manifest: Record<string, unknown> = {
+    // Coerce the required numeric field (frontmatter is all-strings under
+    // FAILSAFE_SCHEMA); fail loud rather than write a NaN/null manifest.
+    const durationMinutes = coerceDurationMinutes(frontmatter.expectedDurationMinutes);
+    if (durationMinutes === null) {
+      report.errors.push({ slug, reason: `frontmatter "expectedDurationMinutes" missing or not a positive number (got ${JSON.stringify(frontmatter.expectedDurationMinutes)})` });
+      continue;
+    }
+
+    // Build the manifest through the single typed constructor — priority,
+    // expectedDurationMinutes, model + pass-throughs are carried here (their
+    // omission is the bug this fixes). The typed return means a dropped required
+    // field is a compile error.
+    const manifest = buildPerSlugManifest({
       slug,
       origin: 'instar',
-      schedule: frontmatter.schedule,
+      schedule: String(frontmatter.schedule ?? ''),
+      priority: frontmatter.priority as JobPriority,
+      expectedDurationMinutes: durationMinutes,
       enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',
       execute: { type: 'agentmd' },
-      manifestVersion: 1,
-    };
-    if (existingDisabledAtBodyHash) {
-      manifest.disabledAtBodyHash = existingDisabledAtBodyHash;
+      model: frontmatter.model != null && String(frontmatter.model).trim() ? (String(frontmatter.model) as ModelTier) : undefined,
+      tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
+      unrestrictedTools: coerceBool(frontmatter.unrestrictedTools),
+      gate: frontmatter.gate != null ? String(frontmatter.gate) : undefined,
+      telegramNotify:
+        typeof frontmatter.telegramNotify === 'boolean'
+          ? frontmatter.telegramNotify
+          : frontmatter.telegramNotify === 'on-alert'
+            ? 'on-alert'
+            : coerceBool(frontmatter.telegramNotify),
+      disabledAtBodyHash: existingDisabledAtBodyHash,
+    });
+
+    // Producer self-check: validate our OWN output against the loader's contract
+    // and fail LOUD at generation time, rather than writing a manifest the loader
+    // will silently reject at load (the failure mode this whole fix exists for).
+    try {
+      validateManifest(manifest, slug);
+    } catch (err) {
+      report.errors.push({ slug, reason: `generated manifest failed validation: ${err instanceof Error ? err.message : String(err)}` });
+      continue;
     }
 
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');

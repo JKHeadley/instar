@@ -45,3 +45,8 @@ The only judgment call is the optional safety net: making the reader lenient abo
 is more robust, but "more lenient" always deserves a second look (could a genuinely-malformed card
 now slip through as a wrongly-prioritized job?). That's exactly the kind of thing the convergence
 review checks before this ships.
+
+## Status
+
+Approved by Justin 2026-05-27; built via /instar-dev (both producers + the shared typed builder +
+tests, including a real-shipped-templates round-trip). Self-heals broken manifests on next update.
