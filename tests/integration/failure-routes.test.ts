@@ -10,7 +10,7 @@
  *  - POST /failures requires X-Instar-Request, validates the initiative,
  *    stamps filedBy, stays one-tap (§4.2 #B / B6)
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
@@ -102,5 +102,39 @@ describe('Failure-Learning routes (integration, real createRoutes path)', () => 
 
   it('GET /failures/:id 404s for an unknown id', async () => {
     await request(app).get('/failures/FAIL-testbox-999').expect(404);
+  });
+});
+
+describe('POST /failures/analyze (closed-loop execution over HTTP)', () => {
+  let ledger: FailureLedger;
+  afterEach(() => ledger.close());
+
+  it('discovers a thresholded insight and opens tracked items via the wired managers', async () => {
+    ledger = new FailureLedger({ dbPath: ':memory:', machineId: 'tb' });
+    // Seed a diverse concurrency cluster (4 sessions, 4 cause-commits).
+    for (const [s, c] of [['sA', 'k1'], ['sB', 'k2'], ['sC', 'k3'], ['sD', 'k4']]) {
+      ledger.open({ filedBy: s, source: 'bugfix-commit', severity: 'medium', summary: 'race',
+        detail: { redacted: 'race', full: 'race' }, category: 'concurrency', initiativeId: 'init-foo',
+        causeCommitOid: c, attribution: 'automatic', attributionConfidence: 0.9 });
+    }
+    const addAction = vi.fn(() => ({ id: 'ACT-1' }));
+    const createInitiative = vi.fn(async (i: { id: string }) => ({ id: i.id }));
+    const app = express();
+    app.use(express.json());
+    app.use('/', createRoutes(minimalCtx({
+      failureLedger: ledger,
+      failureAttributionEngine: null,
+      evolution: { addAction } as never,
+      initiativeTracker: { create: createInitiative } as never,
+    })));
+
+    const res = await request(app).post('/failures/analyze').set('X-Instar-Request', '1').expect(200);
+    expect(res.body.analysis.insightsDiscovered).toHaveLength(1);
+    expect(res.body.actedOn).toBe(1);
+    expect(addAction).toHaveBeenCalledTimes(1);
+    expect(createInitiative).toHaveBeenCalledTimes(1);
+
+    const insights = await request(app).get('/failures/insights').expect(200);
+    expect(insights.body.insights[0].status).toBe('acted-on');
   });
 });

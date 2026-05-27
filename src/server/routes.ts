@@ -24,6 +24,8 @@ import { validateWriteToken, canPerformOperation } from '../core/StateWriteAutho
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
+import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
+import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import {
@@ -4358,6 +4360,43 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     res.json({ insights: ctx.failureLedger.listInsights(status ? { status: status as never } : {}) });
+  });
+
+  // The analyzer + closed-loop tick (spec §4.4/§4.6.1). Invoked by the off-by-
+  // default `failure-analyzer` builtin job (Tier-1 supervised). Discovers
+  // insights, then — if the Evolution Action queue + InitiativeTracker are wired
+  // — opens human-approved tracked items (by-construction guard: only Actions +
+  // draft Initiatives, NEVER a proposal) and runs the verify step.
+  router.post('/failures/analyze', async (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    try {
+      const gates = {
+        minSupport: ctx.config.monitoring?.failureLearning?.minSupport ?? 4,
+        minDistinctSessions: ctx.config.monitoring?.failureLearning?.minDistinctSessions ?? 3,
+        minDistinctCauseCommits: ctx.config.monitoring?.failureLearning?.minDistinctCauseCommits ?? 3,
+      };
+      const analysis = new FailureAnalyzer(ctx.failureLedger, gates).analyze();
+
+      let actedOn = 0;
+      let verified = 0;
+      const evo = ctx.evolution as { addAction?: (o: never) => { id: string } } | null;
+      const tracker = ctx.initiativeTracker;
+      if (evo?.addAction && tracker?.create) {
+        const driver = new FailureLoopDriver(ctx.failureLedger, {
+          addAction: (o) => evo.addAction!(o as never),
+          createInitiative: async (i) => {
+            const created = await tracker.create(i as never);
+            return { id: created.id };
+          },
+        });
+        actedOn = (await driver.actOnNewInsights()).actedOn.length;
+        verified = driver.runVerification().evaluated.length;
+      }
+      res.json({ analysis, actedOn, verified });
+    } catch (err) {
+      // Fail-open: the analyzer never crashes the caller (job).
+      res.status(200).json({ error: 'analyze failed (logged)', detail: (err as Error).message });
+    }
   });
 
   router.get('/failures/:id', (req, res) => {
