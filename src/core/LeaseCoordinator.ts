@@ -207,6 +207,45 @@ export class LeaseCoordinator {
   }
 
   /**
+   * Consented planned-handoff acquisition (spec §8 G3e). The incoming machine
+   * takes the lease while the OUTGOING is still alive — which the liveness-gated
+   * acquireIfEligible() correctly refuses. This path is reachable ONLY from the
+   * onYield handler, which fires only on an authenticated POST /api/handoff/yield
+   * after the outgoing verified the ack + passed validation. The existing
+   * split-brain-critical canAcquire() gate is deliberately left UNTOUCHED — this
+   * is an additive consent path, not a weakening of the liveness rule.
+   *
+   * Security guard: the yielding machine MUST be the holder we currently observe.
+   * A yield from any non-holder is refused, so a forged/misdirected yield cannot
+   * trigger a takeover. On success: CAS to epoch+1, broadcast, emit the new epoch.
+   */
+  async acquireOnConsent(yieldFromMachineId: string): Promise<boolean> {
+    const view = this.effectiveView();
+    const holder = view.lease?.holder ?? null;
+    if (holder && holder === this.selfMachineId) {
+      return true; // already ours — nothing to do
+    }
+    if (holder && holder !== yieldFromMachineId) {
+      this.log(`consent acquire refused: yield from ${yieldFromMachineId} but current holder is ${holder}`);
+      return false;
+    }
+    const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
+    const res = this.d.store.casWrite(candidate);
+    if (res.ok) {
+      this.selfIssued = candidate;
+      await this.broadcast(candidate);
+      this.lastRenewOkAt = this.now();
+      this.emitEpoch(candidate.epoch);
+      this.log(`acquired lease on consent at epoch ${candidate.epoch} (yield from ${yieldFromMachineId})`);
+      return true;
+    }
+    // CAS lost — someone already advanced; adopt the observed epoch and stand down.
+    this.emitEpoch(res.observed.epoch);
+    this.log(`consent acquire lost CAS to epoch ${res.observed.epoch}`);
+    return false;
+  }
+
+  /**
    * Renew the held lease: re-sign with a fresh expiry, broadcast over the
    * tunnel, and (coarsely, via the store on epoch change) keep git current.
    * Returns false (and self-suspends) if the tunnel medium is configured but

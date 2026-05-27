@@ -193,4 +193,54 @@ describe('LeaseCoordinator', () => {
     await lc.acquireIfEligible();
     expect(onEpochAdvance).toHaveBeenCalledWith(1);
   });
+
+  describe('acquireOnConsent (planned-handoff yield, §8 G3e)', () => {
+    it('takes a LIVE peer-held lease when that peer yielded (the consent bypass)', async () => {
+      const store = new FakeStore();
+      store.lease = makeFlB().buildAcquisition(undefined, 500, 1); // B holds, LIVE
+      store.epoch = 1;
+      // No presumed-dead, B is live → ordinary acquire would refuse.
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 2_000,
+      });
+      expect(await lc.acquireIfEligible()).toBe(false); // B live → normal path refuses
+      // But B explicitly yielded → consent path takes it, advancing the epoch.
+      expect(await lc.acquireOnConsent('B')).toBe(true);
+      expect(lc.holdsLease()).toBe(true);
+      expect(lc.currentHolder()).toBe('A');
+      expect(lc.currentEpoch()).toBe(2);
+    });
+
+    it('SECURITY: refuses a yield from a machine that is NOT the current holder', async () => {
+      const store = new FakeStore();
+      store.lease = makeFlB().buildAcquisition(undefined, 500, 1); // B holds
+      store.epoch = 1;
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 2_000,
+      });
+      // A yield purporting to come from 'C' (not the holder B) must NOT grant a takeover.
+      expect(await lc.acquireOnConsent('C')).toBe(false);
+      expect(lc.currentHolder()).toBe('B'); // unchanged
+      expect(lc.currentEpoch()).toBe(1);
+    });
+
+    it('is idempotent when this machine already holds the lease', async () => {
+      const store = new FakeStore();
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 1_000,
+      });
+      await lc.acquireIfEligible(); // A holds epoch 1
+      expect(await lc.acquireOnConsent('B')).toBe(true); // already ours → true, no change
+      expect(lc.currentEpoch()).toBe(1);
+    });
+
+    it('acquires from an empty lease on consent (no prior holder to guard against)', async () => {
+      const store = new FakeStore();
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 1_000,
+      });
+      expect(await lc.acquireOnConsent('B')).toBe(true);
+      expect(lc.currentEpoch()).toBe(1);
+    });
+  });
 });

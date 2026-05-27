@@ -435,6 +435,20 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * Acquire the lease on an explicit yield from the outgoing holder (planned
+   * handoff, spec §8 G3e). Called by the /api/handoff/yield handler on the
+   * INCOMING machine. Delegates to the guarded consent path (which refuses a
+   * yield from any non-holder), then reconciles role → awake on success.
+   * Returns true if this machine now holds the lease.
+   */
+  async acquireLeaseOnConsent(yieldFromMachineId: string): Promise<boolean> {
+    if (!this.leaseCoordinator) return false;
+    const acquired = await this.leaseCoordinator.acquireOnConsent(yieldFromMachineId);
+    this.reconcileRoleToLease('handoff-yield');
+    return acquired;
+  }
+
+  /**
    * Drive the lease on each monitor tick: renew if we hold it, else attempt
    * failover acquisition. Reconciles role afterward. Fire-and-forget safe.
    */
