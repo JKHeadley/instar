@@ -19,6 +19,8 @@ import crypto from 'node:crypto';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { MultiMachineCoordinator } from '../../src/core/MultiMachineCoordinator.js';
 import { MachineIdentityManager, generateMachineId, generateSigningKeyPair, generateEncryptionKeyPair, sign } from '../../src/core/MachineIdentity.js';
+import { HandoffWireTransport } from '../../src/core/HandoffWireTransport.js';
+import type { HandoffAck } from '../../src/core/HandoffSentinel.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { signRequest } from '../../src/server/machineAuth.js';
@@ -128,6 +130,10 @@ describe('Multi-Machine HTTP E2E', () => {
   let serverB: AgentServer;
   let coordA: MultiMachineCoordinator;
   let coordB: MultiMachineCoordinator;
+  // Outgoing-side handoff wire bolted into server A — the same transport
+  // server.ts wires in production. Lets the e2e prove the ack/yield routes are
+  // ALIVE through the real booted server, not silently 503.
+  let handoffWireA: HandoffWireTransport;
 
   beforeAll(async () => {
     // Create machine environments
@@ -168,6 +174,16 @@ describe('Multi-Machine HTTP E2E', () => {
       port: PORT_B,
     });
 
+    // Outgoing-side handoff wire for server A. peer() is unused here (these
+    // tests drive the RECEIVE side: B → A's /api/handoff/{ack,yield}); recordAck
+    // / recordYield are local operations the routes invoke.
+    handoffWireA = new HandoffWireTransport({
+      selfMachineId: envA.machineId,
+      signingKeyPem: envA.signingKeys.privateKey,
+      peer: () => null,
+      nextSequence: () => Date.now(),
+    });
+
     // Create and start servers
     serverA = new AgentServer({
       config: envA.config,
@@ -175,6 +191,7 @@ describe('Multi-Machine HTTP E2E', () => {
       state: stateA,
       coordinator: coordA,
       localSigningKeyPem: envA.signingKeys.privateKey,
+      handoffWireTransport: handoffWireA,
     });
 
     serverB = new AgentServer({
@@ -386,6 +403,74 @@ describe('Multi-Machine HTTP E2E', () => {
     });
     expect(resp2.ok).toBe(false);
     expect(resp2.status).toBe(403);
+  });
+
+  // ── Planned-handoff ack / yield wire (spec §8 G3d/G3e) ─────────
+  // These prove the routes are ALIVE through the real booted server: a signed
+  // ack delivered over HTTP resolves the outgoing transport's pending awaitAck,
+  // and a signed yield fires the registered yield handler. The contrast with the
+  // 503-when-unwired integration test is what "feature is alive" means here.
+
+  it('planned-handoff ack: B\'s signed echo resolves A\'s pending awaitAck', async () => {
+    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const ackEcho: HandoffAck = {
+      tailSeq: 42,
+      ingressPosition: { platform: 'telegram', cursor: 1234, capturedAt: new Date().toISOString() },
+      threadHistoryHash: 'deadbeefcafe',
+    };
+    // A's outgoing transport begins waiting for the incoming's ack.
+    const pending = handoffWireA.awaitAck(3000);
+
+    const body = { ack: ackEcho };
+    const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, body, 36);
+    const resp = await fetch(`${baseUrl}/api/handoff/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    expect(resp.status).toBe(200);
+
+    const resolved = await pending;
+    expect(resolved).not.toBeNull();
+    expect(resolved!.tailSeq).toBe(42);
+    expect(resolved!.threadHistoryHash).toBe('deadbeefcafe');
+  });
+
+  it('planned-handoff yield: B\'s signed yield fires A\'s registered handler', async () => {
+    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    let fired = false;
+    handoffWireA.onYield(() => { fired = true; });
+
+    const body = { yield: true, from: envB.machineId };
+    const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, body, 37);
+    const resp = await fetch(`${baseUrl}/api/handoff/yield`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    expect(resp.status).toBe(200);
+    expect(fired).toBe(true);
+  });
+
+  it('rejects an unsigned ack (401) and a malformed echo (400)', async () => {
+    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    // Unsigned → machine auth rejects before the handler.
+    const unsigned = await fetch(`${baseUrl}/api/handoff/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ack: { tailSeq: 1, ingressPosition: { offset: 0 }, threadHistoryHash: 'x' } }),
+    });
+    expect(unsigned.status).toBe(401);
+
+    // Signed but malformed echo (missing ingressPosition + threadHistoryHash) → 400.
+    const bad = { ack: { tailSeq: 1 } };
+    const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, bad, 38);
+    const resp = await fetch(`${baseUrl}/api/handoff/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(bad),
+    });
+    expect(resp.status).toBe(400);
   });
 
   // ── State Sync ─────────────────────────────────────────────────

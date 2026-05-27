@@ -159,6 +159,15 @@ export class AgentServer {
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
     /**
+     * Handoff wire transport — the point-to-point ack/yield channel for the
+     * planned handoff (spec §8 G3d/G3e). The /api/handoff/ack route delivers the
+     * incoming machine's verified echo via recordAck (resolves the outgoing's
+     * awaitAck); /api/handoff/yield delivers the explicit yield via recordYield
+     * (fires the incoming's registered yield handler → lease CAS). Absent → both
+     * routes 503 (honest not-wired), never a silent ok.
+     */
+    handoffWireTransport?: { recordAck: (ack: any) => void; recordYield: () => void };
+    /**
      * Live-tail receiver — decrypts + applies a peer's encrypted live-tail flush
      * received at /api/live-tail (spec §8 G3b/c). Throws on decrypt/verify failure.
      */
@@ -358,6 +367,12 @@ export class AgentServer {
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined,
         onLiveTailReceived: options.liveTailReceiver,
+        onHandoffAck: options.handoffWireTransport
+          ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)
+          : undefined,
+        onHandoffYield: options.handoffWireTransport
+          ? () => options.handoffWireTransport!.recordYield()
+          : undefined,
       });
       this.app.use(machineRoutes);
     }

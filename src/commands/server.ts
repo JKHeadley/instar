@@ -70,6 +70,7 @@ import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
 import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
 import { LiveTailSource } from '../core/LiveTailSource.js';
+import { HandoffWireTransport } from '../core/HandoffWireTransport.js';
 import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
 import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
@@ -2416,6 +2417,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let leaseTransport: HttpLeaseTransport | undefined;
     let liveTailBuffer: LiveTailBuffer | undefined;
     let liveTailSendTransport: HttpLiveTailTransport | undefined;
+    let handoffWireTransport: HandoffWireTransport | undefined;
     let liveTailReceiver:
       | ((
           flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
@@ -2541,6 +2543,32 @@ export async function startServer(options: StartOptions): Promise<void> {
         coordinator.attachLeaseCoordinator(leaseCoordinator);
         await coordinator.initializeLease();
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
+
+        // ── Handoff ack/yield wire (spec §8 G3d/G3e) ───────────────
+        // The point-to-point channel the two machines use to negotiate a
+        // verified, lease-safe planned handoff. The /api/handoff/ack route
+        // delivers the incoming machine's caught-up echo via recordAck (resolves
+        // the outgoing's awaitAck); /api/handoff/yield delivers the explicit
+        // yield via recordYield (fires the incoming's registered handler → lease
+        // CAS). A handoff is strictly 1:1, so peer() resolves the single
+        // reachable counterpart. Solo agent (no peer) → sends are reachable
+        // no-ops, so a single-machine mesh behaves exactly as before.
+        let handoffSeq = Date.now();
+        handoffWireTransport = new HandoffWireTransport({
+          selfMachineId,
+          signingKeyPem: idMgr.loadSigningKey(),
+          peer: () => {
+            const reg = idMgr.loadRegistry();
+            for (const [id, e] of Object.entries(reg.machines ?? {})) {
+              if (id === selfMachineId || !e.lastKnownUrl || e.revokedAt) continue;
+              return { machineId: id, url: e.lastKnownUrl as string };
+            }
+            return null;
+          },
+          nextSequence: () => ++handoffSeq,
+          logger: (m) => console.log(pc.dim(m)),
+        });
+        console.log(pc.dim('  Handoff ack/yield wire active (ack→recordAck, yield→recordYield)'));
 
         // ── Live-tail RECEIVER (spec §8 G3b/c) ─────────────────────
         // The standby receives the holder's redacted+encrypted live-tail flushes
@@ -8168,7 +8196,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  Live-tail streaming active (holder pushes every ${seamlessness.liveTailPushRateMs}ms when peers present)`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

@@ -65,6 +65,18 @@ export interface MachineRouteContext {
     flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
     fromMachineId: string,
   ) => { applied: boolean; reason: string } | void;
+  /**
+   * Callback when the INCOMING machine POSTs its verified-ack during a planned
+   * handoff (spec §8 G3d). Delivers the echo to the outgoing machine's
+   * HandoffWireTransport.recordAck so the pending awaitAck resolves.
+   */
+  onHandoffAck?: (ack: unknown, fromMachineId: string) => void;
+  /**
+   * Callback when the OUTGOING machine POSTs the explicit yield signal (spec §8
+   * G3e). Triggers the incoming machine's lease-CAS acquisition — the ONLY path
+   * by which the incoming attempts to take the lease in a planned handoff.
+   */
+  onHandoffYield?: (fromMachineId: string) => void;
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
@@ -215,6 +227,45 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       machineIdentity: localIdentity,
       message: 'Pairing request received. Verify the SAS on both machines.',
     });
+  });
+
+  // ── POST /api/handoff/ack — Incoming machine's verified "caught up" ack (§8 G3d) ──
+  // The incoming machine echoes the live-tail sequence, the ingress position it
+  // will resume from, and a hash of the thread history it loaded. The outgoing
+  // machine verifies this echo matches what it flushed BEFORE yielding the lease.
+
+  router.post('/api/handoff/ack', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const ack = (req.body && (req.body as any).ack) as
+      | { tailSeq?: number; ingressPosition?: unknown; threadHistoryHash?: string }
+      | undefined;
+    if (!ack || typeof ack.tailSeq !== 'number' || !ack.ingressPosition || typeof ack.threadHistoryHash !== 'string') {
+      res.status(400).json({ error: 'Invalid handoff ack payload' });
+      return;
+    }
+    if (!ctx.onHandoffAck) {
+      res.status(503).json({ error: 'Handoff ack receiver not available' });
+      return;
+    }
+    ctx.onHandoffAck(ack, auth.machineId);
+    res.json({ ok: true });
+  });
+
+  // ── POST /api/handoff/yield — Outgoing machine's explicit yield signal (§8 G3e) ──
+  // Sent ONLY after a verified ack + passing validation. This is the sole trigger
+  // for the incoming machine's lease-CAS acquisition; without it the incoming
+  // never attempts the lease, so there is no two-holders-same-epoch window.
+
+  router.post('/api/handoff/yield', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    if (!ctx.onHandoffYield) {
+      res.status(503).json({ error: 'Handoff yield receiver not available' });
+      return;
+    }
+    ctx.onHandoffYield(auth.machineId);
+    res.json({ ok: true });
   });
 
   // ── POST /api/handoff/challenge — Generate challenge for handoff ──
