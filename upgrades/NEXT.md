@@ -15,11 +15,27 @@ The **Release-Readiness Visibility** spec (`docs/specs/RELEASE-READINESS-VISIBIL
 
 The fix path for an existing silent stall: the watchdog opens an Attention item; auto-draft fills NEXT.md but BOTH publish gates refuse it until a human reviews each section (replacing the marker with a hash-locked receipt); rollback flips a state-file kill-switch loudly.
 
+---
+
+**Agent-to-agent Telegram comms primitive — receiver-side storage primitives.** Two new
+internal modules the next update will use to wire the recipient side of the a2a primitive,
+both **dark** (no caller yet):
+
+- `AgentTelegramLedger` — append-only JSONL audit trail of every a2a send and every a2a
+  receive decision (routed or dropped, with the drop reason). Best-effort + non-throwing
+  (an audit-write failure must not crash a tick).
+- `ProcessedIdStore` — bounded persistent set of recently-processed marker `id`s, so
+  Telegram retries or adapter restarts can't double-inject the same prompt. Bounded by
+  `maxEntries` (10k default) AND `maxAgeMs` (30d default). Backed by an atomic-write JSON
+  file via SafeFsExecutor; corrupt-file recovery (starts fresh rather than crash the
+  recipient).
+
 ## What to Tell Your User
 
 - **I'll notice if my own ship is stuck**: when changes pile up and a release stops going out, I now raise a single, calm flag on my attention list — and the longer it sits, the louder that flag gets. You don't have to remember to check whether I'm actually shipping; I'll tell you when I'm not.
 - **The release notes draft themselves**: instead of waiting for someone to write release notes from scratch, the toolchain now sketches a starter version from the change list. A human still has to read and sign off on each section before it can publish — the safety net stays in place; it just isn't a blank page anymore.
 - **A merged feature can no longer be invisible to my own systems**: my feature board used to read whatever was on my laptop, which sometimes meant brand-new merged features didn't show up. It can now read the real shared copy directly, so the newest work stops being the most-hidden work.
+- The agent-to-agent Telegram comms infrastructure continues to land in pieces; still plumbing, nothing user-visible changes today.
 
 This change is off by default everywhere. I'll dogfood it on myself first.
 
@@ -31,9 +47,13 @@ This change is off by default everywhere. I'll dogfood it on myself first.
 | Auto-draft an upgrade guide | `node scripts/analyze-release.js --draft-guide` (writes `upgrades/NEXT.md` with unreviewed markers) |
 | Canonical-ref spec scan | Set `featureRollout.canonicalRefScan: true` and `featureRollout.canonicalRemote` in `.instar/config.json` |
 | Enable the watchdog | Set `monitoring.releaseReadiness.enabled: true` in `.instar/config.json`; the `release-readiness-check` job runs every 6h (still ships disabled — flip it on per agent) |
+| `AgentTelegramLedger` | Internal — `new AgentTelegramLedger(defaultLedgerPaths(stateDir))`; `appendSent(row)` + `appendReceived(row)`; JSONL, best-effort non-throwing |
+| `ProcessedIdStore` | Internal — `new ProcessedIdStore({filePath, maxEntries?, maxAgeMs?})`; `hasProcessed(id)` + `markProcessed(id)`; bounded + persistent |
 
 ## Evidence
 
 The Layer B real-I/O E2E (`tests/e2e/release-readiness-live.test.ts`) reproduces the original silent-stall shape against a fixture instar repo (real git fetch + real `analyze-release.js` subprocess + real `merge-base`) and asserts that exactly one Attention item is raised for an aged, blocked backlog. The Layer A unit tests (`tests/unit/analyze-release-draft-guide.test.ts` and `tests/unit/upgrade-guide-autodraft-review.test.ts`) reproduce the placeholder-text bypass adversarial review caught (the analyzer's `'Review the commit for specifics'` fallback that previously could pass the section-presence gate) and confirm the new validator blocks it. The Layer C unit test (`tests/unit/featureRolloutScan-canonical.test.ts`) reproduces the exact bug — a spec deleted from the local working tree but committed to main — and confirms the canonical scan still detects it as merged. ~64 tests added across three layered tiers, all green.
 
 Additionally, this very NEXT.md authoring revealed the meta-failure: the two PRs above merged but their publishes silently skipped because **NEXT.md didn't exist** — exactly the silent-skip mechanism Layer A + Layer B were built to surface. This guide is the unblock; once it publishes, the watchdog this guide describes goes live and can catch the same shape next time.
+
+Plus, the a2a comms storage primitives shipping here have 8 unit tests, all green: ledger writes to distinct files (append-only JSONL, one row per event); ledger captures the drop reason on routing-matrix drops; ledger never throws when the target is unwritable (best-effort guard tested by pointing at an unwritable path); store marks + recalls + persists across re-open; store evicts by `maxAgeMs` and by `maxEntries` (oldest first); store survives a corrupted file (starts fresh, doesn't crash); re-marking the same id is idempotent (first-seen-ts preserved).
