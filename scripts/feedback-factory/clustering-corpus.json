@@ -1,0 +1,17 @@
+{
+  "_comment": "Parity fixture for the clustering driver. `clusters` = pre-existing active clusters; `items` = unprocessed feedback processed in order. Exercises: create-new, merge into open cluster, the 0.55 fixed-cluster false-merge guard (score in [0.35,0.55) vs a fixed cluster → create), merge into fixed (regression note), merge into deferred (reopen note), order-dependence (a later item matching a cluster created for an earlier item), and slug generation. The Python ref runs the REAL cmd_cluster with its DB query monkeypatched to these arrays.",
+  "clusters": [
+    { "clusterId": "cluster-existing-open", "title": "GitSync pull fails intermittently", "description": "the pull step times out under load", "type": "bug", "status": "investigating" },
+    { "clusterId": "cluster-existing-fixed", "title": "auth token refresh broken", "description": "token refresh returns 401 after expiry", "type": "bug", "status": "fixed" },
+    { "clusterId": "cluster-existing-deferred", "title": "dashboard pin rotation edge case", "description": "pin rotation skips on concurrent login", "type": "bug", "status": "deferred" }
+  ],
+  "items": [
+    { "feedbackId": "fb-1", "title": "GitSync pull fails intermittently", "description": "the pull step times out under load", "type": "bug" },
+    { "feedbackId": "fb-2", "title": "completely different telemetry export bug", "description": "csv export drops the last row", "type": "bug" },
+    { "feedbackId": "fb-3", "title": "telemetry export bug csv", "description": "the export drops the final row of data", "type": "bug" },
+    { "feedbackId": "fb-4", "title": "auth token refresh broken", "description": "token refresh returns 401 after expiry", "type": "bug" },
+    { "feedbackId": "fb-5", "title": "auth token refresh sometimes", "description": "occasional 401 seen again", "type": "bug" },
+    { "feedbackId": "fb-6", "title": "dashboard pin rotation edge case", "description": "pin rotation skips on concurrent login", "type": "bug" },
+    { "feedbackId": "fb-7", "title": "Brand New Issue: Weird Unicode café title", "description": "something about an emoji in the report", "type": "feature" }
+  ]
+}
