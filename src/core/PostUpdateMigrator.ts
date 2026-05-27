@@ -25,6 +25,7 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
@@ -3714,6 +3715,24 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
         }
         patched = true;
         result.upgraded.push('.claude/settings.json: migrated compaction hook from Notification to SessionStart');
+      }
+    }
+
+    // Ensure the canonical instar Bash PreToolUse hooks are present (dark-guardrail
+    // migration gap, 2026-05-27). init.ts wires these for NEW agents; existing
+    // agents previously only got slopcheck + the MCP gate ensured here, so
+    // deferral-detector (the false-blocker pre-filter), grounding-before-messaging,
+    // external-communication-guard, and post-action-reflection shipped to disk but
+    // were never switched on. Both paths now share INSTAR_BASH_PRETOOLUSE_HOOKS so
+    // they cannot drift again. Idempotent: appends only missing hooks, never
+    // reorders/removes; safe to re-run. (slopcheck stays in its own block below.)
+    {
+      const added = ensureInstarBashPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+      if (added.length > 0) {
+        patched = true;
+        for (const fname of added) {
+          result.upgraded.push(`.claude/settings.json: added PreToolUse ${fname} hook (dark-guardrail wiring)`);
+        }
       }
     }
 

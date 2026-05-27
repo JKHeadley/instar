@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -4510,44 +4511,13 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   }
   const hooks = settings.hooks as Record<string, unknown[]>;
 
-  // All instar-managed hooks for PreToolUse/Bash
-  const instarBashHooks = [
-    {
-      type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/dangerous-command-guard.sh "$TOOL_INPUT"',
-      blocking: true,
-    },
-    {
-      type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/grounding-before-messaging.sh "$TOOL_INPUT"',
-      blocking: false,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/deferral-detector.js',
-      timeout: 5000,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-communication-guard.js',
-      timeout: 5000,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/post-action-reflection.js',
-      timeout: 5000,
-    },
-  ];
-
-  // External operation gate hook — intercepts MCP tool calls for safety evaluation
-  const instarMcpHooks = [
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js',
-      blocking: true,
-      timeout: 5000,
-    },
-  ];
+  // All instar-managed hooks for PreToolUse/Bash + MCP. The canonical sets live
+  // in src/core/instarSettingsHooks.ts so the new-agent path (here) and the
+  // existing-agent path (PostUpdateMigrator.ensureInstarPreToolUseBashHooks)
+  // consume the SAME list and can never drift (the dark-guardrail gap, 2026-05-27).
+  // Fresh copies so later settings mutation never touches the shared constants.
+  const instarBashHooks = INSTAR_BASH_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
+  const instarMcpHooks = INSTAR_MCP_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
 
   // PreToolUse: merge instar hooks into existing or create fresh
   if (!hooks.PreToolUse) {
