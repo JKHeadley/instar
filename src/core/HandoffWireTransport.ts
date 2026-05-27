@@ -114,6 +114,11 @@ export class HandoffWireTransport {
     return this.post('/api/handoff/yield', { yield: true, from: this.d.selfMachineId });
   }
 
+  /** Open a planned handoff: POST the flush manifest to the incoming's begin route. */
+  async sendBegin(manifest: unknown): Promise<boolean> {
+    return this.post('/api/handoff/begin', { manifest });
+  }
+
   // ── INCOMING side ──────────────────────────────────────────────
 
   /** Send this machine's "caught up" ack to the outgoing machine. */
