@@ -78,7 +78,9 @@ describe('featureRolloutScan — canonical-ref (Layer C)', () => {
     git(repo, ['push', '-q', 'canon', 'main']);
 
     // Simulate the bug: the developer's working tree DROPS the spec (different branch / cleaned worktree).
-    fs.unlinkSync(path.join(repo, 'docs/specs/on-main-only.md'));
+    SafeFsExecutor.safeRmSync(path.join(repo, 'docs/specs/on-main-only.md'), {
+      force: true, operation: 'tests/unit/featureRolloutScan-canonical.test.ts:simulateDeleted',
+    });
 
     // The OLD local scan would now miss it. The canonical scan must still see it.
     const got = scanSpecArtifactsWithCanonical(repo, {
