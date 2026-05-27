@@ -89,6 +89,10 @@ They found real things my own pass missed, and the design got noticeably stronge
 - **You get a log.** Every shutoff and its reason lands on a page you can pull up any time — so a
   vanished session is never a mystery again.
 
+One honest caveat: the *external* reviewers (a GPT and a Gemini reading it independently) aren't wired
+up on this machine yet — standing that up is its own separate piece of work I'm tracking. So this round
+was my five internal reviewers plus the rules-checker, not the full outside panel.
+
 ## What I'm asking you
 
 The spec proposes doing this in three chunks: first the fix for the bug you hit plus the shared brain,

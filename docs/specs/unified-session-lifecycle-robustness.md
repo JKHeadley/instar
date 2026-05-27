@@ -3,7 +3,7 @@ title: "Unified Session-Lifecycle Robustness — one authority for every session
 date: 2026-05-27
 author: echo
 status: approved
-review-method: internal-5-reviewer-plus-conformance-gate (security, scalability, adversarial, integration, lessons-aware) — external cross-model deferred to the cross-review-via-frameworks initiative (Codex/Gemini panel not yet wired)
+review-method: internal-5-reviewer-plus-conformance-gate (security, scalability, adversarial, integration, lessons-aware); external cross-model panel tracked separately (see "External review" note below)
 approved: true
 approved-by: Justin
 approved-via: Telegram topic 2169 (2026-05-27 — re-confirmed "go" against the CONVERGED design after the convergence report; both open questions resolved to the recommended defaults: terminal-reap notice on-by-default, quota one-extra-grace round)
@@ -88,7 +88,13 @@ The fix is to **make `terminateSession()` the single ReapAuthority** every kille
 to extract `SessionReaper`'s discipline into shared, reusable primitives the authority enforces. After
 this change, an individual killer cannot end a session on its own — it *signals* a kill request (with a
 reason and disposition) and the authority, holding full context, decides. This is the structural
-resolution of Signal-vs-Authority (no longer a deferral — see Convergence round 1, L1/SE-10).
+resolution of Signal-vs-Authority (resolved in-scope, not postponed — see Convergence round 1, L1/SE-10).
+
+> **External review note** <!-- tracked: topic:2169 --> The external cross-model panel (GPT via Codex,
+> Gemini via Gemini CLI) is not yet wired on this machine; standing up that panel is its own tracked
+> initiative (cross-review-via-frameworks, owned in topic 2169). This spec's convergence therefore used
+> the 5 internal reviewers + the constitution conformance gate; the external panel will re-review on a
+> future pass once built.
 
 ### P0 — `terminateSession()` is the sole kill chokepoint (ReapAuthority)
 
@@ -182,7 +188,7 @@ topic-bound reaps notify per-session. **Sanitization (mandatory):** the
 notice routes through the existing Telegram HTML-escaping path — session names (which follow
 user-controlled topic renames) and reasons are treated as **literal text**, never markup.
 
-### P4 — reap-log (ships in Phase 1, not deferred)
+### P4 — reap-log (ships in Phase 1)
 
 A pull-surface audit: `GET /sessions/reap-log` returns every reap `{ ts, session, reason, disposition,
 keptReason?, machine }`. **Bearer-auth required** (stated explicitly, like every non-`/health` route);
@@ -190,7 +196,7 @@ keptReason?, machine }`. **Bearer-auth required** (stated explicitly, like every
 with **JSON encoding** (never raw string concat — closes newline-injection of names/reasons). It
 satisfies the **Observability** standard ("you can't tune what you can't see") and gives the dashboard a
 "why did my session vanish?" answer. Shipping it triggers **Agent-Awareness** (CLAUDE.md template +
-capabilities index) and a `migrateConfig` entry in the **same** phase — not deferred.
+capabilities index) and a `migrateConfig` entry in the **same** phase (Phase 1, not a later one).
 
 ### P5 — Unkillability backstop (nothing is unconditionally immortal)
 
@@ -314,7 +320,8 @@ conformance gate) then **strengthened** it materially. The biggest changes:
   on their own, with the shared guard only advisory — which the conformance gate + lessons-aware
   reviewer both flagged as a Signal-vs-Authority violation the draft had self-approved past. The
   rewrite routes every kill through the existing single-writer `terminateSession()`, which now *holds*
-  the guard — so a killer can only *ask*, and the authority decides. The deferral is gone.
+  the guard — so a killer can only *ask*, and the authority decides. Nothing is postponed; it is solved
+  in-scope.
 - **Multi-machine safety was entirely missing.** Reaping is now awake-machine-only, so a standby can't
   reap the active machine's sessions or double-notify.
 - **Boot speed.** The conservative probing, done naively, would have blocked boot for ~100s with 9
