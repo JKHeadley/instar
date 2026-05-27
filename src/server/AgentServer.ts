@@ -317,6 +317,8 @@ export class AgentServer {
     telegramBridge?: import('../threadline/TelegramBridge.js').TelegramBridge;
     /** Threadline observability — read-only views over inbox/outbox/bindings. */
     threadlineObservability?: import('../threadline/ThreadlineObservability.js').ThreadlineObservability;
+    /** CMT-567: shared deps for the "open this" LLM topic-name + summary brief. */
+    briefDeps?: import('../threadline/openConversationBrief.js').BriefDeps;
     /** TaskFlow registry — durable multi-step job records (OpenClaw import). */
     taskFlowRegistry?: import('../tasks/TaskFlowRegistry.js').TaskFlowRegistry;
     /** ThreadlineFlowBridge — resumes flows on cross-agent-callback inbound. */
@@ -695,6 +697,7 @@ export class AgentServer {
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
       threadlineObservability: options.threadlineObservability ?? null,
+      briefDeps: options.briefDeps ?? null,
       taskFlowRegistry: options.taskFlowRegistry ?? null,
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,

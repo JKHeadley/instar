@@ -651,6 +651,10 @@ export interface RouteContext {
   /** Threadline observability — read-only view layer over inbox/outbox/bindings.
    *  Powers the dashboard Threadline tab via /threadline/observability/*. */
   threadlineObservability: import('../threadline/ThreadlineObservability.js').ThreadlineObservability | null;
+  /** CMT-567: shared deps for the "open this" LLM topic-name + summary brief.
+   *  Built once at server startup; the hub/bind route + the structural intercept
+   *  share it. Null sub-deps degrade to template/slug. */
+  briefDeps: import('../threadline/openConversationBrief.js').BriefDeps | null;
   /** Pending reply waiters for threadline relay-send waitForReply support.
    *  Key: threadId (UUID — unique per conversation, unlike agent names which
    *  can collide when multiple agents share a name). Value: resolve callback
@@ -13733,6 +13737,7 @@ export function createRoutes(ctx: RouteContext): Router {
         conversationStore: ctx.conversationStore,
         commitmentTracker: ctx.commitmentTracker,
         telegram: ctx.telegram,
+        brief: ctx.briefDeps ?? undefined,
       },
       {
         action: req.body?.action,

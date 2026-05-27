@@ -3273,7 +3273,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       _fixDeps = { state, liveConfig, sessionManager, telegram, config };
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManagerSendOnly,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
-        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram } : null);
+        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -3461,7 +3461,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Wire up topic → session routing and session management callbacks
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManager,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
-        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram } : null);
+        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
@@ -6868,6 +6868,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     const collaborationSurfacer = telegram
       ? new CollaborationSurfacer({ telegram, stateDir: config.stateDir })
       : undefined;
+    // CMT-567: one shared BriefDeps for the "open this" LLM topic-name + summary.
+    // Built once here (all three inputs in scope) and threaded to BOTH getHubDeps
+    // closures AND the AgentServer ctx, so the HTTP route + the structural
+    // intercept share one construction. Any null sub-dep degrades to template/slug.
+    const briefDeps: import('../threadline/openConversationBrief.js').BriefDeps = {
+      observability: threadlineObservability ?? null,
+      llmQueue: sharedLlmQueue ?? null,
+      intelligence: sharedIntelligence ?? null,
+    };
     const messageFormatter = new MessageFormatter();
     const tmuxBin = config.sessions.tmuxPath;
     const tmuxOps: TmuxOperations = {
@@ -8416,7 +8425,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

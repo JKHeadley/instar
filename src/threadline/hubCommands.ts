@@ -10,6 +10,7 @@
 import type { CollaborationSurfacer } from './CollaborationSurfacer.js';
 import type { ConversationStore } from './ConversationStore.js';
 import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { generateConversationBrief, type BriefDeps } from './openConversationBrief.js';
 
 export type HubCommand =
   | { action: 'open' }
@@ -45,6 +46,13 @@ export interface HubBindDeps {
     findOrCreateForumTopic(name: string, iconColor?: number): Promise<{ topicId: number; name: string; reused: boolean }>;
     sendToTopic(topicId: number, text: string, options?: { silent?: boolean }): Promise<unknown>;
   };
+  /**
+   * Deps for the LLM topic-name + first-message summary (CMT-567). Optional:
+   * when absent, the `open` path degrades to the slug name + legacy tie-marker
+   * (exactly the pre-CMT-567 behavior). When present but its own sub-deps are
+   * null, `generateConversationBrief` degrades to its template/slug tiers.
+   */
+  brief?: BriefDeps;
 }
 
 export interface HubBindArgs {
@@ -116,6 +124,10 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
   try {
     let topicId: number;
     let topicName: string;
+    // The first message posted into the topic: for `open` it's the conversation
+    // brief (LLM summary / deterministic template); for `tie` it's the tie-marker
+    // (the target topic is one the operator already named + populated).
+    let firstMessage = `🧵 This Threadline conversation is now tied to this topic — updates will land here.`;
     if (args.action === 'tie') {
       if (typeof args.targetTopicId === 'number') {
         topicId = args.targetTopicId;
@@ -128,9 +140,22 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
       }
     } else {
       const existing = conversationStore.get(threadId);
-      const name = topicNameFor(existing ?? null, threadId);
-      const t = await telegram.findOrCreateForumTopic(name);
-      topicId = t.topicId; topicName = t.name;
+      // CMT-567: LLM topic name + summary, with deterministic template/slug
+      // fallbacks. When `brief` deps aren't wired, degrade to the slug + tie-marker.
+      if (deps.brief) {
+        // Inject the real slug fn so the brief's fallback name matches the
+        // legacy path exactly (topicNameFor is private to this module).
+        const b = await generateConversationBrief(threadId, existing ?? null, { ...deps.brief, topicNameFallback: (c, t) => topicNameFor(c as Parameters<typeof topicNameFor>[0], t) });
+        const t = await telegram.findOrCreateForumTopic(b.topicName);
+        topicId = t.topicId; topicName = t.name;
+        firstMessage = b.summary; // never empty — see openConversationBrief
+        console.log(`[hub/bind] open threadId=${threadId.slice(0, 8)} topic=${topicId} nameSource=${b.nameSource} summarySource=${b.summarySource} latencyMs=${b.latencyMs} reason=${b.reason}`);
+      } else {
+        const name = topicNameFor(existing ?? null, threadId);
+        const t = await telegram.findOrCreateForumTopic(name);
+        topicId = t.topicId; topicName = t.name;
+        console.log(`[hub/bind] open threadId=${threadId.slice(0, 8)} topic=${topicId} nameSource=slug summarySource=slug latencyMs=0 reason=no-brief-deps`);
+      }
     }
 
     // Authoritative bind: conversation + commitment.
@@ -141,7 +166,7 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
       catch (e) { console.warn(`[hub/bind] commitment topicId update failed: ${e instanceof Error ? e.message : e}`); }
     }
     collaborationSurfacer.markBound(threadId);
-    await telegram.sendToTopic(topicId, `🧵 This Threadline conversation is now tied to this topic — updates will land here.`).catch(() => { });
+    await telegram.sendToTopic(topicId, firstMessage).catch(() => { });
     await collaborationSurfacer.noteInHub(`Opened "${topicName}" (conversation ${threadId.slice(0, 8)}).`);
     return { ok: true, action: args.action, threadId, topicId, topicName };
   } catch (err) {
