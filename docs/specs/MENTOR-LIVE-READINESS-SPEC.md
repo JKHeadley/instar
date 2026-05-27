@@ -68,27 +68,119 @@ own server:
 - The check is async; the runner pre-resolves it before assembling tick deps (the tick stays
   pure).
 
-### Fix 2 — Mentee-side outbox pickup (co-design with Codey)
+### Fix 2 — Mentee-side outbox pickup (Codey-designed, Threadline 5cc61bd7, 2026-05-27)
 
 Keep the outbox-write exactly as is (the spawn-loop-safe shape is correct). Add a
-**pull-based pickup** on Codey's side that turns each new outbox line into a user-prompt the
-running Codey session processes. Two concrete options to be co-designed with Codey (he's the
-authority on his ingestion):
+**pull-based pickup** on Codey's side. Codey picked **option (a) — a scheduled poll job** —
+explicitly because it survives restarts, session churn, and partial failures; correctness
+matters more than the latency cost of supervised live-loop turnaround (~30–60s acceptable).
 
-- **(a) Codey-side scheduled job (`mentor-inbox-poll`)** — runs every ~1min, reads
-  `{stateDir}/mentor-outbox/<framework>.jsonl` (or a shared path), advances a per-file
-  byte-offset cursor (idempotent), and for each new line injects the message via
-  `injectInternalMessage` into Codey's active mentee-collab session. Codey's reply is
-  appended to a **reply outbox** Echo's Stage-B reads.
-- **(b) Codey-side filesystem watcher in-process** (no job) — same shape, event-driven.
+**Pull mechanism (Codey's side, his code).** `mentor-inbox-poll` agentmd job, runs ~every
+minute. Reads append-only JSONL, keeps a **durable per-source byte-offset cursor**, processes
+only complete newline-terminated records, uses a lock file so overlapping invocations cannot
+double-deliver, and on injection delivers via the local server/session-injection surface
+(Codey-side abstraction — intentionally *not* bound in the contract to a specific function
+name, since the injection API is per-harness). On malformed-but-complete line → dead-letter
++ advance cursor; on incomplete trailing line → wait for next poll.
 
-(a) is conservative (matches the cron-job-everywhere pattern) and explicit; (b) is lower-
-latency but more state to manage. **Codey picks**, and ratifies the reply-path shape.
+**Paths (stateDir-relative on each side — IMPORTANT: `{codeyStateDir}` is *Codey's* state
+root, not Echo's, so Echo must write cross-agent into Codey's local state dir).**
 
-This fix has **two-sided code**: Echo writes (already correct) + Codey reads. Echo's side
-adds a documented contract (file path, line schema, reply file path) and a contract test.
-Codey's side ships the pickup. The spawn-loop guard remains structural: no Echo→Codey
-spawn-on-write, no Codey→Echo spawn-on-reply — both sides queue-and-pickup.
+| File | Owner | Purpose |
+|------|-------|---------|
+| `{codeyStateDir}/mentor-outbox/codex-cli.jsonl` | Echo writes / Codey reads | Inbound mentor prompts |
+| `{codeyStateDir}/mentor-outbox/.cursors/codex-cli.cursor.json` | Codey | Durable byte-offset cursor |
+| `{codeyStateDir}/mentor-outbox/codex-cli.deadletter.jsonl` | Codey | Malformed lines, audit |
+| `{codeyStateDir}/mentor-outbox/codex-cli.delivery.jsonl` | Codey writes / Echo Stage-B reads | Per-injection audit row (written immediately after successful inject, BEFORE the reply) |
+| `{codeyStateDir}/mentor-outbox/codex-cli.reply.jsonl` | Codey writes / Echo Stage-B reads | Per-prompt terminal outcome |
+
+Echo resolves `{codeyStateDir}` from a new config `mentor.menteeStateDir` (default
+`/Users/justin/Documents/Projects/instar-codey/.instar` for `codex-cli`). The contract stays
+stateDir-relative; the absolute-path resolution is the only machine-specific shim.
+
+**Audit pattern (Codey's preference, adopted).** The poller writes a **delivery row
+immediately after successful injection** + the **reply row only after the session produces
+the assistant response**. This lets Stage-B distinguish three states cleanly: *never picked
+up* (no delivery row for this id) / *picked up, no reply yet* (delivery row, no reply row) /
+*reply completed* (both rows). Stage-B matches on `correlationId` first, `requestId` second.
+
+**Line schema — inbound prompt (Echo → Codey).**
+```json
+{
+  "schemaVersion": 1,
+  "id": "uuid-or-stable-id",
+  "ts": "2026-05-27T18:25:18.831Z",
+  "kind": "mentor.live.prompt",
+  "from": { "agent": "echo", "role": "mentor" },
+  "to": { "agent": "instar-codey", "framework": "codex-cli" },
+  "threadId": "optional-mentor-thread-or-run-id",
+  "correlationId": "stable-id-stage-b-uses-to-match-reply",
+  "message": "prompt text",
+  "replyRequired": true,
+  "expiresAt": "optional-iso-ts (if absent, processed whenever seen)"
+}
+```
+- `id` is REQUIRED (idempotency anchor).
+- `correlationId` defaults to `id` if omitted; Stage-B matches it first.
+- Echo MAY emit top-level `framework` as a compatibility alias during rollout; the canonical
+  location is `to.framework`.
+- `message` is the only prompt-content field; metadata is routing/audit, never executable
+  instructions.
+- `attachments` field is reserved for future use; for now, prompt is a plain string.
+
+**Line schema — reply (Codey → Echo, terminal outcome).**
+```json
+{
+  "schemaVersion": 1,
+  "kind": "mentor.live.reply",
+  "id": "uuid-for-this-reply-row",
+  "requestId": "incoming-line-id",
+  "correlationId": "incoming-correlation-id-or-id",
+  "ts": "2026-05-27T18:26:05.000Z",
+  "from": { "agent": "instar-codey", "framework": "codex-cli" },
+  "to": { "agent": "echo", "role": "mentor" },
+  "status": "ok",
+  "message": "assistant reply text",
+  "session": {
+    "topicId": null,
+    "sessionId": "optional-local-session-id",
+    "delivery": "active-session"
+  },
+  "error": { "code": "no_active_session", "retryable": true }
+}
+```
+- `status ∈ {ok, error, ignored, expired}`.
+- `error` is present only for non-`ok` statuses; `message` remains user-safe.
+
+**Anti-loop contract (Codey-asserted, baked into the spec — both sides comply).**
+
+1. Echo writes files only. Codey reads files only for inbound mentor prompts. **No
+   Threadline send, no agent spawn, no HTTP callback as part of the live loop.**
+2. Codey replies by appending to the reply JSONL file only. Echo Stage-B reads that file;
+   Echo MUST NOT treat a reply as a trigger to write a new prompt unless a human/supervisor
+   explicitly starts a new mentor turn.
+3. Every incoming row needs a stable `id`; Codey maintains a processed-id ledger (cursor +
+   id check) so file rewrites, duplicate appends, and restarts do not re-inject.
+4. Optional `expiresAt` for prompts whose staleness is unsafe; absence = process whenever
+   seen.
+5. `replyRequired` may be false for one-way deliveries; for the live-loop test, set true.
+6. **Metadata is routing/audit only** — never prompt content. Only `message` is interpreted
+   as prompt.
+7. **One writer per file.** If multi-mentor lands later, one source file per writer (or
+   append-locking).
+8. Delivery + reply ledgers are append-only so Stage-B can reconstruct the run even on
+   mid-turn crash.
+
+**Echo-side responsibilities (this PR ships).** (i) Replace the per-tick `{ts,framework,message}`
+write with the schemaVersion=1 record above (with `id` + `correlationId`). (ii) Write to
+`{mentor.menteeStateDir}/mentor-outbox/codex-cli.jsonl` (cross-agent into Codey's state
+dir). (iii) Publish a typed-contract export Stage-B uses to parse reply.jsonl. (iv) Add a
+contract test that round-trips a written prompt + a hand-written reply through the parser.
+
+**Codey-side responsibilities (Codey ships, separately).** The `mentor-inbox-poll` job,
+cursor + lock + dead-letter, the local injection abstraction, the delivery + reply writers.
+Both halves must land before the supervised live test. Coordinated through this spec's
+shared contract.
 
 ### Fix 3 — Quota-aware budget + notification (replaces the dead dollar cap)
 
