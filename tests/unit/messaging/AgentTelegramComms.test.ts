@@ -15,8 +15,12 @@ import {
   decideRoute,
   cycleKey,
   CycleDetector,
+  sendAgentMessage,
+  scrubToken,
   type RecipientConfig,
   type IncomingContext,
+  type SendAgentMessageDeps,
+  type SendAuditRow,
 } from '../../../src/messaging/AgentTelegramComms.js';
 
 const NOW = 1_779_900_000_000;
@@ -185,5 +189,87 @@ describe('AgentTelegramComms — cycle detection', () => {
     cd.mark(cycleKey({ fromBotId: 'a', toBotId: 'b', topicId: 1, role: 'mentor', corr: 'c1' }), NOW);
     const other = cycleKey({ fromBotId: 'a', toBotId: 'b', topicId: 1, role: 'mentor', corr: 'c2' });
     expect(cd.wouldTrip(other, NOW + 1000)).toBe(false);
+  });
+});
+
+describe('AgentTelegramComms — sendAgentMessage', () => {
+  function mkDeps(over: Partial<SendAgentMessageDeps> = {}): { deps: SendAgentMessageDeps; audit: SendAuditRow[]; sent: { topicId: number; text: string }[] } {
+    const audit: SendAuditRow[] = [];
+    const sent: { topicId: number; text: string }[] = [];
+    const deps: SendAgentMessageDeps = {
+      send: async (topicId, text) => { sent.push({ topicId, text }); return { ok: true, messageId: 'msg-99' }; },
+      appendAudit: (r) => audit.push(r),
+      now: () => NOW,
+      mintId: () => 'minted-id',
+      allowedRoles: new Set(['mentor']),
+      fromBotId: 'echo-mentor-bot',
+      toBotId: 'codey-bot',
+      botToken: '123456:fake-secret-token-value-1234',
+      ...over,
+    };
+    return { deps, audit, sent };
+  }
+
+  it('formats the marker, sends, returns a2aId + sentMessageId, writes ok audit row', async () => {
+    const { deps, audit, sent } = mkDeps();
+    const r = await sendAgentMessage(
+      { fromAgent: 'echo', toAgent: 'instar-codey', role: 'mentor', toTopicId: 42, message: 'hi' },
+      deps,
+    );
+    expect(r).toMatchObject({ ok: true, a2aId: 'minted-id', sentMessageId: 'msg-99' });
+    expect(sent[0].topicId).toBe(42);
+    // Round-trips back through parseMarker (the sender's marker is the receiver's input).
+    const parsed = parseMarker(sent[0].text);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.msg).toMatchObject({ from: 'echo', to: 'instar-codey', role: 'mentor', id: 'minted-id', corr: 'minted-id', ts: NOW });
+    expect(audit[0]).toMatchObject({ result: 'ok', sentMessageId: 'msg-99', fromAgent: 'echo', role: 'mentor', id: 'minted-id', corr: 'minted-id', topicId: 42 });
+  });
+
+  it('correlationId defaults to id; an explicit correlationId threads a reply back to a prompt', async () => {
+    const { deps, sent, audit } = mkDeps();
+    await sendAgentMessage(
+      { fromAgent: 'instar-codey', toAgent: 'echo', role: 'mentor', toTopicId: 7, message: 'reply', id: 'reply-1', correlationId: 'prompt-A' },
+      { ...deps, allowedRoles: new Set(['mentor', 'mentor-reply']) },
+    );
+    const parsed = parseMarker(sent[0].text);
+    if (parsed.ok) expect(parsed.msg.corr).toBe('prompt-A');
+    expect(audit[0].corr).toBe('prompt-A');
+  });
+
+  it('ANTI-LOOP: refuses to send a role not in the caller-allowed set — no send, role-refused audit', async () => {
+    const { deps, audit, sent } = mkDeps({ allowedRoles: new Set(['mentor-reply']) }); // mentor is NOT allowed
+    const r = await sendAgentMessage(
+      { fromAgent: 'instar-codey', toAgent: 'echo', role: 'mentor', toTopicId: 1, message: 'forbidden' },
+      deps,
+    );
+    expect(r.ok).toBe(false);
+    expect(sent).toHaveLength(0); // no send attempted
+    expect(audit[0]).toMatchObject({ result: 'role-refused' });
+    expect(audit[0].reason).toMatch(/role.*mentor.*not in.*allowedRoles/);
+  });
+
+  it('writes a failed audit row + scrubbed reason when the adapter throws', async () => {
+    const tokenInError = '123456:fake-secret-token-value-1234';
+    const { deps, audit } = mkDeps({
+      send: async () => ({ ok: false, error: new Error(`401 from Telegram: bot ${tokenInError} unauthorized`) }),
+    });
+    const r = await sendAgentMessage(
+      { fromAgent: 'echo', toAgent: 'instar-codey', role: 'mentor', toTopicId: 1, message: 'x' },
+      deps,
+    );
+    expect(r.ok).toBe(false);
+    // Token NEVER appears in the result or audit.
+    expect(r.reason).not.toContain(tokenInError);
+    expect(audit[0].result).toBe('failed');
+    expect(audit[0].reason).not.toContain(tokenInError);
+    expect(audit[0].reason).toContain('[REDACTED-BOT-TOKEN]');
+  });
+
+  it('scrubToken redacts both full token and just-the-secret-portion', () => {
+    const t = '123456:abcdef1234567890secret';
+    expect(scrubToken(`oops ${t} leaked`, t)).toContain('[REDACTED-BOT-TOKEN]');
+    expect(scrubToken(`partial: abcdef1234567890secret`, t)).toContain('[REDACTED-BOT-TOKEN]');
+    expect(scrubToken('no token here', t)).toBe('no token here');
+    expect(scrubToken('anything', undefined)).toBe('anything');
   });
 });

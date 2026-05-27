@@ -287,3 +287,178 @@ export class CycleDetector {
     }
   }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// sendAgentMessage — the SEND side (spec §Fix 2a "Sender side")
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface SendAgentMessageInput {
+  fromAgent: string;
+  toAgent: string;
+  /** A role the caller is allowed to send (see allowedRoles). */
+  role: string;
+  /** Recipient bot's topic to write into. */
+  toTopicId: number;
+  /** Prompt content. Markdown is fine — the body is sent verbatim under the marker. */
+  message: string;
+  /** Optional: an existing stable id for this send (else a UUID is minted as a2aId). */
+  id?: string;
+  /** Optional: correlation id (for a reply, set to the prompt's id). Defaults to id. */
+  correlationId?: string;
+}
+
+export interface SendAgentMessageDeps {
+  /** Adapter-specific send. Must return a `messageId` on success. */
+  send: (toTopicId: number, text: string) => Promise<{ ok: true; messageId: string } | { ok: false; error: unknown }>;
+  /** Append one JSONL row to the sent-audit ledger (caller chooses path/storage). */
+  appendAudit: (row: SendAuditRow) => void;
+  /** Wall-clock now (ms) — injected. */
+  now: () => number;
+  /** UUID minter — injected so tests are deterministic. */
+  mintId: () => string;
+  /** Allowed-outbound-roles for THIS caller (constructor-time list). The role-handler
+   *  cannot send any role not in this list — refused at runtime, no marker formed. */
+  allowedRoles: ReadonlySet<string>;
+  /** The bot token to scrub from any error message before it leaves this module
+   *  (round-2 adversarial F5: Telegram 401s sometimes echo the token). */
+  botToken?: string;
+  /** Telegram identifiers for the audit row + future cycle-detection wiring. */
+  fromBotId: string;
+  toBotId: string;
+}
+
+export interface SendAuditRow {
+  localTs: string;
+  direction: 'sent';
+  fromAgent: string;
+  toAgent: string;
+  role: string;
+  id: string;
+  corr: string;
+  ts: number;
+  telegramFromBotId: string;
+  telegramToBotId: string;
+  topicId: number;
+  result: 'ok' | 'failed' | 'role-refused';
+  sentMessageId?: string;
+  reason?: string;
+}
+
+export interface SendAgentMessageResult {
+  ok: boolean;
+  a2aId?: string;
+  sentMessageId?: string;
+  reason?: string;
+}
+
+/**
+ * Send an agent-to-agent Telegram message. Formats the marker, calls the injected
+ * adapter, writes the sent-audit row (always — even on refusal/failure), and scrubs the
+ * bot token from any error surface before returning.
+ *
+ * Anti-loop invariant (spec §Fix 2a anti-loop #1): refuses any `role` not in the caller's
+ * `allowedRoles` set at runtime — no marker is formed, no send is attempted, an audit row
+ * is written with `result: 'role-refused'`. A role-handler that consumes role X cannot
+ * therefore send role X (the import-surface lint is a backup; this is the runtime guard).
+ */
+export async function sendAgentMessage(
+  input: SendAgentMessageInput,
+  deps: SendAgentMessageDeps,
+): Promise<SendAgentMessageResult> {
+  const now = deps.now();
+  const a2aId = input.id ?? deps.mintId();
+  const corr = input.correlationId ?? a2aId;
+
+  // Runtime anti-loop guard (spec §Fix 2a anti-loop #1).
+  if (!deps.allowedRoles.has(input.role)) {
+    deps.appendAudit({
+      localTs: new Date(now).toISOString(),
+      direction: 'sent',
+      fromAgent: input.fromAgent,
+      toAgent: input.toAgent,
+      role: input.role,
+      id: a2aId,
+      corr,
+      ts: now,
+      telegramFromBotId: deps.fromBotId,
+      telegramToBotId: deps.toBotId,
+      topicId: input.toTopicId,
+      result: 'role-refused',
+      reason: `role "${input.role}" not in caller's allowedRoles`,
+    });
+    return { ok: false, a2aId, reason: `role "${input.role}" not in caller's allowedRoles` };
+  }
+
+  let text: string;
+  try {
+    text = formatMarker(
+      { from: input.fromAgent, to: input.toAgent, role: input.role, id: a2aId, corr, ts: now },
+      input.message,
+    );
+  } catch (err) {
+    const reason = scrubToken(err instanceof Error ? err.message : String(err), deps.botToken);
+    deps.appendAudit({
+      localTs: new Date(now).toISOString(),
+      direction: 'sent',
+      fromAgent: input.fromAgent,
+      toAgent: input.toAgent,
+      role: input.role,
+      id: a2aId,
+      corr,
+      ts: now,
+      telegramFromBotId: deps.fromBotId,
+      telegramToBotId: deps.toBotId,
+      topicId: input.toTopicId,
+      result: 'failed',
+      reason: `format: ${reason}`,
+    });
+    return { ok: false, a2aId, reason: `format: ${reason}` };
+  }
+
+  const result = await deps.send(input.toTopicId, text);
+  const row: SendAuditRow = {
+    localTs: new Date(now).toISOString(),
+    direction: 'sent',
+    fromAgent: input.fromAgent,
+    toAgent: input.toAgent,
+    role: input.role,
+    id: a2aId,
+    corr,
+    ts: now,
+    telegramFromBotId: deps.fromBotId,
+    telegramToBotId: deps.toBotId,
+    topicId: input.toTopicId,
+    result: result.ok ? 'ok' : 'failed',
+    sentMessageId: result.ok ? result.messageId : undefined,
+    reason: result.ok ? undefined : scrubToken(stringifyError(result.error), deps.botToken),
+  };
+  deps.appendAudit(row);
+
+  return result.ok
+    ? { ok: true, a2aId, sentMessageId: result.messageId }
+    : { ok: false, a2aId, reason: row.reason };
+}
+
+/** Stringify an unknown error without crashing on weird shapes. */
+function stringifyError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try { return JSON.stringify(err); } catch { return '[unstringifiable error]'; }
+}
+
+/** Scrub the bot token from a string so it can't leak through logs / audit / DegradationReporter
+ *  (round-2 adversarial F5: Telegram 401 response bodies sometimes echo the token). The
+ *  token is fixed-length and high-entropy enough that a literal-string replace is enough;
+ *  we strip the trailing path segment defensively in case only part is echoed. */
+export function scrubToken(s: string, token?: string): string {
+  if (!token) return s;
+  let out = s.split(token).join('[REDACTED-BOT-TOKEN]');
+  // Telegram tokens are <bot-id>:<secret>. If only the secret appears, scrub it too.
+  const colonIdx = token.indexOf(':');
+  if (colonIdx > 0) {
+    const secret = token.slice(colonIdx + 1);
+    if (secret.length >= 16) out = out.split(secret).join('[REDACTED-BOT-TOKEN]');
+  }
+  return out;
+}
+
