@@ -390,6 +390,15 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * The current lease fencing epoch (0 if no lease is attached). Used as the
+   * fencing token for message-ledger transitions (spec §8 G3a) so a stale-epoch
+   * holder's writes are distinguishable from the current holder's.
+   */
+  getLeaseEpoch(): number {
+    return this.leaseCoordinator?.currentEpoch() ?? 0;
+  }
+
+  /**
    * Observability snapshot for /health.multiMachine.syncStatus (spec §11).
    * Always returns valid fields (never null/throws) — this is the Phase-1
    * "feature is alive" surface. On a single-machine install it reports the

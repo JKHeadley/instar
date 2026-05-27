@@ -164,6 +164,7 @@ import type { SessionActivitySentinel } from '../monitoring/SessionActivitySenti
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
+import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { getOutboundQueueStatus, cleanupDeliveredOutbound, buildAgentList } from '../messaging/GitSyncTransport.js';
 import type { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -679,6 +680,19 @@ export interface RouteContext {
   threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | null;
   /** Multi-machine coordinator (cross-machine seamlessness) — null on single-machine installs. */
   coordinator: import('../core/MultiMachineCoordinator.js').MultiMachineCoordinator | null;
+  /**
+   * Exactly-once ingress ledger (spec §8 G3a) — non-null ONLY when
+   * multiMachine.exactlyOnceIngress is enabled. When present, the inbound
+   * forward path dedups via it and the outbound reply path commits. null →
+   * the gate is dark (default), and the message path behaves exactly as before.
+   */
+  messageLedger: import('../messaging/MessageProcessingLedger.js').MessageProcessingLedger | null;
+  /**
+   * Per-topic "current inbound dedupeKey" — set when a forward is claimed for
+   * processing, read when the reply for that topic is committed. In-memory;
+   * paired with messageLedger (both null when the gate is dark).
+   */
+  currentInboundByTopic: Map<string, string> | null;
   startTime: Date;
 }
 
@@ -5221,6 +5235,22 @@ export function createRoutes(ctx: RouteContext): Router {
       if (!isProxy) {
         ctx.sessionManager.clearInjectionTracker(topicId);
       }
+      // ── Exactly-once ingress: commit reply_committed (spec §8 G3a) ──
+      // The agent's real reply just went out → mark the inbound event this topic
+      // is processing as answered, so a provider redelivery or handoff-window
+      // replay of that same inbound is dropped by the gate above. Skipped for
+      // proxy/system sends (they aren't replies to a user inbound). FAIL-OPEN.
+      if (!isProxy && ctx.messageLedger && ctx.currentInboundByTopic) {
+        try {
+          const dedupeKey = ctx.currentInboundByTopic.get(String(topicId));
+          if (dedupeKey) {
+            commitInboundReply(ctx.messageLedger, dedupeKey, ctx.coordinator?.getLeaseEpoch() ?? 0);
+            ctx.currentInboundByTopic.delete(String(topicId));
+          }
+        } catch (err) {
+          console.error(`[telegram/reply] exactly-once commit error (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
       // Record successful delivery in the dedup LRU so a sentinel retry
       // with the same delivery_id returns 200-idempotent.
       if (deliveryId && typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId)) {
@@ -8775,6 +8805,38 @@ export function createRoutes(ctx: RouteContext): Router {
         senderUsername: fromUsername,
         telegramUserId: fromUserId,
       });
+    }
+
+    // ── Exactly-once ingress gate (spec §8 G3a) ──────────────────────
+    // Default-DARK: only active when multiMachine.exactlyOnceIngress wired the
+    // ledger. Placed AFTER the sentinel intercept (emergency-stop/pause must
+    // never be deduped away) and BEFORE routing. dedupeKey = update_id (stable
+    // provider id; falls back to messageId on a pre-Stage-B lifeline). On a
+    // duplicate/in-flight event we return ok+deduped WITHOUT routing — the
+    // structural no-duplicate-reply guarantee. FAIL-OPEN: any ledger error
+    // falls through to normal routing (the gate must never drop a real message).
+    if (ctx.messageLedger) {
+      try {
+        const eventId = req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`;
+        const dedupeKey = dedupeKeyFor('telegram', topicId, eventId);
+        const epoch = ctx.coordinator?.getLeaseEpoch() ?? 0;
+        const decision = decideIngress(ctx.messageLedger, dedupeKey, {
+          platform: 'telegram',
+          topic: String(topicId),
+          input: text,
+          epoch,
+          maxProcessingMs: ctx.config.multiMachine?.maxProcessingMs ?? 5 * 60_000,
+        });
+        if (decision.action === 'drop') {
+          console.log(`[telegram-forward] exactly-once: dropped duplicate (${decision.reason}) ${dedupeKey}`);
+          res.json({ ok: true, deduped: true, reason: decision.reason });
+          return;
+        }
+        // Claimed for processing — remember it so the outbound reply commits it.
+        ctx.currentInboundByTopic?.set(String(topicId), dedupeKey);
+      } catch (err) {
+        console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
+      }
     }
 
     // Build a Message object and fire the onTopicMessage callback

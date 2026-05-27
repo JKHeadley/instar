@@ -188,6 +188,14 @@ export class AgentServer {
      */
     handoffInProgress?: () => boolean;
     /**
+     * Exactly-once ingress ledger (spec §8 G3a) — present ONLY when
+     * multiMachine.exactlyOnceIngress is enabled (server.ts constructs it).
+     * Absent → the inbound/outbound message path behaves exactly as before.
+     */
+    messageLedger?: import('../messaging/MessageProcessingLedger.js').MessageProcessingLedger;
+    /** Per-topic current-inbound dedupeKey map; paired with messageLedger. */
+    currentInboundByTopic?: Map<string, string>;
+    /**
      * Live-tail receiver — decrypts + applies a peer's encrypted live-tail flush
      * received at /api/live-tail (spec §8 G3b/c). Throws on decrypt/verify failure.
      */
@@ -600,6 +608,8 @@ export class AgentServer {
       taskFlowRegistry: options.taskFlowRegistry ?? null,
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
+      messageLedger: options.messageLedger ?? null,
+      currentInboundByTopic: options.currentInboundByTopic ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;

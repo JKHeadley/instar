@@ -174,21 +174,30 @@
           machine double-handle is already prevented; this is belt-and-suspenders for the failover
           window. Can be a tracked follow-on AFTER the same-machine guarantee + offset coordination.
 
-      DECOMPOSITION (safe order):
-      - [ ] D1 (signal-only, safe, no behavior change): construct MessageProcessingLedger in server
-            boot (MessageProcessingLedger.open(agentId, stateDir)); record() each inbound event in
-            the forward handler; expose GET /message-ledger/recent (read-only). NO drop, NO offset
-            change. Wiring-integrity + integration test. This is the codebase's "signal before
-            authority" first layer — observability only, clearly labeled as NOT yet enforcing.
-      - [ ] D2 (authority — needs test-as-self before merge): the dedup DROP at inject +
-            beginProcessing(epoch) + the lifeline offset-on-confirm coordination + reply_committed
-            on the real outbound + cursor_advanced. Fault-injection tests at every boundary
-            (§8 G3a / §10: crash after ack before cursor, after cursor before reply, mid-send).
-      - [ ] D3 (CONTINUATION resume): the receiving machine resumes the conversation via
-            CONTINUATION (no re-greet) — verify it reads the live-tail'd history + handoff manifest
-            so the first post-handoff reply remembers context. Mostly already present (CONTINUATION
-            path exists); D3 is verification + the wiring-integrity that the standby's loaded
-            history feeds the resume briefing.
+      KEY REALIZATION (de-risked): the lifeline offset loop does NOT need surgery. Exactly-once
+      rides on the LEDGER, not the Telegram offset — the offset keeps advancing normally so
+      polling never stalls; the ledger dedups redeliveries + (with replay) recovers crashes.
+
+      DECOMPOSITION:
+      - [x] D-dedup (no-DUPLICATE-reply half) — DONE, flag-gated default-off (commit c-below):
+            ingressDedup.ts (decideIngress/commitInboundReply/dedupeKeyFor) + inbound gate at
+            /internal/telegram-forward (after sentinel, before routing; drop→{deduped:true}) +
+            outbound commit at /telegram/reply/:topicId (after sendToTopic; skips proxy) + ledger
+            built in boot when seamlessness.exactlyOnceIngress + coordinator.getLeaseEpoch().
+            dedupeKey = telegram:<topic>:<message_id> (v1; update_id tracked refinement). 14 tests
+            (8 unit + 5 integration + 1 e2e). FAIL-OPEN throughout. Strict improvement, no
+            regression (a crash after inject-before-reply loses the reply exactly as today).
+      - [ ] D-noloss (no-LOSS-on-crash half): on boot, re-inject un-committed ledger entries
+            (received/processing, from inputSnapshot) so a crash/restart replays the turn. The
+            half that makes loss impossible. Fault-injection tests (§8 G3a/§10).
+      - [ ] D-xmachine: applyRemoteReplyMarker propagation over tunnel+git (failover window).
+            Lower priority — the lease already prevents cross-machine double-forward.
+      - [ ] D-refine: update_id as dedupeKey (vs message_id); per-topic concurrent-inbound queue.
+      - [ ] D3 (CONTINUATION resume): the receiving machine resumes via CONTINUATION (no re-greet)
+            — verify the standby's live-tail'd history feeds the resume briefing. Mostly present;
+            verification + wiring-integrity.
+      - [ ] FLAG FLIP (needs test-as-self): enable exactlyOnceIngress on a live agent, drive real
+            duplicates/redeliveries, confirm no false-drops, THEN default-on / merge.
 - [ ] **E** — integration + e2e + fault-injection tests for the wired path.
 - [ ] **F** — build green + full battery + push + open NEW PR + CI green + merge to main.
 - [ ] **G** — real two-machine over-Telegram test-as-self (laptop awake + mini standby):
