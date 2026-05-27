@@ -4241,6 +4241,16 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ targetFramework, limit, playbook });
   });
 
+  router.get('/framework-issues/capture-stats', (_req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    // The capture funnel: runs vs observations written. A nonzero run count with
+    // a stuck-at-zero observation count over time flags an inert/broken writer.
+    res.json(ctx.frameworkIssueLedger.captureStats());
+  });
+
   // ── Jobs ────────────────────────────────────────────────────────
 
   router.get('/jobs', (_req, res) => {

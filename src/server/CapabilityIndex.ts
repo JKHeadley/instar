@@ -482,6 +482,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'GET /framework-issues — bucket-tagged behavioral issues logged while onboarding a framework',
         'GET /framework-issues/playbook?targetFramework=X — generalizable lessons from prior frameworks, impact-ranked',
+        'GET /framework-issues/capture-stats — Stage-B auto-capture funnel (runs vs observations written)',
       ],
     }),
   },

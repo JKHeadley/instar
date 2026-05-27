@@ -108,6 +108,21 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_fwobs_issue ON framework_observations(issue_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_fwobs_episode ON framework_observations(issue_id, episode_key)`,
   `CREATE INDEX IF NOT EXISTS idx_fwobs_observed_at ON framework_observations(observed_at)`,
+  // Capture-funnel (spec §5/§18): EVERY Stage-B capture run is logged here —
+  // including runs that found nothing — so an inert/broken writer (runs > 0,
+  // observations stuck at 0) is distinguishable from "ran, genuinely nothing to
+  // report." The North Star anti-pattern guard: a silent no-op writer cannot
+  // masquerade as a healthy quiet one.
+  `CREATE TABLE IF NOT EXISTS framework_capture_runs (
+     id                   TEXT PRIMARY KEY,
+     framework            TEXT NOT NULL,
+     tick_id              TEXT,
+     findings_count       INTEGER NOT NULL DEFAULT 0,
+     observations_written INTEGER NOT NULL DEFAULT 0,
+     ran_at               INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_fwruns_framework ON framework_capture_runs(framework)`,
+  `CREATE INDEX IF NOT EXISTS idx_fwruns_ran_at ON framework_capture_runs(ran_at)`,
 ];
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -188,6 +203,34 @@ export interface ListIssuesQuery {
 export interface PlaybookQuery {
   targetFramework: string;
   limit?: number;
+}
+
+/** A single issue Stage-B forensics produced for a run (everything but the
+ *  per-run framework/tickId, which `captureRun` supplies). */
+export type ForensicFinding = Omit<RecordObservationInput, 'framework' | 'tickId'>;
+
+export interface CaptureRunInput {
+  framework: string;
+  tickId?: string;
+  findings: ForensicFinding[];
+}
+
+export interface CaptureRunResult {
+  runId: string;
+  framework: string;
+  findingsCount: number;
+  observationsWritten: number; // distinct episodes actually recorded this run
+  newIssues: number;
+  /** Previously-fixed issues whose signature/dedupKey matches a new finding —
+   *  surfaced for human regression review, NOT auto-linked (spec §13.5). */
+  regressionCandidates: Array<{ findingDedupKey: string; candidateIssueId: string }>;
+}
+
+export interface CaptureStats {
+  totalRuns: number;
+  totalObservationsWritten: number;
+  lastRanAt: number | null;
+  byFramework: Array<{ framework: string; runs: number; observations: number; lastRanAt: number }>;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -542,6 +585,80 @@ export class FrameworkIssueLedger {
       .prepare(`SELECT COUNT(*) AS c FROM framework_observations WHERE issue_id = ?`)
       .get(issueId) as { c: number };
     return r.c;
+  }
+
+  /**
+   * Stage-B auto-capture (spec §5, §19.2). The single atomic entry point the
+   * mentor tick calls after forensics: it writes every finding to the ledger
+   * (no "remember to log" — zero-manual-capture) and ALWAYS logs the run to the
+   * capture-funnel, even when `findings` is empty. That funnel row is what makes
+   * an inert/broken writer visible: a run that produced zero observations is
+   * recorded as a run, so "ran, found nothing" is distinguishable from "never
+   * ran." Regression candidates are surfaced for review, never auto-linked
+   * (spec §13.5 — promotion is not the writer's call).
+   */
+  captureRun(input: CaptureRunInput): CaptureRunResult {
+    const framework = sanitizeFreeText(input.framework, 120);
+    if (!framework) throw new Error('FrameworkIssueLedger: captureRun requires a framework');
+    const tickId = input.tickId ? sanitizeFreeText(input.tickId, 120) : null;
+    const findings = input.findings ?? [];
+
+    let observationsWritten = 0;
+    let newIssues = 0;
+    const regressionCandidates: Array<{ findingDedupKey: string; candidateIssueId: string }> = [];
+
+    // Each recordObservation is its own transaction (better-sqlite3 has no
+    // nested transactions); the funnel row is written last with the real count.
+    for (const finding of findings) {
+      const res = this.recordObservation({ ...finding, framework, tickId: tickId ?? undefined });
+      if (res.episodeRecorded) observationsWritten++;
+      if (res.created) {
+        newIssues++;
+        // A brand-new issue that matches a previously-fixed one is a candidate
+        // regression — surface it (review decides), never silently auto-link.
+        const candidates = this.suggestRegressions({
+          framework,
+          dedupKey: finding.dedupKey,
+          signature: finding.signature ?? null,
+        }).filter((c) => c.id !== res.issueId);
+        for (const c of candidates) {
+          regressionCandidates.push({ findingDedupKey: finding.dedupKey, candidateIssueId: c.id });
+        }
+      }
+    }
+
+    const runId = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO framework_capture_runs (id, framework, tick_id, findings_count, observations_written, ran_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(runId, framework, tickId, findings.length, observationsWritten, this.now());
+
+    return { runId, framework, findingsCount: findings.length, observationsWritten, newIssues, regressionCandidates };
+  }
+
+  /** Capture-funnel observability (spec §5/§18). Surfaces ticks→observations so
+   *  a writer that runs but never writes is visible. */
+  captureStats(): CaptureStats {
+    const totals = this.db
+      .prepare(
+        `SELECT COUNT(*) AS runs, COALESCE(SUM(observations_written), 0) AS obs, MAX(ran_at) AS last
+           FROM framework_capture_runs`,
+      )
+      .get() as { runs: number; obs: number; last: number | null };
+    const byFw = this.db
+      .prepare(
+        `SELECT framework, COUNT(*) AS runs, COALESCE(SUM(observations_written), 0) AS obs, MAX(ran_at) AS last
+           FROM framework_capture_runs GROUP BY framework ORDER BY last DESC`,
+      )
+      .all() as Array<{ framework: string; runs: number; obs: number; last: number }>;
+    return {
+      totalRuns: totals.runs,
+      totalObservationsWritten: totals.obs,
+      lastRanAt: totals.last ?? null,
+      byFramework: byFw.map((r) => ({ framework: r.framework, runs: r.runs, observations: r.obs, lastRanAt: r.last })),
+    };
   }
 
   private rowToIssue(r: Record<string, unknown>): IssueRow {

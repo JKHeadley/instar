@@ -132,4 +132,21 @@ describe('Framework-issues routes (integration)', () => {
       expect(res.body.playbook).toHaveLength(0);
     });
   });
+
+  describe('GET /framework-issues/capture-stats', () => {
+    it('returns 503 when ledger unavailable', async () => {
+      const res = await request(appWith(null)).get('/framework-issues/capture-stats');
+      expect(res.status).toBe(503);
+    });
+
+    it('reports the capture funnel (runs vs observations) — including zero-finding runs', async () => {
+      ledger.captureRun({ framework: 'codex-cli', findings: [{ bucket: 'framework-limitation', title: 'A', dedupKey: 'a' }] });
+      ledger.captureRun({ framework: 'codex-cli', findings: [] }); // ran, found nothing
+      const res = await request(appWith(ledger)).get('/framework-issues/capture-stats');
+      expect(res.status).toBe(200);
+      expect(res.body.totalRuns).toBe(2);
+      expect(res.body.totalObservationsWritten).toBe(1);
+      expect(res.body.lastRanAt).toBeGreaterThan(0);
+    });
+  });
 });

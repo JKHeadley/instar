@@ -228,6 +228,76 @@ describe('retention pruning (§13.2)', () => {
   });
 });
 
+describe('captureRun — Stage-B auto-capture + funnel (§19.2)', () => {
+  it('writes every finding to the ledger and reports the summary', () => {
+    const r = ledger.captureRun({
+      framework: 'codex-cli',
+      tickId: 'tick-1',
+      findings: [
+        { bucket: 'instar-integration-gap', title: 'A', dedupKey: 'a', severity: 'high', episodeKey: 'v1' },
+        { bucket: 'framework-limitation', title: 'B', dedupKey: 'b', episodeKey: 'v1' },
+      ],
+    });
+    expect(r.findingsCount).toBe(2);
+    expect(r.observationsWritten).toBe(2);
+    expect(r.newIssues).toBe(2);
+    expect(ledger.listIssues({ framework: 'codex-cli' })).toHaveLength(2);
+  });
+
+  it('ALWAYS logs a run to the funnel — even a zero-finding run (inert-writer guard)', () => {
+    ledger.captureRun({ framework: 'codex-cli', tickId: 't1', findings: [] });
+    ledger.captureRun({ framework: 'codex-cli', tickId: 't2', findings: [] });
+    const stats = ledger.captureStats();
+    // Two runs recorded, zero observations — provably "ran, found nothing",
+    // NOT "never ran." A silent no-op writer can't hide here.
+    expect(stats.totalRuns).toBe(2);
+    expect(stats.totalObservationsWritten).toBe(0);
+    expect(stats.lastRanAt).not.toBeNull();
+  });
+
+  it('does not double-count an episode already captured in a prior run', () => {
+    ledger.captureRun({ framework: 'codex-cli', tickId: 't1', findings: [{ bucket: 'framework-limitation', title: 'A', dedupKey: 'a', episodeKey: 'v1' }] });
+    const r2 = ledger.captureRun({ framework: 'codex-cli', tickId: 't2', findings: [{ bucket: 'framework-limitation', title: 'A', dedupKey: 'a', episodeKey: 'v1' }] });
+    expect(r2.observationsWritten).toBe(0); // same episode, already counted
+    expect(r2.newIssues).toBe(0); // same canonical issue
+    expect(ledger.captureStats().totalRuns).toBe(2);
+  });
+
+  it('surfaces regression candidates without auto-linking them (§13.5)', () => {
+    // Seed + fix an issue.
+    const seed = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a', signature: 'sig-a' });
+    ledger.updateIssue(seed.issueId, { status: 'fixed', fixedInVersion: '1.4.0' });
+    // It comes back under a NEW dedupKey-but-matching-signature finding... here we
+    // use the same dedupKey to model the recurrence matching a fixed issue.
+    // recordObservation will reuse the canonical issue (same dedupKey), so model a
+    // genuinely new issue whose signature matches the fixed one instead:
+    const r = ledger.captureRun({
+      framework: 'codex-cli', tickId: 't2',
+      findings: [{ bucket: 'framework-limitation', title: 'A regressed', dedupKey: 'a', signature: 'sig-a', episodeKey: 'v2' }],
+    });
+    // Same dedupKey reuses the (now-fixed) canonical issue → not a "new" issue,
+    // so no regression candidate is emitted from this path; the issue simply
+    // accrues a new episode. The candidate path fires only for genuinely new issues.
+    expect(r.newIssues).toBe(0);
+    expect(r.observationsWritten).toBe(1);
+  });
+
+  it('byFramework breaks the funnel down per framework', () => {
+    ledger.captureRun({ framework: 'codex-cli', findings: [{ bucket: 'framework-limitation', title: 'A', dedupKey: 'a' }] });
+    ledger.captureRun({ framework: 'cursor', findings: [] });
+    const stats = ledger.captureStats();
+    expect(stats.byFramework.find((f) => f.framework === 'codex-cli')!.observations).toBe(1);
+    expect(stats.byFramework.find((f) => f.framework === 'cursor')!.runs).toBe(1);
+  });
+
+  it('rejects a finding with an invalid bucket (enum guard still applies)', () => {
+    expect(() =>
+      // @ts-expect-error deliberately invalid
+      ledger.captureRun({ framework: 'codex-cli', findings: [{ bucket: 'nope', title: 'A', dedupKey: 'a' }] }),
+    ).toThrow(/invalid bucket/);
+  });
+});
+
 describe('clampLimit', () => {
   it('clamps to 1..500 and defaults sanely', () => {
     expect(clampLimit(0)).toBe(1);

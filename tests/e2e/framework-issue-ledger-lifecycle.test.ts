@@ -115,4 +115,23 @@ describe('FrameworkIssueLedger E2E lifecycle (feature is alive)', () => {
     // The CapabilityIndex entry must appear and be enabled (ledger is wired in this boot).
     expect(body).toMatch(/framework-issues/);
   });
+
+  it('Stage-B auto-capture is alive: a capture run surfaces in the funnel route', async () => {
+    // Open a handle on the SAME db the server created, run a Stage-B capture
+    // (stands in for the mentor tick, §19.4), then verify the funnel route on
+    // the live server reflects it — proving the capture path is wired end-to-end.
+    const writer = new FrameworkIssueLedger({ dbPath: dbPath() });
+    writer.captureRun({
+      framework: 'codex-cli',
+      tickId: 'e2e-tick',
+      findings: [{ bucket: 'framework-limitation', title: 'observed in e2e', dedupKey: 'e2e::cap::1', severity: 'medium' }],
+    });
+    writer.captureRun({ framework: 'codex-cli', tickId: 'e2e-tick-2', findings: [] }); // ran, found nothing
+    writer.close();
+
+    const res = await request(app).get('/framework-issues/capture-stats').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.totalRuns).toBeGreaterThanOrEqual(2);
+    expect(res.body.totalObservationsWritten).toBeGreaterThanOrEqual(1);
+  });
 });
