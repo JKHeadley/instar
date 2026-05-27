@@ -210,6 +210,9 @@ describe('Feature Delivery Completeness', () => {
       'sentinelTelegramEscalation',                       // silently-stopped sentinel delivery gate
       'Sentinel Notifications (silently-stopped trio)',   // alternate heading phrase
       'Cross-Agent Communication Discipline (anti-confabulation)', // migrator-only behavioral guard, no template parity
+      'The "Threadline" hub topic — notifications',       // CMT-519 migrator-only notification-routing guidance, no template parity
+      'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
+      'Framework-Onboarding Mentor System',               // developer-layer issue-ledger observability; not a Codex/Gemini end-user capability (no shadow-marker parity)
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

@@ -56,6 +56,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
+import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector } from '../monitoring/BurnDetector.js';
 import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
@@ -80,6 +81,7 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
+  private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -420,6 +422,20 @@ export class AgentServer {
           maxFilesPerScan: 500,
           yieldEveryNFiles: 25,
         });
+        // Framework-Onboarding Mentor System issue ledger — read-only
+        // observability, signal-only (never gates). Instantiated here at
+        // startup so its two tables auto-create on first boot of this version
+        // (spec §14.3 — no schema migration needed). Lazy/best-effort: a
+        // failure leaves the /framework-issues routes returning 503, never
+        // blocking server startup.
+        try {
+          this.frameworkIssueLedger = new FrameworkIssueLedger({
+            dbPath: path.join(serverDataDir, 'framework-issue-ledger.db'),
+          });
+        } catch (err) {
+          console.warn('[instar] framework-issue-ledger init failed (non-fatal):', err);
+          this.frameworkIssueLedger = null;
+        }
       }
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
@@ -515,6 +531,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      frameworkIssueLedger: this.frameworkIssueLedger,
       sessionReaper: options.sessionReaper ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
