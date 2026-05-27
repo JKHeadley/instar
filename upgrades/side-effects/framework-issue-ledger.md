@@ -92,3 +92,11 @@ All three tiers, shipped in this PR (no "routes now, migration later"):
 - Tier 3 (e2e "feature is alive"): 5 tests — real AgentServer boot, DB auto-creates on production
   init path, routes 200-not-503, written observation surfaces end-to-end, 401 without auth.
 - Full push-config suite (vs JKHeadley/main): 3362 tests green, no regressions.
+
+## Post-push CI fix
+
+CI shard 1/4 caught `capabilities-discoverability.test.ts`: every registered route prefix must be
+classified in `src/server/CapabilityIndex.ts` (the test reads routes.ts via regex, not import, so
+vitest's `--changed` graph didn't link it locally). Classified `/framework-issues` as a read-only
+observability capability (mirrors the `tokens` entry, `enabled: !!ctx.frameworkIssueLedger`). No
+behavioral change — surfaces the read-only routes in `/capabilities`. 322 capability tests green.

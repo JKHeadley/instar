@@ -474,6 +474,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'frameworkIssues',
+    prefixes: ['/framework-issues'],
+    description: 'Framework-Onboarding Mentor System — read-only issue-ledger observability (never gates)',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.frameworkIssueLedger,
+      endpoints: [
+        'GET /framework-issues — bucket-tagged behavioral issues logged while onboarding a framework',
+        'GET /framework-issues/playbook?targetFramework=X — generalizable lessons from prior frameworks, impact-ranked',
+      ],
+    }),
+  },
+  {
     key: 'skipLedger',
     prefixes: ['/skip-ledger'],
     description: 'Skip-ledger — workload-aware idempotency',

@@ -107,4 +107,12 @@ describe('FrameworkIssueLedger E2E lifecycle (feature is alive)', () => {
     const res = await request(app).get('/framework-issues'); // no auth header
     expect(res.status).toBe(401);
   });
+
+  it('surfaces the framework-issues capability in /capabilities (discoverability)', async () => {
+    const res = await request(app).get('/capabilities').set(auth());
+    expect(res.status).toBe(200);
+    const body = JSON.stringify(res.body);
+    // The CapabilityIndex entry must appear and be enabled (ledger is wired in this boot).
+    expect(body).toMatch(/framework-issues/);
+  });
 });
