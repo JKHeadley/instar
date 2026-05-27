@@ -218,6 +218,8 @@ export class AgentServer {
     unjustifiedStopGate?: import('../core/UnjustifiedStopGate.js').UnjustifiedStopGate;
     /** Stop-gate SQLite persistence (PR3). */
     stopGateDb?: import('../core/StopGateDb.js').StopGateDb;
+    /** notify-on-stop Layer B — surfaces genuinely-stuck unattended stops. */
+    stopNotifier?: import('../monitoring/StopNotifier.js').StopNotifier | null;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
@@ -590,6 +592,7 @@ export class AgentServer {
       ledgerSessionRegistry: options.ledgerSessionRegistry ?? null,
       unjustifiedStopGate: options.unjustifiedStopGate ?? null,
       stopGateDb: options.stopGateDb ?? null,
+      stopNotifier: options.stopNotifier ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
       projectRoundRunner: options.projectRoundRunner ?? null,
       projectDriftChecker: options.projectDriftChecker ?? null,

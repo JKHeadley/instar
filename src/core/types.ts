@@ -2735,6 +2735,22 @@ export interface MonitoringConfig {
    * 2026-05-22 topic-spam flood. See docs/specs/silently-stopped-trio.md.
    */
   sentinelTelegramEscalation?: boolean;
+  /**
+   * notify-on-stop Layer B (docs/specs/NOTIFY-ON-STOP-SPEC.md). When the
+   * UnjustifiedStopGate (shadow/enforce) judges a stop unjustified-but-unblockable
+   * (`continue` in shadow) or ambiguous (`escalate`) for an UNATTENDED session,
+   * send the user one coalesced heads-up. Default enabled (Justin's explicit
+   * "tell me why it stopped"); attended-gate + per-session dedup keep it
+   * near-silent. Distinct from sentinelTelegramEscalation (housekeeping, default-off).
+   */
+  notifyOnStop?: {
+    /** Master gate. Default true. */
+    enabled?: boolean;
+    /** Only notify unattended (autonomous) sessions. Default true. */
+    unattendedOnly?: boolean;
+    /** Per-session dedup window (ms). Default 1800000 (30 min). */
+    cooldownMs?: number;
+  };
   /** LLM-powered stall triage nurse — intelligent session recovery */
   triage?: {
     enabled: boolean;
