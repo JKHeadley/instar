@@ -28,4 +28,12 @@ first message.
 
 Nothing to do — it's automatic. Next time you "open this" in the Threadline topic, the new
 topic shows up with a real name and a short summary of the conversation inside it, instead of
-an empty room. "Tie this to <existing topic>" is unchanged.
+an empty room. "Tie this to <existing topic>" is unchanged. (The topic takes a few seconds to
+appear while the summary is generated; if the model is slow you still get an instant plain brief.)
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| "Open this" topics are LLM-named + summarized | In the Threadline hub topic, say "open this" — the new topic gets an LLM-generated name and a summary of the conversation as its first message. Automatic; no command or flag. |
+| Always-contextful fallback | If the LLM can't run (timeout / daily cap / unwired), the new topic still gets a deterministic templated brief (peer · message count · last activity · latest line) instead of the old empty marker. The bind never fails on LLM trouble. |
