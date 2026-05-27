@@ -1,6 +1,6 @@
 ---
 name: Failure-Learning Analyzer
-description: Weekly scan of the failure ledger for dev-process patterns. Discovers support-and-diversity-thresholded insights, opens human-approved tracked improvements (never auto-implements), and runs the verify step on past fixes. Off by default — turns on with monitoring.failureLearning.enabled. Tier-1 supervised (this haiku job wraps the deterministic /failures/analyze endpoint and validates each surfaced insight against its evidence before posting). Spec: docs/specs/FAILURE-LEARNING-LOOP-SPEC.md §4.4/§4.6.1.
+description: "Weekly scan of the failure ledger for dev-process patterns. Discovers support-and-diversity-thresholded insights, opens human-approved tracked improvements (never auto-implements), and runs the verify step on past fixes. Off by default; turns on with monitoring.failureLearning.enabled. Tier-1 supervised (this haiku job wraps the deterministic /failures/analyze endpoint and validates each surfaced insight against its evidence before posting). Spec docs/specs/FAILURE-LEARNING-LOOP-SPEC.md sections 4.4 and 4.6.1."
 schedule: "0 9 * * 3"
 priority: medium
 expectedDurationMinutes: 2

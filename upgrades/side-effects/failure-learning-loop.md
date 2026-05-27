@@ -115,3 +115,11 @@ Builds the Failure-Learning Loop (instar-self-hosting dev-process forensics). Fi
 
 **Verified:** 147 tests green (all failure tests + capabilities lint + config defaults); typecheck clean.
 **Deferred → tracked fast-follow on the rollout board (justified, feature ships dark):** Process Health dashboard TAB (frontend; data fully exposed via the API + /capabilities); the ci/revert/regression/degradation ingestion sources (spec-deferred to later slices); a live server-tick alternative to the job (the job is the shipped trigger). Phase-1 boot E2E: the route integration tests exercise the real `createRoutes` production path (alive=200 / disabled=503) — the dedicated AgentServer-boot E2E is a tracked follow-up.
+
+### Commit 9 — CI-red fixes (PR #426)
+
+CI on PR #426 surfaced two issues the local targeted runs missed; both fixed:
+- **lint-no-direct-destructive (Type Check job):** AgentServer's `commitTouchedFiles` used a direct `execFileSync('git', ['show', ...])`. `git show` is read-only, but the lint bans ALL direct git execs. -> routed through **`SafeGitExecutor.readSync`** (the read-only funnel; `show` is a READONLY_GIT_VERB) + removed the `execFileSync` import. `npm run lint` exits 0 locally.
+- **builtin-jobs frontmatter parse (cascaded to all unit/e2e shards):** the `failure-analyzer.md` job `description:` contained an unquoted `Spec: ` — the colon-space made YAML read it as a nested mapping ("bad indentation 2:465"), breaking `migrateAsync`/`installBuiltinJobs` frontmatter parsing and failing every test that touches the migrator (incl. `tests/e2e/parity-primitives-lifecycle.test.ts:220`). -> quoted the description + removed inner colons. parity test 12/12 green; cascade clears.
+
+**Lesson (fits this very feature):** a malformed builtin-job description took down the whole suite — exactly the "shipped artifact, downstream failure" the Failure-Learning Loop is built to attribute. Local targeted runs passed because they didn't exercise the migrator's job-frontmatter parse; the full push-config suite (and CI) did.

@@ -12,7 +12,6 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
@@ -47,6 +46,7 @@ import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
@@ -491,8 +491,9 @@ export class AgentServer {
           },
           commitTouchedFiles: (oid) => {
             try {
-              const out = execFileSync('git', ['show', '--name-only', '--pretty=format:', oid], {
-                cwd: projectDir, encoding: 'utf8', timeout: 5000,
+              // Read-only git via the SafeGitExecutor funnel (lint-no-direct-destructive).
+              const out = SafeGitExecutor.readSync(['show', '--name-only', '--pretty=format:', oid], {
+                cwd: projectDir, operation: 'failure-learning:commit-touched-files',
               });
               return out.split('\n').map((s) => s.trim()).filter(Boolean);
             } catch { return []; }
