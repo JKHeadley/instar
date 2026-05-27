@@ -156,6 +156,8 @@ export class AgentServer {
     autonomousEvolution?: import('../core/AutonomousEvolution.js').AutonomousEvolution;
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
+    /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
+    leaseTransport?: { recordObserved: (lease: any) => void };
     whatsapp?: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter;
     slack?: import('../messaging/slack/SlackAdapter.js').SlackAdapter;
     imessage?: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter;
@@ -344,6 +346,9 @@ export class AgentServer {
           state: { jobs: [], sessions: [] },
         }),
         messageRouter: options.messageRouter ?? null,
+        onLeaseReceived: options.leaseTransport
+          ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
+          : undefined,
       });
       this.app.use(machineRoutes);
     }

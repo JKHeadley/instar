@@ -66,6 +66,7 @@ import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
 import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
+import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -2407,6 +2408,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Standalone agents don't have git repos unless the user opted into cloud backup.
     let gitSync: GitSyncManager | undefined;
     let registrySyncDebouncer: RegistrySyncDebouncer | undefined;
+    let leaseTransport: HttpLeaseTransport | undefined;
     const isGitRepo = fs.existsSync(path.join(config.projectDir, '.git'));
     const gitBackupEnabled = config.gitBackup?.enabled !== false;
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
@@ -2484,11 +2486,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
           logger: (m) => console.log(pc.dim(m)),
         });
+        // Lease wire transport (spec §6) — the low-latency authoritative copy
+        // travels over the existing authenticated machine channel. For a
+        // single-machine mesh (no peers) broadcast is a no-op and isReachable()
+        // stays true, so the lease behaves exactly as git-only. Multi-machine
+        // meshes get RTT-bounded acquisition + the renewal-requires-medium rule.
+        let leaseSeq = Date.now();
+        leaseTransport = new HttpLeaseTransport({
+          selfMachineId,
+          signingKeyPem: idMgr.loadSigningKey(),
+          peers: () => {
+            const reg = idMgr.loadRegistry();
+            return Object.entries(reg.machines ?? {})
+              .filter(([id, e]) => id !== selfMachineId && !!e.lastKnownUrl && !e.revokedAt)
+              .map(([id, e]) => ({ machineId: id, url: e.lastKnownUrl as string }));
+          },
+          nextSequence: () => ++leaseSeq,
+          reachabilityWindowMs: seamlessness.leaseTtlMs,
+          logger: (m) => console.log(pc.dim(m)),
+        });
         const leaseCoordinator = new LeaseCoordinator({
           lease: fencedLease,
           store: leaseStore,
-          // tunnel accelerator omitted for the launch increment (git-only is
-          // correct; tunnel transport tracked for the follow-on).
+          tunnel: leaseTransport,
           presumedDeadHolders: () => {
             const reg = idMgr.loadRegistry();
             const nowMs = Date.now();
@@ -8049,7 +8069,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

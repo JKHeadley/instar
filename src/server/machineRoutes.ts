@@ -48,6 +48,12 @@ export interface MachineRouteContext {
   onHandoffRequest?: () => Promise<{ ready: boolean; state?: unknown }>;
   /** Message router for cross-machine message relay */
   messageRouter?: MessageRouter | null;
+  /**
+   * Callback when a peer broadcasts its fenced lease over the wire (spec §6).
+   * Feeds the HttpLeaseTransport's recordObserved so the LeaseCoordinator can
+   * fold the low-latency copy into its effective-epoch view.
+   */
+  onLeaseReceived?: (lease: unknown, fromMachineId: string) => void;
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
@@ -57,6 +63,33 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const authMiddleware = machineAuthMiddleware(ctx.authDeps);
   const handoffChallenges = new ChallengeStore();
   const secretChallenges = new ChallengeStore();
+
+  // ── POST /api/lease — Receive a peer's fenced lease over the wire (spec §6) ──
+  // The low-latency authoritative copy. Auth-verified; the lease holder must
+  // match the authenticated machine (a peer cannot broadcast a lease naming a
+  // third machine). Fed to the HttpLeaseTransport via onLeaseReceived; FencedLease
+  // re-verifies the Ed25519 signature + epoch floor + nonce before trusting it.
+
+  router.post('/api/lease', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const lease = (req.body && (req.body as any).lease) as { holder?: string } | undefined;
+    if (!lease || typeof lease.holder !== 'string') {
+      res.status(400).json({ error: 'Invalid lease payload' });
+      return;
+    }
+    if (lease.holder !== auth.machineId) {
+      ctx.securityLog.append({
+        event: 'lease_holder_mismatch',
+        machineId: auth.machineId,
+        detail: `Lease holder ${lease.holder} != authenticated ${auth.machineId}`,
+      });
+      res.status(403).json({ error: 'Lease holder does not match authenticated machine' });
+      return;
+    }
+    ctx.onLeaseReceived?.(lease, auth.machineId);
+    res.json({ ok: true });
+  });
 
   // ── POST /api/heartbeat — Receive heartbeat from another machine ──
 
