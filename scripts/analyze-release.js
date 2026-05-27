@@ -37,6 +37,20 @@ const args = process.argv.slice(2);
 const JSON_ONLY = args.includes('--json');
 const RECOMMEND_ONLY = args.includes('--recommend-only');
 
+// --ref=<rev> selects the tip the analysis runs against (default HEAD).
+// Layer B of the release-readiness-visibility spec passes --ref=FETCH_HEAD so the
+// readiness check evaluates against canonical main, not the local checkout. The
+// default preserves the prepublish chain's behavior exactly (it never passes --ref).
+const REF = (() => {
+  const flag = args.find((a) => a === '--ref' || a.startsWith('--ref='));
+  if (!flag) return 'HEAD';
+  if (flag === '--ref') {
+    const idx = args.indexOf(flag);
+    return args[idx + 1] || 'HEAD';
+  }
+  return flag.slice('--ref='.length) || 'HEAD';
+})();
+
 function log(msg) {
   if (!JSON_ONLY) process.stderr.write(msg + '\n');
 }
@@ -53,16 +67,16 @@ function gitRead(args) {
 
 function getLastReleaseTag() {
   try {
-    return gitRead(['describe', '--tags', '--abbrev=0']).trim();
+    return gitRead(['describe', '--tags', '--abbrev=0', REF]).trim();
   } catch {
-    // No tags at all — diff against the initial commit
-    return gitRead(['rev-list', '--max-parents=0', 'HEAD']).trim();
+    // No tags at all — diff against the initial commit reachable from REF
+    return gitRead(['rev-list', '--max-parents=0', REF]).trim();
   }
 }
 
 function getCommitsSinceTag(tag) {
   try {
-    const raw = gitRead(['log', `${tag}..HEAD`, '--oneline', '--no-merges']);
+    const raw = gitRead(['log', `${tag}..${REF}`, '--oneline', '--no-merges']);
     return raw.trim().split('\n').filter(Boolean).map(line => {
       const [hash, ...rest] = line.split(' ');
       return { hash, message: rest.join(' ') };
@@ -74,7 +88,7 @@ function getCommitsSinceTag(tag) {
 
 function getDiffStat(tag) {
   try {
-    return gitRead(['diff', `${tag}..HEAD`, '--stat']).trim();
+    return gitRead(['diff', `${tag}..${REF}`, '--stat']).trim();
   } catch {
     return '';
   }
@@ -82,7 +96,7 @@ function getDiffStat(tag) {
 
 function getChangedFiles(tag) {
   try {
-    const raw = gitRead(['diff', `${tag}..HEAD`, '--name-status']);
+    const raw = gitRead(['diff', `${tag}..${REF}`, '--name-status']);
     return raw.trim().split('\n').filter(Boolean).map(line => {
       const [status, ...pathParts] = line.split('\t');
       return { status: status.charAt(0), file: pathParts.join('\t') };
@@ -94,7 +108,7 @@ function getChangedFiles(tag) {
 
 function getFileDiff(tag, file) {
   try {
-    return gitRead(['diff', `${tag}..HEAD`, '--', file]);
+    return gitRead(['diff', `${tag}..${REF}`, '--', file]);
   } catch {
     return '';
   }
