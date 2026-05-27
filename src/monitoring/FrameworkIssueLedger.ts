@@ -85,12 +85,16 @@ const SCHEMA = [
      fixed_in_version       TEXT,
      regressed_from_issue_id TEXT,
      playbook_status        TEXT NOT NULL DEFAULT 'none',
+     promoted_by            TEXT,
      wont_fix_reason        TEXT,
      related_spec           TEXT,
      probable_loop          INTEGER NOT NULL DEFAULT 0,
      created_at             INTEGER NOT NULL,
      updated_at             INTEGER NOT NULL
    )`,
+  // Idempotent migration for ledgers created by §19.1/§19.2 (v1.3.5–1.3.8) that
+  // predate promoted_by. Duplicate-column errors are swallowed in init (below).
+  `ALTER TABLE framework_issues ADD COLUMN promoted_by TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_fwissues_dedup ON framework_issues(framework, dedup_key)`,
   `CREATE INDEX IF NOT EXISTS idx_fwissues_framework_pb ON framework_issues(framework, playbook_status)`,
   `CREATE INDEX IF NOT EXISTS idx_fwissues_bucket ON framework_issues(bucket)`,
@@ -182,6 +186,8 @@ export interface IssueRow {
   fixedInVersion: string | null;
   regressedFromIssueId: string | null;
   playbookStatus: PlaybookStatus;
+  /** Non-Echo actor who attested the candidate→extracted promotion (§13.6). */
+  promotedBy: string | null;
   wontFixReason: string | null;
   relatedSpec: string | null;
   probableLoop: boolean;
@@ -297,7 +303,15 @@ export class FrameworkIssueLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('busy_timeout = 5000');
-    for (const ddl of SCHEMA) this.db.exec(ddl);
+    for (const ddl of SCHEMA) {
+      try {
+        this.db.exec(ddl);
+      } catch (err) {
+        // ALTER TABLE … ADD COLUMN throws if the column already exists; that's
+        // the idempotent-migration case. Swallow only that; rethrow anything else.
+        if (!/duplicate column name/i.test((err as Error).message || '')) throw err;
+      }
+    }
   }
 
   /** Stable list of frameworks the ledger has seen — for the route allowlist (spec §5/§17). */
@@ -514,6 +528,70 @@ export class FrameworkIssueLedger {
   }
 
   /**
+   * Promote an issue along the playbook lifecycle (spec §13.6):
+   *   none → candidate → extracted → superseded.
+   * `none → candidate` may be auto-suggested by Stage B (any actor). But
+   * `candidate → extracted` — the step that puts a lesson into the reusable
+   * onboarding checklist — REQUIRES a non-Echo attestation, so the playbook's
+   * contents are never end-to-end under the proposing agent's control. The
+   * attesting actor is recorded in `promoted_by`. Throws if Echo attempts the
+   * `extracted` promotion itself.
+   */
+  promotePlaybook(issueId: string, target: PlaybookStatus, promotedBy: string): IssueRow | null {
+    assertEnum(target, PLAYBOOK_STATUSES, 'playbookStatus');
+    const actor = sanitizeFreeText(promotedBy, 120).toLowerCase();
+    if (target === 'extracted' && (!actor || actor === 'echo')) {
+      throw new Error(
+        'FrameworkIssueLedger: candidate→extracted requires a non-Echo attestation (spec §13.6) — ' +
+          'the proposing agent cannot promote its own lessons into the playbook',
+      );
+    }
+    const txn = this.db.transaction((): IssueRow | null => {
+      const cur = this.db.prepare(`SELECT id FROM framework_issues WHERE id = ?`).get(issueId);
+      if (!cur) return null;
+      this.db
+        .prepare(`UPDATE framework_issues SET playbook_status = ?, promoted_by = ?, updated_at = ? WHERE id = ?`)
+        .run(target, target === 'extracted' ? actor : null, this.now(), issueId);
+      return this.getIssue(issueId);
+    });
+    return txn();
+  }
+
+  /** Bucket-distribution telemetry (spec §15) — surfaces attribution skew (a
+   *  sudden spike in `generic-agent-mistake` is the "blame the mentee" tell). */
+  observability(): {
+    bucketDistribution: Record<IssueBucket, number>;
+    leakSuspected: number;
+    probableLoops: number;
+    playbookExtracted: number;
+  } {
+    const buckets = this.db
+      .prepare(`SELECT bucket, COUNT(*) AS c FROM framework_issues GROUP BY bucket`)
+      .all() as Array<{ bucket: IssueBucket; c: number }>;
+    const dist: Record<IssueBucket, number> = {
+      'framework-limitation': 0,
+      'instar-integration-gap': 0,
+      'generic-agent-mistake': 0,
+    };
+    for (const b of buckets) if (b.bucket in dist) dist[b.bucket] = b.c;
+    const leak = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM framework_issues WHERE signature = 'stage-a-leak-suspected'`)
+      .get() as { c: number };
+    const loops = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM framework_issues WHERE probable_loop = 1`)
+      .get() as { c: number };
+    const extracted = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM framework_issues WHERE playbook_status = 'extracted'`)
+      .get() as { c: number };
+    return {
+      bucketDistribution: dist,
+      leakSuspected: leak.c,
+      probableLoops: loops.c,
+      playbookExtracted: extracted.c,
+    };
+  }
+
+  /**
    * Suggest a regression link: a new issue whose signature/dedupKey matches a
    * previously-`fixed` issue is a candidate regression (spec §13.5). Returns the
    * matching fixed issues (does NOT auto-link — review decides).
@@ -686,6 +764,7 @@ export class FrameworkIssueLedger {
       fixedInVersion: (r.fixed_in_version as string | null) ?? null,
       regressedFromIssueId: (r.regressed_from_issue_id as string | null) ?? null,
       playbookStatus: r.playbook_status as PlaybookStatus,
+      promotedBy: (r.promoted_by as string | null) ?? null,
       wontFixReason: (r.wont_fix_reason as string | null) ?? null,
       relatedSpec: (r.related_spec as string | null) ?? null,
       probableLoop: !!(r.probable_loop as number),

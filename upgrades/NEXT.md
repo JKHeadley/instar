@@ -1,47 +1,40 @@
 # Instar Upgrade Guide — NEXT
 
-<!-- bump: minor -->
+<!-- bump: patch -->
 
 ## What Changed
 
-**Framework-Onboarding Mentor System — the live mentor loop, shipped dormant (§19.4).** This wires
-the previous three pieces (ledger, auto-capture, Stage-A boundary) into one heartbeat: a pure tick
-that runs a leak-detector canary, a fail-closed budget gate, and a durable safe-window check, then
-spawns a constrained sub-agent (empty tool grant) to drive the mentee as the user, runs the leak
-detector on the transcript, runs Stage-B forensics, and captures findings to the ledger funnel. The
-orchestration is a pure function with every side-effect injected, so the structural guarantees live
-in code, not a prompt. A new built-in job (`mentor-onboarding`, off by default) is a thin timer that
-pokes `POST /mentor/tick`; the real work runs in-process.
+**Framework-Onboarding Mentor System — playbook promotion + observability (§19.5).** The final
+buildable-while-dormant piece. Adds the playbook lifecycle (`none → candidate → extracted →
+superseded`) with a **non-Echo attestation gate**: the mentor can flag a lesson as a candidate, but
+it cannot promote its own lesson into the reusable onboarding checklist — `candidate → extracted`
+requires a non-Echo party to attest, and who attested is recorded. This is the structural anti-gaming
+guard that keeps the playbook from being end-to-end under the proposing agent's control. Also adds an
+adversarial-telemetry read-out: bucket-distribution (a spike in "blame the mentee" is the tell),
+leak-suspected count, probable-loop count, and how many lessons reached the playbook.
 
-It ships **dormant**: `mentor.enabled=false` / `mode='off'`, so `POST /mentor/tick` returns
-`{ran:false, reason:'disabled'}` and nothing spawns, spends, or contacts anyone. There is no
-mentee-delivery path wired yet — promotion off → dry-run → live (with the documented live-promotion
-blockers closed first) is the human's, via the graduated-rollout track.
+Two new read-only routes; the `promoted_by` column migrates forward on existing ledgers via an
+idempotent `ALTER TABLE`. Still part of the dormant mentor system — nothing activates.
 
 ## What to Tell Your User
 
-- The mentor's full loop now exists end-to-end but is switched off — it can't act until you turn it
-  on, and even then it starts in an observe-only dry-run.
-- When you do enable it, it refuses to run under budget pressure or while anything else is working,
-  checks its own leak-detector is alive before every tick, and logs every run so it can't quietly
-  break.
+- The mentor can now nominate a lesson for the reusable checklist, but it can't graduate its own
+  lessons — that needs a sign-off from someone other than the mentor, and the system records who.
+- There's a one-glance read-out of the issue mix and the safety counters (leak hits, runaway-loop
+  flags), so drift is visible.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Mentor status | `curl -H "Authorization: Bearer $AUTH" http://localhost:<port>/mentor/status` — mode + mentee framework (off by default) |
-| Mentor tick | `POST /mentor/tick` — runs one heartbeat (`{ran:false,reason:"disabled"}` until enabled) |
-| Built-in mentor job | `mentor-onboarding` (ships `enabled:false`) — heartbeat that pokes the tick |
-| `mentor.*` config | `.instar/config.json` — `enabled`, `mode` (off/dry-run/live), `minIntervalMs`, `maxRoundsPerDay` |
+| Playbook promotion | `POST /framework-issues/:id/promote` `{status, promotedBy}` — `extracted` requires a non-Echo attester |
+| Observability telemetry | `curl -H "Authorization: Bearer $AUTH" http://localhost:<port>/framework-issues/observability` — bucket distribution + leak/loop/extracted counts |
 
 ## Evidence
 
-Net-new feature, not a bug fix — no prior failure to reproduce. Behavior is proven by tests: 8 unit
-tests assert the load-bearing gate ORDER (canary → budget → safe-window → Stage A → leak → Stage B →
-capture) and that a **fail-closed budget skip happens before any spawn or contact**; 6 runner tests
-prove the dormant short-circuit (disabled config → no work) and the busy/min-interval safe-window;
-4 integration tests cover the routes; and 5 e2e tests boot the real server and confirm `/mentor/tick`
-is dormant on the production init path and the job template ships `enabled:false`. A dedicated
-second-pass reviewer independently audited the spawn/gating logic (concur, 0 blocking concerns).
-Affected push-config suite green (3431 + 300 capability tests) vs canonical main.
+Net-new feature, not a bug fix — no prior failure to reproduce. The non-Echo gate is proven on both
+sides: a unit test asserts `candidate→extracted` is **refused when the attester is `echo` or empty**
+(throws "non-Echo attestation required") and **allowed + records `promoted_by`** for a non-Echo actor;
+an integration test confirms the same over HTTP (400 for Echo, 200 + `promotedBy` for a non-Echo
+attester). Observability counts are asserted against a seeded ledger. 11 new tests; affected
+push-config suite green vs canonical main; route docs-coverage 56% ≥ 55% floor.

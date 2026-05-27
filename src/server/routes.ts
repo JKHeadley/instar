@@ -4254,6 +4254,37 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.frameworkIssueLedger.captureStats());
   });
 
+  router.get('/framework-issues/observability', (_req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    // Adversarial telemetry (§15): bucket-distribution skew, leak-suspected and
+    // probable-loop counts, playbook-extracted count. Read-only signal.
+    res.json(ctx.frameworkIssueLedger.observability());
+  });
+
+  router.post('/framework-issues/:id/promote', (req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    const target = typeof req.body?.status === 'string' ? req.body.status : '';
+    const promotedBy = typeof req.body?.promotedBy === 'string' ? req.body.promotedBy : '';
+    try {
+      // candidate→extracted requires a non-Echo attestation (§13.6); the ledger
+      // throws if Echo attempts to promote its own lesson into the playbook.
+      const updated = ctx.frameworkIssueLedger.promotePlaybook(req.params.id, target as never, promotedBy);
+      if (!updated) {
+        res.status(404).json({ error: 'issue not found' });
+        return;
+      }
+      res.json(updated);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Mentor-onboarding job (§19.4) — dormant by default ──
   router.get('/mentor/status', (_req, res) => {
     if (!ctx.mentorRunner) {

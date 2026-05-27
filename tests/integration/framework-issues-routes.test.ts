@@ -133,6 +133,40 @@ describe('Framework-issues routes (integration)', () => {
     });
   });
 
+  describe('GET /framework-issues/observability (§15)', () => {
+    it('503 when unavailable; 200 with telemetry when wired', async () => {
+      expect((await request(appWith(null)).get('/framework-issues/observability')).status).toBe(503);
+      ledger.recordObservation({ framework: 'codex-cli', bucket: 'generic-agent-mistake', title: 'A', dedupKey: 'a' });
+      const res = await request(appWith(ledger)).get('/framework-issues/observability');
+      expect(res.status).toBe(200);
+      expect(res.body.bucketDistribution['generic-agent-mistake']).toBe(1);
+    });
+  });
+
+  describe('POST /framework-issues/:id/promote (§13.6 non-Echo gate)', () => {
+    it('rejects candidate→extracted by Echo (400)', async () => {
+      const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a' });
+      ledger.promotePlaybook(r.issueId, 'candidate', 'echo');
+      const res = await request(appWith(ledger)).post(`/framework-issues/${r.issueId}/promote`).send({ status: 'extracted', promotedBy: 'echo' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/non-Echo/);
+    });
+
+    it('allows candidate→extracted with a non-Echo attester (200)', async () => {
+      const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a' });
+      ledger.promotePlaybook(r.issueId, 'candidate', 'echo');
+      const res = await request(appWith(ledger)).post(`/framework-issues/${r.issueId}/promote`).send({ status: 'extracted', promotedBy: 'justin' });
+      expect(res.status).toBe(200);
+      expect(res.body.playbookStatus).toBe('extracted');
+      expect(res.body.promotedBy).toBe('justin');
+    });
+
+    it('404 for an unknown issue', async () => {
+      const res = await request(appWith(ledger)).post('/framework-issues/nope/promote').send({ status: 'candidate', promotedBy: 'x' });
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('GET /framework-issues/capture-stats', () => {
     it('returns 503 when ledger unavailable', async () => {
       const res = await request(appWith(null)).get('/framework-issues/capture-stats');

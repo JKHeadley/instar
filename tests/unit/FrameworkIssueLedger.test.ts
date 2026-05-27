@@ -298,6 +298,58 @@ describe('captureRun — Stage-B auto-capture + funnel (§19.2)', () => {
   });
 });
 
+describe('promotePlaybook — non-Echo gate (§13.6, §19.5)', () => {
+  it('allows none→candidate by any actor (auto-suggestable)', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'A', dedupKey: 'a' });
+    const updated = ledger.promotePlaybook(r.issueId, 'candidate', 'echo');
+    expect(updated!.playbookStatus).toBe('candidate');
+    expect(updated!.promotedBy).toBeNull(); // only 'extracted' records the attester
+  });
+
+  it('REFUSES candidate→extracted by Echo (proposer cannot promote its own lesson)', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a' });
+    ledger.promotePlaybook(r.issueId, 'candidate', 'echo');
+    expect(() => ledger.promotePlaybook(r.issueId, 'extracted', 'echo')).toThrow(/non-Echo attestation/);
+    expect(() => ledger.promotePlaybook(r.issueId, 'extracted', '')).toThrow(/non-Echo attestation/);
+  });
+
+  it('allows candidate→extracted with a non-Echo attestation and records who', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a' });
+    ledger.promotePlaybook(r.issueId, 'candidate', 'echo');
+    const updated = ledger.promotePlaybook(r.issueId, 'extracted', 'justin');
+    expect(updated!.playbookStatus).toBe('extracted');
+    expect(updated!.promotedBy).toBe('justin');
+  });
+
+  it('rejects an invalid playbook status', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a' });
+    // @ts-expect-error deliberately invalid
+    expect(() => ledger.promotePlaybook(r.issueId, 'banana', 'justin')).toThrow(/invalid playbookStatus/);
+  });
+
+  it('returns null for an unknown issue', () => {
+    expect(ledger.promotePlaybook('nope', 'candidate', 'echo')).toBeNull();
+  });
+});
+
+describe('observability — adversarial telemetry (§15, §19.5)', () => {
+  it('reports bucket distribution, leak-suspected, probable-loop, and extracted counts', () => {
+    ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'a' });
+    ledger.recordObservation({ framework: 'codex-cli', bucket: 'generic-agent-mistake', title: 'B', dedupKey: 'b' });
+    ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'leak', dedupKey: 'c', signature: 'stage-a-leak-suspected' });
+    const ext = ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'big', dedupKey: 'd' });
+    ledger.promotePlaybook(ext.issueId, 'candidate', 'echo');
+    ledger.promotePlaybook(ext.issueId, 'extracted', 'justin');
+
+    const o = ledger.observability();
+    expect(o.bucketDistribution['framework-limitation']).toBe(1);
+    expect(o.bucketDistribution['generic-agent-mistake']).toBe(1);
+    expect(o.bucketDistribution['instar-integration-gap']).toBe(2);
+    expect(o.leakSuspected).toBe(1);
+    expect(o.playbookExtracted).toBe(1);
+  });
+});
+
 describe('clampLimit', () => {
   it('clamps to 1..500 and defaults sanely', () => {
     expect(clampLimit(0)).toBe(1);
