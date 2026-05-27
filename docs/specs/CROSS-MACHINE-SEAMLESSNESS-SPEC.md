@@ -43,15 +43,25 @@ The whole spec serves these. Each gap and design choice traces back to one.
 - **US2 — Same agent across my machines.** *As a user (e.g. Adriana) who works on two machines, it's the same agent on both — same conversation, same half-finished task, same context — so I can switch machines and not miss a beat.*
 - **US3 — Reliability that's felt, not seen.** *As a user, I just experience an agent that's always there and always coherent; the fact that it spans several machines is invisible. More machines should mean more reliability, never more noise or more confusion.*
 
+### The realistic bar: "no worse than a compaction pause or a fresh-session catch-up"
+
+We are explicitly **not** chasing magically-perfect, zero-latency seamlessness. A machine handoff is the same *kind* of moment users already accept in two existing places: (a) the agent pausing to **compact**, and (b) messaging a topic where a **fresh session spins up and gets up to speed**. Nobody expects those to be invisible — they expect them quick, and to resume knowing what's going on. That is exactly the bar for a handoff. This lets us reuse the catch-up machinery we already trust (compaction-recovery, the CONTINUATION mechanism) rather than build a fragile always-streaming pipe.
+
+The goal is therefore: **carry over as much fresh handoff context as possible, and degrade gracefully when we can't.** Two flavors, two expectations:
+
+- **Planned handoff** (both machines awake; one passes the baton): near-instant, full context flushed across cleanly.
+- **Hard failover** (a machine crashes, or the internet drops mid–live-test): best-effort. The backup resumes from the last good sync — it may miss the last few seconds of in-flight context, exactly like a session that crashed and recovered. We explicitly do **not** over-engineer to guarantee perfection in this rare worst case.
+
 ### What "seamless" means, measured from the channel (acceptance criteria)
 
-These are the user-facing pass/fail bars — the real Phase-0-style gate, observed on the channel, not in the code:
+User-facing pass/fail bars, observed on the channel, not in the code:
 
-1. **No lost messages.** Every Telegram message the user sends during/around a handoff is processed exactly once.
-2. **No duplicate replies.** The user never receives the same answer twice (a real, recurring instar failure mode — see drain-respawn / gate-latency duplicates). Only one machine "owns" the channel at a time.
-3. **Context retained.** The first reply from the new machine demonstrates knowledge of the immediately-preceding exchange — no generic greeting, no "what were we talking about?" (honors the existing CONTINUATION discipline, now cross-machine).
-4. **No perceptible seam.** The pause the user experiences during a handoff stays under a tunable bound (default target: indistinguishable from a normal "agent is thinking" delay).
+1. **No lost messages.** Every message the user sends during/around a handoff is processed exactly once. *(Hard guarantee, both flavors — this is the one we don't compromise.)*
+2. **No duplicate replies.** The user never receives the same answer twice (a real, recurring instar failure mode — see drain-respawn / gate-latency duplicates). Only one machine "owns" the channel at a time. *(Hard guarantee, both flavors.)*
+3. **Maximal context, no fresh-start.** The first reply from the new machine reflects the conversation as of the last sync — no generic greeting, no "what were we talking about?" In a planned handoff this is fully current; in a hard failover it is as-of-last-sync (the compaction/continuation bar). *(Best-effort, bounded by sync freshness.)*
+4. **Pause no worse than a compaction / fresh-session catch-up.** A brief, recognizable "getting up to speed" moment is acceptable; an open-ended hang or silent drop is not. Tunable (see §6).
 5. **Channel identity follows the agent.** The channel's thread/conversation binding (Telegram topic, Slack channel+thread, etc.) moves with the agent, so replies land in the same conversation regardless of which machine produced them.
+6. **Machine-awareness.** The agent always knows which machine served the last turn and that a handoff occurred. This is cheap, lets the agent be honest when context is partial ("picking this up from the other machine"), and feeds per-machine self-knowledge (each machine tracking what is specific to it).
 
 ### Channel-agnostic by design (Telegram is the default, not the spec)
 
@@ -94,6 +104,8 @@ This spec is not theoretical. On 2026-05-26 the multi-machine system was run on 
 - **Near-silent.** Sync and reconciliation are housekeeping. They write to logs/audit trails, not to the user's chat. The user hears about cross-machine activity only when it is actionable (e.g. an unresolvable split-brain requiring a decision).
 - **Tunable latency vs. efficiency** (explicit Justin requirement). Seamlessness has a cost (network, compute, git churn). Every cadence/aggressiveness knob is configurable with sane defaults; "more machines = more reliable" must not mean "more machines = constant chatter."
 - **Git as durable substrate, tunnel as low-latency channel.** Reuse the proven git sync for durable state; add a direct tunnel channel only where latency demands it (the live conversation tail).
+- **Reuse the catch-up model, don't reinvent.** A handoff is the cross-machine generalization of compaction-recovery and fresh-session continuation. The receiving machine resumes via the existing **CONTINUATION** mechanism, and the user-facing bar is "no worse than a compaction pause." We do not build a fragile always-streaming pipe to chase perfect seamlessness — best-effort context + graceful degradation is the explicit, accepted design point.
+- **Machine-aware by default.** The agent records which machine served each turn (provenance, in synced state) and knows when it is resuming someone else's turn. Cheap, and it underpins honest "picking this up from the other machine" behavior plus per-machine self-knowledge.
 
 ---
 

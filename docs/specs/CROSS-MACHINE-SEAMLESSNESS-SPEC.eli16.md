@@ -16,6 +16,17 @@ Picture one employee — call her Luna — who has a desk in two offices. You sh
 
 Everything in this spec exists to deliver that experience. The plumbing is just the means.
 
+## The honest bar (your nudge): "as smooth as a compaction pause," not magic
+
+You pushed back on the word *seamless*, and you were right — chasing magically-perfect, zero-gap invisibility is where you'd over-build. So here's the honest yardstick we're actually holding ourselves to: a machine handoff should feel **no worse than two things the agent already does that you're used to** — pausing to *compact* (tidy up its memory), or spinning up a *fresh session* when you message a quiet topic and it takes a beat to get up to speed. Nobody expects those to be invisible. They expect them to be quick and to come back knowing what's going on. That's exactly the bar for a handoff. The nice bonus: that means we reuse the catch-up machinery we already trust, instead of building a fragile new "always-live wire" between machines just to chase perfection.
+
+So the goal isn't "perfectly invisible" — it's **carry over as much fresh context as we possibly can, and degrade gracefully when we can't.** And there are really two flavors of handoff, with two fair expectations:
+
+- **Planned hand-off** (both machines awake, one politely passes the baton): near-instant, full context goes across cleanly. This is the smooth case.
+- **Hard failover** (a machine crashes, or the internet drops while you're in the middle of a live test): best-effort. The backup picks up from the last good save — it might miss the last few seconds, exactly like a session that crashed and recovered. We *deliberately don't* twist ourselves into knots trying to make that rare worst-case perfect. If you were running live development tests when a machine's internet dropped mid-handoff, a tiny gap is honest and fine.
+
+**And one thing you specifically asked for: the agent always knows which machine it was just on, and that a handoff happened.** It's cheap, and it lets the agent be upfront — "picking this back up from the other machine" — when its context is a little behind, instead of pretending nothing changed. It also feeds the idea you raised early on, that each machine can know what's specific to it.
+
 ### The user stories driving it
 
 - **Failover mid-chat:** the machine serving me dies, I keep texting, I notice nothing.
@@ -59,4 +70,4 @@ How an agent *installs itself* onto a new machine in the first place (the SSH-an
 
 ## Bottom line
 
-The foundation is real and works. The "seamless" part is now three clearly-defined pieces instead of a vague wish — and we know they're the right three because we watched the system miss exactly those on real hardware.
+The foundation is real and works. The "seamless" part is now three clearly-defined pieces instead of a vague wish — and we know they're the right three because we watched the system miss exactly those on real hardware. And thanks to your nudge, the bar is now honest: a handoff should feel no worse than a compaction pause or a fresh-session catch-up — quick, and back up to speed — not a magic trick we'd over-engineer chasing.
