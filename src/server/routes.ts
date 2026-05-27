@@ -660,6 +660,10 @@ export interface RouteContext {
    *  the evaluate route will still produce a response, just without
    *  persistence. */
   stopGateDb: StopGateDb | null;
+  /** notify-on-stop Layer B — surfaces a genuinely-stuck unattended stop to the
+   *  user (coalesced via SentinelNotifier). Null when telegram isn't wired; the
+   *  evaluate route simply skips the notice. */
+  stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null;
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
@@ -1640,6 +1644,10 @@ export function createRoutes(ctx: RouteContext): Router {
     const eventId = cryptoRandomUUID();
     const ts = Date.now();
     const reasonPreview = (body.untrustedContent.stopReason ?? '').slice(0, 200);
+    // notify-on-stop Layer B: whether the stopping session is unattended
+    // (autonomous). Used only to gate the user-facing notice (StopNotifier);
+    // never affects the gate decision itself.
+    const autonomousActive = getHotPathState({ sessionId: sessionId || undefined }).autonomousActive;
 
     // Kill-switch or mode=off: short-circuit to allow, no authority
     // call, no event logged (caller already knows not to call us here,
@@ -1819,6 +1827,15 @@ export function createRoutes(ctx: RouteContext): Router {
         rule: r.rule,
         reminder,
         latencyMs: r.latencyMs,
+      });
+      // notify-on-stop Layer B: surface a genuinely-stuck unattended stop to the
+      // user. No-ops for non-worthy decisions, attended sessions, and recent
+      // dups — see StopNotifier. Fire-and-forget; never affects the response.
+      ctx.stopNotifier?.maybeNotify({
+        sessionId,
+        mode,
+        decision: r.decision,
+        autonomousActive,
       });
     } else {
       // Fail-open: allow. Log with the failure kind so guardian-pulse

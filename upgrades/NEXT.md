@@ -8,7 +8,7 @@ Notify-on-stop, Layer B: when the Unjustified Stop Gate judges a stop unjustifie
 
 Tightly bounded to stay near-silent: only those two genuinely-stuck decision classes, only unattended sessions, at most once per session per 30 minutes, coalesced onto the single system (lifeline) topic. Routine turn-ends, blocked-and-continued stops, and transient fail-opens stay silent. Default ON (Justin's explicit "tell me why it stopped"); disable with `monitoring.notifyOnStop.enabled=false`.
 
-Pairs with Layer A (autonomous-run terminal-exit notices, shipped in #437). Together: a session either keeps going, or the user is told why it stopped.
+Pairs with Layer A (autonomous-run terminal-exit notices). Together: a session either keeps going, or the user is told why it stopped.
 
 ## What to Tell Your User
 
@@ -24,5 +24,5 @@ Pairs with Layer A (autonomous-run terminal-exit notices, shipped in #437). Toge
 
 - `src/monitoring/StopNotifier.ts` (decision matrix + attended-gate + dedup); wired via `src/server/routes.ts` (evaluate route), `src/commands/server.ts` (construction), `src/server/AgentServer.ts` (forward).
 - Config: `monitoring.notifyOnStop` in `src/core/types.ts`.
-- Tests: `tests/unit/StopNotifier.test.ts` (21 — both sides of every decision boundary, gates, dedup) + `tests/unit/stop-notifier-wiring.test.ts` (6 — no dead code).
+- Tests: `tests/unit/StopNotifier.test.ts` (21) + `tests/unit/stop-notifier-wiring.test.ts` (6).
 - Spec: `docs/specs/NOTIFY-ON-STOP-SPEC.md` (approved). Side-effects: `upgrades/side-effects/notify-on-stop-layer-b.md`.

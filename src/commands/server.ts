@@ -7508,6 +7508,48 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Unjustified Stop Gate: ${activeMode}${unjustifiedStopGate && stopGateDb ? ' (authority + SQLite wired)' : ' (degraded, fail-open)'}`));
     }
 
+    // notify-on-stop Layer B — surface a genuinely-stuck UNATTENDED stop to the
+    // user (docs/specs/NOTIFY-ON-STOP-SPEC.md). The evaluate route feeds each
+    // decision to StopNotifier, which filters to the notify-worthy classes
+    // (shadow+continue / escalate), the attended-gate, and per-session dedup,
+    // then hands a coalesced one-liner to a dedicated SentinelNotifier sink
+    // (single lifeline topic, log-always — reuses the post-2026-05-22 discipline).
+    // Default ON (Justin's "tell me why it stopped"); requires telegram wired.
+    let stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null = null;
+    {
+      const nosCfg = config.monitoring?.notifyOnStop ?? {};
+      const nosEnabled = nosCfg.enabled !== false; // default true
+      const localTg = telegram;
+      if (nosEnabled && localTg) {
+        const stopLogPath = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+        const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
+          try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
+        };
+        const send = async (text: string): Promise<boolean> => {
+          const topicId = localTg.getLifelineTopicId();
+          if (!topicId) return false;
+          try { await localTg.sendToTopic(topicId, text); return true; } catch { return false; }
+        };
+        const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
+        const stopSink = new SentinelNotifier(
+          { log: stopLog, sendConsolidated: send },
+          { telegramEscalation: true }, // notify-on-stop is default-on by design
+        );
+        const { StopNotifier } = await import('../monitoring/StopNotifier.js');
+        stopNotifier = new StopNotifier(
+          { escalate: (name, text) => stopSink.escalate('stop-gate', name, text) },
+          {
+            enabled: true,
+            unattendedOnly: nosCfg.unattendedOnly !== false,
+            ...(typeof nosCfg.cooldownMs === 'number' ? { cooldownMs: nosCfg.cooldownMs } : {}),
+          },
+        );
+        console.log(pc.green('  notify-on-stop Layer B: enabled (unjustified-stall heads-up — unattended-only, deduped, coalesced)'));
+      } else {
+        console.log(pc.dim(`  notify-on-stop Layer B: ${nosEnabled ? 'idle (no telegram)' : 'disabled by config'}`));
+      }
+    }
+
     // Response Review Pipeline (Coherence Gate) — evaluates agent responses before delivery.
     // Prefers the shared IntelligenceProvider (subscription-compatible) so the gate works
     // even without ANTHROPIC_API_KEY. Falls back to direct Anthropic API if a key is set
@@ -8049,7 +8091,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
