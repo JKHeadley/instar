@@ -18,9 +18,27 @@ The tricky bit is connecting "the thing that broke today" back to "the thing we 
 
 We don't build a whole new system from scratch. Two things we already have do most of the work. The initiative board already remembers which spec and which code-change each feature came from — so a failure just attaches to the right card. And every time we change Instar's own code, the rules already force us to leave a little receipt of what we did. We just make that receipt also note *which build tool and which review steps* were used. That one small addition is what makes it possible to later say "features built with tool A break more than features built with tool B" — which is exactly what we need, because we're about to have different build tools for different kinds of work.
 
-## What you'll actually notice
+## How it reaches you (three ways, loudest last)
 
-Mostly nothing day to day — it works quietly in the background, like the rollout board does. But when enough has piled up, you'll get an occasional, calm heads-up: "we've now seen this kind of bug five times, and they all share this one thing about how we built them — here's a concrete way to tighten the process." It never blocks anyone, never grades anyone, and never changes the process on its own. It just makes the blind spots visible so you can decide what to fix. Over time, the whole point is simple: we build with fewer failures because we finally remember the ones we had.
+You shouldn't have to go digging, so there are three channels, deliberately ordered from quietest to most attention-grabbing:
+
+1. **The dashboard, a new "Process Health" tab** — the full picture you can browse whenever you want, from your phone or laptop: every failure, what caused it, which tools built it, the trends, and the standing recommendations with a clear "did this fix actually work?" marker next to each. This is the calm, look-when-you-like view.
+2. **A dedicated "Process Insights" chat topic** — its own quiet channel where I post *only* when a real insight is discovered. Not a ping for every bug — just "here's a pattern worth knowing, with the evidence." One tidy message, nothing routine. This is the "tell me when you learn something" channel you asked for.
+3. **The attention list** — only when an insight has become an actual decision waiting on you ("want me to tighten this part of the process?"), so it doesn't get lost in chat scroll.
+
+Everything noisy stays on the pull surface; only the genuinely worth-knowing gets pushed. Same anti-spam discipline we've been holding everywhere.
+
+## The full loop — and why it's a loop, not a suggestion box
+
+This is the part that makes it real. A suggestion box just collects complaints. This closes the circle:
+
+- **Track** the failure (automatic).
+- **Discover** the pattern (automatic, only with enough evidence).
+- **Implement** — when a pattern is solid, the system automatically opens a tracked to-do for the fix so it can't be forgotten — but it *never* changes the process on its own; you approve turning it into a real change.
+- **Deploy** the approved fix through the exact same build-and-rollout path everything else uses (including the rollout board we just built, so it matures safely).
+- **Verify** — and this is the kicker — afterward the system checks whether that kind of failure *actually went down*. If it did, great, the lesson is confirmed. If it didn't, it reopens the issue and says so out loud instead of quietly assuming it worked. And if the fix itself ever breaks, that gets tracked too — the loop even watches its own repairs.
+
+So it's an honest, unbroken line: failure → insight → approved change → deployment → proof it helped. Over time the whole point is simple: we build with fewer failures because we finally remember the ones we had — and we only trust a fix once the numbers agree.
 
 ## How careful we're being
 

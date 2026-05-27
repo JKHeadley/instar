@@ -132,15 +132,27 @@ A periodic analyzer (a **sibling** builtin job, *not* folded into the twice-week
 - **category** distribution and **mean-time-to-failure-after-merge**
 - the **`unknown`-toolchain** bucket size (pre-v3 traces) — itself a signal of how much history we can't yet attribute
 
-It emits **findings** → the learning registry (`addLearning`) + a **near-silent** digest/attention item *only when a trend crosses a support+effect threshold*. Example finding: "5 of 6 concurrency regressions this month were in features whose convergence ran a single iteration — recommend the adversarial reviewer get a concurrency-specific checklist." 
+It emits **findings** → the learning registry (`addLearning`) and out to the feedback channels in §4.5 *only when a trend crosses a support+effect threshold*. Example finding: "5 of 6 concurrency regressions this month were in features whose convergence ran a single iteration — recommend the adversarial reviewer get a concurrency-specific checklist." 
 
 - **Small-N honesty (mandatory):** the analyzer reports counts + a confidence band and **must not escalate a "pattern" below a minimum support count** (default `minSupport: 4`, configurable). Two data points never become a recommendation. This is the dual of the §4.3 attribution-honesty rule.
 - **Signal vs authority:** the analyzer *detects and recommends*; it never blocks a merge, never grades a person, never auto-edits a skill. Process changes stay a human decision. (Matches `feedback_signal_vs_authority`, `feedback_notifications_near_silent`.)
 
-### 4.5 Fits Projects + discoverability (Justin's explicit asks)
+### 4.5 How it feeds back to the user — three layered channels (Justin's explicit asks)
 
-- **Projects:** FailureRecords roll up to the owning project via `initiative.parentProjectId`; a project's status view can show its failure history. It sits *inside* Projects, not beside it (same requirement Graduated Rollout honored).
-- **Discoverability:** new routes `GET /failures` (filterable), `GET /failures/:id`, `POST /failures` (one-tap), `GET /failures/analysis`. Surfaced in `/capabilities` and the Registry-First table so "why do features keep breaking?" / "what's our failure rate by build skill?" routes me to `/failures/analysis`, never to memory. CLAUDE.md template + agent-awareness section updated (Agent Awareness Standard).
+The feedback surfaces follow the near-silent standard strictly: **detail lives on a pull surface; only thresholded, decision-bearing insights are pushed; nothing routine ever buzzes the user.** Three channels, by increasing push-aggressiveness:
+
+1. **Dashboard — "Process Health" tab (PULL, full detail).** A new dashboard tab where Justin browses freely:
+   - **Ledger view** — every FailureRecord, filterable by feature / project / build-skill / review-config / category / attribution status / time window.
+   - **Analysis view** — failure-rate-by-toolchain (which build skill, which review configuration), category distribution, mean-time-to-failure-after-merge, and the size of the `unknown`-toolchain bucket.
+   - **Insights board** — the standing recommendations and, critically, **each one's loop status** (discovered → acted-on-via-initiative-X → verified-it-worked / didn't, per §4.9). This is the at-a-glance "is our process actually getting better?" view.
+   - Mobile-responsive like the rest of the dashboard, reachable via tunnel; backed by the same `/failures*` routes.
+
+2. **Dedicated "Process Insights" Telegram topic (PUSH, near-silent).** A single, calm, browsable topic (the **Threadline-hub pattern**, NOT a topic-per-event) where the analyzer posts **only** a freshly-discovered, support-thresholded insight — never a per-failure ping, never routine status. Coalesced into one message per analysis run. This is the "an insight was discovered" channel Justin asked for, and it is the *only* thing that arrives unprompted in the normal case. (Echoes the silently-stopped-trio fix: default to a quiet pull surface, push only what's actionable.)
+
+3. **Attention Queue (PUSH, decision-bearing only).** When an insight crosses from "noticed" into "recommend a concrete process change — approve?", it also queues an Attention item so a *pending decision* doesn't get lost in chat scroll. Routine insights never touch the Attention queue.
+
+- **Discoverability (so I reach for this reflexively):** new routes `GET /failures` (filterable), `GET /failures/:id`, `POST /failures` (one-tap), `GET /failures/analysis`, `GET /failures/insights`. Surfaced in `/capabilities` and the Registry-First table so "why do features keep breaking?" / "what's our failure rate by build skill?" / "are our process fixes working?" route me to the live ledger, never to memory. CLAUDE.md template + agent-awareness section updated (Agent Awareness Standard).
+- **Projects:** FailureRecords roll up to the owning project via `initiative.parentProjectId`; a project's status view shows its failure history. It sits *inside* Projects, not beside it (same requirement Graduated Rollout honored).
 
 ### 4.6 Mandatory + automatic (Structure > Willpower)
 
@@ -150,10 +162,37 @@ It emits **findings** → the learning registry (`addLearning`) + a **near-silen
 
 There is no "remember to log the failure" anywhere in the loop. The mandatory-ness Justin asked for is enforced by where the capture lives (the gate + the reconciler), not by instruction.
 
+### 4.6.1 The closed self-improvement loop — track → discover → implement → deploy → verify
+
+This is the heart of the feature, and the part that separates it from a passive "suggestion box." A discovered insight must be able to travel all the way to a *deployed* process improvement — and the system must then *check whether the improvement actually worked*. The loop rides existing rails at every step rather than inventing a parallel pipeline:
+
+1. **Track** — FailureLedger auto-captures + attributes (§4.2, §4.3). No human step.
+2. **Discover** — the analyzer surfaces an evidence-backed, support-thresholded process gap (§4.4). Each one is its own small tracked record, persisted alongside the ledger:
+   ```jsonc
+   "InsightRecord": {
+     "id": "INS-001", "discoveredAt": "<ISO>",
+     "summary": "concurrency regressions cluster in single-iteration-convergence features",
+     "supportingFailureIds": ["FAIL-003","FAIL-007", "…"],   // the evidence; ≥ minSupport
+     "recommendation": "give the adversarial reviewer a concurrency checklist",
+     "status": "discovered | acted-on | verified-effective | verified-ineffective | dismissed",
+     "actedOnVia": "<initiativeId | ACT-id>",                 // §4.6.1 step 3
+     "verifiedOutcome": "pending | effective | ineffective | n/a"   // §4.6.1 step 5
+   }
+   ```
+3. **Implement (tracked, never forgotten)** — when an insight crosses the recommend threshold, the system **auto-opens a tracked improvement item**: an **Evolution Action** (via the existing Evolution Action Queue / `/commit-action`) and, when the fix is a real code/skill change, a **draft Initiative on the board** in `needs-user` state. The insight record stores `actedOnVia: <initiativeId|ACT-id>`. This is the same Structure-&gt;Willpower move Graduated Rollout made: the follow-through becomes a property of the system, not of anyone's memory.
+   - **Authority guard (signal vs authority):** the system auto-*opens* the tracked item but **never auto-implements**. Turning an insight into an actual spec/skill change is a human decision — the analyzer recommends, Justin approves. The loop cannot rewrite a review skill or a spec template on its own. (Matches `feedback_signal_vs_authority`; mirrors Graduated Rollout's "never flips the switch itself.")
+4. **Deploy** — an approved improvement goes through the *standard* path with zero bespoke machinery: spec → `/spec-converge` → `/instar-dev` → merge → **Graduated Rollout** (matures dark → live → default-on). Because that path already auto-registers on the initiative board and already stamps a v3 toolchain trace, the improvement is a first-class tracked feature from the moment it ships.
+5. **Verify (the closure — without this it is not a loop).** Because the improvement is itself a tracked initiative with its own toolchain stamp, the analyzer can later ask the only question that matters: **did the targeted failure class actually drop after the change shipped?** The insight record carries a `verifiedOutcome` field the analyzer fills once enough post-change data exists (e.g. "concurrency regressions fell 5/mo → 0 across the 6 weeks after the adversarial-reviewer checklist landed"). Two terminal branches:
+   - **Worked** → insight `status: verified-effective`; the learning is confirmed and the loop closes.
+   - **Didn't work** → insight **reopens** (`status: verified-ineffective`) and re-enters discovery — the system *knows its own advice failed* and says so, instead of quietly assuming success.
+   - **Recursive closure:** if the improvement *itself* later regresses, it is captured like any other feature (§4.2 source #1) — the loop watches its own outputs. There is no special-casing; self-improvement changes are held to the same failure-tracking as everything else.
+
+The net effect Justin asked for: a clear, unbroken path from a failure, to an insight, to a tracked-and-approved change, to a deployed improvement, to evidence that the improvement reduced that class of failure — and an honest reopen when it didn't.
+
 ### 4.7 Boundaries (what this is NOT)
 
 - **vs DegradationReporter:** that's *runtime* fallback observability; this is *dev-process* failure forensics. They connect (source #5) but are distinct ledgers.
-- **vs Evolution Action Queue:** that tracks self-improvement items; a failure may *spawn* an evolution item, but failures are not evolution items.
+- **vs Evolution Action Queue:** that tracks self-improvement items. This loop *feeds* it — a thresholded insight auto-opens an Evolution Action (§4.6.1 step 3) — but failures and insights are not themselves evolution items; they are the evidence and the diagnosis that *justify* one.
 - **vs Commitments:** promises to the user; unrelated.
 - **vs Learning registry:** the registry is the *output sink* (what we learned), not the failure record itself.
 
@@ -175,6 +214,7 @@ There is no "remember to log the failure" anywhere in the loop. The mandatory-ne
 - **Unit:** FailureLedger CRUD + OCC; attribution engine on clean-chain AND ambiguous inputs (both sides of the boundary); trace v3 schema + v2→v3 migration; analyzer metric math + the `minSupport` small-N guard (must refuse to escalate below threshold); redaction split.
 - **Integration:** `/failures`, `/failures/:id`, `/failures/analysis`, `POST /failures`; the reconciler-`regressed` → auto-record wiring (wiring-integrity test: the hook is actually attached, not a no-op).
 - **E2E:** Phase-1 "feature is alive" (routes return 200, not 503, on the production init path); **dogfood proof** — drive a real `regressed` transition and assert an attributed FailureRecord appears on its own with the correct initiative + toolchain join.
+- **Closed-loop (§4.6.1):** an insight crossing threshold auto-opens an Evolution Action + draft initiative with `actedOnVia` set (and does NOT auto-implement — authority guard asserted on both sides); a post-change drop in the targeted failure class flips the insight to `verified-effective`; *no* drop flips it to `verified-ineffective` and reopens it. Dashboard "Process Health" route returns the insights board with loop status; the Process-Insights topic post fires only on a thresholded insight (and never per-failure).
 
 ## 7. Migration parity (Migration Parity Standard)
 
@@ -186,4 +226,4 @@ There is no "remember to log the failure" anywhere in the loop. The mandatory-ne
 
 ## 8. Success criteria
 
-A merged feature that later regresses produces — with no human step — a FailureRecord attributed to its initiative, spec, project, cause commit, and the dev toolchain that built it; and after enough records accumulate, the analyzer surfaces at least one evidence-backed, support-thresholded recommendation about our dev process, logged to the learning registry. The system makes the next build less failure-prone by making our process gaps visible.
+A merged feature that later regresses produces — with no human step — a FailureRecord attributed to its initiative, spec, project, cause commit, and the dev toolchain that built it. After enough records accumulate, the analyzer surfaces an evidence-backed, support-thresholded insight; it shows up on the dashboard's Process Health tab, posts once to the Process-Insights topic, and **auto-opens a tracked improvement that a human approves** — which then deploys through the normal spec→build→rollout path. Finally, the analyzer **verifies whether the targeted failure class actually dropped**, marking the insight effective or reopening it if not. The end state is the unbroken, honest loop Justin asked for: tracking → discovery → (approved) implementation → deployment → verification — so the system measurably builds with fewer failures over time, and admits when a fix didn't take.
