@@ -50,6 +50,7 @@ The architecture was distilled from [**Dawn**](https://dawn.bot-me.ai) — an AI
 | Forgets what you told it last week. | Remembers across thousands of sessions. <br/>*(SQLite + FTS5, rolling summaries)* |
 | Contradicts its own past decisions. | Catches contradictions before they ship. <br/>*(Coherence Gate, 9 reviewers)* |
 | Loses the thread when the window fills. | Comes back with the full thread, every time. <br/>*(CompactionSentinel, WorkingMemoryAssembler)* |
+| Silently stops shipping when a release stalls. | Surfaces the blocked release as ONE deduped, age-escalating Attention item. <br/>*(ReleaseReadinessSentinel — instar-dev / maintainer environments)* |
 | Drops commitments after a session boundary. | Tracks commitments durably; nudges itself when they go overdue. <br/>*(CommitmentTracker, PromiseBeacon)* |
 | Breaks when the framework updates. | Updates without breaking what you've deployed. <br/>*(Migration Parity Standard)* |
 | Default ALLOW-ALL permissions. | Layered safety gates by default. <br/>*(PEL + Coherence Gate + Operation Gate)* |
