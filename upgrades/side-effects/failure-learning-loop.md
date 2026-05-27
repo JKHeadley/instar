@@ -37,3 +37,15 @@ Builds the Failure-Learning Loop (instar-self-hosting dev-process forensics). Fi
 **Level-of-abstraction fit:** pure engine; the route/poller layer (later commit) injects the real InitiativeTracker lookup + `git show --name-only`.
 **Signal-vs-authority:** produces a verdict (signal); does not mutate anything.
 **Rollback cost:** trivial — new pure-logic file, no wiring yet.
+
+### Commit 3 — trace v2→v3 toolchain enrichment (the dev "receipt")
+
+- `skills/instar-dev/scripts/write-trace.mjs` — **modify** — ADD optional `--build-skill`, `--review-skills`, `--convergence-report`, `--convergence-iterations` args + a `buildToolchain()` helper that writes a `toolchain` block (spec §4.1). **Additive + backward-compatible:** with no new args the output is byte-identical v2 (version stays 2, no toolchain). With them, version→3 + toolchain.
+- **Claims vs verified (§4.1 BL-3):** `buildSkill.version` is pinned to a **content hash of the named skill's SKILL.md** (server-derived → `verified:true`), not a caller string; `convergence.verified` is true only if the report file **actually exists**; `reviewSkills[].verified:false` (caller-asserted outcome). The analyzer keeps verified vs claimed in separate buckets.
+- **Hot-path (§4.1 M2):** caller passes literals; the only I/O is hashing one SKILL.md + one `existsSync` — O(1), no git/discovery/parse. **Fail-open:** `buildToolchain()` is wrapped — any error returns `undefined` (toolchain omitted), never blocks the commit.
+- **Scope (§3 BL-3):** repo-local edit; NOT shipped to deployed agents (skills/instar-dev/ isn't in npm `files`), so NO PostUpdateMigrator entry — toolchain provenance is instar-self-hosting only.
+
+**Over/under-block:** none — the gate (`instar-dev-precommit.js`) reads `phase`/`coveredFiles`/`artifact`/`specPath` only, never `version`/`toolchain`, so the bump is invisible to it (verified). 
+**Level-of-abstraction fit:** the receipt-writer enriches what it already stamps; no new tool.
+**Signal-vs-authority:** records provenance claims; no authority.
+**Rollback cost:** trivial — revert the script; existing v2 traces remain valid (readers ignore `toolchain`).
