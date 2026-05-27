@@ -496,6 +496,23 @@ export class GitSyncManager {
   }
 
   /**
+   * Targeted pull-rebase (no auto-commit). Used by the lease CAS to minimize
+   * the push-reject window before writing a lease candidate. Returns true if
+   * the pull succeeded (HEAD may or may not have moved). Best-effort: returns
+   * false on any error rather than throwing.
+   */
+  pullRebase(): boolean {
+    if (!this.isGitRepo()) return false;
+    try {
+      this.gitExec(['pull', '--rebase', '--autostash']);
+      return true;
+    } catch {
+      // @silent-fallback-ok — lease CAS re-reads and retries on failure
+      return false;
+    }
+  }
+
+  /**
    * Stage files and commit with machine signing.
    */
   commitAndPush(message: string, paths?: string[]): boolean {

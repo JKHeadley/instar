@@ -63,6 +63,10 @@ import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
 import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
+import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
+import { GitLeaseStore } from '../core/GitLeaseStore.js';
+import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
+import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
 import { ScopeVerifier } from '../core/ScopeVerifier.js';
@@ -2449,6 +2453,61 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         wireRegistrySync(coordinator, registrySyncDebouncer);
         console.log(pc.dim('  Registry sync wired (roleChange/leaseEpoch → durable push)'));
+
+        // ── G1 fenced-lease integration (spec §6) ──────────────────
+        // The lease becomes the authority for awake/standby. git is the durable
+        // CAS substrate (correct, bounded by git cadence — the tunnel accelerator
+        // is a tracked follow-on, ACT-156-adjacent). A holder that cannot refresh
+        // its lease over git for > leaseTtlMs self-suspends, preventing the
+        // partitioned-old-awake split-brain.
+        const idMgr = coordinator.managers.identityManager;
+        const selfMachineId = coordinator.identity!.machineId;
+        const leaseCrypto: LeaseCrypto = {
+          selfMachineId,
+          sign: (canonical) => signEd25519(canonical, idMgr.loadSigningKey()),
+          verify: (canonical, signature, holderMachineId) => {
+            const pub = idMgr.getSigningPublicKeyPem(holderMachineId);
+            if (!pub) return false;
+            try { return verifyEd25519(canonical, signature, pub); } catch { return false; }
+          },
+        };
+        const fencedLease = new FencedLease(leaseCrypto, {
+          leaseTtlMs: seamlessness.leaseTtlMs,
+          failoverThresholdMs: seamlessness.failoverThresholdMs,
+        });
+        const leaseStore = new GitLeaseStore({
+          machineId: selfMachineId,
+          loadRegistry: () => idMgr.loadRegistry(),
+          saveRegistry: (r) => idMgr.saveRegistry(r),
+          registryAbsPath: idMgr.registryPath,
+          pullRebase: () => gitSyncRef.pullRebase(),
+          commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
+          logger: (m) => console.log(pc.dim(m)),
+        });
+        const leaseCoordinator = new LeaseCoordinator({
+          lease: fencedLease,
+          store: leaseStore,
+          // tunnel accelerator omitted for the launch increment (git-only is
+          // correct; tunnel transport tracked for the follow-on).
+          presumedDeadHolders: () => {
+            const reg = idMgr.loadRegistry();
+            const nowMs = Date.now();
+            const dead = new Set<string>();
+            for (const [id, e] of Object.entries(reg.machines ?? {})) {
+              if (id === selfMachineId) continue;
+              const last = Date.parse(e.lastSeen);
+              if (!Number.isNaN(last) && nowMs - last > seamlessness.failoverThresholdMs) dead.add(id);
+            }
+            return dead;
+          },
+          onEpochAdvance: (epoch) => coordinator.emit('leaseEpochChange', epoch),
+          onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
+          onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
+          logger: (m) => console.log(pc.dim(m)),
+        });
+        coordinator.attachLeaseCoordinator(leaseCoordinator);
+        await coordinator.initializeLease();
+        console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
       } catch (err) {
         // @silent-fallback-ok — git sync disabled gracefully
         console.log(pc.yellow(`  Git sync setup: ${err instanceof Error ? err.message : String(err)}`));

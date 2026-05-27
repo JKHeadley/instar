@@ -22,6 +22,7 @@ import { HeartbeatManager } from './HeartbeatManager.js';
 import { SecurityLog } from './SecurityLog.js';
 import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
+import type { LeaseCoordinator } from './LeaseCoordinator.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -67,6 +68,14 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
   private integratedBeingWarningEmitted: boolean = false;
+  /**
+   * Cross-Machine Seamlessness §6 — the fenced lease is the authority for
+   * "awake". When attached, holdsLease() gates the hot path (the structural
+   * demotion the Phase-0 split-brain was missing). Null on single-machine /
+   * non-git meshes, where the heartbeat path remains the authority.
+   */
+  private leaseCoordinator: LeaseCoordinator | null = null;
+  private leaseTicking: boolean = false;
 
   constructor(state: StateManager, config: CoordinatorConfig) {
     super();
@@ -335,10 +344,94 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this._enabled) return false; // Single machine = always process
     // Independent mode: both machines always process
     if (this.coordinationMode === 'independent') return false;
-    if (this._role !== 'awake') return true; // Standby = skip
 
+    // Lease is authority when attached: a machine processes ONLY while it
+    // structurally holds the lease at the current epoch. A wedged old-awake
+    // whose lease moved on fails this even if its in-memory _role still says
+    // 'awake' — the exact structural demotion Phase-0 was missing.
+    if (this.leaseCoordinator) {
+      return !this.leaseCoordinator.holdsLease();
+    }
+
+    if (this._role !== 'awake') return true; // Standby = skip
     // Even if we think we're awake, check the heartbeat file
     return this.heartbeatManager.shouldDemote();
+  }
+
+  // ── Fenced-Lease integration (spec §6) ───────────────────────────
+
+  /**
+   * Attach the LeaseCoordinator (built once gitSync exists in server boot).
+   * From here the lease is the authority for awake/standby. Wires the lease's
+   * epoch-advance to a coordinator `leaseEpochChange` event so the registry
+   * sync debouncer pushes the new epoch durably.
+   */
+  attachLeaseCoordinator(lc: LeaseCoordinator): void {
+    this.leaseCoordinator = lc;
+  }
+
+  /** Whether this machine structurally holds the lease (false if none attached). */
+  holdsLease(): boolean {
+    return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
+  }
+
+  /**
+   * Initialize the lease-based role at boot: attempt acquisition if eligible,
+   * then reconcile _role + StateManager read-only to whether we hold the lease.
+   */
+  async initializeLease(): Promise<void> {
+    if (!this.leaseCoordinator) return;
+    await this.leaseCoordinator.acquireIfEligible();
+    this.reconcileRoleToLease('lease-init');
+  }
+
+  /**
+   * Drive the lease on each monitor tick: renew if we hold it, else attempt
+   * failover acquisition. Reconciles role afterward. Fire-and-forget safe.
+   */
+  private async tickLease(): Promise<void> {
+    if (!this.leaseCoordinator || this.leaseTicking) return;
+    this.leaseTicking = true;
+    try {
+      if (this.leaseCoordinator.holdsLease()) {
+        await this.leaseCoordinator.renew();
+      } else {
+        await this.leaseCoordinator.acquireIfEligible();
+      }
+      this.reconcileRoleToLease('lease-tick');
+    } catch {
+      // @silent-fallback-ok — a tick failure is retried next interval
+    } finally {
+      this.leaseTicking = false;
+    }
+  }
+
+  /** Bring _role + read-only into line with whether we hold the lease. */
+  private reconcileRoleToLease(reason: string): void {
+    if (!this.leaseCoordinator || !this._identity) return;
+    const holds = this.leaseCoordinator.holdsLease();
+    const desired: MachineRole = holds ? 'awake' : 'standby';
+    if (desired === this._role) return;
+    const oldRole = this._role;
+    this._role = desired;
+    this.identityManager.updateRole(this._identity.machineId, desired);
+    this.state.setReadOnly(!holds);
+    if (holds) this.startHeartbeatWriter();
+    else if (this.heartbeatWriteTimer) {
+      clearInterval(this.heartbeatWriteTimer);
+      this.heartbeatWriteTimer = null;
+    }
+    this.securityLog.append({
+      event: 'role_transition',
+      machineId: this._identity.machineId,
+      from: oldRole,
+      to: desired,
+      reason: `lease:${reason}`,
+    });
+    this.emit('roleChange', oldRole, desired);
+    if (holds) this.emit('promote');
+    else this.emit('demote');
+    console.log(`[MultiMachine] Lease reconcile → ${desired} (${reason})`);
   }
 
   // ── Private ──────────────────────────────────────────────────────
@@ -398,6 +491,13 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this._identity) return;
     // Independent mode: no failover/demotion logic
     if (this.coordinationMode === 'independent') return;
+
+    // Lease is authority when attached — renew/acquire + reconcile role. The
+    // heartbeat below is retained only for liveness display in this mode.
+    if (this.leaseCoordinator) {
+      void this.tickLease();
+      return;
+    }
 
     if (this._role === 'awake') {
       // Awake machine: check if someone else took over
