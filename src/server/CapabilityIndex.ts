@@ -501,6 +501,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'failureLearning',
+    prefixes: ['/failures'],
+    description: 'Failure-Learning Loop — instar dev-process failure forensics (which spec/tool produced a failure; what process gaps recur)',
+    build: ({ ctx }) => ({
+      enabled: ctx.config.monitoring?.failureLearning?.enabled === true,
+      endpoints: [
+        'GET /failures — list failure records (filter by source/category/initiative/attribution)',
+        'GET /failures/:id — one record',
+        'GET /failures/analysis — rates by build-skill / category, coverage (answers "why do features keep breaking?")',
+        'GET /failures/insights — discovered process-gap insights (once the analyzer ships)',
+        'POST /failures — agent-diagnosed one-tap (requires X-Instar-Request; cite an existing initiativeId)',
+      ],
+      hint: 'Ships OFF; when disabled these routes 503. Scoped to instar self-hosting (toolchain attribution is repo-local).',
+    }),
+  },
+  {
     key: 'skipLedger',
     prefixes: ['/skip-ledger'],
     description: 'Skip-ledger — workload-aware idempotency',

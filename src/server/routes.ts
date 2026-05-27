@@ -22,6 +22,10 @@ import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js'
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { FailureLedger } from '../monitoring/FailureLedger.js';
+import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
+import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
+import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import {
@@ -666,6 +670,10 @@ export interface RouteContext {
   /** Mentor-onboarding runner (§19.4). Null when not wired. Ships dormant
    *  (mentor.enabled=false); powers GET /mentor/status + POST /mentor/tick. */
   mentorRunner?: import('../scheduler/MentorOnboardingRunner.js').MentorOnboardingRunner | null;
+  /** Failure-Learning Loop ledger + attribution engine (instar dev-process
+   *  forensics). Null/absent when the feature is disabled (default) → /failures 503s. */
+  failureLedger?: import('../monitoring/FailureLedger.js').FailureLedger | null;
+  failureAttributionEngine?: import('../monitoring/FailureAttributionEngine.js').FailureAttributionEngine | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -4318,6 +4326,132 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.status(202).json({ accepted: r.accepted, reason: r.reason ?? null });
+  });
+
+  // ── Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md §4.5) ──
+  // instar self-hosting dev-process forensics. Inline (like /tokens) so the
+  // /capabilities discoverability lint sees the routes. 503-stub when the
+  // ledger is null (feature OFF, default). Reads serve toApiView ONLY —
+  // detail.full NEVER crosses the boundary (§4.8). POST is the one mutating
+  // route: requires X-Instar-Request intent + server-validated initiative.
+
+  router.get('/failures', (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    const q = req.query;
+    const records = ctx.failureLedger.list({
+      source: typeof q.source === 'string' ? (q.source as never) : undefined,
+      category: typeof q.category === 'string' ? (q.category as never) : undefined,
+      initiativeId: typeof q.initiativeId === 'string' ? q.initiativeId : undefined,
+      attribution: q.attribution === 'automatic' || q.attribution === 'one-tap' || q.attribution === 'inferred' ? q.attribution : undefined,
+      status: typeof q.status === 'string' ? (q.status as never) : undefined,
+      limit: typeof q.limit === 'string' && /^\d+$/.test(q.limit) ? Number(q.limit) : undefined,
+    });
+    res.json({ failures: records.map((r) => FailureLedger.toApiView(r)) });
+  });
+
+  router.get('/failures/analysis', (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    const sinceDays = typeof req.query.sinceDays === 'string' ? Number(req.query.sinceDays) : undefined;
+    const sinceMs = sinceDays && sinceDays > 0 ? Date.now() - sinceDays * 86400_000 : undefined;
+    res.json(ctx.failureLedger.analyze({ sinceMs }));
+  });
+
+  router.get('/failures/insights', (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    res.json({ insights: ctx.failureLedger.listInsights(status ? { status: status as never } : {}) });
+  });
+
+  // The analyzer + closed-loop tick (spec §4.4/§4.6.1). Invoked by the off-by-
+  // default `failure-analyzer` builtin job (Tier-1 supervised). Discovers
+  // insights, then — if the Evolution Action queue + InitiativeTracker are wired
+  // — opens human-approved tracked items (by-construction guard: only Actions +
+  // draft Initiatives, NEVER a proposal) and runs the verify step.
+  router.post('/failures/analyze', async (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    try {
+      const gates = {
+        minSupport: ctx.config.monitoring?.failureLearning?.minSupport ?? 4,
+        minDistinctSessions: ctx.config.monitoring?.failureLearning?.minDistinctSessions ?? 3,
+        minDistinctCauseCommits: ctx.config.monitoring?.failureLearning?.minDistinctCauseCommits ?? 3,
+      };
+      const analysis = new FailureAnalyzer(ctx.failureLedger, gates).analyze();
+
+      let actedOn = 0;
+      let verified = 0;
+      const evo = ctx.evolution as { addAction?: (o: never) => { id: string } } | null;
+      const tracker = ctx.initiativeTracker;
+      if (evo?.addAction && tracker?.create) {
+        const driver = new FailureLoopDriver(ctx.failureLedger, {
+          addAction: (o) => evo.addAction!(o as never),
+          createInitiative: async (i) => {
+            const created = await tracker.create(i as never);
+            return { id: created.id };
+          },
+        });
+        actedOn = (await driver.actOnNewInsights()).actedOn.length;
+        verified = driver.runVerification().evaluated.length;
+      }
+      res.json({ analysis, actedOn, verified });
+    } catch (err) {
+      // Fail-open: the analyzer never crashes the caller (job).
+      res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/failures/:id', (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    const rec = ctx.failureLedger.get(req.params.id);
+    if (!rec) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(FailureLedger.toApiView(rec));
+  });
+
+  router.post('/failures', (req, res) => {
+    if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
+    // Intent marker (§4.2#B) — NOT a transport boundary; paired with filedBy audit.
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'POST /failures requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    const body = req.body ?? {};
+    const summary = typeof body.summary === 'string' ? body.summary.trim() : '';
+    const initiativeId = typeof body.initiativeId === 'string' ? body.initiativeId.trim() : '';
+    if (!summary || !initiativeId) {
+      res.status(400).json({ error: 'summary and initiativeId are required' });
+      return;
+    }
+    if (!ctx.failureAttributionEngine) {
+      res.status(503).json({ error: 'attribution engine not configured' });
+      return;
+    }
+    const verdict = ctx.failureAttributionEngine.validateAgentDiagnosed({
+      initiativeId,
+      causeCommitOid: typeof body.causeCommitOid === 'string' ? body.causeCommitOid : undefined,
+    });
+    if (!verdict.ok) { res.status(400).json({ error: verdict.reason }); return; }
+    const severity = body.severity === 'low' || body.severity === 'high' ? body.severity : 'medium';
+    const redacted = typeof body.detail === 'string' && body.detail ? body.detail : summary;
+    const filedBy =
+      (req.headers['x-instar-agentid'] as string) ||
+      (req.headers['x-instar-session'] as string) ||
+      'agent-diagnosed';
+    const rec = ctx.failureLedger.open({
+      filedBy,
+      source: 'agent-diagnosed',
+      severity,
+      summary,
+      detail: { redacted, full: redacted },
+      category: FailureAttributionEngine.coerceCategory(typeof body.category === 'string' ? body.category : undefined),
+      initiativeId: verdict.verdict.initiativeId,
+      projectId: verdict.verdict.projectId,
+      specPath: verdict.verdict.specPath,
+      causeCommitOid: verdict.verdict.causeCommitOid,
+      attribution: verdict.verdict.attribution, // one-tap — never upgrades (B6)
+      attributionConfidence: verdict.verdict.attributionConfidence,
+      provenance: 'unknown',
+    });
+    if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    res.status(201).json(FailureLedger.toApiView(rec));
   });
 
   // ── Jobs ────────────────────────────────────────────────────────

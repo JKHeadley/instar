@@ -2709,6 +2709,23 @@ export interface MonitoringConfig {
     protectOpenCommitments?: boolean;
   };
   /**
+   * Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
+   * self-hosting dev-process forensics. Ships OFF (registers itself on the
+   * rollout board). When enabled, the FailureLedger + /failures routes + the
+   * analyzer come alive; toolchain attribution is instar-repo-local. The gates
+   * below are the §4.4 source-diversity + §4.3 attribution-confidence controls.
+   */
+  failureLearning?: {
+    enabled: boolean;
+    minSupport?: number;
+    minDistinctSessions?: number;
+    minDistinctCauseCommits?: number;
+    attributionConfidenceFloor?: number;
+    /** Off by default — when true, thresholded insights post ONCE to the existing
+     *  system topic (never a new per-feature topic). Spec §4.5 / round-2 M1. */
+    insightTelegramEscalation?: boolean;
+  };
+  /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations
    * (SentinelNotifier). Default false → sentinel notices are logged to the
    * server log + .instar/../logs/sentinel-events.jsonl only; the user never

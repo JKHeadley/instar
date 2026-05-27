@@ -63,6 +63,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       finalGraceSec: 60,
       protectOpenCommitments: true,
     },
+    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md). Ships
+    // OFF — when disabled, the /failures routes 503-stub (surface still exists
+    // for capability probing). Registers itself on the rollout board.
+    failureLearning: {
+      enabled: false,
+      minSupport: 4,
+      minDistinctSessions: 3,
+      minDistinctCauseCommits: 3,
+      attributionConfidenceFloor: 0.6,
+      insightTelegramEscalation: false,
+    },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
     // in the logs (server.log + sentinel-events.jsonl). Set true to receive

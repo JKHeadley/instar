@@ -462,6 +462,12 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through (and surfaces atRisk items), and the commitment-check job surfaces overdue ones.
 - **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment. NEVER improvise the follow-through with a raw \`sleep\`/background timer or by "remembering" — those do not survive a session ending, a restart, or compaction, so the promise is silently dropped. A registered commitment is the ONLY durable path. (This is distinct from the Evolution Action Queue / \`/commit-action\`, which tracks self-improvement items, not promises to the user.)
 
+**Failure-Learning Loop** — Dev-process failure forensics (instar self-hosting). When something you built breaks later, it's captured and traced back to the spec/initiative/project AND the dev toolchain that produced it; the analyzer surfaces process-gap patterns and opens human-approved tracked fixes, then verifies whether each fix actually reduced that failure class. Ships OFF (\`monitoring.failureLearning.enabled\`); registers itself on the initiative board.
+- Why features break / failure rate by tool / are our fixes working: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` — answer from here, never from memory.
+- List / inspect failures: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures\` · \`GET /failures/:id\` · discovered insights: \`GET /failures/insights\`
+- File a diagnosis (one-tap): \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" http://localhost:${port}/failures -H 'Content-Type: application/json' -d '{"summary":"<what broke>","initiativeId":"<board id it traces to>","severity":"medium"}'\`
+- **When to use** (PROACTIVE): when you diagnose a bug that traces to past work, file it so the pattern can be learned. The loop NEVER changes the process on its own — it opens a draft for your approval. It can never auto-implement (it never creates the record type the autonomous approver acts on). Distinct from the Evolution Action Queue (this produces the evidence + diagnosis that justify an action).
+
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`
 - Configure in \`.instar/config.json\`: \`{"tunnel": {"enabled": true, "type": "quick"}}\`
@@ -678,6 +684,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 |----------|-------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
+| Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
 | Who do I work with? | \`.instar/USER.md\` |
 | What have I learned? | \`.instar/MEMORY.md\` |
 | What jobs do I have? | \`.instar/jobs.json\` or \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` |

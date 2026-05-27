@@ -44,6 +44,9 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import { FailureLedger } from '../monitoring/FailureLedger.js';
+import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
@@ -93,6 +96,8 @@ export class AgentServer {
   /** UTC day + run count for the per-day mentor cap (resets across days). */
   private mentorDayKey = '';
   private mentorRunsToday = 0;
+  private failureLedger: FailureLedger | null = null;
+  private failureAttributionEngine: FailureAttributionEngine | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -459,6 +464,48 @@ export class AgentServer {
       }
     }
 
+    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
+    // self-hosting dev-process forensics. Ships OFF; constructed only when
+    // enabled (else the inline /failures routes 503-stub via the null ledger).
+    // Toolchain attribution is instar-repo-local (§3 scope). Own try/catch so a
+    // failure here can never cascade into the other ledgers' init.
+    try {
+      if (options.config.monitoring?.failureLearning?.enabled === true && options.config.stateDir) {
+        this.failureLedger = new FailureLedger({
+          dbPath: path.join(options.config.stateDir, 'failure-ledger.db'),
+        });
+        const tracker = options.initiativeTracker ?? null;
+        const projectDir = options.config.projectDir;
+        this.failureAttributionEngine = new FailureAttributionEngine({
+          getInitiative: (id) => {
+            const i = tracker?.get(id);
+            if (!i) return null;
+            return {
+              id: i.id,
+              parentProjectId: i.parentProjectId ?? undefined,
+              specPath: i.specPath ?? undefined,
+              mergeCommitOid: i.mergeCommitOid ?? undefined,
+              // coveredFiles (bugfix-commit cross-check) joins from the trace
+              // when that ingestion source is wired (later rollout slice).
+            };
+          },
+          commitTouchedFiles: (oid) => {
+            try {
+              // Read-only git via the SafeGitExecutor funnel (lint-no-direct-destructive).
+              const out = SafeGitExecutor.readSync(['show', '--name-only', '--pretty=format:', oid], {
+                cwd: projectDir, operation: 'failure-learning:commit-touched-files',
+              });
+              return out.split('\n').map((s) => s.trim()).filter(Boolean);
+            } catch { return []; }
+          },
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] failure-learning init failed (non-fatal):', err);
+      this.failureLedger = null;
+      this.failureAttributionEngine = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -550,6 +597,8 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
+      failureLedger: this.failureLedger,
+      failureAttributionEngine: this.failureAttributionEngine,
       sessionReaper: options.sessionReaper ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
