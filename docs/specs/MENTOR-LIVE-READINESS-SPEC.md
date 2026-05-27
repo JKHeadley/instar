@@ -44,11 +44,19 @@ and the spec must surface the substrate choice explicitly, not bury it.
 
 ## The three live-readiness gaps (unchanged from prior draft)
 
-### Gap 1 — `isMenteeBusy()` is a stub that's not about the mentee at all
+### Gap 1 — The whole "is the mentee free?" gate is the wrong design (Justin correction)
 
-`AgentServer.ts:~651`: `isMenteeBusy: () => self.sessionManager.listRunningSessions().length > 0`.
-Tagged `<!-- tracked: topic-13435 -->`. Checks Echo's own sessions; almost always true →
-safe window never opens → mentor effectively never runs.
+`AgentServer.ts:~651`: `isMenteeBusy: () => self.sessionManager.listRunningSessions().length > 0`
+is a stub that always returns true so the mentor never runs. But the deeper issue (Justin,
+2026-05-27 topic 13435): **a user doesn't probe the agent's state before sending a
+Telegram message — they just send.** Whether Codey is mid-task is HIS concern, on his
+side. Replacing the stub with a real `/idle` probe (the prior draft's approach) violates
+the same user-fidelity principle as the file-outbox substrate error — both are "engineering
+convenience that no real user does." The fix is to **remove** the gate, not to make it
+"real." The actual cadence gates that ARE genuine user-behavior live on Echo's side:
+schedule (15-min tick), budget (token cap + quota), and **outstanding-prompt tracking**
+(don't send again before hearing back — that's how real users behave). See §Fix 2b
+"Implementation surface" item 4.
 
 ### Gap 2 — Mentor delivery to Codey does not exist as a real user-channel
 
@@ -64,32 +72,22 @@ config field; Echo runs on a Claude subscription (no per-token dollar charge to 
 real cost is tokens against rolling quota — already tracked by `QuotaTracker.canRunJob` +
 `TokenLedger` (`attribution.component='mentor-stage-b'`).
 
-## Fix 1 — Real Codey-idle signal (replaces the system-busy stub)
+## Fix 1 — REMOVED (Justin user-fidelity correction, 2026-05-27)
 
-Replace `isMenteeBusy` with a **mentee-specific** idle check via a new unauthenticated
-`GET /idle` endpoint Codey ships on his server (port 4044). `/sessions` is Bearer-authed
-AND has no `activelyWorking` field, so a fresh endpoint is needed.
+The prior draft proposed a `/idle` endpoint on Codey's server + Echo-side probe. **Removed
+entirely** per Justin: a real user doesn't probe agent state before sending a Telegram
+message. The mentor's gates are all Echo-side and match real user behavior:
+- **Schedule** (15-min tick) — cadence.
+- **Budget** (Stage-B token cap + quota-aware) — Echo's own quota pressure.
+- **Outstanding-prompt tracker** (don't send while a prior is unanswered within
+  `mentor.replyTimeoutMs`) — natural user behavior of not pestering before getting a reply.
+  Detailed in §Fix 2b "Implementation surface" item 4.
 
-`/idle` returns:
-```json
-{ "schemaVersion": 1, "idle": true, "bootId": "uuid-set-at-process-start",
-  "uptimeSec": 12345, "activeSessions": 0, "ts": "ISO-8601",
-  "reason": "active-session | startup-warmup | unknown (optional, diagnostic only)" }
-```
-**`activeSessions` semantics (Codey's clarification):** sessions with *live work* — active
-autonomous jobs, active Telegram-spawned sessions, running task sessions. Reaped/idle/
-complete panes do NOT count. **If the local signal is ambiguous, the mentee returns
-`idle:false`** rather than guessing or omitting fields. `reason` is optional and Echo
-must NOT depend on it for v1 behavior (it's diagnostic for degradation reports only).
-
-Echo-side:
-- Probe `{mentor.menteeServerUrl}/idle` with 750ms timeout.
-- **Fail-closed on every ambiguous outcome**: non-2xx, network/timeout, JSON-parse failure,
-  unrecognized schemaVersion, missing required fields, `idle !== true` → busy.
-- **Liveness-warmup**: `idle:true` but `uptimeSec < minIntervalMs/1000` → defer one cycle
-  (don't pile onto a recovering Codey).
-- Persistent failure (≥3 consecutive) → `DegradationReporter` event `mentor.menteeProbe`.
-- Reasons split: `mentee-busy` vs `min-interval-not-elapsed` (distinct strings).
+`isMenteeBusy` is **deleted**, not replaced. The previous `safeWindowOpen` branch in
+`MentorOnboardingTick` collapses to `budget.ok && !outstandingForThisMentee` — both
+real Echo-side concerns. Codey's side no longer ships the `/idle` endpoint; his side is
+relieved of that ask (he handles availability via his normal user-message processing,
+which is exactly what we're testing).
 
 ## Fix 2a — Agent-to-Agent Telegram Comms primitive (new infra)
 
@@ -370,19 +368,20 @@ need to land as part of this PR:
 
 - **In:** `AgentTelegramComms` primitive (sender + recipient + marker + anti-loop infra +
   audit ledgers + config), mentor as its first consumer (mentor-bot + Stage-A/Stage-B
-  rewiring + retire file-outbox), Fix 1 idle signal, Fix 3 quota-budget.
+  rewiring + retire file-outbox), Fix 3 quota-budget. (Fix 1 idle-probe REMOVED — Justin
+  user-fidelity correction; mentor cadence is Echo-side only.)
 - **Out:** HMAC-signed markers (v2 if cross-machine trust matters); multi-mentee fan-out;
   Threadline-relay-based mentor delivery (intentionally rejected — Telegram is the test
-  substrate); a general "agent presence" service beyond the per-probe `/idle` (separate
-  concern).
+  substrate); any mentee-state probing (intentionally rejected — users don't probe).
 
 ## Migration parity
 
 - **Config (additive):** `agentTelegram` section (new), `mentor.botToken`,
-  `mentor.menteeServerUrl`, `mentor.menteeBotId`, `mentor.menteeTopicId`,
-  `mentor.quotaCeiling`, `mentor.stageBTokenCeiling` (renamed from `dailyTokenCeiling`
-  per honest-scope downgrade), `mentor.budgetReminderHours`, `mentor.replyTimeoutMs`
-  added via `ConfigDefaults.getMigrationDefaults()` + `applyDefaults` (existence-checked).
+  `mentor.menteeBotId`, `mentor.menteeTopicId`, `mentor.quotaCeiling`,
+  `mentor.stageBTokenCeiling` (renamed from `dailyTokenCeiling` per honest-scope
+  downgrade), `mentor.budgetReminderHours`, `mentor.replyTimeoutMs` added via
+  `ConfigDefaults.getMigrationDefaults()` + `applyDefaults` (existence-checked).
+  (`mentor.menteeServerUrl` REMOVED — Fix 1 idle-probe deleted.)
 - **Config (removal — NOT silent, dedicated migration method).** `applyDefaults` is
   value-patching only and cannot remove fields (round-2 integration F5). Add a dedicated
   `migrateRetireDeadMentorConfig` method on `PostUpdateMigrator` (modeled on
@@ -402,15 +401,12 @@ need to land as part of this PR:
   (round-2 integration F4 correction: OOB-confirmed wasn't an existing pattern; Secret-
   Drop's confirmation is sufficient for a bot token). Codey-side: he adds Echo's
   mentor-bot ID to his `agentTelegram.knownAgents` allowlist as part of his side's PR.
-- **Routes.**
-  - `GET /idle` is on **Codey's** server (not Echo's), so Echo's CapabilityIndex doesn't
-    apply — that's Codey's repo concern.
-  - `POST /mentor/bot-setup` and `POST /mentor/bot-setup/rotate` are on Echo and
-    **inherit the existing `/mentor` prefix classification** in `CapabilityIndex.ts`
-    (verified line 493 — no CapabilityIndex change needed; round-2 integration F6
-    correction to the prior draft's claim). Echo adds a CLAUDE.md template entry per
-    the Agent Awareness Standard (curl example + proactive trigger: "when user says
-    'set up the mentor bot'").
+- **Routes.** `POST /mentor/bot-setup` and `POST /mentor/bot-setup/rotate` are on Echo
+  and **inherit the existing `/mentor` prefix classification** in `CapabilityIndex.ts`
+  (verified line 493 — no CapabilityIndex change needed; round-2 integration F6
+  correction to the prior draft's claim). Echo adds a CLAUDE.md template entry per
+  the Agent Awareness Standard (curl example + proactive trigger: "when user says
+  'set up the mentor bot'"). (`GET /idle` on Codey's server REMOVED.)
 
 ## Testing
 
@@ -437,9 +433,7 @@ need to land as part of this PR:
      conflict.
    - Round-trip ledger: send + receive both write their audit rows; correlation chain
      reconstructable via `corr`; NO tokens/secrets in the row.
-5. **Unit — Fix 1 idle:** as prior draft (fail-closed coverage on every ambiguous
-   outcome including 200+missing-fields; liveness-warmup; persistent-failure degradation).
-6. **Unit — Fix 3 budget:** as prior draft (trip-episode state machine, quota null
+5. **Unit — Fix 3 budget:** as prior draft (trip-episode state machine, quota null
    fail-closed, CAS persistence, corrupt-recovery). Add: assert the ceiling captures only
    `mentor-stage-b::%` (Stage-B); spawn a fake Stage-A JSONL event with
    `unknown::pre-attribution` and assert it does NOT count against the ceiling — the
@@ -468,16 +462,16 @@ need to land as part of this PR:
     sendAgentMessage write, runs the role-handler, writes a reply via
     `sendAgentMessage(role=mentor-reply)`, and Echo's Stage-B parser handles it. Real
     round-trip through the primitive on both sides.
-12. **Wiring-integrity:** production wiring of `getMenteeIdle` / `budget` /
-    `sendAgentMessage` / the agent-handler wrapper is non-null + non-no-op; dependency-
-    cruiser rule passes on the actual codebase.
+12. **Wiring-integrity:** production wiring of `budget` / `sendAgentMessage` / the
+    agent-handler wrapper is non-null + non-no-op; dependency-cruiser rule passes on the
+    actual codebase.
 13. **End-to-end — supervised live cycle** (the actual test):
     - Echo's mentor-bot active in a dedicated Mentor topic in Codey's setup.
-    - `/idle` probe succeeds → idle:true.
-    - Echo sends one tagged mentor message → Codey's recipient handler routes to mentor
-      handler → injects as user prompt → Codey replies via `sendAgentMessage(role=mentor-reply)`.
+    - Echo sends one tagged mentor message on schedule (no mentee-state probe) → Codey's
+      recipient handler routes to mentor handler → injects as user prompt → Codey replies
+      via `sendAgentMessage(role=mentor-reply)`.
     - Echo receives the reply → Stage-B emits findings.
-    - Next tick defers (no auto-recurrence) — outstanding-prompts check + idle gate.
+    - Next tick defers (no auto-recurrence) — outstanding-prompts check + budget gate.
     - Capture token-ledger spend (Stage-B attribution + Stage-A unknown::pre-attribution
       separately), ledger audit trail, any degradation events.
     - Assert no second Lifeline topic appears in the chat (multi-instance hygiene).
@@ -493,10 +487,14 @@ being tested") AND **verified his own live capability surface** before answering
 Telegram bidirectional, Threadline enabled, mentor endpoints present, `quotaTracking:false`
 on his instance — applying [[feedback_report_verified_not_intended_behavior]]).
 
-Codey's 5 substantive refinements (all folded above):
-1. **/idle** — add optional `reason` (diagnostic-only, Echo doesn't depend); sharpen
-   `activeSessions` semantics (live work only, not historical panes); ambiguous-signal →
-   `idle:false` rather than omit.
+**Round 3 (Justin user-fidelity correction, 2026-05-27): `/idle` WITHDRAWN.** The whole
+mentee-state-probe is removed (users don't probe before sending). Codey is relieved of the
+`/idle` endpoint ask. His remaining side: the recipient handler + `sendAgentMessage` + the
+`agentTelegram.knownAgents` allowlist. A short Threadline note will tell him `/idle` is off
+the table (good news — less for him to build).
+
+Codey's substantive refinements (all folded above; the /idle one is now moot):
+1. ~~**/idle**~~ — WITHDRAWN (Justin user-fidelity correction). The endpoint is not built.
 2. **Recipient handler** — strict malformed-marker drop (security event, NEVER fall
    through to user); explicit per-decision audit row; processed-id idempotency ledger
    against Telegram retries / adapter restarts.

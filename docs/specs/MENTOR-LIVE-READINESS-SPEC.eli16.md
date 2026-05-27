@@ -12,15 +12,18 @@ the receive side has the anti-bounce machinery baked in (it knows not to send co
 replies, replies are tagged back with a matching id, etc.). The mentor is just its
 first consumer.
 
-## The three live-readiness fixes (mentor)
+## The live-readiness fixes (mentor)
 
-1. **Is-Codey-free check** — Codey adds a tiny public status page (`/idle`) so my probe
-   has a real signal instead of asking the wrong question. If anything is ambiguous
-   I treat him as busy.
-2. **Talk to Codey via Telegram** — I mint a dedicated mentor bot (per your option C),
+*(There were three; you correctly cut one — the "is Codey free?" probe. A real user
+doesn't check if someone's free before texting them; they just text, and the receiver
+handles it. So that check is gone entirely. What's left:)*
+
+1. **Talk to Codey via Telegram** — I mint a dedicated mentor bot (per your option C),
    message Codey from that bot in a dedicated Mentor topic on his setup, he processes
-   it as a user-style prompt, replies tagged back, my Stage-B reads the reply.
-3. **Budget on real units** — I gate against your quota meter (5-hour / weekly) and a
+   it as a user-style prompt, replies tagged back, my Stage-B reads the reply. I don't
+   pester: I won't send a new message while I'm still waiting on a reply to the last one
+   (that's the real "user behavior" gate — not a status probe).
+2. **Budget on real units** — I gate against your quota meter (5-hour / weekly) and a
    token ceiling, NOT pretend dollars. **Honest scope note**: today the ceiling only
    captures the Stage-B analysis spend; the spawned Stage-A session's tokens go to the
    ledger without a mentor tag, so they bypass the ceiling. I'm shipping the cap with
