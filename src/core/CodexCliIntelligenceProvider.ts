@@ -146,7 +146,9 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         this.codexPath,
         args,
         {
-          timeout: DEFAULT_TIMEOUT_MS,
+          // Honor a caller-supplied per-call budget (IntelligenceOptions.timeoutMs);
+          // fall back to the 30s default so every caller that omits it is unchanged.
+          timeout: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxBuffer: 1024 * 1024,
           env: childEnv,
         },

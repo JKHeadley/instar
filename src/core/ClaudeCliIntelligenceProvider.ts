@@ -55,7 +55,11 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       delete childEnv.CLAUDE_SESSION_ID;
 
       const child = execFile(this.claudePath, args, {
-        timeout: DEFAULT_TIMEOUT_MS,
+        // Honor a caller-supplied per-call budget (IntelligenceOptions.timeoutMs);
+        // fall back to the 30s default so every caller that omits it is unchanged.
+        // LLM-backed callers on a synchronous HTTP path (e.g. the standards-
+        // conformance gate reviewing a full spec) need more than 30s.
+        timeout: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: 1024 * 1024, // 1MB
         env: childEnv,
       }, (error, stdout, stderr) => {

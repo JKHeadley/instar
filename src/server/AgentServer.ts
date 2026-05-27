@@ -48,7 +48,7 @@ import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
-import { corsMiddleware, authMiddleware, requestTimeout, errorHandler, dashboardSecurityHeaders } from './middleware.js';
+import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
 import { getOrCreateBootId } from './boot-id.js';
@@ -370,22 +370,19 @@ export class AgentServer {
     // immediately invalidates old bearer tokens AND old HMAC-signed view
     // URLs without a restart.
     this.app.use(authMiddleware(() => this.config.authToken, options.config.projectName));
-    // Outbound messaging routes are intentionally LLM-backed (tone gate review)
-    // and involve third-party API calls (Telegram/Slack/WhatsApp Bot APIs) whose
-    // latency we don't control. The default 30s budget is routinely exceeded
-    // under normal load; a 408 fired while the handler's send is in flight
-    // causes the agent's client to treat a successful delivery as failure,
-    // regenerate, and retry — shipping a duplicate message. Extended budget
-    // of 120s accommodates the realistic p99 of this path.
-    const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
-    this.app.use(requestTimeout(options.config.requestTimeoutMs, {
-      '/telegram/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
-      '/telegram/post-update': OUTBOUND_MESSAGING_TIMEOUT_MS,
-      '/slack/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
-      '/whatsapp/send': OUTBOUND_MESSAGING_TIMEOUT_MS,
-      '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
-      '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
-    }));
+    // Per-path request-timeout overrides for LLM-backed / third-party routes
+    // (outbound messaging + the standards-conformance gate). The map and its
+    // matching logic are the single source of truth in middleware.ts so a
+    // wiring-integrity test asserts the exact production config. See
+    // buildRequestTimeoutOverrides() for the per-route rationale.
+    //
+    // E2E-PAIRING: EXEMPT — tunes the request-timeout BUDGET of an existing
+    // route (/spec/conformance-check), not a new route or feature. The route's
+    // "feature is alive" lifecycle is already covered by
+    // tests/e2e/standards-conformance-gate-lifecycle.test.ts; the budget itself
+    // is verified at the unit level (AgentServer-outbound-timeout.test.ts via the
+    // extracted production map/matcher). A 150s/180s budget is not E2E-observable.
+    this.app.use(requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides()));
 
     // ── Token Ledger ──────────────────────────────────────────────────
     // Read-only token-usage observability. Reads Claude Code's per-session
