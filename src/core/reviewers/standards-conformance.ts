@@ -40,6 +40,17 @@ export interface ConformanceReport {
 
 /** Hard cap so a wall-of-text spec can't dominate the prompt (injection hardening). */
 export const MAX_SPEC_CHARS = 24000;
+
+/**
+ * Per-call budget passed to the provider for the conformance review. Reviewing
+ * a full spec against the whole constitution is a single heavy top-tier call
+ * that routinely exceeds the providers' 30s default; without this the call is
+ * killed mid-review and the gate returns a misleadingly-empty degraded report.
+ * Kept strictly BELOW the route's outer middleware budget (SPEC_REVIEW_TIMEOUT_MS
+ * in AgentServer) so the provider's clean kill fires before the HTTP 408 — a
+ * genuinely-too-slow spec degrades fail-open rather than erroring at the client.
+ */
+export const CONFORMANCE_REVIEW_TIMEOUT_MS = 150_000;
 const FENCE = '<<<SPEC';
 const FENCE_END = 'SPEC>>>';
 
@@ -121,6 +132,7 @@ export class StandardsConformanceReviewer {
         model: this.opts.model ?? 'capable',
         temperature: 0,
         maxTokens: 1200,
+        timeoutMs: CONFORMANCE_REVIEW_TIMEOUT_MS,
         attribution: { component: 'StandardsConformanceReviewer' },
       });
     } catch {

@@ -23,8 +23,9 @@ import {
   StandardsConformanceReviewer,
   buildConformancePrompt,
   parseConformanceResponse,
+  CONFORMANCE_REVIEW_TIMEOUT_MS,
 } from '../../src/core/reviewers/standards-conformance.js';
-import type { IntelligenceProvider } from '../../src/core/types.js';
+import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 
 const REGISTRY_PATH = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
 
@@ -88,6 +89,22 @@ describe('StandardsConformanceReviewer', () => {
     expect(report.findings).toHaveLength(1);
     expect(report.findings[0].standard).toBe('No Manual Work (user *or* agent)');
     expect(report.findings[0].status).toBe('possible-violation');
+  });
+
+  it('passes the conformance review budget (timeoutMs) to the provider', async () => {
+    // Regression guard for the two-walls timeout bug: if the reviewer does not
+    // pass a budget, the provider's 30s default kills the review on any real
+    // spec and the gate silently returns an empty degraded report. The budget
+    // must reach the provider via IntelligenceOptions.timeoutMs.
+    let seen: IntelligenceOptions | undefined;
+    const provider: IntelligenceProvider = {
+      async evaluate(_prompt: string, options?: IntelligenceOptions) {
+        seen = options;
+        return '[]';
+      },
+    };
+    await new StandardsConformanceReviewer(provider).review('spec', FIXTURE_ARTICLES);
+    expect(seen?.timeoutMs).toBe(CONFORMANCE_REVIEW_TIMEOUT_MS);
   });
 
   it('degrades safe (empty report) when no provider is configured', async () => {

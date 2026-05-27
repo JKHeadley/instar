@@ -288,26 +288,68 @@ export function rateLimiter(windowMs: number = 60_000, maxRequests: number = 10)
  * Override matching is by longest-prefix, so a more specific prefix beats a
  * shorter parent if both are registered.
  */
+/**
+ * Extended request-timeout budget (ms) for outbound-messaging routes. They are
+ * LLM-backed (tone-gate review) and hit third-party APIs (Telegram/Slack/WhatsApp)
+ * whose latency we don't control; the 30s default 408s mid-send and triggers
+ * duplicate-send cascades on the client. 120s covers this path's realistic p99.
+ */
+export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
+
+/**
+ * Extended budget for the standards-conformance gate route (`/spec/conformance-check`).
+ * It makes a single heavy top-tier review call over a full spec; the 30s default
+ * 408s on any real spec. Set ABOVE the reviewer's inner CONFORMANCE_REVIEW_TIMEOUT_MS
+ * (150s) so the provider's own clean kill fires first — a genuinely-too-slow spec
+ * degrades fail-open (advisory empty report) instead of erroring at the client.
+ */
+export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
+
+/**
+ * The production per-path request-timeout overrides. Exported as the single
+ * source of truth so wiring-integrity tests assert against the SAME map the
+ * server actually wires — never a hand-rolled copy that could pass while the
+ * server is misconfigured (the PR-#334 dead-code lesson).
+ */
+export function buildRequestTimeoutOverrides(): Record<string, number> {
+  return {
+    '/telegram/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    '/telegram/post-update': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    '/slack/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    '/whatsapp/send': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+  };
+}
+
+/**
+ * Resolve the timeout budget for a path against the overrides, by longest-prefix
+ * match. Exported and used by BOTH the middleware and its tests so the matching
+ * logic can never drift between what is tested and what runs. Match is exact
+ * prefix OR prefix followed by '/' so '/foo' never spuriously matches '/foo-bar'
+ * — and a sibling like '/spec/conformance-metrics' is NOT matched by the
+ * '/spec/conformance-check' prefix. req.path never carries the query string.
+ */
+export function resolveRequestTimeout(
+  reqPath: string,
+  defaultMs: number,
+  perPathOverrides: Record<string, number>,
+): number {
+  const sortedOverrides = Object.entries(perPathOverrides)
+    .sort((a, b) => b[0].length - a[0].length);
+  for (const [prefix, ms] of sortedOverrides) {
+    if (reqPath === prefix || reqPath.startsWith(prefix + '/')) return ms;
+  }
+  return defaultMs;
+}
+
 export function requestTimeout(
   defaultMs: number = 30_000,
   perPathOverrides: Record<string, number> = {},
 ) {
-  // Precompute overrides sorted by descending prefix length so longest-match
-  // wins without scanning every entry on every request.
-  const sortedOverrides = Object.entries(perPathOverrides)
-    .sort((a, b) => b[0].length - a[0].length);
-
   return (req: Request, res: Response, next: NextFunction): void => {
-    let timeoutMs = defaultMs;
-    for (const [prefix, ms] of sortedOverrides) {
-      // Match either exact prefix or prefix followed by '/' so that '/foo'
-      // does NOT spuriously match '/foo-bar'. req.path in Express never
-      // contains the query string, so no '?' branch is needed.
-      if (req.path === prefix || req.path.startsWith(prefix + '/')) {
-        timeoutMs = ms;
-        break;
-      }
-    }
+    const timeoutMs = resolveRequestTimeout(req.path, defaultMs, perPathOverrides);
 
     let done = false;
     const timer = setTimeout(() => {

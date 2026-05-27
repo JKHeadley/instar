@@ -127,6 +127,34 @@ describe('CodexCliIntelligenceProvider — spawn args', () => {
   });
 });
 
+describe('CodexCliIntelligenceProvider — per-call timeout (IntelligenceOptions.timeoutMs)', () => {
+  // Regression for the two-walls conformance-gate timeout bug
+  // (docs/specs/conformance-gate-timeout.md): the provider used to hardcode the
+  // execFile timeout at 30s and ignore the caller's budget. `timeout` is an
+  // execFile option, not argv, so we assert it behaviorally with a slow fake.
+  let slowCodexPath: string;
+
+  beforeAll(() => {
+    slowCodexPath = path.join(tmpDir, 'slow-codex');
+    fs.writeFileSync(slowCodexPath, '#!/bin/sh\nsleep 1\necho "DONE"\nexit 0\n', { mode: 0o755 });
+  });
+
+  it('honors a short timeoutMs — kills a slow call (pre-fix this budget was ignored)', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
+    await expect(provider.evaluate('hi', { timeoutMs: 100 })).rejects.toThrow();
+  });
+
+  it('a generous timeoutMs lets the same slow call finish', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
+    await expect(provider.evaluate('hi', { timeoutMs: 5000 })).resolves.toContain('DONE');
+  });
+
+  it('without timeoutMs the 30s default is unchanged — a sub-default call still resolves', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
+    await expect(provider.evaluate('hi')).resolves.toContain('DONE');
+  });
+});
+
 describe('CodexCliIntelligenceProvider — clean-call (no identity, no hooks)', () => {
   // Regression: judgment calls must NOT run in the agent's project dir, or
   // codex loads the full ~26 KB AGENTS.md identity and fires the project's

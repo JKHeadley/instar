@@ -1,27 +1,37 @@
 /**
- * Structural guard: AgentServer must register extended request-timeout
- * overrides on every outbound messaging route.
+ * Wiring-integrity guard: the server's per-path request-timeout overrides must
+ * route LLM-backed / third-party routes to their extended budgets — and the
+ * fast sibling routes must stay on the default.
  *
- * A silent regression — typo in a path key, merge drop, or someone removing
- * an override during a refactor — would NOT fail the existing route tests,
- * because those tests don't exercise the 30s→120s distinction. This test
- * reads the AgentServer source and asserts each outbound-messaging prefix is
- * present in the override map, so any accidental removal fails CI.
+ * This asserts against the PRODUCTION map (`buildRequestTimeoutOverrides()`) and
+ * the PRODUCTION matcher (`resolveRequestTimeout()`) imported directly — not a
+ * source regex and not a hand-rolled copy. A hand-rolled map would let this pass
+ * while the server is misconfigured; importing the real functions closes that
+ * dead-code/false-wiring trap (PR-#334 lesson). AgentServer wires these exact
+ * functions, so a regression in the map or the matcher fails here.
  *
- * Background: fix for the duplicate-outbound-message bug where the 30s
- * global timeout fired on LLM-backed outbound routes. See
- * upgrades/side-effects/outbound-timeout-408-ambiguous.md.
+ * Background: the duplicate-outbound-message bug (30s 408 on LLM-backed outbound
+ * routes), and the conformance-gate timeout fix (docs/specs/conformance-gate-timeout.md)
+ * where /spec/conformance-check inherited the 30s default and 408'd on real specs.
  */
 
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  buildRequestTimeoutOverrides,
+  resolveRequestTimeout,
+  OUTBOUND_MESSAGING_TIMEOUT_MS,
+  SPEC_REVIEW_TIMEOUT_MS,
+} from '../../src/server/middleware.js';
+import { CONFORMANCE_REVIEW_TIMEOUT_MS } from '../../src/core/reviewers/standards-conformance.js';
 
-const AGENT_SERVER_PATH = path.join(import.meta.dirname, '../../src/server/AgentServer.ts');
-const source = fs.readFileSync(AGENT_SERVER_PATH, 'utf-8');
+const DEFAULT_MS = 30_000;
 
-describe('AgentServer — outbound messaging timeout overrides', () => {
-  const requiredPrefixes = [
+describe('request-timeout override map (production wiring)', () => {
+  const overrides = buildRequestTimeoutOverrides();
+
+  const outboundPrefixes = [
     '/telegram/reply',
     '/telegram/post-update',
     '/slack/reply',
@@ -30,30 +40,47 @@ describe('AgentServer — outbound messaging timeout overrides', () => {
     '/imessage/validate-send',
   ];
 
-  for (const prefix of requiredPrefixes) {
-    it(`wires ${prefix} to the extended-timeout override map`, () => {
-      // Match 'path-prefix': NUMBER as it appears in the requestTimeout call.
-      // Matches both quoted-string keys ('/telegram/reply': 120_000) and any
-      // reasonable whitespace.
-      const pattern = new RegExp(`['"]${prefix.replace(/\//g, '\\/')}['"]\\s*:`);
-      expect(source).toMatch(pattern);
+  for (const prefix of outboundPrefixes) {
+    it(`resolves ${prefix} to the outbound-messaging budget`, () => {
+      expect(resolveRequestTimeout(prefix, DEFAULT_MS, overrides)).toBe(OUTBOUND_MESSAGING_TIMEOUT_MS);
     });
   }
 
-  it('uses a numeric timeout (not the default 30s) for the outbound routes', () => {
-    // The override value should be materially larger than the default 30_000.
-    // Accept any value ≥ 90_000ms (90s) — gives room to tune the budget
-    // without having to update this test.
-    const match = source.match(/OUTBOUND_MESSAGING_TIMEOUT_MS\s*=\s*(\d[\d_]*)/);
-    expect(match).not.toBeNull();
-    const value = Number(match![1].replace(/_/g, ''));
-    expect(value).toBeGreaterThanOrEqual(90_000);
+  it('resolves /spec/conformance-check to the spec-review budget (the bug this fixed)', () => {
+    expect(resolveRequestTimeout('/spec/conformance-check', DEFAULT_MS, overrides)).toBe(SPEC_REVIEW_TIMEOUT_MS);
   });
 
-  it('still passes the global default to requestTimeout as the first arg', () => {
-    // Regression guard: the global 30s default for every non-outbound route
-    // must not be accidentally replaced with the outbound timeout.
-    expect(source).toMatch(/requestTimeout\(options\.config\.requestTimeoutMs,/);
+  it('leaves the fast sibling /spec/conformance-metrics on the default (no over-reach)', () => {
+    // It is a sibling, NOT a child of /spec/conformance-check, so longest-prefix
+    // matching must not catch it.
+    expect(resolveRequestTimeout('/spec/conformance-metrics', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+  });
+
+  it('leaves an arbitrary unrelated route on the default', () => {
+    expect(resolveRequestTimeout('/health', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+    expect(resolveRequestTimeout('/telegram/reply-but-different', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+  });
+
+  it('uses budgets materially larger than the 30s default', () => {
+    expect(OUTBOUND_MESSAGING_TIMEOUT_MS).toBeGreaterThanOrEqual(90_000);
+    expect(SPEC_REVIEW_TIMEOUT_MS).toBeGreaterThanOrEqual(90_000);
+  });
+
+  it('orders the inner provider budget strictly below the outer HTTP budget', () => {
+    // The provider must kill a too-slow review cleanly (fail-open degraded
+    // report) BEFORE the middleware fires a 408 at the client. If this inverts,
+    // a slow spec produces a raw 408 again.
+    expect(CONFORMANCE_REVIEW_TIMEOUT_MS).toBeLessThan(SPEC_REVIEW_TIMEOUT_MS);
+  });
+
+  it('AgentServer wires the production override builder (not an inline literal)', () => {
+    const agentServerSrc = fs.readFileSync(
+      path.join(import.meta.dirname, '../../src/server/AgentServer.ts'),
+      'utf-8',
+    );
+    // Regression guard: the global default is still passed as the first arg, and
+    // the overrides come from the shared builder (so this test's map == prod's).
+    expect(agentServerSrc).toMatch(/requestTimeout\(options\.config\.requestTimeoutMs,\s*buildRequestTimeoutOverrides\(\)\)/);
   });
 });
 
