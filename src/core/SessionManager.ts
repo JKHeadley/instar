@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -214,6 +215,27 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+  }
+
+  /** Lazily-constructed tri-state liveness oracle (UNIFIED-SESSION-LIFECYCLE §P1).
+   *  Backs the boot purge and isSessionAliveAsync so a slow/unreachable tmux is
+   *  treated as `indeterminate`, never `dead`. */
+  private _livenessOracle: SessionLivenessOracle | null = null;
+  private get livenessOracle(): SessionLivenessOracle {
+    if (!this._livenessOracle) {
+      this._livenessOracle = new SessionLivenessOracle(
+        { tmuxPath: this.config.tmuxPath, exec: execFileAsync },
+        this.config.liveness,
+      );
+    }
+    return this._livenessOracle;
+  }
+
+  /** Test/DI seam: inject a liveness oracle (e.g. one with a scripted exec).
+   *  Production builds the oracle lazily from config; this lets unit tests drive
+   *  the alive/dead/indeterminate verdicts deterministically. */
+  setLivenessOracle(oracle: SessionLivenessOracle): void {
+    this._livenessOracle = oracle;
   }
 
   /** Effective idle-at-prompt kill threshold (config override or hardcoded default) */
@@ -1373,32 +1395,48 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Fast startup purge — immediately remove session records for dead tmux sessions.
-   * Called once at server boot BEFORE monitoring starts, to prevent the death spiral
-   * where stale sessions overwhelm startup and block health checks.
-   * Uses a short timeout (1s) per session to fail fast.
+   * Fast startup purge — remove session records for sessions that are *definitively*
+   * dead. Called once at server boot BEFORE monitoring starts, to prevent the death
+   * spiral where stale records overwhelm startup and block health checks.
+   *
+   * UNIFIED-SESSION-LIFECYCLE §P1 (the 2026-05-27 fix): liveness is resolved from a
+   * single `tmux list-sessions` via the tri-state oracle, NOT a per-session
+   * `has-session` with a 1s timeout. The old code treated a timeout (tmux busy at
+   * boot) identically to "session gone" and mass-purged live sessions — "9 of 9".
+   * Now ONLY a `dead` verdict (server reachable + exact id absent) purges; `alive`
+   * and `indeterminate` are kept. An indeterminate session lingers one extra tick
+   * (cheap, caught by monitoring) rather than being falsely reaped (expensive).
    */
   async purgeDeadSessions(): Promise<number> {
     const running = this.state.listSessions({ status: 'running' });
     if (running.length === 0) return 0;
 
+    const verdicts = await this.livenessOracle.probeAll(running.map((s) => s.tmuxSession));
+
     let purged = 0;
+    let kept = 0;
+    let indeterminate = 0;
     for (const session of running) {
-      try {
-        execFileSync(this.config.tmuxPath, ['has-session', '-t', `=${session.tmuxSession}`], {
-          stdio: 'ignore', timeout: 1000,
-        });
-      } catch {
-        // tmux session doesn't exist — purge the record
+      const v = verdicts.get(session.tmuxSession);
+      if (v?.liveness === 'dead') {
         session.status = 'completed';
         session.endedAt = new Date().toISOString();
+        session.endedReason = 'boot-purge-dead';
         this.state.saveSession(session);
         purged++;
+      } else {
+        kept++;
+        if (v?.liveness === 'indeterminate') indeterminate++;
       }
     }
 
-    if (purged > 0) {
-      console.log(`[SessionManager] Startup purge: removed ${purged} dead session(s) of ${running.length} tracked`);
+    if (purged > 0 || indeterminate > 0) {
+      console.log(
+        `[SessionManager] Startup purge: removed ${purged} dead session(s) of ${running.length} tracked` +
+          (indeterminate > 0
+            ? ` (${indeterminate} indeterminate — KEPT, will re-verify on the next tick rather than risk a false purge)`
+            : ''),
+      );
     }
     return purged;
   }

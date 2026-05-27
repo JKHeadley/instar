@@ -180,6 +180,11 @@ export interface SessionManagerConfig {
   /** Absolute maximum session duration in minutes — safety net for sessions
    *  without an explicit timeout (default: 240) */
   defaultMaxDurationMinutes?: number;
+  /** Tri-state liveness-oracle tuning (UNIFIED-SESSION-LIFECYCLE §P1). Partial —
+   *  unset fields fall back to DEFAULT_LIVENESS_CONFIG. Validated at startup so a
+   *  sub-floor probe timeout (which would re-create the 2026-05-27 false-purge)
+   *  is rejected loudly. */
+  liveness?: Partial<import('./SessionLivenessOracle.js').SessionLivenessOracleConfig>;
 }
 
 // ── Job Scheduling ──────────────────────────────────────────────────
