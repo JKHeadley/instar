@@ -21,7 +21,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync, execSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('analyze-release.js --ref flag', () => {
@@ -29,11 +30,12 @@ describe('analyze-release.js --ref flag', () => {
   let betaSha: string;
   const scriptPath = path.resolve(__dirname, '../../scripts/analyze-release.js');
 
-  function git(args: string[]) {
-    return execFileSync('git', args, {
+  function git(args: string[]): string {
+    // SafeGitExecutor.run routes read verbs → readSync and others → execSync.
+    // Operations run inside an OS tmpdir, so the SourceTreeGuard never trips.
+    return SafeGitExecutor.run(args, {
       cwd: tmpDir,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      operation: 'tests/unit/analyze-release-ref-flag.test.ts:git',
     });
   }
 
