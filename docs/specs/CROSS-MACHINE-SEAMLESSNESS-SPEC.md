@@ -237,7 +237,7 @@ Per Justin's explicit requirement. All under `.instar/config.json` → `multiMac
 |------|---------|---------|
 | `ingressHeartbeatMs` | 30s | How often the lease holder refreshes its liveness/lease (distinct from the 30-min machine-presence heartbeat) |
 | `registrySyncDebounceMs` | 10s | Debounce window for committing *durable* registry changes to git |
-| `standbyPullIntervalMs` | `failoverThresholdMs / 4` (auto) | Standby git-pull cadence; auto-derived to satisfy the **< `failoverThresholdMs` / 3** invariant (validated on startup); explicit overrides are validated against the same bound |
+| `standbyPullIntervalMs` | `min(failoverThresholdMs/4, leaseTtlMs/2)` (auto) | Standby git-pull cadence; auto-derived to satisfy **both** the `< failoverThresholdMs/3` and `< leaseTtlMs` invariants at once (at default ratios `leaseTtlMs` is the binding bound, so a bare `failoverThresholdMs/4` would violate the leaseTtl invariant — implementation verified). Explicit overrides are validated against both bounds |
 | `failoverThresholdMs` | (existing, ~15min) | How stale before a peer is presumed dead; must exceed worst-case NTP drift ×2 |
 | `leaseTtlMs` | 2 × `ingressHeartbeatMs` | Lease expiry; bounds the worst-case transfer overlap window |
 | `liveTailTransport` | `tunnel` | `tunnel` (low-latency) \| `git` (durable-only, cheaper; recommended default for N>3) |
