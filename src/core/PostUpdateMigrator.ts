@@ -2507,6 +2507,25 @@ When the user is reading the Threadline hub topic and says **"open this"** or **
       result.upgraded.push('CLAUDE.md: added Multi-Session Autonomy awareness section');
     }
 
+    // Framework-Onboarding Mentor System — issue-ledger observability (Agent
+    // Awareness Standard). Existing agents need to know the read-only
+    // /framework-issues + playbook routes exist, even if initialized before this
+    // capability shipped. Signal-only (never gates). Content-sniffed marker.
+    if (!content.includes('Framework-Onboarding Mentor System')) {
+      const fwLedgerSection = `
+### Framework-Onboarding Mentor System — issue ledger (read-only)
+
+A durable, bucket-tagged record of behavioral issues observed while onboarding an agent framework (Codex, then Cursor/Aider/Gemini) onto Instar. **Observability only — it never gates a job, blocks a message, or constrains a session.** The full mentor loop ships staged (off by default).
+
+- Issues logged for a framework: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues\` (optional \`?framework=X&bucket=...&status=...&limit=N\`)
+- The onboarding playbook (generalizable lessons from PRIOR frameworks, impact-ranked): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/framework-issues/playbook?targetFramework=X"\`
+- Both routes are read-only and return references, not log contents.
+`;
+      content += '\n' + fwLedgerSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Framework-Onboarding Mentor System issue-ledger awareness section');
+    }
+
     // Version-Skew Self-Recovery section
     // Tells the agent what's happening when the lifeline+server temporarily
     // mismatch versions during an auto-update. Without this, agents diagnose

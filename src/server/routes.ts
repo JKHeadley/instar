@@ -659,6 +659,10 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** Framework-Onboarding Mentor System issue ledger (read-only observability;
+   *  signal-only — never gates). Null when stateDir is unavailable. Powers
+   *  GET /framework-issues and /framework-issues/playbook. */
+  frameworkIssueLedger?: import('../monitoring/FrameworkIssueLedger.js').FrameworkIssueLedger | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -4175,6 +4179,66 @@ export function createRoutes(ctx: RouteContext): Router {
       if (n > 0) idleMs = n;
     }
     res.json({ idleMs, orphans: ctx.tokenLedger.orphans({ idleMs }) });
+  });
+
+  // ── Framework-Onboarding Mentor System: issue ledger (read-only) ──
+  // Signal-only observability. Bearer auth is applied globally by middleware;
+  // these routes never gate behaviour. See FRAMEWORK-ONBOARDING-MENTOR-SPEC §5.
+
+  // Clamp a list limit to 1..500 (§5/§17). Local to avoid import churn; mirrors
+  // FrameworkIssueLedger.clampLimit (the ledger re-clamps server-side too).
+  const clampFwLimit = (raw: unknown): number => {
+    const n = typeof raw === 'string' ? parseInt(raw, 10) : typeof raw === 'number' ? raw : NaN;
+    if (!Number.isFinite(n)) return 100;
+    return Math.max(1, Math.min(500, Math.floor(n)));
+  };
+
+  router.get('/framework-issues', (req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    const limit = clampFwLimit(req.query.limit);
+    // Validate framework against the known-framework allowlist (§17) — an
+    // unknown value yields an empty result, never an unbounded/injection query.
+    const known = ctx.frameworkIssueLedger.knownFrameworks();
+    let framework: string | undefined;
+    if (typeof req.query.framework === 'string') {
+      if (!known.includes(req.query.framework)) {
+        res.json({ framework: req.query.framework, knownFrameworks: known, issues: [] });
+        return;
+      }
+      framework = req.query.framework;
+    }
+    const bucket = typeof req.query.bucket === 'string' ? req.query.bucket : undefined;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    try {
+      const issues = ctx.frameworkIssueLedger.listIssues({
+        framework,
+        // listIssues validates these enums and throws on bad input.
+        bucket: bucket as never,
+        status: status as never,
+        limit,
+      });
+      res.json({ framework, knownFrameworks: known, limit, issues });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/framework-issues/playbook', (req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    const targetFramework = typeof req.query.targetFramework === 'string' ? req.query.targetFramework : '';
+    if (!targetFramework) {
+      res.status(400).json({ error: 'targetFramework query param is required' });
+      return;
+    }
+    const limit = clampFwLimit(req.query.limit);
+    const playbook = ctx.frameworkIssueLedger.playbook({ targetFramework, limit });
+    res.json({ targetFramework, limit, playbook });
   });
 
   // ── Jobs ────────────────────────────────────────────────────────
