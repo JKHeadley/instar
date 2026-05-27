@@ -4,8 +4,8 @@ slug: conformance-gate-timeout
 review-iterations: 1
 review-convergence: "v1 — converged after one adversarial + one standards round (2026-05-26). The adversarial round caught a BLOCKING miss in the v0 draft: a second, inner 30s wall in the intelligence providers that a middleware-only fix would have masked as a silent 'degraded' (empty) report — worse than the loud 408. Root cause and fix surface corrected accordingly. Standards round added the production-map wiring-integrity test requirement."
 eli16-overview: "conformance-gate-timeout.eli16.md"
-approved: false
-approval-context: "DRAFT — converged, awaiting Justin approval per the instar-dev gate (spec-first) before any src/ change."
+approved: true
+approval-context: "Approved by Justin on 2026-05-26 (topic 12476) after the converged plain-English summary. The convergence's adversarial round caught the second (inner provider) 30s wall before any code was written; Justin approved the complete four-edit fix."
 lessons-engaged:
   - "Verify component is actually wired (PR #334 dead-code lesson) — the unit test must assert against the PRODUCTION override map, not a hand-rolled one, or it goes green while the wiring stays broken"
   - "A test can encode the bug as correct — a middleware-only unit test would pass while the gate stays broken end-to-end (the inner provider wall)"
