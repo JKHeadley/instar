@@ -56,6 +56,20 @@ export interface CapabilityEntry {
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
+    key: 'releaseReadiness',
+    prefixes: ['/release-readiness'],
+    description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.releaseReadinessSentinel,
+      endpoints: [
+        'GET /release-readiness',
+        'POST /release-readiness/tick',
+        'POST /release-readiness/rollback',
+        'POST /release-readiness/enable',
+      ],
+    }),
+  },
+  {
     key: 'telegram',
     prefixes: ['/telegram'],
     description: 'Telegram messaging adapter (bidirectional)',
