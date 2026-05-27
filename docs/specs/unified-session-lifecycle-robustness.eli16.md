@@ -66,6 +66,29 @@ Concretely, three shared rules everyone now follows:
 You also asked: when you rename a Telegram topic, the session label in the dashboard should rename
 too. Small, unrelated to the bug, but it's the same "session labeling" area — so I bundled it in.
 
+## What the review round changed (you approved the first draft — this made it stronger)
+
+After you approved, I ran the spec through five independent reviewers plus our constitution-checker.
+They found real things my own pass missed, and the design got noticeably stronger:
+
+- **One bouncer instead of eight.** The first draft let all eight cleanup crews still make their own
+  shut-off call, with the shared rules only as advice. The reviewers (rightly) called that out. Turns
+  out we already have a single front-door that every shutoff *could* go through — so now they all do,
+  and that front door holds the rules. A crew can *ask* to shut a burner off; the front door decides.
+  No crew can act alone anymore.
+- **The machines won't step on each other.** If you're running me on two computers, only the "awake"
+  one is allowed to shut anything off — so a sleepy second machine can't reach over and kill the
+  active one's work.
+- **It won't slow down startup.** Being careful, done naively, would've made the kitchen take a
+  minute-plus to reopen — bringing back the exact pile-up we're fixing. Now the careful check is fast:
+  one quick "who's here?" question for everyone at once, with a hard time limit.
+- **Nothing can hide forever, either.** A burner that *pretends* to be cooking (or that we genuinely
+  can't get an answer about) used to risk never being touchable. Now, after a while, instead of
+  guessing, I just ask *you* ("this one's been unreachable for half an hour — want me to force it
+  off?") — and it can never clog things up so badly you can't start new work.
+- **You get a log.** Every shutoff and its reason lands on a page you can pull up any time — so a
+  vanished session is never a mystery again.
+
 ## What I'm asking you
 
 The spec proposes doing this in three chunks: first the fix for the bug you hit plus the shared brain,
