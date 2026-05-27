@@ -80,6 +80,19 @@ describe('Mentor-onboarding E2E lifecycle (alive + dormant)', () => {
     expect((await request(app).get('/mentor/status')).status).toBe(401);
   });
 
+  it('boots clean with the Stage-B forensics wiring (server alive, mentor dormant)', async () => {
+    // PR B wires real Stage-B forensics (rollout/log reading + LLM classify) into
+    // the runner. This asserts that wiring doesn't break boot and the mentor stays
+    // dormant on the production init path.
+    const status = await request(app).get('/mentor/status').set(auth());
+    expect(status.status).toBe(200);
+    expect(status.body.enabled).toBe(false);
+    // A dormant tick still returns disabled — the forensics path is never reached.
+    const tick = await request(app).post('/mentor/tick').set(auth());
+    expect(tick.status).toBe(200);
+    expect(tick.body).toEqual({ ran: false, reason: 'disabled' });
+  });
+
   it('the built-in mentor job template ships OFF by default', () => {
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
     const repoRoot = path.resolve(thisDir, '..', '..');

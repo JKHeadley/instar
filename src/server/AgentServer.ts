@@ -59,6 +59,8 @@ import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { STAGE_A_ALLOWED_TOOLS } from '../monitoring/MentorStageA.js';
+import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
+import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector } from '../monitoring/BurnDetector.js';
 import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
@@ -648,9 +650,37 @@ export class AgentServer {
    * graduated-rollout track. The live spawn/forensics paths are real code, gated
    * behind that flag and validated via test-as-self before promotion.
    */
+  /** Find the N most recently-modified rollout .jsonl files under a codex sessions
+   *  dir (nested year/month/day). Best-effort; returns [] on any error. */
+  private findRecentRolloutFiles(sessionsDir: string, n: number): string[] {
+    const found: Array<{ path: string; mtime: number }> = [];
+    const walk = (dir: string, depth: number): void => {
+      if (depth > 5) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full, depth + 1);
+        else if (e.name.endsWith('.jsonl')) {
+          try {
+            found.push({ path: full, mtime: fs.statSync(full).mtimeMs });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    };
+    walk(sessionsDir, 0);
+    return found.sort((a, b) => b.mtime - a.mtime).slice(0, n).map((f) => f.path);
+  }
+
   private buildMentorRunner(
     ledger: FrameworkIssueLedger,
-    options: { config: unknown; intelligence?: import('../core/types.js').IntelligenceProvider | null },
+    options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
     serverDataDir: string,
   ): MentorOnboardingRunner {
     const getConfig = (): MentorConfig => ({
@@ -688,13 +718,46 @@ export class AgentServer {
           }
           return self.sessionManager.captureOutput(tmux, 200) ?? '';
         },
-        // Stage-B deep log-forensics (assembling the mentee's rollouts/diffs and
-        // classifying) is a tracked follow-on; today the loop's real signal is the
-        // Stage-A leak detector (§4.3). Returns [] when no forensic inputs exist so
-        // the funnel still logs the run. <!-- tracked: topic-13435 -->
-        runStageBForensics: async (): Promise<ForensicFinding[]> => {
-          void intelligence;
-          return [];
+        // Stage-B deep forensics (§3.2): assemble the mentee's real signals
+        // (recent server-log errors/sentinel lines + a codex-rollout usage digest)
+        // and classify them into bucketed findings via the LLM. Returns [] when no
+        // intelligence provider or no signals (so the funnel still logs the run).
+        // The pure prompt/parse logic lives in MentorStageBForensics (tested);
+        // this closure only does the I/O (read logs/rollouts).
+        runStageBForensics: async (framework: string): Promise<ForensicFinding[]> => {
+          if (!intelligence) return [];
+          let signals = '';
+          try {
+            const logPath = path.join(options.config.stateDir!, 'logs', 'server.log');
+            if (fs.existsSync(logPath)) {
+              const buf = fs.readFileSync(logPath, 'utf-8');
+              const errLines = buf
+                .split('\n')
+                .filter((l) => /error|sentinel|delivery|fail|timeout|degrad/i.test(l))
+                .slice(-40);
+              if (errLines.length) signals += `## Recent server-log signals\n${errLines.join('\n')}\n\n`;
+            }
+            // Codex-rollout usage digest (rate-limit pressure / token burn) for codex frameworks.
+            if (framework.startsWith('codex')) {
+              const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+              const recent = self.findRecentRolloutFiles(sessionsDir, 3);
+              for (const f of recent) {
+                const parsed = parseCodexRollout(fs.readFileSync(f, 'utf-8'));
+                if (parsed) {
+                  signals += `## Codex session ${parsed.sessionId.slice(0, 8)} (model ${parsed.model ?? '?'})\n` +
+                    `tokens=${parsed.totalTokens} primaryRateLimit=${parsed.primaryUsedPercent ?? '?'}% ` +
+                    `secondaryRateLimit=${parsed.secondaryUsedPercent ?? '?'}% turns=${parsed.tokenCountEvents}\n\n`;
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('[mentor] Stage-B signal gathering failed (non-fatal):', err);
+          }
+          return analyzeForensics({
+            framework,
+            signals,
+            evaluate: (prompt) => intelligence.evaluate(prompt, { model: 'capable', maxTokens: 1500, attribution: { component: 'mentor-stage-b' } }),
+          });
         },
         // Safe-window: any other running (non-protected) session means the system
         // is busy — conservative "don't interrupt." Refined per-mentee at live
