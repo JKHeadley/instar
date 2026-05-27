@@ -92,8 +92,9 @@ PURPOSE: <a 4–6 word title naming what this conversation is ABOUT — not who 
 - **Input bound:** last 10 messages, each truncated to 800 chars.
 - **PURPOSE line → `topicName`** (scrubbed + capped, see Fix 1c). **Body → `summary`** (scrubbed + capped). If the PURPOSE line is missing/empty after parse, the topic name degrades to Tier B/C while the body can still serve as summary (if non-empty + clean).
 - **Queue lane:** `interactive` via `llmQueue.enqueue('interactive', fn, costCents=2)` (signature confirmed `LlmQueue.ts:82`). The operator typed "open this" and is watching Telegram for the topic to appear — textbook interactive-latency contract (same as a PresenceProxy tier reply). `background` would let a PresenceProxy arrival abort the in-flight brief (`LlmQueue.ts:128-138` preempts only `background` victims; interactive is never aborted), silently dropping the operator back to a worse name. `costCents=2` (Haiku ~1k in + ~320 out ≈ <1 cent).
-- **Timeout / abort:** `intelligence.evaluate` does NOT accept an `AbortSignal` (`ClaudeCliIntelligenceProvider` runs `execFile` and honors only its own `timeoutMs`). So the `fn` manually `Promise.race`s `evaluate` against (a) a `setTimeout(timeoutMs)` reject and (b) the queue's `signal.addEventListener('abort', …)` reject — exactly the PresenceProxy pattern (`PresenceProxy.ts:1700-1709`). On either → degrade to Tier B. 3.5s is below the operator's noticeable-delay threshold and well inside the session watchdog.
-- **No inbound back-pressure.** The intercept lives in `telegram.onTopicMessage`, which the lifeline-forward path invokes WITHOUT `await` (`routes.ts` returns 200 immediately) and which is NOT serialized across messages — each invocation is an independent async. So a 3.5s await inside the hub-command branch delays only THAT handler, never inbound message throughput.
+- **Timeout / abort:** `intelligence.evaluate` does NOT accept an `AbortSignal` (`ClaudeCliIntelligenceProvider` runs `execFile` and honors only its own `timeoutMs`). So the `fn` manually `Promise.race`s `evaluate` against (a) a `setTimeout(timeoutMs)` reject and (b) the queue's `signal.addEventListener('abort', …)` reject — exactly the PresenceProxy pattern (`PresenceProxy.ts:1700-1709`). On either → degrade to Tier B. **Default `timeoutMs` = 15000** (see test-as-self note below).
+  > **TEST-AS-SELF DEVIATION (2026-05-27):** the draft used a 3.5s ceiling on the assumption that a Haiku call is sub-second. Running the BUILT module against real Claude (and then a real Codex agent) measured **~8-10s end-to-end** for a ~10-message thread — CLI cold-start dominates. A 3.5s budget would have timed out the LLM tier on nearly every real "open this" and silently fallen to the template, defeating the feature's happy path. Raised the default to **15s**. It's a one-shot operator action, the call is non-blocking (next bullet), and the deterministic template still covers any overrun — so the wait cost is bounded and acceptable.
+- **No inbound back-pressure.** The intercept lives in `telegram.onTopicMessage`, which the lifeline-forward path invokes WITHOUT `await` (`routes.ts` returns 200 immediately) and which is NOT serialized across messages — each invocation is an independent async. So the (≤15s) await inside the hub-command branch delays only THAT handler, never inbound message throughput.
 
 **Tier B — deterministic templated brief (no LLM, always available when a conversation exists).** When the LLM tier is skipped (deps null / <2 messages) or fails (timeout / abort / cap / scrub-rejected / empty), build a brief from data already on hand — zero cost, zero latency, perfectly deterministic:
 - `topicName` ← `topicNameFallback(conv, threadId)` (existing `topicNameFor()` slug).
@@ -129,7 +130,7 @@ This makes "what % of opens silently fell back, and why" answerable from `logs/s
 ```ts
 // In the action:'open' branch, BEFORE findOrCreateForumTopic:
 const existing = conversationStore.get(threadId);
-const brief = await generateConversationBrief(threadId, existing ?? null, deps.brief, { timeoutMs: 3500 });
+const brief = await generateConversationBrief(threadId, existing ?? null, deps.brief); // default timeoutMs = 15000
 const t = await telegram.findOrCreateForumTopic(brief.topicName);
 topicId = t.topicId; topicName = t.name;
 // …authoritative bind unchanged…
@@ -151,7 +152,7 @@ Sites 1+2 are inside the same outer server function where `sharedLlmQueue` (~588
 
 ### Why sync, not async (rejected alternative)
 
-The "create topic with a placeholder name, fire the LLM in the background, then `editForumTopic` + post the summary when it returns" pattern decouples bind latency from LLM latency — but it produces a visible name-flicker in the operator's chat list (placeholder → real name seconds later) and a topic that's briefly empty then suddenly populated. The sync path with a 3.5s ceiling keeps the topic correct from first render; 3.5s is below the noticeable-delay threshold for an operator-initiated action, and the Tier-B template guarantees the summary is instant whenever the LLM can't make the window.
+The "create topic with a placeholder name, fire the LLM in the background, then `editForumTopic` + post the summary when it returns" pattern decouples bind latency from LLM latency — but it produces a visible name-flicker in the operator's chat list (placeholder → real name seconds later) and a topic that's briefly empty then suddenly populated. The sync path keeps the topic correct from first render; for a one-shot operator-initiated action the ~8-10s wait (measured, see the timeout note) is acceptable, and the Tier-B template guarantees the summary is instant whenever the LLM overruns the 15s window.
 
 ## 4. Privacy / Safety / Cost
 

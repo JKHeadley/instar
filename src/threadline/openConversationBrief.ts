@@ -109,7 +109,12 @@ function hasSecretInRaw(s: string): boolean {
 function scrubName(raw: string): string | null {
   const collapsed = (raw ?? '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!collapsed || hasSecretValue(collapsed)) return null;
-  const capped = collapsed.slice(0, NAME_MAX).trim();
+  let capped = collapsed.slice(0, NAME_MAX).trim();
+  // Cap on a word boundary so a long title doesn't read "…path resol".
+  if (collapsed.length > NAME_MAX) {
+    const lastSpace = capped.lastIndexOf(' ');
+    if (lastSpace >= MIN_NAME) capped = capped.slice(0, lastSpace).trim();
+  }
   if (capped.length < MIN_NAME) return null;
   return capped;
 }
@@ -203,7 +208,14 @@ export async function generateConversationBrief(
   opts?: { timeoutMs?: number },
 ): Promise<ConversationBrief> {
   const now = (deps.now ?? Date.now)();
-  const timeoutMs = opts?.timeoutMs ?? 3500;
+  // 15s default: a real Claude/Codex CLI call on a ~10-message thread measured
+  // ~8s end-to-end during test-as-self (CLI cold-start dominates), so the
+  // original 3.5s budget would have timed out the happy path on nearly every
+  // real "open this" and silently fallen back to the template. 15s keeps the
+  // LLM brief as the common outcome; it's a one-shot operator action, the call
+  // is non-blocking (onTopicMessage is non-await/non-serial), and the template
+  // still covers any call that overruns.
+  const timeoutMs = opts?.timeoutMs ?? 15000;
   const slug = (deps.topicNameFallback ?? defaultSlug)(conv, threadId);
 
   // Tier C — no backing conversation at all.
