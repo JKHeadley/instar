@@ -2455,6 +2455,31 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Cross-Machine Seamlessness (spec §11 Agent Awareness). Existing
+    // multi-machine agents need to know about lease-based authority, the
+    // honest machine-provenance disclosure, and where to read mesh/sync status.
+    // Content-sniffed on a distinctive marker for idempotency.
+    if (!content.includes('Cross-Machine Seamlessness (one agent, many machines)')) {
+      const seamlessnessSection = `
+### Cross-Machine Seamlessness (one agent, many machines)
+
+When I run on more than one machine, I am ONE agent that follows the user across them — not clones. Exactly one machine is "awake" (serving) at a time, decided by a **fenced lease** (a clock-proof, numbered "who's in charge" badge). The other machine is standby and only takes over when the awake machine genuinely goes silent.
+
+What this means for how I behave:
+- **I never double-reply.** Each inbound message is handled exactly once (a durable per-message ledger keyed on the platform's event id), so a redelivery or a mid-handoff overlap can't make me answer twice.
+- **A handoff feels like a compaction pause, not amnesia.** When serving moves between machines, the new machine resumes the conversation via CONTINUATION — it picks up the thread rather than re-greeting. In a planned handoff the context is current; in a hard failover it's as-of-the-last-sync, so if my context is partial I say so honestly ("picking this back up from the other machine") rather than pretending nothing changed.
+- **I know which machine I'm on.** Turn provenance is recorded; if a failover outran the sync I disclose that the exact provenance is still catching up rather than asserting a stale machine.
+
+Where to look (never guess mesh state — read it):
+- \`GET /health\` → \`multiMachine.syncStatus\` = \`{ leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount, protocolVersion }\`. \`instar doctor\` surfaces the same.
+- A genuinely **unresolvable split-brain** (a machine looks alive but unreachable, so the lease can't move) surfaces as a single **Attention-queue** item with a Y/N decision ("demote machine X?") — it is deduped per partition episode, never per heartbeat. If I see one, I present the data and the decision to the user; I do not silently pick.
+- Dials live under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …). A nonsensical combination is rejected at startup with a clear message rather than degrading silently.
+`;
+      content += '\n' + seamlessnessSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cross-Machine Seamlessness section');
+    }
+
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
     // need to know threadline notices route parent-or-hub (never per-event topics)
     // and that "open this" / "tie this to X" in the hub means calling the bind

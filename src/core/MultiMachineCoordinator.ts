@@ -23,7 +23,21 @@ import { SecurityLog } from './SecurityLog.js';
 import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
 import type { LeaseCoordinator } from './LeaseCoordinator.js';
+import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
+
+/** Observability shape for /health.multiMachine.syncStatus (spec §11). */
+export interface MultiMachineSyncStatus {
+  enabled: boolean;
+  role: MachineRole;
+  leaseHolder: string | null;
+  leaseEpoch: number;
+  holdsLease: boolean;
+  /** 'clear' | 'contested' (more than one awake machine in the registry) | 'self-suspended'. */
+  splitBrainState: 'clear' | 'contested' | 'self-suspended';
+  protocolVersion: number;
+  awakeMachineCount: number;
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -373,6 +387,41 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** Whether this machine structurally holds the lease (false if none attached). */
   holdsLease(): boolean {
     return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
+  }
+
+  /**
+   * Observability snapshot for /health.multiMachine.syncStatus (spec §11).
+   * Always returns valid fields (never null/throws) — this is the Phase-1
+   * "feature is alive" surface. On a single-machine install it reports the
+   * trivially-held lease.
+   */
+  getSyncStatus(): MultiMachineSyncStatus {
+    let awakeMachineCount = 0;
+    try {
+      const reg = this.identityManager.loadRegistry();
+      for (const e of Object.values(reg.machines ?? {})) {
+        if (e.role === 'awake') awakeMachineCount++;
+      }
+    } catch { /* @silent-fallback-ok — registry unreadable → count 0 */ }
+
+    const holds = this.holdsLease();
+    const selfSuspended = this.leaseCoordinator?.isSuspended ?? false;
+    const splitBrainState: MultiMachineSyncStatus['splitBrainState'] = selfSuspended
+      ? 'self-suspended'
+      : awakeMachineCount > 1
+        ? 'contested'
+        : 'clear';
+
+    return {
+      enabled: this._enabled,
+      role: this._role,
+      leaseHolder: this.leaseCoordinator?.currentHolder() ?? (holds ? this._identity?.machineId ?? null : null),
+      leaseEpoch: this.leaseCoordinator?.currentEpoch() ?? 0,
+      holdsLease: holds,
+      splitBrainState,
+      protocolVersion: SEAMLESSNESS_PROTOCOL_VERSION,
+      awakeMachineCount,
+    };
   }
 
   /**

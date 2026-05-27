@@ -677,6 +677,8 @@ export interface RouteContext {
    *  cross-agent-callback when a matching threadline message arrives. Null
    *  when TaskFlow is not enabled. */
   threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | null;
+  /** Multi-machine coordinator (cross-machine seamlessness) — null on single-machine installs. */
+  coordinator: import('../core/MultiMachineCoordinator.js').MultiMachineCoordinator | null;
   startTime: Date;
 }
 
@@ -1208,6 +1210,13 @@ export function createRoutes(ctx: RouteContext): Router {
       base.sessions = { current: sessionCount, max: maxSessions };
       base.schedulerRunning = ctx.scheduler !== null;
       base.consecutiveJobFailures = totalFailures;
+
+      // Cross-Machine Seamlessness (spec §11) — the Phase-1 "feature is alive"
+      // surface. Always present with valid fields (never null/503), even on a
+      // single-machine install (where the lease is trivially held).
+      base.multiMachine = ctx.coordinator
+        ? { enabled: true, syncStatus: ctx.coordinator.getSyncStatus() }
+        : { enabled: ctx.config.multiMachine?.enabled ?? false, syncStatus: null };
       base.project = ctx.config.projectName;
       base.node = process.version;
       base.memory = {
