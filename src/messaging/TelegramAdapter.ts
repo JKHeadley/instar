@@ -114,7 +114,11 @@ interface TelegramUpdate {
   update_id: number;
   message?: {
     message_id: number;
-    from: { id: number; first_name: string; username?: string };
+    // `is_bot` distinguishes a bot-sent message from a human user typing the same text —
+    // the structural half of the a2a spoof defense (a human typing an [a2a:…] marker has
+    // is_bot:false). `sender_chat` is present for group bot-as-channel relays.
+    from: { id: number; first_name: string; username?: string; is_bot?: boolean };
+    sender_chat?: { id: number; type?: string; username?: string };
     chat: { id: number };
     message_thread_id?: number;
     text?: string;
@@ -327,6 +331,14 @@ export class TelegramAdapter implements MessagingAdapter {
   private messageLogPath: string;
   private offsetPath: string;
   private stateDir: string;
+  /** Per-bot state root. Equals stateDir for the primary bot; a namespaced sub-dir for
+   *  non-primary adapters (multi-instance isolation — spec MENTOR-LIVE-READINESS §Fix 2b).
+   *  Only the per-bot state files (registry/messages/offset/attention) live here; shared
+   *  config lookups stay on stateDir. */
+  private botStateDir: string;
+  /** When true, start() skips ensureLifelineTopic() — a non-primary bot must not create a
+   *  second Lifeline topic in the chat. */
+  private suppressLifelineAutoCreate: boolean;
 
   // Attention queue (persisted to disk)
   private attentionItemToTopic: Map<string, number> = new Map();
@@ -511,7 +523,11 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.eventBus;
   }
 
-  constructor(config: TelegramConfig, stateDir: string) {
+  constructor(
+    config: TelegramConfig,
+    stateDir: string,
+    opts?: { subDir?: string; suppressLifelineAutoCreate?: boolean },
+  ) {
     if (config.chatId && !/^-?\d+$/.test(String(config.chatId))) {
       throw new Error(
         `Invalid Telegram chatId "${config.chatId}". Chat IDs must be numeric (e.g., -1001234567890). ` +
@@ -520,10 +536,20 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     this.config = config;
     this.stateDir = stateDir;
-    this.registryPath = path.join(stateDir, 'topic-session-registry.json');
-    this.messageLogPath = path.join(stateDir, 'telegram-messages.jsonl');
-    this.offsetPath = path.join(stateDir, 'telegram-poll-offset.json');
-    this.attentionFilePath = path.join(stateDir, 'state', 'attention-items.json');
+    this.suppressLifelineAutoCreate = opts?.suppressLifelineAutoCreate ?? false;
+    // Multi-instance isolation: a non-primary adapter (e.g. the mentor bot) namespaces its
+    // per-bot state under {stateDir}/{subDir}/ so two adapters never clobber each other's
+    // poll-offset / registry / message-log / attention files (the reviewer-flagged
+    // collision that makes poll()'s cross-token detection fire continuously). The PRIMARY
+    // bot passes no subDir → botStateDir === stateDir → paths are byte-for-byte unchanged.
+    this.botStateDir = opts?.subDir ? path.join(stateDir, opts.subDir) : stateDir;
+    if (opts?.subDir) {
+      fs.mkdirSync(this.botStateDir, { recursive: true });
+    }
+    this.registryPath = path.join(this.botStateDir, 'topic-session-registry.json');
+    this.messageLogPath = path.join(this.botStateDir, 'telegram-messages.jsonl');
+    this.offsetPath = path.join(this.botStateDir, 'telegram-poll-offset.json');
+    this.attentionFilePath = path.join(this.botStateDir, 'state', 'attention-items.json');
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
@@ -770,8 +796,11 @@ export class TelegramAdapter implements MessagingAdapter {
     this.pollStoppedAt = null;
     this.pending401Retry = false;
 
-    // Ensure Lifeline topic exists (auto-recreate if deleted)
-    await this.ensureLifelineTopic();
+    // Ensure Lifeline topic exists (auto-recreate if deleted). A non-primary adapter
+    // (e.g. the mentor bot) must NOT create a second Lifeline topic in the chat.
+    if (!this.suppressLifelineAutoCreate) {
+      await this.ensureLifelineTopic();
+    }
 
     console.log(`[telegram] Starting long-polling...`);
     this.poll();
