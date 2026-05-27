@@ -66,7 +66,28 @@
       - [x] C-receiver: src/core/handoffReceiverWiring.ts factory (begin→buildAck+sendAck;
             yield→acquireLeaseOnConsent) + exported hashTopicHistory + server.ts wiring +
             unit test. (commit 79e9bf23f)
-      - [ ] C2: OUTGOING HandoffSentinel construction + ops + initiate trigger + race guard:
+      - [x] C2a: HandoffWireTransport.sendBegin + createHandoffSentinelWiring factory + unit
+            tests (5: happy hands-off; mismatch/no-ack/failed-validate/unreachable-peer all
+            abort with zero yield/demote). (commit 50e4ca77c)
+      - [ ] C2b: bolt the sentinel into server.ts boot — CONFIRMED FINDINGS for the next session:
+            * Insertion point: the LiveTailSource block at `src/commands/server.ts:8177`
+              (`if (liveTailSendTransport && telegram && coordinator.enabled)`) — `liveTailSource`
+              is in scope there; additionally guard on `handoffWireTransport`.
+            * Config: `seamlessness.handoffAckTimeoutMs` (5000) + `seamlessness.minHandoffIntervalMs`
+              (60000) exist on the assertSeamlessnessInvariants result.
+            * ops bindings: pushTick→liveTailSource.pushTick; getIngressPosition→telegram
+              .getIngressPosition; getTopicHistory→telegram.getTopicHistory; activeTopic→pick the
+              telegram.getKnownTopicIds() topic with the latest last-message ts; postBegin→
+              handoffWireTransport.sendBegin; awaitAck→handoffWireTransport.awaitAck; sendYield→
+              handoffWireTransport.sendYield; demoteSelf→coordinator.demoteToStandby('planned handoff').
+            * TRIGGER: SleepWakeDetector emits ONLY 'wake' (no pre-sleep signal — verified), so a
+              sleep-trigger is NOT viable. Use an explicit authenticated LOCAL route
+              `POST /handoff/initiate` (bearer auth, in src/server/routes.ts or a small AgentServer
+              router) → calls sentinel.initiate(). This touches src/server → e2e-pairing gate fires,
+              so pair a tests/e2e/*.test.ts (the two-server planned-handoff e2e = C3 satisfies it).
+            * race guard: expose sentinel.inProgress; gate the scheduler/reaper checks that already
+              read holdsLease so they pause mid-handoff.
+      - [ ] (was C2) reference for the above:
             * Extract a `createHandoffSentinelWiring({ pushTick, getIngressPosition,
               getTopicHistory, activeTopic, postBegin, awaitAck, sendYield, demoteSelf,
               validate })` factory (mirror C-receiver) → returns { sentinel, initiate }.
