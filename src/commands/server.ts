@@ -7797,14 +7797,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     // ship-dark feature relies on anyone remembering to register it. Runs once
     // at boot + on a bounded cadence. Observation-only w.r.t. config flags.
     const { FeatureRolloutReconciler } = await import('../core/FeatureRolloutReconciler.js');
-    const { scanSpecArtifacts, makeFlagObserver } = await import('../core/featureRolloutScan.js');
+    const { scanSpecArtifactsWithCanonical, makeFlagObserver } = await import('../core/featureRolloutScan.js');
     const { getInitDefaults: _getRolloutDefaults } = await import('../config/ConfigDefaults.js');
     const _shippedDefaults = _getRolloutDefaults(
       (config as { agentType?: string }).agentType === 'standalone' ? 'standalone' : 'managed-project',
     );
+    // Layer C of release-readiness-visibility: when featureRollout.canonicalRefScan
+    // is enabled, scan against canonical `main` (not the local working tree, which
+    // silently misses freshly-merged specs). Falls back to the local scan on any
+    // failure with a single degradation log line — never throws into boot.
+    const _frCfg = config.featureRollout;
     const featureRolloutReconciler = new FeatureRolloutReconciler({
       tracker: initiativeTracker,
-      listSpecArtifacts: () => scanSpecArtifacts(config.projectDir),
+      listSpecArtifacts: () =>
+        scanSpecArtifactsWithCanonical(config.projectDir, {
+          canonicalRefScanEnabled: _frCfg?.canonicalRefScan === true,
+          canonicalRemote: _frCfg?.canonicalRemote,
+          fetchTimeoutMs: _frCfg?.fetchTimeoutMs,
+          onDegradation: (reason) =>
+            console.warn(`[instar] feature-rollout canonical scan degraded: ${reason}`),
+        }),
       observeFlag: makeFlagObserver(config, _shippedDefaults),
     });
     void featureRolloutReconciler.reconcile().catch(err =>
