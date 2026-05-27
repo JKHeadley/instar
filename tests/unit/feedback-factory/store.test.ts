@@ -67,4 +67,13 @@ describe('InMemoryFeedbackStore', () => {
     expect(s.getCluster('c1')?.recurrenceCount).toBeUndefined();
     expect(s.getCluster('c1')?.actionTaken).toBe('N');
   });
+
+  it('addFeedback / hasFeedback (the receiver dedup seam)', () => {
+    const s = new InMemoryFeedbackStore();
+    expect(s.hasFeedback('fb-1')).toBe(false);
+    s.addFeedback(item('fb-1'));
+    expect(s.hasFeedback('fb-1')).toBe(true);
+    // added feedback defaults to unprocessed → visible to the processor
+    expect(s.getUnprocessedFeedback().map(f => f.feedbackId)).toContain('fb-1');
+  });
 });

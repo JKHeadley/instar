@@ -38,6 +38,10 @@ export interface FeedbackStore {
   applyReopen(clusterId: string, decision: ReopenDecision): void;
   /** Mark a feedback item processed + linked to its cluster. */
   markProcessed(feedbackId: string, clusterId: string): void;
+  /** True if a feedback item with this feedbackId already exists (the dedup check). */
+  hasFeedback(feedbackId: string): boolean;
+  /** Persist a newly-received feedback item (the receiver write). */
+  addFeedback(item: FeedbackItem): void;
   metrics(): FeedbackMetrics;
 }
 
@@ -104,6 +108,14 @@ export class InMemoryFeedbackStore implements FeedbackStore {
     const f = this.feedback.get(feedbackId);
     if (f) { f.status = 'processing'; f.clusterId = clusterId; }
     this.counts.captured++;
+  }
+
+  hasFeedback(feedbackId: string): boolean {
+    return this.feedback.has(feedbackId);
+  }
+
+  addFeedback(item: FeedbackItem): void {
+    this.feedback.set(item.feedbackId, { status: 'unprocessed', ...item });
   }
 
   metrics(): FeedbackMetrics {
