@@ -4354,9 +4354,10 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.failureLedger.analyze({ sinceMs }));
   });
 
-  router.get('/failures/insights', (_req, res) => {
+  router.get('/failures/insights', (req, res) => {
     if (!ctx.failureLedger) { res.status(503).json({ error: 'failure-learning disabled' }); return; }
-    res.json({ insights: [], note: 'analyzer not yet enabled — insights populate once it ships' });
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    res.json({ insights: ctx.failureLedger.listInsights(status ? { status: status as never } : {}) });
   });
 
   router.get('/failures/:id', (req, res) => {

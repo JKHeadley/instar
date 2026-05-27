@@ -106,6 +106,53 @@ export interface FailureRecordApiView extends Omit<FailureRecord, 'detail'> {
   detail: { redacted: string };
 }
 
+export type InsightStatus =
+  | 'discovered'
+  | 'acted-on'
+  | 'verified-effective'
+  | 'verified-ineffective'
+  | 'inconclusive'
+  | 'dismissed';
+
+export type VerifiedOutcome = 'pending' | 'effective' | 'ineffective' | 'insufficient-exposure' | 'n/a';
+
+/** A discovered process-gap insight (spec §4.4 / §4.6.1). */
+export interface InsightRecord {
+  id: string;
+  /** Content-stable across analyzer runs (so the same pattern updates, never re-announces). */
+  identityKey: string;
+  discoveredAt: string;
+  summary: string;
+  recommendation: string;
+  supportingFailureIds: string[];
+  distinctSessions: number;
+  distinctCauseCommits: number;
+  status: InsightStatus;
+  actedOnVia?: string;
+  verifyWindowStart?: string;
+  verifyWindowEnd?: string;
+  targetCategory?: string;
+  baselineRate?: number;
+  reopenCount: number;
+  verifiedOutcome: VerifiedOutcome;
+  /** True once this insight has been pushed to the system topic (push exactly once). */
+  announced: boolean;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+
+export interface UpsertInsightInput {
+  identityKey: string;
+  summary: string;
+  recommendation: string;
+  supportingFailureIds: string[];
+  distinctSessions: number;
+  distinctCauseCommits: number;
+  targetCategory?: string;
+  baselineRate?: number;
+}
+
 export interface OpenFailureInput {
   detectedAt?: string;
   filedBy: string;
@@ -139,6 +186,11 @@ export interface ListFilter {
 export type UpdateResult =
   | { ok: true; record: FailureRecord }
   | { ok: false; conflict: true; current?: FailureRecord }
+  | { ok: false; conflict: false; reason: string };
+
+export type InsightUpdateResult =
+  | { ok: true; record: InsightRecord }
+  | { ok: false; conflict: true; current?: InsightRecord }
   | { ok: false; conflict: false; reason: string };
 
 export interface DistinctCounts {
@@ -206,6 +258,31 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS failure_seq (
      machine_id TEXT PRIMARY KEY,
      next_seq   INTEGER NOT NULL DEFAULT 1
+   )`,
+  // Discovered process-gap insights (spec §4.4/§4.6.1). identity_key is
+  // content-stable across analyzer runs so the same pattern is updated, never
+  // re-announced (the tunnel-spam stable-key lesson).
+  `CREATE TABLE IF NOT EXISTS failure_insights (
+     id                     TEXT PRIMARY KEY,
+     identity_key           TEXT NOT NULL UNIQUE,
+     discovered_at          TEXT NOT NULL,
+     summary                TEXT NOT NULL,
+     recommendation         TEXT NOT NULL DEFAULT '',
+     supporting_failure_ids TEXT NOT NULL DEFAULT '[]',
+     distinct_sessions      INTEGER NOT NULL DEFAULT 0,
+     distinct_cause_commits INTEGER NOT NULL DEFAULT 0,
+     status                 TEXT NOT NULL DEFAULT 'discovered',
+     acted_on_via           TEXT,
+     verify_window_start    TEXT,
+     verify_window_end      TEXT,
+     target_category        TEXT,
+     baseline_rate          REAL,
+     reopen_count           INTEGER NOT NULL DEFAULT 0,
+     verified_outcome       TEXT NOT NULL DEFAULT 'pending',
+     announced              INTEGER NOT NULL DEFAULT 0,
+     created_at             TEXT NOT NULL,
+     updated_at             TEXT NOT NULL,
+     version                INTEGER NOT NULL DEFAULT 1
    )`,
 ];
 
@@ -465,6 +542,144 @@ export class FailureLedger {
     const noFeatureLink = (this.db.prepare(`SELECT COUNT(*) c FROM failure_records WHERE initiative_id IS NULL${sinceClause}`).get(params) as { c: number }).c;
 
     return { total, attributed, byCategory, byBuildSkill, unknownToolchainByAuthor, noFeatureLink };
+  }
+
+  // ── Insights (spec §4.4 / §4.6.1) ────────────────────────────────────
+
+  /**
+   * Upsert an insight keyed on its content-stable identityKey. A re-discovery
+   * UPDATES the existing record (refreshes evidence + counts) but PRESERVES its
+   * lifecycle (status/actedOnVia/verify window/announced) — so a pattern is
+   * never re-announced and an in-flight loop is never reset (spec §4.5 stable-key).
+   * Returns the resulting insight (fail-open: null on storage error).
+   */
+  upsertInsight(input: UpsertInsightInput): InsightRecord | null {
+    try {
+      const now = new Date().toISOString();
+      const existing = this.getInsightByIdentity(input.identityKey);
+      if (existing) {
+        this.db
+          .prepare(
+            `UPDATE failure_insights
+               SET summary=@summary, recommendation=@recommendation,
+                   supporting_failure_ids=@ids, distinct_sessions=@ds,
+                   distinct_cause_commits=@dc, target_category=@tc,
+                   baseline_rate=@br, updated_at=@now, version=version+1
+             WHERE id=@id`,
+          )
+          .run({
+            id: existing.id, summary: input.summary, recommendation: input.recommendation,
+            ids: JSON.stringify(input.supportingFailureIds), ds: input.distinctSessions,
+            dc: input.distinctCauseCommits, tc: input.targetCategory ?? null,
+            br: input.baselineRate ?? null, now,
+          });
+        return this.getInsight(existing.id);
+      }
+      const id = `INS-${this.machineId}-${this.nextInsightSeq()}`;
+      this.db
+        .prepare(
+          `INSERT INTO failure_insights
+             (id, identity_key, discovered_at, summary, recommendation,
+              supporting_failure_ids, distinct_sessions, distinct_cause_commits,
+              target_category, baseline_rate,
+              status, reopen_count, verified_outcome, announced, created_at, updated_at, version)
+           VALUES (@id,@ik,@now,@summary,@rec,@ids,@ds,@dc,@tc,@br,'discovered',0,'pending',0,@now,@now,1)`,
+        )
+        .run({
+          id, ik: input.identityKey, now, summary: input.summary, rec: input.recommendation,
+          ids: JSON.stringify(input.supportingFailureIds), ds: input.distinctSessions, dc: input.distinctCauseCommits,
+          tc: input.targetCategory ?? null, br: input.baselineRate ?? null,
+        });
+      return this.getInsight(id);
+    } catch (err) {
+      this.onError('upsertInsight', err);
+      return null;
+    }
+  }
+
+  private nextInsightSeq(): string {
+    const key = `insight:${this.machineId}`;
+    const row = this.db.prepare(`SELECT next_seq FROM failure_seq WHERE machine_id = ?`).get(key) as { next_seq: number } | undefined;
+    const seq = row?.next_seq ?? 1;
+    this.db.prepare(`INSERT INTO failure_seq (machine_id, next_seq) VALUES (?, ?) ON CONFLICT(machine_id) DO UPDATE SET next_seq = ?`).run(key, seq + 1, seq + 1);
+    return String(seq).padStart(3, '0');
+  }
+
+  getInsight(id: string): InsightRecord | null {
+    const row = this.db.prepare(`SELECT * FROM failure_insights WHERE id = ?`).get(id);
+    return row ? this.rowToInsight(row as Record<string, unknown>) : null;
+  }
+
+  getInsightByIdentity(identityKey: string): InsightRecord | null {
+    const row = this.db.prepare(`SELECT * FROM failure_insights WHERE identity_key = ?`).get(identityKey);
+    return row ? this.rowToInsight(row as Record<string, unknown>) : null;
+  }
+
+  listInsights(filter: { status?: InsightStatus } = {}): InsightRecord[] {
+    const sql = filter.status
+      ? `SELECT * FROM failure_insights WHERE status = ? ORDER BY discovered_at DESC`
+      : `SELECT * FROM failure_insights ORDER BY discovered_at DESC`;
+    const rows = (filter.status ? this.db.prepare(sql).all(filter.status) : this.db.prepare(sql).all()) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToInsight(r));
+  }
+
+  updateInsight(
+    id: string,
+    patch: Partial<Pick<InsightRecord, 'status' | 'actedOnVia' | 'verifyWindowStart' | 'verifyWindowEnd' | 'targetCategory' | 'baselineRate' | 'reopenCount' | 'verifiedOutcome' | 'announced'>>,
+    ifMatch: number,
+  ): InsightUpdateResult {
+    try {
+      const current = this.getInsight(id);
+      if (!current) return { ok: false, conflict: false, reason: 'not-found' };
+      if (current.version !== ifMatch) return { ok: false, conflict: true, current };
+      const map: Record<string, string> = {
+        status: 'status', actedOnVia: 'acted_on_via', verifyWindowStart: 'verify_window_start',
+        verifyWindowEnd: 'verify_window_end', targetCategory: 'target_category', baselineRate: 'baseline_rate',
+        reopenCount: 'reopen_count', verifiedOutcome: 'verified_outcome', announced: 'announced',
+      };
+      const cols: string[] = [];
+      const params: Record<string, unknown> = { id, ifMatch };
+      for (const [k, v] of Object.entries(patch)) {
+        const col = map[k]; if (!col) continue;
+        cols.push(`${col} = @${k}`);
+        params[k] = k === 'announced' ? (v ? 1 : 0) : (v ?? null);
+      }
+      if (cols.length === 0) return { ok: true, record: current };
+      const now = new Date().toISOString();
+      const res = this.db.prepare(`UPDATE failure_insights SET ${cols.join(', ')}, updated_at=@now, version=version+1 WHERE id=@id AND version=@ifMatch`).run({ ...params, now });
+      if (res.changes === 0) return { ok: false, conflict: true, current: this.getInsight(id) ?? undefined };
+      return { ok: true, record: this.getInsight(id)! };
+    } catch (err) {
+      this.onError('updateInsight', err);
+      return { ok: false, conflict: false, reason: 'storage-error' };
+    }
+  }
+
+  private rowToInsight(r: Record<string, unknown>): InsightRecord {
+    let ids: string[] = [];
+    try { ids = JSON.parse((r.supporting_failure_ids as string) || '[]'); } catch { ids = []; }
+    return {
+      id: r.id as string,
+      identityKey: r.identity_key as string,
+      discoveredAt: r.discovered_at as string,
+      summary: r.summary as string,
+      recommendation: (r.recommendation as string) ?? '',
+      supportingFailureIds: ids,
+      distinctSessions: r.distinct_sessions as number,
+      distinctCauseCommits: r.distinct_cause_commits as number,
+      status: r.status as InsightStatus,
+      actedOnVia: (r.acted_on_via as string) ?? undefined,
+      verifyWindowStart: (r.verify_window_start as string) ?? undefined,
+      verifyWindowEnd: (r.verify_window_end as string) ?? undefined,
+      targetCategory: (r.target_category as string) ?? undefined,
+      baselineRate: (r.baseline_rate as number) ?? undefined,
+      reopenCount: r.reopen_count as number,
+      verifiedOutcome: r.verified_outcome as VerifiedOutcome,
+      announced: !!(r.announced as number),
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+      version: r.version as number,
+    };
   }
 
   /** Strip detail.full — the ONLY shape that may cross an HTTP boundary (spec §4.8). */

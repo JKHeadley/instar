@@ -89,3 +89,17 @@ Builds the Failure-Learning Loop (instar-self-hosting dev-process forensics). Fi
 **Signal-vs-authority:** read surface + validated one-tap write; no authority.
 **Rollback cost:** trivial — flag default false; routes 503 inert.
 **Deferred (next, same branch):** Phase-1 "feature alive" E2E (boot AgentServer flag-ON → 200); Process Health dashboard tab; the analyzer + closed loop (InsightRecord + by-construction guard); generateClaudeMd capability section; migrateConfig for existing agents; board self-registration.
+
+### Commit 7 — the closed loop: analyzer + InsightRecord + by-construction guard + verify
+
+- `FailureLedger` (`src/monitoring/FailureLedger.ts`) — **add** — `failure_insights` table (content-stable `identity_key` UNIQUE → upsert never re-announces) + InsightRecord type + `upsertInsight`/`getInsight`/`getInsightByIdentity`/`listInsights`/`updateInsight` (mandatory ifMatch). [Round-3-of-build self-catch: the INSERT initially omitted `target_category`/`baseline_rate` — a fresh insight read back `targetCategory:undefined`, which made `runVerification` skip it; caught by the failing test, fixed.]
+- `FailureAnalyzer` (`src/monitoring/FailureAnalyzer.ts`) — **add** — deterministic category-cluster detection gated on support + SOURCE DIVERSITY (≥minSupport ∧ ≥minDistinctSessions ∧ ≥minDistinctCauseCommits, computed conservatively from deduped records → biases toward NOT firing). Template-keyed recommendations per category (never free-LLM text). Signal-only. Idempotent (stable identityKey).
+- `FailureLoopDriver` (`src/monitoring/FailureLoopDriver.ts`) — **add** — the closed loop. **BY-CONSTRUCTION AUTHORITY GUARD (BL-2):** its injected `LoopDeps` are ONLY `addAction` + `createInitiative` — it is given NO proposal-creation capability, so the auto-implement path is unreachable for anything it produces, regardless of `evolutionApprovalMode`. `actOnNewInsights()` opens an Evolution Action + a draft Initiative (needs-user) per discovered insight. `runVerification()` is the active confounder-aware verify: counts NEW (post-fix, baseline-excluded) category failures vs baseline → effective / ineffective(reopen, capped→inconclusive) / insufficient-exposure(extend-once→inconclusive); labeled correlational.
+- `src/server/routes.ts` — **modify** — `/failures/insights` now serves real `ctx.failureLedger.listInsights()`.
+- `tests/unit/FailureLoop.test.ts` — **add** — 7 tests: analyzer fires on diversity / does NOT fire on single-session×4 / idempotent; **by-construction test asserts addProposal + processProposalAutonomously are NEVER called with autonomous-mode ON, and zero loop-created proposals**; verify drop→effective and no-drop→reopen→capped-inconclusive.
+
+**Over/under-block:** the diversity gate prevents false patterns (under-fires by design); the by-construction guard makes over-reach (auto-implement) structurally impossible.
+**Signal-vs-authority:** analyzer = signal; loop opens human-approved tracked items only; NEVER mutates a skill/spec/proposal.
+**Rollback cost:** trivial — insights table is additive; loop only runs when the (off-by-default) analyzer job invokes it.
+**Verified:** 7 closed-loop + 9 ledger + 7 route tests green; typecheck clean.
+**Deferred (next, same branch):** analyzer job template (off by default); generateClaudeMd capability section; migrateConfig; board self-registration; Phase-1 boot E2E; Process Health dashboard tab (tracked fast-follow on the rollout board — data fully exposed via /failures API + /capabilities; feature ships dark).
