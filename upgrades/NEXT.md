@@ -1,37 +1,38 @@
 # Instar Upgrade Guide — NEXT
 
-<!-- bump: patch -->
+<!-- bump: minor -->
 
 ## What Changed
 
-**Framework-Onboarding Mentor System — live-readiness hardening.** Closes the three things the
-§19.4 reviewer flagged as must-haves before the mentor can ever be promoted to `live`: the tick is
-now fire-and-forget (a slow helper-spawn can't hang the request — the result lands in
-`/mentor/status`); the helper-spawn now kills its session and bails cleanly if it overruns (no
-orphaned panes, no half-read transcripts); and `live` mode now has a real, safe delivery path — it
-appends the message to a durable per-mentee outbox the mentee's running session picks up, instead of
-spawning a fresh counterpart session (the structural fix for the agent-to-agent message loop). Still
-dormant by default.
+**Framework-Onboarding Mentor System — Stage-B deep forensics.** The "look under the hood" half of
+the mentor loop is now real. Instead of recording nothing, Stage B reads the mentee's actual recent
+signals — error/sentinel lines from the server log plus a usage digest from its recent Codex session
+rollouts (token burn, rate-limit pressure) — and asks the model to classify any concrete issues into
+the three buckets (engine limitation / Instar integration gap / one-off mistake), writing them to the
+ledger. The prompt-and-parse logic is a separate pure module, defensively tested: malformed or
+invented entries are dropped, and a failed forensic read is a no-op tick, never a crash or a poisoned
+ledger. Still dormant.
 
 ## What to Tell Your User
 
-- The mentor's plumbing is now safe to switch on without it hanging or leaking sessions, and when it
-  eventually talks to the mentee it does so the calm way (drop a note in their inbox, no spawning).
-- Nothing's changed day-to-day; it's still off until you turn it on, and turning it fully live is
-  still gated behind your sign-off.
+- When the mentor inspects the mentee, it now actually reads its logs and recent sessions and writes
+  down what it finds — bucketed and ranked — rather than just noting that an inspection happened.
+- It's deliberately cautious: it reports nothing rather than guess, so the notebook stays trustworthy.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Async mentor tick | `POST /mentor/tick` returns 202; outcome in `GET /mentor/status`.lastResult |
-| Persist-only delivery | live mode appends to `server-data/mentor-outbox/<framework>.jsonl` (never spawns) |
+| Stage-B forensics | Automatic inside a live/dry-run mentor tick — reads server-log errors + codex-rollout digest, classifies into ledger findings |
+| Defensive forensic parse | `MentorStageBForensics.parseForensicFindings()` — drops malformed/invalid entries; never throws |
 
 ## Evidence
 
-Net-new hardening of a dormant feature, not a bug fix — no prior production failure. Proven by tests:
-the delivery path is asserted to fire **only in live mode and never in dry-run** (and to no-op safely
-when unwired); the async tick is asserted to return 202 with the result landing in `status.lastResult`
-and the in-flight guard preventing overlap; the spawn-kill-on-timeout path throws after killing the
-session so the tick captures a clean failure rather than a partial transcript. 27 mentor tests +
-route-completeness/discoverability gates; affected push-config suite green (745) vs canonical main.
+Net-new feature, not a bug fix — no prior production failure. Proven by tests: the parser is asserted
+to handle clean JSON, markdown-fenced output, and surrounding prose; to **drop invalid-bucket and
+titleless entries**; to return `[]` for non-JSON/empty/broken input (never throw); to cap findings
+per run; and to derive a stable dedupKey when the model omits one. `analyzeForensics` is asserted to
+**skip the LLM call entirely when there are no signals**, to classify real signals via the injected
+model, and to return `[]` (no crash) when the LLM throws. 10 unit tests + an e2e confirming the server
+boots clean with the forensics wiring and stays dormant; affected push-config suite green (488) vs
+canonical main.
