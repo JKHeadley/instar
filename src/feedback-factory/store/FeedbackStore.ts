@@ -15,6 +15,7 @@
 
 import type { FeedbackItem, Cluster, ClusterResult } from '../processor/types.js';
 import type { ReopenDecision } from '../processor/reopen.js';
+import type { DispatchRecord } from '../dispatch/dispatch.js';
 
 /** Read-only observability counters for the capture→cluster→reopen loop (spec §2.7). */
 export interface FeedbackMetrics {
@@ -42,6 +43,12 @@ export interface FeedbackStore {
   hasFeedback(feedbackId: string): boolean;
   /** Persist a newly-received feedback item (the receiver write). */
   addFeedback(item: FeedbackItem): void;
+  /** Active dispatches matching an optional since/type filter, oldest-first (the dispatch list read). */
+  listDispatches(filter?: { since?: string; type?: string }): DispatchRecord[];
+  /** Find an existing dispatch by exact (normalized) title — the create-dedup check. */
+  findDispatchByTitle(title: string): DispatchRecord | undefined;
+  /** Persist a new dispatch. */
+  createDispatch(record: DispatchRecord): void;
   metrics(): FeedbackMetrics;
 }
 
@@ -116,6 +123,24 @@ export class InMemoryFeedbackStore implements FeedbackStore {
 
   addFeedback(item: FeedbackItem): void {
     this.feedback.set(item.feedbackId, { status: 'unprocessed', ...item });
+  }
+
+  private dispatches = new Map<string, DispatchRecord>();
+
+  listDispatches(filter?: { since?: string; type?: string }): DispatchRecord[] {
+    return [...this.dispatches.values()]
+      .filter((d) => d.active !== false)
+      .filter((d) => !filter?.since || String(d.createdAt ?? '') >= filter.since)
+      .filter((d) => !filter?.type || d.type === filter.type)
+      .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
+  }
+
+  findDispatchByTitle(title: string): DispatchRecord | undefined {
+    return [...this.dispatches.values()].find((d) => d.title === title);
+  }
+
+  createDispatch(record: DispatchRecord): void {
+    this.dispatches.set(record.dispatchId, { active: true, ...record });
   }
 
   metrics(): FeedbackMetrics {
