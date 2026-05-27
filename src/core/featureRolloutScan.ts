@@ -12,6 +12,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { SafeGitExecutor } from './SafeGitExecutor.js';
 import type { SpecArtifact } from './FeatureRolloutReconciler.js';
 import type { RolloutFlagObservation } from './featureRollout.js';
 
@@ -103,6 +104,150 @@ export function scanSpecArtifacts(repoRoot: string, now: () => number = () => Da
 /** Read a dotted config path, e.g. 'monitoring.sessionReaper', from an object. */
 function readPath(obj: unknown, dotted: string): unknown {
   return dotted.split('.').reduce<unknown>((acc, k) => (acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[k] : undefined), obj);
+}
+
+// ── Canonical-ref scan (Layer C of release-readiness-visibility) ────────
+//
+// The local-tree scan above infers `merged = approved && traceExists` from
+// LOCAL files. As the maintainer's dev branch moves around, freshly-merged
+// specs can be absent locally (different branch / cleaned worktree) → the
+// reconciler silently skips them. The canonical scan reads `docs/specs/` and
+// `.instar/instar-dev-traces/` from the canonical `main` ref directly, so a
+// spec on main is detected as merged by construction. Repo-gated +
+// feature-flagged + falls back to local on any failure (never throws into
+// boot).
+
+export interface CanonicalScanOpts {
+  repoPath: string;
+  /** A git remote name configured in repoPath; the canonical-remote allow-list
+   *  on the caller's side already validated this. */
+  canonicalRemote: string;
+  fetchTimeoutMs?: number;
+  now?: () => number;
+}
+
+export interface CanonicalScanResult {
+  artifacts: SpecArtifact[];
+  canonicalHeadSha: string;
+}
+
+export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalScanResult {
+  const now = opts.now ?? (() => Date.now());
+  const timeout = opts.fetchTimeoutMs ?? 30_000;
+
+  // 1) Bounded fetch (no --depth: matches the Layer-B fix that --depth=1
+  //    shallows the local repo and breaks downstream git log).
+  SafeGitExecutor.run(
+    ['fetch', opts.canonicalRemote, 'main', '--no-tags', '--no-recurse-submodules'],
+    { cwd: opts.repoPath, operation: 'featureRolloutScan:canonicalFetch', timeout },
+  );
+  const canonicalHeadSha = SafeGitExecutor.run(['rev-parse', 'FETCH_HEAD'], {
+    cwd: opts.repoPath,
+    operation: 'featureRolloutScan:canonicalRevParse',
+  }).trim();
+
+  // 2) Enumerate spec files on main.
+  const lsSpecs = SafeGitExecutor.run(
+    ['ls-tree', '-r', '--name-only', canonicalHeadSha, '--', 'docs/specs/'],
+    { cwd: opts.repoPath, operation: 'featureRolloutScan:lsSpecs' },
+  );
+  const specPaths = lsSpecs.split('\n').map((s) => s.trim()).filter((p) => p.endsWith('.md') && !p.endsWith('.eli16.md'));
+
+  // 3) Enumerate trace files on main and index by specPath.
+  let lsTraces = '';
+  try {
+    lsTraces = SafeGitExecutor.run(
+      ['ls-tree', '-r', '--name-only', canonicalHeadSha, '--', '.instar/instar-dev-traces/'],
+      { cwd: opts.repoPath, operation: 'featureRolloutScan:lsTraces' },
+    );
+  } catch { /* traces dir may not exist on main yet */ }
+  const tracesByPath = new Map<string, TraceInfo>();
+  for (const tp of lsTraces.split('\n').map((s) => s.trim()).filter((p) => p.endsWith('.json'))) {
+    try {
+      const blob = SafeGitExecutor.run(['show', `${canonicalHeadSha}:${tp}`], {
+        cwd: opts.repoPath, operation: 'featureRolloutScan:traceBlob',
+      });
+      const t = JSON.parse(blob);
+      if (typeof t.specPath === 'string') {
+        const ts = t.createdAt ?? t.timestamp;
+        tracesByPath.set(t.specPath, {
+          prNumber: typeof t.prNumber === 'number' ? t.prNumber : undefined,
+          createdAtMs: ts ? Date.parse(ts) : undefined,
+        });
+      }
+    } catch { /* skip malformed trace */ }
+  }
+
+  // 4) Build SpecArtifact[] from canonical blobs.
+  const out: SpecArtifact[] = [];
+  for (const specPath of specPaths) {
+    let content: string;
+    try {
+      content = SafeGitExecutor.run(['show', `${canonicalHeadSha}:${specPath}`], {
+        cwd: opts.repoPath, operation: 'featureRolloutScan:specBlob',
+      });
+    } catch { continue; }
+    const fm = parseSpecFrontmatter(content);
+    const approved = fm.approved === 'true';
+    const reviewConverged = Boolean(fm['review-convergence']);
+    const shipsStaged = fm['ships-staged'] === 'true';
+    const trace = tracesByPath.get(specPath);
+    const traceExists = trace != null;
+    // Canonical semantics: a spec on main IS merged by construction (it's
+    // reachable from FETCH_HEAD). The previous inferred rule
+    // (approved && traceExists) misses approved-but-untraced or
+    // untraced-but-merged cases.
+    const merged = true;
+    const mergedRecently = merged && trace?.createdAtMs != null && (now() - trace.createdAtMs) <= RECENT_MERGE_WINDOW_MS;
+    out.push({
+      id: normalizeSpecId(path.basename(specPath)),
+      specPath,
+      title: (content.match(/^#\s+(.+)$/m)?.[1] ?? fm.title ?? specPath).slice(0, 120),
+      approved, reviewConverged, shipsStaged,
+      flagPath: fm['rollout-flag-path'] || undefined,
+      promotionCriteria: fm['rollout-criteria'] || undefined,
+      evidenceSource: fm['rollout-evidence-ref']
+        ? { type: (fm['rollout-evidence-type'] as 'log-filter' | 'endpoint') || 'log-filter', ref: fm['rollout-evidence-ref'], filter: fm['rollout-evidence-filter'] || undefined }
+        : undefined,
+      traceExists,
+      prNumber: trace?.prNumber,
+      merged,
+      mergedRecently,
+    });
+  }
+
+  return { artifacts: out, canonicalHeadSha };
+}
+
+/**
+ * Repo-gated, feature-flagged scanner with graceful fallback to the local
+ * scan on any failure. Never throws into the caller (boot-safe).
+ */
+export function scanSpecArtifactsWithCanonical(
+  repoRoot: string,
+  opts: {
+    canonicalRefScanEnabled: boolean;
+    canonicalRemote?: string;
+    fetchTimeoutMs?: number;
+    onDegradation?: (reason: string) => void;
+  },
+  now: () => number = () => Date.now(),
+): SpecArtifact[] {
+  if (!opts.canonicalRefScanEnabled) return scanSpecArtifacts(repoRoot, now);
+  const remote = opts.canonicalRemote;
+  if (!remote) {
+    opts.onDegradation?.('canonical-ref scan enabled but no canonicalRemote configured — falling back to local scan');
+    return scanSpecArtifacts(repoRoot, now);
+  }
+  try {
+    const result = scanSpecArtifactsCanonical({
+      repoPath: repoRoot, canonicalRemote: remote, fetchTimeoutMs: opts.fetchTimeoutMs, now,
+    });
+    return result.artifacts;
+  } catch (err) {
+    opts.onDegradation?.(`canonical-ref scan failed (${String((err as Error)?.message ?? err)}) — falling back to local scan`);
+    return scanSpecArtifacts(repoRoot, now);
+  }
 }
 
 /**

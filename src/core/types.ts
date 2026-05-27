@@ -1887,6 +1887,21 @@ export interface InstarConfig {
   messaging: MessagingAdapterConfig[];
   /** Monitoring config */
   monitoring: MonitoringConfig;
+  /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
+   *  Layer C). Off by default — flips on to scan against canonical `main`
+   *  instead of the local working tree (which silently misses freshly-merged
+   *  specs when the developer's branch doesn't contain them). On any failure
+   *  the scan gracefully falls back to the local scan + emits a degradation
+   *  event; never throws into boot. */
+  featureRollout?: {
+    /** Master kill switch for the canonical-ref scan (default: false). */
+    canonicalRefScan?: boolean;
+    /** Git remote name to fetch canonical `main` from (default: the same as
+     *  releaseReadiness.canonicalRemote, falling back to auto-detection). */
+    canonicalRemote?: string;
+    /** Bounded canonical-fetch timeout (ms) (default: 30_000). */
+    fetchTimeoutMs?: number;
+  };
   /** Auth token for API access (generated during setup) */
   authToken?: string;
   /** PIN for dashboard web access (simpler than authToken, used for mobile/remote login) */
