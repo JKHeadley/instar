@@ -25,3 +25,15 @@ Builds the Failure-Learning Loop (instar-self-hosting dev-process forensics). Fi
 **Level-of-abstraction fit:** sibling to `TokenLedger`/`DegradationReporter` in `src/monitoring/`; reuses `NativeModuleHealer.openWithHealSync` + WAL pragmas exactly as `TokenLedger`.
 **Signal-vs-authority:** storage layer only — no authority. (The signal-only analyzer + by-construction authority guard land in later commits.)
 **Rollback cost:** trivial — new file + new DB table; disabling the feature flag leaves the table inert.
+
+### Commit 2 — FailureAttributionEngine (the fix→feature join)
+
+- `FailureAttributionEngine` (`src/monitoring/FailureAttributionEngine.ts`) — **add** — pure logic with injected deps (`getInitiative`, `commitTouchedFiles`) so it's unit-testable without a live tracker/git.
+- `attributeBugfixCommit()` — **add** — parses the `Fixes-Feature:` trailer (a HINT), then CROSS-CHECKS the fix commit's touched files against the initiative's `coveredFiles`. Verified overlap → `automatic` (0.9); real-initiative-but-no-overlap → `inferred` (mis-blame guard, §4.2 M7); unknown initiative → `inferred`; **trailer omission → `inferred` + `noFeatureLink` coverage bucket** (measured, not silently dropped, §4.2 #A).
+- `validateAgentDiagnosed()` — **add** — initiative MUST exist (server-side validation, A2); a caller-supplied `causeCommitOid` is recorded but NEVER upgrades the verdict to `automatic` (stays `one-tap`, B6).
+- `coerceCategory()` (static) — **add** — clamps category to the fixed enum; free-text / injected category strings collapse to `unknown` (§4.4 untrusted-text discipline).
+
+**Over/under-block:** the cross-check is the anti-over-attribution control — a forged trailer can't earn `automatic`. Under-block risk (a real fix with a missing trailer) is handled by the visible `noFeatureLink` bucket, not silent loss.
+**Level-of-abstraction fit:** pure engine; the route/poller layer (later commit) injects the real InitiativeTracker lookup + `git show --name-only`.
+**Signal-vs-authority:** produces a verdict (signal); does not mutate anything.
+**Rollback cost:** trivial — new pure-logic file, no wiring yet.
