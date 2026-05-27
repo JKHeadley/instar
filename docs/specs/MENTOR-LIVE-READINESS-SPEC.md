@@ -1,455 +1,315 @@
 ---
-title: Mentor live-readiness — real idle signal, mentee-side pickup, quota-aware budget
-owning-layer: scheduler + server (mentor)
-status: converged
-review-convergence: true
-review-iterations: 2
-review-reviewers: lessons-aware, integration, adversarial
-co-designer: instar-codey (Threadline thread 5cc61bd7, §Fix 2 mentee-side pickup)
+title: Agent-to-Agent Telegram comms primitive + Mentor live-readiness (its first consumer)
+owning-layer: messaging (new primitive) + scheduler/server (mentor consumer)
+status: draft
+review-convergence: false
+review-iterations: 0
+co-designer: instar-codey (pending — recipient-side detection + anti-loop handler)
 approved: false
+supersedes-rounds: 2 prior convergence rounds on file-based mentor-outbox design (committed but re-architected after Justin substrate correction, topic 13435, 2026-05-27)
 supervision: tier1
 ---
 
-# Mentor live-readiness
+# Agent-to-Agent Telegram comms primitive + Mentor live-readiness
 
 ## Summary
 
-The mentor system ships fully built but with three placeholders that block a real live test
-against Codey. All three were surfaced during the 2026-05-27 dry-run live-validation phase
-(topic 13435 — Justin caught two; the third I verified before claiming a live test would
-work). Fixing all three is the prerequisite for one supervised live cycle against Codey, and
-then for unattended live operation.
+Two fixes wrapped together because the consumer drove the primitive's design:
 
-## The three gaps
+1. **A new agent-to-agent Telegram comms primitive** — a robust, recipient-knows-it's-from-
+   an-agent channel any agent can use to message another agent's bot, with the indicator
+   *and* the anti-loop machinery as first-class infra. Justin's framing (2026-05-27):
+   "robust infra that indicates the message is from another agent… leverage infra to
+   prevent the ping pong trap." Reusable for any future agent-to-agent Telegram scenario;
+   the mentor is its first consumer.
+2. **Mentor live-readiness** — three remaining gaps in the existing mentor system that
+   block a real supervised live cycle against Codey (real idle signal, the agent-comms
+   delivery — now via the primitive — replacing the broken file-outbox, and a quota-aware
+   budget on actual subscription metrics).
+
+## Design-drift correction (honoring this morning's learning)
+
+The first version of this spec used a file-based outbox for mentor delivery — convergence
+hardened it heavily, all the way to round 2 — and Justin caught that it solved the wrong
+problem. The cross-agent spawn loop was a *discipline* issue (don't auto-reply to courtesy
+acks); I'd misread it as a *substrate* issue and moved off Telegram, which broke the
+authenticity of the simulation (Codey would process file lines, not user messages, exactly
+what we DON'T want to test). Two rounds of reviewer review didn't catch it because each
+reviewer asked "is this file-based design sound?" not "is file-based the right substrate?"
+Recorded the meta-lesson alongside today's earlier one
+([[feedback_report_verified_not_intended_behavior]]): convergence checks *how well a
+design holds up*, not *whether the design's framing is correct* — that's the user's call,
+and the spec must surface the substrate choice explicitly, not bury it.
+
+## The three live-readiness gaps (unchanged from prior draft)
 
 ### Gap 1 — `isMenteeBusy()` is a stub that's not about the mentee at all
 
-`AgentServer.ts:~651`:
-```ts
-isMenteeBusy: () => self.sessionManager.listRunningSessions().length > 0,
-```
+`AgentServer.ts:~651`: `isMenteeBusy: () => self.sessionManager.listRunningSessions().length > 0`.
+Tagged `<!-- tracked: topic-13435 -->`. Checks Echo's own sessions; almost always true →
+safe window never opens → mentor effectively never runs.
 
-Tagged in code with `<!-- tracked: topic-13435 -->` ("refined at live validation"). It checks
-**Echo's own** running-session count, not Codey's state. Echo almost always has running
-sessions → `isMenteeBusy()` is almost always true → `safeWindowOpen` is almost never true →
-**the mentor effectively never runs**.
+### Gap 2 — Mentor delivery to Codey does not exist as a real user-channel
 
-### Gap 2 — `deliverToMentee` is write-only (no Codey-side pickup)
-
-`AgentServer.ts:~671-678`: `deliverToMentee` correctly appends a JSON line to
-`{stateDir}/mentor-outbox/<framework>.jsonl`. The persist-only-no-spawn shape is the
-deliberate **structural fix for the cross-agent spawn loop** ([[bug_cross_agent_ack_spawn_loop]]).
-But **nothing on Codey's side reads that outbox** — verified by grepping the shipped dist for
-mentor-outbox readers (one writer, zero readers). A live test today would write a file Codey
-never sees. The mentee-side pickup is the missing piece — and it's Codey's side, so co-design.
+The current `deliverToMentee` writes JSON lines to a file nothing reads, AND the file
+substrate doesn't simulate a user interaction even if it were read. Both problems are
+fixed by the new primitive: route mentor messages through Telegram (the real user channel)
+so Codey processes them with his normal user-message pipeline.
 
 ### Gap 3 — Budget is dollar-denominated on a token-subscription, unenforced, silent on trip
 
-`AgentServer.ts:~656-664`: `budgetOk` checks `mentorRunsToday < cfg.maxRoundsPerDay`
-(24/day **run-count**). `cfg.dailySpendCapUsd: 0.5` is configured in
-`MentorOnboardingRunner.DEFAULT_MENTOR_CONFIG` and `ConfigDefaults.ts` but **read nowhere**
-(dead field — verified by repo-wide grep). Worse, the unit is fundamentally wrong: Echo runs
-on a Claude **subscription**, not pay-per-token API, so there is no per-token dollar charge to
-cap. The real cost is **tokens against a rolling quota** (5-hour + weekly limits) — already
-tracked by `QuotaTracker` (`canRunJob(priority)` → normal/elevated/critical/shutdown) and
-`TokenLedger` (with `attribution: { component: 'mentor-stage-b' }` already set). And nothing
-notifies Justin when the cap (round or otherwise) trips.
+`AgentServer.ts:~656-664`: `budgetOk` checks a run-count; `dailySpendCapUsd: 0.5` is a dead
+config field; Echo runs on a Claude subscription (no per-token dollar charge to cap). The
+real cost is tokens against rolling quota — already tracked by `QuotaTracker.canRunJob` +
+`TokenLedger` (`attribution.component='mentor-stage-b'`).
 
-## Fix
+## Fix 1 — Real Codey-idle signal (replaces the system-busy stub)
 
-### Fix 1 — Real Codey-idle signal (replaces the system-busy stub)
+Replace `isMenteeBusy` with a **mentee-specific** idle check via a new unauthenticated
+`GET /idle` endpoint Codey ships on his server (port 4044). `/sessions` is Bearer-authed
+AND has no `activelyWorking` field, so a fresh endpoint is needed.
 
-Replace `isMenteeBusy` with a **mentee-specific** idle check. Convergence (adversarial F1/F2,
-integration minor) revealed two blockers in the original draft:
-
-- `/sessions` is **Bearer-token-gated** (`middleware.ts:57`); a cross-agent probe without
-  auth always returns 401 → fail-closed → permanent silent deferral.
-- `SessionManager` session records have **no `activelyWorking` field** (grep returns 0 hits) —
-  only `status:'running'`. A 200 with empty array is ambiguous (truly idle vs. mentee server
-  crashed-and-restarted-clean), and a single-session-at-prompt-for-hours looks identical to
-  active work.
-
-**Required Codey-side addition:** a dedicated **unauthenticated** `GET /idle` endpoint Codey
-ships on his server. Returns a structured response Echo can trust:
+`/idle` returns:
 ```json
-{
-  "schemaVersion": 1,
-  "idle": true,
-  "bootId": "uuid-set-at-process-start",
-  "uptimeSec": 12345,
-  "activeSessions": 0,
-  "ts": "ISO-8601"
-}
+{ "schemaVersion": 1, "idle": true, "bootId": "uuid-set-at-process-start",
+  "uptimeSec": 12345, "activeSessions": 0, "ts": "ISO-8601" }
 ```
-- `idle` = true iff Codey reports no sessions doing work right now.
-- `bootId` + `uptimeSec` let Echo detect mentee restart-since-last-probe (treat as busy for
-  one min-interval after a fresh boot, so we don't pile on a recovering Codey).
-- Unauthenticated because (i) it leaks no sensitive state, (ii) avoids the
-  cross-agent shared-Bearer-secret trust boundary.
 
-**Echo-side wiring:**
-- Resolve from `mentor.menteeServerUrl` (default `http://localhost:4044` for `codex-cli`).
-- `GET {menteeServerUrl}/idle` with a 750ms timeout.
-- **Fail-closed on every ambiguous outcome:** non-2xx, network/timeout, JSON-parse failure,
-  unrecognized schemaVersion, missing required fields, OR `idle !== true` → treat as
-  **busy** (never silently flip to idle).
-- **Liveness inferred from heartbeat, not 200-empty-array** — if `idle:true` but
-  `uptimeSec < minIntervalMs/1000`, defer one more cycle.
-- Persistent probe failure (≥3 consecutive) emits a `DegradationReporter` event with
-  feature `'mentor.menteeProbe'` — surfaces in `/degradation`, not silent.
-- The check is async; the runner pre-resolves it before assembling tick deps (the tick stays
-  pure).
-- **Defer reasons are split** (per adversarial minor): `mentee-busy` (probe says busy /
-  failed / liveness-warmup) and `min-interval-not-elapsed` are distinct strings so debugging
-  doesn't collapse them.
+Echo-side:
+- Probe `{mentor.menteeServerUrl}/idle` with 750ms timeout.
+- **Fail-closed on every ambiguous outcome**: non-2xx, network/timeout, JSON-parse failure,
+  unrecognized schemaVersion, missing required fields, `idle !== true` → busy.
+- **Liveness-warmup**: `idle:true` but `uptimeSec < minIntervalMs/1000` → defer one cycle
+  (don't pile onto a recovering Codey).
+- Persistent failure (≥3 consecutive) → `DegradationReporter` event `mentor.menteeProbe`.
+- Reasons split: `mentee-busy` vs `min-interval-not-elapsed` (distinct strings).
 
-### Fix 2 — Mentee-side outbox pickup (Codey-designed, Threadline 5cc61bd7, 2026-05-27)
+## Fix 2a — Agent-to-Agent Telegram Comms primitive (new infra)
 
-Keep the outbox-write exactly as is (the spawn-loop-safe shape is correct). Add a
-**pull-based pickup** on Codey's side. Codey picked **option (a) — a scheduled poll job** —
-explicitly because it survives restarts, session churn, and partial failures; correctness
-matters more than the latency cost of supervised live-loop turnaround (~30–60s acceptable).
+**Module:** `src/messaging/AgentTelegramComms.ts` (new) — generic primitive, mentor-agnostic.
 
-**Pull mechanism (Codey's side, his code).** `mentor-inbox-poll` agentmd job, runs ~every
-minute. Reads append-only JSONL, keeps a **durable per-source byte-offset cursor**, processes
-only complete newline-terminated records, uses a lock file so overlapping invocations cannot
-double-deliver, and on injection delivers via the local server/session-injection surface
-(Codey-side abstraction — intentionally *not* bound in the contract to a specific function
-name, since the injection API is per-harness). On malformed-but-complete line → dead-letter
-+ advance cursor; on incomplete trailing line → wait for next poll.
+### The marker
 
-**Paths (stateDir-relative on each side — IMPORTANT: `{codeyStateDir}` is *Codey's* state
-root, not Echo's, so Echo must write cross-agent into Codey's local state dir).**
+Every agent-to-agent message carries a structured, visible prefix in the message body:
 
-| File | Owner | Purpose |
-|------|-------|---------|
-| `{codeyStateDir}/mentor-outbox/codex-cli.jsonl` | Echo writes / Codey reads | Inbound mentor prompts |
-| `{codeyStateDir}/mentor-outbox/.cursors/codex-cli.cursor.json` | Codey | Durable byte-offset cursor |
-| `{codeyStateDir}/mentor-outbox/codex-cli.deadletter.jsonl` | Codey | Malformed lines, audit |
-| `{codeyStateDir}/mentor-outbox/codex-cli.delivery.jsonl` | Codey writes / Echo Stage-B reads | Per-injection audit row (written immediately after successful inject, BEFORE the reply) |
-| `{codeyStateDir}/mentor-outbox/codex-cli.reply.jsonl` | Codey writes / Echo Stage-B reads | Per-prompt terminal outcome |
-
-Echo resolves `{codeyStateDir}` from a new config `mentor.menteeStateDir` (default
-`/Users/justin/Documents/Projects/instar-codey/.instar` for `codex-cli`). The contract stays
-stateDir-relative; the absolute-path resolution is the only machine-specific shim.
-
-**Audit pattern (Codey's preference, adopted).** The poller writes a **delivery row
-immediately after successful injection** + the **reply row only after the session produces
-the assistant response**. This lets Stage-B distinguish three states cleanly: *never picked
-up* (no delivery row for this id) / *picked up, no reply yet* (delivery row, no reply row) /
-*reply completed* (both rows). Stage-B matches on `correlationId` first, `requestId` second.
-
-**Line schema — inbound prompt (Echo → Codey).**
-```json
-{
-  "schemaVersion": 1,
-  "id": "uuid-or-stable-id",
-  "ts": "2026-05-27T18:25:18.831Z",
-  "kind": "mentor.live.prompt",
-  "from": { "agent": "echo", "role": "mentor" },
-  "to": { "agent": "instar-codey", "framework": "codex-cli" },
-  "threadId": "optional-mentor-thread-or-run-id",
-  "correlationId": "stable-id-stage-b-uses-to-match-reply",
-  "message": "prompt text",
-  "replyRequired": true,
-  "expiresAt": "optional-iso-ts (if absent, processed whenever seen)"
-}
 ```
-- `id` is REQUIRED (idempotency anchor).
-- `correlationId` defaults to `id` if omitted; Stage-B matches it first.
-- Echo MAY emit top-level `framework` as a compatibility alias during rollout; the canonical
-  location is `to.framework`.
-- `message` is the only prompt-content field; metadata is routing/audit, never executable
-  instructions.
-- `attachments` field is reserved for future use; for now, prompt is a plain string.
+[a2a:from=<senderAgent> to=<recipientAgent> role=<role> id=<stable-uuid> v=1]
 
-**Line schema — reply (Codey → Echo, terminal outcome).**
+<message body>
+```
+
+- **Visible in chat** — humans can audit at a glance (a real chat-log forensic property,
+  not a hidden metadata field).
+- **Parseable** — regex `^\[a2a:from=(\S+) to=(\S+) role=(\S+) id=(\S+) v=(\d+)\]\n\n`.
+- **Versioned** (`v=1`) — schema bumps are explicit.
+- **No HMAC v1** — recipient trusts the marker if the sender Telegram bot identity is in
+  the recipient's known-agents allowlist (the structural identity check is the Telegram bot
+  ID, not the marker text). HMAC-signed markers deferred to v2 if cross-machine trust
+  becomes a concern.
+- **Roles defined**: `mentor`, `mentor-reply`, `coord`, `coord-reply`, `notify` (extensible).
+
+### Sender side
+
+```ts
+sendAgentMessage({
+  fromAgent: 'echo',
+  toAgent: 'instar-codey',
+  toBotToken: cfg.codey.mentorBotToken,   // the recipient's mentor-bot token
+  toTopicId: cfg.codey.mentorTopicId,     // the dedicated topic in recipient's setup
+  role: 'mentor',
+  message: '<the prompt>',
+  correlationId?: 'optional-existing-id-for-reply-threading',
+}): Promise<{ ok: boolean; sentMessageId?: string; reason?: string }>
+```
+
+- Instantiates (or reuses) a `TelegramAdapter` for the recipient's bot.
+- Prepends the marker; calls `sendToTopic(toTopicId, marker+body)`.
+- Returns `{ok, sentMessageId}` so consumers can correlate.
+- Logs every send to an audit ledger (`state/a2a-sent.jsonl`) — append-only.
+
+### Recipient side
+
+A new incoming-message handler registered with `TelegramAdapter.onMessage`:
+
+```ts
+agentMessageHandler(rawMsg): { handled: boolean; routedTo?: string }
+```
+
+- Parses the marker. If absent → not an agent message; fall through to normal user handler.
+- If present and `from` is in the known-agents allowlist (`config.agentTelegram.knownAgents`)
+  AND the sender bot ID matches → route to the appropriate handler (`role` → handler map).
+- **If marker present but `from` not allowlisted OR bot ID mismatch**: log as
+  `agent-marker-unknown` and drop (NEVER deliver to the normal user-message path — spoofing
+  defense; an unknown party adding a marker doesn't get user-level processing).
+- **Anti-loop discipline (the heart of the primitive)**:
+  - Agent-origin messages NEVER auto-trigger courtesy replies. The role-handler is the
+    only producer of any outgoing message in response.
+  - If the role-handler does produce a reply, it routes through `sendAgentMessage` with
+    `role=<original>-reply`, carrying the original `id` as `correlationId`. Replies are
+    marked, traceable, and visible.
+  - **A reply received (e.g. `mentor-reply`) NEVER triggers another `mentor` send.**
+    Outgoing mentor messages come only from the scheduled mentor cycle. Same for any
+    role-pair. Compile-time guard: the role-handler module's import surface lint forbids
+    `sendAgentMessage(role='X')` if it also reads `role='X-reply'` (no closed-loop within
+    one module).
+- Every received agent message logged to `state/a2a-received.jsonl` (append-only audit).
+
+### Anti-loop infra: structural, not just rules
+
+1. **One outbound producer per `role`.** Each `role` has exactly one module that may send
+   it (`mentor` is sent only by the mentor tick; `mentor-reply` only by Codey's mentor
+   handler). Import-surface lint enforces.
+2. **Cycle-detection in flight.** If `sendAgentMessage` sees a recipient bot-id+topic that
+   matches an inflight conversation where the local agent received from that bot in the
+   last N seconds (default 5), it requires an explicit `cycle-ok: true` parameter or
+   refuses with a degradation event.
+3. **Round-trip audit ledger.** Both ledgers (sent + received) include role, ids, and
+   correlation chains. Stage-B / future debugging can prove there is no role→reply→role
+   path within a single tick boundary.
+
+### Config
+
+New `agentTelegram` section in `.instar/config.json`:
 ```json
-{
-  "schemaVersion": 1,
-  "kind": "mentor.live.reply",
-  "id": "uuid-for-this-reply-row",
-  "requestId": "incoming-line-id",
-  "correlationId": "incoming-correlation-id-or-id",
-  "ts": "2026-05-27T18:26:05.000Z",
-  "from": { "agent": "instar-codey", "framework": "codex-cli" },
-  "to": { "agent": "echo", "role": "mentor" },
-  "status": "ok",
-  "message": "assistant reply text",
-  "session": {
-    "topicId": null,
-    "sessionId": "optional-local-session-id",
-    "delivery": "active-session"
+"agentTelegram": {
+  "knownAgents": {
+    "echo":        { "botId": "echo-mentor-bot-id" },
+    "instar-codey":{ "botId": "codey-bot-id" }
   },
-  "error": { "code": "no_active_session", "retryable": true }
+  "cycleDetectionWindowMs": 5000,
+  "auditRetentionDays": 30
 }
 ```
-- `status ∈ {ok, error, ignored, expired}`.
-- `error` is present only for non-`ok` statuses; `message` remains user-safe.
 
-**Anti-loop contract (Codey-asserted, baked into the spec — both sides comply).**
+Per-recipient bot config (sender-side) lives under the consumer's section (e.g.
+`mentor.codeyBot = {token, topicId}` — see Fix 2b).
 
-1. Echo writes files only. Codey reads files only for inbound mentor prompts. **No
-   Threadline send, no agent spawn, no HTTP callback as part of the live loop.**
-2. Codey replies by appending to the reply JSONL file only. Echo Stage-B reads that file;
-   Echo MUST NOT treat a reply as a trigger to write a new prompt unless a human/supervisor
-   explicitly starts a new mentor turn.
-3. Every incoming row needs a stable `id`; Codey maintains a processed-id ledger (cursor +
-   id check) so file rewrites, duplicate appends, and restarts do not re-inject.
-4. Optional `expiresAt` for prompts whose staleness is unsafe; absence = process whenever
-   seen.
-5. `replyRequired` may be false for one-way deliveries; for the live-loop test, set true.
-6. **Metadata is routing/audit only** — never prompt content. Only `message` is interpreted
-   as prompt.
-7. **One writer per file.** If multi-mentor lands later, one source file per writer (or
-   append-locking).
-8. Delivery + reply ledgers are append-only so Stage-B can reconstruct the run even on
-   mid-turn crash.
+## Fix 2b — Mentor consumes the primitive
 
-**Echo-side responsibilities (this PR ships).** (i) Replace the per-tick `{ts,framework,message}`
-write with the schemaVersion=1 record above (with `id` + `correlationId`). (ii) Write to
-`{mentor.menteeStateDir}/mentor-outbox/codex-cli.jsonl` (cross-agent into Codey's state
-dir). (iii) Publish a typed-contract export Stage-B uses to parse reply.jsonl. (iv) Add a
-contract test that round-trips a written prompt + a hand-written reply through the parser.
+- **Echo mints a dedicated mentor bot via @BotFather** (per Justin's choice C). Token
+  stored in Echo's config under `mentor.botToken` (Secret-Drop-collected — never via chat
+  paste).
+- **Codey accepts the mentor bot** as a known agent in his `agentTelegram.knownAgents`
+  allowlist, and routes any received `[a2a:role=mentor]` to a new "mentor inbox" topic
+  (the dedicated Mentor session topic). The role-handler injects the message body
+  (post-marker-strip) as a user prompt into Codey's mentor-session.
+- **Codey's reply** goes back via `sendAgentMessage` with `role=mentor-reply` to Echo's
+  mentor bot. Echo's mentor bot receives it; Echo's recipient handler routes to Stage-B.
+- **Stage-B reply ingestion is finding-emission-only** — capture() only, no path to
+  spawnStageA or another deliverToMentee. Unit-tested by an assertion: a `mentor-reply`
+  received → next tick still defers (no implicit recurrence).
+- **`deliverToMentee` (Echo-side) is replaced** by a thin wrapper around `sendAgentMessage`.
+  The file-based mentor-outbox is retired (legacy artifact cleanup in migration).
 
-**Codey-side responsibilities (Codey ships, separately).** The `mentor-inbox-poll` job,
-cursor + lock + dead-letter, the local injection abstraction, the delivery + reply writers,
-the `/idle` endpoint, and vendoring `MENTOR_CONTRACT_VERSION`. Both halves must land before
-the supervised live test. Coordinated through this spec's shared contract.
+### What this means for the mentor's Stage A
 
-**Echo-side ship-independence (R2 integration F-new-1).** Echo's side ships independently of
-Codey's PR. Absent `/idle` produces continuous `mentee-busy` defers + a degradation event —
-**not a refuse-to-start**. The mentor stays harmlessly idle in production (just like the
-dry-run we ran today) until Codey's side lands. This is the [[graduated-feature-rollout]]
-pattern: ship dark, observe-only, then promote when the dependent piece is ready.
+Stage A drives Codey "as a user would" — via Telegram, in the dedicated mentor topic,
+through the primitive. Codey's mentor-handler processes the prompt the same way it would
+process any user message (the test of his behavior under user-like interaction). The
+identity is honest (it's Echo's mentor bot, not a Justin impersonation), but the
+*interaction shape* is user-level, which is what the wild-behavior test needs.
 
-#### Hardening (convergence round 1)
+## Fix 3 — Quota-aware budget + notification (unchanged from prior draft)
 
-**Cross-agent filesystem safety (adversarial F3, integration F1).** The current
-`deliverToMentee` uses raw `fs.mkdirSync` + `fs.appendFileSync` — no symlink check, no path
-canonicalization. Echo writes into *another agent's* state dir, so the attack/misconfig
-surface is real. New Echo-side requirements:
+- **Remove** `dailySpendCapUsd` from config defaults; add `mentor.quotaCeiling` (default
+  `elevated`), wire `budgetOk` to `QuotaTracker.canRunJob('low')` + run-count backstop.
+- **Quota null/stale → fail-closed** (`reason: quota-unknown`); override the default
+  fail-open.
+- **Token-spend ceiling** (`mentor.dailyTokenCeiling`, default 200_000) summed via
+  prefix-match `mentor-stage-b::%` on `TokenLedger.byAttributionKey({sinceMs})`.
+- **Trip-EPISODE state machine** (not day-bucket); alerts on `ok→tripped` AND
+  `tripped→ok`; file-backed persistence at `state/mentor-budget-notifications.json` via
+  `SafeFsExecutor.atomicWriteJsonSync`; CAS single-writer; corrupt-state-file recovery
+  with degradation event; optional `budgetReminderHours` long-trip reminder (default off).
 
-1. **Symlink reject + parent-realpath check (defense-in-depth, R2 adversarial-B)**: `lstat`
-   the leaf path before each append; if it's a symlink, refuse the write and emit
-   `DegradationReporter` event `mentor.delivery.symlink-rejected`. ALSO `realpathSync` the
-   resolved write path and assert it still resides under the validated `menteeStateDir` root
-   — leaf-lstat alone misses a directory-symlink planted *above* the leaf on macOS, and
-   guards against lstat→append TOCTOU.
-2. **menteeStateDir allowlist**: validate `mentor.menteeStateDir` at startup — refuse if it
-   resolves to Echo's own `stateDir`, contains `..`, or doesn't look like an instar agent
-   home (no `.instar/config.json` at the root). Refuse-to-start with a loud error rather
-   than silently writing into the wrong place.
-3. **Append-only contract documented**: raw `appendFileSync` is correct for JSONL (atomic at
-   line granularity on POSIX for `<PIPE_BUF`); document why `SafeFsExecutor` is NOT used for
-   this path (its destructive-op guards don't apply to append) so a future reviewer doesn't
-   "fix" it incorrectly.
+## Scope
 
-**Delivery failure must surface (adversarial F4).** Current shape silently swallows EACCES /
-ENOSPC / EROFS → tick reports `delivered:true` even when nothing was written. Required:
-- `deliverToMentee` returns `{ ok: boolean; reason?: string }` (was void).
-- Tick's `delivered` boolean reflects the callback's `ok`.
-- On `!ok`, runner pushes ONE Attention entry deduped per (reason, day) using the same
-  primitive as the budget-trip notifier (Fix 3). Otherwise a permanently-broken Codey disk
-  burns the daily run budget silently.
-
-**Anti-loop made structural (lessons 1, adversarial F5).** The eight contract constraints
-are correct but currently behavioral promises. Make them compile-/test-time invariants:
-
-1. **Stage-B reply ingestion is finding-emission-only.** Define explicitly: when Stage-B
-   reads `reply.jsonl`, the only output path is `capture({findings})` — there is NO code
-   path from reply ingestion to `spawnStageA` or `deliverToMentee`. Implementation: Stage-B
-   reply parser returns `ForensicFinding[]`; the tick passes them only to `capture()`.
-2. **Unit test (the structural assertion):** "given a reply row landed, the next tick still
-   defers on `mentee-busy` / `min-interval-not-elapsed` and does NOT call `deliverToMentee`
-   or `spawnStageA`" — proves no implicit recurrence path exists.
-3. **Import-surface lint** for the mentor-delivery module: arch-test asserts the module's
-   imports are a subset of `{ fs, path, mentor-contract-types }` — no `threadline_send`, no
-   `spawnSession`, no `fetch`/`http`. Build fails on regression. Turns rule 1 of the
-   contract from promise into compile-time invariant.
-
-**Schema-version negotiation (adversarial F7, integration F6, lessons F6).** SchemaVersion=1
-ships today; bumps need a rule, not a Threadline round-trip every time.
-- Echo exports `MENTOR_CONTRACT_VERSION` (a constant + a typed `MentorPrompt` /
-  `MentorReply` schema) Codey imports/vendors with a pinned version.
-- Echo serves the schema at `GET /mentor/contract` (unauthenticated read-only — schema is
-  not sensitive) so Codey can fetch + assert at startup if vendoring isn't workable.
-- **Within v1**: additions are additive-only (new optional fields allowed; required
-  fields/renames forbidden).
-- **Breaking change → v2**: bumps land on the **reader-first** (Codey, who reads prompts AND
-  writes replies — gets v2 understanding first), then on Echo (writer). Older readers seeing
-  newer lines → dead-letter row with a `schema-version-too-new` reason (not crash, not
-  silent).
-- CI gate: a bump to `MENTOR_CONTRACT_VERSION` requires a corresponding entry in
-  `docs/specs/MENTOR-CONTRACT-CHANGELOG.md` — script lints this on PR.
-
-### Fix 3 — Quota-aware budget + notification (replaces the dead dollar cap)
-
-- **Remove** `dailySpendCapUsd` from config defaults; replace with `mentor.quotaCeiling`
-  (default: `elevated` — mentor stands down at elevated/critical/shutdown, runs only at
-  normal). Wire `budgetOk` to `QuotaTracker.canRunJob('low')` (mentor is low-priority) AND
-  the existing run-count backstop (`maxRoundsPerDay` stays — it's a real bound).
-- **Quota null/stale → fail-closed (integration F2).** `QuotaTracker.getState()` returns
-  null when the quota state file is missing or stale (>30 min), and `shouldSpawnSession`
-  fails-OPEN by default. For the mentor, override to **fail-closed**: null/stale ⇒
-  `budget.ok = false, reason = 'quota-unknown'`. Consistent with Fix 1's idle posture; we
-  don't burn quota blindly when we can't read it.
-- **Add a token-spend ceiling** (`mentor.dailyTokenCeiling`, default 200_000 tokens) summed
-  from `TokenLedger`. **Integration F3 correction:** `TokenLedger.attribution_key` shape is
-  `<component>::<promptFingerprint>`, not bare `mentor-stage-b` — sum via prefix-match
-  (`key LIKE 'mentor-stage-b::%'`) over `byAttributionKey({sinceMs})`, OR add a thin
-  `byComponent('mentor-stage-b', {sinceMs})` helper. The spec ships the helper for clarity.
-  Hit the ceiling → defer with reason `budget-tokens`.
-- **Notify on trip — state-machine, not day-bucket (adversarial F6, lessons F5).** Per-
-  episode dedup is correct; per-day is wrong (a trip→recover→re-trip same day MUST re-alert
-  on the re-trip — that's exactly when Justin needs to know). State machine:
-  - Track `currentTripState ∈ {ok, tripped}` per `reason` (one of `quota-elevated`,
-    `quota-unknown`, `runs-exhausted`, `budget-tokens`, `delivery-failed`).
-  - **Alert on transition `ok → tripped`** (one Attention entry + one Telegram alert).
-  - **Alert on transition `tripped → ok`** (one "recovered" message — symmetry, so the user
-    knows we're back).
-  - Within state, suppress (no chatter on every tick).
-  - **Persistence: file-backed** at `state/mentor-budget-notifications.json` via
-    `SafeFsExecutor.atomicWriteJsonSync` so a mid-day server restart does NOT re-alert
-    (integration F4). In-memory alone re-spams. **Explicit shape** (R2 integration F-new-2):
-    ```json
-    { "<reason>": { "state": "ok|tripped", "lastTransitionTs": "ISO", "lastAlertTs": "ISO" } }
-    ```
-    **Single-writer / CAS (R2 adversarial-A):** all state-machine reads + transitions go
-    through a `CommitmentTracker.mutate()`-style CAS so two concurrent ticks observing
-    `tripped→ok` cannot double-fire the recovery alert. **Corrupt-state file on read**:
-    treat as `{}` (full re-alert next trip) AND emit `mentor.budget-state.corrupt`
-    degradation event — don't crash, don't silently lose all dedup.
-  - **Optional "still tripped after N hours" reminder** (default off, configurable via
-    `mentor.budgetReminderHours`) for long-running trips (e.g. quota stays elevated for 6h).
-
-## Design (one place to read)
-
-The runner gets three new service dependencies, all small + injectable for tests:
-- `getMenteeIdle(menteeFramework): Promise<boolean>` — async probe + fail-closed.
-- `quotaStandDown(menteeFramework): { allow: boolean; reason?: string }` — composes quota
-  + run-count + token-ceiling; returns the specific blocker.
-- `notifyBudgetTrip(reason, detail)` — fires the attention + Telegram alert (deduped).
-
-The tick changes:
-- Order is `canary → quota → idle → spawn → leak → forensics → capture → deliver` (idle
-  becomes a real async-resolved boolean, computed in `Runner.startTick` so the tick stays
-  pure).
-- `deps.budgetOk` is replaced by `deps.budget` returning `{ ok, reason }`; on `!ok` the tick
-  calls `deps.notifyBudgetTrip(reason)` exactly once (dedup is in the notifier, not the tick).
-- `reason: 'unsafe-window'` is renamed `reason: 'mentee-busy'` to match the actual signal.
-
-## Out of scope
-
-- A Codey **liveness** monitor beyond the per-probe fail-closed (separate concern).
-- Threadline-relay-based delivery (intentionally rejected — see [[bug_cross_agent_ack_spawn_loop]]).
-- Multi-mentee fan-out (one mentee for now).
-
-## Testing
-
-1. **Unit — idle signal:**
-   - `/idle` returns `{idle:true, uptimeSec: large}` → `getMenteeIdle = true` → tick
-     proceeds past the idle gate.
-   - `/idle` returns `{idle:false, ...}` → defers `mentee-busy`.
-   - `/idle` returns 200 with `idle:true` but `uptimeSec < minInterval` → defers
-     `mentee-busy` (liveness-warmup).
-   - **Fail-closed coverage:** non-2xx, network/timeout, JSON-parse failure, unknown
-     `schemaVersion`, missing required fields, AND a 200 with `idle:true` but missing
-     `bootId`/`uptimeSec` (schema drift) → ALL produce `getMenteeIdle = false`. No path can
-     silently flip to idle.
-   - Persistent failure (≥3 consecutive) emits a `DegradationReporter` event.
-2. **Unit — quota-budget:**
-   - quota `normal` + under run-count + under token-ceiling → `budget.ok = true`.
-   - quota `elevated` → `budget.ok = false, reason = 'quota-elevated'`.
-   - **quota state `null`/stale** → `budget.ok = false, reason = 'quota-unknown'`
-     (fail-closed, not the QuotaTracker default fail-open).
-   - run-count cap → `budget.ok = false, reason = 'runs-exhausted'`.
-   - token-ceiling hit (via prefix-match `mentor-stage-b::%`) → `budget.ok = false,
-     reason = 'tokens-exhausted'`.
-   - **State-machine notify:** `ok → tripped` fires one alert per reason; further `tripped`
-     ticks are suppressed; `tripped → ok` fires one recovered alert; `ok → tripped → ok →
-     tripped` same day fires THREE alerts (down, up, down) — proving day-bucket dedup is
-     replaced by trip-episode dedup. Persistence across simulated server restart.
-3. **Integration — delivery contract (Echo-side):**
-   - `deliverToMentee` writes a well-formed schemaVersion=1 JSONL line at
-     `{menteeStateDir}/mentor-outbox/codex-cli.jsonl`; the contract schema is exported as
-     `MentorPrompt`/`MentorReply` types + `MENTOR_CONTRACT_VERSION` constant; `GET
-     /mentor/contract` serves the schema.
-   - **Symlink at target path** → write refused, degradation event emitted.
-   - **`menteeStateDir` resolving to Echo's own stateDir** → server refuses to start.
-   - **`deliverToMentee` returns `{ok:false, reason}`** when the write fails (EACCES /
-     ENOSPC simulated via fs mock) → tick reports `delivered:false` + one Attention entry
-     (deduped by the same notifier primitive as the budget-trip).
-4. **Integration — bidirectional contract (the #425 gap-closer):**
-   - A test-fixture poller (simulating Codey's side) reads `{menteeStateDir}/mentor-
-     outbox/codex-cli.jsonl` using the **exported typed contract**, writes a `delivery.jsonl`
-     row then a `reply.jsonl` row, and Echo Stage-B parses both. Asserts: the round-trip
-     produces a `ForensicFinding`, and the next tick still defers (does NOT call
-     `deliverToMentee` or `spawnStageA` — proves the anti-loop is structural). This is the
-     test #425's "validate the artifact but never drive the full path end-to-end" gap.
-5. **Wiring-integrity — production deps are real:**
-   - When the runner is constructed from production wiring (not the test factory),
-     `getMenteeIdle` / `quotaStandDown` / `notifyBudgetTrip` are non-null, non-no-op, and
-     delegate to the real probe / `QuotaTracker` / Attention+Telegram path. Catches the
-     "shipped as null/no-op" failure mode.
-6. **Import-surface lint:**
-   - Static check: the mentor-delivery module's import set is a subset of `{fs, path,
-     mentor-contract-types}`. Build fails if `threadline_send`, `spawnSession`, or
-     `fetch`/`http` are introduced. Anti-loop rule 1 is now compile-time, not promise.
-7. **End-to-end — supervised live cycle (the actual test):**
-   - All three fixes shipped + Codey's pickup shipped; manually trigger one tick against
-     the real Codey with Justin watching; assert (a) `/idle` probe succeeds and returns
-     `idle:true`, (b) Echo writes the schemaVersion=1 prompt line, (c) Codey's poller
-     ingests + writes the delivery row (immediately) then the reply row (after the
-     assistant response), (d) Stage-B parses both + emits findings, (e) the next tick
-     defers (no auto-recurrence). Capture before/after token-ledger spend, attention-queue
-     state, and any degradation events.
+- **In:** `AgentTelegramComms` primitive (sender + recipient + marker + anti-loop infra +
+  audit ledgers + config), mentor as its first consumer (mentor-bot + Stage-A/Stage-B
+  rewiring + retire file-outbox), Fix 1 idle signal, Fix 3 quota-budget.
+- **Out:** HMAC-signed markers (v2 if cross-machine trust matters); multi-mentee fan-out;
+  Threadline-relay-based mentor delivery (intentionally rejected — Telegram is the test
+  substrate); a general "agent presence" service beyond the per-probe `/idle` (separate
+  concern).
 
 ## Migration parity
 
-- **Config (additive):** `ConfigDefaults.getMigrationDefaults()` adds `mentor.menteeServerUrl`,
-  `mentor.menteeStateDir`, `mentor.quotaCeiling`, `mentor.dailyTokenCeiling`,
-  `mentor.budgetReminderHours` with defaults — `applyDefaults` is existence-checked, only
-  fills missing fields (integration F5 confirms the right primitive).
-- **Config (removal) — NOT silent (lessons 4, adversarial F8).** `applyDefaults` is
-  additive-only and can't remove fields. Add an explicit `migrateConfig` step (modeled on
-  `migrateLegacyMaxSessions`, `PostUpdateMigrator.ts:~3961`) that:
-  1. If `mentor.dailySpendCapUsd` is present AND equals the historical default `0.5`, delete
-     it silently (no warning — they never changed it).
-  2. If it's present AND ≠ `0.5`, **emit one Attention-queue entry** explaining the field
-     was decorative ("your `mentor.dailySpendCapUsd: <value>` was never enforced because
-     Echo runs on a Claude subscription — there's no per-token dollar charge to cap. Your
-     new effective ceiling is `mentor.dailyTokenCeiling: 200000` tokens/day. Adjust if
-     needed."), then delete the field. Idempotent (re-run = no-op once the field is gone).
-  3. Repeating the original "silent dead config" bug at migration time is precisely the
-     learning-experience failure mode — surface it loudly.
-- **No agent-installed file changes** beyond config defaults — loader-only shadow-install
-  update for Echo's side; Codey's side is a separate PR in his repo (which adds his
-  `mentor-inbox-poll` job + the `/idle` endpoint).
-- **New route parity (R2 integration F-new-3).** The new `GET /mentor/contract` route
-  requires: (a) classification under the `mentor` prefix in `CapabilityIndex.ts` so the
-  capabilities-discoverability CI gate passes; (b) a one-line entry in the CLAUDE.md
-  template (`src/scaffold/templates.ts → generateClaudeMd()`) per the Agent Awareness
-  Standard so other agents know it exists; (c) a docs-coverage entry in `default-jobs.md`
-  is NOT needed (this isn't a job) — the route is documented in `reference/api.md` per the
-  existing pattern. Migration: route ships in the package; no per-agent migration needed.
+- **Config (additive):** `agentTelegram` section (new), `mentor.botToken`,
+  `mentor.menteeServerUrl`, `mentor.menteeBotId`, `mentor.menteeTopicId`,
+  `mentor.quotaCeiling`, `mentor.dailyTokenCeiling`, `mentor.budgetReminderHours` added
+  via `ConfigDefaults.getMigrationDefaults()` + `applyDefaults` (existence-checked).
+- **Config (removal — NOT silent).** `migrateConfig` deletes `mentor.dailySpendCapUsd`
+  (silent if default `0.5`); if non-default, emit ONE Attention entry explaining the
+  field was decorative (subscription, no per-token charge) and the replacement is
+  `mentor.dailyTokenCeiling`.
+- **Retire the file-outbox.** `migrateConfig` deletes `{stateDir}/mentor-outbox/*` on the
+  first run after this update lands (the legacy outbox is now dead state). Idempotent.
+  An Attention entry notes the cleanup if any files were present.
+- **Codey bot allowlist bootstrapping.** Echo-side: `mentor.botToken` is Secret-Drop-
+  collected during a `/mentor/bot-setup` one-time command (interactive, OOB-confirmed) —
+  never via chat paste. Codey-side: he adds Echo's mentor-bot ID to his
+  `agentTelegram.knownAgents` allowlist as part of his side's PR.
+- **Routes.** Two new routes (`GET /idle` on Codey's server; `POST /mentor/bot-setup` on
+  Echo). Both get CapabilityIndex prefix classification + CLAUDE.md template entry per
+  the Agent Awareness Standard.
 
-## Co-design with Codey
+## Testing
 
-**Round 1 (closed — Threadline thread 5cc61bd7, 2026-05-27).** All five co-design questions
-resolved by Codey (senior-grade input): option (a) scheduled poll job; stateDir-relative
-paths; schemaVersion=1 with stable `id`/`correlationId`; full reply schema with `status`
-enum + optional `error`; eight anti-loop constraints; plus the separate-delivery-vs-reply
-audit-row insight Stage-B uses to distinguish never-picked-up / picked-up-no-reply-yet /
-completed. Folded above (§Fix 2).
+1. **Unit — primitive marker parsing:** valid markers parse; malformed markers
+   (missing fields, wrong version, extra fields) reject; unknown sender → drop (not
+   route to user handler); spoofed `from` but wrong bot ID → drop + log.
+2. **Unit — anti-loop infra:**
+   - Role-handler import-surface lint: a module that registers as `mentor` handler MUST
+     NOT import `sendAgentMessage` with `role: 'mentor'` (only `mentor-reply`).
+   - Cycle-detection: two sends to the same recipient within 5s without `cycle-ok:true`
+     → refused + degradation event.
+   - Round-trip ledger: send + receive both write their audit rows; correlation chain
+     reconstructable.
+3. **Unit — Fix 1 idle:** as prior draft (fail-closed coverage on every ambiguous
+   outcome including 200+missing-fields; liveness-warmup; persistent-failure degradation).
+4. **Unit — Fix 3 budget:** as prior draft (trip-episode state machine, quota null
+   fail-closed, prefix-match summation, CAS persistence, corrupt-recovery).
+5. **Integration — Echo-side mentor consumer:** mock `TelegramAdapter` sends via
+   `sendAgentMessage`; assert marker formed correctly, audit written; simulate
+   `mentor-reply` received → Stage-B parser invoked; assert next tick still defers (no
+   recurrence). This closes the [[project_jobs_load_fix_layered]] test-gap pattern.
+6. **Wiring-integrity:** production wiring of `getMenteeIdle` / `budget` /
+   `sendAgentMessage` is non-null + non-no-op; arch-test on import surfaces.
+7. **End-to-end — supervised live cycle** (the actual test):
+   - Echo's mentor-bot active in a dedicated Mentor topic in Codey's setup.
+   - `/idle` probe succeeds → idle:true.
+   - Echo sends one tagged mentor message → Codey's recipient handler routes to mentor
+     handler → injects as user prompt → Codey replies via `sendAgentMessage(role=mentor-reply)`.
+   - Echo receives the reply → Stage-B emits findings.
+   - Next tick defers (no auto-recurrence). Capture token-ledger spend + ledger audit
+     trail + any degradation events.
 
-**Round 2 (open — convergence added two Codey-side requirements after round-1 review):**
+## Co-design with Codey (NEW round, recipient-side substrate is now Telegram)
 
-1. **Unauthenticated `GET /idle` endpoint on Codey's server.** Convergence found `/sessions`
-   is Bearer-authed (can't be cross-agent probed) and has no `activelyWorking` field — so
-   the spec's idle signal needs a dedicated endpoint Codey ships. Schema in §Fix 1.
-2. **Vendoring of `MENTOR_CONTRACT_VERSION` + typed schema** (Echo exports + serves at
-   `GET /mentor/contract`). Codey's poll job imports/asserts the version at startup.
+Round 1 (prior file-based design) is superseded by this redesign. New asks for Codey:
 
-Both are small but they're requirements on Codey's side that convergence imposed *after* his
-round-1 answers. They go to Codey for confirmation before this spec converges and ships.
+1. Add `agentTelegram.knownAgents` allowlist + `/idle` endpoint on his server.
+2. Implement the recipient-side `agentMessageHandler` for incoming Telegram messages with
+   the `[a2a:...]` marker — route `role=mentor` to a new mentor-message handler that
+   injects into his mentor-session as a user prompt; route `mentor-reply` to nothing on
+   his side (he's not the recipient of replies; Echo is).
+3. Implement `sendAgentMessage` on his side so his mentor-handler can write the `mentor-
+   reply` back to Echo's mentor bot.
+4. Confirm or adjust the marker schema (`[a2a:from=… to=… role=… id=… v=1]`).
+5. Confirm the anti-loop infra invariants (one outbound producer per role; cycle-
+   detection; audit ledgers).
+
+Sent to Codey on a fresh Threadline thread + view link after Justin's nod on this draft.
+
+## Honesty / lessons applied
+
+- Every claim about an existing surface cites the code I read (TelegramAdapter.onMessage
+  line 1327; sendToTopic widely used; QuotaTracker.canRunJob from prior verification;
+  TokenLedger.byAttributionKey/attribution_key shape from prior verification). The
+  substrate-vs-discipline error that bit this morning is recorded ([[feedback_report_
+  verified_not_intended_behavior]] applies + adjacent lesson on level-of-fix selection).
+- The convergence rounds on the file-based design caught everything that mattered about
+  that design EXCEPT whether the design's substrate was right — that's an instructive
+  limit of reviewer review (reviewers ask "is this sound?", not "is this framing
+  correct?"). Future specs must surface substrate choices explicitly so the framing is
+  reviewable, not assumed.
