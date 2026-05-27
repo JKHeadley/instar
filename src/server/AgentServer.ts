@@ -158,6 +158,14 @@ export class AgentServer {
     localSigningKeyPem?: string;
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
+    /**
+     * Live-tail receiver — decrypts + applies a peer's encrypted live-tail flush
+     * received at /api/live-tail (spec §8 G3b/c). Throws on decrypt/verify failure.
+     */
+    liveTailReceiver?: (
+      flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
+      fromMachineId: string,
+    ) => { applied: boolean; reason: string } | void;
     whatsapp?: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter;
     slack?: import('../messaging/slack/SlackAdapter.js').SlackAdapter;
     imessage?: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter;
@@ -349,6 +357,7 @@ export class AgentServer {
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined,
+        onLiveTailReceived: options.liveTailReceiver,
       });
       this.app.use(machineRoutes);
     }

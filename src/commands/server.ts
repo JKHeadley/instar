@@ -67,6 +67,9 @@ import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
+import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
+import { decryptFromSync } from '../core/SecretStore.js';
+import { createPrivateKey } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -2409,6 +2412,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     let gitSync: GitSyncManager | undefined;
     let registrySyncDebouncer: RegistrySyncDebouncer | undefined;
     let leaseTransport: HttpLeaseTransport | undefined;
+    let liveTailBuffer: LiveTailBuffer | undefined;
+    let liveTailReceiver:
+      | ((
+          flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
+          fromMachineId: string,
+        ) => { applied: boolean; reason: string } | void)
+      | undefined;
     const isGitRepo = fs.existsSync(path.join(config.projectDir, '.git'));
     const gitBackupEnabled = config.gitBackup?.enabled !== false;
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
@@ -2528,6 +2538,32 @@ export async function startServer(options: StartOptions): Promise<void> {
         coordinator.attachLeaseCoordinator(leaseCoordinator);
         await coordinator.initializeLease();
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
+
+        // ── Live-tail RECEIVER (spec §8 G3b/c) ─────────────────────
+        // The standby receives the holder's redacted+encrypted live-tail flushes
+        // at /api/live-tail, decrypts them with THIS machine's X25519 private key,
+        // and sequence-dedups them into a persisted buffer so a failover resumes
+        // from a durable (not merely in-memory) copy. The HOLDER-side sender
+        // (HttpLiveTailTransport.broadcast) is driven by the flush producer wired
+        // in the inbound-dispatch + handoff integration (next increment piece).
+        // Solo agent (no peers ever POST here) → the receiver simply never fires.
+        if (seamlessness.liveTailTransport === 'tunnel') {
+          liveTailBuffer = new LiveTailBuffer({
+            outOfOrderTimeoutMs: seamlessness.liveTailOutOfOrderTimeoutMs,
+            maxBytesPerTopic: seamlessness.liveTailMaxBytesPerTopic,
+            logger: (m) => console.log(pc.dim(m)),
+          });
+          const liveTailBufferRef = liveTailBuffer;
+          // Decrypt with THIS machine's X25519 private key, then apply
+          // (sequence-deduped). Throws on a bad payload → the route returns 400.
+          const ownEncryptionKey = createPrivateKey(idMgr.loadEncryptionKey());
+          liveTailReceiver = (flush) => {
+            const decrypted = decryptFromSync(flush.enc as any, ownEncryptionKey) as { content?: unknown };
+            const content = typeof decrypted.content === 'string' ? decrypted.content : '';
+            return liveTailBufferRef.applyFlush({ topic: flush.topic, seq: flush.seq, content });
+          };
+          console.log(pc.dim('  Live-tail receiver active (standby decrypts + sequence-dedups holder stream)'));
+        }
       } catch (err) {
         // @silent-fallback-ok — git sync disabled gracefully
         console.log(pc.yellow(`  Git sync setup: ${err instanceof Error ? err.message : String(err)}`));
@@ -8069,7 +8105,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

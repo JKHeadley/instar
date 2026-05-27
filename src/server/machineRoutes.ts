@@ -54,6 +54,17 @@ export interface MachineRouteContext {
    * fold the low-latency copy into its effective-epoch view.
    */
   onLeaseReceived?: (lease: unknown, fromMachineId: string) => void;
+  /**
+   * Callback when the holder streams an encrypted live-tail flush over the wire
+   * (spec §8 G3b/c). The server lifecycle decrypts it with this machine's X25519
+   * private key, then applies it to the LiveTailBuffer (sequence-deduped). Throws
+   * if decryption/auth fails (the route turns that into a 400 rejection). Returns
+   * the apply outcome for observability.
+   */
+  onLiveTailReceived?: (
+    flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
+    fromMachineId: string,
+  ) => { applied: boolean; reason: string } | void;
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
@@ -89,6 +100,44 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     }
     ctx.onLeaseReceived?.(lease, auth.machineId);
     res.json({ ok: true });
+  });
+
+  // ── POST /api/live-tail — Receive an encrypted live-tail flush (spec §8 G3b/c) ──
+  // The holder streams the redacted+encrypted live conversation tail to the
+  // standby. Auth-verified (machineAuthMiddleware confirms the sender's identity
+  // against the registry — an unverifiable peer is rejected BEFORE any content is
+  // accepted, per §8 G3c). Decryption with this machine's X25519 private key and
+  // the sequence-deduped applyFlush happen in onLiveTailReceived (server
+  // lifecycle), which throws on a bad payload/auth → 400.
+
+  router.post('/api/live-tail', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const flush = (req.body && (req.body as any).flush) as
+      | { topic?: string; seq?: number; enc?: unknown; redactionVersion?: number }
+      | undefined;
+    if (!flush || typeof flush.topic !== 'string' || typeof flush.seq !== 'number' || !flush.enc) {
+      res.status(400).json({ error: 'Invalid live-tail flush payload' });
+      return;
+    }
+    if (!ctx.onLiveTailReceived) {
+      res.status(503).json({ error: 'Live-tail receiver not available' });
+      return;
+    }
+    try {
+      const result = ctx.onLiveTailReceived(
+        { topic: flush.topic, seq: flush.seq, enc: flush.enc, redactionVersion: flush.redactionVersion },
+        auth.machineId,
+      );
+      res.json({ ok: true, applied: result?.applied ?? null, reason: result?.reason ?? null });
+    } catch (err) {
+      ctx.securityLog.append({
+        event: 'live_tail_rejected',
+        machineId: auth.machineId,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      res.status(400).json({ error: 'Live-tail flush rejected (decrypt/verify failed)' });
+    }
   });
 
   // ── POST /api/heartbeat — Receive heartbeat from another machine ──
