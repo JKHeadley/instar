@@ -103,4 +103,56 @@ describe('bindHubConversation', () => {
     // The created topic name reflects the gist, not "codey · t-named".
     expect(tg.created.some(n => /GrowthBook/i.test(n))).toBe(true);
   });
+
+  // ── CMT-567: brief deps (LLM name + summary first message) ──────────────
+  function briefDeps(messages: number, evaluate?: (p: string) => Promise<string>): import('../../src/threadline/openConversationBrief.js').BriefDeps {
+    return {
+      observability: { getThread: () => ({ messages: Array.from({ length: messages }, (_, i) => ({ direction: (i % 2 === 0 ? 'in' : 'out') as 'in' | 'out', text: `m${i}`, remoteAgentName: 'Codey', timestamp: `2026-05-27T19:0${i}:00Z` })) }) },
+      llmQueue: evaluate ? ({ enqueue: async (_l: string, fn: (s: AbortSignal) => Promise<string>) => fn(new AbortController().signal) } as unknown as import('../../src/threadline/openConversationBrief.js').BriefDeps['llmQueue']) : null,
+      intelligence: evaluate ? { evaluate } : null,
+      topicNameFallback: (_c: unknown, t: string) => `codey · ${t.slice(0, 8)}`,
+    };
+  }
+
+  it('open with brief + LLM → topic named from PURPOSE, summary is first message', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await store.mutate('t-llm', (c) => { c.participants = { peers: ['codey'] }; return c; });
+    await surfacer.surface({ threadId: 't-llm', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(4, async () => 'PURPOSE: GrowthBook rollout plan\n\nCodey wants to coordinate the GrowthBook rollout. Awaiting your sign-off.') };
+    const r = await bindHubConversation(d, { action: 'open', threadId: 't-llm' });
+    expect(r.ok).toBe(true);
+    expect(tg.created.some(n => /GrowthBook rollout plan/i.test(n))).toBe(true);
+    expect(tg.posts.some(p => /Codey wants to coordinate/i.test(p.text))).toBe(true);
+    expect(tg.posts.some(p => /now tied to this topic/i.test(p.text))).toBe(false); // NOT the legacy marker
+  });
+
+  it('open with brief but LLM throws → slug name + template summary (NOT empty marker)', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await store.mutate('t-fb', (c) => { c.participants = { peers: ['codey'] }; c.messageCount = 4; return c; });
+    await surfacer.surface({ threadId: 't-fb', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(4, async () => { throw new Error('LLM timeout'); }) };
+    const r = await bindHubConversation(d, { action: 'open', threadId: 't-fb' });
+    expect(r.ok).toBe(true);
+    expect(tg.posts.some(p => /Conversation with/i.test(p.text))).toBe(true); // template brief
+  });
+
+  it('open with brief but no backing conversation messages → slug + legacy marker', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await surfacer.surface({ threadId: 't-empty', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(0, async () => 'PURPOSE: x\n\ny') };
+    const r = await bindHubConversation(d, { action: 'open', threadId: 't-empty' });
+    expect(r.ok).toBe(true);
+    expect(tg.posts.some(p => /now tied to this topic/i.test(p.text))).toBe(true); // Tier-C legacy marker
+  });
+
+  it('tie with brief deps → operator name + legacy marker, brief NOT invoked', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await surfacer.surface({ threadId: 't-tie2', senderName: 'codey', text: 'x', hasParentTopic: false, warrants: true });
+    let called = false;
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(4, async () => { called = true; return 'PURPOSE: x\n\ny'; }) };
+    const r = await bindHubConversation(d, { action: 'tie', threadId: 't-tie2', targetTopicId: 9999 });
+    expect(r.ok).toBe(true);
+    expect(called).toBe(false);
+    expect(tg.posts.some(p => /now tied to this topic/i.test(p.text))).toBe(true);
+  });
 });
