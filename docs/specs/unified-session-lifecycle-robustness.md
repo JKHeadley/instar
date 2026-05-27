@@ -2,11 +2,11 @@
 title: "Unified Session-Lifecycle Robustness — one authority for every session kill"
 date: 2026-05-27
 author: echo
-status: converged-awaiting-reconfirm
+status: approved
 review-method: internal-5-reviewer-plus-conformance-gate (security, scalability, adversarial, integration, lessons-aware) — external cross-model deferred to the cross-review-via-frameworks initiative (Codex/Gemini panel not yet wired)
-approved: false
-approved-by: null
-approved-note: "Justin approved the DRAFT (Telegram topic 2169, 2026-05-27); convergence then MATERIALLY strengthened the design (single authority, multi-machine lease-gating, unkillability backstop, reap-log ships). approved reset to false pending Justin's re-confirm against the converged design after reading the convergence report."
+approved: true
+approved-by: Justin
+approved-via: Telegram topic 2169 (2026-05-27 — re-confirmed "go" against the CONVERGED design after the convergence report; both open questions resolved to the recommended defaults: terminal-reap notice on-by-default, quota one-extra-grace round)
 eli16-overview: unified-session-lifecycle-robustness.eli16.md
 supervision: oracle/guard = tier0 (pure data, no policy); reap-notification disposition + quota soft-check = tier1
 topic: 2169 (session-robustness)
