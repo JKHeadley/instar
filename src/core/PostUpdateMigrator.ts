@@ -1332,13 +1332,15 @@ export class PostUpdateMigrator {
       }
     };
     // Marker = the latest capability signature (bumped each time the bundled hook/
-    // setup gains a feature, so prior installs upgrade): now the independent
-    // completion evaluator (mirrors /goal). Absent from multi-session-only installs.
+    // setup gains a feature, so prior installs upgrade): now notify-on-stop —
+    // terminal exits (completion/duration/emergency) send a Telegram explaining
+    // why the run stopped (2026-05-27 silent-stalls postmortem, Task 2). The
+    // `notify_terminal_stop` function name is absent from all prior installs.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'Native /goal delegation',
+      'notify_terminal_stop',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal + notify-on-stop)',
     );
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',

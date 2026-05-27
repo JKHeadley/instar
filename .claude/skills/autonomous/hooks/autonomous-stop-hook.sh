@@ -147,6 +147,32 @@ STARTED_AT=$(fm_get started_at)
 COMPLETION_PROMISE=$(fm_get completion_promise)
 COMPLETION_CONDITION=$(fm_get completion_condition)
 GOAL_MODE=$(fm_get goal_mode)   # "native" = the framework's own /goal loop drives completion
+RUN_GOAL=$(fm_get goal)
+
+# ── Layer A: notify-on-stop (2026-05-27 silent-stalls postmortem, Task 2) ──────
+# When an autonomous run reaches a TERMINAL exit (completion / duration / emergency),
+# send ONE plain-English Telegram to the run's report topic explaining why it
+# stopped. Closes Justin's "a session either keeps going OR tells me why it
+# stopped" requirement structurally: previously every terminal exit only echoed
+# to stderr (the terminal the user can't see), so an autonomous run could end in
+# silence. Best-effort + NON-BLOCKING — a delivery failure never blocks the exit.
+# Fires at most once per run (the state file is removed right after each terminal
+# exit, so the hook won't re-enter). Reuses telegram-reply.sh (the same transport
+# the restart-resume recovery note uses), and only for the telegram channel.
+goal_snippet() {
+  printf '%s' "${RUN_GOAL:-the autonomous run}" | tr '\n\t' '  ' | cut -c1-80
+}
+notify_terminal_stop() {
+  local msg="$1"
+  [[ -z "$REPORT_TOPIC" ]] && return 0
+  [[ "${REPORT_CHANNEL:-telegram}" != "telegram" ]] && return 0
+  local script=""
+  if [[ -x ".instar/scripts/telegram-reply.sh" ]]; then script=".instar/scripts/telegram-reply.sh"
+  elif [[ -x ".claude/scripts/telegram-reply.sh" ]]; then script=".claude/scripts/telegram-reply.sh"
+  fi
+  [[ -z "$script" ]] && return 0
+  printf '%s\n' "$msg" | "$script" "$REPORT_TOPIC" >/dev/null 2>&1 || true
+}
 
 # Validate recorded session_id is a real UUID. Claude sometimes writes a custom
 # string instead of $CLAUDE_CODE_SESSION_ID; non-UUID values are treated as
@@ -245,12 +271,14 @@ if [[ "$GOAL_MODE" == "native" ]]; then
         --data-binary @- "http://localhost:${port}/autonomous/native-goal/clear" >/dev/null 2>&1 || true
   }
   if [[ -f ".instar/autonomous-emergency-stop" ]]; then
+    notify_terminal_stop "🛑 My autonomous run on \"$(goal_snippet)\" was stopped (emergency stop)."
     native_goal_clear; rm -f "$STATE_FILE"
     echo "[autonomous] emergency stop — native /goal cleared" >&2; exit 0
   fi
   if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
     NG_START=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || date -d "$STARTED_AT" +%s 2>/dev/null || echo 0)
     if [[ "$NG_START" =~ ^[0-9]+$ ]] && [[ $NG_START -gt 0 ]] && [[ $(( $(date +%s) - NG_START )) -ge $DURATION_SECONDS ]]; then
+      notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" hit its time limit and stopped. Ask me and I'll pick up where I left off."
       native_goal_clear; rm -f "$STATE_FILE"
       echo "[autonomous] duration expired — native /goal cleared" >&2; exit 0
     fi
@@ -280,6 +308,7 @@ if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
     if [[ $ELAPSED -ge $DURATION_SECONDS ]]; then
       echo "⏰ Autonomous mode: Duration expired ($ELAPSED seconds elapsed)."
       echo "   Session is free to exit."
+      notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" just hit its time limit and stopped. Ask me and I'll pick up where I left off."
       rm -f "$STATE_FILE"
       exit 0
     fi
@@ -293,6 +322,7 @@ fi
 # Emergency stop (global — halts every autonomous job on its next fire)
 if [[ -f ".instar/autonomous-emergency-stop" ]]; then
   echo "🛑 Autonomous mode: Emergency stop detected."
+  notify_terminal_stop "🛑 My autonomous run on \"$(goal_snippet)\" was stopped (emergency stop)."
   rm -f "$STATE_FILE"
   # NOTE: the emergency flag is left in place so OTHER topics' hooks also see it
   # and clear their own per-topic files; stop-all clears the flag when complete.
@@ -323,6 +353,7 @@ if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TR
   fi
   if [[ "$EVAL_MET" == "true" ]]; then
     echo "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+    notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
     rm -f "$STATE_FILE"
     exit 0
   fi
@@ -341,6 +372,7 @@ if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
       if [[ -n "$PROMISE_TEXT" ]] && [[ "$PROMISE_TEXT" = "$COMPLETION_PROMISE" ]]; then
         echo "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
         echo "   Session is free to exit. Good work!"
+        notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — all the work is done."
         rm -f "$STATE_FILE"
         exit 0
       fi
