@@ -123,3 +123,9 @@ CI on PR #426 surfaced two issues the local targeted runs missed; both fixed:
 - **builtin-jobs frontmatter parse (cascaded to all unit/e2e shards):** the `failure-analyzer.md` job `description:` contained an unquoted `Spec: ` — the colon-space made YAML read it as a nested mapping ("bad indentation 2:465"), breaking `migrateAsync`/`installBuiltinJobs` frontmatter parsing and failing every test that touches the migrator (incl. `tests/e2e/parity-primitives-lifecycle.test.ts:220`). -> quoted the description + removed inner colons. parity test 12/12 green; cascade clears.
 
 **Lesson (fits this very feature):** a malformed builtin-job description took down the whole suite — exactly the "shipped artifact, downstream failure" the Failure-Learning Loop is built to attribute. Local targeted runs passed because they didn't exercise the migrator's job-frontmatter parse; the full push-config suite (and CI) did.
+
+### Commit 10 — route-completeness fix (PR #426, 2nd CI run)
+
+2nd CI run: Type Check + 6/8 unit shards green; shard 3/4 failed on `route-completeness.test.ts:124` — it asserts every `catch (err)` in routes.ts uses `err instanceof Error`. My `/failures/analyze` catch used `(err as Error).message` → 196 catch blocks vs 195 instanceof checks (off by one). Fixed: `err instanceof Error ? err.message : String(err)`. route-completeness 9/9 green.
+
+Docs Coverage (advisory, NOT a required check per branch protection) reports the repo-wide 57% capability-doc coverage — a pre-existing long-standing metric (965 capabilities), not a regression from this PR; the feature ships with a full converged spec + ELI16 + CLAUDE.md capability section. Left as-is (out of scope; advisory).

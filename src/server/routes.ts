@@ -4395,7 +4395,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ analysis, actedOn, verified });
     } catch (err) {
       // Fail-open: the analyzer never crashes the caller (job).
-      res.status(200).json({ error: 'analyze failed (logged)', detail: (err as Error).message });
+      res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
     }
   });
 
