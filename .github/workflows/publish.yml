@@ -172,6 +172,10 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Post-publish smoke test (clean install + --version)
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
+
       - name: Commit version bump & tag
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         env:

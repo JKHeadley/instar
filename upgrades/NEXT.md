@@ -4,37 +4,35 @@
 
 ## What Changed
 
-**`instar test-as-self` — one-button throwaway-deploy harness.** Automates what the
-test-as-self skill documented as manual steps: deploy the current dist into a
-throwaway agent home, start it, optionally run a real Telegram round-trip (Bot HTTP
-API), run the deterministic crash/lease verifier, and tear down — a single JSON
-report, exit 0 = all PASS. Structural guards make it impossible to point at your
-real agent home or a protected agent (Bob), and it refuses a raw bot token on the
-command line (Secret Drop only).
+**Post-publish smoke gate (publish-pipeline regression insurance).** A new step
+after `npm publish` clean-installs the just-published version into a throwaway
+prefix and runs `instar --version`, asserting the tarball actually installs and
+reports the right version. If the publish pipeline ever ships a tarball missing
+its compiled output, this catches it within minutes of release instead of when a
+fresh install fails in the wild. (Track A was re-scoped from a "fix" to this gate:
+the original "empty dist" scare was self-inflicted, not a real publish bug.)
 
 ## What to Tell Your User
 
-- There's now a one-command way for me to safely test a fresh deploy of myself in
-  an isolated sandbox — `instar test-as-self` — before shipping a change that
-  touches the startup/deploy path, so I get clean evidence instead of guessing from
-  logs. It can't touch your real agent or Bob, and it never takes a bot token on the
-  command line.
+- Internal release-pipeline hardening: after I publish a new version, CI now
+  immediately does a clean install of it and checks it runs, so a broken release
+  can't slip out unnoticed. Nothing changes for you — it's a safety net on my own
+  shipping process.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| `instar test-as-self` | `instar test-as-self --no-roundtrip` (deploy+verify) or `--bot-token <secret-drop-id>` (+ Telegram round-trip); `--keep` leaves it running. |
-| Structural deploy guards | Automatic — refuses canonical-home / Bob targets (exit 11) and raw tokens on argv (exit 12). |
+| Post-publish smoke gate | Automatic in the publish workflow — clean-installs the just-published version + asserts `instar --version`. |
 
 ## Evidence
 
-**New command + pure guards, fully wired (not dead code) + Agent-Awareness entry.**
-Unit `tests/unit/test-as-self-validation.test.ts` (12) covers every guard decision
-boundary; integration `tests/integration/test-as-self-guards.test.ts` (3) verifies
-the orchestrator's no-I/O early-exit codes (11 bad target, 12 raw token). `tsc
---noEmit` + destructive-lint + url-log-lint clean. The round-trip uses the Telegram
-Bot HTTP API (not Playwright — more reliable). Deferred follow-up (tracked): SKILL.md
-demote + migrator (the v1 runbook still works). Side-effects review:
-`upgrades/side-effects/test-as-self-orchestrator.md`. Spec: Track F of
+**Re-scoped to regression insurance (the original premise was a self-inflicted
+artifact, not a bug).** `scripts/post-publish-smoke.mjs` waits for npm
+propagation, clean-installs into a throwaway prefix, asserts `dist/cli.js` exists
++ `--version` matches. Unit test `tests/unit/post-publish-smoke.test.ts` (4)
+covers the pure version-match logic incl the 1.3.5-vs-1.3.55 substring trap.
+`publish.yml` validates as YAML; the step mirrors the existing publish steps'
+structure + gating. Side-effects review:
+`upgrades/side-effects/publish-completeness-smoke-gate.md`. Spec: Track A of
 `docs/specs/MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS-SPEC.md`.
