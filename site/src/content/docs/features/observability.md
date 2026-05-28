@@ -17,6 +17,14 @@ The throttle runbook is automated: once a burn alert escalates past a configured
 
 The verifier double-checks the detector's signals. Burn detection is a brittle signal by design (rates can spike legitimately during heavy work); the verifier asks a higher-context check (is this session doing meaningful work, or stuck in a retry loop?) before escalating.
 
+## LLM rate-limit circuit breaker
+
+Components: `LlmCircuitBreaker`, `CircuitBreakingIntelligenceProvider`.
+
+Where burn detection reacts to token *volume* over a rolling window, the circuit breaker reacts to the provider's own rate-limit *signal* in milliseconds. It exists because a background LLM loop that keeps calling the model after the account is over its usage or spend limit will, with auto-reload enabled, burn credits indefinitely — every call past the limit is either rejected or freshly billed.
+
+`CircuitBreakingIntelligenceProvider` wraps every intelligence provider at the single construction chokepoint, so every LLM-backed feature is covered without per-feature code. When a call returns a usage/rate/spend-limit error, the shared account-global `LlmCircuitBreaker` opens: subsequent calls short-circuit in-process — no subprocess is spawned, so they cost nothing — for a cool-down window (15 minutes by default). After the window it admits a single probe; a successful probe closes the breaker and work resumes, a still-limited probe re-opens it. The breaker enforces the provider's decision rather than making a policy decision of its own, and it is on by default (tune or disable via `intelligence.circuitBreaker` in `.instar/config.json`).
+
 ## Quota tracking
 
 Components: `QuotaTracker`, `QuotaManager`, `QuotaCollector`, `QuotaNotifier`, `QuotaExhaustionDetector`.
