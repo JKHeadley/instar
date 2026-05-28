@@ -41,19 +41,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: true,
     },
     // ContextWedgeSentinel — detect+recover the "thinking blocks ... cannot be
-    // modified" 400 fast-fail wedge. Detection/audit ships default-ON (it kills
-    // nothing). The destructive fresh-respawn is gated behind autoRecovery,
-    // which ships dark (enabled:false) and rides the Graduated Feature Rollout
-    // track — promotion to default-on is a deliberate one-line flip of
-    // autoRecovery.enabled here, which (because the runtime reads it as a
-    // fallback against this shipped default) propagates to every existing agent
-    // on next update with no migration. See docs/specs/context-wedge-sentinel.md.
+    // modified" 400 fast-fail wedge. ONLY the detection switch is persisted here
+    // (it kills nothing; default-ON is stable). The destructive fresh-respawn
+    // flag `autoRecovery` is DELIBERATELY OMITTED from these persisted defaults:
+    // applyDefaults() is add-missing-only, so persisting autoRecovery.enabled
+    // now would freeze it and a later default-on flip could never reach existing
+    // agents. Instead the autoRecovery default lives as the runtime fallback in
+    // server.ts (the trio block). Graduated-Feature-Rollout promotion to
+    // default-on = (1) flip that runtime literal so every existing agent without
+    // a persisted override inherits it on next update, and (2) add
+    // `autoRecovery: { enabled: true }` here so new agents + the rollout observer
+    // (rollout-flag-path: monitoring.contextWedgeSentinel.autoRecovery) see it.
+    // See docs/specs/context-wedge-sentinel.md.
     contextWedgeSentinel: {
       enabled: true,
-      autoRecovery: {
-        enabled: false,
-        dryRun: true,
-      },
     },
     // SessionReaper — pressure-aware reaper of idle-but-alive sessions.
     // UNLIKE the sentinels above, default OFF + dry-run: it is the only monitor
