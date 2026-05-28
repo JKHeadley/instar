@@ -86,3 +86,49 @@ reason. The authority (terminateSession) decides; wired in P0.
 unreferenced if the reaper's guard field + call are removed.
 
 **Tests:** 15 (guard) + 30 (reaper parity) + 4 (wiring) green; typecheck clean.
+
+## Commit — P0 ReapAuthority gates + funnel killers #1/#2/#3
+
+**Files:**
+- `src/core/SessionManager.ts` — `terminateSession` gains `origin`/`disposition`/`knownDead` opts, a
+  lease-holder gate, the mandatory ReapGuard consult, and a single `sessionReaped` emission;
+  `setReapGuard()`/`setAwakeChecker()` DI seams. Killers funneled: #1 boot-purge (`knownDead:true`,
+  lease-gated), #2 age-limit (inline kill → `terminateSession('age-limit')`), #3 idle-zombie (explicit
+  `disposition:'terminal'`).
+- `src/server/routes.ts` — `DELETE /sessions/:id` is now async and routes through
+  `terminateSession(origin:'operator')` instead of the raw `killSession`.
+- `src/commands/server.ts` — shared `reapGuardDeps` back BOTH the SessionReaper and the authority's
+  ReapGuard (built `minAgeMs:0`); `setAwakeChecker` wires the lease gate (single-machine ⇒ always awake).
+
+**Implementation decisions with side-effects (reviewed):**
+1. **Operator kill bypasses `protected`.** The `protected` check moved *inside* the autonomous-only
+   gate block, so an `origin:'operator'` kill is no longer blocked on protected sessions. Risk: an
+   operator can now kill a protected (e.g. lifeline) session via the dashboard. Mitigation/justification:
+   this *preserves* the prior behavior — the old `DELETE` route used `killSession`, which killed
+   unconditionally — and matches the spec's "an explicit human kill must always happen". Autonomous
+   reapers remain fully blocked on protected.
+2. **`knownDead` bypass for boot-purge.** A `dead` verdict skips the KEEP-guard. Risk: a mis-verdict
+   would skip protection. Mitigation: the oracle returns `dead` ONLY on tmux-server-reachable +
+   exact-full-id-absent, never on timeout/unreachable/unknown — so `knownDead` is only ever passed for a
+   provably-gone session, which has no liveness to protect. Without the bypass, the guard's
+   liveness-blind topic-state KEEPs (recent-user-message / open-commitment) would pin a dead record in
+   the running list and re-create the boot death-spiral.
+3. **`DELETE` route now emits `beforeSessionKill`/`sessionComplete`/`sessionReaped`.** The old
+   `killSession` path historically emitted none of these. Effect: resume-UUID listeners now fire on an
+   operator kill (beneficial — a manually-killed topic session can be resumed), and the operator kill
+   lands in the reap-log (P4). No double-emit: `killSession` is no longer on this path.
+
+**Signal vs authority:** unchanged — killers *request*, the authority decides. The only callers that
+may mint `origin:'operator'` are Bearer-authed HTTP routes; in-process killers default to `autonomous`
+and so always pass through the gates.
+
+**Re-entrancy:** the guard is consulted before the in-flight (`terminating`) lock is acquired, so the
+authority never misreads its own lock as a KEEP (spec §P0 ordering).
+
+**Rollback:** additive per killer; reverting restores the inline kills. P0 gates default to the prior
+behavior when `setReapGuard`/`setAwakeChecker` are unset (tests/standalone) — no guard consult, treated
+as awake.
+
+**Tests:** terminate (9) + reaper (30) + guard (15) + oracle (15) + timeout (4+6) + async-monitor (6) +
+lifecycle integration (6) green; typecheck clean. One brittle source-string test updated to the new
+age-kill log + funnel contract.

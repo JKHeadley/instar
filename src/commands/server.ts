@@ -8253,39 +8253,59 @@ export async function startServer(options: StartOptions): Promise<void> {
       const n = typeof t === 'number' ? t : Number(t);
       return Number.isFinite(n) ? n : null;
     };
+    // Shared stateless KEEP-guard deps (UNIFIED-SESSION-LIFECYCLE §P2). Built
+    // once here and used to back BOTH the SessionReaper and the ReapAuthority's
+    // guard (`sessionManager.setReapGuard`), so a killer cannot end a session the
+    // reaper would have kept — the same chain protects every kill path.
+    const reapGuardDeps: import('../core/ReapGuard.js').ReapGuardDeps = {
+      protectedSessions: () => sessionManager.getProtectedSessions(),
+      isRecoveryActive: (session) => composedRecoveryActive(session),
+      hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
+      isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
+      topicBinding: _resolveTopic,
+      // Gate I is a v1 stub (returns false): active conversation is already
+      // covered by the relay-lease + pending-injection gates and by render
+      // stasis (a session being talked to is not render-static for the full
+      // hysteresis+threshold window). Promoting to a real message-recency
+      // query is a tracked tuning follow-up.
+      recentUserMessage: () => false,
+      activeCommitmentForTopic: (topicId) => {
+        try { return commitmentTracker.getActive().some(c => c.topicId === topicId); }
+        catch { return true; } // cannot tell → protect
+      },
+      activeSubagentCount: (csid) => {
+        try { return csid ? subagentTracker.getActiveSubagents(csid).length : 0; }
+        catch { return 1; } // cannot tell → protect
+      },
+      buildOrAutonomousActive: (topicId) => {
+        const fresh = (p: string): boolean => {
+          try { return fs.existsSync(p) && (Date.now() - fs.statSync(p).mtimeMs) < 30 * 60_000; }
+          catch { return false; }
+        };
+        if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
+        return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
+      },
+      hasActiveProcesses: (s) => sessionManager.hasActiveProcesses(s),
+    };
+
+    // Wire the ReapAuthority's KEEP-guard. minAgeMs:0 disables spawn-grace here —
+    // the killers that consult this guard (age-limit #2, idle-zombie #3) already
+    // gate on their own age/idle thresholds, so the reaper-specific spawn-grace
+    // would otherwise delay legitimate zombie kills for young-but-stuck sessions.
+    {
+      const { ReapGuard } = await import('../core/ReapGuard.js');
+      sessionManager.setReapGuard(new ReapGuard(reapGuardDeps, { minAgeMs: 0 }));
+    }
+    // Lease-holder gate: only the awake machine autonomously reaps. Single-machine
+    // installs (coordinator disabled) are always awake.
+    sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
+
     const sessionReaper = new SessionReaper(
       {
+        ...reapGuardDeps,
         listRunningSessions: () => sessionManager.listRunningSessions(),
         captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
-        hasActiveProcesses: (s) => sessionManager.hasActiveProcesses(s),
         frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,
-        isRecoveryActive: (session) => composedRecoveryActive(session),
-        isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
-        hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
-        topicBinding: _resolveTopic,
-        // Gate I is a v1 stub (returns false): active conversation is already
-        // covered by the relay-lease + pending-injection gates and by render
-        // stasis (a session being talked to is not render-static for the full
-        // hysteresis+threshold window). Promoting to a real message-recency
-        // query is a tracked tuning follow-up.
-        recentUserMessage: () => false,
-        activeCommitmentForTopic: (topicId) => {
-          try { return commitmentTracker.getActive().some(c => c.topicId === topicId); }
-          catch { return true; } // cannot tell → protect
-        },
-        activeSubagentCount: (csid) => {
-          try { return csid ? subagentTracker.getActiveSubagents(csid).length : 0; }
-          catch { return 1; } // cannot tell → protect
-        },
-        buildOrAutonomousActive: (topicId) => {
-          const fresh = (p: string): boolean => {
-            try { return fs.existsSync(p) && (Date.now() - fs.statSync(p).mtimeMs) < 30 * 60_000; }
-            catch { return false; }
-          };
-          if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
-          return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
-        },
-        protectedSessions: () => sessionManager.getProtectedSessions(),
         pressure: () => {
           const total = _os.totalmem();
           const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;
