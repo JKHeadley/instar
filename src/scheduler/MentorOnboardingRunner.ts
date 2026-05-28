@@ -19,8 +19,17 @@ import type { CaptureRunInput, CaptureRunResult, ForensicFinding } from '../moni
 export interface MentorConfig {
   enabled: boolean;
   mode: 'off' | 'dry-run' | 'live';
-  /** The framework being mentored (parametric). */
+  /** The framework being mentored (parametric). Used for Stage-B forensics
+   *  (codex-rollout parsing keys on framework). NOT necessarily the mentee's
+   *  agent-registry name — see menteeAgentName. */
   menteeFramework: string;
+  /** The mentee's actual agent-registry name (e.g. 'instar-codey'). Used for
+   *  same-machine peer lookup + the a2a marker `to=`/reply-allowlist. Defaults
+   *  to `instar-${menteeFramework}` when unset (back-compat), but framework and
+   *  registered agent name routinely differ (framework=codex-cli, agent
+   *  name=instar-codey) — that mismatch silently broke same-machine a2a routing
+   *  + reply-allowlisting until this field existed. */
+  menteeAgentName?: string;
   minIntervalMs: number;
   maxRoundsPerDay: number;
   /** @deprecated dead config — we run on a Claude subscription; replacement is the

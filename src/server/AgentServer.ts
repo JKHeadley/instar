@@ -918,10 +918,11 @@ export class AgentServer {
   private installMentorReceiverHook(bot: MentorTelegramAdapter, mentorBotId: string): void {
     const cfg = this.getMentorConfigSnapshot();
     if (!cfg.menteeBotId) return;
+    const menteeAgent = cfg.menteeAgentName || `instar-${cfg.menteeFramework}`;
     const recipientCfg: RecipientConfig = {
       localAgent: 'echo',
-      knownAgents: { [`instar-${cfg.menteeFramework}`]: { botId: cfg.menteeBotId } },
-      acceptRoles: { [`instar-${cfg.menteeFramework}`]: ['mentor-reply'] },
+      knownAgents: { [menteeAgent]: { botId: String(cfg.menteeBotId) } },
+      acceptRoles: { [menteeAgent]: ['mentor-reply'] },
       skewWindowMs: 24 * 60 * 60 * 1000,
       maxVersion: A2A_VERSION,
     };
@@ -1022,7 +1023,9 @@ export class AgentServer {
     }
     if (menteeReady) {
       for (const [mentorName, info] of Object.entries(menteeCfg.knownMentors)) {
-        knownAgents[mentorName] = info;
+        // Coerce botId to string (config may store it as a JSON number; the
+        // marker senderBotId is always a string + the allowlist uses ===).
+        knownAgents[mentorName] = { botId: String(info.botId) };
         acceptRoles[mentorName] = [...(acceptRoles[mentorName] ?? []), 'mentor'];
       }
       const sessionTimeoutMs = menteeCfg.sessionTimeoutMs;
@@ -1088,6 +1091,9 @@ export class AgentServer {
           body: reply,
           allowedRoles: new Set(['mentor-reply']),
           telegramTopicId: menteeCfg.replyTopicId,
+          // fromBotId = THIS agent's own bot id, so the mentor's allowlist
+          // (knownAgents[instar-codey].botId === senderBotId) passes.
+          fromBotId: self.ownPrimaryBotId(),
           toBotId: menteeCfg.knownMentors[msg.from]?.botId,
         });
       };
@@ -1100,8 +1106,11 @@ export class AgentServer {
     // the mentor-BOT adapter (spec §250 — capability-handle, capture-only).
     const mentorCfg = this.getMentorConfigSnapshot();
     if (mentorCfg.menteeBotId) {
-      const menteeAgent = `instar-${mentorCfg.menteeFramework}`;
-      knownAgents[menteeAgent] = { botId: mentorCfg.menteeBotId };
+      const menteeAgent = mentorCfg.menteeAgentName || `instar-${mentorCfg.menteeFramework}`;
+      // Coerce to string — config may store the bot id as a JSON number, but
+      // the a2a marker's senderBotId is always a string; the allowlist compares
+      // with === so a number/string mismatch silently drops every reply.
+      knownAgents[menteeAgent] = { botId: String(mentorCfg.menteeBotId) };
       acceptRoles[menteeAgent] = [...(acceptRoles[menteeAgent] ?? []), 'mentor-reply'];
       const outstanding = this.getOrCreateMentorOutstanding();
       const replyJsonl = path.join(this.config.stateDir, 'mentor-replies.jsonl');
@@ -1174,7 +1183,12 @@ export class AgentServer {
     body: string;
     allowedRoles: ReadonlySet<string>;
     telegramTopicId?: number;
+    /** The recipient's bot id — used ONLY by the Telegram fallback's toBotId. */
     toBotId?: string;
+    /** The SENDER's own bot id — sent as the inbox `senderBotId` so the
+     *  recipient's allowlist check (knownAgents[from].botId === senderBotId)
+     *  passes. Must be the from-agent's bot id, NOT the recipient's. */
+    fromBotId?: string;
     /** Telegram fallback bits (mentor→mentee only). */
     telegramBot?: { sendToTopic: (topicId: number, text: string) => Promise<{ messageId: number }> };
     botToken?: string;
@@ -1203,7 +1217,7 @@ export class AgentServer {
               topicId: opts.telegramTopicId ?? 0,
               senderAgent: opts.fromAgent,
               senderIsBot: true,
-              senderBotId: opts.toBotId ?? `${opts.fromAgent}-local`,
+              senderBotId: opts.fromBotId ?? `${opts.fromAgent}-local`,
             }),
             signal: AbortSignal.timeout(10_000),
           });
@@ -1270,6 +1284,21 @@ export class AgentServer {
       ...DEFAULT_MENTEE_CONFIG,
       ...((this.config as unknown as { mentee?: Partial<MenteeConfig> }).mentee ?? {}),
     };
+  }
+
+  /**
+   * This agent's own primary Telegram bot id (the numeric prefix of its
+   * messaging bot token), or undefined if no Telegram messaging is configured.
+   * Used as the a2a `senderBotId` so a recipient's allowlist check
+   * (knownAgents[from].botId === senderBotId) passes — the sender must
+   * identify with its OWN bot id.
+   */
+  private ownPrimaryBotId(): string | undefined {
+    const tg = (this.config.messaging ?? []).find(
+      (m) => m.type === 'telegram' && m.enabled,
+    ) as { config?: { token?: string } } | undefined;
+    const token = tg?.config?.token;
+    return token ? token.split(':')[0] : undefined;
   }
 
   /** Snapshot of mentor config for use outside the runner's getConfig closure. */
@@ -1388,7 +1417,10 @@ export class AgentServer {
         // the bot isn't configured yet, this no-ops with a log — the dark default.
         deliverToMentee: async (framework: string, message: string) => {
           const cfg = getConfig();
-          const menteeAgent = `instar-${framework}`;
+          // Prefer the explicit registry name; fall back to the framework-derived
+          // name (back-compat). framework=codex-cli but the agent registers as
+          // instar-codey — using the derived name silently broke peer lookup.
+          const menteeAgent = cfg.menteeAgentName || `instar-${framework}`;
           const corr = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
           // Anti-ping-pong (spec §Fix 2b item 4 + Justin's original concern). Same
@@ -1432,6 +1464,9 @@ export class AgentServer {
             body: message,
             allowedRoles: new Set(['mentor']),
             telegramTopicId: cfg.menteeTopicId,
+            // fromBotId = echo's mentor-bot id, so the mentee's allowlist
+            // (knownMentors[echo].botId === senderBotId) passes.
+            fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
             toBotId: cfg.menteeBotId,
             telegramBot: telegramBot
               ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
