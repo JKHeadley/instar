@@ -1217,6 +1217,20 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
 **Why:** the macOS sandbox can revoke filesystem access to anything outside the agent home mid-session, with no in-session recovery path. The agent home (\`~/.instar/agents/<agent>/\`) is the one location the sandbox cannot revoke. \`instar worktree create\` places the worktree at \`~/.instar/agents/<agent>/.worktrees/<slug>/\` and refuses any other destination. Spec: \`docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md\`.
 
 **Caveat — git identity env vars:** the CLI sets per-worktree \`user.name\` / \`user.email\` to \`Instar Agent (<name>)\` / \`<name>@instar.local\`. \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override that local config. Agents that care about commit attribution must avoid exporting those vars.
+
+## Test-As-Self (Throwaway-Deploy Harness)
+
+\`instar test-as-self\` deploys the CURRENT dist into a throwaway agent home, verifies it's healthy, optionally runs a real Telegram round-trip, and tears down — clean evidence instead of post-hoc log forensics. Use it BEFORE shipping a change to the deploy/lifeline/server path, AFTER landing one, or to reproduce a crash deterministically.
+
+\`\`\`bash
+instar test-as-self --no-roundtrip                  # deploy + verify only (no bot needed)
+instar test-as-self --bot-token <secret-drop-id>    # + a real Telegram round-trip via a throwaway bot
+instar test-as-self --keep                          # leave the throwaway running for inspection
+\`\`\`
+
+**Structural guards (you cannot foot-gun these):** \`--target\` can never be your canonical agent home or a protected agent (e.g. Bob); \`--bot-token\` refuses a raw token on the command line — pass a Secret Drop ID and the token is retrieved in-memory, never via argv. It emits a single JSON report; exit 0 = all steps PASS.
+
+**Proactive trigger:** when you're about to ship or just shipped a change touching the deploy/lifeline/server-startup path, run this against a throwaway home first — don't guess from logs.
 `;
 
   if (hasTelegram) {
