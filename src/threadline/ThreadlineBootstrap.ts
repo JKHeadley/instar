@@ -31,6 +31,8 @@ import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { InboundMessageGate } from './InboundMessageGate.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { IdentityManager } from './client/IdentityManager.js';
+import { detectMachineName } from '../core/MachineIdentity.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -107,13 +109,30 @@ export async function bootstrapThreadline(
     selfPort: config.port,
   });
 
-  // Announce presence for other agents to find us
+  // ── Routing identity (the address the relay actually answers to) ─
+  // Resolve via the SAME read-only API the relay client uses
+  // (IdentityManager.get(), NOT getOrCreate — never fabricate a dead address
+  // for a relay-less or locked-encrypted agent). Resolve up front, before the
+  // relay client is constructed, so discovery advertises the routable identity
+  // — not the orphan identity-keys.json hex key, which nothing on the relay
+  // routing path reads.
+  const routingIdentity = new IdentityManager(config.stateDir).get();
+
+  // Announce presence for other agents to find us. When a routing identity
+  // resolves, advertise its fingerprint (the routable relay address) AND set
+  // publicKey to the SAME canonical key, so the two correspond
+  // (fingerprint === computeFingerprint(publicKey)). When none resolves (no
+  // identity on disk, or canonical identity.json is passphrase-encrypted and
+  // locked at boot), OMIT both — an agent with no resolvable routing identity
+  // is simply not relay-discoverable until it has one.
   discovery.announcePresence({
     capabilities: ['threadline', 'mcp'],
     description: config.agentDescription ?? `${config.agentName} Instar agent`,
     threadlineVersion: '1.0',
-    publicKey: identityKeys.publicKey.toString('hex'),
+    publicKey: routingIdentity?.publicKey.toString('hex'),
+    fingerprint: routingIdentity?.fingerprint,
     framework: 'instar',
+    machine: detectMachineName(),
   });
 
   // Start heartbeat for liveness detection

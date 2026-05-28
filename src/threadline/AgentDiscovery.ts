@@ -41,8 +41,10 @@ export interface ThreadlineAgentInfo {
   threadlineEnabled: boolean;
   /** Threadline protocol version */
   threadlineVersion?: string;
-  /** Ed25519 identity public key (hex) */
+  /** Ed25519 identity public key (hex) — corresponds to `fingerprint` */
   publicKey?: string;
+  /** Routable relay fingerprint (computeFingerprint(publicKey)) — the address a peer must target */
+  fingerprint?: string;
   /** Agent framework */
   framework: 'instar' | 'claude-code' | 'other';
   /** Last time this agent was verified */
@@ -59,6 +61,8 @@ export interface AgentInfoFile {
   description?: string;
   threadlineVersion: string;
   publicKey?: string;
+  /** Routable relay fingerprint (computeFingerprint(publicKey)) — the address a peer must target */
+  fingerprint?: string;
   framework: 'instar' | 'claude-code' | 'other';
   machine?: string;
   updatedAt: string;
@@ -75,6 +79,7 @@ interface HealthResponse {
   version?: string;
   agent?: string;
   identityPub?: string;
+  fingerprint?: string;
   capabilities?: string[];
   description?: string;
   framework?: string;
@@ -239,6 +244,7 @@ export class AgentDiscovery {
         threadlineEnabled: true,
         threadlineVersion: health.version,
         publicKey: health.identityPub,
+        fingerprint: health.fingerprint,
         framework: (health.framework as ThreadlineAgentInfo['framework']) ?? 'instar',
         lastVerified: undefined,
         machine: health.machine,
@@ -259,6 +265,7 @@ export class AgentDiscovery {
     description?: string;
     threadlineVersion: string;
     publicKey?: string;
+    fingerprint?: string;
     framework?: ThreadlineAgentInfo['framework'];
     machine?: string;
   }): void {
@@ -270,6 +277,7 @@ export class AgentDiscovery {
       description: selfInfo.description,
       threadlineVersion: selfInfo.threadlineVersion,
       publicKey: selfInfo.publicKey,
+      fingerprint: selfInfo.fingerprint,
       framework: selfInfo.framework ?? 'instar',
       machine: selfInfo.machine,
       updatedAt: new Date().toISOString(),
@@ -324,6 +332,7 @@ export class AgentDiscovery {
         threadlineEnabled: true,
         threadlineVersion: health.version,
         publicKey: health.identityPub,
+        fingerprint: health.fingerprint,
         framework: (health.framework as ThreadlineAgentInfo['framework']) ?? 'instar',
         lastVerified: new Date().toISOString(),
         machine: health.machine,

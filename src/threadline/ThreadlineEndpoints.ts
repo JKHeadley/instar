@@ -21,6 +21,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { HandshakeManager, HelloPayload, ConfirmPayload } from './HandshakeManager.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { verify } from './ThreadlineCrypto.js';
+import { IdentityManager } from './client/IdentityManager.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -38,6 +39,8 @@ export interface ThreadlineEndpointsConfig {
   localAgent: string;
   /** Threadline protocol version */
   version: string;
+  /** Agent state directory — used to resolve the canonical routing identity for /threadline/health */
+  stateDir: string;
 }
 
 // ── Error Codes ──────────────────────────────────────────────────────
@@ -101,12 +104,23 @@ export function createThreadlineRoutes(
   // ── Health ─────────────────────────────────────────────────────
 
   router.get('/threadline/health', (_req: Request, res: Response) => {
+    // Report the canonical routing identity (the address the relay answers to),
+    // resolved via the SAME read-only API the relay client uses. When it
+    // resolves, identityPub + fingerprint correspond
+    // (fingerprint === computeFingerprint(identityPub)) so a peer discovering us
+    // via health obtains a routable address. When no routing identity resolves
+    // (none on disk, or canonical identity.json is locked-encrypted), fall back
+    // to the handshake-layer key and omit the fingerprint — never fabricate one.
+    const routingIdentity = new IdentityManager(config.stateDir).get();
     res.json({
       status: 'ok',
       protocol: 'threadline',
       version: config.version,
       agent: config.localAgent,
-      identityPub: handshakeManager.getIdentityPublicKey(),
+      identityPub: routingIdentity
+        ? routingIdentity.publicKey.toString('hex')
+        : handshakeManager.getIdentityPublicKey(),
+      fingerprint: routingIdentity?.fingerprint,
       pairedAgents: handshakeManager.listPairedAgents().length,
       timestamp: new Date().toISOString(),
     });

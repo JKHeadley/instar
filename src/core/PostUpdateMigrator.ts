@@ -33,6 +33,7 @@ import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-te
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
+import { IdentityManager } from '../threadline/client/IdentityManager.js';
 import { installAutoStart, installBootWrapper } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
@@ -230,6 +231,7 @@ export class PostUpdateMigrator {
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
+    this.migrateThreadlineAgentInfoIdentity(result);
 
     return result;
   }
@@ -497,6 +499,72 @@ export class PostUpdateMigrator {
       result.upgraded.push(`threadline-conversations: folded ${folded} legacy thread(s) into conversations.json`);
     } catch (err) {
       result.errors.push(`threadline-conversations write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Threadline identity-discovery unification (THREADLINE-IDENTITY-DISCOVERY-
+   * UNIFICATION-SPEC, Migration parity): existing agents may carry an
+   * agent-info.json whose `publicKey` is the orphan identity-keys.json hex key
+   * (or no `fingerprint` at all) while the relay routes by the canonical
+   * identity.json fingerprint — so peers who discover them obtain a dead
+   * address. The fixed announcePresence rewrites agent-info.json on every boot,
+   * and the update path restarts the server, so the common case self-heals.
+   * This is the belt-and-suspenders for the narrow window where the package
+   * updates but the server has not yet restarted before a peer tries to
+   * discover the agent.
+   *
+   * Resolves the routing identity via the SAME read-only API the relay client
+   * uses (IdentityManager.get()). If it yields an identity whose fingerprint is
+   * absent from / differs from agent-info.json, rewrites agent-info.json with
+   * the consistent { fingerprint, publicKey(hex) } pair. No-op (never
+   * fabricate) when get() is null (no identity, or locked-encrypted) or when
+   * agent-info.json is already aligned. Atomic write; idempotent across runs;
+   * last-writer-wins with a concurrent boot announce is safe (same value).
+   */
+  private migrateThreadlineAgentInfoIdentity(result: MigrationResult): void {
+    const agentInfoPath = path.join(this.config.stateDir, 'threadline', 'agent-info.json');
+    if (!fs.existsSync(agentInfoPath)) {
+      result.skipped.push('threadline-agent-info-identity: no agent-info.json (agent never announced)');
+      return;
+    }
+
+    // Resolve the routing identity — same API the relay client uses. Null when
+    // no identity exists or canonical identity.json is locked-encrypted: do NOT
+    // fabricate a dead address.
+    const identity = new IdentityManager(this.config.stateDir).get();
+    if (!identity) {
+      result.skipped.push('threadline-agent-info-identity: no resolvable routing identity (none on disk or locked) — not fabricating');
+      return;
+    }
+
+    const canonicalFingerprint = identity.fingerprint;
+    const canonicalPublicKeyHex = identity.publicKey.toString('hex');
+
+    let agentInfo: Record<string, unknown>;
+    try {
+      agentInfo = JSON.parse(fs.readFileSync(agentInfoPath, 'utf-8'));
+    } catch {
+      result.skipped.push('threadline-agent-info-identity: agent-info.json unreadable');
+      return;
+    }
+
+    if (agentInfo.fingerprint === canonicalFingerprint && agentInfo.publicKey === canonicalPublicKeyHex) {
+      result.skipped.push('threadline-agent-info-identity: already aligned with canonical identity');
+      return;
+    }
+
+    agentInfo.fingerprint = canonicalFingerprint;
+    agentInfo.publicKey = canonicalPublicKeyHex;
+    agentInfo.updatedAt = new Date().toISOString();
+
+    try {
+      const tmp = `${agentInfoPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(agentInfo, null, 2));
+      fs.renameSync(tmp, agentInfoPath);
+      result.upgraded.push(`threadline-agent-info-identity: repaired agent-info.json to canonical fingerprint ${canonicalFingerprint.slice(0, 8)}…`);
+    } catch (err) {
+      result.errors.push(`threadline-agent-info-identity write: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -2494,6 +2562,22 @@ Rule: I do not state that work landed inside another agent's state unless I have
       content += '\n' + antiConfabulationSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
+    }
+
+    // THREADLINE-IDENTITY-DISCOVERY-UNIFICATION (Agent Awareness). Existing
+    // agents on the network need to know the authoritative "what address reaches
+    // me" source is the routing fingerprint (relay registration / health
+    // fingerprint), not the legacy publicKey hex — this is exactly the bug that
+    // made a peer's sends vanish. Content-sniffed on a distinctive marker.
+    if (!content.includes('What address reaches me (Threadline routing fingerprint)')) {
+      const routingFingerprintSection = `
+### What address reaches me (Threadline routing fingerprint)
+
+If a peer's messages to me never land (their side shows \`sent=true\`, my \`logs/server.log\` shows no "Accepted message from <them>"), the usual cause is a **wrong address**. The authoritative "what address reaches me" value is my **routing fingerprint** — the one my relay registers with (\`logs/server.log\`: \`Threadline: relay connected (fingerprint: …)\`) and the one I publish at \`GET /threadline/health\` (\`fingerprint\` field) and in \`threadline/agent-info.json\`. These are sourced from my canonical \`identity.json\`, so they always agree. Hand peers THAT fingerprint — never the legacy \`publicKey\` hex from an old keypair. If \`/threadline/health\` returns no \`fingerprint\`, I have no resolvable routing identity yet (none on disk, or it's locked-encrypted) and am simply not relay-discoverable until I do.
+`;
+      content += '\n' + routingFingerprintSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline routing-fingerprint guidance section');
     }
 
     // Cross-Machine Seamlessness (spec §11 Agent Awareness). Existing

@@ -8,6 +8,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
+
+/** Write a canonical (unencrypted) identity.json and return its expected fingerprint + hex pubkey. */
+function seedCanonicalIdentity(stateDir: string): { fingerprint: string; publicKeyHex: string } {
+  fs.mkdirSync(stateDir, { recursive: true });
+  const kp = generateIdentityKeyPair();
+  fs.writeFileSync(
+    path.join(stateDir, 'identity.json'),
+    JSON.stringify({
+      publicKey: kp.publicKey.toString('base64'),
+      privateKey: kp.privateKey.toString('base64'),
+      privateKeyEncryption: 'none',
+      createdAt: new Date().toISOString(),
+    }, null, 2),
+  );
+  return { fingerprint: computeFingerprint(kp.publicKey), publicKeyHex: kp.publicKey.toString('hex') };
+}
 
 describe('ThreadlineBootstrap', () => {
   let tmpDir: string;
@@ -158,8 +176,82 @@ describe('ThreadlineBootstrap', () => {
     expect(agentInfo.description).toBe('A test agent for testing');
     expect(agentInfo.capabilities).toContain('threadline');
     expect(agentInfo.capabilities).toContain('mcp');
-    expect(agentInfo.publicKey).toBeDefined();
     expect(agentInfo.framework).toBe('instar');
+  });
+
+  // THREADLINE-IDENTITY-DISCOVERY-UNIFICATION: announce advertises the canonical
+  // routing identity (the address the relay answers to), internally consistent.
+  it('advertises the canonical routing fingerprint + consistent publicKey when an identity exists', async () => {
+    const expected = seedCanonicalIdentity(stateDir);
+
+    const result = await bootstrapThreadline({
+      agentName: 'test-agent',
+      stateDir,
+      projectDir,
+      port: 4040,
+    });
+    await result.shutdown();
+
+    const agentInfo = JSON.parse(
+      fs.readFileSync(path.join(stateDir, 'threadline', 'agent-info.json'), 'utf-8'),
+    );
+    expect(agentInfo.fingerprint).toBe(expected.fingerprint);
+    expect(agentInfo.publicKey).toBe(expected.publicKeyHex);
+    // Internal consistency: fingerprint === computeFingerprint(publicKey)
+    expect(computeFingerprint(Buffer.from(agentInfo.publicKey, 'hex'))).toBe(agentInfo.fingerprint);
+    // machine field is set so multi-machine advertisements are attributable
+    expect(typeof agentInfo.machine).toBe('string');
+    expect(agentInfo.machine.length).toBeGreaterThan(0);
+  });
+
+  // No-fabrication boundary: no routing identity on disk → both fields OMITTED
+  // (never invent a dead address), and boot does not throw.
+  it('omits fingerprint and publicKey when no routing identity exists', async () => {
+    const result = await bootstrapThreadline({
+      agentName: 'test-agent',
+      stateDir,
+      projectDir,
+      port: 4040,
+    });
+    await result.shutdown();
+
+    const agentInfo = JSON.parse(
+      fs.readFileSync(path.join(stateDir, 'threadline', 'agent-info.json'), 'utf-8'),
+    );
+    expect(agentInfo.fingerprint).toBeUndefined();
+    expect(agentInfo.publicKey).toBeUndefined();
+  });
+
+  // The CANONICAL identity is advertised, never the legacy threadline/identity-keys.json
+  // hex key — even when that orphan file is present (the root cause of the bug).
+  it('advertises the canonical identity even when the orphan identity-keys.json is present', async () => {
+    const expected = seedCanonicalIdentity(stateDir);
+    // Plant an orphan identity-keys.json with a DIFFERENT key (the stale-hex source).
+    const orphan = generateIdentityKeyPair();
+    fs.mkdirSync(path.join(stateDir, 'threadline'), { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'threadline', 'identity-keys.json'),
+      JSON.stringify({
+        publicKey: orphan.publicKey.toString('hex'),
+        privateKey: orphan.privateKey.toString('hex'),
+        createdAt: new Date().toISOString(),
+      }, null, 2),
+    );
+
+    const result = await bootstrapThreadline({
+      agentName: 'test-agent',
+      stateDir,
+      projectDir,
+      port: 4040,
+    });
+    await result.shutdown();
+
+    const agentInfo = JSON.parse(
+      fs.readFileSync(path.join(stateDir, 'threadline', 'agent-info.json'), 'utf-8'),
+    );
+    expect(agentInfo.publicKey).toBe(expected.publicKeyHex);
+    expect(agentInfo.publicKey).not.toBe(orphan.publicKey.toString('hex'));
+    expect(agentInfo.fingerprint).toBe(expected.fingerprint);
   });
 
   it('handles corrupted identity key file gracefully', async () => {

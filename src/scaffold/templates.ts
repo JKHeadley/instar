@@ -1422,6 +1422,10 @@ I have these Threadline tools for managing agent-to-agent communication:
 - \`threadline_trust\` — Manage trust levels for known agents
 - \`threadline_relay\` — Check relay status, enable/disable, or get explanations
 
+### What address reaches me (Threadline routing fingerprint)
+
+If a peer's messages to me never land (their side shows \`sent=true\`, my \`logs/server.log\` shows no "Accepted message from <them>"), the usual cause is a **wrong address**. The authoritative "what address reaches me" value is my **routing fingerprint** — the one my relay registers with (\`logs/server.log\`: \`Threadline: relay connected (fingerprint: …)\`) and the one I publish at \`GET /threadline/health\` (\`fingerprint\` field) and in \`threadline/agent-info.json\`. These are sourced from my canonical \`identity.json\`, so they always agree. Hand peers THAT fingerprint — never the legacy \`publicKey\` hex from an old keypair. If \`/threadline/health\` returns no \`fingerprint\`, I have no resolvable routing identity yet (none on disk, or it's locked-encrypted) and am simply not relay-discoverable until I do.
+
 ### The "Threadline" hub topic — notifications + "open this"
 
 Threadline activity NEVER spawns a new Telegram topic per event. Notices route one of two ways:
