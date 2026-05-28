@@ -1663,6 +1663,56 @@ export class TelegramAdapter implements MessagingAdapter {
     this.agentMessageHook = hook;
   }
 
+  /**
+   * Dispatch an inbound text to the installed agent-message hook (if any) BEFORE
+   * normal user-message routing. Returns true iff the hook claimed the message
+   * (`{handled: true}`); the caller MUST then short-circuit and NOT route the
+   * message to the user-message flow.
+   *
+   * Why this is public: in send-only mode the primary adapter doesn't poll —
+   * the lifeline polls and forwards via `/internal/telegram-forward`. The
+   * forwarded path calls `onTopicMessage` directly, bypassing the polling
+   * text-dispatch site where the hook lives. Exposing this dispatcher lets the
+   * forward handler invoke the same gate before falling through, so the
+   * mentee receiver wiring fires regardless of message origin.
+   *
+   * Spoof defense: the hook needs `senderIsBot` AND `senderChatId` to decide
+   * whether a marker-bearing message is from a real bot or a user typing a
+   * marker-shaped string (spec §Routing matrix:
+   * `agent-marker-spoofed-by-user`). The caller passes through what it has;
+   * `senderBotId` is derived as `senderChatId` (group bot-as-channel) or the
+   * passed `rawFromId` when `senderIsBot` is true (DM / topic post by a bot).
+   */
+  async dispatchAgentMessageHook(ctx: {
+    text: string;
+    topicId: number;
+    senderIsBot: boolean;
+    senderChatId?: string;
+    senderBotId?: string;
+    rawFromId?: string;
+    now?: number;
+  }): Promise<boolean> {
+    if (!this.agentMessageHook) return false;
+    try {
+      const senderBotId =
+        ctx.senderBotId ?? ctx.senderChatId ?? (ctx.senderIsBot ? ctx.rawFromId : undefined);
+      const result = await this.agentMessageHook({
+        text: ctx.text,
+        topicId: ctx.topicId,
+        senderIsBot: ctx.senderIsBot,
+        senderChatId: ctx.senderChatId,
+        senderBotId,
+        now: ctx.now ?? Date.now(),
+      });
+      return result.handled === true;
+    } catch (err) {
+      // Hook must never crash the dispatch loop — log + fall through to normal user flow.
+      // (A broken hook is preferable to a frozen message pipeline.)
+      console.error(`[telegram] agentMessageHook error (falling through): ${err}`);
+      return false;
+    }
+  }
+
   async resolveUser(channelIdentifier: string): Promise<string | null> {
     return null;
   }
@@ -3722,24 +3772,16 @@ export class TelegramAdapter implements MessagingAdapter {
     // normal user-message dispatch on text messages so an a2a marker is intercepted as an
     // agent event (route or drop), never falling through to topic-session spawning. Other
     // message types can't carry markers — bypass entirely.
-    if (this.agentMessageHook && typeof text === 'string') {
-      try {
-        const senderChatId = msg.sender_chat?.id !== undefined ? String(msg.sender_chat.id) : undefined;
-        const senderBotId = senderChatId ?? (msg.from?.id !== undefined ? String(msg.from.id) : undefined);
-        const result = await this.agentMessageHook({
-          text,
-          topicId: numericTopicId,
-          senderIsBot: msg.from?.is_bot === true,
-          senderChatId,
-          senderBotId,
-          now: Date.now(),
-        });
-        if (result.handled) return;
-      } catch (err) {
-        // Hook must never crash the dispatch loop — log + fall through to normal user flow.
-        // (A broken hook is preferable to a frozen message pipeline.)
-        console.error(`[telegram] agentMessageHook error (falling through): ${err}`);
-      }
+    if (typeof text === 'string') {
+      const handled = await this.dispatchAgentMessageHook({
+        text,
+        topicId: numericTopicId,
+        senderIsBot: msg.from?.is_bot === true,
+        senderChatId: msg.sender_chat?.id !== undefined ? String(msg.sender_chat.id) : undefined,
+        senderBotId: undefined, // computed inside dispatch — see method docs
+        rawFromId: msg.from?.id !== undefined ? String(msg.from.id) : undefined,
+      });
+      if (handled) return;
     }
 
     // Fire topic message callback (always fires — General topic falls back to ID 1)

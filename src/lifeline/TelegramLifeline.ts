@@ -1309,6 +1309,21 @@ export class TelegramLifeline {
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
   ): Promise<boolean> {
+    // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
+    // server's /internal/telegram-forward handler passes these to
+    // `TelegramAdapter.dispatchAgentMessageHook` so the a2a hook can distinguish
+    // a real bot-sent marker (route) from a user typing a marker-shaped string
+    // (drop as `agent-marker-spoofed-by-user`). An older server reads only the
+    // fields it knows and ignores the rest. An older lifeline omits them →
+    // server treats senderIsBot as falsy → marker-bearing forwards drop closed,
+    // matching the spec invariant (a real user typing a marker MUST be dropped).
+    const rawFrom = rawMsg.from as { id?: number; is_bot?: boolean } | undefined;
+    const rawSenderChat = (rawMsg as { sender_chat?: { id?: number } }).sender_chat;
+    const senderIsBot = rawFrom?.is_bot === true;
+    const senderChatId = rawSenderChat?.id !== undefined ? String(rawSenderChat.id) : undefined;
+    const senderBotId =
+      senderChatId ?? (senderIsBot && rawFrom?.id !== undefined ? String(rawFrom.id) : undefined);
+
     const buildBody = (includeVersion: boolean): string =>
       JSON.stringify({
         topicId,
@@ -1318,6 +1333,9 @@ export class TelegramLifeline {
         fromFirstName: rawMsg.from.first_name,
         messageId: rawMsg.message_id,
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
+        senderIsBot,
+        ...(senderChatId !== undefined ? { senderChatId } : {}),
+        ...(senderBotId !== undefined ? { senderBotId } : {}),
         ...(includeVersion ? { lifelineVersion: this.lifelineVersion } : {}),
       });
 

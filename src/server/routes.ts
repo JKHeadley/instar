@@ -8910,7 +8910,16 @@ export function createRoutes(ctx: RouteContext): Router {
   let _versionMissingLogged = false;
 
   router.post('/internal/telegram-forward', async (req, res) => {
-    const { topicId, text, fromUserId, fromUsername, fromFirstName, messageId, lifelineVersion } = req.body;
+    const {
+      topicId, text, fromUserId, fromUsername, fromFirstName, messageId, lifelineVersion,
+      // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
+      // lifeline forwards these when present in the Telegram update. Older lifelines
+      // omit them → `senderIsBot` defaults to falsy → any marker-bearing forwarded
+      // message is dropped as `agent-marker-spoofed-by-user` (fail-CLOSED for spoof
+      // defense, matching the spec invariant that a real user typing a marker MUST
+      // be dropped). Upgraded lifelines populate them and the hook routes normally.
+      senderIsBot, senderChatId, senderBotId,
+    } = req.body;
 
     // Server boot window: if version cache wasn't populated, skip handshake
     // rather than 426-erroneously. Lifeline retries after retryAfterMs.
@@ -9106,6 +9115,31 @@ export function createRoutes(ctx: RouteContext): Router {
         ctx.currentInboundByTopic?.set(String(topicId), dedupeKey);
       } catch (err) {
         console.error(`[telegram-forward] exactly-once gate error (fail-open, routing normally): ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    // Agent-to-agent Telegram comms hook (spec MENTOR-LIVE-READINESS §Recipient side).
+    // The polling path invokes this gate inside the adapter; lifeline-forwarded messages
+    // bypass that path and arrive here, so we MUST invoke the same gate before falling
+    // through to user-message routing. If the hook returns handled=true we short-circuit
+    // — the message was an a2a event (routed to a role-handler or dropped per the spec's
+    // routing matrix) and must NOT also dispatch to the user-message path.
+    if (ctx.telegram && typeof text === 'string' && typeof topicId === 'number') {
+      try {
+        const handled = await ctx.telegram.dispatchAgentMessageHook({
+          text,
+          topicId,
+          senderIsBot: senderIsBot === true,
+          senderChatId: senderChatId !== undefined ? String(senderChatId) : undefined,
+          senderBotId: senderBotId !== undefined ? String(senderBotId) : undefined,
+          rawFromId: fromUserId !== undefined ? String(fromUserId) : undefined,
+        });
+        if (handled) {
+          res.json({ ok: true, forwarded: true, agentMessage: true });
+          return;
+        }
+      } catch (err) {
+        console.error(`[telegram-forward] agentMessageHook dispatch error (falling through): ${err instanceof Error ? err.message : err}`);
       }
     }
 
