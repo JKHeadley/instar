@@ -329,3 +329,36 @@ implementation can await terminateSession.
 **Tests:** SessionRecovery (9) + terminate-CAS (9) + Phase-2 wiring (10) green; typecheck clean.
 
 **Rollback:** revert this commit. `bypassRecoveryFlag` becomes unused but harmless.
+
+## Phase 2 — Commit #9: wake-reaper → P1/P2 + cumulative sleep + ReapAuthority
+
+**Files:** `src/scheduler/JobScheduler.ts`, `src/core/SleepWakeDetector.ts`,
+`src/commands/server.ts`, `tests/unit/JobScheduler-reaper.test.ts`,
+`tests/unit/sleep-wake-cumulative.test.ts` (new),
+`tests/unit/session-lifecycle-phase-2-wiring.test.ts`.
+
+Three spec-faithful changes:
+1. **Cumulative sleep (SE-8).** `SleepWakeDetector.getCumulativeSleepMsBetween(startMs, endMs)`
+   sums the overlap of every recorded sleep window with the query range. The
+   wake-reaper now reads `cumulativeSleepProvider(runStartMs, now)` per run and
+   uses `effectiveElapsed = elapsedMs − cumulativeSleep` against its threshold —
+   a run that spanned multiple sleeps is no longer reaped early because the old
+   code credited only the single last `sleepDurationSeconds` event.
+2. **P1/P2 gate.** Before any kill, `sessionManager.hasActiveProcesses(sessionName)`
+   is consulted; on `true` the run is KEPT regardless of clock (spec: "a
+   progressing process is KEEP regardless of clock"). The deferred run is
+   counted as `skipped` and a structured log line names the reason.
+3. **Route through P0.** When a stuck-run session is currently tracked, the
+   kill goes through
+   `terminateSession(id, 'wake-reaper', { disposition:'terminal', finalStatus:'killed' })`
+   — the authority's protected-set + lease gate + reap-log + `sessionReaped`
+   emission apply. Untracked tmux panes fall back to the raw `killSession`.
+
+`reapStuckRuns` is now async; the timeout error message now names the effective-
+elapsed + cumulative-sleep subtraction instead of the single last sleep event.
+
+**Tests:** JobScheduler reaper (7, updated to async + new error contract) +
+SleepWakeDetector cumulative (6, new) + Phase-2 wiring (14) green; typecheck clean.
+
+**Rollback:** revert this commit. `getCumulativeSleepMsBetween` becomes unused
+but harmless.

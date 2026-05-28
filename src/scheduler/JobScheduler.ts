@@ -115,6 +115,14 @@ export class JobScheduler {
 
   /** Optional job claim manager for multi-machine deduplication (Phase 4C) */
   private claimManager: JobClaimManager | null = null;
+  /**
+   * UNIFIED-SESSION-LIFECYCLE §P0 #9 (SE-8): function returning cumulative
+   * wall-time-asleep in milliseconds during a half-open window [startMs, endMs).
+   * Wired by server.ts to SleepWakeDetector.getCumulativeSleepMsBetween. When
+   * unset, the wake-reaper falls back to no sleep subtraction (the pre-Phase-2
+   * behavior — never more aggressive).
+   */
+  private cumulativeSleepProvider: ((startMs: number, endMs: number) => number) | null = null;
 
   /** Optional LLM provider for per-job reflection (Living Skills Phase 4) */
   private intelligence: IntelligenceProvider | null = null;
@@ -144,6 +152,15 @@ export class JobScheduler {
    */
   setMessenger(adapter: MessagingAdapter): void {
     this.messenger = adapter;
+  }
+
+  /**
+   * Inject the cumulative-sleep provider used by the wake-reaper
+   * (UNIFIED-SESSION-LIFECYCLE §P0 #9 / SE-8). Pass undefined or omit to leave
+   * the reaper in its no-subtraction fallback behavior.
+   */
+  setCumulativeSleepProvider(fn: (startMs: number, endMs: number) => number): void {
+    this.cumulativeSleepProvider = fn;
   }
 
   /**
@@ -540,7 +557,7 @@ export class JobScheduler {
    * Reaping is idempotent: a second invocation finds the run is no
    * longer `pending` and skips it.
    */
-  reapStuckRuns(sleepEvent: { sleepDurationSeconds: number }): { reaped: string[]; skipped: number } {
+  async reapStuckRuns(sleepEvent: { sleepDurationSeconds: number }): Promise<{ reaped: string[]; skipped: number }> {
     const result = { reaped: [] as string[], skipped: 0 };
 
     const minSleepSec = this.config.wakeReaper?.minSleepSeconds ?? 60;
@@ -562,14 +579,45 @@ export class JobScheduler {
       const job = jobMap.get(run.slug);
       const expMin = job?.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES;
       const thresholdMs = expMin * multiplier * 60_000;
-      const elapsedMs = now - new Date(run.startedAt).getTime();
-      if (elapsedMs <= thresholdMs) {
+      const runStartMs = new Date(run.startedAt).getTime();
+      const elapsedMs = now - runStartMs;
+      // §P0 #9 / SE-8: cumulative wall-time-asleep DURING this run, not the single
+      // last sleepDurationSeconds. A run that started before multiple sleeps was
+      // previously credited only the last sleep and reaped early.
+      const cumulativeSleepMs = this.cumulativeSleepProvider?.(runStartMs, now) ?? 0;
+      const effectiveElapsed = elapsedMs - cumulativeSleepMs;
+      if (effectiveElapsed <= thresholdMs) {
         result.skipped++;
         continue;
       }
 
+      // §P0 #9 P1/P2 gate — a progressing process is KEEP regardless of clock.
+      // The wall-clock gap can exceed the threshold for an actively-running job
+      // (the user kept the machine awake; the job stalled on a remote API; etc.)
+      // — never reap a session that's still producing real work.
+      if (this.sessionManager.hasActiveProcesses?.(sessionName)) {
+        console.log(
+          `[scheduler][reaper] "${sessionName}" effective-elapsed ${Math.round(effectiveElapsed / 60_000)}m `
+            + `exceeded ${expMin}m × ${multiplier} threshold, but P1/P2 work-check found active children — keeping`,
+        );
+        result.skipped++;
+        continue;
+      }
+
+      // §P0 #9 route through the ReapAuthority — the authority's protected-set
+      // + lease gate + reap-log + sessionReaped emission apply (one chokepoint).
       try {
-        this.sessionManager.killSession?.(sessionName);
+        const tracked = this.sessionManager.listRunningSessions?.().find((s) => s.tmuxSession === sessionName);
+        if (tracked) {
+          await this.sessionManager.terminateSession?.(tracked.id, 'wake-reaper', {
+            disposition: 'terminal',
+            finalStatus: 'killed',
+          });
+        } else {
+          // Not currently tracked — fall back to killSession (which itself is a
+          // pane-only teardown when the state record is already terminal).
+          this.sessionManager.killSession?.(sessionName);
+        }
       } catch {
         // Best-effort — session may already be dead.
       }
@@ -578,7 +626,7 @@ export class JobScheduler {
         this.runHistory.recordCompletion({
           runId,
           result: 'timeout',
-          error: `Reaped on wake — sleep gap of ${sleepEvent.sleepDurationSeconds}s exceeded ${expMin}min × ${multiplier} threshold`,
+          error: `Reaped on wake — effective elapsed ${Math.round(effectiveElapsed / 60_000)}m (cumulative sleep ${Math.round(cumulativeSleepMs / 60_000)}m subtracted) exceeded ${expMin}min × ${multiplier} threshold`,
         });
       } catch (err) {
         // Leave activeRunIds entry intact: run is still 'pending' in the ledger,
