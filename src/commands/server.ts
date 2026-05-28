@@ -7959,6 +7959,53 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Completion evaluator: active (independent /goal-style judge)'));
     }
 
+    // ── CollaborationRedriveEngine ────────────────────────────────────
+    // Proactively re-engage a COUNTERPART that has gone silent on an open
+    // threadline-reply commitment. Bounded peer nudges with a durable,
+    // reply-INDEPENDENT cap; escalates to the Attention queue after the cap
+    // and goes terminal-quiet (never spins). Spec:
+    // docs/specs/collaboration-redrive-on-counterpart-silence.md (approved
+    // by Justin 2026-05-28). Ships OFF.
+    try {
+      const redriveCfg = config.monitoring?.collaborationRedrive ?? {};
+      if (redriveCfg.enabled && completionEvaluator) {
+        const { CollaborationRedriveEngine, DEFAULT_REDRIVE_CONFIG } = await import('../monitoring/CollaborationRedriveEngine.js');
+        const collaborationRedrive = new CollaborationRedriveEngine(
+          {
+            commitmentTracker,
+            completionEvaluator,
+            relayClient: threadlineRelayClient ?? undefined,
+            surfacer: collaborationSurfacer ?? undefined,
+            raiseAttention: telegram
+              ? async (item) => {
+                  const priorityMap: Record<string, 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'> = {
+                    high: 'HIGH', medium: 'NORMAL', low: 'LOW',
+                  };
+                  return telegram!.createAttentionItem({
+                    id: `collab-redrive-${Date.now()}`,
+                    title: item.title,
+                    summary: item.body.slice(0, 160),
+                    description: item.body,
+                    category: 'collaboration-redrive',
+                    priority: priorityMap[item.priority ?? 'medium'] ?? 'NORMAL',
+                    sourceContext: item.source ?? 'collaboration-redrive',
+                  });
+                }
+              : undefined,
+            knownAgentsPath: path.join(config.stateDir, 'threadline', 'known-agents.json'),
+          },
+          { ...DEFAULT_REDRIVE_CONFIG, ...redriveCfg, enabled: true },
+        );
+        collaborationRedrive.start();
+        (globalThis as Record<string, unknown>).__instarCollaborationRedrive = collaborationRedrive;
+        console.log(pc.green('  CollaborationRedriveEngine: armed (proactive peer re-drive on counterpart silence)'));
+      } else {
+        console.log(pc.dim('  CollaborationRedriveEngine: disabled (monitoring.collaborationRedrive.enabled=false; the ship-OFF default)'));
+      }
+    } catch (err) {
+      console.warn('[CollaborationRedrive] init failed:', (err as Error).message);
+    }
+
     // Register feature-discovery probe for self-knowledge tree (Phase 4: Agent Integration)
     if (selfKnowledgeTree && featureRegistry) {
       selfKnowledgeTree.probes.register('feature-discovery', async () => {

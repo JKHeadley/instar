@@ -93,6 +93,20 @@ export interface Commitment {
    */
   lastReplyAt?: string;
 
+  /**
+   * For CollaborationRedriveEngine — DURABLE, MONOTONIC, REPLY-INDEPENDENT
+   * count of bounded follow-up nudges sent to the counterpart on this
+   * objective. A counterpart reply updates `lastReplyAt` (silence clock) but
+   * NEVER touches this — the load-bearing termination guarantee for the
+   * mutual re-drive scenario. Spec:
+   * docs/specs/collaboration-redrive-on-counterpart-silence.md §2.4.
+   */
+  redriveCount?: number;
+  /** ISO timestamp of the most recent re-drive send (spacing window). */
+  lastRedriveAt?: string;
+  /** Text of the most recent re-drive (decorative novelty-tiebreaker). */
+  lastRedriveText?: string;
+
   // ── Self-healing tracking ─────────────────────────────
 
   /** Number of times auto-correction has fired for this commitment */
@@ -411,6 +425,10 @@ export class CommitmentTracker extends EventEmitter {
       correctionHistory: [],
       escalated: false,
       version: 0,
+      // CollaborationRedriveEngine: default the durable cap counter so
+      // newly-created threadline-reply commitments have an explicit 0
+      // (existing rows are backfilled by loadStore()).
+      redriveCount: 0,
       // Promise Beacon fields (Phase 1).
       beaconEnabled: autoBeaconEnabled,
       cadenceMs: autoCadenceMs,
@@ -1278,6 +1296,11 @@ export class CommitmentTracker extends EventEmitter {
             if (c.escalated === undefined) c.escalated = false;
             // v1 → v2: back-fill version field on every commitment.
             if (typeof c.version !== 'number') c.version = 0;
+            // CollaborationRedriveEngine fields (additive, optional). The
+            // engine reads `(c.redriveCount ?? 0)` so a missing field reads
+            // as 0 — backfilling here keeps the on-disk representation
+            // consistent with what the engine expects.
+            if (c.redriveCount === undefined) c.redriveCount = 0;
           }
           // Bump on-disk version tag; persisted on next saveStore().
           data.version = 2;

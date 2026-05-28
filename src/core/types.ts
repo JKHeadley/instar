@@ -2679,6 +2679,22 @@ export interface MonitoringConfig {
   memoryMonitoring: boolean;
   /** Health check interval in ms */
   healthCheckIntervalMs: number;
+  /**
+   * CollaborationRedriveEngine — proactively re-engage a counterpart that
+   * has gone silent on an open threadline-reply commitment. Ships OFF.
+   * Spec: docs/specs/collaboration-redrive-on-counterpart-silence.md.
+   */
+  collaborationRedrive?: {
+    enabled?: boolean;
+    sweepIntervalMs?: number;
+    silenceThresholdMs?: number;
+    maxRedrives?: number;
+    perPeerDailyCap?: number;
+    maxRedriveSendsPerDay?: number;
+    maxRedrivesPerTick?: number;
+    trustFloor?: string;
+    dedupeJaccard?: number;
+  };
   /** Session watchdog — auto-remediation for stuck commands */
   watchdog?: {
     enabled: boolean;
