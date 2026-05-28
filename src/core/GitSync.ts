@@ -24,6 +24,7 @@ import type { ClassificationResult } from './FileClassifier.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { assertNotInstarSourceTree } from './SourceTreeGuard.js';
 import { reconcileRegistryEntries } from './registryReplayGuard.js';
+import { mergeRegistry } from './mergeRegistry.js';
 import type { MachineRegistry } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
@@ -987,7 +988,44 @@ export class GitSyncManager {
       return this.resolveUnionById(filePath);
     }
 
+    // Mesh registry: union machines (later lastSeen wins per id; revocation
+    // sticky) + lease higher-epoch-wins. Closes the 2026-05-27 divergence where
+    // a concurrent lease-bump + join collided on registry.json and fell to
+    // LLM/manual, leaving the mesh split (one side saw 1 machine, the other 2).
+    if (relPath.endsWith('machines/registry.json') || relPath.endsWith('machines\\registry.json')) {
+      return this.resolveRegistryConflict(filePath);
+    }
+
     return false;
+  }
+
+  /**
+   * Resolve a `machines/registry.json` conflict via deterministic semantic
+   * merge (mergeRegistry): union machines by id, lease by higher epoch. Both
+   * machines compute the identical merged registry, so the mesh converges
+   * without coordination.
+   */
+  private resolveRegistryConflict(filePath: string): boolean {
+    try {
+      const oursContent = this.gitExec(['show', ':2:' + filePath]); // ours
+      const theirsContent = this.gitExec(['show', ':3:' + filePath]); // theirs
+      const ours = JSON.parse(oursContent) as MachineRegistry;
+      const theirs = JSON.parse(theirsContent) as MachineRegistry;
+
+      const merged = mergeRegistry(ours, theirs);
+      fs.writeFileSync(filePath, JSON.stringify(merged, null, 2));
+      this.gitExec(['add', filePath]);
+      return true;
+    } catch (err) {
+      DegradationReporter.getInstance().report({
+        feature: 'GitSync.resolveRegistryConflict',
+        primary: 'Auto-merge mesh registry conflict (union machines + higher-epoch lease)',
+        fallback: 'Leave conflict for LLM/manual resolution',
+        reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Mesh registry may diverge until the conflict is resolved another way.',
+      });
+      return false;
+    }
   }
 
   /**
