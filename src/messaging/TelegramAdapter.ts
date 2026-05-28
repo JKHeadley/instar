@@ -176,6 +176,30 @@ interface LogEntry {
   telegramUserId?: number;
 }
 
+/**
+ * Pre-dispatch hook for the agent-to-agent Telegram comms primitive. Adapter calls this
+ * BEFORE normal onTopicMessage / this.handler dispatch on text messages. Returns
+ * {handled:true} → dispatch is skipped (hook routed or dropped the a2a event);
+ * {handled:false} → fall through to normal user flow. Spec: MENTOR-LIVE-READINESS §Fix 2b.
+ */
+export interface AgentMessageHookInput {
+  /** Raw message text (the body the marker parser inspects). */
+  text: string;
+  /** Telegram topic id (or GENERAL_TOPIC_ID fallback). */
+  topicId: number;
+  /** msg.from.is_bot (per Telegram's update shape). False for human users — the structural
+   *  half of the a2a spoof defense. */
+  senderIsBot: boolean;
+  /** msg.sender_chat.id (when present — group bot-as-channel relay). */
+  senderChatId?: string;
+  /** Effective bot identity: sender_chat.id ?? from.id, stringified. */
+  senderBotId?: string;
+  /** Wall-clock now (ms) — passed in for testability. */
+  now: number;
+}
+
+export type AgentMessageHook = (input: AgentMessageHookInput) => Promise<{ handled: boolean }>;
+
 export interface AttentionItem {
   id: string;
   title: string;
@@ -339,6 +363,14 @@ export class TelegramAdapter implements MessagingAdapter {
   /** When true, start() skips ensureLifelineTopic() — a non-primary bot must not create a
    *  second Lifeline topic in the chat. */
   private suppressLifelineAutoCreate: boolean;
+  /** Pre-dispatch hook for the agent-to-agent Telegram comms primitive (spec
+   *  MENTOR-LIVE-READINESS §Fix 2b). When set, the text-dispatch path calls this BEFORE
+   *  onTopicMessage / this.handler. If it returns {handled:true}, normal dispatch is
+   *  skipped (the hook routed the message to a role-handler OR dropped it as an a2a
+   *  security event). If {handled:false}, normal user flow continues. Other message types
+   *  (voice/photo/document) cannot carry the [a2a:…] marker and bypass the hook.
+   *  See installAgentMessageHook for the production binding. */
+  private agentMessageHook?: AgentMessageHook;
 
   // Attention queue (persisted to disk)
   private attentionItemToTopic: Map<string, number> = new Map();
@@ -1620,6 +1652,15 @@ export class TelegramAdapter implements MessagingAdapter {
 
   onMessage(handler: (message: Message) => Promise<void>): void {
     this.handler = handler;
+  }
+
+  /**
+   * Install the agent-to-agent Telegram comms pre-dispatch hook. The hook fires on text
+   * messages BEFORE onTopicMessage / this.handler dispatch — see AgentMessageHook docs
+   * above. Setting to undefined disables the hook (falls back to pure user-message flow).
+   */
+  setAgentMessageHook(hook: AgentMessageHook | undefined): void {
+    this.agentMessageHook = hook;
   }
 
   async resolveUser(channelIdentifier: string): Promise<string | null> {
@@ -3666,6 +3707,30 @@ export class TelegramAdapter implements MessagingAdapter {
     if (this.pendingPromptReply.has(numericTopicId) && text) {
       const handled = this.handlePendingPromptReply(numericTopicId, msg);
       if (handled) return;
+    }
+
+    // Agent-to-agent Telegram comms hook (spec MENTOR-LIVE-READINESS §Fix 2b). Runs BEFORE
+    // normal user-message dispatch on text messages so an a2a marker is intercepted as an
+    // agent event (route or drop), never falling through to topic-session spawning. Other
+    // message types can't carry markers — bypass entirely.
+    if (this.agentMessageHook && typeof text === 'string') {
+      try {
+        const senderChatId = msg.sender_chat?.id !== undefined ? String(msg.sender_chat.id) : undefined;
+        const senderBotId = senderChatId ?? (msg.from?.id !== undefined ? String(msg.from.id) : undefined);
+        const result = await this.agentMessageHook({
+          text,
+          topicId: numericTopicId,
+          senderIsBot: msg.from?.is_bot === true,
+          senderChatId,
+          senderBotId,
+          now: Date.now(),
+        });
+        if (result.handled) return;
+      } catch (err) {
+        // Hook must never crash the dispatch loop — log + fall through to normal user flow.
+        // (A broken hook is preferable to a frozen message pipeline.)
+        console.error(`[telegram] agentMessageHook error (falling through): ${err}`);
+      }
     }
 
     // Fire topic message callback (always fires — General topic falls back to ID 1)
