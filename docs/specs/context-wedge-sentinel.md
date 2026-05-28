@@ -154,3 +154,53 @@ don't replace").
 The regex + tail gate + confirm window are detectors. `recoverFn` is a bounded
 recovery primitive (rate-guarded by `SessionRefresh`). Escalation routes through
 the existing `MessagingToneGate` via `SentinelNotifier`. No new blocking authority.
+
+## Follow-up — disk-backed topic resolution (2026-05-28)
+
+**Gap found in production.** A confirmed wedge on the long-lived Codey
+collaboration session (Telegram topic 13435) was DETECTED but never recovered —
+the sentinel escalated "respawn attempt did not clear it" instead. Root cause:
+`SessionRefresh` resolves a session's topic via `TelegramAdapter.getTopicForSession`,
+which reads the **in-memory** `sessionToTopic` map. Echo's server runs
+`--no-telegram`, so its in-memory map is only a boot-time snapshot of the
+registry, while the lifeline keeps writing new topic↔session bindings to
+`topic-session-registry.json` on disk. A session bound AFTER the server booted
+therefore resolves to `null` in-memory → `refreshSession` returned
+`not_telegram_bound` → the dead session stayed dead. (The original spec's "v1
+scope: Telegram-bound only" framing masked this: the session WAS Telegram-bound;
+the binding just wasn't in this process's in-memory snapshot.)
+
+**Fix (scoped to the recovery path, not a hot-path semantics change).**
+`TelegramAdapter.resolveTopicForSessionFromDisk(sessionName)` performs a fresh
+read of the persisted registry and returns the bound topic (pure read; does not
+mutate the in-memory maps). `SessionRefresh` tries the in-memory lookup first
+and, only on a miss, falls back to the disk read before giving up. An in-memory
+hit short-circuits — the disk read is a fallback, never a default — so the hot
+path is unchanged. Genuinely unbound sessions (no binding on disk either) still
+return `not_telegram_bound`.
+
+**Why scope it to recovery, not `getTopicForSession` itself.** That accessor is
+on several hot paths (live-tail, reaper topic-binding); re-reading disk on every
+miss there would change broad behavior and could mask other bugs. The wedge
+recovery path runs rarely and benefits from the strongest possible resolution, so
+the fallback lives there. The broader in-memory/disk staleness on a
+`--no-telegram` server is noted as a tracked follow-up.
+
+### Follow-up files
+
+- `src/messaging/TelegramAdapter.ts` — `resolveTopicForSessionFromDisk` (disk-backed reverse lookup).
+- `src/core/SessionRefresh.ts` — in-memory-then-disk topic resolution.
+
+### Follow-up tests
+
+- **unit** `tests/unit/SessionRefresh.test.ts` — disk fallback (in-memory miss →
+  disk hit → respawn), in-memory hit short-circuits the disk read, both-miss →
+  `not_telegram_bound`. `tests/unit/telegram-registry-log.test.ts` — disk read of
+  a post-boot binding, missing file, corrupt file.
+- **integration** `tests/integration/session-refresh-disk-topic-fallback.test.ts`
+  — REAL `SessionRefresh` × REAL `TelegramAdapter`: a disk-only binding recovers
+  end-to-end (the exact Codey shape); a truly-unbound session still bails.
+- **e2e** `tests/e2e/context-wedge-sentinel-lifecycle.test.ts` — unchanged feature
+  coverage; also fixed a pre-existing cleanup bug there (`path.dirname(logsDir)`
+  resolved to `os.tmpdir()` itself, so `cleanup()` rm-rf'd the shared tmpdir base
+  and intermittently broke the next test's `mkdtemp`).

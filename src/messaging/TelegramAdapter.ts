@@ -1921,6 +1921,42 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.sessionToTopic.get(sessionName) ?? null;
   }
 
+  /**
+   * Disk-backed reverse lookup: re-reads the persisted topic-session registry
+   * and returns the topic bound to `sessionName`, or null. This is the fallback
+   * for {@link getTopicForSession} when the in-memory map misses because the
+   * binding was registered AFTER this process loaded the registry.
+   *
+   * The concrete gap (2026-05-28): a `--no-telegram` server's in-memory
+   * `sessionToTopic` reflects only its boot-time registry snapshot, while the
+   * lifeline keeps writing new topic↔session bindings to the file as long-lived
+   * dev sessions come up. A session bound after the server booted therefore
+   * resolves to null in-memory — which made ContextWedgeSentinel recovery bail
+   * with `not_telegram_bound` and leave the wedged session dead. A fresh disk
+   * read closes that hole on the (rare) recovery path without changing the
+   * hot-path semantics of getTopicForSession.
+   *
+   * Pure read: does NOT mutate the in-memory maps (the respawn path re-registers
+   * the new session for the topic anyway).
+   */
+  resolveTopicForSessionFromDisk(sessionName: string): number | null {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.registryPath, 'utf-8'));
+      const t2s = data?.topicToSession;
+      if (t2s && typeof t2s === 'object') {
+        for (const [k, v] of Object.entries(t2s)) {
+          if (v === sessionName) {
+            const n = Number(k);
+            return Number.isFinite(n) ? n : null;
+          }
+        }
+      }
+    } catch {
+      // Registry file missing or corrupt — no fallback available.
+    }
+    return null;
+  }
+
   getTopicName(topicId: number): string | null {
     return this.topicToName.get(topicId) ?? null;
   }

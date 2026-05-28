@@ -22,6 +22,9 @@ function makeDeps(overrides: {
   rateLimit?: { maxPerWindow: number; windowMs: number };
   clock?: () => number;
   noTelegram?: boolean;
+  /** Topic the disk-backed reverse lookup resolves to. Omit to leave the
+   *  method off the mock entirely (simulates an adapter build without it). */
+  diskTopicId?: number | null;
 } = {}) {
   const topicId = overrides.topicId === undefined ? 9235 : overrides.topicId;
   const stateSession = overrides.stateSession === undefined
@@ -34,6 +37,9 @@ function makeDeps(overrides: {
   const telegram: Partial<TelegramAdapter> = {
     getTopicForSession: vi.fn().mockReturnValue(topicId),
   };
+  if (overrides.diskTopicId !== undefined) {
+    telegram.resolveTopicForSessionFromDisk = vi.fn().mockReturnValue(overrides.diskTopicId);
+  }
   const topicResumeMap: Partial<TopicResumeMap> = {
     findUuidForSession: vi.fn().mockReturnValue(uuid),
     save: vi.fn(),
@@ -270,8 +276,49 @@ describe('SessionRefresh', () => {
     });
   });
 
+  describe('disk-backed topic fallback (in-memory registry miss)', () => {
+    it('resolves the topic from disk when the in-memory map misses, then respawns', async () => {
+      // The real-world gap: a --no-telegram server's in-memory sessionToTopic
+      // reflects only its boot snapshot, so a session bound after boot (e.g. the
+      // Codey collaboration dev session) returns null from getTopicForSession.
+      // The disk registry still has the binding — recovery must use it.
+      const { refresh, telegram, respawner, sessionManager } = makeDeps({
+        topicId: null,
+        diskTopicId: 13435,
+        stateSession: { id: 'state-codey', tmuxSession: 'echo-codey-collaboration' },
+      });
+      const result = await refresh.refreshSession({ sessionName: 'echo-codey-collaboration', fresh: true });
+      expect(result).toEqual({ ok: true, newSessionName: 'new-tmux-session', topicId: 13435 });
+      expect(telegram.resolveTopicForSessionFromDisk).toHaveBeenCalledWith('echo-codey-collaboration');
+      // The respawn used the disk-resolved topic end-to-end.
+      expect(sessionManager.killSession).toHaveBeenCalledWith('state-codey');
+      expect(respawner).toHaveBeenCalledWith('echo-codey-collaboration', 13435, undefined);
+    });
+
+    it('does NOT consult the disk fallback when the in-memory lookup hits', async () => {
+      const { refresh, telegram } = makeDeps({ topicId: 9235, diskTopicId: 13435 });
+      const result = await refresh.refreshSession({ sessionName: 'echo-qalatra' });
+      expect(result).toEqual({ ok: true, newSessionName: 'new-tmux-session', topicId: 9235 });
+      // In-memory hit short-circuits — the disk read is a fallback, not a default.
+      expect(telegram.resolveTopicForSessionFromDisk).not.toHaveBeenCalled();
+    });
+
+    it('returns not_telegram_bound when BOTH in-memory and disk miss', async () => {
+      const { refresh, telegram, respawner, sessionManager } = makeDeps({
+        topicId: null,
+        diskTopicId: null,
+      });
+      const result = await refresh.refreshSession({ sessionName: 'orphan-session' });
+      expect(result.ok).toBe(false);
+      expect((result as { code: string }).code).toBe('not_telegram_bound');
+      expect(telegram.resolveTopicForSessionFromDisk).toHaveBeenCalledWith('orphan-session');
+      expect(respawner).not.toHaveBeenCalled();
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+    });
+  });
+
   describe('failure modes', () => {
-    it('returns not_telegram_bound when session has no topic binding', async () => {
+    it('returns not_telegram_bound when session has no topic binding (no disk fallback available)', async () => {
       const { refresh, respawner, sessionManager } = makeDeps({ topicId: null });
       const result = await refresh.refreshSession({ sessionName: 'orphan-session' });
       expect(result).toEqual({
