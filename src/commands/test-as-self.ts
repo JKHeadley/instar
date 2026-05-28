@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import pc from 'picocolors';
 import { validateTarget, validateBotTokenArg } from './testAsSelfValidation.js';
@@ -57,7 +58,7 @@ const DEFAULT_TIMEOUT_S = 600;
 /** The dist cli.js that is currently executing (what we deploy into the throwaway). */
 function resolveDistCli(): string {
   // This file compiles to dist/commands/test-as-self.js; cli.js is two dirs up.
-  const here = path.dirname(new URL(import.meta.url).pathname);
+  const here = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, '..', 'cli.js');
 }
 

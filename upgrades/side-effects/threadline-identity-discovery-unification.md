@@ -46,6 +46,15 @@ the relay client uses, so the two can never re-diverge.
 `ThreadlineEndpoints.test.ts` (+3 new: migrator unit, health integration,
 bootstrap wiring e2e).
 
+**Drive-by (unrelated, green-keeping):** `src/commands/test-as-self.ts` line 60
+— `new URL(import.meta.url).pathname` → `fileURLToPath(import.meta.url)`. This
+is the URL-pathname-path-encoding pattern (breaks when the project path
+contains spaces) that the pre-push gate (`scripts/pre-push-gate.js`) flags; it
+was introduced into `test-as-self.ts` by an earlier merge and the pre-push gate
+blocks any push until it is fixed (the check is pre-push-only, not in CI, which
+is why it landed). One-line fix to the documented-correct pattern; no behavior
+change.
+
 ## Blast radius / consumers
 
 - **`agent-info.json.publicKey` encoding** is unchanged (hex) and now sourced
