@@ -34,9 +34,9 @@ Your agent can no longer burn through your credits by repeatedly calling the
 model after you've hit a usage or spend limit. The instant the provider says
 you're over your limit, background model work pauses on its own, costs nothing
 while paused, and quietly resumes once the limit lifts. This is on by default —
-no setup needed. If you ever want to tune or turn it off, there's an optional
-`intelligence.circuitBreaker` setting (an `enabled` switch and an `openMs`
-cool-down window), but the safe defaults are designed to just work.
+no setup needed. If you ever want to tune the cool-down window or turn it off,
+there's an optional circuit-breaker setting in your config, but the safe
+defaults are designed to just work.
 
 ## Summary of New Capabilities
 
