@@ -139,7 +139,15 @@ export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalSc
   //    shallows the local repo and breaks downstream git log).
   SafeGitExecutor.run(
     ['fetch', opts.canonicalRemote, 'main', '--no-tags', '--no-recurse-submodules'],
-    { cwd: opts.repoPath, operation: 'featureRolloutScan:canonicalFetch', timeout },
+    {
+      cwd: opts.repoPath,
+      operation: 'featureRolloutScan:canonicalFetch',
+      timeout,
+      // LAYER C explicitly scans the instar source tree (a present-but-on-
+      // wrong-branch spec is the bug being fixed). fetch is data-pull
+      // (FETCH_HEAD + objects only). See SafeGitOptions.sourceTreeReadOk.
+      sourceTreeReadOk: true,
+    },
   );
   const canonicalHeadSha = SafeGitExecutor.run(['rev-parse', 'FETCH_HEAD'], {
     cwd: opts.repoPath,

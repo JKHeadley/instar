@@ -133,7 +133,17 @@ export function buildReleaseReadinessDeps(opts: ReleaseReadinessWiringOpts): Rel
           // checkout transfer only new objects.
           SafeGitExecutor.run(
             ['fetch', remote, 'main', '--no-tags', '--no-recurse-submodules'],
-            { cwd: opts.repoPath, operation: 'releaseReadinessWiring:fetch', timeout: fetchTimeoutMs },
+            {
+              cwd: opts.repoPath,
+              operation: 'releaseReadinessWiring:fetch',
+              timeout: fetchTimeoutMs,
+              // The watchdog by-design runs against the instar source tree
+              // (the maintainer environment IS an instar checkout). fetch
+              // only touches FETCH_HEAD + objects — read-tier for source
+              // protection. Opt into the narrow allowlist documented on
+              // SafeGitOptions.sourceTreeReadOk.
+              sourceTreeReadOk: true,
+            },
           );
           const headSha = SafeGitExecutor.run(['rev-parse', 'FETCH_HEAD'], {
             cwd: opts.repoPath,
