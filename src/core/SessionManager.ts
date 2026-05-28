@@ -1511,6 +1511,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Every tmuxSession name SessionManager has ever known (any status — running,
+   * completed, failed, killed). Backs the OrphanProcessReaper's exact-id orphan
+   * classification (UNIFIED-SESSION-LIFECYCLE §P0 #6): a process is an instar-
+   * orphan ONLY when its tmuxSession exactly matches a name instar has tracked,
+   * never via a project-prefix substring (which over-matches user-created
+   * sessions that happen to share the prefix).
+   */
+  listKnownTmuxSessions(): Set<string> {
+    const out = new Set<string>();
+    for (const s of this.state.listSessions()) out.add(s.tmuxSession);
+    return out;
+  }
+
+  /**
    * Get cached running session info (count + list) without blocking the event loop.
    * Updated asynchronously by the monitor tick every 5 seconds.
    * Safe to call from the health endpoint and other latency-sensitive paths.

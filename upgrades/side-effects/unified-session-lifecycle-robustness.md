@@ -265,3 +265,34 @@ persistently-stale session.
 
 **Rollback:** revert this commit; the raw `killTmuxSession` is the only thing
 deleted and is recoverable from history.
+
+## Phase 2 — Commit #6: OrphanProcessReaper → exact-id + work-check + ReapAuthority
+
+**Files:** `src/monitoring/OrphanProcessReaper.ts`, `src/core/SessionManager.ts`,
+`tests/unit/session-lifecycle-phase-2-wiring.test.ts`.
+
+Three spec-faithful changes:
+1. **Exact-id classification.** The legacy `tmuxSession.startsWith(this.projectPrefix)`
+   substring match is replaced by EXACT membership in
+   `SessionManager.listKnownTmuxSessions()` — the new method returns every tmux
+   name instar has ever tracked (any status). A user-created tmux session that
+   happens to share the project prefix is now classified `external`, not
+   `instar-orphan`, so the reaper cannot false-reap a user pane.
+2. **60-min age = necessary, not sufficient.** Before any orphan kill the new
+   `processHasActiveChildren(pid)` helper (`pgrep -P`) is consulted; a positive
+   result vetoes the reap and surfaces a `Kept orphan PID … work check vetoed
+   reap` action. An uninspectable result returns `false` (allowed to proceed)
+   to preserve prior behavior — this gate is a soft veto layered on top of the
+   age gate, never an escalation.
+3. **Route through P0 when applicable.** When the orphan's tmuxSession matches a
+   CURRENTLY-tracked session (a scan/refresh race), the kill goes through
+   `terminateSession(id, 'orphan-reap', { disposition:'terminal', finalStatus:'killed' })`
+   so the authority's KEEP-guard + lease gate + reap-log entry + `sessionReaped`
+   emission apply. Otherwise the tracked record is already terminal and the raw
+   tmux-kill cleans up the stray pane.
+
+The server session remains excluded unconditionally.
+
+**Tests:** OrphanProcessReaper (9) + Phase-2 wiring (6) green; typecheck clean.
+
+**Rollback:** revert this commit. `listKnownTmuxSessions()` becomes unused but harmless.

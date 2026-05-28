@@ -16,6 +16,14 @@ const watchdogSource = fs.readFileSync(
   path.join(process.cwd(), 'src/monitoring/SessionWatchdog.ts'),
   'utf-8',
 );
+const orphanSource = fs.readFileSync(
+  path.join(process.cwd(), 'src/monitoring/OrphanProcessReaper.ts'),
+  'utf-8',
+);
+const sessionManagerSource = fs.readFileSync(
+  path.join(process.cwd(), 'src/core/SessionManager.ts'),
+  'utf-8',
+);
 
 describe('Phase 2 — per-killer routing contracts', () => {
   describe('#5 SessionWatchdog → ReapAuthority', () => {
@@ -44,6 +52,32 @@ describe('Phase 2 — per-killer routing contracts', () => {
       // And the log line names the skipped reason explicitly so an operator can
       // see which guard kept the session.
       expect(body).toContain('kill refused');
+    });
+  });
+
+  describe('#6 OrphanProcessReaper → exact-id + work-check + ReapAuthority', () => {
+    it('classifies by EXACT-id membership in instar-known sessions (no project-prefix substring match)', () => {
+      // The legacy prefix-startsWith match is gone.
+      expect(orphanSource).not.toMatch(/tmuxSession\.startsWith\(this\.projectPrefix\)/);
+      // The new gate is exact-id membership in SessionManager.listKnownTmuxSessions().
+      expect(orphanSource).toContain('knownInstarSessions.has(tmuxSession)');
+      // And SessionManager exposes the corresponding lookup.
+      expect(sessionManagerSource).toContain('listKnownTmuxSessions()');
+    });
+
+    it('60-min age gate is NECESSARY but NOT SUFFICIENT — defers when the process has active children', () => {
+      // The work-check (pgrep -P → non-empty) must veto the reap before any kill.
+      expect(orphanSource).toContain('processHasActiveChildren(orphan.pid)');
+      expect(orphanSource).toMatch(/pgrep\s+-P\s+\$\{pid\}/);
+      // And the deferred path logs a Kept-not-Killed action so it surfaces.
+      expect(orphanSource).toContain('Kept orphan PID');
+      expect(orphanSource).toContain('work check vetoed reap');
+    });
+
+    it('routes through terminateSession when the orphan tmuxSession matches a currently-tracked session', () => {
+      expect(orphanSource).toMatch(/terminateSession\(\s*trackedNow\.id\s*,\s*'orphan-reap'/);
+      expect(orphanSource).toContain("disposition: 'terminal'");
+      expect(orphanSource).toContain("finalStatus: 'killed'");
     });
   });
 });
