@@ -59,11 +59,36 @@ fi
 # Known-safe domains are whitelisted; anything else gets flagged.
 URLS_IN_MSG=$(echo "$CONTENT" | grep -oE 'https?://[^ )"'"'"'>]+' 2>/dev/null || true)
 if [ -n "$URLS_IN_MSG" ]; then
+  # The agent's OWN tunnel domain is trusted — a private-view / dashboard link
+  # the agent just generated via POST /view is not a confabulation. Read the
+  # live tunnel host from the persisted tunnel state so custom-domain tunnels
+  # are covered too (not just the default *.dawn-tunnel.dev / *.trycloudflare.com).
+  OWN_TUNNEL_HOST=""
+  for tj in "${CLAUDE_PROJECT_DIR:-.}/.instar/state/tunnel.json" "${CLAUDE_PROJECT_DIR:-.}/.instar/tunnel.json"; do
+    if [ -f "$tj" ]; then
+      OWN_TUNNEL_HOST=$(python3 -c "
+import json,sys,re
+try:
+    d=json.load(open('$tj'))
+    u=d.get('url') or d.get('tunnelUrl') or ''
+    m=re.search(r'https?://([^/]+)', u)
+    print(re.escape(m.group(1)) if m else '')
+except Exception:
+    print('')
+" 2>/dev/null)
+      [ -n "$OWN_TUNNEL_HOST" ] && break
+    fi
+  done
+
   UNFAMILIAR_URLS=""
   while IFS= read -r url; do
     [ -z "$url" ] && continue
-    # Skip well-known service domains
-    if echo "$url" | grep -qE '(github\.com|vercel\.app|vercel\.com|netlify\.app|netlify\.com|npmjs\.com|npmjs\.org|cloudflare\.com|google\.com|twitter\.com|x\.com|youtube\.com|reddit\.com|discord\.com|discord\.gg|telegram\.org|t\.me|localhost|127\.0\.0\.1|stackoverflow\.com|developer\.mozilla\.org|docs\.anthropic\.com|anthropic\.com|openai\.com|claude\.ai|notion\.so|linear\.app|fly\.io|render\.com|railway\.app|heroku\.com|amazonaws\.com|azure\.com|gitlab\.com|bitbucket\.org|docker\.com|hub\.docker\.com|pypi\.org|crates\.io|rubygems\.org|pkg\.go\.dev|wikipedia\.org|medium\.com|substack\.com|circle\.so|ghost\.io|telegraph\.ph)'; then
+    # Skip the agent's own live tunnel host (dynamic, covers custom domains).
+    if [ -n "$OWN_TUNNEL_HOST" ] && echo "$url" | grep -qE "$OWN_TUNNEL_HOST"; then
+      continue
+    fi
+    # Skip well-known service domains + common agent tunnel domains.
+    if echo "$url" | grep -qE '(github\.com|vercel\.app|vercel\.com|netlify\.app|netlify\.com|npmjs\.com|npmjs\.org|cloudflare\.com|google\.com|twitter\.com|x\.com|youtube\.com|reddit\.com|discord\.com|discord\.gg|telegram\.org|t\.me|localhost|127\.0\.0\.1|stackoverflow\.com|developer\.mozilla\.org|docs\.anthropic\.com|anthropic\.com|openai\.com|claude\.ai|notion\.so|linear\.app|fly\.io|render\.com|railway\.app|heroku\.com|amazonaws\.com|azure\.com|gitlab\.com|bitbucket\.org|docker\.com|hub\.docker\.com|pypi\.org|crates\.io|rubygems\.org|pkg\.go\.dev|wikipedia\.org|medium\.com|substack\.com|circle\.so|ghost\.io|telegraph\.ph|dawn-tunnel\.dev|trycloudflare\.com)'; then
       continue
     fi
     UNFAMILIAR_URLS="$UNFAMILIAR_URLS  $url\n"
