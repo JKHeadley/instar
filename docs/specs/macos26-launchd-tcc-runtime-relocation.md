@@ -2,9 +2,9 @@
 title: macOS 26 launchd-TCC runtime relocation + peer-independent escalation + reboot-persistent updater coalesce
 date: 2026-05-27
 author: echo
-approved: false
-approved-by:
-approved-via:
+approved: true
+approved-by: Justin
+approved-via: Telegram topic 5447 ("approved" at 2026-05-28, after reading the convergence report + the two material-change disclosures; proceeding with recommended defaults on all four open questions)
 eli16-overview: macos26-launchd-tcc-runtime-relocation.eli16.md
 related-specs:
   - boot-wrapper-plist-coherence.md
