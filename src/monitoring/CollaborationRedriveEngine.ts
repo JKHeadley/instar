@@ -29,6 +29,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import type { CommitmentTracker, Commitment } from './CommitmentTracker.js';
 import type { CompletionEvaluator } from '../core/CompletionEvaluator.js';
 import type { ThreadlineClient } from '../threadline/client/ThreadlineClient.js';
@@ -46,6 +47,17 @@ export interface CollaborationRedriveConfig {
   maxRedrivesPerTick: number;
   trustFloor: string;
   dedupeJaccard: number;
+  /**
+   * Dogfood fix (2026-05-28): an unresolvable peer name is a STABLE condition
+   * (the name is missing from known-agents.json — it doesn't fix itself on
+   * the next sweep). Without a cooldown, the engine escalated to the
+   * Attention queue every few sweeps for every such peer → notification
+   * flood on Echo, observed live. After this many ms since the last
+   * unreachable-peer escalation for a given peer, the engine may escalate
+   * again. Default 24h. Cooldown is durable (persisted to disk), so it
+   * survives restart.
+   */
+  unreachableEscalationCooldownMs: number;
 }
 
 export const DEFAULT_REDRIVE_CONFIG: CollaborationRedriveConfig = {
@@ -58,6 +70,7 @@ export const DEFAULT_REDRIVE_CONFIG: CollaborationRedriveConfig = {
   maxRedrivesPerTick: 1,
   trustFloor: 'verified',
   dedupeJaccard: 0.7,
+  unreachableEscalationCooldownMs: 24 * 60 * 60 * 1000,
 };
 
 export interface CollaborationRedriveDeps {
@@ -67,6 +80,11 @@ export interface CollaborationRedriveDeps {
   surfacer?: CollaborationSurfacer;
   raiseAttention?: (item: { title: string; body: string; priority?: 'low' | 'medium' | 'high'; source?: string }) => Promise<unknown>;
   knownAgentsPath: string;
+  /**
+   * Where to persist the per-peer "last unreachable escalation" timestamp
+   * log (dogfood fix). Defaults next to `knownAgentsPath` if not set.
+   */
+  escalationLogPath?: string;
   now?: () => number;
   log?: { log: (m: string) => void; warn: (m: string) => void };
 }
@@ -89,7 +107,10 @@ export class CollaborationRedriveEngine {
   private readonly now: () => number;
   private readonly log: { log: (m: string) => void; warn: (m: string) => void };
   private sweepTimer: NodeJS.Timeout | null = null;
-  private unresolvedNameStrikes = new Map<string, number>();
+  /** Resolved path to the durable per-peer unreachable-escalation log. */
+  private readonly escalationLogPath: string;
+  /** In-memory cache of the on-disk escalation log; lazy-loaded. */
+  private escalationLogCache: Record<string, string> | null = null;
 
   constructor(deps: CollaborationRedriveDeps, cfg: Partial<CollaborationRedriveConfig> = {}) {
     this.cfg = { ...DEFAULT_REDRIVE_CONFIG, ...cfg };
@@ -99,6 +120,50 @@ export class CollaborationRedriveEngine {
       log: (m) => console.log(`[CollabRedrive] ${m}`),
       warn: (m) => console.warn(`[CollabRedrive] ${m}`),
     };
+    // Default the escalation log next to known-agents.json (already a
+    // per-agent path under .instar/threadline) unless the caller overrides.
+    this.escalationLogPath = deps.escalationLogPath
+      ?? path.join(path.dirname(deps.knownAgentsPath), 'collab-redrive-escalation-log.json');
+  }
+
+  /**
+   * Has it been at least `unreachableEscalationCooldownMs` since we last
+   * escalated "can't reach <peer>" for this peer? Reads from the durable
+   * log; if the cooldown has elapsed (or there's no record), the engine
+   * may escalate again. Persistent across restart by design.
+   */
+  private shouldEscalateUnreachable(peer: string, nowMs: number): boolean {
+    const log = this.loadEscalationLog();
+    const lastIso = log[peer];
+    if (!lastIso) return true;
+    const lastMs = Date.parse(lastIso);
+    if (!Number.isFinite(lastMs)) return true;
+    return (nowMs - lastMs) >= this.cfg.unreachableEscalationCooldownMs;
+  }
+
+  private recordUnreachableEscalation(peer: string, nowMs: number): void {
+    const log = this.loadEscalationLog();
+    log[peer] = new Date(nowMs).toISOString();
+    try {
+      fs.mkdirSync(path.dirname(this.escalationLogPath), { recursive: true });
+      fs.writeFileSync(this.escalationLogPath, JSON.stringify(log, null, 2));
+    } catch (err) {
+      this.log.warn(`failed to persist escalation log: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private loadEscalationLog(): Record<string, string> {
+    if (this.escalationLogCache !== null) return this.escalationLogCache;
+    try {
+      const raw = fs.readFileSync(this.escalationLogPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      this.escalationLogCache = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        ? (parsed as Record<string, string>)
+        : {};
+    } catch {
+      this.escalationLogCache = {};
+    }
+    return this.escalationLogCache;
   }
 
   start(): void {
@@ -192,25 +257,30 @@ export class CollaborationRedriveEngine {
 
       const fingerprint = this.resolveFingerprint(peer);
       if (!fingerprint) {
-        const strikes = (this.unresolvedNameStrikes.get(peer) ?? 0) + 1;
-        this.unresolvedNameStrikes.set(peer, strikes);
-        result.skipped[c.id] = `unresolved-name (strike ${strikes})`;
-        if (strikes >= 3 && this.deps.raiseAttention) {
+        // Dogfood fix (2026-05-28): unresolvable peer names are STABLE
+        // conditions (the name is missing from known-agents.json — it won't
+        // resolve itself on the next sweep). The original strike-counter
+        // escalated every few sweeps and reset, producing a notification
+        // flood. The cooldown is durable per-peer: at most one
+        // "can't reach <peer> — unknown routing" item per peer per
+        // `unreachableEscalationCooldownMs` (default 24h), persisted to
+        // disk so it survives restart.
+        result.skipped[c.id] = 'unresolved-name';
+        if (this.shouldEscalateUnreachable(peer, nowMs) && this.deps.raiseAttention) {
           try {
             await this.deps.raiseAttention({
               title: `can't reach ${peer} — unknown routing`,
-              body: `Tried to nudge ${peer} on commitment ${c.id} ("${c.userRequest.slice(0, 120)}") but no fingerprint resolved from known-agents.json after ${strikes} attempts. Add ${peer} to known-agents.json or close the commitment.`,
+              body: `Tried to nudge ${peer} on commitment ${c.id} ("${c.userRequest.slice(0, 120)}") but no fingerprint resolved from known-agents.json. Add ${peer} to known-agents.json or close the commitment. (I will not raise this again for this peer for ${Math.round(this.cfg.unreachableEscalationCooldownMs / 3600000)}h.)`,
               priority: 'medium',
               source: 'collaboration-redrive',
             });
-            this.unresolvedNameStrikes.set(peer, 0);
+            this.recordUnreachableEscalation(peer, nowMs);
           } catch {
             // non-fatal
           }
         }
         continue;
       }
-      this.unresolvedNameStrikes.delete(peer);
 
       const currentCount = (c.redriveCount ?? 0) + 1;
       const nudgeText = this.buildNudge(c, currentCount);
@@ -312,6 +382,18 @@ export class CollaborationRedriveEngine {
   }
 
   private resolveFingerprint(peerName: string): string | null {
+    // Dogfood gap (2026-05-28): `relatedAgent` on a real threadline-reply
+    // commitment is sometimes ALREADY a 32-char hex fingerprint, not a
+    // display name (e.g. when the commitment was opened from an inbound
+    // whose sender we only knew by fingerprint). The original v3 resolver
+    // assumed display-name-only, so the lookup missed and every such
+    // commitment skipped with `unresolved-name`. Verified live: ~10/15
+    // open threadline-reply commitments on Echo used the fingerprint as
+    // the peer field. Detect the fingerprint case structurally and use
+    // it directly; otherwise fall back to the name lookup.
+    if (CollaborationRedriveEngine.looksLikeFingerprint(peerName)) {
+      return peerName.toLowerCase();
+    }
     try {
       const raw = fs.readFileSync(this.deps.knownAgentsPath, 'utf-8');
       const data = JSON.parse(raw);
@@ -323,6 +405,16 @@ export class CollaborationRedriveEngine {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * `relatedAgent` looks like a Threadline fingerprint if it is exactly 32
+   * hex characters (the format `computeFingerprint` produces — first 16
+   * bytes of the Ed25519 public key, hex-encoded). Matched
+   * case-insensitively; the resolver normalises to lowercase before use.
+   */
+  static looksLikeFingerprint(s: string): boolean {
+    return typeof s === 'string' && /^[0-9a-f]{32}$/i.test(s);
   }
 
   private buildNudge(c: Commitment, attemptNumber: number): string {

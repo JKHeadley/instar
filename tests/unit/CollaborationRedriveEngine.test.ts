@@ -337,3 +337,172 @@ describe('referenceMs', () => {
     expect(referenceMs(c)).toBe(Number.POSITIVE_INFINITY);
   });
 });
+
+// ── Fingerprint-as-relatedAgent (dogfood-surfaced 2026-05-28) ────────
+
+describe('CollaborationRedriveEngine — fingerprint-as-relatedAgent (dogfood fix)', () => {
+  it('looksLikeFingerprint accepts 32-char lowercase hex', () => {
+    expect(CollaborationRedriveEngine.looksLikeFingerprint('8c7928aa9f04fbda947172a2f9b2d81a')).toBe(true);
+  });
+  it('looksLikeFingerprint accepts 32-char uppercase hex', () => {
+    expect(CollaborationRedriveEngine.looksLikeFingerprint('8C7928AA9F04FBDA947172A2F9B2D81A')).toBe(true);
+  });
+  it('looksLikeFingerprint rejects non-hex strings', () => {
+    expect(CollaborationRedriveEngine.looksLikeFingerprint('dawn')).toBe(false);
+    expect(CollaborationRedriveEngine.looksLikeFingerprint('not-a-fingerprint-123456789abcdef')).toBe(false);
+  });
+  it('looksLikeFingerprint rejects wrong-length hex (31 or 33 chars)', () => {
+    expect(CollaborationRedriveEngine.looksLikeFingerprint('8c7928aa9f04fbda947172a2f9b2d81')).toBe(false);
+    expect(CollaborationRedriveEngine.looksLikeFingerprint('8c7928aa9f04fbda947172a2f9b2d81a1')).toBe(false);
+  });
+
+  it('a commitment with relatedAgent already set to a fingerprint hex resolves DIRECTLY and the engine sends', async () => {
+    const dir = makeTmpDir();
+    try {
+      const tracker = setupTracker(dir);
+      const relay = makeRelayStub();
+      const engine = new CollaborationRedriveEngine(
+        {
+          commitmentTracker: tracker,
+          completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+          relayClient: relay.client as never,
+          // known-agents.json is intentionally EMPTY — the engine must
+          // resolve from the fingerprint pattern alone.
+          knownAgentsPath: makeKnownAgents(dir, []),
+          now: () => Date.parse('2026-05-28T22:00:00Z'),
+          log: { log: () => undefined, warn: () => undefined },
+        },
+        { ...DEFAULT_REDRIVE_CONFIG, enabled: true },
+      );
+      const c = recordThreadlineReplyCommitment(tracker, {
+        relatedAgent: '8C7928AA9F04FBDA947172A2F9B2D81A', // uppercase fingerprint
+        lastReplyAt: '2026-05-28T19:00:00Z',
+      });
+      const result = await engine.tick();
+      expect(result.sent).toBe(1);
+      expect(relay.sent.length).toBe(1);
+      // case-normalised lowercase used as the routing fingerprint
+      expect(relay.sent[0].fingerprint).toBe('8c7928aa9f04fbda947172a2f9b2d81a');
+      const updated = tracker.get(c.id)!;
+      expect(updated.redriveCount).toBe(1);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
+    }
+  });
+});
+
+// ── Per-peer unreachable-escalation cooldown (the "noise flood" fix) ────
+
+describe('CollaborationRedriveEngine — unreachable-escalation cooldown (flood fix)', () => {
+  it('an unresolvable peer escalates ONCE then stays silent for the cooldown window', async () => {
+    const dir = makeTmpDir();
+    try {
+      const tracker = setupTracker(dir);
+      const escalations: Array<{ title: string }> = [];
+      const knownAgentsPath = makeKnownAgents(dir, []); // empty — "dawn" won't resolve
+      const buildEngine = (nowMs: number) => new CollaborationRedriveEngine(
+        {
+          commitmentTracker: tracker,
+          completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+          knownAgentsPath,
+          escalationLogPath: path.join(dir, 'escalation-log.json'),
+          raiseAttention: async (item) => { escalations.push({ title: item.title }); return undefined; },
+          now: () => nowMs,
+          log: { log: () => undefined, warn: () => undefined },
+        },
+        { ...DEFAULT_REDRIVE_CONFIG, enabled: true, unreachableEscalationCooldownMs: 24 * 60 * 60 * 1000 },
+      );
+      recordThreadlineReplyCommitment(tracker, { relatedAgent: 'dawn', lastReplyAt: '2026-05-28T18:00:00Z' });
+
+      // Tick #1 — first time hitting unresolvable dawn → ONE escalation.
+      await buildEngine(Date.parse('2026-05-28T20:00:00Z')).tick();
+      expect(escalations.length).toBe(1);
+      expect(escalations[0].title).toContain('dawn');
+
+      // Tick #2 (5 min later, same day) — still unresolvable, but cooldown not elapsed → ZERO new escalations.
+      await buildEngine(Date.parse('2026-05-28T20:05:00Z')).tick();
+      expect(escalations.length).toBe(1);
+
+      // Tick #3 (12 h later) — still in cooldown window → ZERO new escalations.
+      await buildEngine(Date.parse('2026-05-29T08:00:00Z')).tick();
+      expect(escalations.length).toBe(1);
+
+      // Tick #4 (25 h later) — past cooldown → ONE more escalation (the renewed warning).
+      await buildEngine(Date.parse('2026-05-29T21:00:00Z')).tick();
+      expect(escalations.length).toBe(2);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
+    }
+  });
+
+  it('multiple commitments to the SAME unresolvable peer in one tick still produce just ONE escalation', async () => {
+    const dir = makeTmpDir();
+    try {
+      const tracker = setupTracker(dir);
+      const escalations: Array<{ title: string }> = [];
+      const knownAgentsPath = makeKnownAgents(dir, []);
+      const engine = new CollaborationRedriveEngine(
+        {
+          commitmentTracker: tracker,
+          completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+          knownAgentsPath,
+          escalationLogPath: path.join(dir, 'escalation-log.json'),
+          raiseAttention: async (item) => { escalations.push({ title: item.title }); return undefined; },
+          now: () => Date.parse('2026-05-28T20:00:00Z'),
+          log: { log: () => undefined, warn: () => undefined },
+        },
+        { ...DEFAULT_REDRIVE_CONFIG, enabled: true },
+      );
+      // Five commitments, same unresolvable peer.
+      for (let i = 0; i < 5; i++) {
+        recordThreadlineReplyCommitment(tracker, {
+          relatedAgent: 'ai-guy',
+          relatedThreadId: `thread-${i}`,
+          lastReplyAt: '2026-05-28T18:00:00Z',
+        });
+      }
+      await engine.tick();
+      // The cooldown check happens BEFORE escalating, so the first
+      // commitment triggers + records; the next four see the recorded
+      // timestamp and skip silently. Exactly ONE escalation for the peer.
+      expect(escalations.length).toBe(1);
+      expect(escalations[0].title).toContain('ai-guy');
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
+    }
+  });
+
+  it('escalation cooldown is DURABLE across a process restart (a fresh engine reads the log)', async () => {
+    const dir = makeTmpDir();
+    try {
+      const tracker = setupTracker(dir);
+      const escalations: Array<{ title: string }> = [];
+      const knownAgentsPath = makeKnownAgents(dir, []);
+      const logPath = path.join(dir, 'escalation-log.json');
+      const makeEngine = () => new CollaborationRedriveEngine(
+        {
+          commitmentTracker: tracker,
+          completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+          knownAgentsPath,
+          escalationLogPath: logPath,
+          raiseAttention: async (item) => { escalations.push({ title: item.title }); return undefined; },
+          now: () => Date.parse('2026-05-28T20:00:00Z'),
+          log: { log: () => undefined, warn: () => undefined },
+        },
+        { ...DEFAULT_REDRIVE_CONFIG, enabled: true },
+      );
+      recordThreadlineReplyCommitment(tracker, { relatedAgent: 'codey', lastReplyAt: '2026-05-28T18:00:00Z' });
+      await makeEngine().tick();
+      expect(escalations.length).toBe(1);
+      // Brand-new engine instance reads the SAME log → still in cooldown.
+      await makeEngine().tick();
+      expect(escalations.length).toBe(1);
+      // And the log file is present + correct on disk.
+      expect(fs.existsSync(logPath)).toBe(true);
+      const onDisk = JSON.parse(fs.readFileSync(logPath, 'utf-8'));
+      expect(onDisk.codey).toBeTruthy();
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
+    }
+  });
+});
