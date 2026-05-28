@@ -52,7 +52,11 @@ function wireProduction(opts: {
   telegramEscalation?: boolean;
 }): Rig {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-wedge-e2e-'));
-  const logsDir = path.join(stateDir, '..', 'logs');
+  // logs live INSIDE the per-test stateDir, not as a sibling. The previous
+  // `path.join(stateDir, '..', 'logs')` made cleanup's `path.dirname(logsDir)`
+  // resolve to os.tmpdir() ITSELF — so cleanup() rm-rf'd the shared tmpdir base,
+  // which intermittently broke the next test's mkdtemp with ENOENT.
+  const logsDir = path.join(stateDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
   const sentinelLogPath = path.join(logsDir, 'sentinel-events.jsonl');
 
@@ -86,7 +90,7 @@ function wireProduction(opts: {
     sentinel,
     sentinelLogPath,
     respawns: () => respawns,
-    cleanup: () => { try { fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }); } catch { /* ignore */ } },
+    cleanup: () => { try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch { /* ignore */ } },
   };
 }
 

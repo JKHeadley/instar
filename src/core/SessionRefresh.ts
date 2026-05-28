@@ -17,8 +17,12 @@
  * docs/signal-vs-authority.md "safety guards on irreversible actions"
  * carve-out) — prevents infinite-respawn loops. Not a judgment call.
  *
- * v1 scope: Telegram-bound sessions only. Non-Telegram-bound respawn is a
- * v2 follow-up — returns { ok: false, code: 'not_telegram_bound' } for now.
+ * Scope: Telegram-bound sessions. Topic resolution checks the in-memory map
+ * first and, on a miss, falls back to a fresh disk read of the persisted
+ * topic-session registry — so a binding registered after this process loaded
+ * the registry (e.g. on a --no-telegram server) is still recoverable. Genuinely
+ * non-Telegram-bound sessions (Slack, iMessage, headless) return
+ * { ok: false, code: 'not_telegram_bound' } and remain a follow-up.
  */
 
 import type { SessionManager } from './SessionManager.js';
@@ -124,15 +128,27 @@ export class SessionRefresh {
       };
     }
 
-    const topicId = this.deps.telegram.getTopicForSession(sessionName);
+    let topicId = this.deps.telegram.getTopicForSession(sessionName);
     if (topicId === null) {
-      // TODO(v2): handle non-Telegram-bound sessions (Slack, iMessage,
-      // headless). Today only Telegram-bound is supported because the
-      // respawn path is built around topicId → context routing.
+      // In-memory miss does NOT mean the session is unbound. A binding
+      // registered after this process loaded the registry won't be in the
+      // in-memory reverse map — most importantly on a `--no-telegram` server,
+      // whose map reflects only its boot-time snapshot while the lifeline keeps
+      // writing new bindings to disk. That is exactly the gap that left wedged
+      // long-lived dev sessions (e.g. the Codey collaboration session, topic
+      // 13435) un-recoverable: getTopicForSession returned null, recovery bailed
+      // with not_telegram_bound, and the dead session stayed dead. Fall back to
+      // a fresh disk-backed reverse lookup before giving up.
+      topicId = this.deps.telegram.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+    }
+    if (topicId === null) {
+      // Genuinely unbound (no topic on disk either): non-Telegram-bound sessions
+      // (Slack, iMessage, headless) remain a follow-up — the respawn path is
+      // built around topicId → context routing.
       return {
         ok: false,
         code: 'not_telegram_bound',
-        message: `Session "${sessionName}" is not bound to a Telegram topic; cannot self-refresh in v1.`,
+        message: `Session "${sessionName}" is not bound to a Telegram topic (checked in-memory + disk registry); cannot self-refresh.`,
       };
     }
 
