@@ -142,7 +142,18 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
  * source-tree guard.)
  */
 export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
+  // data-pull verbs (execSync path)
   'fetch',
+  // read-tier verbs the watchdog + reconciler need against the source tree
+  // (readSync path — defense-in-depth source-tree check also gates these,
+  // so the bypass must work for both methods)
+  'rev-parse',
+  'ls-tree',
+  'show',
+  'log',
+  'cat-file',
+  'merge-base',
+  'remote', // shape-checked to list/get-url only; needed by resolveCanonicalRemote
 ]);
 
 // ── Env denylist ────────────────────────────────────────────────────
@@ -760,8 +771,15 @@ export class SafeGitExecutor {
       );
     }
 
-    // Defense-in-depth: source-tree check on the read path too.
-    runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    // Defense-in-depth: source-tree check on the read path too — UNLESS the
+    // caller opted into the narrow read-tier allowlist (the LAYER B/C
+    // canonical-ref read path that legitimately operates against the agent's
+    // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
+    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+      runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    } else {
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+    }
 
     const env = sanitizeEnv(opts.env);
     let stdout: string;
