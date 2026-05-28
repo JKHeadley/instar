@@ -23,6 +23,8 @@ The result: every agent session that needs to rebase its own feature branch and 
 
 This is the blunt-filter-vs-context (signal-vs-authority) anti-pattern in our own tooling: a brittle filter that has authority to block, with no context to distinguish safe from risky. The first concrete real-world catch surfaced by the (still-being-built) Correction & Preference Learning Sentinel.
 
+**A second, adjacent false-positive discovered while authoring this spec (2026-05-28).** The risky-patterns loop runs `grep -qi "$pattern"` against the *entire* INPUT — so the literal string `git push --force` appearing ANYWHERE in the payload trips the BLOCK, including inside a `git commit -m "…git push --force…"` body, or a markdown file passed as a HEREDOC. Live-verified: committing this very spec, whose message body contained the matched phrase, was BLOCKED until the wording was changed. That is the same blunt-filter shape — no context for "is this token at command position or inside quoted text" — and the fix is in scope here (see §3.4).
+
 ## 2. What already exists (extend, not reinvent)
 
 | Component | File | What it does | How this fix uses it |
@@ -75,7 +77,19 @@ A small bash helper does the extraction in pure POSIX shell + one `git` call. No
 
 For paranoid environments (a multi-user agent, an agent with broad push rights to shared infra), flipping `alwaysGateForcePush: true` restores the v1.3.x behavior (BLOCK on any force-push). Default off because (a) the auto-allow is only triggered by `--force-with-lease` (provably safe by git's contract: the lease refuses if the remote moved unexpectedly, so the push cannot clobber another contributor's work), AND (b) the protected-branch list keeps the dangerous cases gated.
 
-### 3.4 Audit trail
+### 3.4 Command-position anchoring (the live-discovered second false positive)
+
+The existing risky-patterns loop runs `grep -qi "$pattern"` over the entire INPUT. This blocks any payload whose body merely *mentions* a matched phrase — including `git commit -m "…"` messages, HEREDOC bodies, and `cat` of any file whose contents happen to contain the phrase. Fix:
+
+- **Tokenize the INPUT on shell operators** (`&&`, `||`, `;`, `|`, and unquoted-newline) to recover individual sub-commands. (Tokens inside `'…'` / `"…"` / `<<EOF…EOF` are skipped — the script uses a small POSIX state machine; full shell parsing is out of scope, but commit-message + HEREDOC body recognition is in.)
+- For each sub-command, run the risky-patterns check against the **command verb + args region only**, not the quoted/HEREDOC body.
+- For the new `--force-with-lease` auto-allow (§3.1), the same tokenization applies — it must see `git push` at command position in a sub-command, not embedded in text.
+
+This change makes the *entire* risky-patterns family of checks context-aware to "the phrase appears at command position vs. inside a quoted body" — a generalization that benefits every pattern in the loop, not just `git push --force`. It is the smallest fix that closes the live-discovered second false-positive shape AND prevents the same anti-pattern from recurring on a future risky pattern.
+
+**Fail-closed on tokenizer ambiguity.** When the tokenizer cannot confidently determine command position (e.g. complex `eval` constructs, indirect invocation via `bash -c "…"`), it falls back to the *existing* anywhere-substring behavior — BLOCK on any match. The new logic is strictly additive (it can only RELAX the existing block when it is *confident* about command position; it never adds a NEW block path).
+
+### 3.5 Audit trail
 
 When the auto-allow path fires, the `decision:approve` JSON `additionalContext` includes:
 - The matched pattern (`git push --force-with-lease`).
