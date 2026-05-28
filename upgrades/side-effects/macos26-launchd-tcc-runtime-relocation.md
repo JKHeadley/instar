@@ -89,6 +89,23 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > recoverable agent over a symlink mismatch is worse; doctor surfaces it as
 > `symlink-arg-mismatch`). **Scope A COMPLETE.** 71 tests green across the suite.
 
+> **Increment 7 (Scope B foundation — fleet-watchdog TCC classifier + spool):**
+> `instar-watchdog.sh` gains `classify_and_spool_tcc_blocked` wired FIRST in the
+> crash-loop branch (skips generic self-heal that can't fix TCC). PRIMARY signal
+> is `LastExitStatus==78` + `ProgramArguments[0]` under a TCC folder (no `log show`
+> required — Apple's wording is unstable). On match: persists a STABLE
+> `firstDetectedDown` episode marker in `~/.instar/escalation-episodes/<label>.json`
+> and appends a deduped entry to `~/.instar/watchdog-escalations.jsonl` (matches
+> the on-disk JSONL shape `EscalationSpool.ts` reads, so consented drainers see
+> the same entries). New helpers `get_program_argv0` / `is_tcc_protected_path`
+> (Documents/Desktop/Downloads/iCloud Drive). New `INSTAR_WATCHDOG_LIB_ONLY=1`
+> source-mode lets tests exercise helpers without the main supervision loop. 11
+> tests (7 content + 4 darwin-gated behavioral: classify+spool, non-78
+> falls-through, non-TCC-path falls-through, one-shot dedup across ticks). 35
+> tests green across new + existing watchdog suites. **Not yet wired:** runtime-
+> root resolution from plist (replaces `$project_dir/.instar` reads), direct-
+> Telegram delivery (needs Scope C credential), SessionStart-hook drain.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.

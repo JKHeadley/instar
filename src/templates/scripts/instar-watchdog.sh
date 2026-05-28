@@ -602,6 +602,163 @@ check_stale_lifeline_signal() {
   return 1
 }
 
+# ── macOS 26 launchd-TCC classifier + escalation spool ──────────────
+#
+# Spec: docs/specs/macos26-launchd-tcc-runtime-relocation.md (Scope B).
+# When launchctl reports LastExitStatus=78 (EX_CONFIG) AND the plist's
+# ProgramArguments[0] resolves under a TCC-protected user folder, the failure
+# is the kernel denying launchd's posix_spawn — no amount of self-heal can fix
+# it. Classify, append a deduped entry to the machine-level escalation spool
+# (~/.instar/watchdog-escalations.jsonl), and SKIP the generic self-heal that
+# would just churn against a wall.
+
+INSTAR_MACHINE_DIR="$HOME/.instar"
+ESCALATION_SPOOL="$INSTAR_MACHINE_DIR/watchdog-escalations.jsonl"
+EPISODE_DIR="$INSTAR_MACHINE_DIR/escalation-episodes"
+
+# Read the launchd plist's ProgramArguments[0] (the executable launchd would
+# spawn). Returns empty on read failure.
+get_program_argv0() {
+  local plist="$1"
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$plist" 2>/dev/null || true
+    return
+  fi
+  if command -v python3 &>/dev/null; then
+    python3 - "$plist" 2>/dev/null <<'PYEOF' || true
+import sys, xml.etree.ElementTree as ET
+d = ET.parse(sys.argv[1]).getroot().find('dict')
+els = list(d)
+for i, el in enumerate(els):
+    if el.tag == 'key' and el.text == 'ProgramArguments' and i + 1 < len(els):
+        arr = els[i + 1]
+        for child in arr:
+            if child.tag == 'string':
+                print(child.text or '')
+                break
+        break
+PYEOF
+    return
+  fi
+  return
+}
+
+# Is a path under one of the TCC-protected user folders? Same set as the TS
+# isUnderTccProtectedRoot (~/Documents, ~/Desktop, ~/Downloads, iCloud Drive).
+is_tcc_protected_path() {
+  local p="$1"
+  case "$p" in
+    "$HOME/Documents"|"$HOME/Documents"/*) return 0 ;;
+    "$HOME/Desktop"|"$HOME/Desktop"/*) return 0 ;;
+    "$HOME/Downloads"|"$HOME/Downloads"/*) return 0 ;;
+    "$HOME/Library/Mobile Documents/com~apple~CloudDocs"|"$HOME/Library/Mobile Documents/com~apple~CloudDocs"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Persisted first-detected-down epoch for an outage episode — the STABLE dedup
+# anchor that survives across watchdog ticks. Echoes the epoch (existing or new).
+episode_first_detected_down() {
+  local label="$1"
+  local safe_label
+  safe_label=$(echo "$label" | tr -c 'A-Za-z0-9._-' '_')
+  local marker="$EPISODE_DIR/${safe_label}.json"
+  if [ -r "$marker" ]; then
+    local existing
+    existing=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('firstDetectedDown',''))" "$marker" 2>/dev/null || echo "")
+    if [ -n "$existing" ]; then
+      echo "$existing"
+      return
+    fi
+  fi
+  mkdir -p "$EPISODE_DIR"
+  chmod 700 "$INSTAR_MACHINE_DIR" 2>/dev/null || true
+  chmod 700 "$EPISODE_DIR" 2>/dev/null || true
+  local now
+  now=$(date +%s)
+  now=$((now * 1000))
+  printf '{"label":"%s","firstDetectedDown":%s}' "$label" "$now" > "$marker"
+  chmod 600 "$marker" 2>/dev/null || true
+  echo "$now"
+}
+
+# Append a deduped escalation entry to the spool. Matches the on-disk JSONL
+# shape that EscalationSpool.ts reads (label, projectDir, cause,
+# firstDetectedDown, remediation, ts). Dedup keys on (label,firstDetectedDown).
+# Returns 0 if appended (new), 1 if already spooled this episode.
+spool_append() {
+  local label="$1"
+  local project_dir="$2"
+  local cause="$3"
+  local remediation="$4"
+  local first_down="$5"
+
+  mkdir -p "$INSTAR_MACHINE_DIR"
+  chmod 700 "$INSTAR_MACHINE_DIR" 2>/dev/null || true
+
+  # Dedup: if any existing line has both this label and this firstDetectedDown,
+  # we've already spooled this episode — skip.
+  if [ -r "$ESCALATION_SPOOL" ] && \
+     grep -F "\"label\":\"$label\"" "$ESCALATION_SPOOL" 2>/dev/null | grep -qF "\"firstDetectedDown\":$first_down"; then
+    return 1
+  fi
+
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # JSON-escape: just enough — these are paths/labels validated by the launchd
+  # label regex elsewhere and well-known cause strings, so backslash + quote
+  # escaping is sufficient.
+  local esc_project esc_rem
+  esc_project=$(printf '%s' "$project_dir" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  esc_rem=$(printf '%s' "$remediation" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+
+  printf '{"label":"%s","projectDir":"%s","cause":"%s","firstDetectedDown":%s,"remediation":"%s","ts":"%s"}\n' \
+    "$label" "$esc_project" "$cause" "$first_down" "$esc_rem" "$ts" >> "$ESCALATION_SPOOL"
+  chmod 600 "$ESCALATION_SPOOL" 2>/dev/null || true
+  return 0
+}
+
+# Try to classify a non-zero-exit crash-loop as macOS 26 TCC-spawn-blocked.
+# When matched: appends to the spool (deduped per episode), logs the
+# classification, and returns 0 (caller should SKIP generic self-heal). When
+# unmatched: returns 1 (caller falls through to existing self-heal flow).
+classify_and_spool_tcc_blocked() {
+  local label="$1"
+  local plist="$2"
+  local exit_status="$3"
+
+  # PRIMARY deterministic signal: exit 78 (EX_CONFIG) — what launchd returns
+  # for a posix_spawn EPERM. Soft `log show` corroboration is intentionally
+  # NOT required (Apple's wording is unstable across releases).
+  [ "$exit_status" != "78" ] && return 1
+
+  local argv0
+  argv0=$(get_program_argv0 "$plist")
+  [ -z "$argv0" ] && return 1
+  is_tcc_protected_path "$argv0" || return 1
+
+  local project_dir first_down
+  project_dir=$(get_project_dir "$plist")
+  first_down=$(episode_first_detected_down "$label")
+
+  log "TCC-SPAWN-BLOCKED: $label — exit 78 + ProgramArguments[0] under TCC folder ($argv0)"
+
+  if spool_append "$label" "$project_dir" "tcc-spawn-blocked" \
+       "my startup files are in a folder macOS now locks — run 'instar relocate' once, or grant Full Disk Access to node" \
+       "$first_down"; then
+    log "SPOOLED: $label — escalation queued (episode $first_down)"
+  else
+    $VERBOSE && log "SPOOL-DEDUP: $label — episode $first_down already queued"
+  fi
+  return 0
+}
+
+# Lib-only gate: tests source this file with INSTAR_WATCHDOG_LIB_ONLY=1 to
+# exercise the helpers without running the main supervision loop.
+if [ "${INSTAR_WATCHDOG_LIB_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 recovered=0
 checked=0
 for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
@@ -648,6 +805,14 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
       fi
     elif [ -n "$exit_status" ] && [ "$exit_status" != "0" ]; then
       log "CRASH-LOOP: $label (exit $exit_status, no PID)"
+
+      # macOS 26 launchd-TCC classifier FIRST: when exit=78 + ProgramArguments[0]
+      # is under a TCC folder, no self-heal can fix it — spool an escalation
+      # (deduped per episode) and SKIP the generic heal flow that would just
+      # churn against a wall. Generic non-78 crashes fall through unchanged.
+      if classify_and_spool_tcc_blocked "$label" "$plist" "$exit_status"; then
+        continue
+      fi
 
       if should_attempt_heal "$label"; then
         project_dir=$(get_project_dir "$plist")
