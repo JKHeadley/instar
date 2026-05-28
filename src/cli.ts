@@ -1568,6 +1568,16 @@ jobCmd
     await jobContinuity(slug);
   });
 
+// ── Runtime relocation (macOS 26 TCC) ─────────────────────────────
+program
+  .command('relocate')
+  .description('Move this agent\'s runtime out of a macOS-26 TCC-locked folder (~/Documents etc.) into a safe location launchd can reach')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts: { dir?: string }) => {
+    const { relocateCommand } = await import('./commands/relocate.js');
+    await relocateCommand(opts);
+  });
+
 jobCmd
   .command('migrate')
   .description('Migrate legacy jobs.json entries to agentmd markdown templates')

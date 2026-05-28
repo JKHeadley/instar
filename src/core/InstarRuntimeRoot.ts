@@ -198,6 +198,51 @@ export function resolveStateDir(projectDir: string, env: NodeJS.ProcessEnv = pro
   return path.join(projectDir, '.instar');
 }
 
+/**
+ * Boot-time consistency check (convergence NEW-4): the two pointers — the
+ * on-disk `<projectDir>/.instar` symlink target and the `--runtime-root` arg
+ * baked into the plist (→ INSTAR_RUNTIME_ROOT) — must agree. They are written
+ * at different times by different code; a second relocation or a partial
+ * migration could make them disagree, which would split-brain the boot reader
+ * (arg's root) against consented-context readers (symlink's target).
+ *
+ * Returns `{ ok }` with a loud message on mismatch. The caller LOGS this (does
+ * NOT crash — bricking a recoverable agent's boot is worse than a logged
+ * warning); `instar doctor` surfaces the same as `symlink-arg-mismatch`.
+ *
+ * No-op (ok:true) when not relocated (no env root) or the symlink isn't present
+ * — there's nothing to disagree about.
+ */
+export function checkRuntimeRootConsistency(
+  projectDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { ok: boolean; message?: string } {
+  const argRoot = env[RUNTIME_ROOT_ENV];
+  if (!argRoot || !argRoot.trim()) return { ok: true };
+
+  const instarPath = path.join(projectDir, '.instar');
+  let linkTarget: string;
+  try {
+    if (!fs.lstatSync(instarPath).isSymbolicLink()) return { ok: true }; // not relocated via symlink
+    linkTarget = fs.realpathSync(instarPath);
+  } catch {
+    return { ok: true }; // can't read it (e.g. TCC-blind boot) — the arg is authoritative anyway
+  }
+
+  let argReal: string;
+  try { argReal = fs.realpathSync(argRoot.trim()); } catch { argReal = path.resolve(argRoot.trim()); }
+
+  if (linkTarget !== argReal) {
+    return {
+      ok: false,
+      message:
+        `runtime-root mismatch: launchd --runtime-root points at "${argReal}" but ` +
+        `<projectDir>/.instar resolves to "${linkTarget}". Run 'instar relocate' to repair.`,
+    };
+  }
+  return { ok: true };
+}
+
 /** The decision the migrator's relocation orchestrator makes, given gathered
  *  facts. Pure + exhaustively testable — the orchestrator just gathers the
  *  inputs (platform, relocated?, in-TCC?, source-readable?) and acts on the

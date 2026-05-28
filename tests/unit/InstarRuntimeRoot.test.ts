@@ -21,6 +21,7 @@ import {
   readPersistedRuntimeRoot,
   readRelocateRecord,
   classifyRelocation,
+  checkRuntimeRootConsistency,
   type RelocationFacts,
 } from '../../src/core/InstarRuntimeRoot.js';
 
@@ -153,6 +154,52 @@ describe('InstarRuntimeRoot', () => {
 
     it('BLOCKS (escalate, no partial move) when source is unreadable — launchd TCC-blind', () => {
       expect(classifyRelocation({ ...base, sourceReadable: false })).toBe('blocked-tcc-blind');
+    });
+  });
+
+  describe('checkRuntimeRootConsistency (NEW-4 split-brain guard)', () => {
+    const tmp: string[] = [];
+    afterEach(() => {
+      for (const d of tmp.splice(0)) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* */ } }
+    });
+    function scratch(): string { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-cons-')); tmp.push(d); return d; }
+
+    it('ok when no --runtime-root env is set (not relocated / consented context)', () => {
+      expect(checkRuntimeRootConsistency('/Users/x/Documents/foo', {} as NodeJS.ProcessEnv).ok).toBe(true);
+    });
+
+    it('ok when .instar symlink target matches --runtime-root', () => {
+      const base = scratch();
+      const projectDir = path.join(base, 'project');
+      const root = path.join(base, 'root');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.mkdirSync(root, { recursive: true });
+      fs.symlinkSync(root, path.join(projectDir, '.instar'));
+      const res = checkRuntimeRootConsistency(projectDir, { [RUNTIME_ROOT_ENV]: root } as NodeJS.ProcessEnv);
+      expect(res.ok).toBe(true);
+    });
+
+    it('FLAGS a mismatch between the symlink target and --runtime-root', () => {
+      const base = scratch();
+      const projectDir = path.join(base, 'project');
+      const rootA = path.join(base, 'rootA');
+      const rootB = path.join(base, 'rootB');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.mkdirSync(rootA, { recursive: true });
+      fs.mkdirSync(rootB, { recursive: true });
+      fs.symlinkSync(rootA, path.join(projectDir, '.instar')); // symlink → A
+      const res = checkRuntimeRootConsistency(projectDir, { [RUNTIME_ROOT_ENV]: rootB } as NodeJS.ProcessEnv); // arg → B
+      expect(res.ok).toBe(false);
+      expect(res.message).toMatch(/runtime-root mismatch/);
+      expect(res.message).toMatch(/instar relocate/);
+    });
+
+    it('ok (arg authoritative) when .instar is not a symlink', () => {
+      const base = scratch();
+      const projectDir = path.join(base, 'project');
+      fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+      const res = checkRuntimeRootConsistency(projectDir, { [RUNTIME_ROOT_ENV]: '/some/root' } as NodeJS.ProcessEnv);
+      expect(res.ok).toBe(true);
     });
   });
 });

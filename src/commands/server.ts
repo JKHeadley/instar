@@ -2033,6 +2033,18 @@ export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
   ensureStateDir(config.stateDir);
 
+  // macOS 26 TCC relocation (NEW-4): if the launchd --runtime-root arg and the
+  // on-disk `.instar` symlink disagree, the boot reader and consented readers
+  // would split-brain. Log loudly (don't crash — a recoverable agent shouldn't
+  // be bricked over this); `instar doctor` surfaces it as symlink-arg-mismatch.
+  try {
+    const { checkRuntimeRootConsistency } = await import('../core/InstarRuntimeRoot.js');
+    const consistency = checkRuntimeRootConsistency(config.projectDir);
+    if (!consistency.ok) {
+      console.error(pc.yellow(`[runtime-root] ${consistency.message}`));
+    }
+  } catch { /* non-fatal */ }
+
   // LiveConfig: dynamic config re-reading for long-running server process.
   // Solves the "Written But Not Re-Read" class of bugs — sessions modify
   // config.json but the server process never picks up the changes.

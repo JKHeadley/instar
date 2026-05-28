@@ -287,6 +287,17 @@ export class PostUpdateMigrator {
     }
   }
 
+  /**
+   * Public entry for the `instar relocate` CLI — runs ONLY the runtime-root
+   * relocation (not the full migrate sweep), from a consented foreground
+   * context. Reuses the tested orchestrator so there's one relocation code path.
+   */
+  public relocateRuntimeRootNow(): MigrationResult {
+    const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    this.migrateRuntimeRoot(result);
+    return result;
+  }
+
   // ── macOS 26 runtime-root relocation ────────────────────────────────
   //
   // Orchestrates the relocation of a Documents-resident agent's runtime out of

@@ -79,6 +79,16 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > tests green across new + adjacent migrator suites. **Scope A now functionally
 > complete except** the `instar relocate` CLI + boot consistency assertion (next).
 
+> **Increment 6 (Scope A completion — relocate CLI + boot consistency):** adds
+> `instar relocate` (`src/commands/relocate.ts` + `cli.ts` registration) — the
+> one consented command that relocates a dead-before-fix agent; it reuses the
+> tested orchestrator via a new `PostUpdateMigrator.relocateRuntimeRootNow()`
+> public wrapper (one relocation code path). Adds `checkRuntimeRootConsistency`
+> (NEW-4 split-brain guard: symlink target vs `--runtime-root` arg) + 4 tests,
+> wired as a loud-but-non-fatal warning in `startServer` boot (crashing a
+> recoverable agent over a symlink mismatch is worse; doctor surfaces it as
+> `symlink-arg-mismatch`). **Scope A COMPLETE.** 71 tests green across the suite.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
