@@ -8457,7 +8457,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                   fs.readSync(fd, buf, 0, len, start);
                   tailHash = hash(buf.toString('utf-8'));
                 } finally { fs.closeSync(fd); }
-              } catch { tailHash = null; }
+              } catch {
+                // @silent-fallback-ok — an unreadable transcript tail just means
+                // "no meaningful-advance signal this tick"; the backstop treats a
+                // null tail as ambiguous (never as progress), which is safe.
+                tailHash = null;
+              }
             }
             const frame = sessionManager.captureOutput(session.tmuxSession, 8) ?? '';
             return {

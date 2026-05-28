@@ -93,7 +93,9 @@ export class ReapLog {
     try {
       raw = fs.readFileSync(this.logPath, 'utf-8');
     } catch {
-      return []; // no log yet → empty, not an error
+      // @silent-fallback-ok — no log file yet means no reaps recorded; an empty
+      // list is the correct answer, not a degraded one.
+      return [];
     }
     const lines = raw.split('\n').filter((l) => l.trim().length > 0);
     const tail = limit > 0 ? lines.slice(-limit) : lines;

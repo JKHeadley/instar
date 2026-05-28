@@ -231,3 +231,11 @@ one notice" and "guarded/standby/protected survive" are reproduced through the r
 path (integration); the route is proven alive on the real AgentServer (e2e). A full live boot with a
 deliberately-slowed tmux + a real Telegram notice landing was NOT performed in this environment — the
 test-tier reproductions stand in for it, and that gap is stated rather than papered over.
+
+## Commit — annotate intentional silent catches (no-silent-fallbacks ratchet)
+
+Two new intentional silent catches are annotated `@silent-fallback-ok` so the
+no-silent-fallbacks ratchet doesn't count them: `ReapLog.read` (no log file ⇒
+empty list is correct, not degraded) and the §P5 transcript-tail read (an
+unreadable tail ⇒ no meaningful-advance signal this tick; treated as ambiguous,
+never as progress). Behavior unchanged.
