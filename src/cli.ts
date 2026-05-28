@@ -2030,6 +2030,28 @@ program
   .action(joinMesh);
 
 program
+  .command('test-as-self')
+  .description('Deploy the current dist into a throwaway agent home, verify it, and tear down (Part 2.1 harness)')
+  .option('--target <dir>', 'Throwaway agent home (default: ~/.instar/test-deploys/<isoTs>)')
+  .option('--bot-token <dropId>', 'Secret Drop ID for a test bot token (enables the Telegram round-trip; NEVER a raw token)')
+  .option('--keep', 'Skip teardown (leave the throwaway running for inspection)')
+  .option('--no-roundtrip', 'Skip the Telegram round-trip (lease/log verification only)')
+  .option('--report-json <path>', 'Write the per-step JSON report to this path')
+  .option('--timeout-s <secs>', 'Overall timeout in seconds (default 600)', (v) => parseInt(v, 10))
+  .action(async (opts) => {
+    const { runTestAsSelf } = await import('./commands/test-as-self.js');
+    const { exitCode } = await runTestAsSelf({
+      target: opts.target,
+      botToken: opts.botToken,
+      keep: opts.keep,
+      noRoundtrip: opts.roundtrip === false,
+      reportJson: opts.reportJson,
+      timeoutS: opts.timeoutS,
+    });
+    process.exit(exitCode);
+  });
+
+program
   .command('wakeup')
   .description('Move the agent to this machine (transfer awake role)')
   .option('-d, --dir <path>', 'Project directory')
