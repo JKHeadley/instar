@@ -9356,6 +9356,80 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Agent-to-agent inbox (same-machine HTTP transport) ────────
+  // The Telegram-bridge transport for a2a (mentor bot → mentee bot in shared
+  // group) CANNOT work — Telegram structurally blocks bot-to-bot delivery
+  // ("bots will not be able to see messages from other bots regardless of
+  // mode" — Bot API FAQ). For same-machine agents this endpoint is the
+  // canonical transport: a peer POSTs an a2a-marker-prefixed message + sender
+  // context here, we invoke the same `dispatchAgentMessageHook` that the
+  // polling + lifeline-forward paths use. The receiver wiring
+  // (`installMentorMessageHook` via `config.mentee`) is unchanged — only the
+  // entry point differs.
+  //
+  // Cross-machine transport is a separate architectural problem (would need
+  // a shared-bot or user-account relay); this PR ships same-machine only.
+  //
+  // Auth: Bearer must match THIS agent's token (verifyAgentToken). Anyone
+  // can call /a2a/inbox iff they hold our token — same trust model as
+  // /messages/relay-agent for Threadline.
+  router.post('/a2a/inbox', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+      if (!bearerToken || !verifyAgentToken(ctx.config.projectName, bearerToken)) {
+        res.status(401).json({ error: 'Invalid or missing agent token' });
+        return;
+      }
+
+      if (!ctx.telegram) {
+        // No primary adapter constructed (rare: agent has no Telegram
+        // messaging configured at all). The receiver hook lives on the
+        // adapter; without it there's nowhere to dispatch.
+        res.status(503).json({ ok: false, reason: 'no-adapter' });
+        return;
+      }
+
+      const { text, topicId, senderAgent, senderBotId, senderIsBot, fromUserId } = req.body ?? {};
+      if (typeof text !== 'string' || text.length === 0) {
+        res.status(400).json({ error: 'text (string) is required' });
+        return;
+      }
+      const numericTopicId = typeof topicId === 'number' ? topicId : Number(topicId);
+      if (!Number.isFinite(numericTopicId)) {
+        res.status(400).json({ error: 'topicId (number) is required' });
+        return;
+      }
+      // The /a2a/inbox endpoint is ONLY for bot-origin messages. A peer agent
+      // is by definition a bot (the spec's spoof defense distinguishes real
+      // users from bots; same-machine peer calls satisfy the bot-origin
+      // requirement by construction — they hold our agent token).
+      const effectiveSenderIsBot = senderIsBot === undefined ? true : senderIsBot === true;
+      const handled = await ctx.telegram.dispatchAgentMessageHook({
+        text,
+        topicId: numericTopicId,
+        senderIsBot: effectiveSenderIsBot,
+        senderBotId: senderBotId !== undefined ? String(senderBotId) : undefined,
+        rawFromId: fromUserId !== undefined ? String(fromUserId) : undefined,
+      });
+      if (handled) {
+        console.log(`[a2a-inbox] routed (senderAgent=${senderAgent ?? 'unknown'}, topicId=${numericTopicId})`);
+        res.json({ ok: true, agentMessage: true });
+      } else {
+        // Not handled = hook rejected (no marker / malformed / not-allowlisted
+        // / etc). The /a2a/inbox endpoint is dedicated to a2a — non-routable
+        // messages are NOT forwarded to user-message handling. The caller
+        // should not have sent it through this route.
+        console.warn(`[a2a-inbox] rejected (senderAgent=${senderAgent ?? 'unknown'}, topicId=${numericTopicId}) — no marker or refused by hook`);
+        res.json({ ok: true, agentMessage: false, reason: 'not-routed' });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[a2a-inbox] handler error: ${errMsg}`);
+      res.status(500).json({ ok: false, error: errMsg });
+    }
+  });
+
   // ── Plan Prompt Relay (from hook) ─────────────────────────────
   // Receives plan mode entry events from the PreToolUse hook on EnterPlanMode.
   // Relays the plan to Telegram for user approval via inline keyboard.

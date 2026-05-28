@@ -777,6 +777,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  * here — never both, never neither.
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'a2a', reason: 'same-machine agent-to-agent transport — peers discover each other via AgentRegistry, not /capabilities' },
   { prefix: 'health', reason: 'basic liveness check, no auth' },
   { prefix: 'ping', reason: 'synchronous noop, used by tunnel/lifeline probes' },
   { prefix: 'whoami', reason: 'internal identity probe (sentinel/relay layer 1c)' },
