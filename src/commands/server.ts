@@ -4277,6 +4277,60 @@ export async function startServer(options: StartOptions): Promise<void> {
     // so it can wire episodicMemory from the sentinel.
     let workingMemory: WorkingMemoryAssembler | undefined;
 
+    // ── Reap observability + notify (UNIFIED-SESSION-LIFECYCLE §P3/§P4) ──
+    // Wired BEFORE the boot purge so even boot-time reaps land in the reap-log
+    // and surface a notice. The awake-checker is also wired here so the boot
+    // purge is lease-gated (a standby never reaps another machine's sessions).
+    // (The KEEP-guard is wired later, once its tracker deps exist — that is safe:
+    //  the boot purge passes knownDead and bypasses the guard, and the only other
+    //  guard consumers (monitorTick #2 age-limit / #3 idle-zombie) cannot fire a
+    //  kill in the first monitoring seconds — they require multi-hour age or 15+m
+    //  of observed idle — long after the guard is set below.)
+    const { ReapLog } = await import('../monitoring/ReapLog.js');
+    const { ReapNotifier } = await import('../monitoring/ReapNotifier.js');
+    const reapLog = new ReapLog(
+      config.stateDir,
+      () => (coordinator.enabled ? coordinator.identity?.machineId : undefined),
+    );
+    const reapNotifier = new ReapNotifier(
+      {
+        resolveTopic: (tmuxSession) => {
+          const t = telegram?.getTopicForSession(tmuxSession);
+          if (t == null) return null;
+          const n = typeof t === 'number' ? t : Number(t);
+          return Number.isFinite(n) ? n : null;
+        },
+        lifelineTopic: () => telegram?.getLifelineTopicId() ?? null,
+        // SUMMARY tier → through the formatter/tone-gate (HTML-escaped, quiet-hours
+        // aware). The notifier already coalesces, so a burst is one message.
+        send: (topicId, text) => notify('SUMMARY', 'session-reap', text, topicId),
+      },
+      {
+        enabled: config.monitoring?.reapNotify?.enabled ?? true,
+        coalesceWindowMs: config.monitoring?.reapNotify?.coalesceWindowMs ?? 60_000,
+      },
+    );
+    sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
+    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous' }) => {
+      reapLog.recordReaped({
+        session: e.session.name,
+        tmuxSession: e.session.tmuxSession,
+        reason: e.reason,
+        disposition: e.disposition,
+        origin: e.origin,
+      });
+      reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin });
+    });
+    sessionManager.on('reapBlocked', (e: { session: import('../core/types.js').Session; reason: string; skipped: string; origin?: 'operator' | 'autonomous' }) => {
+      reapLog.recordSkipped({
+        session: e.session.name,
+        tmuxSession: e.session.tmuxSession,
+        reason: e.reason,
+        skipped: e.skipped,
+        origin: e.origin,
+      });
+    });
+
     // Fast startup purge — remove session records for dead tmux sessions BEFORE
     // monitoring starts. Prevents the death spiral where stale sessions overwhelm
     // the health endpoint (synchronous tmux has-session calls) and cause the
@@ -8296,9 +8350,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { ReapGuard } = await import('../core/ReapGuard.js');
       sessionManager.setReapGuard(new ReapGuard(reapGuardDeps, { minAgeMs: 0 }));
     }
-    // Lease-holder gate: only the awake machine autonomously reaps. Single-machine
-    // installs (coordinator disabled) are always awake.
-    sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
+    // (setAwakeChecker is wired earlier, before the boot purge, so the purge is
+    //  lease-gated — see the §P3/§P4 block above.)
 
     const sessionReaper = new SessionReaper(
       {
@@ -8476,7 +8529,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, reapLog, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

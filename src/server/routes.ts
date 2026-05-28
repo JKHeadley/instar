@@ -694,6 +694,7 @@ export interface RouteContext {
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
+  reapLog?: import('../monitoring/ReapLog.js').ReapLog | null;
   /** TaskFlow registry — durable multi-step job records (OpenClaw import).
    *  Null when not enabled. Phase 1: no business consumers; admin endpoints
    *  only. */
@@ -3831,6 +3832,20 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.sessionReaper.snapshot());
+  });
+
+  // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4). The pull-surface answer to "why did
+  // my session vanish?": every reap + every refused/skipped terminate, newest
+  // last. Read-only, Bearer-auth (the router-level middleware). `?limit=N`
+  // bounds the tail (default 200).
+  router.get('/sessions/reap-log', (req, res) => {
+    if (!ctx.reapLog) {
+      res.status(503).json({ error: 'reap-log unavailable' });
+      return;
+    }
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
+    res.json({ entries: ctx.reapLog.read(limit) });
   });
 
   router.get('/sessions', (req, res) => {

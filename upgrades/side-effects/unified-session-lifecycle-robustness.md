@@ -132,3 +132,47 @@ as awake.
 **Tests:** terminate (9) + reaper (30) + guard (15) + oracle (15) + timeout (4+6) + async-monitor (6) +
 lifecycle integration (6) green; typecheck clean. One brittle source-string test updated to the new
 age-kill log + funnel contract.
+
+## Commit — P3 reap-notify seam + P4 reap-log + Agent-Awareness + migration
+
+**Files:**
+- `src/monitoring/ReapNotifier.ts` (new) — single coalescing `sessionReaped` listener. Silent on
+  `recovery-bounce` and `origin:'operator'`; isolated reap → bound topic (or lifeline); burst within
+  the window → ONE consolidated lifeline message stating the EXACT total (count tracked separately from
+  the bounded detail buffer, so an overflow never under-reports). User-controlled names/reasons wrapped
+  as literal inline-code spans (inner backticks neutralized) so the downstream formatter never renders
+  them as markup.
+- `src/monitoring/ReapLog.ts` (new) — append-only JSONL audit at `logs/reap-log.jsonl`; records BOTH
+  reaps (`sessionReaped`) and refused/skipped terminates (`reapBlocked`); JSON-encoded (no concat →
+  no newline injection); read tolerates corrupt lines.
+- `src/server/routes.ts` — `GET /sessions/reap-log` (Bearer-auth via router middleware, read-only,
+  `?limit` capped at 1000, default 200).
+- `src/server/AgentServer.ts` — `reapLog` option + ctx wire (mirrors `sessionReaper`).
+- `src/commands/server.ts` — ReapLog + ReapNotifier built and the `sessionReaped`/`reapBlocked`
+  listeners + `setAwakeChecker` wired BEFORE the boot purge, so boot reaps are lease-gated, logged, and
+  notified. (The KEEP-guard is wired later, after its tracker deps exist — safe: boot-purge bypasses it
+  via `knownDead`, and no monitorTick kill can fire in the first seconds.)
+- `src/core/types.ts` + `src/config/ConfigDefaults.ts` — `monitoring.reapNotify {enabled, coalesceWindowMs}`,
+  default ON.
+- `src/scaffold/templates.ts` (Agent-Awareness) + `src/core/PostUpdateMigrator.migrateClaudeMd` (existing
+  agents get the Reap-Log section) + `migrateConfig` via ConfigDefaults (existing agents get the
+  `reapNotify` default automatically).
+
+**Notify default = ON (deliberate, differs from sentinelTelegramEscalation).** The silently-stopped
+sentinel escalation defaults OFF (post-2026-05-22 flood). The reap-notify defaults ON because the
+incident this whole spec answers is *silent disappearance* — the user explicitly asked to be told. The
+flood risk is bounded by: (a) coalescing a burst into one message, (b) staying silent on the common
+recovery-bounce + operator paths, (c) SUMMARY tier (quiet-hours aware). A single config flag disables it.
+
+**Discoverability:** `/sessions/reap-log` lives under the already-classified `sessions` prefix
+(operator/dashboard-only in CapabilityIndex) — no new prefix, no lint change. Agent-awareness is carried
+by the CLAUDE.md template + migrateClaudeMd instead (the template IS the agent's awareness).
+
+**Ordering side-effect (reviewed):** the listeners attach pre-boot-purge; the guard wires post. The only
+guard consumers besides boot-purge are monitorTick #2/#3, which require multi-hour age / 15+m observed
+idle — unreachable in the sub-second guard-unset window. Documented inline.
+
+**Tests:** ReapNotifier (10: silent dispositions/origins, isolated bound/unbound routing, burst
+coalescing, overflow exact-count, auto-timer, malicious-name literalization, unreachable-channel drop)
++ ReapLog (6: empty, reaped/skipped fields, newline-injection→valid-JSON, tail, corrupt-line tolerance)
+green; typecheck clean. Route integration + e2e land in the test-phase commit.

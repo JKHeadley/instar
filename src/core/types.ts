@@ -2745,6 +2745,18 @@ export interface MonitoringConfig {
     protectOpenCommitments?: boolean;
   };
   /**
+   * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing
+   * listener on `sessionReaped` that surfaces a "your session was shut down"
+   * notice so a session never silently vanishes. Default ON (the disappearing-
+   * session incident is exactly the silence this closes); recovery-bounce and
+   * operator kills stay silent regardless. Terminal reaps within
+   * `coalesceWindowMs` collapse into one consolidated lifeline message.
+   */
+  reapNotify?: {
+    enabled?: boolean;
+    coalesceWindowMs?: number;
+  };
+  /**
    * Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
    * self-hosting dev-process forensics. Ships OFF (registers itself on the
    * rollout board). When enabled, the FailureLedger + /failures routes + the

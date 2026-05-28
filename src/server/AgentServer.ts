@@ -317,6 +317,9 @@ export class AgentServer {
     /** SessionReaper — pressure-aware idle-session reaper (off/dry-run by
      *  default). Powers GET /sessions/reaper. */
     sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper;
+    /** ReapLog — durable audit of every reap + skipped-reap (UNIFIED-SESSION-LIFECYCLE
+     *  §P4). Powers GET /sessions/reap-log. */
+    reapLog?: import('../monitoring/ReapLog.js').ReapLog;
     /** Threadline → Telegram bridge config — toggles + allow/deny list. */
     telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
     /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
@@ -729,6 +732,7 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       sessionReaper: options.sessionReaper ?? null,
+      reapLog: options.reapLog ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
       threadlineObservability: options.threadlineObservability ?? null,
