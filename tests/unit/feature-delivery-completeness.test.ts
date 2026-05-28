@@ -215,6 +215,7 @@ describe('Feature Delivery Completeness', () => {
       'Cross-Machine Seamlessness (one agent, many machines)', // operational self-heal/handoff awareness (like Version-Skew); not a user-invokable capability
       'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
       'Framework-Onboarding Mentor System',               // developer-layer issue-ledger observability; not a Codex/Gemini end-user capability (no shadow-marker parity)
+      '/sessions/reap-log',                               // UNIFIED-SESSION-LIFECYCLE §P4 reap-log: operational observability the agent READS to answer "where did my session go?" — like Sentinel Notifications, not a user-invokable capability requiring framework-shadow parity
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

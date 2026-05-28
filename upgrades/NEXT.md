@@ -17,7 +17,7 @@ All changes are additive and only make killing *more* conservative; the boot-pur
 
 ## What to Tell Your User
 
-- Your sessions won't silently disappear anymore. The startup cleanup no longer mistakes a slow-to-answer session for a dead one, and if anything *does* get shut down you get told why — with a log page (`/sessions/reap-log`) recording every shutoff and every *refused* shutoff.
+- Your sessions won't silently disappear anymore. The startup cleanup no longer mistakes a slow-to-answer session for a dead one, and if anything *does* get shut down you get told why — with a reap-log page recording every shutoff and every refused shutoff.
 - Every automatic cleanup now goes through one careful gatekeeper that refuses to end a session that might be working, and only the "awake" machine ever reaps. When *you* kill a session it still happens immediately.
 - Nothing can get wedged-but-immortal or quietly fill your slots: instead of ever auto-killing a stuck session, the agent raises a single "this looks stuck — investigate or force-kill?" item for you.
 
