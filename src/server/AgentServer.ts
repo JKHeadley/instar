@@ -74,7 +74,7 @@ import { ProcessedIdStore } from '../messaging/ProcessedIdStore.js';
 import { buildAgentMessageHook, type RoleHandler } from '../messaging/installAgentMessageHook.js';
 import { OutstandingPromptTracker } from '../scheduler/OutstandingPromptTracker.js';
 import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
-import { extractCodexFinalMessage, extractClaudeFinalMessage } from '../monitoring/SessionReplyExtractor.js';
+import { extractCodexFinalMessage, extractClaudeFinalMessage, findClaudeTranscriptShallow } from '../monitoring/SessionReplyExtractor.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector } from '../monitoring/BurnDetector.js';
 import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
@@ -910,10 +910,10 @@ export class AgentServer {
    * - Claude sessions: the session's JSONL transcript (by claudeSessionId) →
    *   the last assistant text block.
    */
-  private extractMenteeReplyFromTranscript(
+  private async extractMenteeReplyFromTranscript(
     session: { id: string; claudeSessionId?: string; framework?: string },
     spawnTs: number,
-  ): string | null {
+  ): Promise<string | null> {
     try {
       const framework = String(session.framework ?? '');
       // ── Codex path ──
@@ -932,24 +932,45 @@ export class AgentServer {
         return null;
       }
       // ── Claude path ──
-      const claudeId = session.claudeSessionId;
-      if (claudeId) {
-        const projectsDir = path.join(os.homedir(), '.claude', 'projects');
-        // Find the <claudeId>.jsonl transcript anywhere under projects/.
-        const stack = [projectsDir];
-        for (let guard = 0; guard < 10_000 && stack.length; guard++) {
-          const dir = stack.pop()!;
-          let entries: fs.Dirent[];
-          try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-          for (const e of entries) {
-            const full = path.join(dir, e.name);
-            if (e.isDirectory()) stack.push(full);
-            else if (e.name === `${claudeId}.jsonl`) {
-              const text = extractClaudeFinalMessage(fs.readFileSync(full, 'utf-8'));
+      // Two async lags after the session leaves the running list: (1)
+      // claudeSessionId is flushed to the session record by a hook, and (2)
+      // the transcript JSONL's FINAL assistant message is written progressively
+      // (the last block lands after the session exits). So poll the WHOLE
+      // resolve-id → read-transcript → extract chain until it yields content,
+      // not just until the id exists. Use the exact <claudeSessionId>.jsonl —
+      // never newest-by-mtime, since many Claude sessions run concurrently and
+      // mtime would grab an unrelated one.
+      const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+      // Claude Code writes transcripts at projectsDir/<encoded-cwd>/<claudeId>.jsonl
+      // — i.e. DEPTH 1. findClaudeTranscriptShallow scans only the immediate
+      // children (NOT a recursive walk): ~/.claude/projects can hold >10k nested
+      // dirs on a busy agent, so a guarded depth-first walk exhausts its budget
+      // deep in an unrelated subtree before reaching ours — the exact bug that
+      // made Stage-A capture silently return empty.
+      // Poll up to ~240s: the spawned session's listRunningSessions
+      // registration can lag (so the caller's completion-wait may exit at
+      // iteration 0, before the session even started), and claudeSessionId is
+      // only flushed to the session record when the session COMPLETES — which,
+      // under heavy concurrent load on this machine, can be 2+ minutes for a
+      // Stage-A haiku session. claudeSessionId appearing IS the completion
+      // signal; the transcript's final assistant block lands with it. Poll long
+      // enough to cover the session's own maxDuration (5 min) rather than race
+      // it. The mentor tick is async fire-and-forget, so the wait is fine.
+      for (let i = 0; i < 240; i++) {
+        let claudeId = session.claudeSessionId;
+        if (!claudeId) {
+          try { claudeId = this.state.getSession(session.id)?.claudeSessionId ?? undefined; } catch { /* best-effort */ }
+        }
+        if (claudeId) {
+          const tf = findClaudeTranscriptShallow(projectsDir, claudeId);
+          if (tf) {
+            try {
+              const text = extractClaudeFinalMessage(fs.readFileSync(tf, 'utf-8'));
               if (text && text.trim()) return text;
-            }
+            } catch { /* transcript mid-write; retry */ }
           }
         }
+        await new Promise((r) => setTimeout(r, 1000));
       }
       return null;
     } catch (err) {
@@ -1184,7 +1205,7 @@ export class AgentServer {
           // Robust capture: prefer the session's persisted transcript (clean
           // assistant prose) over the racy tmux-pane read. The pane read is
           // only a fallback for when no transcript is found.
-          const fromTranscript = self.extractMenteeReplyFromTranscript(session, spawnTs);
+          const fromTranscript = await self.extractMenteeReplyFromTranscript(session, spawnTs);
           if (fromTranscript && fromTranscript.trim()) reply = fromTranscript;
         } catch (err) {
           console.warn(
@@ -1448,6 +1469,7 @@ export class AgentServer {
         // Stage A spawns with the EMPTY tool grant (structural two-hats boundary,
         // §4); we bounded-wait for it to finish, then capture its transcript.
         spawnStageA: async (prompt: string): Promise<string> => {
+          const spawnTs = Date.now();
           const session = await self.sessionManager.spawnSession({
             name: `mentor-stage-a-${Date.now()}`,
             prompt,
@@ -1457,8 +1479,16 @@ export class AgentServer {
           });
           const tmux = session.tmuxSession;
           let finished = false;
+          let lastSnapshot = '';
           for (let i = 0; i < 90; i++) {
             const stillRunning = self.sessionManager.listRunningSessions().some((s) => s.id === session.id);
+            // Capture-while-alive: keep the last non-empty pane snapshot so a
+            // completed-then-reaped session still yields SOMETHING (tmux
+            // fallback). The Stage-A session produces its prompt ~8-10s in then
+            // completes + is reaped within ~2s, so a post-loop pane read races
+            // the reaper and returns empty.
+            const snap = self.sessionManager.captureOutput(tmux, 200) ?? '';
+            if (snap.trim()) lastSnapshot = snap;
             if (!stillRunning) { finished = true; break; }
             await new Promise((r) => setTimeout(r, 2000));
           }
@@ -1469,7 +1499,19 @@ export class AgentServer {
             try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
             throw new Error('stage-a-timeout: Stage-A session did not complete within the poll window');
           }
-          return self.sessionManager.captureOutput(tmux, 200) ?? '';
+          // Prefer the persisted transcript (clean prose, robust to the reap
+          // race) — Stage A is a Claude session; the helper re-fetches its
+          // claudeSessionId post-completion and reads that exact JSONL. Fall
+          // back to the captured pane snapshot only if no transcript is found.
+          console.log(`[stage-a-diag] session ${session.id} finished=${finished} framework=${session.framework} spawnClaudeId=${session.claudeSessionId} lastSnapshotLen=${lastSnapshot.length}`);
+          const fromTranscript = await self.extractMenteeReplyFromTranscript(
+            { id: session.id, claudeSessionId: session.claudeSessionId, framework: session.framework },
+            spawnTs,
+          );
+          console.log(`[stage-a-diag] transcript extract → ${fromTranscript ? `${fromTranscript.length} chars` : 'NULL'}`);
+          return (fromTranscript && fromTranscript.trim())
+            ? fromTranscript
+            : (lastSnapshot || (self.sessionManager.captureOutput(tmux, 200) ?? ''));
         },
         // Stage-B deep forensics (§3.2): assemble the mentee's real signals
         // (recent server-log errors/sentinel lines + a codex-rollout usage digest)
