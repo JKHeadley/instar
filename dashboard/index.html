@@ -795,24 +795,74 @@
     .ph-headline { font-size: 26px; font-weight: 600; line-height: 1.5; color: var(--text-bright); }
     .ph-subline { font-size: 18px; color: var(--text-dim); margin-top: 8px; line-height: 1.55; }
     .ph-section { display: flex; flex-direction: column; gap: 10px; }
-    .ph-h { font-size: 20px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
+    .ph-h { font-size: 20px; font-weight: 600; color: var(--text-bright); line-height: 1.5; margin: 0; }
+    .ph-h-sub { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin: 4px 0 4px 0; max-width: 720px; }
     .ph-empty { font-size: 18px; color: var(--text-dim); line-height: 1.6; }
-    .ph-card {
-      padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
-      display: flex; flex-direction: column; gap: 6px;
+    /* Page intro — one-sentence grounding right under the title so terms like
+       "it" / "the system" later in the page have a clear referent. */
+    .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
+    /* Status color tokens — calm, never alarming. The dot is a scan-aid:
+       glance the collapsed list, see which problems are still being worked
+       on (amber), cause known (blue), or worked out (green). */
+    .ph-status-dot {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      flex-shrink: 0; margin-top: 8px; background: var(--text-dim);
     }
+    .ph-status-dot.status-open      { background: #f59e0b; } /* amber: still looking */
+    .ph-status-dot.status-attributed{ background: #60a5fa; } /* soft blue: cause known */
+    .ph-status-dot.status-verified  { background: var(--ph-accent); }
+    .ph-status-dot.status-resolved  { background: var(--ph-accent); }
+    .ph-status-dot.status-closed    { background: #6b7280; } /* muted gray */
+    /* Labeled rows inside the expanded body — scaffolding, not paragraphs. */
+    .ph-label { font-weight: 600; color: var(--text); margin-right: 4px; }
+    .ph-value { color: var(--text-dim); }
+    /* Expandable items (captured problems + pattern cards): summary always
+       visible, body revealed on tap. Plain ELI16 inside both. */
+    .ph-item {
+      border: 1px solid var(--border); border-radius: 10px; padding: 0;
+      background: transparent;
+    }
+    .ph-item + .ph-item { margin-top: 10px; }
+    .ph-item-summary {
+      padding: 14px 44px 14px 16px; font-size: 18px; color: var(--text); line-height: 1.6;
+      cursor: pointer; list-style: none; position: relative;
+      display: flex; flex-direction: row; align-items: flex-start; gap: 12px;
+    }
+    .ph-item-text { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .ph-item-summary::-webkit-details-marker { display: none; }
+    /* Subtle chevron on the right edge — signals "tap to expand" without shouting. */
+    .ph-item-summary::after {
+      content: '▾'; position: absolute; right: 16px; top: 16px;
+      color: var(--text-dim); font-size: 16px; opacity: 0.8;
+    }
+    .ph-item[open] > .ph-item-summary::after { content: '▴'; opacity: 1; }
+    .ph-item[open] > .ph-item-summary { color: var(--text-bright); border-bottom: 1px solid var(--border); }
+    .ph-item-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+    .ph-item-row { font-size: 16px; color: var(--text-dim); line-height: 1.55; }
+    .ph-item-row.ph-card-rec { color: var(--text); }
+    .ph-item-inert { opacity: 0.7; }
+    /* Pattern-card-specific lines inside the summary stack. */
     .ph-card-summary { font-size: 18px; color: var(--text-bright); line-height: 1.5; }
     .ph-card-frame { font-size: 15px; color: var(--text-dim); font-style: italic; }
-    .ph-card-rec { font-size: 17px; color: var(--text); line-height: 1.55; }
-    .ph-card-evidence { font-size: 15px; color: var(--text-dim); }
-    .ph-record { font-size: 18px; color: var(--text); line-height: 1.6; padding: 5px 0; }
-    .ph-record-inert { color: var(--text-dim); }
-    .ph-stage { display: flex; align-items: baseline; gap: 10px; font-size: 18px; padding: 3px 0; color: var(--text-dim); line-height: 1.5; }
-    .ph-stage-here { color: var(--text-bright); }
+    /* Maturation track: each stage is also an expandable row. */
+    .ph-stage {
+      padding: 4px 0; line-height: 1.5; color: var(--text-dim);
+    }
+    .ph-stage-summary {
+      display: flex; align-items: baseline; gap: 10px; font-size: 18px;
+      cursor: pointer; list-style: none; padding: 4px 0; position: relative;
+    }
+    .ph-stage-summary::-webkit-details-marker { display: none; }
+    .ph-stage-summary::after {
+      content: '▾'; margin-left: auto; color: var(--text-dim); font-size: 12px; opacity: 0.4;
+    }
+    .ph-stage[open] > .ph-stage-summary::after { content: '▴'; opacity: 0.8; }
+    .ph-stage-here > .ph-stage-summary { color: var(--text-bright); }
     .ph-stage-glyph { color: var(--text-dim); }
     .ph-stage-here .ph-stage-glyph { color: var(--ph-accent); }
     .ph-stage-marker { color: var(--ph-accent); font-size: 15px; }
     .ph-stage-note { color: var(--text-dim); font-size: 15px; }
+    .ph-stage-body { font-size: 16px; color: var(--text-dim); line-height: 1.55; padding: 6px 0 6px 26px; }
     .ph-detail { margin-top: 4px; }
     .ph-detail-summary { font-size: 17px; color: var(--text-dim); cursor: pointer; }
     .ph-detail-body { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
@@ -3063,21 +3113,25 @@
         <h2 class="ph-title">Process Health</h2>
         <div id="phStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
+      <p class="ph-intro">A quiet look at what the failure-watching system has spotted in this agent’s recent work — problems it’s caught, any patterns that keep coming up, and how far the system is switched on for this agent.</p>
       <div id="phHeadline" class="ph-headline-wrap" aria-live="polite"></div>
       <section class="ph-section">
-        <h3 class="ph-h">Patterns to know about</h3>
+        <h3 class="ph-h">Recurring patterns</h3>
+        <p class="ph-h-sub">Kinds of problem that have come up more than once across different changes.</p>
         <div id="phPatterns"></div>
       </section>
       <section class="ph-section">
-        <h3 class="ph-h">What’s been captured</h3>
+        <h3 class="ph-h">Problems it’s noticed lately</h3>
+        <p class="ph-h-sub">Individual things the system has caught. When the same kind keeps repeating, it shows up as a pattern above.</p>
         <div id="phCaptured"></div>
       </section>
       <section class="ph-section">
-        <h3 class="ph-h">Maturation</h3>
+        <h3 class="ph-h">How far the system is switched on</h3>
+        <p class="ph-h-sub">Where this agent sits on the rollout — from "off" to "on for everyone by default".</p>
         <div id="phMaturation"></div>
       </section>
       <details class="ph-detail">
-        <summary class="ph-detail-summary">Detail</summary>
+        <summary class="ph-detail-summary">More detail</summary>
         <div id="phDetail" class="ph-detail-body"></div>
       </details>
     </div>
