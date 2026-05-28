@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeConfigWithSecrets } from './SecretMigrator.js';
+import { resolveStateDir } from './InstarRuntimeRoot.js';
 import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
 
@@ -602,8 +603,17 @@ export function resolveAgentDir(nameOrPath?: string): string {
 
 export function loadConfig(projectDir?: string): InstarConfig {
   const resolvedProjectDir = projectDir || detectProjectDir();
-  const configPath = path.join(resolvedProjectDir, '.instar', 'config.json');
-  const stateDir = path.join(resolvedProjectDir, '.instar');
+  // Two-layer runtime-root resolution (macOS 26 TCC relocation, Scope A):
+  //  - boot layer: when INSTAR_RUNTIME_ROOT is set (the launchd-spawned
+  //    server/lifeline parses --runtime-root into it), the state dir is that
+  //    absolute Library path — the boot path NEVER traverses a Documents-
+  //    resident `.instar` symlink (a readlink under Documents EPERMs on 26).
+  //  - consented layer: otherwise <projectDir>/.instar, which the OS follows
+  //    transparently if it's a relocation symlink, or is the real dir if not.
+  // For every non-relocated / non-boot caller this is identical to the prior
+  // `join(resolvedProjectDir, '.instar')` behavior.
+  const stateDir = resolveStateDir(resolvedProjectDir);
+  const configPath = path.join(stateDir, 'config.json');
 
   // Load config file if it exists
   let fileConfig: Partial<InstarConfig> = {};
