@@ -49,6 +49,19 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > rewrites the plist is the next increment; until then `installMacOSLaunchAgent`
 > is called with no `runtimeRoot` (legacy behavior) everywhere.
 
+> **Increment 4 (EscalationSpool — Scope C foundation):** adds
+> `src/core/EscalationSpool.ts` — the machine-level (`~/.instar/`, outside any
+> TCC folder) durable JSONL queue of outage pages, with one-shot-per-episode
+> dedup keyed on the STABLE `label + firstDetectedDown` anchor (persisted in
+> `~/.instar/escalation-episodes/` so it survives ticks even when the agent's
+> own state dir is locked). Entries carry NO secret — routing + cause +
+> remediation only. `firstDetectedDown`/`clearEpisode` manage episode lifecycle;
+> `appendEscalation` dedups; `markDelivered` is idempotent; reads tolerate
+> malformed lines. Atomic 0600 writes. 10 unit tests incl. dedup, new-episode-
+> after-recovery, mode-0600, stable-anchor, malformed-line tolerance. **Not yet
+> consumed** — the migrator's EPERM-blocked branch + the watchdog (Scope B) + the
+> consented drain (Scope C delivery) wire to it in later increments.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
