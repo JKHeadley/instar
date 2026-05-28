@@ -439,6 +439,11 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   async initializeLease(): Promise<void> {
     if (!this.leaseCoordinator) return;
+    // Prime from the durable medium FIRST so this boot's failover-eligibility
+    // check sees the holder's current heartbeat — not a stale seed `lastSeen`
+    // that a freshly-joined standby would misread as "holder dead" and grab the
+    // live holder's lease (verified live on a two-machine mesh, 2026-05-28).
+    this.leaseCoordinator.primeFromDurable();
     await this.leaseCoordinator.acquireIfEligible();
     this.reconcileRoleToLease('lease-init');
   }

@@ -89,3 +89,16 @@ normal routing). Opt out with `multiMachine.exactlyOnceIngress: false`.
 
 **Rollback:** set the default back to `?? false` (one line) — fully reversible,
 no data migration.
+
+## Addendum 2 — fresh-join lease-grab fix (bug #7, 2026-05-28)
+
+`src/core/LeaseCoordinator.ts` + `GitLeaseStore.ts` + `MultiMachineCoordinator.ts`:
+a freshly-joined/booted standby evaluated failover-eligibility against a STALE
+seed `lastSeen` for the live holder, presumed it dead, and grabbed its lease
+(found driving the live handoff demo). Fix: `LeaseStore.syncDown()` (pull, no
+write) + `LeaseCoordinator.primeFromDurable()`, called once in
+`initializeLease()` before the first `acquireIfEligible()`, so the boot decision
+sees the holder's CURRENT heartbeat. Split-brain CAS gate untouched; steady-state
+ticks already self-correct — this only closes the boot-time stale-data window.
+Test: `tests/unit/lease-fresh-join-prime.test.ts` (with-vs-without priming).
+Rollback: revert; no data/schema change.
