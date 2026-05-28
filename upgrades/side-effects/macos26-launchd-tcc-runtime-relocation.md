@@ -10,6 +10,24 @@
 > (`migrateRuntimeRoot`, `installMacOSLaunchAgent` rewrite, `relocate.ts`,
 > watchdog, credential, FDA bootstrap) extend this artifact in-place as they land.
 
+> **Increment 2 (RuntimeRelocator engine):** adds `src/core/RuntimeRelocator.ts`
+> — the transactional whole-tree move (`.instar` → runtime root via atomic
+> same-volume `rename()`, verify, rollback-by-rename, symlink-back, sentinel-last)
+> + helpers (`sweepStalePartials`, `verifyRuntimeRoot`, `sameVolume`). **NOT YET
+> WIRED** — `migrateRuntimeRoot` (the orchestrator that gates detection, runs the
+> EPERM probe, calls this engine, and rewrites the plist) is the next increment;
+> until then this engine is reachable only from its tests. **Tracked deviation
+> (Rule 4 — architectural refinement):** the converged spec described "build in
+> `<root>.partial`, verify, atomic rename." Implementation uses a *whole-directory
+> atomic `rename()`* for the same-volume case instead — instant, atomic, moves
+> shadow-install for free, and eliminates the partial-copy/dual-copy class
+> entirely (one tree, new path). The `.partial` copy+verify path is retained for
+> the cross-volume fallback (rename EXDEVs across volumes), which currently
+> returns a typed error so the orchestrator can surface `relocate-needs-network`
+> (OQ4, defensive). Rollback is the inverse rename. 9 unit tests incl. happy-path
+> move, one-live-copy, verify-fail rollback (probe + missing-config), double-
+> relocate refusal, non-empty-root refusal.
+
 ## Summary of the change
 
 Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an agent's runtime should live so launchd can always reach it (`~/Library/Application Support/instar/<name>-<hash>/` on macOS, `~/.local/share/instar/...` on Linux), detects whether a directory is under a TCC-protected user folder (Documents/Desktop/Downloads/iCloud), reads the persisted `relocate.json` record, and exposes `resolveStateDir(projectDir, env)` — the two-layer pointer (boot layer reads `INSTAR_RUNTIME_ROOT`; consented layer uses `<projectDir>/.instar`). Wires `loadConfig` (`src/core/Config.ts`) to derive `stateDir`/`configPath` from `resolveStateDir` instead of an inline `path.join(projectDir, '.instar')`. The module has NO filesystem side effects (no moves) — relocation itself is a later increment. Files: `src/core/InstarRuntimeRoot.ts` (new), `src/core/Config.ts` (resolver wiring + import), `tests/unit/InstarRuntimeRoot.test.ts` (new, 19 tests).
