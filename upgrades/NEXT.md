@@ -4,6 +4,10 @@
 
 ## What Changed
 
+`SourceTreeGuard` `sourceTreeReadOk` opt extended to `readSync` (defense-in-depth source-tree check on the read path) + `SOURCE_TREE_READ_TIER_VERBS` expanded to cover the canonical-ref read path the watchdog and reconciler use (`rev-parse`, `ls-tree`, `show`, `log`, `cat-file`, `merge-base`, `remote`). Caught dogfooding Echo on v1.3.38: the previous fix only opened `execSync` to `fetch`, but every downstream readonly verb still tripped the guard. With this PR landed, the watchdog completes a real tick against the agent's own instar source.
+
+---
+
 Self-Propagation, Part 2 v1 — the **`/test-as-self` skill**: a deterministic post-deploy verifier for a throwaway agent home. Reads the Part 1 poll-ownership lease (present / fresh / well-formed / tokenHash-only security check), greps the server log for the Part 1 demote line (proves Part 1 actually fired in the live deploy — not just shipped), and tails the server + lifeline logs for the actual crash signatures (heap-OOM / `CheckIneffectiveMarkCompact` / Abort trap / libc++abi / SIGABRT — the signatures the 2026-05-27 mmtest diagnosis had wrong). Emits a single JSON report; exit 0 = all PASS; 1 = fail or crash detected.
 
 Includes a runbook (`SKILL.md`) for the tight deploy recipe and an explicit list of what v1 does NOT do (auto-mint bot, full Playwright Telegram round-trip, one-button command — those ship in Part 2.1 under the same approved spec).
@@ -12,7 +16,8 @@ Pairs with Part 1 (the structural poll-ownership lease, shipping in #446).
 
 ## What to Tell Your User
 
-- A new `/test-as-self` skill that runs a deterministic check on a throwaway test deploy — verifies Part 1's structural fix actually fired in practice, and captures any crash signature for you instead of you guessing from log forensics.
+- A new test-as-self skill that runs a deterministic check on a throwaway test deploy — verifies Part 1's structural fix actually fired in practice, and captures any crash signature for you instead of you guessing from log forensics.
+- I can finally complete a real release-readiness watchdog tick against my own checkout. The first dogfood attempt caught a real safety-guard interaction; this update closes the loop so the watchdog can read what it needs without bypassing the broader policy.
 
 ## Summary of New Capabilities
 

@@ -152,12 +152,13 @@ export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalSc
   const canonicalHeadSha = SafeGitExecutor.run(['rev-parse', 'FETCH_HEAD'], {
     cwd: opts.repoPath,
     operation: 'featureRolloutScan:canonicalRevParse',
+    sourceTreeReadOk: true,
   }).trim();
 
   // 2) Enumerate spec files on main.
   const lsSpecs = SafeGitExecutor.run(
     ['ls-tree', '-r', '--name-only', canonicalHeadSha, '--', 'docs/specs/'],
-    { cwd: opts.repoPath, operation: 'featureRolloutScan:lsSpecs' },
+    { cwd: opts.repoPath, operation: 'featureRolloutScan:lsSpecs', sourceTreeReadOk: true },
   );
   const specPaths = lsSpecs.split('\n').map((s) => s.trim()).filter((p) => p.endsWith('.md') && !p.endsWith('.eli16.md'));
 
@@ -166,14 +167,14 @@ export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalSc
   try {
     lsTraces = SafeGitExecutor.run(
       ['ls-tree', '-r', '--name-only', canonicalHeadSha, '--', '.instar/instar-dev-traces/'],
-      { cwd: opts.repoPath, operation: 'featureRolloutScan:lsTraces' },
+      { cwd: opts.repoPath, operation: 'featureRolloutScan:lsTraces', sourceTreeReadOk: true },
     );
   } catch { /* traces dir may not exist on main yet */ }
   const tracesByPath = new Map<string, TraceInfo>();
   for (const tp of lsTraces.split('\n').map((s) => s.trim()).filter((p) => p.endsWith('.json'))) {
     try {
       const blob = SafeGitExecutor.run(['show', `${canonicalHeadSha}:${tp}`], {
-        cwd: opts.repoPath, operation: 'featureRolloutScan:traceBlob',
+        cwd: opts.repoPath, operation: 'featureRolloutScan:traceBlob', sourceTreeReadOk: true,
       });
       const t = JSON.parse(blob);
       if (typeof t.specPath === 'string') {
@@ -192,7 +193,7 @@ export function scanSpecArtifactsCanonical(opts: CanonicalScanOpts): CanonicalSc
     let content: string;
     try {
       content = SafeGitExecutor.run(['show', `${canonicalHeadSha}:${specPath}`], {
-        cwd: opts.repoPath, operation: 'featureRolloutScan:specBlob',
+        cwd: opts.repoPath, operation: 'featureRolloutScan:specBlob', sourceTreeReadOk: true,
       });
     } catch { continue; }
     const fm = parseSpecFrontmatter(content);
