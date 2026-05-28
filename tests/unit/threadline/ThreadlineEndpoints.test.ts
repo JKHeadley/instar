@@ -7,8 +7,25 @@ import express from 'express';
 import request from 'supertest';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../../../src/threadline/ThreadlineEndpoints.js';
-import { sign } from '../../../src/threadline/ThreadlineCrypto.js';
+import { sign, generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+
+/** Write a canonical (unencrypted) identity.json into a state dir and return its expected fingerprint. */
+function writeCanonicalIdentity(stateDir: string): { fingerprint: string; publicKeyHex: string } {
+  fs.mkdirSync(stateDir, { recursive: true });
+  const kp = generateIdentityKeyPair();
+  fs.writeFileSync(
+    path.join(stateDir, 'identity.json'),
+    JSON.stringify({
+      publicKey: kp.publicKey.toString('base64'),
+      privateKey: kp.privateKey.toString('base64'),
+      privateKeyEncryption: 'none',
+      createdAt: new Date().toISOString(),
+    }, null, 2),
+  );
+  return { fingerprint: computeFingerprint(kp.publicKey), publicKeyHex: kp.publicKey.toString('hex') };
+}
 
 describe('ThreadlineEndpoints', () => {
   let tmpDir: string;
@@ -32,6 +49,7 @@ describe('ThreadlineEndpoints', () => {
     appA.use(createThreadlineRoutes(managerA, null, {
       localAgent: 'agent-a',
       version: '1.0',
+      stateDir: stateDirA,
     }));
 
     appB = express();
@@ -39,6 +57,7 @@ describe('ThreadlineEndpoints', () => {
     appB.use(createThreadlineRoutes(managerB, null, {
       localAgent: 'agent-b',
       version: '1.0',
+      stateDir: stateDirB,
     }));
   });
 
@@ -63,6 +82,41 @@ describe('ThreadlineEndpoints', () => {
     it('sets correct content type', async () => {
       const res = await request(appA).get('/threadline/health');
       expect(res.headers['content-type']).toContain('application/threadline+json');
+    });
+
+    // THREADLINE-IDENTITY-DISCOVERY-UNIFICATION: health must advertise the
+    // canonical routing identity (the address the relay answers to), with
+    // identityPub and fingerprint internally consistent.
+    it('reports the canonical routing fingerprint + consistent identityPub when an identity exists', async () => {
+      const stateDir = path.join(tmpDir, 'agent-canonical');
+      const expected = writeCanonicalIdentity(stateDir);
+
+      const app = express();
+      app.use(express.json());
+      app.use(createThreadlineRoutes(new HandshakeManager(stateDir, 'agent-canonical'), null, {
+        localAgent: 'agent-canonical',
+        version: '1.0',
+        stateDir,
+      }));
+
+      const res = await request(app).get('/threadline/health');
+      expect(res.status).toBe(200);
+      expect(res.body.fingerprint).toBe(expected.fingerprint);
+      expect(res.body.identityPub).toBe(expected.publicKeyHex);
+      // Internal consistency: fingerprint === computeFingerprint(identityPub)
+      expect(computeFingerprint(Buffer.from(res.body.identityPub, 'hex'))).toBe(res.body.fingerprint);
+    });
+
+    // No-fabrication boundary: no canonical identity → fall back to the
+    // handshake key and OMIT the fingerprint (never invent a dead address).
+    it('omits fingerprint and falls back to the handshake key when no routing identity exists', async () => {
+      // appA's stateDirA has no canonical identity.json (only the handshake manager key).
+      const res = await request(appA).get('/threadline/health');
+      expect(res.status).toBe(200);
+      expect(res.body.fingerprint).toBeUndefined();
+      // Falls back to the handshake-layer key so existing behavior is preserved.
+      expect(res.body.identityPub).toBeDefined();
+      expect(res.body.identityPub).toHaveLength(64);
     });
   });
 

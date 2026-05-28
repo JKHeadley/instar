@@ -12993,6 +12993,7 @@ export function createRoutes(ctx: RouteContext): Router {
       {
         localAgent: ctx.config.projectName,
         version: '1.0',
+        stateDir: ctx.config.stateDir,
       },
     );
     router.use(threadlineRoutes);
