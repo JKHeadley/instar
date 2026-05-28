@@ -6708,6 +6708,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Start SleepWakeDetector (re-validate sessions on wake)
     const { SleepWakeDetector } = await import('../core/SleepWakeDetector.js');
     const sleepWakeDetector = new SleepWakeDetector();
+    // §P0 #9 (SE-8): give the scheduler's wake-reaper a cumulative-sleep view
+    // (not the single last sleep event) so a job that spanned multiple sleeps
+    // isn't reaped early.
+    if (scheduler) {
+      scheduler.setCumulativeSleepProvider((a, b) => sleepWakeDetector.getCumulativeSleepMsBetween(a, b));
+    }
     sleepWakeDetector.on('wake', async (event: { sleepDurationSeconds: number; timestamp: string }) => {
       console.log(`[SleepWake] Wake detected after ~${event.sleepDurationSeconds}s sleep`);
 
@@ -6784,7 +6790,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       let reapResult: { reaped: string[]; skipped: number } = { reaped: [], skipped: 0 };
       try {
         if (scheduler) {
-          reapResult = scheduler.reapStuckRuns(event);
+          reapResult = await scheduler.reapStuckRuns(event);
         }
       } catch (err) {
         console.error('[SleepWake][reaper] unexpected error:', err);

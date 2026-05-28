@@ -32,6 +32,14 @@ const serverSource = fs.readFileSync(
   path.join(process.cwd(), 'src/commands/server.ts'),
   'utf-8',
 );
+const schedulerSource = fs.readFileSync(
+  path.join(process.cwd(), 'src/scheduler/JobScheduler.ts'),
+  'utf-8',
+);
+const sleepWakeSource = fs.readFileSync(
+  path.join(process.cwd(), 'src/core/SleepWakeDetector.ts'),
+  'utf-8',
+);
 
 describe('Phase 2 — per-killer routing contracts', () => {
   describe('#5 SessionWatchdog → ReapAuthority', () => {
@@ -121,6 +129,35 @@ describe('Phase 2 — per-killer routing contracts', () => {
       // The bypass is scoped to the recovery-in-flight reason, not the whole guard.
       expect(sessionManagerSource).toContain('bypassRecoveryFlag');
       expect(sessionManagerSource).toMatch(/blocked\?\.reason\s*===\s*'recovery-in-flight'/);
+    });
+  });
+
+  describe('#9 wake-reaper → P1/P2 + cumulative sleep + ReapAuthority', () => {
+    it('reapStuckRuns is async and uses CUMULATIVE sleep (SE-8), not the single last event', () => {
+      expect(schedulerSource).toMatch(/async reapStuckRuns/);
+      // The cumulative-sleep provider is consulted with [runStartMs, now).
+      expect(schedulerSource).toMatch(/cumulativeSleepProvider\?\.\(runStartMs, now\)/);
+      // Effective elapsed = elapsed − cumulative sleep.
+      expect(schedulerSource).toMatch(/effectiveElapsed\s*=\s*elapsedMs\s*-\s*cumulativeSleepMs/);
+    });
+
+    it('the P1/P2 gate keeps a session whose process is still producing work — regardless of clock', () => {
+      // Before any kill, hasActiveProcesses is consulted; on true the reaper
+      // keeps the session (the spec: "a progressing process is KEEP regardless
+      // of clock").
+      expect(schedulerSource).toMatch(/sessionManager\.hasActiveProcesses\?\.\(sessionName\)/);
+      expect(schedulerSource).toMatch(/P1\/P2 work-check found active children/);
+    });
+
+    it('routes the kill through terminateSession with disposition:terminal when tracked', () => {
+      expect(schedulerSource).toMatch(/terminateSession\?\.\(\s*tracked\.id\s*,\s*'wake-reaper'/);
+      expect(schedulerSource).toContain("disposition: 'terminal'");
+      expect(schedulerSource).toContain("finalStatus: 'killed'");
+    });
+
+    it('SleepWakeDetector exposes the cumulative-sleep accessor + server wires it', () => {
+      expect(sleepWakeSource).toMatch(/getCumulativeSleepMsBetween\(/);
+      expect(serverSource).toMatch(/setCumulativeSleepProvider/);
     });
   });
 });
