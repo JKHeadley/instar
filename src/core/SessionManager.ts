@@ -396,6 +396,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Update a session's display `name` only (UNIFIED-SESSION-LIFECYCLE bonus —
+   * session label follows topic rename). NEVER touches `tmuxSession` (the
+   * stable key tmux + every internal lookup uses) or `id` (the stable UUID
+   * state lookups use). The rename surfaces in the dashboard + any place that
+   * prints `session.name`; the operational identity stays intact.
+   *
+   * Idempotent + safe: if the session isn't found or the name is unchanged,
+   * the call is a no-op. Returns true when a save occurred.
+   */
+  renameSessionByTmux(tmuxSession: string, newName: string): boolean {
+    if (!newName || typeof newName !== 'string') return false;
+    const trimmed = newName.trim();
+    if (!trimmed) return false;
+    const session = this.state.listSessions().find((s) => s.tmuxSession === tmuxSession);
+    if (!session) return false;
+    if (session.name === trimmed) return false;
+    session.name = trimmed;
+    this.state.saveSession(session);
+    return true;
+  }
+
+  /**
    * Resolve tri-state liveness for many sessions from ONE tmux snapshot via the
    * P1 oracle (UNIFIED-SESSION-LIFECYCLE §P5 backstop). `reachable` is false when
    * the snapshot was non-authoritative (control plane unreachable) — in which

@@ -3309,6 +3309,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
 
+      // UNIFIED-SESSION-LIFECYCLE bonus — session label follows topic rename.
+      // When the user renames a Telegram forum topic, update the bound
+      // session's display `name` ONLY (never tmuxSession or id). Fire-and-
+      // forget; rename-display is non-critical.
+      telegram.setTopicRenamedHandler((topicId, newName) => {
+        const tmuxSession = telegram?.getSessionForTopic(topicId);
+        if (!tmuxSession) return;
+        const renamed = sessionManager.renameSessionByTmux(tmuxSession, newName);
+        if (renamed) {
+          console.log(`[session-rename] Updated bound session "${tmuxSession}" display name → "${newName}" (topic ${topicId})`);
+        }
+      });
+
       // Threadline → Telegram bridge — mirrors inbound/outbound threadline
       // messages into per-thread Telegram topics. Default-OFF; the relay
       // handler below and the threadline_send tool consult bridge.mirror*

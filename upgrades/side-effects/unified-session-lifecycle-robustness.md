@@ -362,3 +362,71 @@ SleepWakeDetector cumulative (6, new) + Phase-2 wiring (14) green; typecheck cle
 
 **Rollback:** revert this commit. `getCumulativeSleepMsBetween` becomes unused
 but harmless.
+
+## Phase 3 — Commit #7: quota soft-check (bounded, force-kill via ReapAuthority)
+
+**Files:** `src/monitoring/SessionMigrator.ts`, `src/monitoring/QuotaManager.ts`,
+`tests/unit/session-lifecycle-phase-3-wiring.test.ts` (new).
+
+The quota migrator's force-kill path now goes through the single ReapAuthority,
+and grants a bounded extra-grace round to working sessions — without ever
+letting that grace push real usage to 100%/lockout.
+
+1. **Bounded soft-check (SE-9).** New `MigrationThresholds`:
+   `softCheckEnabled` (default true), `softCheckMaxUsagePercent` (default 95),
+   `softCheckExtraGraceMs` (default = `gracePeriodMs`). The kill loop computes
+   `softCheckActive = softEnabled && currentUsagePct ≤ softCeilingPct`. **Above**
+   the ceiling the soft check is **disabled** — quota's final authority cannot
+   be undermined when usage is already near 100%. When unknown,
+   `quotaUsagePercent` falls back to **100** (fail-closed posture: no grace
+   without proof we're below the ceiling).
+2. **One extra Ctrl+C grace round.** When the soft check is active AND
+   `isBuildOrAutonomousActive()` returns true, the session gets ONE more C-c +
+   `softCheckExtraGraceMs` wait before force-kill. The current implementation
+   uses a coarse signal — `state/build/build-state.json` fresh OR any
+   `autonomous/*.local.md` fresh under 30 min — which trades per-topic
+   precision for simplicity (the ceiling backstop bounds the worst case).
+3. **Route through ReapAuthority.** The force-kill goes through
+   `deps.terminateSession(id, 'quota-shed', { disposition: 'terminal',
+   finalStatus: 'killed' })` so the §P3 notifier surfaces "your session was
+   shut down — quota-shed" and the reap-log records it. Falls back to
+   `deps.killSession` only if `terminateSession` is unwired (older agents).
+4. **Tier-1 supervision seam.** A new `quota-force-kill-decision` event is
+   emitted with `{ tmuxSession, sessionId, jobSlug, currentUsagePct,
+   softCheckActive, workingSoftCheckFired }` so a future Haiku-wrapping
+   supervisor can validate the policy decision. The event is observability,
+   not a gate — the kill still happens.
+
+**Tests:** session-migrator existing (37) + Phase-3 wiring (6) green; typecheck clean.
+
+**Rollback:** revert this commit. The new thresholds default to safe values and
+the migrator dep stays optional, so older callers are unaffected.
+
+## Phase 3 — Commit (bonus): session label follows topic rename
+
+**Files:** `src/core/SessionManager.ts`, `src/messaging/TelegramAdapter.ts`,
+`src/commands/server.ts`, `tests/unit/session-rename-by-tmux.test.ts` (new),
+`tests/unit/session-lifecycle-phase-3-wiring.test.ts`.
+
+When the user renames a Telegram forum topic, the bound session's DISPLAY name
+follows the rename — but the operational identity (`tmuxSession` key + `id`
+UUID) stays intact, as the spec requires.
+
+1. **`SessionManager.renameSessionByTmux(tmuxSession, newName)`** — updates
+   `session.name` ONLY. NEVER touches `tmuxSession` (the tmux key + every
+   internal lookup) or `id` (state lookups). Idempotent; safe on unknown
+   tmuxSession; rejects empty / whitespace-only / non-string names.
+2. **`TelegramAdapter.setTopicRenamedHandler`** — wires a fire-and-forget
+   callback fired ONLY on a true rename (`forum_topic_edited` present AND the
+   name changed). Initial-capture and topic-creation cases do not fire.
+3. **server.ts wiring** — `setTopicRenamedHandler((topicId, newName) => {
+   sessionManager.renameSessionByTmux(telegram.getSessionForTopic(topicId), newName); })`.
+
+Because the renamed value is user-controlled, it flows through the same §P3
+sanitization (literal code spans) wherever it surfaces in user-facing notices.
+
+**Tests:** SessionManager rename (5) + Phase-3 wiring (9, including the bonus
+contracts) green; typecheck clean.
+
+**Rollback:** revert this commit; the handler stays optional, so older callers
+are unaffected.

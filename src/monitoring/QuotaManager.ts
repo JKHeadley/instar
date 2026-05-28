@@ -12,6 +12,8 @@
  */
 
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { QuotaTracker } from './QuotaTracker.js';
 import type { QuotaCollector, CollectionResult } from './QuotaCollector.js';
 import type { SessionMigrator, AccountSnapshot } from './SessionMigrator.js';
@@ -93,6 +95,40 @@ export interface QuotaManagerConfig {
   autoMigrate?: boolean;
   /** Allow JSONL-estimated data to trigger migration (default: false) */
   jsonlCanTriggerMigration?: boolean;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * §P0 #7 — does the agent have any active build or autonomous run RIGHT NOW?
+ * The soft-check uses this as a coarse "give working sessions one extra Ctrl+C
+ * grace round" signal. Fresh = mtime within 30 min. Errors → false (soft check
+ * silently falls back to straight force-kill, matching pre-Phase-3 behavior).
+ */
+function isBuildOrAutonomousActiveNow(stateDir: string): boolean {
+  const FRESH_MS = 30 * 60_000;
+  const fresh = (p: string): boolean => {
+    try {
+      if (!fs.existsSync(p)) return false;
+      return Date.now() - fs.statSync(p).mtimeMs < FRESH_MS;
+    } catch {
+      // @silent-fallback-ok — cannot stat ⇒ treat as not-active
+      return false;
+    }
+  };
+  if (fresh(path.join(stateDir, 'state', 'build', 'build-state.json'))) return true;
+  try {
+    const autonomousDir = path.join(stateDir, 'autonomous');
+    if (!fs.existsSync(autonomousDir)) return false;
+    for (const name of fs.readdirSync(autonomousDir)) {
+      if (!name.endsWith('.local.md')) continue;
+      if (fresh(path.join(autonomousDir, name))) return true;
+    }
+    return false;
+  } catch {
+    // @silent-fallback-ok — directory missing or unreadable ⇒ not-active
+    return false;
+  }
 }
 
 // ── QuotaManager class ───────────────────────────────────────────────
@@ -301,6 +337,25 @@ export class QuotaManager extends EventEmitter {
       },
       getAccountStatuses: () => switcher.getAccountStatuses() as AccountSnapshot[],
       switchAccount: (email) => switcher.switchAccount(email),
+      // §P0 #7 — route force-kill through the single ReapAuthority so the
+      // §P3 notifier fires + the reap-log records the `quota-shed` reason.
+      terminateSession: (sessionId, reason, opts) =>
+        sm.terminateSession(sessionId, reason, opts),
+      // §P0 #7 P2-style soft check (one extra Ctrl+C grace round on a working
+      // session). Build/autonomous-active = the same "structural long work"
+      // signal used by the SessionReaper KEEP-guard — a fresh build-state.json
+      // OR a fresh autonomous/*.local.md anywhere under the state dir. Coarse
+      // by design: when any active long-running work exists, all sessions get
+      // the soft grace (precision trades for simplicity here; quota's ceiling
+      // backstop ensures the soft check can never block above the ceiling).
+      isBuildOrAutonomousActive: () => isBuildOrAutonomousActiveNow(this.config.stateDir),
+      // §P0 #7 / SE-9 — the soft-check ceiling. quotaUsagePercent feeds the
+      // disable-above-ceiling check so the bounded soft-check can never push
+      // real usage to 100%/lockout.
+      // Unknown usage ⇒ assume 100% so the soft check stays disabled (we never
+      // want to grant grace when we cannot confirm we're below the ceiling —
+      // SE-9 fail-closed posture).
+      quotaUsagePercent: () => this.tracker.getState()?.usagePercent ?? 100,
     });
 
     // Recover from any in-progress migration that was interrupted
