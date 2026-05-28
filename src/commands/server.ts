@@ -8147,6 +8147,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             backlogAgeDaysHigh: rrCfg.backlogAgeDaysHigh,
             hysteresisHours: rrCfg.hysteresisHours,
             staleEpisodeTtlDays: rrCfg.staleEpisodeTtlDays,
+            escalateEvalFailures: rrCfg.escalateEvalFailures,
           });
           console.log(pc.green('  ReleaseReadinessSentinel enabled (release-hygiene watchdog — job-driven)'));
         } else {

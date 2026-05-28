@@ -133,21 +133,65 @@ describe('ReleaseReadinessSentinel', () => {
     expect(h.resolved[0].reason).toBe('cleared');
   });
 
-  it('fail-loud: raises a low-priority signal when the canonical fetch fails (deduped)', async () => {
+  // ─── fail-loud → housekeeping by default (sentinel-trio standard) ───
+  // The original watchdog posted a LOW-priority Attention item — and therefore
+  // a per-stage Telegram topic — on every evaluator-self-failure. That violated
+  // the sentinel-trio standard codified after the 2026-05-22 topic-spam flood.
+  // The new default routes those failures to audit-only (logs/sentinel-events.jsonl
+  // + server.log + the `eval-failed` event). User-facing escalation is opt-in
+  // via `escalateEvalFailures`.
+
+  it('fail-loud (housekeeping default): canonical-fetch failure audits but does NOT postAttention', async () => {
     h.fetchOk = false;
+    const evalFailed: Array<{ stage: string }> = [];
     const s = new ReleaseReadinessSentinel(h.deps());
+    s.on('eval-failed', (e) => evalFailed.push(e as { stage: string }));
+    await s.tick();
+    await s.tick(); // same failure → dedup keeps the audit but suppresses the event side-effects regardless
+    expect(h.posted).toHaveLength(0);
+    expect(h.audits.some((a) => a.event === 'eval-failed' && a.stage === 'fetch')).toBe(true);
+    // The first call emits eval-failed (event still fires so consumers can wire alerts);
+    // the second is deduped by lastFailureKey.
+    expect(evalFailed.map((e) => e.stage)).toEqual(['fetch']);
+  });
+
+  it('fail-loud (housekeeping default): analyzer null audits but does NOT postAttention', async () => {
+    h.analyzer = null;
+    const s = new ReleaseReadinessSentinel(h.deps());
+    await s.tick();
+    expect(h.posted).toHaveLength(0);
+    expect(h.audits.some((a) => a.event === 'eval-failed' && a.stage === 'analyzer')).toBe(true);
+  });
+
+  it('fail-loud (housekeeping default): user-actionable "release blocked" signal STILL posts to Attention', async () => {
+    // The escalateEvalFailures flag only gates evaluator-self-failures.
+    // The legitimate "unreleased commits piling up" signal must always reach
+    // the user — that's the whole reason the sentinel exists.
+    h.oldest = { sha: 'a'.repeat(40), dateMs: h.clock - 3 * DAY };
+    const s = new ReleaseReadinessSentinel(h.deps()); // default: escalateEvalFailures=false
+    await s.tick();
+    expect(h.posted).toHaveLength(1);
+    expect(h.posted[0].title).toContain('Release blocked');
+    expect(h.posted[0].priority).toBe('LOW');
+  });
+
+  it('fail-loud (escalateEvalFailures opt-in): canonical-fetch failure DOES postAttention (deduped)', async () => {
+    h.fetchOk = false;
+    const s = new ReleaseReadinessSentinel(h.deps(), { escalateEvalFailures: true });
     await s.tick();
     await s.tick(); // same failure → deduped
     expect(h.posted).toHaveLength(1);
     expect(h.posted[0].priority).toBe('LOW');
     expect(h.posted[0].title).toContain('could not evaluate');
+    expect(h.posted[0].id).toBe('release-readiness-eval-failure-fetch');
   });
 
-  it('fail-loud: raises a signal when the analyzer returns null', async () => {
+  it('fail-loud (escalateEvalFailures opt-in): analyzer null DOES postAttention', async () => {
     h.analyzer = null;
-    const s = new ReleaseReadinessSentinel(h.deps());
+    const s = new ReleaseReadinessSentinel(h.deps(), { escalateEvalFailures: true });
     await s.tick();
     expect(h.posted.some((p) => p.title.includes('could not evaluate'))).toBe(true);
+    expect(h.posted[0].id).toBe('release-readiness-eval-failure-analyzer');
   });
 
   it('hysteresis: does not re-raise the same sha within the window after a resolve', async () => {
