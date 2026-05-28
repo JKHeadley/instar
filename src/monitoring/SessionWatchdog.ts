@@ -274,7 +274,7 @@ export class SessionWatchdog extends EventEmitter {
     const existing = this.escalationState.get(tmuxSession);
 
     if (existing && existing.level > EscalationLevel.Monitoring) {
-      this.handleEscalation(tmuxSession, existing);
+      await this.handleEscalation(tmuxSession, existing);
       return;
     }
 
@@ -481,7 +481,7 @@ export class SessionWatchdog extends EventEmitter {
     this.emit('compaction-idle', tmuxSession);
   }
 
-  private handleEscalation(tmuxSession: string, state: EscalationState): void {
+  private async handleEscalation(tmuxSession: string, state: EscalationState): Promise<void> {
     const now = Date.now();
 
     if (!this.isProcessAlive(state.stuckChildPid)) {
@@ -531,12 +531,41 @@ export class SessionWatchdog extends EventEmitter {
         this.recordIntervention(tmuxSession, EscalationLevel.SigKill, `SIGKILL ${state.stuckChildPid}`, child);
         break;
 
-      case EscalationLevel.KillSession:
-        console.log(`[Watchdog] "${tmuxSession}": killing tmux session`);
-        this.killTmuxSession(tmuxSession);
-        this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'Killed tmux session', child);
+      case EscalationLevel.KillSession: {
+        // UNIFIED-SESSION-LIFECYCLE §P0 #5: route the final-level kill through the
+        // single ReapAuthority instead of the raw `tmux kill-session`. The
+        // authority consults the P2 KEEP-guard (relay-lease / active subagent /
+        // recent-user-message / etc.) and the awake-machine lease gate before any
+        // autonomous kill — so a session the guards would have kept survives a
+        // buggy watchdog, gains exactly-once sessionComplete/sessionReaped
+        // emission, and lands in the reap-log with its reason.
+        console.log(`[Watchdog] "${tmuxSession}": requesting session kill via ReapAuthority`);
+        const sess = this.sessionManager
+          .listRunningSessions()
+          .find((s) => s.tmuxSession === tmuxSession);
+        if (!sess) {
+          // Session already gone — nothing to kill.
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'session already gone', child);
+          this.escalationState.delete(tmuxSession);
+          break;
+        }
+        const result = await this.sessionManager.terminateSession(sess.id, 'watchdog-stuck', {
+          disposition: 'terminal',
+          finalStatus: 'killed',
+        });
+        if (result.terminated) {
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'terminated via ReapAuthority', child);
+        } else {
+          // The authority refused (protected / lease / a KEEP). Stand down — the
+          // guards own this decision; the §P5 backstop will surface a
+          // persistently-stale session for an operator decision rather than the
+          // watchdog re-escalating against a guarded session every tick.
+          console.log(`[Watchdog] "${tmuxSession}": kill refused — ${result.skipped} (standing down)`);
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, `kept (${result.skipped})`, child);
+        }
         this.escalationState.delete(tmuxSession);
         break;
+      }
     }
   }
 
@@ -860,11 +889,6 @@ export class SessionWatchdog extends EventEmitter {
     }
   }
 
-  private killTmuxSession(tmuxSession: string): void {
-    try {
-      shellExec(`${this.config.sessions.tmuxPath} kill-session -t "=${tmuxSession}" 2>/dev/null`);
-    } catch {}
-  }
 
   private recordIntervention(
     sessionName: string,
