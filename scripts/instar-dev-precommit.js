@@ -41,8 +41,28 @@ const MIN_ARTIFACT_CHARS = 200;
 // ─── Step 0: skip gate for merge commits ─────────────────────────────────
 // Merge commits integrate already-reviewed code from another branch/machine.
 // The side-effects review was done when those commits were originally authored.
-if (fs.existsSync(path.join(ROOT, '.git', 'MERGE_HEAD'))) {
-  process.exit(0);
+//
+// `.git` is a directory in a normal checkout but a gitlink-FILE in a worktree
+// (containing `gitdir: /absolute/path/to/the/real/git/dir`). The real
+// MERGE_HEAD lives in that real git dir, e.g.
+// `.git/worktrees/<worktree-name>/MERGE_HEAD`. Asking git for the resolved
+// git dir works in both layouts; hard-coding `path.join(ROOT, '.git', ...)`
+// fails to detect a merge in a worktree, which made the gate fire on every
+// worktree merge commit. We use `git rev-parse --git-dir` to dodge both.
+{
+  let gitDir = path.join(ROOT, '.git');
+  try {
+    const resolved = execSync('git rev-parse --git-dir', { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (resolved) {
+      gitDir = path.isAbsolute(resolved) ? resolved : path.join(ROOT, resolved);
+    }
+  } catch {
+    // Fall back to the literal `.git` join — at worst we miss the merge
+    // detection and the gate fires; we never falsely SKIP.
+  }
+  if (fs.existsSync(path.join(gitDir, 'MERGE_HEAD'))) {
+    process.exit(0);
+  }
 }
 
 // ─── Step 1: inspect staged files ────────────────────────────────────────
