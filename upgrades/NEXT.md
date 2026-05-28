@@ -45,6 +45,35 @@ config kill switch `monitoring.contextWedgeSentinel.enabled` (default true).
   one config switch, and it's on a track that will nag toward on-by-default once
   it's proven itself.
 
+## Evidence
+
+**Reproduction (live, 2026-05-28).** The `echo-instar-exo` session (topic 13481,
+the `mm-proof-build` worktree) fired a parallel Bash batch; one call
+(`rm -rf …/echo…`) was blocked by the source-tree guard, which cancelled the
+whole batch. With extended thinking on, that corrupted the latest assistant
+turn's thinking block.
+
+**Observed before.** Every subsequent inbound Telegram message produced, in the
+tmux pane, an instant:
+```
+⎿  API Error: 400 messages.9.content.20: `thinking` or `redacted_thinking` blocks
+   in the latest assistant message cannot be modified.
+✻ Cooked for 0s
+```
+The user sent "How is this looking?" twice over ~30 minutes and received only
+sentinel/standby replies — the session was a corpse, and the silence + socket
+sentinels never fired (output never went quiet; no disconnect string).
+
+**Observed after.** With ContextWedgeSentinel: the wedge is detected as the live
+tail and written to `logs/sentinel-events.jsonl` (`kind:detected` →
+`kind:escalated` in detect-only mode, or `kind:recovered` when autoRecovery is
+on). The e2e test (`tests/e2e/context-wedge-sentinel-lifecycle.test.ts`) drives
+the production assembly and reads those exact rows back from disk; the live
+recovery clears the topic's resume UUID so the respawn starts fresh (verified by
+`SessionRefresh.test.ts` asserting the kill→clear→respawn order). The original
+wedged session was recovered manually by killing it (the next message spawned
+clean), confirming the fresh-respawn approach before it was automated.
+
 ## Summary of New Capabilities
 
 - **ContextWedgeSentinel** — detects the thinking-block-400 fast-fail wedge as a
