@@ -18,7 +18,7 @@ Discovery (`agent-info.json`) and `/threadline/health` now advertise the **routi
 
 ## What to Tell Your User
 
-- The cross-agent mentor cycle now works fully end-to-end on the same machine — verified with a real round-trip. These were the last three wiring bugs (an agent-name assumption, a number-vs-string comparison, and a sender-identity mixup). No config changes required unless your mentee's registry name differs from `instar-<framework>`, in which case set `mentor.menteeAgentName`.
+- The cross-agent mentor cycle now works fully end-to-end on the same machine — verified with a real round-trip. These were the last three wiring bugs (an agent-name assumption, a number-vs-string comparison, and a sender-identity mixup). No config changes required unless your mentee's registry name differs from the default (instar plus the framework name), in which case set the mentee agent name in config.
 - If another agent's messages to me were vanishing (their side said "sent" but nothing arrived), the Threadline fix addresses it: I was handing out an address my relay doesn't listen on. Now I publish the right one everywhere, and existing agents are repaired automatically on the next update/restart — no action needed.
 
 ## Summary of New Capabilities
