@@ -210,3 +210,24 @@ still count toward the soft scheduler cap. Cleared the moment a session is verif
 **Tests:** StaleSessionBackstop (10: M-min escalation, no-re-raise-per-episode, heartbeat-not-progress,
 meaningful-advance/CPU/prompt-change progress, per-episode re-raise after recovery, global-unreachable
 dedup, long-indeterminate flag set+cleared, never-kills structural) green; typecheck clean.
+
+## Commit — Phase 1 test tiers (integration + e2e)
+
+**Files:**
+- `tests/integration/reap-log-route.test.ts` (new, 4) — GET /sessions/reap-log through the real
+  createRoutes pipeline: 503-when-unwired, 200 with reaped+skipped entries, ?limit tail, read-only
+  (POST/DELETE → 404).
+- `tests/integration/session-lifecycle-reap-wiring.test.ts` (new, 6) — the real SessionManager
+  terminateSession authority wired (as server.ts does) to ReapGuard + ReapNotifier + ReapLog, asserting
+  through the real emit path: autonomous terminal reap → log + exactly one notice; recovery-bounce →
+  logged-but-silent; operator → logged-silent + bypasses guard+protected; relay-lease KEEP → refused +
+  survives + logged 'skipped'; standby → refused + survives; protected → refused + survives.
+- `tests/e2e/reap-log-lifecycle.test.ts` (new, 3) — boots the REAL AgentServer: GET /sessions/reap-log
+  is alive (200 not 503), surfaces recorded entries, requires Bearer, read-only.
+
+**Reproduce-before-claim status (honest):** the boot-purge false-purge is reproduced at the unit tier
+(death-spiral-fixes — the 2026-05-27 9-of-9 incident now yields 0 purges); "one terminal reap → exactly
+one notice" and "guarded/standby/protected survive" are reproduced through the real SessionManager event
+path (integration); the route is proven alive on the real AgentServer (e2e). A full live boot with a
+deliberately-slowed tmux + a real Telegram notice landing was NOT performed in this environment — the
+test-tier reproductions stand in for it, and that gap is stated rather than papered over.
