@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -2789,6 +2790,13 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
   // Install /build skill from bundled file (too large for inline content)
   installBuildSkill(skillsDir);
 
+  // Install /test-as-self skill (Task 4 Part 2 of the silent-stalls postmortem) —
+  // ships SKILL.md + scripts/verify.mjs as bundled files. The verifier is a
+  // deterministic post-deploy check (lease present/fresh/well-formed/tokenHash-only
+  // + Part 1 demote logged + crash-tail). Lets agents reproduce the harness
+  // workflow + capture the REAL crash signature instead of post-hoc forensics.
+  installTestAsSelfSkill(skillsDir);
+
   // Install autonomous skill with hooks and scripts (special case — needs full directory structure)
   installAutonomousSkill(skillsDir);
 }
@@ -2831,6 +2839,62 @@ Use \`python3 playbook-scripts/build-state.py init "TASK" --size STANDARD\` to s
 
 See the full skill documentation at: https://github.com/sagemindai/instar
 `);
+}
+
+/**
+ * Install the /test-as-self skill (Task 4 Part 2, spec
+ * docs/specs/SELF-PROPAGATION-HARNESS-SPEC.md) — bundled SKILL.md + a
+ * verify.mjs helper script. Mirrors installBuildSkill: prefer bundled .claude/
+ * skills/test-as-self/* from the package, fall back to a minimal inline pointer
+ * if the bundled files aren't present (preserves a usable skill if packaging
+ * ever omits them).
+ *
+ * The bundled verify.mjs reads a deployed throwaway agent's
+ *   state/telegram-poll-owner.json (the Part 1 lease artifact)
+ * and grep's logs/server.log for the demote line + crash signatures, producing
+ * a deterministic JSON report. This is the structural piece that replaces
+ * post-hoc log forensics with a reproducible verifier.
+ */
+function installTestAsSelfSkill(skillsDir: string): void {
+  const skillDir = path.join(skillsDir, 'test-as-self');
+  const skillFile = path.join(skillDir, 'SKILL.md');
+  const scriptDir = path.join(skillDir, 'scripts');
+  const scriptFile = path.join(scriptDir, 'verify.mjs');
+
+  // Idempotent — only install missing files; preserve operator customizations.
+  const skillMissing = !fs.existsSync(skillFile);
+  const scriptMissing = !fs.existsSync(scriptFile);
+  if (!skillMissing && !scriptMissing) return;
+
+  const modDir = __dirname;
+  const bundledSkill = path.join(modDir, '..', '..', '.claude', 'skills', 'test-as-self', 'SKILL.md');
+  const bundledScript = path.join(modDir, '..', '..', '.claude', 'skills', 'test-as-self', 'scripts', 'verify.mjs');
+
+  if (skillMissing) {
+    fs.mkdirSync(skillDir, { recursive: true });
+    if (fs.existsSync(bundledSkill)) {
+      fs.copyFileSync(bundledSkill, skillFile);
+    } else {
+      fs.writeFileSync(skillFile, `---
+name: test-as-self
+description: Deploy the current instar dist into a throwaway agent home and verify health.
+metadata:
+  user_invocable: "true"
+---
+
+# /test-as-self
+
+See the full skill at https://github.com/sagemindai/instar (.claude/skills/test-as-self/SKILL.md).
+The bundled SKILL.md and scripts/verify.mjs were not present in this package layout.
+`);
+    }
+  }
+
+  if (scriptMissing && fs.existsSync(bundledScript)) {
+    fs.mkdirSync(scriptDir, { recursive: true });
+    fs.copyFileSync(bundledScript, scriptFile);
+    try { fs.chmodSync(scriptFile, 0o755); } catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -4510,44 +4574,13 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   }
   const hooks = settings.hooks as Record<string, unknown[]>;
 
-  // All instar-managed hooks for PreToolUse/Bash
-  const instarBashHooks = [
-    {
-      type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/dangerous-command-guard.sh "$TOOL_INPUT"',
-      blocking: true,
-    },
-    {
-      type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/grounding-before-messaging.sh "$TOOL_INPUT"',
-      blocking: false,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/deferral-detector.js',
-      timeout: 5000,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-communication-guard.js',
-      timeout: 5000,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/post-action-reflection.js',
-      timeout: 5000,
-    },
-  ];
-
-  // External operation gate hook — intercepts MCP tool calls for safety evaluation
-  const instarMcpHooks = [
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js',
-      blocking: true,
-      timeout: 5000,
-    },
-  ];
+  // All instar-managed hooks for PreToolUse/Bash + MCP. The canonical sets live
+  // in src/core/instarSettingsHooks.ts so the new-agent path (here) and the
+  // existing-agent path (PostUpdateMigrator.ensureInstarPreToolUseBashHooks)
+  // consume the SAME list and can never drift (the dark-guardrail gap, 2026-05-27).
+  // Fresh copies so later settings mutation never touches the shared constants.
+  const instarBashHooks = INSTAR_BASH_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
+  const instarMcpHooks = INSTAR_MCP_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
 
   // PreToolUse: merge instar hooks into existing or create fresh
   if (!hooks.PreToolUse) {

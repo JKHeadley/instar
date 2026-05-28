@@ -68,6 +68,12 @@ Long-running sessions accumulate a lot of activity. The session activity sentine
 
 The partitioner is the algorithm that decides where one episode ends and the next begins. It uses signals like topic switches, long pauses, explicit user marking, and job-boundary events.
 
+## Release readiness (instar-dev / maintainer environments)
+
+Components: `ReleaseReadinessSentinel`.
+
+A repo-gated watchdog that makes a stalled instar release impossible to miss. It evaluates canonical `main` and, when finished work sits unreleased while publishing is blocked, raises ONE deduped, age-escalating item on the Attention queue. Ships OFF (Echo dogfoods first); the `release-readiness-check` job drives it. Null on any install with no analyzable instar git repo. Routes: `GET /release-readiness`, `POST /release-readiness/tick`, `POST /release-readiness/rollback` (loud — raises a HIGH attention item + audits, never silent).
+
 ## Credential management
 
 Components: `SessionCredentialManager`, `ClaudeConfigCredentialProvider`, `KeychainCredentialProvider`, `BitwardenProvider`.

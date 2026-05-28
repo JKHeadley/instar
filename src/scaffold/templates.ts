@@ -462,6 +462,12 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through (and surfaces atRisk items), and the commitment-check job surfaces overdue ones.
 - **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment. NEVER improvise the follow-through with a raw \`sleep\`/background timer or by "remembering" — those do not survive a session ending, a restart, or compaction, so the promise is silently dropped. A registered commitment is the ONLY durable path. (This is distinct from the Evolution Action Queue / \`/commit-action\`, which tracks self-improvement items, not promises to the user.)
 
+**Failure-Learning Loop** — Dev-process failure forensics (instar self-hosting). When something you built breaks later, it's captured and traced back to the spec/initiative/project AND the dev toolchain that produced it; the analyzer surfaces process-gap patterns and opens human-approved tracked fixes, then verifies whether each fix actually reduced that failure class. Ships OFF (\`monitoring.failureLearning.enabled\`); registers itself on the initiative board.
+- Why features break / failure rate by tool / are our fixes working: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` — answer from here, never from memory.
+- List / inspect failures: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures\` · \`GET /failures/:id\` · discovered insights: \`GET /failures/insights\`
+- File a diagnosis (one-tap): \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" http://localhost:${port}/failures -H 'Content-Type: application/json' -d '{"summary":"<what broke>","initiativeId":"<board id it traces to>","severity":"medium"}'\`
+- **When to use** (PROACTIVE): when you diagnose a bug that traces to past work, file it so the pattern can be learned. The loop NEVER changes the process on its own — it opens a draft for your approval. It can never auto-implement (it never creates the record type the autonomous approver acts on). Distinct from the Evolution Action Queue (this produces the evidence + diagnosis that justify an action).
+
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`
 - Configure in \`.instar/config.json\`: \`{"tunnel": {"enabled": true, "type": "quick"}}\`
@@ -475,6 +481,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - View queue: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention\`
 - Resolve: \`curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/ATT-ID -H 'Content-Type: application/json' -d '{"status":"resolved","resolution":"Done"}'\`
 - **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.
+
+**Release Readiness** (instar-dev / maintainer environments only) — A repo-gated watchdog that makes a stalled instar release impossible to miss. It evaluates canonical \`main\`, and when finished work sits unreleased while publishing is blocked, raises ONE deduped, age-escalating item on the Attention queue. Ships OFF; the \`release-readiness-check\` job drives it. Null/503 on any install with no analyzable instar git repo.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness\` (state, open episodes, last tick/signal)
+- Run one check now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness/tick\`
+- Disable (loud — raises a HIGH attention item + audits, never silent): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness/rollback\` · re-arm: \`.../release-readiness/enable\`
 
 **Skip Ledger** — Track computational work to avoid repeating expensive operations. When a job or session processes items (files, messages, records), log what was processed so the next run can skip already-handled items.
 - View ledger: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger\`
@@ -554,6 +565,12 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - **Default config**: Browsing enabled for \`.claude/\` and \`docs/\`. Editing disabled by default — prompt the user to enable it for safe paths.
 - **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\` are always read-only regardless of config.
 - **Tunnel URL awareness**: Quick tunnel URLs change on restart. Frame file links as session-scoped unless using a named tunnel. Don't promise permanent URLs with quick tunnels.
+
+**Process Health (Dashboard Tab)** — A calm, human-readable window into the Failure-Learning Loop. The loop's findings are otherwise invisible (API-only); this tab shows, in plain English and large type, what's being watched, any patterns surfaced, and where the rollout sits.
+- **Where**: the "Process Health" tab in the dashboard. Refreshes itself quietly; nothing to run.
+- **What it shows**: an informational headline ("Watching — N issues recorded"), surfaced patterns (awareness-only — never auto-acted-on), recent captures as plain sentences, and the maturation track. A collapsed "Detail" drawer holds the aggregate counts.
+- **Proactive trigger**: when the user asks "is the loop noticing anything? / how's the rollout going? / what's it found?" → point them to the Process Health tab (give the dashboard URL + PIN). Do NOT paraphrase \`/failures*\` curl output at them — the tab IS the answer surface. Only read \`/failures/analysis\` yourself when you need the raw numbers for your own reasoning.
+- **Disabled note**: when \`monitoring.failureLearning.enabled\` is false the tab shows a friendly "not turned on yet" message, not an error.
 
 **Backup System** — Snapshot and restore agent state. Use before risky changes, after major progress, or to recover from corruption.
 - List snapshots: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/backups\`
@@ -678,6 +695,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 |----------|-------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
+| Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
 | Who do I work with? | \`.instar/USER.md\` |
 | What have I learned? | \`.instar/MEMORY.md\` |
 | What jobs do I have? | \`.instar/jobs.json\` or \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` |

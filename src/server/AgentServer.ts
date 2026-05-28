@@ -44,6 +44,9 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import { FailureLedger } from '../monitoring/FailureLedger.js';
+import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
@@ -61,6 +64,12 @@ import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { STAGE_A_ALLOWED_TOOLS } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
+import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { sendAgentMessage, A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
+import { AgentTelegramLedger, defaultLedgerPaths as defaultA2aLedgerPaths } from '../messaging/AgentTelegramLedger.js';
+import { ProcessedIdStore } from '../messaging/ProcessedIdStore.js';
+import { buildAgentMessageHook, type RoleHandler } from '../messaging/installAgentMessageHook.js';
+import { OutstandingPromptTracker } from '../scheduler/OutstandingPromptTracker.js';
 import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector } from '../monitoring/BurnDetector.js';
@@ -94,6 +103,21 @@ export class AgentServer {
   /** UTC day + run count for the per-day mentor cap (resets across days). */
   private mentorDayKey = '';
   private mentorRunsToday = 0;
+  /** Lazily-constructed second TelegramAdapter for the mentor bot (gated on
+   *  mentor.botToken). Per-token-cached so config reloads with the same token reuse the
+   *  same adapter (avoids leaking a new bot poll loop on every send). Spec §Fix 2b. */
+  private mentorBotAdapter: MentorTelegramAdapter | null = null;
+  private mentorBotAdapterToken: string | null = null;
+  /** Lazily-constructed a2a audit ledger (shared across mentor sends/recvs). */
+  private a2aLedger: AgentTelegramLedger | null = null;
+  /** Lazily-constructed processed-id store (idempotency for inbound mentor-reply). */
+  private a2aProcessedIds: ProcessedIdStore | null = null;
+  /** Lazily-constructed outstanding-prompt tracker (anti-ping-pong). */
+  private mentorOutstanding: OutstandingPromptTracker | null = null;
+  /** Reply-jsonl path (Codey's reply persisted here for Stage-B forensics). */
+  private mentorReplyJsonlPath: string | null = null;
+  private failureLedger: FailureLedger | null = null;
+  private failureAttributionEngine: FailureAttributionEngine | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -141,6 +165,7 @@ export class AgentServer {
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
+    releaseReadinessSentinel?: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
     quotaManager?: import('../monitoring/QuotaManager.js').QuotaManager;
     messageRouter?: MessageRouter;
@@ -268,6 +293,8 @@ export class AgentServer {
     unjustifiedStopGate?: import('../core/UnjustifiedStopGate.js').UnjustifiedStopGate;
     /** Stop-gate SQLite persistence (PR3). */
     stopGateDb?: import('../core/StopGateDb.js').StopGateDb;
+    /** notify-on-stop Layer B — surfaces genuinely-stuck unattended stops. */
+    stopNotifier?: import('../monitoring/StopNotifier.js').StopNotifier | null;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
@@ -497,26 +524,75 @@ export class AgentServer {
           maxFilesPerScan: 500,
           yieldEveryNFiles: 25,
         });
-        // Framework-Onboarding Mentor System issue ledger — read-only
-        // observability, signal-only (never gates). Instantiated here at
-        // startup so its two tables auto-create on first boot of this version
-        // (spec §14.3 — no schema migration needed). Lazy/best-effort: a
-        // failure leaves the /framework-issues routes returning 503, never
-        // blocking server startup.
-        try {
-          this.frameworkIssueLedger = new FrameworkIssueLedger({
-            dbPath: path.join(serverDataDir, 'framework-issue-ledger.db'),
-          });
-          this.mentorRunner = this.buildMentorRunner(this.frameworkIssueLedger, options, serverDataDir);
-        } catch (err) {
-          console.warn('[instar] framework-issue-ledger init failed (non-fatal):', err);
-          this.frameworkIssueLedger = null;
-          this.mentorRunner = null;
-        }
       }
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
       this.tokenLedger = null;
+    }
+
+    // Framework-Onboarding Mentor System issue ledger — read-only observability,
+    // signal-only (never gates). Its two tables auto-create on first boot (spec
+    // §14.3 — no schema migration needed). DELIBERATELY in its OWN try/catch,
+    // independent of TokenLedger: a TokenLedger init failure (e.g. a stale
+    // token-ledger.db schema on an existing agent) must NOT cascade and take the
+    // mentor ledger + runner down with it. (Found in production: an agent whose
+    // TokenLedger threw `no such column: attribution_key` had the mentor routes
+    // 503 purely because the two were sequenced in one try block.)
+    if (options.config.stateDir) {
+      try {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        this.frameworkIssueLedger = new FrameworkIssueLedger({
+          dbPath: path.join(serverDataDir, 'framework-issue-ledger.db'),
+        });
+        this.mentorRunner = this.buildMentorRunner(this.frameworkIssueLedger, options, serverDataDir);
+      } catch (err) {
+        console.warn('[instar] framework-issue-ledger init failed (non-fatal):', err);
+        this.frameworkIssueLedger = null;
+        this.mentorRunner = null;
+      }
+    }
+
+    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
+    // self-hosting dev-process forensics. Ships OFF; constructed only when
+    // enabled (else the inline /failures routes 503-stub via the null ledger).
+    // Toolchain attribution is instar-repo-local (§3 scope). Own try/catch so a
+    // failure here can never cascade into the other ledgers' init.
+    try {
+      if (options.config.monitoring?.failureLearning?.enabled === true && options.config.stateDir) {
+        this.failureLedger = new FailureLedger({
+          dbPath: path.join(options.config.stateDir, 'failure-ledger.db'),
+        });
+        const tracker = options.initiativeTracker ?? null;
+        const projectDir = options.config.projectDir;
+        this.failureAttributionEngine = new FailureAttributionEngine({
+          getInitiative: (id) => {
+            const i = tracker?.get(id);
+            if (!i) return null;
+            return {
+              id: i.id,
+              parentProjectId: i.parentProjectId ?? undefined,
+              specPath: i.specPath ?? undefined,
+              mergeCommitOid: i.mergeCommitOid ?? undefined,
+              // coveredFiles (bugfix-commit cross-check) joins from the trace
+              // when that ingestion source is wired (later rollout slice).
+            };
+          },
+          commitTouchedFiles: (oid) => {
+            try {
+              // Read-only git via the SafeGitExecutor funnel (lint-no-direct-destructive).
+              const out = SafeGitExecutor.readSync(['show', '--name-only', '--pretty=format:', oid], {
+                cwd: projectDir, operation: 'failure-learning:commit-touched-files',
+              });
+              return out.split('\n').map((s) => s.trim()).filter(Boolean);
+            } catch { return []; }
+          },
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] failure-learning init failed (non-fatal):', err);
+      this.failureLedger = null;
+      this.failureAttributionEngine = null;
     }
 
     // Routes
@@ -555,6 +631,7 @@ export class AgentServer {
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,
       rateLimitSentinel: options.rateLimitSentinel ?? null,
+      releaseReadinessSentinel: options.releaseReadinessSentinel ?? null,
       workingMemory: options.workingMemory ?? null,
       quotaManager: options.quotaManager ?? null,
       messageRouter: options.messageRouter ?? null,
@@ -603,6 +680,7 @@ export class AgentServer {
       ledgerSessionRegistry: options.ledgerSessionRegistry ?? null,
       unjustifiedStopGate: options.unjustifiedStopGate ?? null,
       stopGateDb: options.stopGateDb ?? null,
+      stopNotifier: options.stopNotifier ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
       projectRoundRunner: options.projectRoundRunner ?? null,
       projectDriftChecker: options.projectDriftChecker ?? null,
@@ -610,6 +688,8 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
+      failureLedger: this.failureLedger,
+      failureAttributionEngine: this.failureAttributionEngine,
       sessionReaper: options.sessionReaper ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
@@ -758,6 +838,135 @@ export class AgentServer {
     return found.sort((a, b) => b.mtime - a.mtime).slice(0, n).map((f) => f.path);
   }
 
+  /**
+   * Lazily construct + cache the mentor-bot TelegramAdapter for the given token. Uses
+   * PR 2a's multi-instance support (subDir + suppressLifelineAutoCreate) so the second
+   * bot can't clobber the primary bot's state files OR auto-create a second Lifeline
+   * topic. Reconfiguration (token change) tears down the old adapter first.
+   * Returns null on construction failure (logged) — caller treats as "no delivery."
+   */
+  private getOrCreateMentorBot(botToken: string, menteeChatId: string): MentorTelegramAdapter | null {
+    if (this.mentorBotAdapter && this.mentorBotAdapterToken === botToken) {
+      return this.mentorBotAdapter;
+    }
+    if (this.mentorBotAdapter && this.mentorBotAdapterToken !== botToken) {
+      this.mentorBotAdapter.stop().catch(() => {});
+      this.mentorBotAdapter = null;
+      this.mentorBotAdapterToken = null;
+    }
+    try {
+      this.mentorBotAdapter = new MentorTelegramAdapter(
+        { token: botToken, chatId: menteeChatId },
+        this.config.stateDir,
+        { subDir: 'agent-telegram/mentor-bot', suppressLifelineAutoCreate: true },
+      );
+      this.mentorBotAdapterToken = botToken;
+      // Install the mentor-reply recipient hook now that the adapter is up. The handler
+      // clears the outstanding-prompt by corr + persists the reply for Stage-B.
+      const mentorBotId = botToken.split(':')[0];
+      this.installMentorReceiverHook(this.mentorBotAdapter, mentorBotId);
+      return this.mentorBotAdapter;
+    } catch (err) {
+      console.warn('[mentor] mentor-bot adapter construction failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      this.mentorBotAdapter = null;
+      this.mentorBotAdapterToken = null;
+      return null;
+    }
+  }
+
+  /** Lazily construct + cache the a2a audit ledger. Paths default under stateDir. */
+  private getOrCreateA2aLedger(): AgentTelegramLedger {
+    if (!this.a2aLedger) {
+      this.a2aLedger = new AgentTelegramLedger(defaultA2aLedgerPaths(this.config.stateDir));
+    }
+    return this.a2aLedger;
+  }
+
+  /** Lazily construct + cache the processed-id store (idempotency for inbound replies). */
+  private getOrCreateA2aProcessedIds(): ProcessedIdStore {
+    if (!this.a2aProcessedIds) {
+      this.a2aProcessedIds = new ProcessedIdStore({
+        filePath: path.join(this.config.stateDir, 'a2a-processed-ids.json'),
+      });
+    }
+    return this.a2aProcessedIds;
+  }
+
+  /** Lazily construct + cache the outstanding-prompt tracker (anti-ping-pong). */
+  private getOrCreateMentorOutstanding(): OutstandingPromptTracker {
+    if (!this.mentorOutstanding) {
+      this.mentorOutstanding = new OutstandingPromptTracker({
+        filePath: path.join(this.config.stateDir, 'mentor-outstanding-prompts.json'),
+      });
+    }
+    return this.mentorOutstanding;
+  }
+
+  /**
+   * Install the mentor-reply recipient hook on the mentor-bot adapter. Called from
+   * getOrCreateMentorBot once the adapter is up. The hook routes role=`mentor-reply`
+   * from Codey to a handler that (1) clears the outstanding-prompt entry by `corr`
+   * (so the next mentor tick can send again), and (2) persists the reply to a
+   * jsonl file Stage-B forensics reads. This is the capability-handle invariant from
+   * the spec: the reply-ingestion path CANNOT call spawnStageA / deliverToMentee /
+   * scheduler / Threadline — it only writes the reply + clears tracking.
+   */
+  private installMentorReceiverHook(bot: MentorTelegramAdapter, mentorBotId: string): void {
+    const cfg = this.getMentorConfigSnapshot();
+    if (!cfg.menteeBotId) return;
+    const recipientCfg: RecipientConfig = {
+      localAgent: 'echo',
+      knownAgents: { [`instar-${cfg.menteeFramework}`]: { botId: cfg.menteeBotId } },
+      acceptRoles: { [`instar-${cfg.menteeFramework}`]: ['mentor-reply'] },
+      skewWindowMs: 24 * 60 * 60 * 1000,
+      maxVersion: A2A_VERSION,
+    };
+    const outstanding = this.getOrCreateMentorOutstanding();
+    const replyJsonl = path.join(this.config.stateDir, 'mentor-replies.jsonl');
+    this.mentorReplyJsonlPath = replyJsonl;
+
+    const mentorReplyHandler: RoleHandler = async (msg, ctx) => {
+      // (1) Clear the outstanding-prompt by corr (the next tick can send again).
+      const had = outstanding.clearByCorr(msg.corr);
+      if (!had) {
+        // Spurious / late reply (no outstanding match). Still persist it for forensics.
+        console.warn(`[mentor] mentor-reply for unknown corr=${msg.corr} (late after orphan-sweep?); persisting anyway`);
+      }
+      // (2) Persist the reply for Stage-B (append-only JSONL). Capability-handle
+      // invariant: this is the ONLY outbound effect; no spawn/deliver/schedule.
+      try {
+        fs.mkdirSync(path.dirname(replyJsonl), { recursive: true });
+        const row = {
+          ts: Date.now(),
+          fromAgent: msg.from,
+          corr: msg.corr,
+          replyId: msg.id,
+          topicId: ctx.topicId,
+          message: msg.body,
+        };
+        fs.appendFileSync(replyJsonl, JSON.stringify(row) + '\n', 'utf-8');
+      } catch (err) {
+        console.warn('[mentor] mentor-reply persist failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    const hook = buildAgentMessageHook({
+      config: recipientCfg,
+      ledger: this.getOrCreateA2aLedger(),
+      processedIds: this.getOrCreateA2aProcessedIds(),
+      roleHandlers: new Map<string, RoleHandler>([['mentor-reply', mentorReplyHandler]]),
+    });
+    bot.setAgentMessageHook(hook);
+  }
+
+  /** Snapshot of mentor config for use outside the runner's getConfig closure. */
+  private getMentorConfigSnapshot(): MentorConfig {
+    return {
+      ...DEFAULT_MENTOR_CONFIG,
+      ...((this.config as unknown as { mentor?: Partial<MentorConfig> }).mentor ?? {}),
+    };
+  }
+
   private buildMentorRunner(
     ledger: FrameworkIssueLedger,
     options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
@@ -857,19 +1066,83 @@ export class AgentServer {
           return self.mentorRunsToday < cfg.maxRoundsPerDay;
         },
         getSurface: (framework: string) => ({ framework, threadlineHistory: '' }),
-        // Persist-only delivery (§6): append the Stage-A message to a durable
-        // per-mentee outbox the mentee's already-running session picks up. This
-        // does NOT call threadline_send / spawn a counterpart session — the
-        // structural fix for the cross-agent spawn loop. Best-effort + never throws
-        // (delivery failure must not crash a tick). Called ONLY in live mode.
-        deliverToMentee: (framework: string, message: string) => {
+        // Live delivery via the agent-to-agent Telegram comms primitive (spec
+        // MENTOR-LIVE-READINESS §Fix 2b — Justin's substrate correction replaced the
+        // earlier file-outbox design). Echo's mentor-bot (a second TelegramAdapter, gated
+        // on mentor.botToken being set) sends a tagged [a2a:…] message to the mentee's
+        // bot in a dedicated mentor topic. The anti-spawn-loop discipline lives in the
+        // primitive (one outbound producer per role, no auto-reply, audit ledger). If
+        // the bot isn't configured yet, this no-ops with a log — the dark default.
+        deliverToMentee: async (framework: string, message: string) => {
+          const cfg = getConfig();
+          if (!cfg.botToken || !cfg.menteeBotId || !cfg.menteeChatId || cfg.menteeTopicId === undefined) {
+            console.warn(`[mentor] deliverToMentee skipped — mentor-bot config incomplete (need mentor.botToken + menteeBotId + menteeChatId + menteeTopicId; framework=${framework})`);
+            return;
+          }
+          const menteeAgent = `instar-${framework}`;
+          // Anti-ping-pong (spec §Fix 2b item 4 + Justin's original concern). Refuse to
+          // send a new prompt while a prior one is unanswered within replyTimeoutMs.
+          const outstanding = self.getOrCreateMentorOutstanding();
+          const orphans = outstanding.sweepExpired();
+          for (const orphan of orphans) {
+            if (outstanding.recordOrphanNotified(orphan.corr)) {
+              console.warn(`[mentor] orphaned prompt — no reply within ${orphan.ageMs}ms (corr=${orphan.corr}, mentee=${orphan.mentee})`);
+              try {
+                DegradationReporter.getInstance().report({
+                  feature: 'mentor.reply-orphaned',
+                  primary: 'mentor receives Codey reply within replyTimeoutMs',
+                  fallback: 'tick continues; no auto-resend; Stage-B sees the routed-sent row + no matching reply row',
+                  reason: `outstanding prompt corr=${orphan.corr} aged ${orphan.ageMs}ms without a mentor-reply`,
+                  impact: 'mentor cycle silently lost a reply; next tick allowed to retry',
+                });
+              } catch { /* best-effort */ }
+            }
+          }
+          const check = outstanding.canSendTo(menteeAgent);
+          if (!check.ok) {
+            console.warn(`[mentor] deliverToMentee deferred — prior-prompt-in-flight (corr=${check.outstandingCorr}, sentAt=${check.sentAt})`);
+            return;
+          }
+
+          const bot = self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId);
+          if (!bot) return;
+          const ledger = self.getOrCreateA2aLedger();
+          const corr = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           try {
-            const outboxDir = path.join(serverDataDir, 'mentor-outbox');
-            fs.mkdirSync(outboxDir, { recursive: true });
-            const line = JSON.stringify({ ts: Date.now(), framework, message }) + '\n';
-            fs.appendFileSync(path.join(outboxDir, `${framework.replace(/[^\w.-]/g, '_')}.jsonl`), line);
+            const result = await sendAgentMessage(
+              {
+                fromAgent: 'echo',
+                toAgent: menteeAgent,
+                role: 'mentor',
+                toTopicId: cfg.menteeTopicId,
+                message,
+                id: corr,
+                correlationId: corr,
+              },
+              {
+                send: async (topicId, text) => {
+                  try {
+                    const id = await bot.sendToTopic(topicId, text);
+                    return { ok: true, messageId: String(id ?? '') };
+                  } catch (err) {
+                    return { ok: false, error: err };
+                  }
+                },
+                appendAudit: (row) => ledger.appendSent(row),
+                now: () => Date.now(),
+                mintId: () => corr,
+                allowedRoles: new Set(['mentor']),
+                botToken: cfg.botToken,
+                fromBotId: cfg.botToken.split(':')[0],
+                toBotId: cfg.menteeBotId,
+              },
+            );
+            if (result.ok) {
+              // Mark only on successful send — a failed send doesn't owe a reply.
+              outstanding.markSent(corr, menteeAgent);
+            }
           } catch (err) {
-            console.warn('[mentor] deliverToMentee outbox write failed (non-fatal):', err);
+            console.warn('[mentor] deliverToMentee send failed (non-fatal):', err instanceof Error ? err.message : String(err));
           }
         },
         onTickRan: () => {
@@ -1081,6 +1354,17 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    // Stop the mentor bot adapter first (it has its own poll loop + state files
+    // under the subDir; clean shutdown avoids stranded background work).
+    if (this.mentorBotAdapter) {
+      try {
+        await this.mentorBotAdapter.stop();
+      } catch (err) {
+        console.warn('[mentor] mentor-bot adapter stop raised:', err);
+      }
+      this.mentorBotAdapter = null;
+      this.mentorBotAdapterToken = null;
+    }
     // Stop the Layer 3 sentinel BEFORE the WebSocket manager — the
     // sentinel's SSE subscription needs an alive wsManager to clean up
     // its listener. Order: sentinel → wsManager → server.

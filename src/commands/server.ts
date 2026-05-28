@@ -30,6 +30,7 @@ import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProv
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
+import { lifelineOwnsPoll as lifelineOwnsTelegramPoll } from '../lifeline/TelegramPollOwnerLease.js';
 import { DispatchManager } from '../core/DispatchManager.js';
 import { UpdateChecker } from '../core/UpdateChecker.js';
 import { AutoUpdater } from '../core/AutoUpdater.js';
@@ -3177,7 +3178,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     const skipTelegram = options.telegram === false; // --no-telegram sets telegram: false
     // Standby machines use send-only Telegram — they don't poll for messages
     const isStandbyTelegram = !coordinator.isAwake && telegramConfig;
-    if ((skipTelegram || isStandbyTelegram) && telegramConfig) {
+    // Poll-ownership lease (Task 4 / 2026-05-27 silent-stalls postmortem,
+    // SELF-PROPAGATION-HARNESS-SPEC.md Part 1): if a lifeline is already polling
+    // this bot token (lease present + fresh + token-hash match), the server
+    // auto-demotes to send-only — Telegram allows exactly one long-poller per
+    // token, and dual-polling would 409. Fail-OPEN: any read miss/stale/
+    // mismatch ⇒ false ⇒ server polls as today, so setups without a lifeline
+    // are unaffected. Reads only — never writes the lease here.
+    const telegramBotToken = telegramConfig ? (telegramConfig.config as { token?: string }).token : undefined;
+    const lifelineOwnsPolling = telegramConfig && telegramBotToken
+      ? lifelineOwnsTelegramPoll(config.stateDir, telegramBotToken)
+      : false;
+    if ((skipTelegram || isStandbyTelegram || lifelineOwnsPolling) && telegramConfig) {
       // Send-only mode: no polling, but sendToTopic() works for session replies
       telegram = new TelegramAdapter(
         {
@@ -3192,7 +3204,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
-      console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : 'lifeline owns polling'})`));
+      console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
 
       // Resolve any topic names still using the fallback "topic-NNNN" pattern
       telegram.resolveUnknownTopicNames().catch(err => {
@@ -3266,7 +3278,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
 
-    if (telegramConfig && !skipTelegram && !isStandbyTelegram) {
+    if (telegramConfig && !skipTelegram && !isStandbyTelegram && !lifelineOwnsPolling) {
       telegram = new TelegramAdapter(
         {
           ...(telegramConfig.config as any),
@@ -7652,6 +7664,48 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Unjustified Stop Gate: ${activeMode}${unjustifiedStopGate && stopGateDb ? ' (authority + SQLite wired)' : ' (degraded, fail-open)'}`));
     }
 
+    // notify-on-stop Layer B — surface a genuinely-stuck UNATTENDED stop to the
+    // user (docs/specs/NOTIFY-ON-STOP-SPEC.md). The evaluate route feeds each
+    // decision to StopNotifier, which filters to the notify-worthy classes
+    // (shadow+continue / escalate), the attended-gate, and per-session dedup,
+    // then hands a coalesced one-liner to a dedicated SentinelNotifier sink
+    // (single lifeline topic, log-always — reuses the post-2026-05-22 discipline).
+    // Default ON (Justin's "tell me why it stopped"); requires telegram wired.
+    let stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null = null;
+    {
+      const nosCfg = config.monitoring?.notifyOnStop ?? {};
+      const nosEnabled = nosCfg.enabled !== false; // default true
+      const localTg = telegram;
+      if (nosEnabled && localTg) {
+        const stopLogPath = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+        const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
+          try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
+        };
+        const send = async (text: string): Promise<boolean> => {
+          const topicId = localTg.getLifelineTopicId();
+          if (!topicId) return false;
+          try { await localTg.sendToTopic(topicId, text); return true; } catch { return false; }
+        };
+        const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
+        const stopSink = new SentinelNotifier(
+          { log: stopLog, sendConsolidated: send },
+          { telegramEscalation: true }, // notify-on-stop is default-on by design
+        );
+        const { StopNotifier } = await import('../monitoring/StopNotifier.js');
+        stopNotifier = new StopNotifier(
+          { escalate: (name, text) => stopSink.escalate('stop-gate', name, text) },
+          {
+            enabled: true,
+            unattendedOnly: nosCfg.unattendedOnly !== false,
+            ...(typeof nosCfg.cooldownMs === 'number' ? { cooldownMs: nosCfg.cooldownMs } : {}),
+          },
+        );
+        console.log(pc.green('  notify-on-stop Layer B: enabled (unjustified-stall heads-up — unattended-only, deduped, coalesced)'));
+      } else {
+        console.log(pc.dim(`  notify-on-stop Layer B: ${nosEnabled ? 'idle (no telegram)' : 'disabled by config'}`));
+      }
+    }
+
     // Response Review Pipeline (Coherence Gate) — evaluates agent responses before delivery.
     // Prefers the shared IntelligenceProvider (subscription-compatible) so the gate works
     // even without ANTHROPIC_API_KEY. Falls back to direct Anthropic API if a key is set
@@ -7899,14 +7953,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     // ship-dark feature relies on anyone remembering to register it. Runs once
     // at boot + on a bounded cadence. Observation-only w.r.t. config flags.
     const { FeatureRolloutReconciler } = await import('../core/FeatureRolloutReconciler.js');
-    const { scanSpecArtifacts, makeFlagObserver } = await import('../core/featureRolloutScan.js');
+    const { scanSpecArtifactsWithCanonical, makeFlagObserver } = await import('../core/featureRolloutScan.js');
     const { getInitDefaults: _getRolloutDefaults } = await import('../config/ConfigDefaults.js');
     const _shippedDefaults = _getRolloutDefaults(
       (config as { agentType?: string }).agentType === 'standalone' ? 'standalone' : 'managed-project',
     );
+    // Layer C of release-readiness-visibility: when featureRollout.canonicalRefScan
+    // is enabled, scan against canonical `main` (not the local working tree, which
+    // silently misses freshly-merged specs). Falls back to the local scan on any
+    // failure with a single degradation log line — never throws into boot.
+    const _frCfg = config.featureRollout;
     const featureRolloutReconciler = new FeatureRolloutReconciler({
       tracker: initiativeTracker,
-      listSpecArtifacts: () => scanSpecArtifacts(config.projectDir),
+      listSpecArtifacts: () =>
+        scanSpecArtifactsWithCanonical(config.projectDir, {
+          canonicalRefScanEnabled: _frCfg?.canonicalRefScan === true,
+          canonicalRemote: _frCfg?.canonicalRemote,
+          fetchTimeoutMs: _frCfg?.fetchTimeoutMs,
+          onDegradation: (reason) =>
+            console.warn(`[instar] feature-rollout canonical scan degraded: ${reason}`),
+        }),
       observeFlag: makeFlagObserver(config, _shippedDefaults),
     });
     void featureRolloutReconciler.reconcile().catch(err =>
@@ -8301,7 +8367,47 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb });
+    // ── ReleaseReadinessSentinel (Layer B of release-readiness-visibility) ──
+    // Repo-gated dev-environment watchdog: only constructed when the install has
+    // an analyzable instar git repo AND the feature is enabled in config. On a
+    // plain npm-installed agent (no instar repo) it stays null → routes 503,
+    // never a spurious signal. Not start()ed here — the off-by-default
+    // release-readiness-check job drives tick() via POST /release-readiness/tick.
+    let releaseReadinessSentinel: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel | null = null;
+    {
+      const rrCfg = config.monitoring?.releaseReadiness;
+      const repoPath = rrCfg?.repoPath ?? process.cwd();
+      if (rrCfg?.enabled) {
+        const { isAnalyzableRepo, buildReleaseReadinessDeps } = await import('../monitoring/releaseReadinessWiring.js');
+        if (isAnalyzableRepo(repoPath)) {
+          const { ReleaseReadinessSentinel } = await import('../monitoring/ReleaseReadinessSentinel.js');
+          const deps = buildReleaseReadinessDeps({
+            repoPath,
+            statePath: path.join(config.stateDir, 'release-readiness.json'),
+            auditPath: path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl'),
+            port: config.port,
+            authToken: config.authToken ?? '',
+            canonicalRemote: rrCfg.canonicalRemote,
+            fetchTimeoutMs: rrCfg.fetchTimeoutMs,
+          });
+          releaseReadinessSentinel = new ReleaseReadinessSentinel(deps, {
+            enabled: true,
+            tickIntervalMs: rrCfg.tickIntervalMs,
+            backlogAgeDaysSilent: rrCfg.backlogAgeDaysSilent,
+            backlogAgeDaysLow: rrCfg.backlogAgeDaysLow,
+            backlogAgeDaysMedium: rrCfg.backlogAgeDaysMedium,
+            backlogAgeDaysHigh: rrCfg.backlogAgeDaysHigh,
+            hysteresisHours: rrCfg.hysteresisHours,
+            staleEpisodeTtlDays: rrCfg.staleEpisodeTtlDays,
+          });
+          console.log(pc.green('  ReleaseReadinessSentinel enabled (release-hygiene watchdog — job-driven)'));
+        } else {
+          console.log(pc.dim('  ReleaseReadinessSentinel enabled in config but no analyzable instar repo found — staying inert'));
+        }
+      }
+    }
+
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

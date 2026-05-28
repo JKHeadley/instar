@@ -52,10 +52,26 @@ const READ_CONCURRENCY = 32;
 const MAX_FRONTMATTER_BYTES = 16 * 1024;
 const MAX_BODY_BYTES = 64 * 1024;
 
-/** Spec §6: closed-set frontmatter key whitelist (Phase 1a starter set).
- *  Unknown keys → per-entry skip. The set grows in later phases (e.g.
- *  toolAllowlist coercion details, viewMetadata schema) — adding to this
- *  set is a deliberate change, never silent. */
+/** Spec §6: closed-set frontmatter key whitelist. Unknown keys → per-entry
+ *  skip. Adding to this set is a deliberate change, never silent.
+ *
+ *  Two groups:
+ *  1. Agent-behavior keys — frontmatter is (or contributes to) authority:
+ *     name + description (manifestToJobDefinition reads them), toolAllowlist
+ *     (resolveAllowlist reads it directly; gated for '*' by the MANIFEST's
+ *     unrestrictedTools), and the grounding/notification/view metadata.
+ *  2. Scheduling/execution vocabulary — DECORATIVE in frontmatter. The agentmd
+ *     `.md` is the single authoring source from which InstallBuiltinJobs derives
+ *     the per-slug JSON manifest, so these keys legitimately appear in
+ *     frontmatter, but manifestToJobDefinition reads every effective value from
+ *     `manifest.*`, never frontmatter. We accept (do not deep-validate) them
+ *     here; the manifest's validateManifest is the correctness authority, which
+ *     is why a malformed frontmatter copy cannot reach a consumer.
+ *     NOTE: of these, schedule/priority/expectedDurationMinutes/model/enabled/
+ *     tags/unrestrictedTools/gate are derived by InstallBuiltinJobs today;
+ *     topicId/machines/supervision are forward-vocabulary (valid manifest fields,
+ *     not yet emitted by any shipped template) included so future templates do
+ *     not re-trip this closed-set guard. */
 const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'name',
   'description',
@@ -64,6 +80,19 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'notificationMode',
   'viewMetadata',
   'commonBlockers',
+  // Scheduling/execution vocabulary (decorative — manifest is authority):
+  'schedule',
+  'priority',
+  'expectedDurationMinutes',
+  'model',
+  'enabled',
+  'tags',
+  'unrestrictedTools',
+  'gate',
+  'telegramNotify',
+  'topicId',
+  'machines',
+  'supervision',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -112,6 +141,9 @@ export interface PerSlugManifest {
   gate?: string;
   unrestrictedTools?: boolean;
   manifestVersion?: number;
+  /** SHA of the body at the time an operator disabled the default — preserved
+   *  across regeneration so a re-enabled default re-syncs intentionally. */
+  disabledAtBodyHash?: string;
 }
 
 // ── Load-problems surface ──────────────────────────────────────────────────

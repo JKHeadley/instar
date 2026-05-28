@@ -251,7 +251,20 @@ describe('Tunnel + Private Viewer E2E', () => {
       return;
     }
 
-    const body = await res.json();
+    // Cloudflare quick-tunnels occasionally return 200 with an empty body
+    // mid-route-handoff. Tolerate that the same way we tolerate other transient
+    // network conditions above, instead of crashing on `res.json()`.
+    const text = await res.text();
+    if (!text.trim()) {
+      console.log('[E2E] Tunnel health returned empty body — transient network condition, skipping');
+      return;
+    }
+    let body: { status?: string };
+    try { body = JSON.parse(text); }
+    catch {
+      console.log(`[E2E] Tunnel health returned non-JSON body (${text.slice(0, 60)}…) — skipping`);
+      return;
+    }
     expect(body.status).toBe('ok');
   }, 45_000);
 

@@ -25,6 +25,7 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
@@ -204,6 +205,8 @@ export class PostUpdateMigrator {
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateLegacyMaxSessions(result);
+    this.migrateRetireDeadMentorConfig(result);
+    this.migrateRetireMentorOutbox(result);
     this.migratePrPipelineArtifacts(result);
     this.migrateBackupManifest(result);
     this.migrateGitignore(result);
@@ -1332,13 +1335,15 @@ export class PostUpdateMigrator {
       }
     };
     // Marker = the latest capability signature (bumped each time the bundled hook/
-    // setup gains a feature, so prior installs upgrade): now the independent
-    // completion evaluator (mirrors /goal). Absent from multi-session-only installs.
+    // setup gains a feature, so prior installs upgrade): now notify-on-stop —
+    // terminal exits (completion/duration/emergency) send a Telegram explaining
+    // why the run stopped (2026-05-27 silent-stalls postmortem, Task 2). The
+    // `notify_terminal_stop` function name is absent from all prior installs.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'Native /goal delegation',
+      'notify_terminal_stop',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal + notify-on-stop)',
     );
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
@@ -2499,6 +2504,22 @@ When the user is reading the Threadline hub topic and says **"open this"** or **
       result.upgraded.push('CLAUDE.md: added Threadline hub + "open this" guidance (CMT-519)');
     }
 
+    // release-readiness-visibility §7 — Agent Awareness + Migration Parity:
+    // existing agents must learn the release-readiness watchdog endpoints, not
+    // just new agents via init. Content-sniff on the route marker.
+    if (!content.includes('/release-readiness')) {
+      const rrSection = `
+### Release Readiness (instar-dev / maintainer environments only)
+
+A repo-gated watchdog that makes a stalled instar release impossible to miss: it evaluates canonical \`main\` and, when finished work sits unreleased while publishing is blocked, raises ONE deduped, age-escalating item on the Attention queue. Ships OFF; the \`release-readiness-check\` job drives it. Null/503 on any install with no analyzable instar git repo.
+- Status: \`GET /release-readiness\` · Run one check: \`POST /release-readiness/tick\`
+- Disable (loud — raises a HIGH attention item + audits, never silent): \`POST /release-readiness/rollback\` · re-arm: \`POST /release-readiness/enable\`
+`;
+      content += '\n' + rrSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Release Readiness watchdog awareness (release-readiness-visibility)');
+    }
+
     // CMT-529 — agents migrated under CMT-519 got the OLD "call the bind endpoint"
     // wording; "open this" is now a STRUCTURAL intercept (handled before the agent).
     // Re-patch the stale sentence so the agent doesn't try to call the endpoint /
@@ -3283,6 +3304,23 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added "what are we working on" Registry-First row (initiative discoverability)');
     }
 
+    // Process Health (Dashboard Tab) — Agent Awareness backfill for the
+    // Failure-Learning Loop's read surface. Fresh inits get this via
+    // generateClaudeMd; existing agents get it here on update. The copy mirrors
+    // the template exactly. Idempotent via content-sniff on the section title.
+    if (!content.includes('Process Health (Dashboard Tab)')) {
+      const section = `
+**Process Health (Dashboard Tab)** — A calm, human-readable window into the Failure-Learning Loop. The loop's findings are otherwise invisible (API-only); this tab shows, in plain English and large type, what's being watched, any patterns surfaced, and where the rollout sits.
+- **Where**: the "Process Health" tab in the dashboard. Refreshes itself quietly; nothing to run.
+- **What it shows**: an informational headline ("Watching — N issues recorded"), surfaced patterns (awareness-only — never auto-acted-on), recent captures as plain sentences, and the maturation track. A collapsed "Detail" drawer holds the aggregate counts.
+- **Proactive trigger**: when the user asks "is the loop noticing anything? / how's the rollout going? / what's it found?" → point them to the Process Health tab (give the dashboard URL + PIN). Do NOT paraphrase \`/failures*\` curl output at them — the tab IS the answer surface. Only read \`/failures/analysis\` yourself when you need the raw numbers for your own reasoning.
+- **Disabled note**: when \`monitoring.failureLearning.enabled\` is false the tab shows a friendly "not turned on yet" message, not an error.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Process Health dashboard tab awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -3348,6 +3386,7 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      '**Process Health (Dashboard Tab)**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
@@ -3717,6 +3756,24 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     }
 
+    // Ensure the canonical instar Bash PreToolUse hooks are present (dark-guardrail
+    // migration gap, 2026-05-27). init.ts wires these for NEW agents; existing
+    // agents previously only got slopcheck + the MCP gate ensured here, so
+    // deferral-detector (the false-blocker pre-filter), grounding-before-messaging,
+    // external-communication-guard, and post-action-reflection shipped to disk but
+    // were never switched on. Both paths now share INSTAR_BASH_PRETOOLUSE_HOOKS so
+    // they cannot drift again. Idempotent: appends only missing hooks, never
+    // reorders/removes; safe to re-run. (slopcheck stays in its own block below.)
+    {
+      const added = ensureInstarBashPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+      if (added.length > 0) {
+        patched = true;
+        for (const fname of added) {
+          result.upgraded.push(`.claude/settings.json: added PreToolUse ${fname} hook (dark-guardrail wiring)`);
+        }
+      }
+    }
+
     // Ensure PreToolUse Bash slopcheck-guard hook exists (cherry-pick 2026-05-23).
     // Existing agents only get new Bash-matcher hooks through an explicit ensure
     // block here — there is no wholesale settings-template refresh on migration.
@@ -4022,6 +4079,141 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       } catch { /* audit log is best-effort */ }
     } catch (err) {
       result.errors.push(`legacy maxSessions migration write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Retire `mentor.dailySpendCapUsd` — a config field that was DECORATIVE (read nowhere
+   * in code; spec MENTOR-LIVE-READINESS §Migration parity called it out as the
+   * silent-dead-config bug we shouldn't repeat at migration time). On a Claude
+   * subscription there's no per-token dollar charge to cap; the real budget is quota-
+   * aware (a separate future PR ships `mentor.stageBTokenCeiling`).
+   *
+   * Behavior:
+   *  - field absent → silent skip
+   *  - field present at the default (0.5) → silent delete (no warning)
+   *  - field present at a NON-default value → delete + LOUD `result.upgraded` entry with
+   *    a REVIEW prefix (operator never set this thinking it was enforced; they deserve
+   *    to know). Don't repeat the original silent-dead-config bug at migration time.
+   * Idempotent via the `_instar_migrations` marker.
+   */
+  private migrateRetireDeadMentorConfig(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('mentor dailySpendCapUsd retirement (config.json not found)');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`mentor dailySpendCapUsd retirement: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'mentor-dailySpendCapUsd-retire-v1';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('mentor dailySpendCapUsd retirement (already migrated)');
+      return;
+    }
+
+    const mentor = (config.mentor as Record<string, unknown> | undefined) ?? undefined;
+    if (!mentor || !('dailySpendCapUsd' in mentor)) {
+      // Field never present — mark + skip.
+      migrations.push(`${marker}-${new Date().toISOString()}`);
+      config._instar_migrations = migrations;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      result.skipped.push('mentor dailySpendCapUsd retirement (field never present)');
+      return;
+    }
+
+    const value = mentor.dailySpendCapUsd;
+    const isDefault = value === 0.5;
+    delete mentor.dailySpendCapUsd;
+    config.mentor = mentor;
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      if (isDefault) {
+        result.upgraded.push('mentor.dailySpendCapUsd retired (was default 0.5; field was decorative — never read)');
+      } else {
+        // LOUD prefix so the operator notices in post-update output (this is the
+        // "non-silent removal" the spec specifically calls for).
+        result.upgraded.push(
+          `REVIEW: mentor.dailySpendCapUsd=${JSON.stringify(value)} was retired. ` +
+          `The field was decorative (never enforced) — Echo runs on a Claude subscription, ` +
+          `so there is no per-token dollar charge to cap. A future update introduces ` +
+          `mentor.stageBTokenCeiling (quota-aware) as the real replacement. ` +
+          `If you set this value expecting enforcement, adjust your expectations accordingly.`
+        );
+      }
+    } catch (err) {
+      result.errors.push(`mentor dailySpendCapUsd retirement write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Retire the legacy `{stateDir}/mentor-outbox/` directory — the file-based mentor
+   * delivery design that Justin's substrate correction replaced (spec MENTOR-LIVE-
+   * READINESS §Migration parity). The new mentor delivery goes through the agent-to-
+   * agent Telegram comms primitive (sendAgentMessage); the outbox files are now dead
+   * state and should be swept so they don't accumulate or mislead a future operator.
+   *
+   * Idempotent via the `_instar_migrations` marker. The first run deletes if present;
+   * subsequent runs are no-ops. Best-effort — a removal failure logs + continues.
+   */
+  private migrateRetireMentorOutbox(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      // Still try to retire the outbox if present, even without config.json — but mark
+      // via state-file marker since we can't write to config. Simpler: skip entirely.
+      result.skipped.push('mentor outbox retirement (config.json not found)');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`mentor outbox retirement: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'mentor-outbox-retire-v1';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('mentor outbox retirement (already migrated)');
+      return;
+    }
+
+    const outboxDir = path.join(this.config.stateDir, 'mentor-outbox');
+    let removed = false;
+    let filesRemoved = 0;
+    if (fs.existsSync(outboxDir)) {
+      try {
+        // Count files before removing for the audit entry.
+        try {
+          filesRemoved = fs.readdirSync(outboxDir).length;
+        } catch { /* ignore, just for the audit */ }
+        SafeFsExecutor.safeRmSync(outboxDir, { recursive: true, force: true, operation: 'migrateRetireMentorOutbox' });
+        removed = true;
+      } catch (err) {
+        result.errors.push(`mentor outbox retirement removeSync failed: ${err instanceof Error ? err.message : String(err)}`);
+        // Don't mark migrated on failure — retry on next run.
+        return;
+      }
+    }
+
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      if (removed) {
+        result.upgraded.push(`mentor-outbox directory retired (removed ${filesRemoved} file(s) — legacy file-based mentor delivery; replaced by the agent-to-agent Telegram comms primitive)`);
+      } else {
+        result.skipped.push('mentor outbox retirement (directory not present; marker set so we don\'t re-check)');
+      }
+    } catch (err) {
+      result.errors.push(`mentor outbox retirement marker write: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -5685,56 +5877,64 @@ process.stdin.on('end', () => {
 // spike (gsd-executor Rule 3 exclusion: package installs are NOT
 // auto-fixable because a failed/typo'd install may be a slopsquat).
 // Signal-only — decision: approve + additionalContext. The agent decides.
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level \`require(...)\` throws
+// in ESM scope when the host package.json has "type":"module" — silently
+// killed this PreToolUse guard on every tool call. See hook-event-reporter.js.
 
-const fs = require('fs');
-const path = require('path');
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
 
-// Install-command patterns → capture the args portion after the verb.
-const INSTALL_PATTERNS = [
-  { re: /\\bnpm\\s+(?:i|install|add)\\s+([^&|;]+)/i, mgr: 'npm' },
-  { re: /\\bpnpm\\s+(?:i|install|add)\\s+([^&|;]+)/i, mgr: 'pnpm' },
-  { re: /\\byarn\\s+add\\s+([^&|;]+)/i, mgr: 'yarn' },
-  { re: /\\bpip3?\\s+install\\s+([^&|;]+)/i, mgr: 'pip' },
-  { re: /\\bcargo\\s+add\\s+([^&|;]+)/i, mgr: 'cargo' },
-];
+  // Install-command patterns → capture the args portion after the verb.
+  const INSTALL_PATTERNS = [
+    { re: /\\bnpm\\s+(?:i|install|add)\\s+([^&|;]+)/i, mgr: 'npm' },
+    { re: /\\bpnpm\\s+(?:i|install|add)\\s+([^&|;]+)/i, mgr: 'pnpm' },
+    { re: /\\byarn\\s+add\\s+([^&|;]+)/i, mgr: 'yarn' },
+    { re: /\\bpip3?\\s+install\\s+([^&|;]+)/i, mgr: 'pip' },
+    { re: /\\bcargo\\s+add\\s+([^&|;]+)/i, mgr: 'cargo' },
+  ];
 
-// Flags to strip when extracting package names.
-const FLAG_RE = /^-/;
+  // Flags to strip when extracting package names.
+  const FLAG_RE = /^-/;
 
-function parsePackages(argStr) {
-  return argStr
-    .trim()
-    .split(/\\s+/)
-    .filter(tok => tok && !FLAG_RE.test(tok))
-    // Strip version specifiers: pkg@1.2.3, pkg==1.2.3, pkg~=1.0
-    .map(tok => tok.replace(/[@=~<>!].*$/, '').replace(/\\[.*$/, ''))
-    .filter(Boolean);
-}
-
-// Returns the set of package names already known to the project from
-// any manifest/lockfile present in the project dir.
-function knownPackages(projectDir) {
-  const known = new Set();
-  const add = (name) => { if (name && typeof name === 'string') known.add(name.toLowerCase()); };
-
-  // package.json deps + devDeps + lock
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
-    for (const k of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-      if (pkg[k]) Object.keys(pkg[k]).forEach(add);
-    }
-  } catch { /* no package.json */ }
-  // package-lock.json — names appear as keys; cheap substring presence check via raw read
-  let lockRaw = '';
-  for (const lf of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'requirements.txt', 'Cargo.toml', 'Cargo.lock', 'Pipfile', 'pyproject.toml']) {
-    try { lockRaw += '\\n' + fs.readFileSync(path.join(projectDir, lf), 'utf-8'); } catch { /* absent */ }
+  function parsePackages(argStr) {
+    return argStr
+      .trim()
+      .split(/\\s+/)
+      .filter(tok => tok && !FLAG_RE.test(tok))
+      // Strip version specifiers: pkg@1.2.3, pkg==1.2.3, pkg~=1.0
+      .map(tok => tok.replace(/[@=~<>!].*$/, '').replace(/\\[.*$/, ''))
+      .filter(Boolean);
   }
-  return { known, lockRaw: lockRaw.toLowerCase() };
-}
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  // Returns the set of package names already known to the project from
+  // any manifest/lockfile present in the project dir.
+  function knownPackages(projectDir) {
+    const known = new Set();
+    const add = (name) => { if (name && typeof name === 'string') known.add(name.toLowerCase()); };
+
+    // package.json deps + devDeps + lock
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
+      for (const k of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+        if (pkg[k]) Object.keys(pkg[k]).forEach(add);
+      }
+    } catch { /* no package.json */ }
+    // package-lock.json — names appear as keys; cheap substring presence check via raw read
+    let lockRaw = '';
+    for (const lf of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'requirements.txt', 'Cargo.toml', 'Cargo.lock', 'Pipfile', 'pyproject.toml']) {
+      try { lockRaw += '\\n' + fs.readFileSync(path.join(projectDir, lf), 'utf-8'); } catch { /* absent */ }
+    }
+    return { known, lockRaw: lockRaw.toLowerCase() };
+  }
+
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     if (input.tool_name !== 'Bash') process.exit(0);
@@ -5785,7 +5985,7 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
   } catch { /* never block on errors */ }
   process.exit(0);
-});
+})();
 `;
   }
 
@@ -5798,13 +5998,19 @@ process.stdin.on('end', () => {
 //
 // "Every action is an opportunity to learn. Most of that learning is lost
 // because nobody paused to ask: what did this teach me?"
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. See hook-event-reporter.js header.
 
-const fs = require('node:fs');
-const pathMod = require('node:path');
+(async () => {
+  const fs = await import('node:fs');
+  const pathMod = await import('node:path');
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     if (input.tool_name !== 'Bash') process.exit(0);
@@ -5895,7 +6101,7 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: reminder }));
   } catch { /* don't break on errors */ }
   process.exit(0);
-});
+})();
 `;
   }
 
@@ -6452,9 +6658,15 @@ echo "[\$(date -Iseconds)] Server restart initiated"
 // State persists in .instar/state/scope-coherence.json via the server API.
 
 // CJS imports — this is a standalone hook script, not an ESM module
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level \`require(...)\` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
 
 const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
 const SCOPE_DOC_PATTERNS = [
@@ -6502,9 +6714,11 @@ function saveState(state) {
   } catch {}
 }
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     const toolName = input.tool_name || '';
@@ -6553,7 +6767,8 @@ process.stdin.on('end', () => {
   } catch {}
   process.stdout.write(JSON.stringify({ decision: 'approve' }));
   process.exit(0);
-});
+})();
+
 `;
   }
 
@@ -6570,10 +6785,16 @@ process.stdin.on('end', () => {
 // Calls the Instar server for active job context to make the checkpoint actionable.
 
 // CJS imports — this is a standalone hook script, not an ESM module
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
-const http = _r('http');
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level \`require(...)\` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const http = await import('node:http');
 
 const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
 const DEPTH_THRESHOLD = 20;
@@ -6609,9 +6830,11 @@ function fetchActiveJob() {
   });
 }
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', async () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     // Re-entry guard: if this Stop is a correction continuation (stop_hook_active),
     // approve immediately — never re-block a continuation. Without this, a block →
@@ -6712,7 +6935,8 @@ process.stdin.on('end', async () => {
     process.stdout.write(JSON.stringify({ decision: 'approve' }));
   }
   process.exit(0);
-});
+})();
+
 `;
   }
 
@@ -6747,9 +6971,15 @@ process.stdin.on('end', async () => {
 //   - Only checks topically relevant output (skip pure code, grep, cat)
 //   - Rate-limited to prevent latency stacking
 
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level \`require(...)\` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
 
 const STATE_DIR = path.join('.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
@@ -6877,9 +7107,11 @@ function findContradictions(text, state) {
 
 // ── Main ───────────────────────────────────────────────────────
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     const toolName = input.tool_name || '';
@@ -6944,7 +7176,8 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: warning }));
   } catch {}
   process.exit(0);
-});
+})();
+
 `;
   }
 
@@ -6960,10 +7193,16 @@ process.stdin.on('end', () => {
 // The CoherenceGate handles retry tracking and exhaustion internally.
 // The hook always passes the stopHookActive flag so the server can decide.
 
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
-const http = _r('http');
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level \`require(...)\` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const http = await import('node:http');
 
 // Read config for port and auth token
 let serverPort = ${port};
@@ -6989,9 +7228,11 @@ if (!reviewEnabled) {
   process.exit(0);
 }
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', async () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     const message = input.last_assistant_message || '';
@@ -7068,7 +7309,8 @@ process.stdin.on('end', async () => {
     // JSON parse error on stdin — fail open
     process.exit(0);
   }
-});
+})();
+
 `;
   }
 
@@ -7081,122 +7323,135 @@ process.stdin.on('end', async () => {
 // for hot-path state, and in shadow/enforce mode submits trusted evidence
 // metadata to /internal/stop-gate/evaluate. Shadow mode only records telemetry;
 // enforce mode blocks only on a server-side "continue" decision.
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. A bare top-level \`require(...)\` throws
+// "require is not defined in ES module scope" when the host package.json has
+// "type":"module" (which silently killed this gate — the gate meant to PREVENT
+// unjustified silent stalls). A bare top-level \`import\` is a syntax error in
+// CJS scope; dynamic import works in BOTH. See hook-event-reporter.js header.
 
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
-const childProcess = _r('child_process');
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const childProcess = await import('node:child_process');
 
-const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const configPath = path.join(projectDir, '.instar', 'config.json');
-let serverPort = ${port};
-let authToken = '';
-try {
-  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  serverPort = cfg.port || ${port};
-  authToken = cfg.authToken || '';
-} catch {}
-
-function postJson(urlPath, payload, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-  return fetch('http://127.0.0.1:' + serverPort + urlPath, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + authToken,
-    },
-    body: JSON.stringify(payload),
-    signal: controller.signal,
-  }).then(async function (res) {
-    clearTimeout(timer);
-    if (!res.ok) throw new Error('http ' + res.status);
-    return res.json();
-  }, function (err) {
-    clearTimeout(timer);
-    throw err;
-  });
-}
-
-function getJson(urlPath, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-  return fetch('http://127.0.0.1:' + serverPort + urlPath, {
-    headers: { 'Authorization': 'Bearer ' + authToken },
-    signal: controller.signal,
-  }).then(async function (res) {
-    clearTimeout(timer);
-    if (!res.ok) throw new Error('http ' + res.status);
-    return res.json();
-  }, function (err) {
-    clearTimeout(timer);
-    throw err;
-  });
-}
-
-function git(args) {
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const configPath = path.join(projectDir, '.instar', 'config.json');
+  let serverPort = ${port};
+  let authToken = '';
   try {
-    return childProcess.execFileSync('git', ['-C', projectDir].concat(args), {
-      encoding: 'utf-8',
-      timeout: 800,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return '';
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    serverPort = cfg.port || ${port};
+    authToken = cfg.authToken || '';
+  } catch {}
+
+  function postJson(urlPath, payload, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    return fetch('http://127.0.0.1:' + serverPort + urlPath, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + authToken,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    }).then(async function (res) {
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('http ' + res.status);
+      return res.json();
+    }, function (err) {
+      clearTimeout(timer);
+      throw err;
+    });
   }
-}
 
-function firstLine(value) {
-  return String(value || '').split(/\\r?\\n/).filter(Boolean)[0] || null;
-}
+  function getJson(urlPath, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    return fetch('http://127.0.0.1:' + serverPort + urlPath, {
+      headers: { 'Authorization': 'Bearer ' + authToken },
+      signal: controller.signal,
+    }).then(async function (res) {
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('http ' + res.status);
+      return res.json();
+    }, function (err) {
+      clearTimeout(timer);
+      throw err;
+    });
+  }
 
-function listEvidenceArtifacts(sessionStartTs) {
-  const out = git(['ls-files']);
-  if (!out) return [];
-  const files = out.split(/\\r?\\n/).filter(function (file) {
-    if (!file) return false;
-    if (!/\\.(md|markdown|json|jsonl|txt)$/i.test(file)) return false;
-    return /(^|\\/)(docs\\/specs|specs|plans?|tasks?|upgrades|MEMORY\\.md|AGENTS\\.md)|spec|plan|handoff|todo|next|round/i.test(file);
-  }).slice(0, 30);
-  return files.map(function (file) {
-    const introducingCommit = firstLine(git(['log', '--follow', '--format=%H', '--reverse', '--', file]));
-    const latestCommit = firstLine(git(['log', '--format=%H', '-1', '--', file]));
-    let createdThisSession = false;
-    let modifiedThisSession = false;
-    if (sessionStartTs && latestCommit) {
-      const ts = Number(firstLine(git(['show', '-s', '--format=%ct', latestCommit])) || '0') * 1000;
-      modifiedThisSession = ts >= sessionStartTs;
-      if (introducingCommit) {
-        const createdTs = Number(firstLine(git(['show', '-s', '--format=%ct', introducingCommit])) || '0') * 1000;
-        createdThisSession = createdTs >= sessionStartTs;
-      }
+  function git(args) {
+    try {
+      return childProcess.execFileSync('git', ['-C', projectDir].concat(args), {
+        encoding: 'utf-8',
+        timeout: 800,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return '';
     }
+  }
+
+  function firstLine(value) {
+    return String(value || '').split(/\\r?\\n/).filter(Boolean)[0] || null;
+  }
+
+  function listEvidenceArtifacts(sessionStartTs) {
+    const out = git(['ls-files']);
+    if (!out) return [];
+    const files = out.split(/\\r?\\n/).filter(function (file) {
+      if (!file) return false;
+      if (!/\\.(md|markdown|json|jsonl|txt)$/i.test(file)) return false;
+      return /(^|\\/)(docs\\/specs|specs|plans?|tasks?|upgrades|MEMORY\\.md|AGENTS\\.md)|spec|plan|handoff|todo|next|round/i.test(file);
+    }).slice(0, 30);
+    return files.map(function (file) {
+      const introducingCommit = firstLine(git(['log', '--follow', '--format=%H', '--reverse', '--', file]));
+      const latestCommit = firstLine(git(['log', '--format=%H', '-1', '--', file]));
+      let createdThisSession = false;
+      let modifiedThisSession = false;
+      if (sessionStartTs && latestCommit) {
+        const ts = Number(firstLine(git(['show', '-s', '--format=%ct', latestCommit])) || '0') * 1000;
+        modifiedThisSession = ts >= sessionStartTs;
+        if (introducingCommit) {
+          const createdTs = Number(firstLine(git(['show', '-s', '--format=%ct', introducingCommit])) || '0') * 1000;
+          createdThisSession = createdTs >= sessionStartTs;
+        }
+      }
+      return {
+        path: file,
+        introducingCommit: introducingCommit,
+        latestCommit: latestCommit,
+        createdThisSession: createdThisSession,
+        modifiedThisSession: modifiedThisSession,
+      };
+    });
+  }
+
+  function buildSignals(stopReason, message) {
+    const text = String(stopReason || '') + '\\n' + String(message || '');
     return {
-      path: file,
-      introducingCommit: introducingCommit,
-      latestCommit: latestCommit,
-      createdThisSession: createdThisSession,
-      modifiedThisSession: modifiedThisSession,
+      mentionsContextLimit: /context|window|token|compact/i.test(text),
+      mentionsFreshSession: /fresh session|new session|restart|continue in a new/i.test(text),
+      claimsShouldStopForContext: /stop|pause|wrap up|hand off/i.test(text) && /context|fresh|compact/i.test(text),
     };
-  });
-}
+  }
 
-function buildSignals(stopReason, message) {
-  const text = String(stopReason || '') + '\\n' + String(message || '');
-  return {
-    mentionsContextLimit: /context|window|token|compact/i.test(text),
-    mentionsFreshSession: /fresh session|new session|restart|continue in a new/i.test(text),
-    claimsShouldStopForContext: /stop|pause|wrap up|hand off/i.test(text) && /context|fresh|compact/i.test(text),
-  };
-}
+  function exitOpen() {
+    process.exit(0);
+  }
 
-function exitOpen() {
-  process.exit(0);
-}
+  // Read the Stop-hook JSON from stdin (works in both CJS + ESM).
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch {
+    exitOpen();
+    return;
+  }
 
-let data = '';
-process.stdin.on('data', function (chunk) { data += chunk; });
-process.stdin.on('end', async function () {
   let input;
   try {
     input = data ? JSON.parse(data) : {};
@@ -7205,12 +7460,12 @@ process.stdin.on('end', async function () {
     return;
   }
 
-  if (input.stop_hook_active) exitOpen();
+  if (input.stop_hook_active) { exitOpen(); return; }
   const sessionId = String(input.session_id || input.sessionId || process.env.INSTAR_SESSION_ID || 'unknown');
 
   try {
     const hot = await getJson('/internal/stop-gate/hot-path?session=' + encodeURIComponent(sessionId), 1500);
-    if (!hot || hot.killSwitch || hot.mode === 'off' || hot.compactionInFlight) exitOpen();
+    if (!hot || hot.killSwitch || hot.mode === 'off' || hot.compactionInFlight) { exitOpen(); return; }
 
     const message = String(input.last_assistant_message || '');
     const stopReason = String(input.stop_reason || input.reason || message || '');
@@ -7238,7 +7493,7 @@ process.stdin.on('end', async function () {
   } catch {
     exitOpen();
   }
-});
+})();
 `;
   }
 
@@ -7259,9 +7514,15 @@ process.stdin.on('end', async function () {
 // Guard against infinite loops:
 //   If stop_hook_active is true, we're in a correction continuation — skip.
 
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
+//
+// ESM-SAFE: dynamic \`await import(...)\` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level \`require(...)\` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
 
 const STATE_DIR = path.join('.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
@@ -7353,9 +7614,11 @@ function findContradictions(text, state) {
   return contradictions;
 }
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
 
@@ -7407,7 +7670,8 @@ process.stdin.on('end', () => {
     process.exit(2);
   } catch {}
   process.exit(0);
-});
+})();
+
 `;
   }
 

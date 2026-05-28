@@ -63,6 +63,32 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       finalGraceSec: 60,
       protectOpenCommitments: true,
     },
+    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md). Ships
+    // OFF — when disabled, the /failures routes 503-stub (surface still exists
+    // for capability probing). Registers itself on the rollout board.
+    failureLearning: {
+      enabled: false,
+      minSupport: 4,
+      minDistinctSessions: 3,
+      minDistinctCauseCommits: 3,
+      attributionConfidenceFloor: 0.6,
+      insightTelegramEscalation: false,
+    },
+    // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
+    // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the
+    // install has an analyzable instar git repo. Thresholds default to
+    // silent <2d, LOW ≥2d, MEDIUM ≥4d, HIGH ≥7d.
+    releaseReadiness: {
+      enabled: false,
+      tickIntervalMs: 21_600_000,
+      backlogAgeDaysSilent: 2,
+      backlogAgeDaysLow: 2,
+      backlogAgeDaysMedium: 4,
+      backlogAgeDaysHigh: 7,
+      hysteresisHours: 12,
+      staleEpisodeTtlDays: 30,
+      fetchTimeoutMs: 30_000,
+    },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
     // in the logs (server.log + sentinel-events.jsonl). Set true to receive

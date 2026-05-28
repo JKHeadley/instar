@@ -98,22 +98,13 @@ export function verifySignature(args: {
   }
 }
 
-/** Port of the input-validation block (:242–269): title ≥3, description ≥10, valid type, semver instarVersion. */
-export function validateFeedbackInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
-  if (!body.type || !isValidType(body.type)) {
-    return { valid: false, error: 'Invalid request format' };
-  }
-  if (!body.title || typeof body.title !== 'string' || body.title.trim().length < 3) {
-    return { valid: false, error: 'Invalid request format' };
-  }
-  if (!body.description || typeof body.description !== 'string' || body.description.trim().length < 10) {
-    return { valid: false, error: 'Invalid request format' };
-  }
-  if (body.instarVersion && !SEMVER_RE.test(body.instarVersion as string)) {
-    return { valid: false, error: 'Invalid request format' };
-  }
-  return { valid: true };
-}
+// NOTE: an earlier `validateFeedbackInput` helper lived here but diverged from the
+// reference handleSubmit — it REJECTED an invalid `type` (the reference DEFAULTS it
+// to 'other'), used a generic error message instead of the reference's specific
+// per-field messages, and omitted the agentName/nodeVersion format checks. The
+// faithful validation now lives inline in `handleFeedbackSubmit` (handlers.ts),
+// which reproduces handleSubmit's exact order, messages, and type-default. The
+// imperfect helper was removed to avoid two divergent validators.
 
 /**
  * Port of the in-memory sliding-window rate limiter (checkRateLimit + prune) as an

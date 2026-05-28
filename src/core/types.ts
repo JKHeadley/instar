@@ -1893,6 +1893,21 @@ export interface InstarConfig {
   messaging: MessagingAdapterConfig[];
   /** Monitoring config */
   monitoring: MonitoringConfig;
+  /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
+   *  Layer C). Off by default — flips on to scan against canonical `main`
+   *  instead of the local working tree (which silently misses freshly-merged
+   *  specs when the developer's branch doesn't contain them). On any failure
+   *  the scan gracefully falls back to the local scan + emits a degradation
+   *  event; never throws into boot. */
+  featureRollout?: {
+    /** Master kill switch for the canonical-ref scan (default: false). */
+    canonicalRefScan?: boolean;
+    /** Git remote name to fetch canonical `main` from (default: the same as
+     *  releaseReadiness.canonicalRemote, falling back to auto-detection). */
+    canonicalRemote?: string;
+    /** Bounded canonical-fetch timeout (ms) (default: 30_000). */
+    fetchTimeoutMs?: number;
+  };
   /** Auth token for API access (generated during setup) */
   authToken?: string;
   /** PIN for dashboard web access (simpler than authToken, used for mobile/remote login) */
@@ -2715,6 +2730,53 @@ export interface MonitoringConfig {
     protectOpenCommitments?: boolean;
   };
   /**
+   * Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
+   * self-hosting dev-process forensics. Ships OFF (registers itself on the
+   * rollout board). When enabled, the FailureLedger + /failures routes + the
+   * analyzer come alive; toolchain attribution is instar-repo-local. The gates
+   * below are the §4.4 source-diversity + §4.3 attribution-confidence controls.
+   */
+  failureLearning?: {
+    enabled: boolean;
+    minSupport?: number;
+    minDistinctSessions?: number;
+    minDistinctCauseCommits?: number;
+    attributionConfidenceFloor?: number;
+    /** Off by default — when true, thresholded insights post ONCE to the existing
+     *  system topic (never a new per-feature topic). Spec §4.5 / round-2 M1. */
+    insightTelegramEscalation?: boolean;
+  };
+  /**
+   * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)
+   * — Layer B. A repo-gated dev-environment watchdog: evaluates the canonical
+   * `main` of the instar checkout and surfaces a stalled/blocked release as a
+   * single, deduped, age-escalating Attention item. Ships OFF (Echo dogfoods
+   * first). Inert on any install with no analyzable instar git repo. Tier 0.
+   */
+  releaseReadiness?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Scan cadence (ms) (default: 21_600_000 = 6h). */
+    tickIntervalMs?: number;
+    /** Backlog age (days) below which the check is silent (default: 2). */
+    backlogAgeDaysSilent?: number;
+    /** Age thresholds (days) for LOW / MEDIUM / HIGH priority (default: 2 / 4 / 7). */
+    backlogAgeDaysLow?: number;
+    backlogAgeDaysMedium?: number;
+    backlogAgeDaysHigh?: number;
+    /** Hysteresis window (hours) before re-raising the same episode (default: 12). */
+    hysteresisHours?: number;
+    /** TTL (days) after which an abandoned open episode is reaped as stale (default: 30). */
+    staleEpisodeTtlDays?: number;
+    /** Bounded canonical-fetch timeout (ms) (default: 30_000). */
+    fetchTimeoutMs?: number;
+    /** Override the canonical remote NAME (default: auto-detect a JKHeadley/instar
+     *  remote; a non-canonical override raises a HIGH-priority signal). */
+    canonicalRemote?: string;
+    /** Override the instar repo path to analyze (default: the agent home). */
+    repoPath?: string;
+  };
+  /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations
    * (SentinelNotifier). Default false → sentinel notices are logged to the
    * server log + .instar/../logs/sentinel-events.jsonl only; the user never
@@ -2724,6 +2786,22 @@ export interface MonitoringConfig {
    * 2026-05-22 topic-spam flood. See docs/specs/silently-stopped-trio.md.
    */
   sentinelTelegramEscalation?: boolean;
+  /**
+   * notify-on-stop Layer B (docs/specs/NOTIFY-ON-STOP-SPEC.md). When the
+   * UnjustifiedStopGate (shadow/enforce) judges a stop unjustified-but-unblockable
+   * (`continue` in shadow) or ambiguous (`escalate`) for an UNATTENDED session,
+   * send the user one coalesced heads-up. Default enabled (Justin's explicit
+   * "tell me why it stopped"); attended-gate + per-session dedup keep it
+   * near-silent. Distinct from sentinelTelegramEscalation (housekeeping, default-off).
+   */
+  notifyOnStop?: {
+    /** Master gate. Default true. */
+    enabled?: boolean;
+    /** Only notify unattended (autonomous) sessions. Default true. */
+    unattendedOnly?: boolean;
+    /** Per-session dedup window (ms). Default 1800000 (30 min). */
+    cooldownMs?: number;
+  };
   /** LLM-powered stall triage nurse — intelligent session recovery */
   triage?: {
     enabled: boolean;

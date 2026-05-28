@@ -72,6 +72,8 @@ The immune system is the most layered part of the organism. It has innate immuni
 | **identity-review** | Job (daily) | Self-model maintenance. Checks whether behavior aligns with AGENT.md and soul.md. |
 | **overseer-learning** | Job (2 days) | Meta-learning. Is the agent actually getting smarter, or is the learning pipeline busy-work? |
 | **mentor-onboarding** | Job (15m, off) | Framework-onboarding mentor heartbeat. Pokes the in-process mentor tick that drives a mentee framework as the user, runs the leak-detector, and captures behavioral issues to the framework ledger. Ships dormant. |
+| **failure-analyzer** | Job (weekly, off) | Failure-learning. Scans the failure ledger for dev-process patterns, surfaces evidence-thresholded insights, and opens human-approved improvements — never auto-implements. Closes the loop from "a fix broke" back to "the process that produced it." Ships dormant. |
+| **initiative-digest-review** | Job (2x/week) | Rollout self-drive. Reviews the initiative board, surfaces decisions that are waiting, and for staged features gathers promotion evidence (dry-run → live → default-on) and recommends the next step. Recommends; never flips a flag. |
 
 **How it flows:** reflection-trigger captures raw learnings → insight-harvest finds patterns → EvolutionManager creates proposals → evolution-proposal-evaluate approves → evolution-proposal-implement builds → memory-hygiene prunes → memory-export consolidates → identity-review checks alignment. overseer-learning watches the whole pipeline.
 
@@ -201,3 +203,22 @@ The biological metaphor isn't decorative — it's a diagnostic framework.
 - [Default Jobs](/reference/default-jobs) — Detailed descriptions of all 26 scheduled jobs
 - [Self-Healing](/features/self-healing) — The user-facing perspective on recovery
 - [Evolution System](/features/evolution) — How the Memory & Learning system appears to users
+
+---
+
+## Inter-agent comms (the new building block)
+
+A small set of internal modules powers the agent-to-agent Telegram comms primitive — the
+groundwork for one Instar agent messaging another over Telegram with built-in anti-loop
+machinery. **Ships dark today**; the mentor system will be its first consumer:
+
+- **`AgentTelegramComms`** — the pure logic: visible `[a2a:from=… to=… role=… id=… corr=…
+  ts=… v=1]` marker, strict parser, the recipient routing decision (with the user-spoof
+  defense — a human typing the marker is dropped, not routed), and cycle-detection on
+  `(fromBot, toBot, topic, role, corr)`.
+- **`AgentTelegramLedger`** — append-only JSONL of every send and every receive decision.
+  Best-effort + non-throwing (an audit-write failure cannot crash a tick).
+- **`ProcessedIdStore`** — bounded persistent set of recently-seen marker ids so a
+  Telegram retry or adapter restart can't double-inject the same prompt.
+
+See `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` for the full design.

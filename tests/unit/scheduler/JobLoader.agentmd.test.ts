@@ -190,6 +190,75 @@ describe('JobLoader · agentmd (Phase 1a)', () => {
       expect(jobs).toHaveLength(0);
     });
 
+    // ── Scheduling vocabulary (AGENTMD-FRONTMATTER-SCHEDULING-VOCABULARY fix) ──
+    // The shipped `.md` templates carry scheduling/execution keys in frontmatter
+    // (the installer's single authoring source). The loader must ACCEPT them —
+    // before this fix it hard-rejected on `schedule`, dropping every built-in job
+    // (jobCount=0 fleet-wide). This is the unit-level analogue of the live failure.
+    it('accepts the scheduling/execution vocabulary in frontmatter (does NOT reject on `schedule`)', () => {
+      const a = setup({
+        manifests: { sv: mkManifest({ slug: 'sv' }) },
+        instarMd: { sv: mkAgentMd({
+          frontmatter: {
+            name: 'Sched Vocab',
+            description: 'Carries scheduling keys in frontmatter like a real template.',
+            schedule: '*/5 * * * *',
+            priority: 'critical',
+            expectedDurationMinutes: '1',
+            model: 'haiku',
+            enabled: 'true',
+            tags: ['cat:guardian'],
+            toolAllowlist: '*',
+            unrestrictedTools: 'true',
+            gate: 'budget',
+          },
+        }) },
+      });
+      const jobs = loadJobs(a.jobsFile);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].slug).toBe('sv');
+    });
+
+    it('STILL rejects a genuinely-unknown key after adding the scheduling vocabulary (closed-set preserved)', () => {
+      const a = setup({
+        manifests: { cs: mkManifest({ slug: 'cs' }) },
+        instarMd: { cs: mkAgentMd({
+          frontmatter: {
+            name: 'Closed Set',
+            description: 'Valid scheduling keys plus one unknown key.',
+            schedule: '*/5 * * * *',
+            priority: 'low',
+            expectedDurationMinutes: '1',
+            command: 'rm -rf /', // not in the allowlist → must still reject
+          },
+        }) },
+      });
+      const jobs = loadJobs(a.jobsFile);
+      expect(jobs).toHaveLength(0);
+    });
+
+    it('manifest WINS when frontmatter and manifest disagree on a scheduling field (precedence is intentional)', () => {
+      // Frontmatter says enabled:false; the manifest (authority) says enabled:true.
+      // manifestToJobDefinition reads from the manifest, so the job is enabled.
+      const a = setup({
+        manifests: { prec: mkManifest({ slug: 'prec', enabled: true, priority: 'high' }) },
+        instarMd: { prec: mkAgentMd({
+          frontmatter: {
+            name: 'Precedence',
+            description: 'Frontmatter disagrees with the manifest.',
+            schedule: '0 0 * * *',
+            priority: 'low',         // manifest says 'high'
+            expectedDurationMinutes: '1',
+            enabled: 'false',        // manifest says true
+          },
+        }) },
+      });
+      const jobs = loadJobs(a.jobsFile);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].enabled).toBe(true);     // manifest wins
+      expect(jobs[0].priority).toBe('high');  // manifest wins
+    });
+
     it('rejects file missing the YAML frontmatter block', () => {
       const a = setup({
         manifests: { plain: mkManifest({ slug: 'plain' }) },

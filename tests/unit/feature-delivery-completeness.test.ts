@@ -131,6 +131,7 @@ describe('Feature Delivery Completeness', () => {
       'Playbook',
       'Worktree Convention',
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
+      'Process Health (Dashboard Tab)', // Failure-Learning Loop read surface (templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {
@@ -211,6 +212,7 @@ describe('Feature Delivery Completeness', () => {
       'Sentinel Notifications (silently-stopped trio)',   // alternate heading phrase
       'Cross-Agent Communication Discipline (anti-confabulation)', // migrator-only behavioral guard, no template parity
       'The "Threadline" hub topic — notifications',       // CMT-519 migrator-only notification-routing guidance, no template parity
+      'Cross-Machine Seamlessness (one agent, many machines)', // operational self-heal/handoff awareness (like Version-Skew); not a user-invokable capability
       'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
       'Framework-Onboarding Mentor System',               // developer-layer issue-ledger observability; not a Codex/Gemini end-user capability (no shadow-marker parity)
     ];

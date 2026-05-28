@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
   normalizeWebhookSecret, isValidType, extractSourceIp, validateAgentFingerprint,
-  checkHoneypot, verifySignature, validateFeedbackInput, RateLimiter, RATE_LIMITS,
+  checkHoneypot, verifySignature, RateLimiter, RATE_LIMITS,
 } from '../../../src/feedback-factory/receiver/defense.js';
 
 describe('normalizeWebhookSecret', () => {
@@ -89,21 +89,6 @@ describe('verifySignature', () => {
   });
 });
 
-describe('validateFeedbackInput', () => {
-  const ok = { type: 'bug', title: 'abc', description: '0123456789' };
-  it('accepts a well-formed body', () => {
-    expect(validateFeedbackInput(ok).valid).toBe(true);
-  });
-  it('rejects title < 3 and description < 10 (boundary)', () => {
-    expect(validateFeedbackInput({ ...ok, title: 'ab' }).valid).toBe(false);
-    expect(validateFeedbackInput({ ...ok, description: '123456789' }).valid).toBe(false);
-  });
-  it('rejects invalid type and bad instarVersion', () => {
-    expect(validateFeedbackInput({ ...ok, type: 'nope' }).valid).toBe(false);
-    expect(validateFeedbackInput({ ...ok, instarVersion: 'x.y' }).valid).toBe(false);
-    expect(validateFeedbackInput({ ...ok, instarVersion: '1.2.3' }).valid).toBe(true);
-  });
-});
 
 describe('RateLimiter', () => {
   it('allows up to perHour then blocks with a retryAfter', () => {

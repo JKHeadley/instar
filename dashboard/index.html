@@ -777,6 +777,50 @@
       display: none !important;
     }
 
+    /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
+       Large, readable, calm. No monospace, no tables, no alarm colors.
+       Measurable bars: headline ≥24px, section headers ≥20px, body ≥17px,
+       line-height 1.5–1.6. One neutral accent token, used ONLY for the
+       maturation "you're here" marker. */
+    .ph-root {
+      --ph-accent: #4ade80;
+      max-width: 760px;
+      font-size: 18px;
+      line-height: 1.55;
+      color: var(--text-bright);
+    }
+    .ph-title { font-size: 22px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
+    .ph-stamp { font-size: 14px; color: var(--text-dim); }
+    .ph-headline-wrap { margin: 4px 0 8px; }
+    .ph-headline { font-size: 26px; font-weight: 600; line-height: 1.5; color: var(--text-bright); }
+    .ph-subline { font-size: 18px; color: var(--text-dim); margin-top: 8px; line-height: 1.55; }
+    .ph-section { display: flex; flex-direction: column; gap: 10px; }
+    .ph-h { font-size: 20px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
+    .ph-empty { font-size: 18px; color: var(--text-dim); line-height: 1.6; }
+    .ph-card {
+      padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .ph-card-summary { font-size: 18px; color: var(--text-bright); line-height: 1.5; }
+    .ph-card-frame { font-size: 15px; color: var(--text-dim); font-style: italic; }
+    .ph-card-rec { font-size: 17px; color: var(--text); line-height: 1.55; }
+    .ph-card-evidence { font-size: 15px; color: var(--text-dim); }
+    .ph-record { font-size: 18px; color: var(--text); line-height: 1.6; padding: 5px 0; }
+    .ph-record-inert { color: var(--text-dim); }
+    .ph-stage { display: flex; align-items: baseline; gap: 10px; font-size: 18px; padding: 3px 0; color: var(--text-dim); line-height: 1.5; }
+    .ph-stage-here { color: var(--text-bright); }
+    .ph-stage-glyph { color: var(--text-dim); }
+    .ph-stage-here .ph-stage-glyph { color: var(--ph-accent); }
+    .ph-stage-marker { color: var(--ph-accent); font-size: 15px; }
+    .ph-stage-note { color: var(--text-dim); font-size: 15px; }
+    .ph-detail { margin-top: 4px; }
+    .ph-detail-summary { font-size: 17px; color: var(--text-dim); cursor: pointer; }
+    .ph-detail-body { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+    .ph-detail-row { font-size: 17px; color: var(--text); line-height: 1.55; }
+    .ph-operator { margin-top: 14px; }
+    .ph-operator-summary { font-size: 15px; color: var(--text-dim); cursor: pointer; }
+    .ph-operator-hint { font-size: 16px; color: var(--text-dim); margin-top: 8px; line-height: 1.55; }
+
     /* ── File viewer ─────────────────────────────────────── */
     .files-container {
       display: flex;
@@ -2529,6 +2573,7 @@
           <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
+          <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -3012,6 +3057,31 @@
 
     <!-- Evidence Tab (WikiClaim Phase 4) — per-entity evidence + reverse "what cites this?" view.
          Spec: docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Phase 4 (line 343). -->
+    <!-- process-health tab -->
+    <div id="processHealthPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Process Health</h2>
+        <div id="phStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <div id="phHeadline" class="ph-headline-wrap" aria-live="polite"></div>
+      <section class="ph-section">
+        <h3 class="ph-h">Patterns to know about</h3>
+        <div id="phPatterns"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">What’s been captured</h3>
+        <div id="phCaptured"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Maturation</h3>
+        <div id="phMaturation"></div>
+      </section>
+      <details class="ph-detail">
+        <summary class="ph-detail-summary">Detail</summary>
+        <div id="phDetail" class="ph-detail-body"></div>
+      </details>
+    </div>
+
     <div id="evidenceTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Evidence</h2>
@@ -4243,6 +4313,13 @@
         panels: ['evidenceTab'],
         display: ['flex'],
         onActivate: null,
+      },
+      {
+        id: 'process-health',
+        panels: ['processHealthPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startProcessHealth === 'function') startProcessHealth(); },
+        onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
       },
       {
         id: 'secrets',
@@ -7973,13 +8050,48 @@
       return m + 'm';
     }
 
+    // ── Process Health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC) ──
+    // Lazy dynamic-import keeps the controller in this (classic) scope so it can
+    // read `token`; the module ships the pure renderers + the polling controller.
+    let __phController = null;
+    let __phModule = null;
+    async function startProcessHealth() {
+      if (!__phModule) {
+        try { __phModule = await import('/dashboard/process-health.js'); }
+        catch (e) { console.error('[process-health] module load failed', e); return; }
+      }
+      if (!__phController) {
+        const els = {
+          headline: document.getElementById('phHeadline'),
+          patterns: document.getElementById('phPatterns'),
+          captured: document.getElementById('phCaptured'),
+          maturation: document.getElementById('phMaturation'),
+          detail: document.getElementById('phDetail'),
+          stamp: document.getElementById('phStamp'),
+        };
+        // Raw fetch (NOT apiFetch) so the controller sees 304/503/ETag itself.
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+          signal: opts.signal,
+        });
+        __phController = __phModule.createController({ doc: document, els, fetchImpl });
+      }
+      __phController.start();
+    }
+    function stopProcessHealth() {
+      if (__phController) __phController.stop();
+    }
+
     // Handle tab visibility — close SSE when tab is backgrounded
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         disconnectJobsSSE();
+        if (currentTab === 'process-health') stopProcessHealth();
       } else if (currentTab === 'jobs') {
         connectJobsSSE();
         loadJobs(); // Resync on return
+      } else if (currentTab === 'process-health') {
+        startProcessHealth(); // resume on return: one immediate refresh + re-arm
       }
       // Always refresh vital signs on tab focus
       if (!document.hidden) pollVitalSigns();

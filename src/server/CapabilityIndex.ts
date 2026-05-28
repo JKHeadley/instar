@@ -56,6 +56,20 @@ export interface CapabilityEntry {
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
+    key: 'releaseReadiness',
+    prefixes: ['/release-readiness'],
+    description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.releaseReadinessSentinel,
+      endpoints: [
+        'GET /release-readiness',
+        'POST /release-readiness/tick',
+        'POST /release-readiness/rollback',
+        'POST /release-readiness/enable',
+      ],
+    }),
+  },
+  {
     key: 'telegram',
     prefixes: ['/telegram'],
     description: 'Telegram messaging adapter (bidirectional)',
@@ -498,6 +512,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /mentor/status — mentor mode + mentee framework (off by default)',
         'POST /mentor/tick — run one mentor heartbeat (returns {ran:false,reason:"disabled"} until enabled)',
       ],
+    }),
+  },
+  {
+    key: 'failureLearning',
+    prefixes: ['/failures'],
+    description: 'Failure-Learning Loop — instar dev-process failure forensics (which spec/tool produced a failure; what process gaps recur)',
+    build: ({ ctx }) => ({
+      enabled: ctx.config.monitoring?.failureLearning?.enabled === true,
+      endpoints: [
+        'GET /failures — list failure records (filter by source/category/initiative/attribution)',
+        'GET /failures/:id — one record',
+        'GET /failures/analysis — rates by build-skill / category, coverage (answers "why do features keep breaking?")',
+        'GET /failures/insights — discovered process-gap insights (once the analyzer ships)',
+        'POST /failures — agent-diagnosed one-tap (requires X-Instar-Request; cite an existing initiativeId)',
+      ],
+      hint: 'Ships OFF; when disabled these routes 503. Scoped to instar self-hosting (toolchain attribution is repo-local).',
     }),
   },
   {

@@ -130,6 +130,21 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
   'stash', // shape-check: `stash list` / `stash show` allowed
 ]);
 
+/**
+ * Verbs that are "data-pull": they touch the object database and FETCH_HEAD
+ * but DO NOT modify the working tree, committed refs (heads/tags/remotes),
+ * or any source file. From SourceTreeGuard's "protect the instar source"
+ * standpoint they are read-tier. Permitted on the instar source tree ONLY
+ * when the caller opts in via `SafeGitOptions.sourceTreeReadOk: true`.
+ *
+ * Currently: `fetch` only. (`ls-remote` is pure-read and already in
+ * READONLY_GIT_VERBS — it goes through readSync which never trips the
+ * source-tree guard.)
+ */
+export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
+  'fetch',
+]);
+
 // ── Env denylist ────────────────────────────────────────────────────
 
 const GIT_ENV_DENYLIST: ReadonlySet<string> = new Set([
@@ -583,6 +598,24 @@ export interface SafeGitOptions {
   input?: string | Buffer;
   /** Maximum buffer for stdout/stderr (execFileSync). */
   maxBuffer?: number;
+  /**
+   * Opt-in: allow execSync/spawn against the instar source tree for a small
+   * allowlist of data-pull verbs that do not mutate committed refs or the
+   * working tree (currently `fetch` and `ls-remote`). Defaults false.
+   *
+   * Why this exists: SourceTreeGuard refuses non-readonly git ops on the
+   * instar source tree (the 2026-04-22 incident-class). But the release-
+   * readiness watchdog (LAYER B of RELEASE-READINESS-VISIBILITY-SPEC) and
+   * its sibling FeatureRolloutReconciler canonical scan (LAYER C) NEED to
+   * pull the canonical `main` ref into the agent's own instar checkout —
+   * by-definition a source tree — to do their job. `git fetch <remote>
+   * <branch> --no-tags --no-recurse-submodules` writes only to FETCH_HEAD
+   * (transient) and the object database; it does not modify the working
+   * tree or any committed refs, so from the source-protection standpoint
+   * it is read-tier. `ls-remote` is pure read. This flag is the narrow,
+   * audited escape hatch the spec referenced.
+   */
+  sourceTreeReadOk?: boolean;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -614,8 +647,15 @@ export class SafeGitExecutor {
   static execSync(args: readonly string[], opts: SafeGitOptions): string {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
 
-    // Run source-tree assertion against every target.
-    runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    // Run source-tree assertion against every target — unless the caller
+    // explicitly opted into the narrow data-pull allowlist (fetch / etc.)
+    // for the documented LAYER B + LAYER C canonical-ref read path. See
+    // SafeGitOptions.sourceTreeReadOk for the rationale.
+    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+      runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    } else {
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+    }
 
     // Verb classification.
     const verbArgs = sliceAfterVerb(args, verb);
@@ -662,7 +702,11 @@ export class SafeGitExecutor {
    */
   static spawn(args: readonly string[], opts: SafeGitOptions): ChildProcess {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
-    runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+      runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    } else {
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+    }
 
     const verbArgs = sliceAfterVerb(args, verb);
     const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);

@@ -102,3 +102,58 @@ describe('Mentor-onboarding E2E lifecycle (alive + dormant)', () => {
     expect(body).toMatch(/^enabled:\s*false\s*$/m);
   });
 });
+
+describe('Mentor ledger survives a broken TokenLedger (regression: production cascade)', () => {
+  // Reproduces the exact production bug: an agent whose TokenLedger init throws
+  // (Echo's `no such column: attribution_key`) must NOT have the mentor ledger +
+  // runner taken down with it. Before the decoupling fix, both lived in one try
+  // block and a TokenLedger throw → /mentor + /framework-issues all 503.
+  let tmpDir: string;
+  let stateDir: string;
+  let server: AgentServer;
+  let app: express.Express;
+  const AUTH = 'test-e2e-mentor-tokenledger-cascade';
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-cascade-e2e-'));
+    stateDir = path.join(tmpDir, '.instar');
+    const serverDataDir = path.join(stateDir, 'server-data');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.mkdirSync(serverDataDir, { recursive: true });
+    // Pre-plant a CORRUPT token-ledger.db so the real TokenLedger constructor
+    // throws on open — standing in for Echo's stale-schema failure.
+    fs.writeFileSync(path.join(serverDataDir, 'token-ledger.db'), 'this is not a sqlite database — corrupt on purpose');
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+
+    const config: InstarConfig = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+
+    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    await server.start();
+    app = server.getApp();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-onboarding-lifecycle.test.ts:cascade' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('a corrupt token-ledger.db (TokenLedger fails) does NOT 503 the mentor surface', async () => {
+    // TokenLedger should be down, but the mentor ledger + runner are independent.
+    const status = await request(app).get('/mentor/status').set(auth());
+    expect(status.status).toBe(200); // NOT 503 — the cascade is broken
+    expect(status.body.enabled).toBe(false);
+
+    const fi = await request(app).get('/framework-issues').set(auth());
+    expect(fi.status).toBe(200); // ledger alive despite TokenLedger failure
+    expect(Array.isArray(fi.body.issues)).toBe(true);
+  });
+});

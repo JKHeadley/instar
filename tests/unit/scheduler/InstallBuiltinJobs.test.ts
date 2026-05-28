@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { installBuiltinJobs } from '../../../src/scheduler/InstallBuiltinJobs.js';
+import { validateManifest, loadAgentMdJobs } from '../../../src/scheduler/AgentMdJobLoader.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 describe('installBuiltinJobs', () => {
@@ -80,6 +81,104 @@ describe('installBuiltinJobs', () => {
     expect(alphaManifest.origin).toBe('instar');
     expect(alphaManifest.execute.type).toBe('agentmd');
     expect(alphaManifest.enabled).toBe(true);
+  });
+
+  it('REGRESSION: EVERY real shipped built-in template produces a manifest the loader accepts', () => {
+    // The fleet-wide check: install the ACTUAL shipped templates and assert every
+    // generated manifest passes validateManifest (jobCount would be 0 otherwise).
+    const repoRoot = path.resolve(__dirname, '..', '..', '..');
+    const realAgentDir = path.join(workspace, 'real-agent', '.instar');
+    fs.mkdirSync(realAgentDir, { recursive: true });
+    const report = installBuiltinJobs({ agentStateDir: realAgentDir, packageRoot: repoRoot, port: 4042 });
+    expect(report.errors).toEqual([]);
+    expect(report.installed.length).toBeGreaterThanOrEqual(10); // the shipped built-in set
+    const scheduleDir = path.join(realAgentDir, 'jobs', 'schedule');
+    for (const slug of report.installed) {
+      const m = JSON.parse(fs.readFileSync(path.join(scheduleDir, `${slug}.json`), 'utf-8'));
+      expect(() => validateManifest(m, slug), `manifest for "${slug}" must pass the loader`).not.toThrow();
+    }
+  });
+
+  it('GAP-CLOSER: every real shipped template loads end-to-end through loadAgentMdJobs with valid scheduling', () => {
+    // The blind spot that let jobCount=0 ship: the regression test above validates
+    // the JSON MANIFEST, but the real loader ALSO validates the `.md` frontmatter
+    // (which carries scheduling keys). Driving the install output through the FULL
+    // loadAgentMdJobs path — and asserting the scheduling VALUES, not just a count —
+    // is the assertion that would have caught the live failure.
+    const repoRoot = path.resolve(__dirname, '..', '..', '..');
+    const realAgentDir = path.join(workspace, 'real-agent-e2e', '.instar');
+    fs.mkdirSync(realAgentDir, { recursive: true });
+    const report = installBuiltinJobs({ agentStateDir: realAgentDir, packageRoot: repoRoot, port: 4042 });
+    expect(report.errors).toEqual([]);
+
+    const installedCount = report.installed.length; // derived, never hardcoded
+    expect(installedCount).toBeGreaterThanOrEqual(10);
+
+    const scheduleDir = path.join(realAgentDir, 'jobs', 'schedule');
+    const jobsRootDir = path.join(realAgentDir, 'jobs');
+    const result = loadAgentMdJobs(scheduleDir, jobsRootDir);
+
+    // (b) ZERO frontmatter rejections — the exact failure mode being fixed.
+    const fmProblems = result.problems.filter((p) => p.kind === 'agentmd-frontmatter-invalid');
+    expect(fmProblems, `frontmatter rejections: ${JSON.stringify(fmProblems)}`).toEqual([]);
+
+    // (a) Every installed template actually loads.
+    expect(result.jobs.length).toBe(installedCount);
+
+    // (c) Scheduling VALUES are valid — the test cannot pass while a job loads
+    // with garbage scheduling (test-can-encode-the-bug guard).
+    const validPriorities = new Set(['critical', 'high', 'medium', 'low']);
+    for (const job of result.jobs) {
+      expect(typeof job.schedule === 'string' && job.schedule.trim().length > 0,
+        `job "${job.slug}" must have a non-empty schedule`).toBe(true);
+      expect(validPriorities.has(job.priority as string),
+        `job "${job.slug}" priority "${job.priority}" must be valid`).toBe(true);
+      expect((job.expectedDurationMinutes ?? 0) > 0,
+        `job "${job.slug}" expectedDurationMinutes must be > 0`).toBe(true);
+    }
+  });
+
+  it('REGRESSION: generated manifest carries priority/expectedDurationMinutes/model and PASSES the loader validator (round-trip)', () => {
+    // The bug: built-in manifests omitted priority/expectedDurationMinutes/model
+    // that the loader REQUIRES → jobCount=0 fleet-wide. The strongest guard is to
+    // round-trip the producer's output through the consumer's validator.
+    writeTemplate('gamma', 'gamma body\n', { priority: 'high', expectedDurationMinutes: '7', model: 'sonnet' });
+    const report = installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+    expect(report.errors).toEqual([]);
+
+    const m = JSON.parse(fs.readFileSync(path.join(agentStateDir, 'jobs', 'schedule', 'gamma.json'), 'utf-8'));
+    expect(m.priority).toBe('high');
+    expect(m.expectedDurationMinutes).toBe(7); // coerced string "7" → number
+    expect(typeof m.expectedDurationMinutes).toBe('number');
+    expect(m.model).toBe('sonnet');
+    // The actual anti-regression assertion: the loader accepts our output.
+    expect(() => validateManifest(m, 'gamma')).not.toThrow();
+  });
+
+  it('carries the manifest pass-throughs the loader reads (unrestrictedTools, tags)', () => {
+    // Write the template directly so it carries a tags sequence + unrestrictedTools.
+    fs.writeFileSync(
+      path.join(templatesDir, 'delta.md'),
+      `---\nname: "delta"\ndescription: "d"\nschedule: "*/5 * * * *"\npriority: "medium"\nexpectedDurationMinutes: "2"\nmodel: "haiku"\nenabled: "true"\nunrestrictedTools: "true"\ntags:\n  - cat:learning\n  - audit\n---\ndelta body\n`,
+      'utf-8',
+    );
+    installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+    const m = JSON.parse(fs.readFileSync(path.join(agentStateDir, 'jobs', 'schedule', 'delta.json'), 'utf-8'));
+    expect(m.unrestrictedTools).toBe(true); // coerced "true" → boolean
+    expect(m.tags).toEqual(['cat:learning', 'audit']);
+  });
+
+  it('FAILS LOUD (report.errors, no manifest) when expectedDurationMinutes is missing/invalid — not a silent broken manifest', () => {
+    // Write a template whose duration is non-numeric.
+    fs.writeFileSync(
+      path.join(templatesDir, 'broken.md'),
+      `---\nname: "broken"\ndescription: "d"\nschedule: "*/5 * * * *"\npriority: "low"\nexpectedDurationMinutes: "soon"\nmodel: "haiku"\nenabled: "true"\n---\nbody\n`,
+      'utf-8',
+    );
+    const report = installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+    expect(report.errors.some((e) => e.slug === 'broken')).toBe(true);
+    // No half-baked manifest written.
+    expect(fs.existsSync(path.join(agentStateDir, 'jobs', 'schedule', 'broken.json'))).toBe(false);
   });
 
   it('substitutes the port sentinel 4042 → the agent\'s configured port in body content', () => {

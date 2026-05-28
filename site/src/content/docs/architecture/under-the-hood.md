@@ -367,3 +367,16 @@ The sections above describe what each subsystem does at a behavioral level. The 
 ### `src/providers/` — cross-framework intelligence routing
 
 `AnthropicIntelligenceProvider`, `CostAwareRoutingPolicy`, `LocalModelAdapter`, `ProviderRegistry`, `StallTriageNurse` (provider-side fork), `TierResolver`.
+
+## Inter-agent comms (agent-to-agent Telegram primitive)
+
+- **`AgentTelegramComms`** (`src/messaging/AgentTelegramComms.ts`) — the agent-to-agent
+  Telegram comms primitive's pure logic: marker parse/format, the recipient routing
+  matrix (incl. user-spoof defense + per-source role acceptance), and cycle-detection.
+- **`AgentTelegramLedger`** (`src/messaging/AgentTelegramLedger.ts`) — append-only JSONL
+  audit trail of every a2a send and every receive decision (routed or dropped, with the
+  reason code). Best-effort + non-throwing.
+- **`ProcessedIdStore`** (`src/messaging/ProcessedIdStore.ts`) — bounded persistent set
+  of recently-processed marker ids; idempotency against Telegram retry / adapter restart.
+
+Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
