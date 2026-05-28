@@ -1,0 +1,242 @@
+/**
+ * StaleSessionBackstop — the unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5).
+ *
+ * Rules 1–2 of the robustness bar are deliberately conservative ("can't tell"
+ * never means "dead"). That creates a dual risk the round-1 review surfaced:
+ *   (a) a session that FAKES work (a tight CPU loop, or a transcript that appends
+ *       a heartbeat byte every few minutes) is KEPT by every killer forever;
+ *   (b) a session stuck `indeterminate` forever leaks a slot.
+ * Both are resolved by a single staleness escalation — NEVER an auto-kill. After
+ * M minutes of no-forward-progress, or N consecutive `indeterminate` probes, ONE
+ * deduped Attention-queue item is raised for an operator decision
+ * (investigate / force-kill?). Dedupe is per EPISODE (a recovered session that
+ * later goes stale again raises a fresh item).
+ *
+ * Forward progress is NOT raw byte growth — a wedged session that appends a
+ * heartbeat byte would defeat a naive "any growth" gate forever (exactly the
+ * absence-of-signal inference rule 2 forbids). "Progress" = ANY of:
+ *   (i)   a MEANINGFUL transcript advance: delta ≥ progressFloorBytes AND the new
+ *         tail differs from the prior tail (guards the heartbeat/loop case),
+ *   (ii)  main-process CPU above an idle floor,
+ *   (iii) a change in the positive-idle / prompt state.
+ *
+ * A server-unreachable `indeterminate` raises ONE GLOBAL "tmux control-plane
+ * unreachable" item (not one per session) — anti-flood. Long-`indeterminate`
+ * sessions are flagged so the spawn-path can exclude them from the ABSOLUTE
+ * session cap, so a fleet of unverifiable panes can never lock a human out of
+ * spawning (the death-spiral cannot relocate here).
+ *
+ * Signal-only: this backstop never ends a session. It only observes and asks.
+ */
+
+import type { Session } from '../core/types.js';
+import type { AttentionPoster } from './sentinelWiring.js';
+
+export type Liveness = 'alive' | 'dead' | 'indeterminate';
+
+/** A per-tick forward-progress probe for one session. */
+export interface ProgressSnapshot {
+  /** Whether the transcript path resolved + statted (false ⇒ ambiguous). */
+  transcriptResolved: boolean;
+  /** Transcript size in bytes (0 when unresolved). */
+  transcriptSize: number;
+  /** Hash of the last `progressFloorBytes` of the transcript (null when unresolved/short). */
+  transcriptTailHash: string | null;
+  /** Main-process CPU/IO above an idle floor. `undefined` ⇒ uninspectable. */
+  mainProcessActive: boolean | undefined;
+  /** Opaque token for the positive-idle / prompt state — ANY change ⇒ progress. */
+  idleStateToken: string;
+}
+
+export interface LivenessBatch {
+  /** False ⇒ the tmux control plane is unreachable (no authoritative snapshot). */
+  reachable: boolean;
+  /** Per-session tri-state liveness keyed by tmux session name. */
+  liveness: Map<string, Liveness>;
+}
+
+export interface StaleBackstopDeps {
+  listRunningSessions: () => Session[];
+  /** ONE batch probe per tick (mirrors the boot-purge single-snapshot path). */
+  probeLiveness: (tmuxSessions: string[]) => Promise<LivenessBatch> | LivenessBatch;
+  snapshot: (session: Session) => ProgressSnapshot;
+  raiseAttention: AttentionPoster;
+  /** Flag/unflag a session as long-`indeterminate` for the spawn absolute-cap exclusion. */
+  setLongIndeterminate?: (sessionId: string, isLong: boolean) => void;
+  now?: () => number;
+}
+
+export interface StaleBackstopOptions {
+  enabled: boolean;
+  tickIntervalSec: number;
+  unverifiableEscalateMinutes: number;
+  indeterminateEscalateCount: number;
+  progressFloorBytes: number;
+}
+
+export const DEFAULT_STALE_BACKSTOP_OPTIONS: StaleBackstopOptions = {
+  enabled: true,
+  tickIntervalSec: 120,
+  unverifiableEscalateMinutes: 30,
+  indeterminateEscalateCount: 15,
+  progressFloorBytes: 512,
+};
+
+interface Obs {
+  lastSnapshot: ProgressSnapshot | null;
+  lastProgressAt: number;
+  indeterminateStreak: number;
+  episodeActive: boolean;
+  episodeSeq: number;
+}
+
+export class StaleSessionBackstop {
+  private readonly deps: StaleBackstopDeps;
+  private readonly opts: StaleBackstopOptions;
+  private readonly now: () => number;
+  private timer: NodeJS.Timeout | null = null;
+  private obs = new Map<string, Obs>();
+  private globalUnreachable = false;
+  private globalUnreachableSeq = 0;
+
+  constructor(deps: StaleBackstopDeps, opts?: Partial<StaleBackstopOptions>) {
+    this.deps = deps;
+    this.opts = { ...DEFAULT_STALE_BACKSTOP_OPTIONS, ...(opts ?? {}) };
+    this.now = deps.now ?? (() => Date.now());
+  }
+
+  start(): void {
+    if (this.timer || !this.opts.enabled) return;
+    this.timer = setInterval(() => { void this.tick(); }, this.opts.tickIntervalSec * 1000);
+    if (typeof this.timer.unref === 'function') this.timer.unref();
+  }
+
+  stop(): void {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+  }
+
+  private obsFor(id: string): Obs {
+    let o = this.obs.get(id);
+    if (!o) {
+      o = { lastSnapshot: null, lastProgressAt: this.now(), indeterminateStreak: 0, episodeActive: false, episodeSeq: 0 };
+      this.obs.set(id, o);
+    }
+    return o;
+  }
+
+  /** Run one observation pass. Public so the lifecycle (and tests) can drive it. */
+  async tick(): Promise<void> {
+    if (!this.opts.enabled) return;
+
+    const running = this.deps.listRunningSessions();
+    const batch = await this.deps.probeLiveness(running.map((s) => s.tmuxSession));
+
+    // Control-plane unreachable: ONE global item, never per-session (anti-flood).
+    if (!batch.reachable) {
+      if (!this.globalUnreachable) {
+        this.globalUnreachable = true;
+        this.globalUnreachableSeq++;
+        await this.deps.raiseAttention({
+          id: `stale-tmux-unreachable-${this.globalUnreachableSeq}`,
+          title: 'tmux control plane unreachable',
+          summary:
+            'The tmux server is not answering, so no session can be verified alive or dead. '
+            + 'Sessions are being KEPT (never auto-killed on doubt). Investigate the tmux server / host.',
+          category: 'degradation',
+          priority: 'HIGH',
+        });
+      }
+      return; // do not advance per-session episodes while blind
+    }
+    this.globalUnreachable = false;
+
+    const liveIds = new Set(running.map((s) => s.id));
+    for (const session of running) {
+      const v = batch.liveness.get(session.tmuxSession) ?? 'indeterminate';
+      const o = this.obsFor(session.id);
+
+      if (v === 'dead') {
+        // A dead session is the reapers' business; clear our state for it.
+        this.clear(session.id);
+        continue;
+      }
+
+      if (v === 'indeterminate') {
+        o.indeterminateStreak++;
+        const isLong = o.indeterminateStreak >= this.opts.indeterminateEscalateCount;
+        this.deps.setLongIndeterminate?.(session.id, isLong);
+        if (isLong && !o.episodeActive) {
+          o.episodeActive = true;
+          o.episodeSeq++;
+          await this.escalateSession(session, o, `unverifiable: ${o.indeterminateStreak} consecutive indeterminate probes`);
+        }
+        continue;
+      }
+
+      // v === 'alive' — verifiable again.
+      o.indeterminateStreak = 0;
+      this.deps.setLongIndeterminate?.(session.id, false);
+      const cur = this.deps.snapshot(session);
+      const prev = o.lastSnapshot;
+      o.lastSnapshot = cur;
+      if (!prev) {
+        // First sighting — establish the baseline, treat as progress.
+        o.lastProgressAt = this.now();
+        continue;
+      }
+      if (this.hasForwardProgress(prev, cur)) {
+        o.lastProgressAt = this.now();
+        o.episodeActive = false; // recovered — a future stall is a new episode
+        continue;
+      }
+      const stalledMs = this.now() - o.lastProgressAt;
+      if (stalledMs >= this.opts.unverifiableEscalateMinutes * 60_000 && !o.episodeActive) {
+        o.episodeActive = true;
+        o.episodeSeq++;
+        await this.escalateSession(
+          session, o,
+          `no forward progress for ${Math.round(stalledMs / 60_000)} min (transcript static + no CPU + no prompt change) — may be faking work`,
+        );
+      }
+    }
+
+    // Drop obs for sessions that are gone.
+    for (const id of [...this.obs.keys()]) {
+      if (!liveIds.has(id)) this.clear(id);
+    }
+  }
+
+  private hasForwardProgress(prev: ProgressSnapshot, cur: ProgressSnapshot): boolean {
+    // (i) Meaningful transcript advance — guards the heartbeat/loop case.
+    if (
+      prev.transcriptResolved && cur.transcriptResolved &&
+      cur.transcriptSize - prev.transcriptSize >= this.opts.progressFloorBytes &&
+      cur.transcriptTailHash != null && cur.transcriptTailHash !== prev.transcriptTailHash
+    ) {
+      return true;
+    }
+    // (ii) Main process doing CPU/IO work. `undefined` (uninspectable) is NOT progress
+    //      here — the escalation is a question to the operator, never a kill, so erring
+    //      toward "ask" on a truly-uninspectable session is safe.
+    if (cur.mainProcessActive === true) return true;
+    // (iii) Positive-idle / prompt state changed.
+    if (cur.idleStateToken !== prev.idleStateToken) return true;
+    return false;
+  }
+
+  private async escalateSession(session: Session, o: Obs, detail: string): Promise<void> {
+    await this.deps.raiseAttention({
+      id: `stale-${session.id}-${o.episodeSeq}`,
+      title: `Session "${session.name}" is stale but unkillable`,
+      summary:
+        `${detail}. It is being KEPT (never auto-killed), but it may be wedged or holding a slot. `
+        + `Investigate, or force-kill it from the dashboard if it's genuinely stuck.`,
+      category: 'degradation',
+      priority: 'HIGH',
+    });
+  }
+
+  private clear(id: string): void {
+    if (this.obs.delete(id)) this.deps.setLongIndeterminate?.(id, false);
+  }
+}

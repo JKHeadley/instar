@@ -180,6 +180,11 @@ export interface SessionManagerConfig {
   /** Absolute maximum session duration in minutes — safety net for sessions
    *  without an explicit timeout (default: 240) */
   defaultMaxDurationMinutes?: number;
+  /** Tri-state liveness-oracle tuning (UNIFIED-SESSION-LIFECYCLE §P1). Partial —
+   *  unset fields fall back to DEFAULT_LIVENESS_CONFIG. Validated at startup so a
+   *  sub-floor probe timeout (which would re-create the 2026-05-27 false-purge)
+   *  is rejected loudly. */
+  liveness?: Partial<import('./SessionLivenessOracle.js').SessionLivenessOracleConfig>;
 }
 
 // ── Job Scheduling ──────────────────────────────────────────────────
@@ -2740,6 +2745,46 @@ export interface MonitoringConfig {
     verifyWindowMs?: number;
   };
   /**
+   * ContextWedgeSentinel — detects the Claude Code "thinking/redacted_thinking
+   * blocks in the latest assistant message cannot be modified" 400 fast-fail
+   * wedge (a cancelled tool call inside a parallel batch corrupts the latest
+   * assistant turn's thinking block, so every subsequent resume 400s instantly
+   * and the session is permanently dead while still emitting output). A nudge
+   * cannot fix it; recovery is a FRESH respawn (kill + clear the topic's resume
+   * UUID so the bridge does not --resume the corrupted transcript).
+   *
+   * Detection/audit ships default-ON (housekeeping — harmless, kills nothing).
+   * The destructive respawn is gated behind `autoRecovery` (default OFF + dryRun)
+   * and rides the Graduated Feature Rollout track (rollout-flag-path:
+   * monitoring.contextWedgeSentinel.autoRecovery). See
+   * docs/specs/context-wedge-sentinel.md.
+   */
+  contextWedgeSentinel?: {
+    /** Master kill switch for detection + audit (default: true). */
+    enabled: boolean;
+    /** Scan-loop interval (ms) (default: 20_000). */
+    tickIntervalMs?: number;
+    /** How long the signature must persist as the non-progressing session tail
+     *  before the wedge is confirmed (ms) (default: 45_000). Guards against a
+     *  session merely discussing the error or a transient render. */
+    confirmWindowMs?: number;
+    /** Pane lines to capture when scanning for the signature (default: 30). */
+    captureLines?: number;
+    /**
+     * Destructive auto-recovery (fresh respawn). The Graduated-Feature-Rollout
+     * staged flag: dark (enabled:false) → dry-run (enabled:true + dryRun:true,
+     * logs would-respawn) → live (enabled:true + dryRun:false) → default-on
+     * (shipped default enabled:true). Read at runtime as a fallback against the
+     * shipped default so a default flip propagates fleet-wide with no migration.
+     */
+    autoRecovery?: {
+      /** Whether confirmed wedges are auto-respawned (default: false). */
+      enabled: boolean;
+      /** When true, log the would-respawn decision but kill nothing (default: true). */
+      dryRun?: boolean;
+    };
+  };
+  /**
    * SessionReaper — pressure-aware reaper of idle-but-alive sessions. The only
    * monitor that *kills* on a heuristic, so it ships OFF + dry-run by default.
    * See docs/specs/SESSION-REAPER-SPEC.md and DEFAULT_SESSION_REAPER_CONFIG.
@@ -2760,6 +2805,31 @@ export interface MonitoringConfig {
     maxReapsPerHour?: number;
     finalGraceSec?: number;
     protectOpenCommitments?: boolean;
+  };
+  /**
+   * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing
+   * listener on `sessionReaped` that surfaces a "your session was shut down"
+   * notice so a session never silently vanishes. Default ON (the disappearing-
+   * session incident is exactly the silence this closes); recovery-bounce and
+   * operator kills stay silent regardless. Terminal reaps within
+   * `coalesceWindowMs` collapse into one consolidated lifeline message.
+   */
+  reapNotify?: {
+    enabled?: boolean;
+    coalesceWindowMs?: number;
+  };
+  /**
+   * Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Watches for sessions
+   * the conservative KEEP-rules would protect forever — one that FAKES work, or
+   * one stuck `indeterminate` — and raises a SINGLE deduped Attention item for an
+   * operator decision (never an auto-kill). Default ON; signal-only.
+   */
+  staleBackstop?: {
+    enabled?: boolean;
+    tickIntervalSec?: number;
+    unverifiableEscalateMinutes?: number;
+    indeterminateEscalateCount?: number;
+    progressFloorBytes?: number;
   };
   /**
    * Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar

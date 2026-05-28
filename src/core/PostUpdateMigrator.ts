@@ -2765,6 +2765,51 @@ If a user asks "are my sentinels alerting?" or "why isn't the watchdog notifying
       result.skipped.push('CLAUDE.md: Sentinel Notifications section already present');
     }
 
+    // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
+    // about the thinking-block-400 wedge + that auto-recovery is opt-in. Without
+    // it, an agent asked "why did my session keep failing instantly / what is
+    // the thinking-block error?" has no grounded answer. Idempotent via marker.
+    if (!content.includes('ContextWedgeSentinel') && !content.includes('Stuck-Context Recovery (thinking-block wedge)')) {
+      const section = `
+## Stuck-Context Recovery (thinking-block wedge)
+
+The ContextWedgeSentinel (4th member of the silently-stopped family) detects a specific way a session dies: when a tool call is cancelled inside a PARALLEL tool batch while extended thinking is on, Claude Code cancels every sibling call and that corrupts the thinking block on the latest assistant turn. After that, the Anthropic API rejects every resume with \`400 … thinking blocks in the latest assistant message cannot be modified\`, so the session fast-fails instantly on every message ("Cooked for 0s") — permanently dead, yet still emitting output (so the silence + socket sentinels miss it).
+
+A nudge can't fix this (re-engaging re-sends the corrupted turn). Recovery is a FRESH respawn — kill + spawn a new session that does NOT \`--resume\` the corrupted transcript (the topic's resume UUID is cleared first, so the bridge can't re-wedge on the next message).
+
+- **Detection + audit are default-ON housekeeping** — every transition (detected / recovered / dry-run / false-alarm / escalated) lands in \`logs/sentinel-events.jsonl\`; the user sees nothing.
+- **Auto-recovery is OPT-IN** (it kills + respawns a session). It rides the Graduated Feature Rollout track and ships dark. Turn it on in \`.instar/config.json\`: \`{"monitoring": {"contextWedgeSentinel": {"autoRecovery": {"enabled": true, "dryRun": false}}}}\` (use \`dryRun: true\` first to log what it WOULD respawn). When OFF, a confirmed wedge escalates (gated by \`sentinelTelegramEscalation\`) so you can restart it yourself.
+- If a user asks "why did my session keep failing / get stuck on a thinking error?" — read \`logs/sentinel-events.jsonl\` (filter \`context-wedge\`) and explain the above. Spec: \`docs/specs/context-wedge-sentinel.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Stuck-Context Recovery section');
+    } else {
+      result.skipped.push('CLAUDE.md: Stuck-Context Recovery section already present');
+    }
+
+    // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4) — tells the agent the durable
+    // "why did my session vanish?" answer exists and where to read it. Without
+    // this, an agent asked "where did my session go?" has no grounded answer.
+    // Idempotent via content-sniffing on the route path.
+    if (!content.includes('/sessions/reap-log')) {
+      const section = `
+## Reap-Log — why a session vanished
+
+Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder, a KEEP-guard hold, in-flight) — is recorded as one JSON line in \`logs/reap-log.jsonl\` and served read-only at \`GET /sessions/reap-log\`. A session can never disappear without a trace.
+
+- Read it: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/reap-log?limit=50"\` → \`{ entries: [{ ts, type:'reaped'|'skipped', session, reason, disposition, origin, skipped?, machine? }] }\`.
+- Distinct from \`/sessions/reaper\` (live verdicts): the reap-log is the historical record of what ACTUALLY happened.
+- When a session is autonomously shut down you also get a "your session was shut down — <reason>" notice. Recovery-bounces (kill-to-respawn) and your own operator kills stay silent. Off-switch: \`{"monitoring": {"reapNotify": {"enabled": false}}}\`.
+- Proactive: user asks "where did my session go?" / "why did X disappear?" / "did something get killed?" → GET /sessions/reap-log and explain the most recent entries for that session. Spec: \`docs/specs/unified-session-lifecycle-robustness.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Reap-Log section');
+    } else {
+      result.skipped.push('CLAUDE.md: Reap-Log section already present');
+    }
+
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
     // and lifeline drift auto-promote. Complementary to Version-Skew Self-
     // Recovery above (that one handles major.minor crossings; this one handles

@@ -68,6 +68,16 @@ export interface RefreshOptions {
   sessionName: string;
   followUpPrompt?: string;
   reason?: string;
+  /**
+   * Fresh respawn: do NOT `--resume` the old session. After the kill (which
+   * fires beforeSessionKill → TopicResumeMap saves the Claude UUID), clear that
+   * resume entry so the respawner spawns a brand-new session with no
+   * conversation carried over. Used by ContextWedgeSentinel: the old
+   * transcript's latest assistant turn is corrupted (thinking-block 400), so
+   * resuming it would immediately re-wedge. Default false (continuity-preserving
+   * resume, the original self-refresh behavior).
+   */
+  fresh?: boolean;
 }
 
 const DEFAULT_MAX_PER_WINDOW = 5;
@@ -103,7 +113,7 @@ export class SessionRefresh {
    * unexpected internal errors from the respawner callback.
    */
   async refreshSession(opts: RefreshOptions): Promise<RefreshResult> {
-    const { sessionName, followUpPrompt, reason } = opts;
+    const { sessionName, followUpPrompt, reason, fresh } = opts;
 
     // ── detect ─────────────────────────────────────────────────────────
     if (!this.deps.telegram) {
@@ -173,9 +183,20 @@ export class SessionRefresh {
       // removed deliberately and the call returns null).
       this.deps.sessionManager.killSession(stateSession.id);
 
+      // Fresh respawn: drop the resume UUID that beforeSessionKill just saved,
+      // so the respawner finds no entry and spawns a brand-new conversation
+      // instead of `--resume`-ing the corrupted transcript. MUST run after the
+      // kill (beforeSessionKill writes the entry) and before the respawner
+      // reads it.
+      if (fresh) {
+        this.deps.topicResumeMap?.remove(topicId);
+        console.log(`[SessionRefresh] fresh respawn — cleared resume UUID for topic ${topicId} (sessionName=${sessionName})`);
+      }
+
       // The respawner spawns a fresh tmux session that runs `claude
       // --resume <uuid>` (resolved by spawnSessionForTopic via the saved
-      // TopicResumeMap entry) and re-registers the topic mapping.
+      // TopicResumeMap entry) and re-registers the topic mapping. With
+      // `fresh`, the entry was just cleared, so it spawns without --resume.
       const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt);
 
       // ── verify + finalize ────────────────────────────────────────────

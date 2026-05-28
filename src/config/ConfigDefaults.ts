@@ -40,6 +40,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     activeWorkSilenceSentinel: {
       enabled: true,
     },
+    // ContextWedgeSentinel — detect+recover the "thinking blocks ... cannot be
+    // modified" 400 fast-fail wedge. ONLY the detection switch is persisted here
+    // (it kills nothing; default-ON is stable). The destructive fresh-respawn
+    // flag `autoRecovery` is DELIBERATELY OMITTED from these persisted defaults:
+    // applyDefaults() is add-missing-only, so persisting autoRecovery.enabled
+    // now would freeze it and a later default-on flip could never reach existing
+    // agents. Instead the autoRecovery default lives as the runtime fallback in
+    // server.ts (the trio block). Graduated-Feature-Rollout promotion to
+    // default-on = (1) flip that runtime literal so every existing agent without
+    // a persisted override inherits it on next update, and (2) add
+    // `autoRecovery: { enabled: true }` here so new agents + the rollout observer
+    // (rollout-flag-path: monitoring.contextWedgeSentinel.autoRecovery) see it.
+    // See docs/specs/context-wedge-sentinel.md.
+    contextWedgeSentinel: {
+      enabled: true,
+    },
     // SessionReaper — pressure-aware reaper of idle-but-alive sessions.
     // UNLIKE the sentinels above, default OFF + dry-run: it is the only monitor
     // that *kills* sessions on a heuristic, so it ships dark and must be flipped
@@ -62,6 +78,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxReapsPerHour: 12,
       finalGraceSec: 60,
       protectOpenCommitments: true,
+    },
+    // Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). Default ON — the single
+    // coalescing listener that surfaces "your session was shut down" so a reap is
+    // never silent (the disappearing-session incident). recovery-bounce + operator
+    // kills stay silent regardless; terminal reaps within the window collapse into
+    // one consolidated lifeline message.
+    reapNotify: {
+      enabled: true,
+      coalesceWindowMs: 60_000,
+    },
+    // Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Default ON, signal-
+    // only: raises ONE deduped Attention item (never auto-kills) when a session is
+    // KEPT forever despite faking work, or is stuck indeterminate. The escalation
+    // thresholds match the spec (30 min no-forward-progress / 15 indeterminate).
+    staleBackstop: {
+      enabled: true,
+      tickIntervalSec: 120,
+      unverifiableEscalateMinutes: 30,
+      indeterminateEscalateCount: 15,
+      progressFloorBytes: 512,
     },
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md). Ships
     // OFF — when disabled, the /failures routes 503-stub (surface still exists

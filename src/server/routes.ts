@@ -694,6 +694,7 @@ export interface RouteContext {
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
+  reapLog?: import('../monitoring/ReapLog.js').ReapLog | null;
   /** TaskFlow registry — durable multi-step job records (OpenClaw import).
    *  Null when not enabled. Phase 1: no business consumers; admin endpoints
    *  only. */
@@ -3833,6 +3834,20 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sessionReaper.snapshot());
   });
 
+  // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4). The pull-surface answer to "why did
+  // my session vanish?": every reap + every refused/skipped terminate, newest
+  // last. Read-only, Bearer-auth (the router-level middleware). `?limit=N`
+  // bounds the tail (default 200).
+  router.get('/sessions/reap-log', (req, res) => {
+    if (!ctx.reapLog) {
+      res.status(503).json({ error: 'reap-log unavailable' });
+      return;
+    }
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
+    res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
   router.get('/sessions', (req, res) => {
     const status = req.query.status as string | undefined;
     const validStatuses = ['starting', 'running', 'completed', 'failed', 'killed'];
@@ -4066,25 +4081,34 @@ export function createRoutes(ctx: RouteContext): Router {
     }, 500);
   });
 
-  router.delete('/sessions/:id', (req, res) => {
+  router.delete('/sessions/:id', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.id)) {
       res.status(400).json({ error: 'Invalid session ID format' });
       return;
     }
     try {
-      // Try direct UUID lookup first, then fall back to tmux session name lookup.
-      // The dashboard sends tmux session names, not UUIDs.
-      let killed = ctx.sessionManager.killSession(req.params.id);
-      if (!killed) {
-        // Look up by tmux session name
+      // Operator kill — stamped origin:'operator' so it bypasses the autonomous
+      // ReapAuthority gates (protected / lease / KEEP-guard) and ALWAYS happens
+      // (the user clicked "kill"). Routing through terminateSession (rather than
+      // the raw killSession) gives the reap-log + lifecycle events the §P4 surface
+      // depends on. (UNIFIED-SESSION-LIFECYCLE §P0.)
+      // Try direct UUID lookup first, then fall back to tmux session name lookup —
+      // the dashboard sends tmux session names, not UUIDs.
+      let target = ctx.state.getSession(req.params.id);
+      if (!target) {
         const allSessions = ctx.state.listSessions({ status: 'running' });
-        const match = allSessions.find(s => s.tmuxSession === req.params.id);
-        if (match) {
-          killed = ctx.sessionManager.killSession(match.id);
-        }
+        target = allSessions.find(s => s.tmuxSession === req.params.id) ?? null;
       }
-      if (!killed) {
+      if (!target) {
         res.status(404).json({ error: `Session "${req.params.id}" not found` });
+        return;
+      }
+      const result = await ctx.sessionManager.terminateSession(target.id, 'operator-kill', {
+        origin: 'operator',
+        finalStatus: 'killed',
+      });
+      if (!result.terminated) {
+        res.status(404).json({ error: `Session "${req.params.id}" not found`, skipped: result.skipped });
         return;
       }
       res.json({ ok: true, killed: req.params.id });

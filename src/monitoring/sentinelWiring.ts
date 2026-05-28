@@ -25,6 +25,10 @@ import type {
   ActiveWorkSilenceSentinelDeps,
   SessionRegistryEntry,
 } from './ActiveWorkSilenceSentinel.js';
+import type {
+  ContextWedgeSentinelDeps,
+  WedgeRecoveryOutcome,
+} from './ContextWedgeSentinel.js';
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 
@@ -77,6 +81,7 @@ export function makeAttentionPoster(opts: {
 
 const SOCKET_CAPTURE_LINES = 40;
 const SILENCE_CAPTURE_LINES = 40;
+const WEDGE_CAPTURE_LINES = 30;
 
 /**
  * Callback shape for routing a recovery-failed escalation through the
@@ -100,6 +105,49 @@ export function buildSocketDisconnectDeps(opts: {
       // re-engages without interrupting in-flight work (unlike Ctrl+C, which
       // would cancel a tool call that may still be running).
       return opts.sessions.sendKey(sessionName, 'Enter');
+    },
+    notifyFn: async (sessionName, text) => {
+      await opts.escalate(sessionName, text);
+    },
+    listSessionNames: () =>
+      opts.sessions.listRunningSessions().map((s) => s.tmuxSession),
+  };
+}
+
+/**
+ * Builds the ContextWedgeSentinel deps. The `recoverFn` encodes the
+ * detect-only / dry-run / live recovery policy from autoRecovery config and
+ * delegates the actual fresh respawn to the injected `freshRespawn` callback
+ * (server bootstrap wires it to SessionRefresh.refreshSession({ fresh: true }),
+ * which clears the topic's resume UUID so the new session never --resume-s the
+ * corrupted transcript). Keeping policy here — not in the sentinel — means the
+ * sentinel stays a pure detector + lifecycle and the rollout-staged flag is
+ * observed in exactly one place.
+ */
+export function buildContextWedgeDeps(opts: {
+  sessions: SentinelSessionSurface;
+  escalate: EscalateFn;
+  /** autoRecovery config (the Graduated-Feature-Rollout staged flag). */
+  autoRecovery: { enabled: boolean; dryRun?: boolean };
+  /** Performs the destructive fresh respawn. Returns true if the session was
+   *  actually killed + respawned. Wired to SessionRefresh fresh-mode. */
+  freshRespawn: (sessionName: string) => Promise<boolean>;
+}): ContextWedgeSentinelDeps {
+  return {
+    getRecentOutput: (sessionName) =>
+      opts.sessions.captureOutput(sessionName, WEDGE_CAPTURE_LINES) ?? '',
+    recoverFn: async (sessionName): Promise<WedgeRecoveryOutcome> => {
+      // dark: detection + audit only, no destructive action.
+      if (!opts.autoRecovery.enabled) return 'detect-only';
+      // dry-run: log the would-respawn decision, kill nothing.
+      if (opts.autoRecovery.dryRun) return 'dry-run';
+      // live: actually kill + fresh-respawn.
+      try {
+        const ok = await opts.freshRespawn(sessionName);
+        return ok ? 'respawned' : 'failed';
+      } catch {
+        return 'failed';
+      }
     },
     notifyFn: async (sessionName, text) => {
       await opts.escalate(sessionName, text);

@@ -37,6 +37,9 @@ function makeDeps(overrides: {
   const topicResumeMap: Partial<TopicResumeMap> = {
     findUuidForSession: vi.fn().mockReturnValue(uuid),
     save: vi.fn(),
+    remove: vi.fn((_topic: number) => {
+      callOrder.push('removeResume');
+    }) as unknown as TopicResumeMap['remove'],
   };
   const sessionManager: Partial<SessionManager> = {
     killSession: vi.fn((_id: string) => {
@@ -71,6 +74,26 @@ function makeDeps(overrides: {
 describe('SessionRefresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('fresh mode (ContextWedgeSentinel re-wedge defense)', () => {
+    it('clears the topic resume UUID AFTER kill and BEFORE respawn', async () => {
+      const { refresh, topicResumeMap, callOrder } = makeDeps();
+      const result = await refresh.refreshSession({ sessionName: 'echo-qalatra', fresh: true });
+      expect(result.ok).toBe(true);
+      expect(topicResumeMap.remove).toHaveBeenCalledWith(9235);
+      // Order is load-bearing: beforeSessionKill saves the UUID during
+      // killSession, so the clear MUST come after the kill; and the respawner
+      // reads the (now-cleared) map, so the clear MUST come before respawn.
+      expect(callOrder).toEqual(['killSession', 'removeResume', 'respawner']);
+    });
+
+    it('default (no fresh) preserves resume — never clears the UUID', async () => {
+      const { refresh, topicResumeMap, callOrder } = makeDeps();
+      await refresh.refreshSession({ sessionName: 'echo-qalatra' });
+      expect(topicResumeMap.remove).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['killSession', 'respawner']);
+    });
   });
 
   describe('happy path', () => {
