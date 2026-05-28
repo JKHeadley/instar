@@ -39,8 +39,8 @@ kill switch `topicIntent.arccheck.enabled` (default true).
   need a machine" when we already agreed one is set up), the existing
   message-review step now sees a flag and can catch it — instead of nothing.
 - Nothing you see changes by default and nothing gets blocked by this on its
-  own — it's a signal into the review I already run, not a new gate. Turn it
-  off with `topicIntent.arccheck.enabled: false` if ever needed.
+  own — it's a signal into the review I already run, not a new gate. There's a
+  config switch to turn it off if ever needed.
 
 ## Summary of New Capabilities
 
