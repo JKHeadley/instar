@@ -995,149 +995,273 @@ export class AgentServer {
   private installMentorMessageHook(): void {
     const adapter = this.telegramAdapter;
     if (!adapter) return;
-    const cfg = this.getMenteeConfigSnapshot();
-    if (!cfg.enabled) return;
-    if (!cfg.localAgentName) {
-      console.warn('[mentee] receiver wiring skipped — mentee.localAgentName required');
-      return;
-    }
-    if (Object.keys(cfg.knownMentors).length === 0) {
-      console.warn('[mentee] receiver wiring skipped — mentee.knownMentors is empty');
-      return;
-    }
-    if (!cfg.replyChatId || !cfg.replyTopicId) {
+
+    const self = this;
+    const ledger = this.getOrCreateA2aLedger();
+    const localAgent = this.config.projectName;
+
+    // The primary adapter's hook carries ALL a2a roles this agent accepts —
+    // both as-mentee (`mentor`) and as-mentor (`mentor-reply`). Same-machine
+    // a2a (Telegram blocks bot-to-bot) routes through /a2a/inbox → this hook.
+    const knownAgents: Record<string, { botId: string }> = {};
+    const acceptRoles: Record<string, string[]> = {};
+    const roleHandlers = new Map<string, RoleHandler>();
+
+    // ── Mentee side: accept `mentor` from configured known-mentors ──
+    const menteeCfg = this.getMenteeConfigSnapshot();
+    const menteeReady =
+      menteeCfg.enabled &&
+      !!menteeCfg.localAgentName &&
+      Object.keys(menteeCfg.knownMentors).length > 0 &&
+      !!menteeCfg.replyChatId &&
+      !!menteeCfg.replyTopicId;
+    if (menteeCfg.enabled && !menteeReady) {
       console.warn(
-        '[mentee] receiver wiring skipped — mentee.replyChatId + mentee.replyTopicId required for reply path',
+        '[mentee] receiver wiring skipped — mentee.enabled but missing localAgentName / knownMentors / replyChatId / replyTopicId',
       );
-      return;
+    }
+    if (menteeReady) {
+      for (const [mentorName, info] of Object.entries(menteeCfg.knownMentors)) {
+        knownAgents[mentorName] = info;
+        acceptRoles[mentorName] = [...(acceptRoles[mentorName] ?? []), 'mentor'];
+      }
+      const sessionTimeoutMs = menteeCfg.sessionTimeoutMs;
+      const mentorMessageHandler: RoleHandler = async (msg, _ctx) => {
+        // Spawn a mentee session, bounded-wait, capture the reply. Capture the
+        // last non-empty pane snapshot WHILE the session is alive — the post-
+        // completion capture races the reaper (the session's tmux pane is gone
+        // by the time we detect completion, so captureOutput returns empty).
+        let reply = '';
+        let sessionId = '';
+        try {
+          const session = await self.sessionManager.spawnSession({
+            name: `mentee-handle-${Date.now()}`,
+            prompt: msg.body,
+            maxDurationMinutes: Math.max(1, Math.ceil(sessionTimeoutMs / 60_000)),
+          });
+          sessionId = session.id;
+          const tmux = session.tmuxSession;
+          const pollIntervalMs = 2_000;
+          const pollIterations = Math.max(1, Math.ceil(sessionTimeoutMs / pollIntervalMs));
+          let finished = false;
+          for (let i = 0; i < pollIterations; i++) {
+            const stillRunning = self.sessionManager
+              .listRunningSessions()
+              .some((s) => s.id === session.id);
+            // Capture-while-alive: keep the last non-empty snapshot so a
+            // completed-then-reaped session still yields its output.
+            const snapshot = self.sessionManager.captureOutput(tmux, 200) ?? '';
+            if (snapshot.trim()) reply = snapshot;
+            if (!stillRunning) { finished = true; break; }
+            await new Promise((r) => setTimeout(r, pollIntervalMs));
+          }
+          if (!finished) {
+            try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
+            console.warn(
+              `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); sending best-effort partial reply`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
+            err instanceof Error ? err.message : String(err),
+          );
+          return;
+        }
+
+        if (!reply.trim()) {
+          console.warn(
+            `[mentee] mentee session produced empty reply for corr=${msg.corr}; skipping reply-out`,
+          );
+          return;
+        }
+
+        // Reply OUT via the a2a transport (same-machine /a2a/inbox when the
+        // mentor is a local peer; Telegram fallback otherwise). The handler
+        // stays capture-only — deliverA2aMessage is an orchestrator method,
+        // not a capability handed into the handler.
+        await self.deliverA2aMessage({
+          fromAgent: localAgent,
+          toAgent: msg.from,
+          role: 'mentor-reply',
+          corr: msg.corr || msg.id,
+          body: reply,
+          allowedRoles: new Set(['mentor-reply']),
+          telegramTopicId: menteeCfg.replyTopicId,
+          toBotId: menteeCfg.knownMentors[msg.from]?.botId,
+        });
+      };
+      roleHandlers.set('mentor', mentorMessageHandler);
     }
 
-    const acceptRoles: Record<string, string[]> = {};
-    for (const mentorName of Object.keys(cfg.knownMentors)) {
-      acceptRoles[mentorName] = ['mentor'];
+    // ── Mentor side: accept `mentor-reply` from the configured mentee ──
+    // So a mentee's reply arriving via /a2a/inbox reaches the same
+    // finding-emission-only handler that installMentorReceiverHook uses on
+    // the mentor-BOT adapter (spec §250 — capability-handle, capture-only).
+    const mentorCfg = this.getMentorConfigSnapshot();
+    if (mentorCfg.menteeBotId) {
+      const menteeAgent = `instar-${mentorCfg.menteeFramework}`;
+      knownAgents[menteeAgent] = { botId: mentorCfg.menteeBotId };
+      acceptRoles[menteeAgent] = [...(acceptRoles[menteeAgent] ?? []), 'mentor-reply'];
+      const outstanding = this.getOrCreateMentorOutstanding();
+      const replyJsonl = path.join(this.config.stateDir, 'mentor-replies.jsonl');
+      this.mentorReplyJsonlPath = replyJsonl;
+      const mentorReplyHandler: RoleHandler = async (msg, ctx) => {
+        const had = outstanding.clearByCorr(msg.corr);
+        if (!had) {
+          console.warn(`[mentor] mentor-reply for unknown corr=${msg.corr} (late after orphan-sweep?); persisting anyway`);
+        }
+        try {
+          fs.mkdirSync(path.dirname(replyJsonl), { recursive: true });
+          const row = {
+            ts: Date.now(),
+            fromAgent: msg.from,
+            corr: msg.corr,
+            replyId: msg.id,
+            topicId: ctx.topicId,
+            message: msg.body,
+            transport: 'a2a-inbox-local',
+          };
+          fs.appendFileSync(replyJsonl, JSON.stringify(row) + '\n', 'utf-8');
+          console.log(`[mentor] mentor-reply persisted (corr=${msg.corr}, from=${msg.from}) → mentor-replies.jsonl`);
+        } catch (err) {
+          console.warn('[mentor] mentor-reply persist failed (non-fatal):', err instanceof Error ? err.message : String(err));
+        }
+      };
+      roleHandlers.set('mentor-reply', mentorReplyHandler);
+    }
+
+    if (roleHandlers.size === 0) {
+      // Neither side configured — nothing to install. /a2a/inbox will return
+      // agentMessage:false until a role-handler exists.
+      return;
     }
 
     const recipientCfg: RecipientConfig = {
-      localAgent: cfg.localAgentName,
-      knownAgents: cfg.knownMentors,
+      localAgent,
+      knownAgents,
       acceptRoles,
       skewWindowMs: 24 * 60 * 60 * 1000,
       maxVersion: A2A_VERSION,
     };
-
-    const self = this;
-    const ledger = this.getOrCreateA2aLedger();
-    const sessionTimeoutMs = cfg.sessionTimeoutMs;
-
-    const mentorMessageHandler: RoleHandler = async (msg, _ctx) => {
-      // 1. Spawn a mentee session and bounded-wait for completion. The
-      //    mentee's normal default-tool agent (not the Stage-A constrained
-      //    one) — the mentor is asking this agent to do real work.
-      let reply = '';
-      let sessionId = '';
-      try {
-        const session = await self.sessionManager.spawnSession({
-          name: `mentee-handle-${Date.now()}`,
-          prompt: msg.body,
-          maxDurationMinutes: Math.max(1, Math.ceil(sessionTimeoutMs / 60_000)),
-        });
-        sessionId = session.id;
-        const tmux = session.tmuxSession;
-        const pollIntervalMs = 2_000;
-        const pollIterations = Math.max(1, Math.ceil(sessionTimeoutMs / pollIntervalMs));
-        let finished = false;
-        for (let i = 0; i < pollIterations; i++) {
-          const stillRunning = self.sessionManager
-            .listRunningSessions()
-            .some((s) => s.id === session.id);
-          if (!stillRunning) {
-            finished = true;
-            break;
-          }
-          await new Promise((r) => setTimeout(r, pollIntervalMs));
-        }
-        if (!finished) {
-          try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
-          console.warn(
-            `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); skipping reply-out`,
-          );
-          return;
-        }
-        reply = self.sessionManager.captureOutput(tmux, 200) ?? '';
-      } catch (err) {
-        console.warn(
-          `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
-          err instanceof Error ? err.message : String(err),
-        );
-        return;
-      }
-
-      if (!reply.trim()) {
-        console.warn(
-          `[mentee] mentee session produced empty reply for corr=${msg.corr}; skipping reply-out`,
-        );
-        return;
-      }
-
-      // 2. Reply OUT — orchestrator-level (NOT a capability passed to the
-      //    handler — see installMentorMessageHook docs above).
-      const senderBotId = cfg.knownMentors[msg.from]?.botId ?? '';
-      try {
-        const result = await sendAgentMessage(
-          {
-            fromAgent: cfg.localAgentName,
-            toAgent: msg.from,
-            role: 'mentor-reply',
-            toTopicId: cfg.replyTopicId,
-            message: reply,
-            id: `mr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-            correlationId: msg.corr || msg.id,
-          },
-          {
-            send: async (topicId, text) => {
-              try {
-                const res = await adapter.sendToTopic(topicId, text);
-                return { ok: true, messageId: String(res.messageId) };
-              } catch (e) {
-                return { ok: false, error: e };
-              }
-            },
-            appendAudit: (row) => ledger.appendSent(row),
-            now: () => Date.now(),
-            mintId: () => `mr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-            allowedRoles: new Set(['mentor-reply']),
-            // Note: the primary adapter's token is not surfaced on the
-            // adapter (intentionally — receiver doesn't need it). Scrubbing
-            // is best-effort on the adapter-side; this caller is a no-op
-            // for the botToken-scrub helper.
-            botToken: undefined,
-            fromBotId: '',
-            toBotId: senderBotId,
-          },
-        );
-        if (!result.ok) {
-          console.warn(
-            `[mentee] mentor-reply send refused (corr=${msg.corr}): ${result.reason ?? 'unknown'}`,
-          );
-        }
-      } catch (err) {
-        console.warn(
-          `[mentee] mentor-reply send failed (corr=${msg.corr}):`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    };
-
     const hook = buildAgentMessageHook({
       config: recipientCfg,
       ledger,
       processedIds: this.getOrCreateA2aProcessedIds(),
-      roleHandlers: new Map<string, RoleHandler>([['mentor', mentorMessageHandler]]),
+      roleHandlers,
     });
     adapter.setAgentMessageHook(hook);
     console.log(
-      `[mentee] receiver wiring installed — localAgent=${cfg.localAgentName}, knownMentors=[${Object.keys(cfg.knownMentors).join(',')}], reply→${cfg.replyChatId}/topic ${cfg.replyTopicId}`,
+      `[a2a] primary-adapter hook installed — localAgent=${localAgent}, roles=[${[...roleHandlers.keys()].join(',')}], knownAgents=[${Object.keys(knownAgents).join(',')}]`,
     );
+  }
+
+  /**
+   * Deliver an a2a message to another agent. Same-machine peers (registered in
+   * AgentRegistry) receive it via HTTP POST to their `/a2a/inbox` endpoint —
+   * the canonical transport because Telegram structurally blocks bot-to-bot
+   * delivery. Cross-machine peers fall back to the Telegram bot path (preserved
+   * but currently unreachable due to the same block; tracked follow-up).
+   *
+   * Used by BOTH directions: the mentor's `deliverToMentee` (role=mentor) and
+   * the mentee's reply (role=mentor-reply). Returns true iff delivered.
+   */
+  private async deliverA2aMessage(opts: {
+    fromAgent: string;
+    toAgent: string;
+    role: string;
+    corr: string;
+    body: string;
+    allowedRoles: ReadonlySet<string>;
+    telegramTopicId?: number;
+    toBotId?: string;
+    /** Telegram fallback bits (mentor→mentee only). */
+    telegramBot?: { sendToTopic: (topicId: number, text: string) => Promise<{ messageId: number }> };
+    botToken?: string;
+  }): Promise<boolean> {
+    const ledger = this.getOrCreateA2aLedger();
+    const id = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // ── Same-machine: POST to peer's /a2a/inbox ──
+    try {
+      const { listAgents } = await import('../core/AgentRegistry.js');
+      const { getAgentToken } = await import('../messaging/AgentTokenManager.js');
+      const peers = listAgents();
+      const localPeer = peers.find(
+        (a) => a.name === opts.toAgent && a.name !== this.config.projectName,
+      );
+      if (localPeer?.port) {
+        const peerToken = getAgentToken(localPeer.name);
+        if (peerToken) {
+          const tsNow = Date.now();
+          const marker = `[a2a:from=${opts.fromAgent} to=${opts.toAgent} role=${opts.role} id=${id} corr=${opts.corr} ts=${tsNow} v=${A2A_VERSION}]`;
+          const fullText = `${marker}\n\n${opts.body}`;
+          const resp = await fetch(`http://localhost:${localPeer.port}/a2a/inbox`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${peerToken}` },
+            body: JSON.stringify({
+              text: fullText,
+              topicId: opts.telegramTopicId ?? 0,
+              senderAgent: opts.fromAgent,
+              senderIsBot: true,
+              senderBotId: opts.toBotId ?? `${opts.fromAgent}-local`,
+            }),
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (resp.ok) {
+            const result = (await resp.json().catch(() => ({}))) as { agentMessage?: boolean; reason?: string };
+            if (result.agentMessage === true) {
+              try {
+                ledger.appendSent({
+                  ts: tsNow, from: opts.fromAgent, to: opts.toAgent, role: opts.role,
+                  id, corr: opts.corr, result: 'sent', transport: 'a2a-inbox-local',
+                } as never);
+              } catch { /* best-effort */ }
+              console.log(`[a2a] delivered → ${opts.toAgent} via local /a2a/inbox (role=${opts.role}, corr=${opts.corr})`);
+              return true;
+            }
+            console.warn(`[a2a] local /a2a/inbox refused (to=${opts.toAgent}, role=${opts.role}, reason=${result.reason ?? 'unknown'})`);
+          } else {
+            console.warn(`[a2a] local /a2a/inbox HTTP ${resp.status} (to=${opts.toAgent}, role=${opts.role})`);
+          }
+        } else {
+          console.warn(`[a2a] no token for local peer ${localPeer.name}; cannot deliver ${opts.role}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[a2a] local-inbox delivery attempt failed (to=${opts.toAgent}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // ── Cross-machine Telegram fallback (mentor→mentee only; currently
+    //    unreachable due to bot-to-bot block — tracked follow-up). ──
+    if (opts.telegramBot && opts.telegramTopicId !== undefined && opts.toBotId && opts.botToken) {
+      try {
+        const result = await sendAgentMessage(
+          {
+            fromAgent: opts.fromAgent, toAgent: opts.toAgent, role: opts.role,
+            toTopicId: opts.telegramTopicId, message: opts.body, id, correlationId: opts.corr,
+          },
+          {
+            send: async (topicId, text) => {
+              try {
+                const res = await opts.telegramBot!.sendToTopic(topicId, text);
+                return { ok: true, messageId: String(res.messageId) };
+              } catch (e) { return { ok: false, error: e }; }
+            },
+            appendAudit: (row) => ledger.appendSent(row),
+            now: () => Date.now(),
+            mintId: () => id,
+            allowedRoles: opts.allowedRoles,
+            botToken: opts.botToken,
+            fromBotId: opts.botToken.split(':')[0],
+            toBotId: opts.toBotId,
+          },
+        );
+        return result.ok;
+      } catch (err) {
+        console.warn(`[a2a] telegram fallback failed (to=${opts.toAgent}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return false;
   }
 
   /** Snapshot of mentee config for the receiver-wiring installer. */
@@ -1292,122 +1416,32 @@ export class AgentServer {
             return;
           }
 
-          // Same-machine HTTP transport (post-bot-to-bot-block fix). Try
-          // delivering to the peer's `/a2a/inbox` endpoint when the mentee
-          // is registered as a local peer. Telegram structurally blocks
-          // bot-to-bot delivery, so the bot path can't reach a same-machine
-          // peer's primary adapter; the inbox route is the canonical local
-          // transport. If no local peer is found we fall through to the
-          // Telegram bot path (preserved for the cross-machine case;
-          // currently doesn't deliver due to the same block, tracked as a
-          // follow-up).
-          let deliveredLocally = false;
-          try {
-            const { listAgents } = await import('../core/AgentRegistry.js');
-            const { getAgentToken } = await import('../messaging/AgentTokenManager.js');
-            const peers = listAgents();
-            const localPeer = peers.find(
-              (a) => a.name === menteeAgent && a.name !== self.config.projectName,
-            );
-            if (localPeer?.port) {
-              const peerToken = getAgentToken(localPeer.name);
-              if (peerToken) {
-                const tsNow = Date.now();
-                const marker = `[a2a:from=echo to=${menteeAgent} role=mentor id=${corr} corr=${corr} ts=${tsNow} v=1]`;
-                const fullText = `${marker}\n${message}`;
-                const resp = await fetch(`http://localhost:${localPeer.port}/a2a/inbox`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${peerToken}`,
-                  },
-                  body: JSON.stringify({
-                    text: fullText,
-                    topicId: cfg.menteeTopicId ?? 0,
-                    senderAgent: 'echo',
-                    senderIsBot: true,
-                    senderBotId: cfg.botToken ? cfg.botToken.split(':')[0] : 'echo-local',
-                  }),
-                  signal: AbortSignal.timeout(10_000),
-                });
-                if (resp.ok) {
-                  const result = (await resp.json().catch(() => ({}))) as { agentMessage?: boolean; reason?: string };
-                  if (result.agentMessage === true) {
-                    outstanding.markSent(corr, menteeAgent);
-                    try {
-                      const ledger = self.getOrCreateA2aLedger();
-                      ledger.appendSent({
-                        ts: tsNow,
-                        from: 'echo',
-                        to: menteeAgent,
-                        role: 'mentor',
-                        id: corr,
-                        corr,
-                        result: 'sent',
-                        transport: 'a2a-inbox-local',
-                      } as never);
-                    } catch { /* best-effort */ }
-                    console.log(`[mentor] deliverToMentee → local a2a inbox (peer=${menteeAgent}:${localPeer.port}, corr=${corr})`);
-                    deliveredLocally = true;
-                  } else {
-                    console.warn(`[mentor] deliverToMentee local-inbox refused (reason=${result.reason ?? 'unknown'}, peer=${menteeAgent}); falling back to Telegram bot transport`);
-                  }
-                } else {
-                  console.warn(`[mentor] deliverToMentee local-inbox HTTP ${resp.status} (peer=${menteeAgent}); falling back to Telegram bot transport`);
-                }
-              } else {
-                console.warn(`[mentor] deliverToMentee local-inbox skipped — no token for peer ${localPeer.name}; falling back to Telegram bot transport`);
-              }
-            }
-          } catch (err) {
-            console.warn(`[mentor] deliverToMentee local-inbox attempt failed (non-fatal, falling back to Telegram): ${err instanceof Error ? err.message : String(err)}`);
-          }
-          if (deliveredLocally) return;
-
-          // Telegram bot fallback — preserved for cross-machine peers (not
-          // currently deliverable due to Telegram bot-to-bot block; tracked).
-          if (!cfg.botToken || !cfg.menteeBotId || !cfg.menteeChatId || cfg.menteeTopicId === undefined) {
-            console.warn(`[mentor] deliverToMentee skipped — mentor-bot config incomplete (need mentor.botToken + menteeBotId + menteeChatId + menteeTopicId; framework=${framework})`);
-            return;
-          }
-          const bot = self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId);
-          if (!bot) return;
-          const ledger = self.getOrCreateA2aLedger();
-          try {
-            const result = await sendAgentMessage(
-              {
-                fromAgent: 'echo',
-                toAgent: menteeAgent,
-                role: 'mentor',
-                toTopicId: cfg.menteeTopicId,
-                message,
-                id: corr,
-                correlationId: corr,
-              },
-              {
-                send: async (topicId, text) => {
-                  try {
-                    const id = await bot.sendToTopic(topicId, text);
-                    return { ok: true, messageId: String(id ?? '') };
-                  } catch (err) {
-                    return { ok: false, error: err };
-                  }
-                },
-                appendAudit: (row) => ledger.appendSent(row),
-                now: () => Date.now(),
-                mintId: () => corr,
-                allowedRoles: new Set(['mentor']),
-                botToken: cfg.botToken,
-                fromBotId: cfg.botToken.split(':')[0],
-                toBotId: cfg.menteeBotId,
-              },
-            );
-            if (result.ok) {
-              // Mark only on successful send — a failed send doesn't owe a reply.
-              outstanding.markSent(corr, menteeAgent);
-            }
-          } catch (err) {
-            console.warn('[mentor] deliverToMentee send failed (non-fatal):', err instanceof Error ? err.message : String(err));
+          // Deliver via the unified a2a transport: same-machine /a2a/inbox
+          // when the mentee is a local peer (Telegram blocks bot-to-bot, so
+          // this is the canonical path), else the Telegram bot fallback
+          // (cross-machine; currently unreachable, tracked follow-up).
+          const telegramBot =
+            cfg.botToken && cfg.menteeChatId
+              ? self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId) ?? undefined
+              : undefined;
+          const delivered = await self.deliverA2aMessage({
+            fromAgent: 'echo',
+            toAgent: menteeAgent,
+            role: 'mentor',
+            corr,
+            body: message,
+            allowedRoles: new Set(['mentor']),
+            telegramTopicId: cfg.menteeTopicId,
+            toBotId: cfg.menteeBotId,
+            telegramBot: telegramBot
+              ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
+              : undefined,
+            botToken: cfg.botToken,
+          });
+          if (delivered) {
+            outstanding.markSent(corr, menteeAgent);
+          } else {
+            console.warn(`[mentor] deliverToMentee did not deliver (corr=${corr}, mentee=${menteeAgent}) — no local peer + telegram fallback unavailable/blocked`);
           }
         },
         onTickRan: () => {
