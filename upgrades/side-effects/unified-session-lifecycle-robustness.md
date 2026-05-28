@@ -176,3 +176,37 @@ idle — unreachable in the sub-second guard-unset window. Documented inline.
 coalescing, overflow exact-count, auto-timer, malicious-name literalization, unreachable-channel drop)
 + ReapLog (6: empty, reaped/skipped fields, newline-injection→valid-JSON, tail, corrupt-line tolerance)
 green; typecheck clean. Route integration + e2e land in the test-phase commit.
+
+## Commit — P5 unkillability backstop
+
+**Files:**
+- `src/monitoring/StaleSessionBackstop.ts` (new) — signal-only. Per-tick forward-progress check; after
+  M min of no-forward-progress OR N consecutive indeterminate probes, raises ONE per-episode-deduped
+  Attention item (never auto-kills). Forward progress = meaningful transcript advance (≥floor AND new
+  tail — guards the heartbeat/loop case) OR main-process CPU OR a prompt/idle-state change. A
+  control-plane-unreachable tick raises ONE global item, not one per session.
+- `src/core/SessionManager.ts` — `markLongIndeterminate()` + a `longIndeterminateSessions` set excluded
+  from the ABSOLUTE `maxSessions × 3` spawn cap (so unverifiable panes can't lock out spawning);
+  `probeLivenessBatch()` resolves tri-state liveness + reachability from ONE oracle snapshot.
+- `src/core/types.ts` + `src/config/ConfigDefaults.ts` — `monitoring.staleBackstop`, default ON;
+  propagates to existing agents via ConfigDefaults.
+- `src/commands/server.ts` — backstop wired after the SessionReaper; snapshot built from probeTranscript
+  (+ tail-hash read so a heartbeat byte isn't "progress"), captureOutput frame-hash, hasActiveProcesses;
+  Attention via makeAttentionPoster.
+
+**Never-auto-kills (structural):** the backstop's deps surface has NO terminate/kill function — it
+physically cannot end a session. Asserted by a unit test. It only observes and asks.
+
+**Oracle interaction (reviewed):** with the committed single-snapshot oracle, a session is only
+`indeterminate` when the whole snapshot is non-authoritative (server unreachable). So the per-session
+indeterminate-streak path is currently reached only under global unreachability (handled by the global
+item); the live, reachable path is the M-minute no-forward-progress escalation for ALIVE-but-faking
+sessions. The per-session indeterminate code is kept (defensive — correct if the oracle later adds
+individual re-probes that return indeterminate while reachable).
+
+**Spawn-cap exclusion:** long-indeterminate sessions are removed from the ABSOLUTE-cap count only; they
+still count toward the soft scheduler cap. Cleared the moment a session is verifiable again.
+
+**Tests:** StaleSessionBackstop (10: M-min escalation, no-re-raise-per-episode, heartbeat-not-progress,
+meaningful-advance/CPU/prompt-change progress, per-episode re-raise after recovery, global-unreachable
+dedup, long-indeterminate flag set+cleared, never-kills structural) green; typecheck clean.

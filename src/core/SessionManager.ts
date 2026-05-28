@@ -161,6 +161,9 @@ export class SessionManager extends EventEmitter {
   private activeRecoveryChecker?: (session: Session) => boolean;
   /** Shared stateless KEEP-guard consulted by terminateSession (§P2). */
   private reapGuard?: ReapGuard;
+  /** Sessions the §P5 backstop has flagged long-`indeterminate` — excluded from
+   *  the ABSOLUTE spawn cap so unverifiable panes can't lock out spawning. */
+  private longIndeterminateSessions = new Set<string>();
   /** Multi-machine lease/awake predicate gating autonomous reaps (§Multi-machine). */
   private isAwakeMachine?: () => boolean;
 
@@ -379,6 +382,37 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setReapGuard(guard: ReapGuard): void {
     this.reapGuard = guard;
+  }
+
+  /**
+   * Flag/unflag a session as long-`indeterminate` (UNIFIED-SESSION-LIFECYCLE §P5).
+   * Driven by the StaleSessionBackstop. A flagged session still counts toward the
+   * soft scheduler cap, but is excluded from the ABSOLUTE `maxSessions × 3` cap so
+   * a fleet of unverifiable panes can never lock a human out of spawning.
+   */
+  markLongIndeterminate(sessionId: string, isLong: boolean): void {
+    if (isLong) this.longIndeterminateSessions.add(sessionId);
+    else this.longIndeterminateSessions.delete(sessionId);
+  }
+
+  /**
+   * Resolve tri-state liveness for many sessions from ONE tmux snapshot via the
+   * P1 oracle (UNIFIED-SESSION-LIFECYCLE §P5 backstop). `reachable` is false when
+   * the snapshot was non-authoritative (control plane unreachable) — in which
+   * case every session resolves `indeterminate`. Shares the oracle's short-TTL
+   * cache, so the backstop and boot-purge never double-probe within a tick.
+   */
+  async probeLivenessBatch(
+    tmuxSessions: string[],
+  ): Promise<{ reachable: boolean; liveness: Map<string, 'alive' | 'dead' | 'indeterminate'> }> {
+    const results = await this.livenessOracle.probeAll(tmuxSessions);
+    const liveness = new Map<string, 'alive' | 'dead' | 'indeterminate'>();
+    for (const [name, r] of results) liveness.set(name, r.liveness);
+    // With a single authoritative snapshot, a session is only `indeterminate`
+    // when the whole snapshot was non-authoritative — i.e. the server is
+    // unreachable. So "reachable" ⟺ at least one definitive (alive/dead) verdict.
+    const reachable = tmuxSessions.length === 0 || [...liveness.values()].some((l) => l !== 'indeterminate');
+    return { reachable, liveness };
   }
 
   /**
@@ -1759,7 +1793,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Safety valve: still cap at maxSessions * 3 to prevent runaway sessions.
     const runningSessions = this.listRunningSessions();
     const absoluteLimit = this.config.maxSessions * 3;
-    if (runningSessions.length >= absoluteLimit) {
+    // §P5: exclude long-`indeterminate` sessions (unverifiable panes flagged by the
+    // StaleSessionBackstop) from the ABSOLUTE cap, so a fleet of them can never lock
+    // a human out of spawning — the death-spiral the boot purge guarded against
+    // cannot relocate here.
+    const countable = runningSessions.filter(s => !this.longIndeterminateSessions.has(s.id));
+    if (countable.length >= absoluteLimit) {
       throw new Error(
         `Absolute session limit (${absoluteLimit}) reached. ` +
         `Running: ${runningSessions.map(s => s.name).join(', ')}`

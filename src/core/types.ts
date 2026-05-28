@@ -2797,6 +2797,19 @@ export interface MonitoringConfig {
     coalesceWindowMs?: number;
   };
   /**
+   * Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Watches for sessions
+   * the conservative KEEP-rules would protect forever — one that FAKES work, or
+   * one stuck `indeterminate` — and raises a SINGLE deduped Attention item for an
+   * operator decision (never an auto-kill). Default ON; signal-only.
+   */
+  staleBackstop?: {
+    enabled?: boolean;
+    tickIntervalSec?: number;
+    unverifiableEscalateMinutes?: number;
+    indeterminateEscalateCount?: number;
+    progressFloorBytes?: number;
+  };
+  /**
    * Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
    * self-hosting dev-process forensics. Ships OFF (registers itself on the
    * rollout board). When enabled, the FailureLedger + /failures routes + the

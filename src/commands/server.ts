@@ -8424,6 +8424,60 @@ export async function startServer(options: StartOptions): Promise<void> {
       config.monitoring?.sessionReaper,
     );
     sessionReaper.start();
+
+    // ── Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5) ───────────────
+    // Signal-only: raises ONE deduped Attention item (never auto-kills) when a
+    // session is KEPT forever despite faking work, or is stuck indeterminate.
+    {
+      const { StaleSessionBackstop } = await import('../monitoring/StaleSessionBackstop.js');
+      const { probeTranscript } = await import('../monitoring/transcriptProber.js');
+      const { makeAttentionPoster } = await import('../monitoring/sentinelWiring.js');
+      const _crypto = await import('node:crypto');
+      const staleCfg = config.monitoring?.staleBackstop ?? {};
+      const progressFloorBytes = staleCfg.progressFloorBytes ?? 512;
+      const hash = (s: string): string => _crypto.createHash('sha1').update(s).digest('hex').slice(0, 16);
+      const backstop = new StaleSessionBackstop(
+        {
+          listRunningSessions: () => sessionManager.listRunningSessions(),
+          probeLiveness: (names) => sessionManager.probeLivenessBatch(names),
+          snapshot: (session) => {
+            const framework = session.framework ?? sessionManager.frameworkForSession(session.tmuxSession) ?? 'claude-code';
+            const sessionId = framework === 'claude-code' ? (session.claudeSessionId ?? '') : '';
+            const tp = probeTranscript({ framework, sessionId, projectDir: '' });
+            // Tail hash: read the last progressFloorBytes so a heartbeat-byte append
+            // (same tail) is NOT counted as a meaningful advance.
+            let tailHash: string | null = null;
+            if (tp.resolved && tp.path) {
+              try {
+                const fd = fs.openSync(tp.path, 'r');
+                try {
+                  const start = Math.max(0, tp.size - progressFloorBytes);
+                  const len = tp.size - start;
+                  const buf = Buffer.alloc(len);
+                  fs.readSync(fd, buf, 0, len, start);
+                  tailHash = hash(buf.toString('utf-8'));
+                } finally { fs.closeSync(fd); }
+              } catch { tailHash = null; }
+            }
+            const frame = sessionManager.captureOutput(session.tmuxSession, 8) ?? '';
+            return {
+              transcriptResolved: tp.resolved,
+              transcriptSize: tp.size,
+              transcriptTailHash: tailHash,
+              mainProcessActive: sessionManager.hasActiveProcesses(session.tmuxSession),
+              idleStateToken: hash(frame),
+            };
+          },
+          raiseAttention: makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' }),
+          setLongIndeterminate: (id, isLong) => sessionManager.markLongIndeterminate(id, isLong),
+        },
+        staleCfg,
+      );
+      backstop.start();
+      if (staleCfg.enabled !== false) {
+        console.log(pc.green('  Unkillability backstop enabled (§P5 — signal-only, never auto-kills)'));
+      }
+    }
     if (config.monitoring?.sessionReaper?.enabled) {
       console.log(pc.green(
         config.monitoring.sessionReaper.dryRun === false
