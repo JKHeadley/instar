@@ -72,6 +72,7 @@ import { ProcessedIdStore } from '../messaging/ProcessedIdStore.js';
 import { buildAgentMessageHook, type RoleHandler } from '../messaging/installAgentMessageHook.js';
 import { OutstandingPromptTracker } from '../scheduler/OutstandingPromptTracker.js';
 import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
+import { extractCodexFinalMessage, extractClaudeFinalMessage } from '../monitoring/SessionReplyExtractor.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector } from '../monitoring/BurnDetector.js';
 import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
@@ -843,6 +844,65 @@ export class AgentServer {
   }
 
   /**
+   * Extract a completed mentee session's FINAL assistant message from its
+   * persisted transcript (clean prose), rather than the racy tmux-pane read.
+   * Returns null when no transcript reply is found — the caller then keeps the
+   * tmux-capture fallback.
+   *
+   * - Codex sessions: the newest rollout JSONL under $CODEX_HOME/sessions that
+   *   was written at/after the spawn → `task_complete.last_agent_message`.
+   * - Claude sessions: the session's JSONL transcript (by claudeSessionId) →
+   *   the last assistant text block.
+   */
+  private extractMenteeReplyFromTranscript(
+    session: { id: string; claudeSessionId?: string; framework?: string },
+    spawnTs: number,
+  ): string | null {
+    try {
+      const framework = String(session.framework ?? '');
+      // ── Codex path ──
+      if (framework.startsWith('codex')) {
+        const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+        // The mentee rollout is the newest rollout written since the spawn
+        // (allow a small skew for the rollout file's first write lag).
+        const candidates = this.findRecentRolloutFiles(sessionsDir, 5);
+        for (const f of candidates) {
+          try {
+            if (fs.statSync(f).mtimeMs < spawnTs - 5_000) continue;
+            const text = extractCodexFinalMessage(fs.readFileSync(f, 'utf-8'));
+            if (text && text.trim()) return text;
+          } catch { /* try next candidate */ }
+        }
+        return null;
+      }
+      // ── Claude path ──
+      const claudeId = session.claudeSessionId;
+      if (claudeId) {
+        const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+        // Find the <claudeId>.jsonl transcript anywhere under projects/.
+        const stack = [projectsDir];
+        for (let guard = 0; guard < 10_000 && stack.length; guard++) {
+          const dir = stack.pop()!;
+          let entries: fs.Dirent[];
+          try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+          for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) stack.push(full);
+            else if (e.name === `${claudeId}.jsonl`) {
+              const text = extractClaudeFinalMessage(fs.readFileSync(full, 'utf-8'));
+              if (text && text.trim()) return text;
+            }
+          }
+        }
+      }
+      return null;
+    } catch (err) {
+      console.warn(`[mentee] transcript extraction failed (falling back to tmux capture): ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
    * Lazily construct + cache the mentor-bot TelegramAdapter for the given token. Uses
    * PR 2a's multi-instance support (subDir + suppressLifelineAutoCreate) so the second
    * bot can't clobber the primary bot's state files OR auto-create a second Lifeline
@@ -1036,6 +1096,7 @@ export class AgentServer {
         // by the time we detect completion, so captureOutput returns empty).
         let reply = '';
         let sessionId = '';
+        const spawnTs = Date.now();
         try {
           const session = await self.sessionManager.spawnSession({
             name: `mentee-handle-${Date.now()}`,
@@ -1064,6 +1125,11 @@ export class AgentServer {
               `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); sending best-effort partial reply`,
             );
           }
+          // Robust capture: prefer the session's persisted transcript (clean
+          // assistant prose) over the racy tmux-pane read. The pane read is
+          // only a fallback for when no transcript is found.
+          const fromTranscript = self.extractMenteeReplyFromTranscript(session, spawnTs);
+          if (fromTranscript && fromTranscript.trim()) reply = fromTranscript;
         } catch (err) {
           console.warn(
             `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
@@ -1390,10 +1456,20 @@ export class AgentServer {
             evaluate: (prompt) => intelligence.evaluate(prompt, { model: 'capable', maxTokens: 1500, attribution: { component: 'mentor-stage-b' } }),
           });
         },
-        // Safe-window: any other running (non-protected) session means the system
-        // is busy — conservative "don't interrupt." Refined per-mentee at live
-        // validation. <!-- tracked: topic-13435 -->
-        isMenteeBusy: () => self.sessionManager.listRunningSessions().length > 0,
+        // Safe-window: the mentee is "busy" iff there is an OUTSTANDING mentor
+        // prompt already in-flight to it (the OutstandingPromptTracker is the
+        // honest per-mentee busy signal — a prompt sent + not yet replied).
+        // The mentee is REMOTE (a separate agent/process), so Echo's own
+        // local session count says nothing about whether the mentee is free;
+        // the prior code (listRunningSessions().length > 0) wrongly blocked
+        // every tick because Echo always has sessions running. Gating on the
+        // outstanding-prompt tracker means: don't send a new prompt while the
+        // last one is unanswered — exactly the anti-ping-pong invariant.
+        isMenteeBusy: () => {
+          const cfg = getConfig();
+          const menteeAgent = cfg.menteeAgentName || `instar-${cfg.menteeFramework}`;
+          return !self.getOrCreateMentorOutstanding().canSendTo(menteeAgent).ok;
+        },
         minIntervalElapsed: () => {
           const cfg = getConfig();
           return Date.now() - self.mentorLastTickAt >= cfg.minIntervalMs;
