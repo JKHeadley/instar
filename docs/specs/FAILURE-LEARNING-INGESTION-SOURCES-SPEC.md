@@ -1,6 +1,8 @@
 ---
 status: draft
-approved: false
+approved: true
+approved-by: justin
+approved-at: "2026-05-28T16:30:00Z"
 author: echo
 created: 2026-05-27
 topic: 13201
