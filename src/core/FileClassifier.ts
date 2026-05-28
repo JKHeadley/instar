@@ -199,7 +199,13 @@ export class FileClassifier {
    * Classify a file and determine its merge strategy.
    */
   classify(filePath: string): ClassificationResult {
-    const relPath = path.relative(this.projectDir, filePath);
+    // git's `diff --name-only` already yields paths relative to the repo root
+    // (= projectDir). Re-running path.relative on an already-relative path
+    // resolves it against process.cwd() — which mangles it whenever cwd differs
+    // from projectDir or projectDir has a symlink component, misclassifying
+    // .instar/ state files (machines/registry.json) as 'llm' so the
+    // deterministic resolvers never run. Only relativize an ABSOLUTE input.
+    const relPath = path.isAbsolute(filePath) ? path.relative(this.projectDir, filePath) : filePath;
     const basename = path.basename(relPath);
     const ext = path.extname(relPath).toLowerCase();
 

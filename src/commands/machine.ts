@@ -25,7 +25,71 @@ import { SecretStore } from '../core/SecretStore.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
+import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import type { MachineRole } from '../core/types.js';
+
+/**
+ * Claim the fenced lease for THIS machine and propagate it to the substrate.
+ *
+ * `instar wakeup` (force path and the no-awake-machine path) used to only flip
+ * the LOCAL registry role — but the lease, not the role, is the authority, and
+ * the server's reconcileRoleToLease() OVERRIDES role back to match the lease on
+ * startup. So a role-only flip was silently undone and never reached the peer
+ * (verified live on a real two-machine mesh, 2026-05-28). Here we build a real
+ * signed +1-epoch acquisition (the same record GitLeaseStore writes), persist it
+ * into the registry with the holder's freshness fields, and best-effort push so
+ * the peer sees the takeover immediately (the server's next sync re-pushes too).
+ */
+export async function claimLeaseForSelf(
+  mgr: MachineIdentityManager,
+  machineId: string,
+  signingKeyPem: string,
+  config: { stateDir: string; projectDir: string; multiMachine?: unknown },
+): Promise<void> {
+  const { sign, verify } = await import('../core/MachineIdentity.js');
+  const { FencedLease } = await import('../core/FencedLease.js');
+  const { assertSeamlessnessInvariants } = await import('../core/seamlessnessConfig.js');
+
+  const seamless = assertSeamlessnessInvariants(config.multiMachine as never);
+  const crypto = {
+    selfMachineId: machineId,
+    sign: (canonical: string) => sign(canonical, signingKeyPem),
+    verify: (canonical: string, signature: string, holder: string) => {
+      const pub = mgr.getSigningPublicKeyPem(holder);
+      if (!pub) return false;
+      try { return verify(canonical, signature, pub); } catch { return false; }
+    },
+  };
+  const fenced = new FencedLease(crypto, {
+    leaseTtlMs: seamless.leaseTtlMs,
+    failoverThresholdMs: seamless.failoverThresholdMs,
+  });
+
+  const registry = mgr.loadRegistry();
+  const candidate = fenced.buildAcquisition(registry.lease ?? null, Date.now(), (registry.lease?.nonce ?? 0) + 1);
+  registry.lease = candidate;
+  const entry = registry.machines[machineId];
+  if (entry) {
+    entry.syncSequence = (entry.syncSequence ?? 0) + 1;
+    entry.authoredUnderEpoch = candidate.epoch;
+  }
+  mgr.saveRegistry(registry);
+
+  // Best-effort immediate propagation (gpgsign disabled so a stale signing
+  // config can't block the commit — see GitSync.configureCommitSigning).
+  try {
+    if (!fs.existsSync(path.join(config.projectDir, '.git'))) return;
+    const opts = { cwd: config.projectDir, encoding: 'utf-8' as const, stdio: 'pipe' as const, operation: 'src/commands/machine.ts:claimLeaseForSelf' };
+    SafeGitExecutor.run(['add', path.join(config.stateDir, 'machines', 'registry.json')], opts);
+    SafeGitExecutor.run(['-c', 'commit.gpgsign=false', 'commit', '-m', `chore(mesh): force-wakeup lease epoch ${candidate.epoch} → ${machineId.slice(0, 8)}`], opts);
+    let hasUpstream = false;
+    try { SafeGitExecutor.run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], opts); hasUpstream = true; } catch { /* none yet */ }
+    const branch = SafeGitExecutor.run(['rev-parse', '--abbrev-ref', 'HEAD'], opts).trim() || 'main';
+    SafeGitExecutor.run(hasUpstream ? ['push'] : ['push', '-u', 'origin', branch], opts);
+  } catch {
+    // @silent-fallback-ok — the server's next sync will push the claimed lease.
+  }
+}
 
 // ── instar machines ──────────────────────────────────────────────
 
@@ -253,6 +317,39 @@ interface JoinOptions {
   dir?: string;
   code?: string;
   name?: string;
+  port?: number;
+}
+
+/**
+ * Build a complete machine-local config.json for a freshly-joined home.
+ *
+ * config.json is gitignored (authToken + dashboardPin), so a cloned mesh repo
+ * never carries it — `join` must scaffold one or the standby boots with NO
+ * authToken (unauthenticated API) on loadConfig defaults. Pure + exported so
+ * the scaffold logic is unit-testable independent of the git/identity I/O.
+ */
+export function buildJoinedConfig(
+  loaded: { projectName?: string; projectDir?: string; port?: number; sessions?: { tmuxPath?: string; claudePath?: string; maxSessions?: number } },
+  portOption: number | undefined,
+  authToken: string,
+): Record<string, unknown> {
+  const port = portOption ?? loaded.port ?? 4040;
+  return {
+    projectName: loaded.projectName,
+    projectDir: loaded.projectDir,
+    port,
+    agentType: 'standalone',
+    sessions: {
+      tmuxPath: loaded.sessions?.tmuxPath,
+      claudePath: loaded.sessions?.claudePath,
+      maxSessions: loaded.sessions?.maxSessions ?? 10,
+      protectedSessions: [`${loaded.projectName}-server`],
+    },
+    scheduler: { enabled: true, maxParallelJobs: 2 },
+    messaging: [],
+    monitoring: { quotaTracking: true, memoryMonitoring: true, healthCheckIntervalMs: 30000 },
+    authToken,
+  };
 }
 
 export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<void> {
@@ -301,40 +398,52 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     process.exit(1);
   }
 
+  // Step 2b: scaffold a machine-local config.json if the joined home lacks one.
+  // config.json is gitignored (it holds the authToken + dashboardPin), so a
+  // freshly-cloned mesh repo never carries it — which left the joined standby
+  // with NO authToken (unauthenticated API) and only loadConfig defaults
+  // (verified live on a real two-machine mesh, 2026-05-28). Generate a complete
+  // machine-local config so the standby boots healthy and authenticated. Shared
+  // state (jobs, topics) still syncs via the repo; only per-machine secrets and
+  // the port live in config.json.
+  const configFilePath = path.join(config.stateDir, 'config.json');
+  if (!fs.existsSync(configFilePath)) {
+    const { randomUUID } = await import('node:crypto');
+    const scaffolded = buildJoinedConfig(config, options.port, randomUUID());
+    fs.writeFileSync(configFilePath, JSON.stringify(scaffolded, null, 2));
+    console.log(pc.green(`  Scaffolded machine-local config.json (port ${scaffolded.port}, fresh auth token).`));
+    config = loadConfig(projectDir); // reload so downstream steps see the persisted config
+  } else if (options.port != null) {
+    // Honor an explicit --port on an existing config (e.g. re-join on a new port).
+    try {
+      const existing = JSON.parse(fs.readFileSync(configFilePath, 'utf-8'));
+      existing.port = options.port;
+      fs.writeFileSync(configFilePath, JSON.stringify(existing, null, 2));
+      config = loadConfig(projectDir);
+      console.log(pc.dim(`  Set port ${options.port} on existing config.json.`));
+    } catch {
+      // @silent-fallback-ok — port override is best-effort.
+    }
+  }
+
   const mgr = new MachineIdentityManager(config.stateDir);
 
-  // Step 3: Generate identity for this machine
+  // Step 3: Generate identity for this machine.
+  //
+  // Use the canonical MachineIdentityManager.generateIdentity() rather than
+  // hand-writing the keys — the hand-rolled path wrote `signing-private.pem` /
+  // `encryption-private.pem`, but EVERY reader (loadSigningKey, leaseCrypto,
+  // configureCommitSigning) expects the canonical `signing-key.pem` /
+  // `encryption-key.pem`. The mismatch left joined machines unable to load
+  // their own signing key — breaking lease signing on the standby and (where
+  // the name happened to line up) enabling broken commit-signing. Verified live
+  // on a real two-machine mesh, 2026-05-28. generateIdentity writes the
+  // canonical filenames, the identity, and self-registers as standby.
   if (mgr.hasIdentity()) {
     console.log(pc.yellow('  This machine already has an identity. Using existing.'));
   } else {
-    const { generateMachineId, generateSigningKeyPair, generateEncryptionKeyPair, pemToBase64 } = await import('../core/MachineIdentity.js');
-    const os = await import('os');
-
-    const machineId = generateMachineId();
-    const signingKeys = generateSigningKeyPair();
-    const encryptionKeys = generateEncryptionKeyPair();
-    const machineName = options.name || os.hostname();
-
-    const identity = {
-      machineId,
-      signingPublicKey: pemToBase64(signingKeys.publicKey),
-      encryptionPublicKey: pemToBase64(encryptionKeys.publicKey),
-      name: machineName,
-      platform: `${os.platform()}-${os.arch()}`,
-      createdAt: new Date().toISOString(),
-      capabilities: ['sessions'] as string[],
-    };
-
-    // Save identity and keys
-    const machineDir = path.join(config.stateDir, 'machine');
-    fs.mkdirSync(machineDir, { recursive: true });
-    fs.writeFileSync(path.join(machineDir, 'identity.json'), JSON.stringify(identity, null, 2));
-    fs.writeFileSync(path.join(machineDir, 'signing-private.pem'), signingKeys.privateKey, { mode: 0o600 });
-    fs.writeFileSync(path.join(machineDir, 'encryption-private.pem'), encryptionKeys.privateKey, { mode: 0o600 });
-
-    // Register in the mesh as standby
-    mgr.registerMachine(identity as any, 'standby');
-    console.log(pc.green(`  Identity created: ${machineName} (${machineId.slice(0, 12)}...)`));
+    const identity = await mgr.generateIdentity({ name: options.name, role: 'standby' });
+    console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
   }
 
   // Step 4: Contact the awake machine's pairing endpoint (if URL is a tunnel)
@@ -493,10 +602,17 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
   // Find the currently awake machine
   const awake = mgr.getAwakeMachine();
 
+  // Signing key for claiming the lease (canonical MachineIdentity name).
+  const wakeupSigningKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
+  const wakeupSigningKeyPem = fs.existsSync(wakeupSigningKeyPath) ? fs.readFileSync(wakeupSigningKeyPath, 'utf-8') : '';
+
   if (!awake) {
-    // No awake machine — just promote ourselves
+    // No awake machine — promote ourselves AND claim the lease (the authority).
     console.log(pc.yellow('No awake machine found. Promoting this machine.'));
     mgr.updateRole(identity.machineId, 'awake');
+    if (wakeupSigningKeyPem) {
+      await claimLeaseForSelf(mgr, identity.machineId, wakeupSigningKeyPem, config);
+    }
 
     // Write initial heartbeat
     const heartbeat = new HeartbeatManager(config.stateDir, identity.machineId);
@@ -508,16 +624,24 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
   }
 
   if (options.force) {
-    // Force-promote without contacting the current awake machine
+    // Force-promote without contacting the current awake machine. Claim the
+    // LEASE (not just the role) at a higher epoch and push it — otherwise the
+    // server's reconcileRoleToLease() reverts our role on startup and the peer
+    // never learns of the takeover.
     console.log(pc.yellow(`Force-wakeup: bypassing contact with ${awake.entry.name}.`));
     mgr.updateRole(awake.machineId, 'standby');
     mgr.updateRole(identity.machineId, 'awake');
+    if (!wakeupSigningKeyPem) {
+      console.log(pc.red('  Missing signing key — cannot claim the lease. Run `instar init` to regenerate.'));
+      process.exit(1);
+    }
+    await claimLeaseForSelf(mgr, identity.machineId, wakeupSigningKeyPem, config);
 
     const heartbeat = new HeartbeatManager(config.stateDir, identity.machineId);
     heartbeat.writeHeartbeat();
 
     console.log(pc.green(`${config.projectName} is now awake on ${identity.name} (forced).`));
-    console.log(pc.dim('The old awake machine will detect this on its next heartbeat check.'));
+    console.log(pc.dim('Lease claimed + pushed; the old awake machine steps down when it sees the higher epoch.'));
     return;
   }
 
@@ -543,8 +667,8 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Load signing key for challenge-response
-  const signingKeyPath = path.join(config.stateDir, 'machine', 'signing-private.pem');
+  // Load signing key for challenge-response (canonical MachineIdentity name).
+  const signingKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
   if (!fs.existsSync(signingKeyPath)) {
     console.log(pc.red('  Missing signing key. Run `instar init` to regenerate.'));
     process.exit(1);
