@@ -106,17 +106,49 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     )).toThrow(SourceTreeGuardError);
   });
 
-  it('SOURCE_TREE_READ_TIER_VERBS is a closed, narrow set (fetch only initially)', () => {
+  it('SOURCE_TREE_READ_TIER_VERBS is a closed read-tier set — no destructive write verbs', () => {
+    // Allowed read-tier verbs (data-pull + readonly used by LAYER B/C):
     expect(SOURCE_TREE_READ_TIER_VERBS.has('fetch')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('rev-parse')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('ls-tree')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('show')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('log')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('merge-base')).toBe(true);
+    // Must NEVER include verbs that modify the working tree or committed refs:
     expect(SOURCE_TREE_READ_TIER_VERBS.has('commit')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('push')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('reset')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('checkout')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('rebase')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('merge')).toBe(false);
-    // Sanity: the set must stay tiny. Two classifications are independent —
-    // fetch IS destructive for execSync routing AND source-tree-read-tier
-    // for guard purposes; that's by design.
-    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(3);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('clean')).toBe(false);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('rm')).toBe(false);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('branch')).toBe(false);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('tag')).toBe(false);
+    // Bounded — adding to this set requires a spec edit + side-effects review.
+    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(10);
+  });
+
+  it('readSync path also honors sourceTreeReadOk — rev-parse on a source tree passes', () => {
+    // rev-parse FETCH_HEAD after a fetch (which leaves FETCH_HEAD pointing at canon's main).
+    SafeGitExecutor.run(
+      ['fetch', 'canon', 'main', '--no-tags', '--no-recurse-submodules'],
+      { cwd: srcTree, operation: 't:setup-fetch', sourceTreeReadOk: true },
+    );
+    expect(() => SafeGitExecutor.run(
+      ['rev-parse', 'FETCH_HEAD'],
+      { cwd: srcTree, operation: 't:revparse-allowed', sourceTreeReadOk: true },
+    )).not.toThrow();
+  });
+
+  it('readSync path WITHOUT sourceTreeReadOk: rev-parse on a source tree is STILL blocked', () => {
+    SafeGitExecutor.run(
+      ['fetch', 'canon', 'main', '--no-tags', '--no-recurse-submodules'],
+      { cwd: srcTree, operation: 't:setup-fetch2', sourceTreeReadOk: true },
+    );
+    expect(() => SafeGitExecutor.run(
+      ['rev-parse', 'FETCH_HEAD'],
+      { cwd: srcTree, operation: 't:revparse-default' },
+    )).toThrow(SourceTreeGuardError);
   });
 });

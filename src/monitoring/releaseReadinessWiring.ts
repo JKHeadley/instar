@@ -70,7 +70,7 @@ export function resolveCanonicalRemote(
 ): { remote: string; overridden: boolean } {
   let remotesRaw = '';
   try {
-    remotesRaw = SafeGitExecutor.run(['remote', '-v'], { cwd: repoPath, operation: 'releaseReadinessWiring:resolveRemote' });
+    remotesRaw = SafeGitExecutor.run(['remote', '-v'], { cwd: repoPath, operation: 'releaseReadinessWiring:resolveRemote', sourceTreeReadOk: true });
   } catch {
     return { remote: configured ?? 'origin', overridden: configured != null };
   }
@@ -148,6 +148,7 @@ export function buildReleaseReadinessDeps(opts: ReleaseReadinessWiringOpts): Rel
           const headSha = SafeGitExecutor.run(['rev-parse', 'FETCH_HEAD'], {
             cwd: opts.repoPath,
             operation: 'releaseReadinessWiring:revparse',
+            sourceTreeReadOk: true,
           }).trim();
           return { ok: true, headSha };
         } catch {
@@ -188,7 +189,7 @@ export function buildReleaseReadinessDeps(opts: ReleaseReadinessWiringOpts): Rel
       try {
         const raw = SafeGitExecutor.run(
           ['log', `${lastTag}..${ref}`, '--no-merges', '--reverse', '--format=%H %ct'],
-          { cwd: opts.repoPath, operation: 'releaseReadinessWiring:oldest' },
+          { cwd: opts.repoPath, operation: 'releaseReadinessWiring:oldest', sourceTreeReadOk: true },
         ).trim();
         const first = raw.split('\n').filter(Boolean)[0];
         if (!first) return null;
@@ -238,6 +239,7 @@ export function buildReleaseReadinessDeps(opts: ReleaseReadinessWiringOpts): Rel
         SafeGitExecutor.run(['merge-base', '--is-ancestor', sha, ref], {
           cwd: opts.repoPath,
           operation: 'releaseReadinessWiring:isAncestor',
+          sourceTreeReadOk: true,
         });
         return true;
       } catch {
