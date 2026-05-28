@@ -377,6 +377,33 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   const { ensureGitignore } = await import('../core/MachineIdentity.js');
   ensureGitignore(config.projectDir);
 
+  // Step 6: Install auto-start for THIS (the joined) home.
+  // Without this, a joined agent has no LaunchAgent/systemd unit — the operator
+  // must hand-start it, and worse: a stale `ai.instar.<projectName>` plist left
+  // by a prior `instar init` of the same name (at a DIFFERENT home) keeps
+  // respawning a server against the wrong directory and fights the joined one
+  // for the port + identity (observed live 2026-05-27). The auto-start Label is
+  // keyed on projectName, so installing here for the joined projectDir cleanly
+  // REPLACES any stale same-name plist — one unit, pointing at the joined home.
+  // (Spec MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS Track C — simpler than the drafted
+  // pointer-file approach, which was solving a non-problem given Label-keying.)
+  try {
+    const { installAutoStart } = await import('./setup.js');
+    // Mirror server.ts's hasTelegram derivation. A standby still installs its
+    // server unit so it's ready to take over; the shipped poll-ownership lease
+    // prevents any dual-poll if telegram is configured on both ends.
+    const hasTelegram = (config as { messaging?: Array<{ type?: string }> }).messaging?.some(
+      (m) => m.type === 'telegram',
+    ) ?? false;
+    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+    if (installed) {
+      console.log(pc.dim(`  Auto-start installed for the joined home (${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}).`));
+    }
+  } catch (err) {
+    // @silent-fallback-ok — auto-start is non-critical; join still succeeds.
+    console.log(pc.dim(`  (Auto-start install skipped: ${err instanceof Error ? err.message : String(err)})`));
+  }
+
   console.log();
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
   console.log();
