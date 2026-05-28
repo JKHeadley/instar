@@ -729,6 +729,21 @@ function findInstarRoot(): string {
  *
  * Returns true if auto-start was installed successfully.
  */
+
+/**
+ * Whether the real `launchctl bootout/bootstrap` (loading a plist into the live
+ * user launchd) is allowed. Skipped under a test runner (vitest auto-sets
+ * `VITEST`) or when `INSTAR_SKIP_LAUNCHCTL_LOAD` is set — so a unit test that
+ * exercises the plist-WRITING path (e.g. the init→join handoff test) never
+ * loads a tmpdir-pointed plist into the operator's real launchd and leaves
+ * stale `status 78` entries behind (test-hygiene fix, MM-Bootstrap Track C
+ * follow-up). The plist file is still written/removed; only the live load is
+ * gated, so the unit-under-test (the plist content) is unaffected.
+ */
+export function launchctlLoadAllowed(): boolean {
+  return !process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD;
+}
+
 export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const platform = process.platform;
 
@@ -1582,13 +1597,15 @@ export function installFleetWatchdog(): boolean {
       return false;
     }
 
-    // Reload (bootout if loaded; bootstrap fresh)
-    try {
-      execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
-    } catch { /* not loaded — fine */ }
-    try {
-      execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
-    } catch { /* bootstrap failure — non-fatal, will run on next login */ }
+    // Reload (bootout if loaded; bootstrap fresh) — skipped under test.
+    if (launchctlLoadAllowed()) {
+      try {
+        execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      } catch { /* not loaded — fine */ }
+      try {
+        execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      } catch { /* bootstrap failure — non-fatal, will run on next login */ }
+    }
 
     return true;
   } catch (err) {
@@ -1678,13 +1695,15 @@ ${argsXml}
       return false;
     }
 
-    // Load the agent
-    try {
-      // Unload first if already loaded
-      execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
-    } catch { /* not loaded yet — fine */ }
+    // Load the agent (skipped under test — see launchctlLoadAllowed).
+    if (launchctlLoadAllowed()) {
+      try {
+        // Unload first if already loaded
+        execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      } catch { /* not loaded yet — fine */ }
 
-    execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+    }
 
     // Ensure the user-machine fleet watchdog is installed alongside this agent.
     // Singleton per machine — first agent setup creates it, subsequent setups
