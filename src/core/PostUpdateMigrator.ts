@@ -34,6 +34,15 @@ import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { installAutoStart, installBootWrapper } from '../commands/setup.js';
+import {
+  RELOCATE_SENTINEL,
+  RELOCATE_SCHEMA_VERSION,
+  computeRuntimeRoot,
+  isUnderTccProtectedRoot,
+  classifyRelocation,
+} from './InstarRuntimeRoot.js';
+import { relocateRuntime } from './RuntimeRelocator.js';
+import { appendEscalation, firstDetectedDown } from './EscalationSpool.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -227,6 +236,7 @@ export class PostUpdateMigrator {
     this.migrateWorktreeConvention(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateBootWrapperAbiCheck(result);
+    this.migrateRuntimeRoot(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
 
@@ -274,6 +284,108 @@ export class PostUpdateMigrator {
       result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── macOS 26 runtime-root relocation ────────────────────────────────
+  //
+  // Orchestrates the relocation of a Documents-resident agent's runtime out of
+  // the TCC-locked folder into ~/Library/Application Support/instar, so launchd
+  // can spawn it after a reboot on macOS 26. The pure decision lives in
+  // classifyRelocation; the transactional move in relocateRuntime; the plist
+  // rewrite in installAutoStart(runtimeRoot). This method gathers the facts and
+  // acts on the verdict. Spec: docs/specs/macos26-launchd-tcc-runtime-relocation.md
+  //
+  // KEY SAFETY PROPERTY: the source-readable guard doubles as the stage-only
+  // guard. A launchd-spawned (TCC-blind) process cannot read the source
+  // config.json → verdict 'blocked-tcc-blind' → it escalates and does NOT move
+  // or rewrite the plist. So the bootout/bootstrap inside installAutoStart only
+  // ever runs from a CONSENTED context (instar update/relocate/Scout), never
+  // from the launchd-managed process itself.
+  private migrateRuntimeRoot(result: MigrationResult): void {
+    const { projectDir, projectName, stateDir, hasTelegram } = this.config;
+
+    // (1) already-relocated short-circuit — read relocate.json from the
+    // env-resolved stateDir (Library in launchd ctx, symlinked .instar in
+    // consented ctx; both readable). MUST be evaluated first.
+    let alreadyRelocated = false;
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(stateDir, RELOCATE_SENTINEL), 'utf-8'));
+      alreadyRelocated = rec?.completed === true && rec?.schemaVersion === RELOCATE_SCHEMA_VERSION;
+    } catch { /* not relocated */ }
+
+    // (4) source-readable probe (only meaningful when we'd otherwise relocate).
+    const sourceConfig = path.join(projectDir, '.instar', 'config.json');
+    let sourceReadable = false;
+    try { fs.accessSync(sourceConfig, fs.constants.R_OK); fs.readFileSync(sourceConfig); sourceReadable = true; }
+    catch { sourceReadable = false; }
+
+    const action = classifyRelocation({
+      platform: process.platform,
+      alreadyRelocated,
+      underTccProtectedRoot: isUnderTccProtectedRoot(projectDir),
+      sourceReadable,
+    });
+
+    switch (action) {
+      case 'skip-already-relocated':
+        result.skipped.push('runtime-root: already relocated');
+        return;
+      case 'skip-not-macos':
+        result.skipped.push('runtime-root: non-darwin (no TCC issue)');
+        return;
+      case 'skip-not-tcc':
+        result.skipped.push('runtime-root: project not under a TCC-protected folder');
+        return;
+      case 'blocked-tcc-blind': {
+        // TCC-blind launchd context: do NOT partial-move. Write a loud marker +
+        // spool an escalation so the user is paged / a consented run picks it up.
+        const label = `ai.instar.${projectName}`;
+        try {
+          const blockedDir = path.join(os.homedir(), '.instar', 'relocate-blocked');
+          fs.mkdirSync(blockedDir, { recursive: true, mode: 0o700 });
+          fs.writeFileSync(
+            path.join(blockedDir, `${label}.json`),
+            JSON.stringify({ label, projectDir, detectedAt: new Date().toISOString(), reason: 'tcc-spawn-blocked' }, null, 2),
+          );
+        } catch { /* best effort */ }
+        try {
+          appendEscalation({
+            label,
+            projectDir,
+            cause: 'relocate-blocked',
+            firstDetectedDown: firstDetectedDown(label),
+            remediation: "my startup files are in a folder macOS now locks — run 'instar relocate' once, or grant Full Disk Access to node",
+            ts: new Date().toISOString(),
+          });
+        } catch { /* best effort */ }
+        result.skipped.push('runtime-root: blocked (TCC-blind context) — escalated; needs a consented relocate');
+        return;
+      }
+      case 'relocate': {
+        const runtimeRoot = computeRuntimeRoot(projectName, projectDir);
+        const relo = relocateRuntime(
+          { projectDir, projectName, runtimeRoot },
+          (nodePath: string) => {
+            try { execFileSync(nodePath, ['--version'], { stdio: 'ignore', timeout: 10_000 }); return true; }
+            catch { return false; }
+          },
+        );
+        if (!relo.ok) {
+          result.errors.push(`runtime-root relocation failed: ${relo.error}`);
+          return;
+        }
+        // Rewrite the plist to point at the new root. This bootout/bootstrap is
+        // safe: we only reach here from a consented context (source was readable).
+        try {
+          installAutoStart(projectName, projectDir, !!hasTelegram, runtimeRoot);
+        } catch (err) {
+          result.errors.push(`runtime-root plist rewrite: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        result.upgraded.push(`runtime-root: relocated to ${runtimeRoot} (macOS 26 TCC fix)`);
+        return;
+      }
     }
   }
 

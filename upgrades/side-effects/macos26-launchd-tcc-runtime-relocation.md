@@ -62,6 +62,23 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > consumed** — the migrator's EPERM-blocked branch + the watchdog (Scope B) + the
 > consented drain (Scope C delivery) wire to it in later increments.
 
+> **Increment 5 (migrateRuntimeRoot orchestrator — wires Scope A together):**
+> adds `classifyRelocation` (pure decision: already-relocated FIRST → macOS gate
+> → TCC-folder gate → source-readable guard) to `InstarRuntimeRoot.ts` (+5 tests,
+> both sides of every gate), and `PostUpdateMigrator.migrateRuntimeRoot()` — a
+> `migrate()`-body method (actually runs; the registerStep engine is dormant)
+> that gathers facts and acts: skip / blocked-tcc-blind (write
+> `~/.instar/relocate-blocked/<label>.json` + `appendEscalation` — NO move) /
+> relocate (`relocateRuntime` + `installAutoStart(runtimeRoot)` plist rewrite).
+> `installAutoStart` gained a `runtimeRoot` passthrough. **KEY SAFETY PROPERTY:**
+> the source-readable guard doubles as the stage-only guard — a launchd-spawned
+> TCC-blind process can't read the source → 'blocked' → never moves or rewrites
+> the plist, so the bootout/bootstrap in `installAutoStart` only ever runs from a
+> consented context. 3 orchestration tests (wired-into-migrate, safe-skip-no-
+> mutation, NEW-R1 already-relocated-short-circuit-when-source-unreadable). 61
+> tests green across new + adjacent migrator suites. **Scope A now functionally
+> complete except** the `instar relocate` CLI + boot consistency assertion (next).
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.

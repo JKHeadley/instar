@@ -197,3 +197,38 @@ export function resolveStateDir(projectDir: string, env: NodeJS.ProcessEnv = pro
   }
   return path.join(projectDir, '.instar');
 }
+
+/** The decision the migrator's relocation orchestrator makes, given gathered
+ *  facts. Pure + exhaustively testable — the orchestrator just gathers the
+ *  inputs (platform, relocated?, in-TCC?, source-readable?) and acts on the
+ *  verdict, so the gate/guard ordering can't drift. */
+export type RelocationAction =
+  | 'skip-not-macos'        // Linux / Windows — no TCC issue
+  | 'skip-already-relocated' // relocate.json present + complete + current schema
+  | 'skip-not-tcc'          // projectDir not under a TCC-protected folder (e.g. Echo)
+  | 'blocked-tcc-blind'     // would relocate, but the source is unreadable (launchd-spawned TCC-blind context) → escalate, do NOT partial-move
+  | 'relocate';             // consented context, in a TCC folder, not yet relocated → do it
+
+export interface RelocationFacts {
+  platform: NodeJS.Platform;
+  alreadyRelocated: boolean;
+  underTccProtectedRoot: boolean;
+  sourceReadable: boolean;
+}
+
+/**
+ * The relocation decision. ORDER IS LOAD-BEARING (convergence NEW-R1):
+ *   1. already-relocated short-circuit FIRST — so an already-relocated agent
+ *      re-running migrate from a launchd/TCC-blind context never attempts a move
+ *      (it read relocate.json from the Library root, which is readable).
+ *   2. macOS gate.
+ *   3. TCC-folder gate.
+ *   4. source-readable guard — readable ⇒ consented context ⇒ relocate;
+ *      unreadable ⇒ launchd-spawned TCC-blind ⇒ blocked (escalate, no move).
+ */
+export function classifyRelocation(facts: RelocationFacts): RelocationAction {
+  if (facts.alreadyRelocated) return 'skip-already-relocated';
+  if (facts.platform !== 'darwin') return 'skip-not-macos';
+  if (!facts.underTccProtectedRoot) return 'skip-not-tcc';
+  return facts.sourceReadable ? 'relocate' : 'blocked-tcc-blind';
+}

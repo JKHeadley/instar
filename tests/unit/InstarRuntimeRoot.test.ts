@@ -20,6 +20,8 @@ import {
   resolveStateDir,
   readPersistedRuntimeRoot,
   readRelocateRecord,
+  classifyRelocation,
+  type RelocationFacts,
 } from '../../src/core/InstarRuntimeRoot.js';
 
 const HOME = '/Users/test';
@@ -118,6 +120,39 @@ describe('InstarRuntimeRoot', () => {
     it('ignores a blank/whitespace env value', () => {
       const env = { [RUNTIME_ROOT_ENV]: '   ' } as NodeJS.ProcessEnv;
       expect(resolveStateDir(`${HOME}/x`, env)).toBe(`${HOME}/x/.instar`);
+    });
+  });
+
+  describe('classifyRelocation (orchestrator decision — both sides of every gate)', () => {
+    const base: RelocationFacts = {
+      platform: 'darwin',
+      alreadyRelocated: false,
+      underTccProtectedRoot: true,
+      sourceReadable: true,
+    };
+
+    it('already-relocated short-circuits FIRST, even in a launchd/TCC-blind context (NEW-R1)', () => {
+      // The dangerous regression: an already-relocated agent re-running migrate
+      // from a launchd context (source unreadable) must NOT attempt a move.
+      expect(classifyRelocation({ ...base, alreadyRelocated: true, sourceReadable: false })).toBe('skip-already-relocated');
+      // ...regardless of platform/TCC state.
+      expect(classifyRelocation({ platform: 'linux', alreadyRelocated: true, underTccProtectedRoot: false, sourceReadable: true })).toBe('skip-already-relocated');
+    });
+
+    it('skips on non-macOS (no TCC issue)', () => {
+      expect(classifyRelocation({ ...base, platform: 'linux' })).toBe('skip-not-macos');
+    });
+
+    it('skips when the project is not in a TCC-protected folder (e.g. Echo in ~/.instar)', () => {
+      expect(classifyRelocation({ ...base, underTccProtectedRoot: false })).toBe('skip-not-tcc');
+    });
+
+    it('relocates when macOS + in a TCC folder + consented (source readable)', () => {
+      expect(classifyRelocation({ ...base, sourceReadable: true })).toBe('relocate');
+    });
+
+    it('BLOCKS (escalate, no partial move) when source is unreadable — launchd TCC-blind', () => {
+      expect(classifyRelocation({ ...base, sourceReadable: false })).toBe('blocked-tcc-blind');
     });
   });
 });

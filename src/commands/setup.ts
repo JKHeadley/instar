@@ -729,11 +729,13 @@ function findInstarRoot(): string {
  *
  * Returns true if auto-start was installed successfully.
  */
-export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
+export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean, runtimeRoot?: string): boolean {
   const platform = process.platform;
 
   if (platform === 'darwin') {
-    return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
+    // runtimeRoot (macOS 26 TCC relocation): when set, the plist points node,
+    // the boot wrapper, logs, and WorkingDirectory at the safe Library root.
+    return installMacOSLaunchAgent(projectName, projectDir, hasTelegram, runtimeRoot);
   } else if (platform === 'linux') {
     return installLinuxSystemdService(projectName, projectDir, hasTelegram);
   } else {
