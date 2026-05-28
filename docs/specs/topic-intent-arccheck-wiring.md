@@ -3,10 +3,10 @@ slug: topic-intent-arccheck-wiring
 title: Wire ArcCheck (Layer 3) — classifier + outbound integration
 author: echo
 project: continuous-working-awareness
-review-convergence: ""
-review-iterations: 0
-review-completed-at: ""
-review-report: ""
+review-convergence: "2026-05-28T04:01:05.103Z"
+review-iterations: 2
+review-completed-at: "2026-05-28T04:01:05.103Z"
+review-report: "self-review + standards-conformance gate (22/22 clean)"
 approved: false
 approved-by: ""
 approved-at: ""
@@ -83,53 +83,76 @@ pattern, one layer up from the capture-loop fix.
   lane → yields to interactive work, respects the daily cap). On cap breach
   the classifier degrades silently (same shape as no-intelligence).
 
-### 2. Wire the classifier into the route
+### 2. Construct one ArcCheck instance; share between route and in-process caller
 
-In `src/server/AgentServer.ts:552`, change the route construction to:
+In `src/commands/server.ts`, alongside the capture-loop construction block
+(~`server.ts:5892-5943`), build a single `ArcCheck` instance:
 
 ```ts
-const topicIntentRoutes = createTopicIntentRoutes({
-  topicIntentStore: options.topicIntentStore ?? null,
-  arcCheckClassify: options.arcCheckClassify ?? null,
-});
+const arcCheckClassify = createArcCheckClassifyFn(queuedIntelligence);
+const topicIntentArcCheck = new ArcCheck(topicIntentStore, arcCheckClassify);
 ```
 
-Add `arcCheckClassify?: ArcCheckClassifyFn | null` to `AgentServerOptions`
-(file: `src/server/AgentServer.ts`).
+Gated on `sharedIntelligence && (config.topicIntent?.arccheck?.enabled ?? true)`.
+Reuses the same `queuedIntelligence` the capture loop already built, so we
+inherit the LlmQueue lane and daily cap behaviour for free.
 
-In `src/commands/server.ts`, in the same block that constructs the capture
-loop (~`server.ts:5892-5943`), additionally build the ArcCheck classifier
-from the same `sharedIntelligence` + `sharedLlmQueue` and pass it through
-the AgentServer constructor. Gated on
-`sharedIntelligence && (config.topicIntent?.arccheck?.enabled ?? true)`.
+Pass `topicIntentArcCheck` through `AgentServer` so both surfaces use the
+same instance:
 
-### 3. Plug into the outbound path via `MessagingToneGate`
+- **HTTP route** — extend `AgentServerOptions` with
+  `topicIntentArcCheck?: ArcCheck | null`. `createTopicIntentRoutes` is
+  reshaped to accept the instance directly:
+  `createTopicIntentRoutes({ topicIntentStore, arcCheck })`. (Today it
+  takes a classifier function; this is a small refactor since the function
+  was only used to construct an `ArcCheck` inside the route — the route
+  doesn't care which side built the instance.)
+- **In-process caller** — expose the same instance on the routes `ctx` so
+  `checkOutboundMessage` can call it directly (see §3).
+
+### 3. Plug into the outbound path via `MessagingToneGate` — in-process
 
 `src/core/MessagingToneGate.ts` is the existing single authority for
 outbound user messages and already accepts upstream `ToneReviewSignals` from
-detectors (e.g. `LedgerParaphraseDetector`, `JargonDetector`). The ArcCheck
-header at `src/core/TopicIntentArcCheck.ts:20-22` explicitly names this gate
-as its integration point.
+detectors (e.g. `JargonDetector`, the outbound-dedup detector via
+`signals.duplicate`). The ArcCheck header at
+`src/core/TopicIntentArcCheck.ts:20-22` explicitly names this gate as its
+integration point.
+
+**Integration seam (verified).** The single fan-in is
+`checkOutboundMessage` in `src/server/routes.ts:934-1007`. It already
+receives `options.topicId`, builds a `ToneReviewSignals` object from
+upstream detectors (junk, jargon, duplicate), and passes it to
+`messagingToneGate.review(text, { signals, ... })`. ArcCheck plugs in here
+as one more signal collector, exactly mirroring the dedup pattern at
+`routes.ts:987-998`.
 
 Design:
 
 - **New signal channel** on `ToneReviewSignals`:
   `arcCheck?: { fire: boolean; kind?: 'acting-on-tentative' | 'contradicts-settled'; refText?: string; suggestedRewriteHint?: string }`.
-- **Caller orchestration.** At the outbound-message seam where the
-  `ToneReviewContext` is assembled (today via the response-review pipeline),
-  fire-and-forget a single `POST /topic-intent/:topicId/arccheck` with the
-  draft text. Run **concurrent with** the tone-gate's primary review
-  (`feedback_gate_latency_vs_client_timeout` — never serial) under a hard
-  short timeout (200ms; tunable). When the result lands before the gate
-  finishes, merge it into `signals.arcCheck`. When it doesn't, the gate
-  proceeds without the signal — same shape as a missing detector signal
-  today.
-- **Authority.** ArcCheck is **signal only**. The tone gate (or
-  response-review when wired) consumes the signal and *may* fold ArcCheck's
-  rewrite hint into its rewrite plan; it never converts a fire into a hard
-  block. The two-layer split from `feedback_signal_vs_authority` is
-  preserved verbatim: ArcCheck = brittle/low-context filter emitting a
-  signal, the tone gate retains blocking authority.
+- **In-process invocation — not HTTP self-call.** The tone-gate runs
+  in-process at `routes.ts:1001`. We pass an `ArcCheck` instance on `ctx`
+  (e.g. `ctx.topicIntentArcCheck: ArcCheck | null`) and call
+  `ctx.topicIntentArcCheck?.check({ topicId, draftText: text })` directly.
+  An HTTP self-call would serialize/deserialize the payload, double the
+  latency budget, and add a fail path; in-process is the obvious right
+  shape now that we know the seam. The HTTP `/topic-intent/:topicId/arccheck`
+  endpoint stays — same `ArcCheck` instance behind it — for tests and
+  out-of-process callers, but production goes direct.
+- **Caller orchestration.** Wrap the in-process call in a hard timeout
+  (200ms; tunable via config). Run **concurrent with** the rest of the
+  signal gathering — when the result lands in time, merge into
+  `signals.arcCheck`; when it times out or throws, the gate proceeds
+  without the signal (same shape as `try { ... } catch { /* skip */ }`
+  around the dedup detector at `routes.ts:987-998`). `feedback_gate_latency_vs_client_timeout`
+  is preserved: no serial extra LLM call on the hot path.
+- **Authority.** ArcCheck is **signal only**. The tone gate consumes the
+  signal and *may* fold ArcCheck's rewrite hint into its rewrite plan via
+  `renderSignals`; it never converts a fire into a hard block. The
+  two-layer split from `feedback_signal_vs_authority` is preserved
+  verbatim: ArcCheck = brittle/low-context filter emitting a signal, the
+  tone gate retains blocking authority.
 
 ### 4. Metering — bring `capture-metrics` to life
 
@@ -173,6 +196,12 @@ runs, prove the tone gate consumes the signal). Signal-vs-authority is the
   - The tone gate consumes the merged `signals.arcCheck` and includes the
     rewrite hint in its review prompt (verifiable by `renderSignals`
     output).
+  - In-process path: posting an outbound message through the route at
+    `checkOutboundMessage` invokes `ctx.topicIntentArcCheck.check` (spy)
+    when `topicId` and `topicIntentArcCheck` are both present, skips
+    cleanly when either is missing.
+  - Timeout path: when ArcCheck takes longer than the hard timeout, the
+    gate proceeds without the signal — same behaviour as a thrown detector.
 - **Tier 3 (e2e — the founding-drift fixture):**
   - Boot the real init path. Seed a topic with one SETTLED ref:
     *"The mac-mini (192.168.87.38) is already configured and SSH-reachable."*
