@@ -63,6 +63,31 @@ export class SleepWakeDetector extends EventEmitter {
     }
   }
 
+  /**
+   * Cumulative wall-time-asleep during the half-open window [startMs, endMs).
+   * Used by the wake-reaper (UNIFIED-SESSION-LIFECYCLE §P0 #9 / SE-8) to subtract
+   * sleep that overlapped a job run rather than relying on the single last
+   * `sleepDurationSeconds` event — a run that started before multiple sleeps was
+   * previously credited only the last sleep's duration and reaped early.
+   *
+   * Each wake event's sleep window is approximated as
+   *   [wakeTimestamp − sleepDurationSeconds, wakeTimestamp].
+   * Returns the sum of overlap with the query window in milliseconds. Returns 0
+   * when the history is empty or no event overlaps.
+   */
+  getCumulativeSleepMsBetween(startMs: number, endMs: number): number {
+    if (endMs <= startMs) return 0;
+    let total = 0;
+    for (const e of this.wakeHistory) {
+      const wakeMs = new Date(e.timestamp).getTime();
+      const sleepStartMs = wakeMs - e.sleepDurationSeconds * 1000;
+      const overlapStart = Math.max(startMs, sleepStartMs);
+      const overlapEnd = Math.min(endMs, wakeMs);
+      if (overlapEnd > overlapStart) total += overlapEnd - overlapStart;
+    }
+    return total;
+  }
+
   /** Get wake event stats for telemetry reporting. */
   getStats(sinceMs?: number): { wakeCount: number; totalSleepSeconds: number; longestSleepSeconds: number } {
     const since = sinceMs ?? 0;

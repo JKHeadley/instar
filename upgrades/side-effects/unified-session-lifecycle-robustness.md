@@ -239,3 +239,126 @@ no-silent-fallbacks ratchet doesn't count them: `ReapLog.read` (no log file ⇒
 empty list is correct, not degraded) and the §P5 transcript-tail read (an
 unreadable tail ⇒ no meaningful-advance signal this tick; treated as ambiguous,
 never as progress). Behavior unchanged.
+
+## Phase 2 — Commit #5: SessionWatchdog → ReapAuthority
+
+**Files:** `src/monitoring/SessionWatchdog.ts`,
+`tests/unit/session-lifecycle-phase-2-wiring.test.ts` (new).
+
+`handleEscalation` is now `async`; the final `EscalationLevel.KillSession` no
+longer calls a raw `tmux kill-session` — it resolves the instar session by
+`tmuxSession` and routes through
+`sessionManager.terminateSession(id, 'watchdog-stuck', { disposition: 'terminal', finalStatus: 'killed' })`.
+The authority's mandatory KEEP-guard + lease gate + protected-set check now
+apply: a session the guards would have kept survives a buggy watchdog. The raw
+`killTmuxSession` method is deleted; the LLM gate + stdin guard + signal
+escalations (CtrlC / SigTerm / SigKill) are unchanged.
+
+**Stand-down on KEEP (anti-thrash):** if the authority refuses the kill
+(`protected` / `not-lease-holder` / a KEEP-guard hold / `in-flight`), the
+watchdog logs the exact reason, records a `kept (<reason>)` intervention, and
+**clears escalationState**. It does not re-escalate against a guarded session
+every tick — the §P5 backstop owns operator-decision escalation for a
+persistently-stale session.
+
+**Tests:** existing SessionWatchdog tests (58) green; new wiring contract (3) green; typecheck clean.
+
+**Rollback:** revert this commit; the raw `killTmuxSession` is the only thing
+deleted and is recoverable from history.
+
+## Phase 2 — Commit #6: OrphanProcessReaper → exact-id + work-check + ReapAuthority
+
+**Files:** `src/monitoring/OrphanProcessReaper.ts`, `src/core/SessionManager.ts`,
+`tests/unit/session-lifecycle-phase-2-wiring.test.ts`.
+
+Three spec-faithful changes:
+1. **Exact-id classification.** The legacy `tmuxSession.startsWith(this.projectPrefix)`
+   substring match is replaced by EXACT membership in
+   `SessionManager.listKnownTmuxSessions()` — the new method returns every tmux
+   name instar has ever tracked (any status). A user-created tmux session that
+   happens to share the project prefix is now classified `external`, not
+   `instar-orphan`, so the reaper cannot false-reap a user pane.
+2. **60-min age = necessary, not sufficient.** Before any orphan kill the new
+   `processHasActiveChildren(pid)` helper (`pgrep -P`) is consulted; a positive
+   result vetoes the reap and surfaces a `Kept orphan PID … work check vetoed
+   reap` action. An uninspectable result returns `false` (allowed to proceed)
+   to preserve prior behavior — this gate is a soft veto layered on top of the
+   age gate, never an escalation.
+3. **Route through P0 when applicable.** When the orphan's tmuxSession matches a
+   CURRENTLY-tracked session (a scan/refresh race), the kill goes through
+   `terminateSession(id, 'orphan-reap', { disposition:'terminal', finalStatus:'killed' })`
+   so the authority's KEEP-guard + lease gate + reap-log entry + `sessionReaped`
+   emission apply. Otherwise the tracked record is already terminal and the raw
+   tmux-kill cleans up the stray pane.
+
+The server session remains excluded unconditionally.
+
+**Tests:** OrphanProcessReaper (9) + Phase-2 wiring (6) green; typecheck clean.
+
+**Rollback:** revert this commit. `listKnownTmuxSessions()` becomes unused but harmless.
+
+## Phase 2 — Commit #8: SessionRecovery → P1/P2 cross-check + recovery-bounce disposition
+
+**Files:** `src/monitoring/SessionRecovery.ts`, `src/core/SessionManager.ts`,
+`src/commands/server.ts`, `tests/unit/session-lifecycle-phase-2-wiring.test.ts`.
+
+Three spec-faithful changes:
+1. **P1/P2 cross-check** — a new shared `killForRecovery(name)` helper inside
+   `SessionRecovery` consults `deps.hasActiveProcesses` BEFORE any kill. When
+   the tmux pane has active child processes, the recovery DEFERS this attempt
+   and returns a structured `deferred-still-working` result with the correct
+   `failureType` (stall / context_exhaustion / crash / error_loop). All four
+   recovery paths route through this helper — `deps.killSession` is no longer
+   called directly from any recovery method.
+2. **`disposition:'recovery-bounce'`** — the dep's `killSession` is rewired in
+   server.ts to route through
+   `sessionManager.terminateSession(id, 'session-recovery', { disposition:
+   'recovery-bounce', finalStatus: 'killed', bypassRecoveryFlag: true })`. The
+   §P3 notifier is silent on recovery-bounce, so the user isn't told "shut
+   down" when the bounce immediately respawns; the reap-log still records it.
+3. **`bypassRecoveryFlag` (scoped)** — terminateSession gains an opt that
+   skips ONLY the `recovery-in-flight` KEEP-guard reason (not the whole guard).
+   Without it the recovery would refuse to kill its OWN in-flight session.
+   Other KEEP-guards (active subagent, recent-user-message, etc.) still apply
+   so a session mid-conversation is not killed-to-respawn under the cover of
+   "recovery."
+
+`SessionRecoveryDeps.killSession` is now `() => void | Promise<void>` so the
+implementation can await terminateSession.
+
+**Tests:** SessionRecovery (9) + terminate-CAS (9) + Phase-2 wiring (10) green; typecheck clean.
+
+**Rollback:** revert this commit. `bypassRecoveryFlag` becomes unused but harmless.
+
+## Phase 2 — Commit #9: wake-reaper → P1/P2 + cumulative sleep + ReapAuthority
+
+**Files:** `src/scheduler/JobScheduler.ts`, `src/core/SleepWakeDetector.ts`,
+`src/commands/server.ts`, `tests/unit/JobScheduler-reaper.test.ts`,
+`tests/unit/sleep-wake-cumulative.test.ts` (new),
+`tests/unit/session-lifecycle-phase-2-wiring.test.ts`.
+
+Three spec-faithful changes:
+1. **Cumulative sleep (SE-8).** `SleepWakeDetector.getCumulativeSleepMsBetween(startMs, endMs)`
+   sums the overlap of every recorded sleep window with the query range. The
+   wake-reaper now reads `cumulativeSleepProvider(runStartMs, now)` per run and
+   uses `effectiveElapsed = elapsedMs − cumulativeSleep` against its threshold —
+   a run that spanned multiple sleeps is no longer reaped early because the old
+   code credited only the single last `sleepDurationSeconds` event.
+2. **P1/P2 gate.** Before any kill, `sessionManager.hasActiveProcesses(sessionName)`
+   is consulted; on `true` the run is KEPT regardless of clock (spec: "a
+   progressing process is KEEP regardless of clock"). The deferred run is
+   counted as `skipped` and a structured log line names the reason.
+3. **Route through P0.** When a stuck-run session is currently tracked, the
+   kill goes through
+   `terminateSession(id, 'wake-reaper', { disposition:'terminal', finalStatus:'killed' })`
+   — the authority's protected-set + lease gate + reap-log + `sessionReaped`
+   emission apply. Untracked tmux panes fall back to the raw `killSession`.
+
+`reapStuckRuns` is now async; the timeout error message now names the effective-
+elapsed + cumulative-sleep subtraction instead of the single last sleep event.
+
+**Tests:** JobScheduler reaper (7, updated to async + new error contract) +
+SleepWakeDetector cumulative (6, new) + Phase-2 wiring (14) green; typecheck clean.
+
+**Rollback:** revert this commit. `getCumulativeSleepMsBetween` becomes unused
+but harmless.

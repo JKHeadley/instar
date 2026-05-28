@@ -149,8 +149,14 @@ export class OrphanProcessReaper extends EventEmitter {
     const claudeProcesses = this.findAllFrameworkProcesses();
     const tmuxSessions = this.listAllTmuxSessions();
     const trackedSessions = this.getTrackedSessionNames();
+    // UNIFIED-SESSION-LIFECYCLE §P0 #6 — every tmux name instar has ever known
+    // (running + completed + failed + killed). The orphan classifier uses
+    // EXACT-id membership in this set rather than a project-prefix substring, so
+    // a user-created tmux session that happens to share the prefix (e.g. user
+    // typing `tmux new -s the-portal-myhand`) is NOT false-classified as orphan.
+    const knownInstarSessions = this.sessionManager.listKnownTmuxSessions();
 
-    const classified = this.classifyProcesses(claudeProcesses, tmuxSessions, trackedSessions);
+    const classified = this.classifyProcesses(claudeProcesses, tmuxSessions, trackedSessions, knownInstarSessions);
 
     const tracked = classified.filter(p => p.classification === 'tracked');
     const orphans = classified.filter(p => p.classification === 'instar-orphan');
@@ -175,10 +181,34 @@ export class OrphanProcessReaper extends EventEmitter {
 
     for (const orphan of orphans) {
       if (orphan.elapsedMs > orphanMaxAge && autoKill) {
+        // §P0 #6 P2-style work check: 60-min age is NECESSARY, not SUFFICIENT.
+        // An orphan with active child processes is doing real work — defer the
+        // reap rather than killing a working pipeline.
+        if (this.processHasActiveChildren(orphan.pid)) {
+          const msg = `Kept orphan PID ${orphan.pid} (age ${this.formatDuration(orphan.elapsedMs)}, tmux: ${orphan.tmuxSession || 'none'}) — active child processes (work check vetoed reap)`;
+          report.actionsPerformed.push(msg);
+          console.log(`[OrphanReaper] ${msg}`);
+          continue;
+        }
         this.killProcess(orphan.pid);
-        // Also kill the tmux session if it exists — but NEVER the server session
+        // Also kill the tmux session if it exists — but NEVER the server session.
+        // §P0 #6 route through ReapAuthority when the orphan's tmuxSession
+        // matches a CURRENTLY-tracked session (a race between this scan and a
+        // tracking refresh): the authority's KEEP-guard + lease gate + reap-log
+        // + sessionReaped emission then apply. Otherwise the state record is
+        // already terminal — just clean up the stray tmux pane.
         if (orphan.tmuxSession && orphan.tmuxSession !== serverSessionName) {
-          this.killTmuxSession(orphan.tmuxSession);
+          const trackedNow = this.sessionManager
+            .listRunningSessions()
+            .find((s) => s.tmuxSession === orphan.tmuxSession);
+          if (trackedNow) {
+            await this.sessionManager.terminateSession(trackedNow.id, 'orphan-reap', {
+              disposition: 'terminal',
+              finalStatus: 'killed',
+            });
+          } else {
+            this.killTmuxSession(orphan.tmuxSession);
+          }
         }
         const msg = `Killed orphan PID ${orphan.pid} (${Math.round(orphan.rssKB / 1024)}MB, running ${this.formatDuration(orphan.elapsedMs)}, tmux: ${orphan.tmuxSession || 'none'})`;
         report.actionsPerformed.push(msg);
@@ -391,6 +421,7 @@ export class OrphanProcessReaper extends EventEmitter {
     processes: FrameworkProcess[],
     tmuxSessions: Map<number, string>,
     trackedSessions: Set<string>,
+    knownInstarSessions: Set<string>,
   ): ClassifiedProcess[] {
     return processes.map(proc => {
       // Resolve which tmux session this process belongs to
@@ -414,12 +445,16 @@ export class OrphanProcessReaper extends EventEmitter {
           };
         }
 
-        // In a tmux session matching our project prefix but NOT tracked
-        if (tmuxSession.startsWith(this.projectPrefix)) {
+        // EXACT-id orphan: the tmux session name matches one instar has
+        // tracked (current or historical), but isn't in the live-tracked set.
+        // This replaces the old prefix-startsWith match per
+        // UNIFIED-SESSION-LIFECYCLE §P0 #6 — a user-created session that happens
+        // to share the project prefix is NOT classified as orphan.
+        if (knownInstarSessions.has(tmuxSession)) {
           return {
             ...proc,
             classification: 'instar-orphan' as const,
-            reason: `In project-prefixed tmux "${tmuxSession}" but not tracked by SessionManager`,
+            reason: `In instar-known tmux "${tmuxSession}" but not currently tracked by SessionManager`,
           };
         }
 
@@ -525,6 +560,27 @@ export class OrphanProcessReaper extends EventEmitter {
       if (err.code !== 'ESRCH') {
         console.error(`[OrphanReaper] Failed to kill PID ${pid}:`, err);
       }
+      return false;
+    }
+  }
+
+  /**
+   * §P0 #6 work-check: does the process have at least one active child? Used as
+   * a 60-min-age-is-necessary-not-sufficient gate before a reap. A pgrep-empty
+   * orphan is genuinely idle and safe to reap; an orphan with running children
+   * is doing real work and must be kept.
+   *
+   * Errors → `false` (cannot inspect ⇒ allow the reap to proceed, matching the
+   * pre-Phase-2 behavior; this never makes the reaper MORE aggressive — the
+   * helper is a soft veto layered on top of the existing age gate).
+   */
+  private processHasActiveChildren(pid: number): boolean {
+    try {
+      const out = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      return out.length > 0;
+    } catch {
+      // @silent-fallback-ok — cannot inspect (no permission / process gone) ⇒
+      // do not block the reap; the age gate already gives 60 min of grace.
       return false;
     }
   }

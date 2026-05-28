@@ -4906,10 +4906,21 @@ export async function startServer(options: StartOptions): Promise<void> {
               return /^\d+$/.test(pid) ? parseInt(pid, 10) : null;
             } catch { return null; }
           },
-          killSession: (name) => {
-            // Route through SessionManager to fire beforeSessionKill hook
-            const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === name);
-            if (session) { sessionManager.killSession(session.id); return; }
+          // UNIFIED-SESSION-LIFECYCLE §P0 #8: route the kill-to-respawn through
+          // the ReapAuthority with disposition:'recovery-bounce' (silent §P3
+          // notifier — a bounce is not a disappearance) and bypassRecoveryFlag
+          // (the recovery's own in-flight flag would otherwise refuse its own
+          // kill via the KEEP-guard).
+          killSession: async (name) => {
+            const session = sessionManager.listRunningSessions().find((s) => s.tmuxSession === name);
+            if (session) {
+              await sessionManager.terminateSession(session.id, 'session-recovery', {
+                disposition: 'recovery-bounce',
+                finalStatus: 'killed',
+                bypassRecoveryFlag: true,
+              });
+              return;
+            }
             // Fallback: direct tmux kill for untracked sessions
             try {
               const tmux = detectTmuxPath();
@@ -4917,6 +4928,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               execFileSync(tmux, ['kill-session', '-t', `=${name}`], { encoding: 'utf-8' });
             } catch { /* may already be dead */ }
           },
+          // P1/P2 cross-check dep — see SessionRecovery.killForRecovery().
+          hasActiveProcesses: (name) => sessionManager.hasActiveProcesses(name),
           respawnSession: async (topicId, _sessionName, recoveryPrompt) => {
             // Check Slack first (synthetic IDs are negative)
             const slackChId = slackProxyChannelMap.get(topicId);
@@ -6695,6 +6708,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Start SleepWakeDetector (re-validate sessions on wake)
     const { SleepWakeDetector } = await import('../core/SleepWakeDetector.js');
     const sleepWakeDetector = new SleepWakeDetector();
+    // §P0 #9 (SE-8): give the scheduler's wake-reaper a cumulative-sleep view
+    // (not the single last sleep event) so a job that spanned multiple sleeps
+    // isn't reaped early.
+    if (scheduler) {
+      scheduler.setCumulativeSleepProvider((a, b) => sleepWakeDetector.getCumulativeSleepMsBetween(a, b));
+    }
     sleepWakeDetector.on('wake', async (event: { sleepDurationSeconds: number; timestamp: string }) => {
       console.log(`[SleepWake] Wake detected after ~${event.sleepDurationSeconds}s sleep`);
 
@@ -6771,7 +6790,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       let reapResult: { reaped: string[]; skipped: number } = { reaped: [], skipped: 0 };
       try {
         if (scheduler) {
-          reapResult = scheduler.reapStuckRuns(event);
+          reapResult = await scheduler.reapStuckRuns(event);
         }
       } catch (err) {
         console.error('[SleepWake][reaper] unexpected error:', err);
