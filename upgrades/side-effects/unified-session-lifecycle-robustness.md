@@ -239,3 +239,29 @@ no-silent-fallbacks ratchet doesn't count them: `ReapLog.read` (no log file ⇒
 empty list is correct, not degraded) and the §P5 transcript-tail read (an
 unreadable tail ⇒ no meaningful-advance signal this tick; treated as ambiguous,
 never as progress). Behavior unchanged.
+
+## Phase 2 — Commit #5: SessionWatchdog → ReapAuthority
+
+**Files:** `src/monitoring/SessionWatchdog.ts`,
+`tests/unit/session-lifecycle-phase-2-wiring.test.ts` (new).
+
+`handleEscalation` is now `async`; the final `EscalationLevel.KillSession` no
+longer calls a raw `tmux kill-session` — it resolves the instar session by
+`tmuxSession` and routes through
+`sessionManager.terminateSession(id, 'watchdog-stuck', { disposition: 'terminal', finalStatus: 'killed' })`.
+The authority's mandatory KEEP-guard + lease gate + protected-set check now
+apply: a session the guards would have kept survives a buggy watchdog. The raw
+`killTmuxSession` method is deleted; the LLM gate + stdin guard + signal
+escalations (CtrlC / SigTerm / SigKill) are unchanged.
+
+**Stand-down on KEEP (anti-thrash):** if the authority refuses the kill
+(`protected` / `not-lease-holder` / a KEEP-guard hold / `in-flight`), the
+watchdog logs the exact reason, records a `kept (<reason>)` intervention, and
+**clears escalationState**. It does not re-escalate against a guarded session
+every tick — the §P5 backstop owns operator-decision escalation for a
+persistently-stale session.
+
+**Tests:** existing SessionWatchdog tests (58) green; new wiring contract (3) green; typecheck clean.
+
+**Rollback:** revert this commit; the raw `killTmuxSession` is the only thing
+deleted and is recoverable from history.
