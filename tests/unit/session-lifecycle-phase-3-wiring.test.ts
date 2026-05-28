@@ -68,4 +68,43 @@ describe('Phase 3 — per-killer routing contracts', () => {
       expect(quotaManagerSource).toContain('quotaUsagePercent:');
     });
   });
+
+  describe('Bonus — session label follows topic rename', () => {
+    const sessionManagerSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/core/SessionManager.ts'),
+      'utf-8',
+    );
+    const telegramSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/messaging/TelegramAdapter.ts'),
+      'utf-8',
+    );
+    const serverSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/commands/server.ts'),
+      'utf-8',
+    );
+
+    it('SessionManager.renameSessionByTmux mutates ONLY the display name (never tmuxSession or id)', () => {
+      const fn = sessionManagerSource.match(/renameSessionByTmux\([^)]*\)[\s\S]*?\n {2}\}/);
+      expect(fn, 'method must exist').toBeTruthy();
+      const body = fn![0];
+      expect(body).toMatch(/session\.name\s*=\s*trimmed/);
+      // Defensive: the method MUST NOT touch tmuxSession or id.
+      expect(body).not.toMatch(/session\.tmuxSession\s*=/);
+      expect(body).not.toMatch(/session\.id\s*=/);
+    });
+
+    it('TelegramAdapter fires the handler on TRUE rename — not on initial-capture / creation', () => {
+      expect(telegramSource).toContain('setTopicRenamedHandler');
+      // The fire site is gated on isRename, which requires forum_topic_edited
+      // (rename event) AND name != currentName.
+      expect(telegramSource).toMatch(/isRename\s*=\s*!!msg\.forum_topic_edited\?\.name\s*&&\s*currentName\s*!==\s*detectedName/);
+      expect(telegramSource).toMatch(/if\s*\(isRename\s*&&\s*this\.topicRenamedHandler\)/);
+    });
+
+    it('server.ts wires the handler to update the BOUND session only via tmuxSession lookup', () => {
+      expect(serverSource).toMatch(/setTopicRenamedHandler\(\(topicId, newName\)/);
+      expect(serverSource).toMatch(/telegram\?\.getSessionForTopic\(topicId\)/);
+      expect(serverSource).toContain('sessionManager.renameSessionByTmux');
+    });
+  });
 });

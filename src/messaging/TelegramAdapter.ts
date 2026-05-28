@@ -494,10 +494,25 @@ export class TelegramAdapter implements MessagingAdapter {
    * trust the click came from the owner.
    */
   private tunnelConsentHandler: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null = null;
+  /**
+   * UNIFIED-SESSION-LIFECYCLE bonus — fired when a Telegram forum topic is
+   * renamed. Wired in server.ts to update the bound session's display name
+   * (display `name` only — never the tmuxSession key or id). Fire-and-forget.
+   */
+  private topicRenamedHandler: ((topicId: number, newName: string) => void | Promise<void>) | null = null;
 
   /** Wire the tunnel-consent callback handler (called by TunnelManager). */
   setTunnelConsentHandler(fn: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null): void {
     this.tunnelConsentHandler = fn;
+  }
+
+  /**
+   * Wire the topic-renamed callback (UNIFIED-SESSION-LIFECYCLE bonus). Fires
+   * fire-and-forget when a Telegram forum topic is renamed; consumers update
+   * the bound session's display `name` only (never the tmuxSession key or id).
+   */
+  setTopicRenamedHandler(fn: ((topicId: number, newName: string) => void | Promise<void>) | null): void {
+    this.topicRenamedHandler = fn;
   }
 
   /**
@@ -3641,9 +3656,23 @@ export class TelegramAdapter implements MessagingAdapter {
     if (detectedName) {
       const currentName = this.topicToName.get(numericTopicId);
       if (!currentName || /^topic-\d+$/.test(currentName) || msg.forum_topic_edited?.name) {
+        const isRename = !!msg.forum_topic_edited?.name && currentName !== detectedName;
         this.topicToName.set(numericTopicId, detectedName);
         this.saveRegistry();
         console.log(`[telegram] Captured topic name: ${numericTopicId} → "${detectedName}"`);
+        // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
+        // initial capture or topic creation). The handler updates the bound
+        // session's display `name` so the dashboard label tracks the user's
+        // rename. Fire-and-forget: rename-display is non-critical.
+        if (isRename && this.topicRenamedHandler) {
+          try {
+            void Promise.resolve(this.topicRenamedHandler(numericTopicId, detectedName)).catch((err) => {
+              console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
+            });
+          } catch (err) {
+            console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
+          }
+        }
       }
     }
 

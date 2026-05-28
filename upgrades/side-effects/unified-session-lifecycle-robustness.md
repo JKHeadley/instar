@@ -401,3 +401,32 @@ letting that grace push real usage to 100%/lockout.
 
 **Rollback:** revert this commit. The new thresholds default to safe values and
 the migrator dep stays optional, so older callers are unaffected.
+
+## Phase 3 — Commit (bonus): session label follows topic rename
+
+**Files:** `src/core/SessionManager.ts`, `src/messaging/TelegramAdapter.ts`,
+`src/commands/server.ts`, `tests/unit/session-rename-by-tmux.test.ts` (new),
+`tests/unit/session-lifecycle-phase-3-wiring.test.ts`.
+
+When the user renames a Telegram forum topic, the bound session's DISPLAY name
+follows the rename — but the operational identity (`tmuxSession` key + `id`
+UUID) stays intact, as the spec requires.
+
+1. **`SessionManager.renameSessionByTmux(tmuxSession, newName)`** — updates
+   `session.name` ONLY. NEVER touches `tmuxSession` (the tmux key + every
+   internal lookup) or `id` (state lookups). Idempotent; safe on unknown
+   tmuxSession; rejects empty / whitespace-only / non-string names.
+2. **`TelegramAdapter.setTopicRenamedHandler`** — wires a fire-and-forget
+   callback fired ONLY on a true rename (`forum_topic_edited` present AND the
+   name changed). Initial-capture and topic-creation cases do not fire.
+3. **server.ts wiring** — `setTopicRenamedHandler((topicId, newName) => {
+   sessionManager.renameSessionByTmux(telegram.getSessionForTopic(topicId), newName); })`.
+
+Because the renamed value is user-controlled, it flows through the same §P3
+sanitization (literal code spans) wherever it surfaces in user-facing notices.
+
+**Tests:** SessionManager rename (5) + Phase-3 wiring (9, including the bonus
+contracts) green; typecheck clean.
+
+**Rollback:** revert this commit; the handler stays optional, so older callers
+are unaffected.
