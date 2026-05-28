@@ -47,14 +47,22 @@ function sanitizeMetaForDiagnostics(meta: Record<string, unknown> | undefined): 
 
 export function createTopicIntentRoutes(deps: {
   topicIntentStore: TopicIntentStore | null;
-  /** Layer 3 classifier callback. Null/undefined → arccheck route returns
-   *  a no-fire verdict (degrades open). Production wires this to a
-   *  Haiku-class call through Instar's LlmQueue. */
+  /** Layer 3 ArcCheck instance. Null/undefined → arccheck route returns
+   *  a no-fire verdict (degrades open). Production constructs one shared
+   *  instance in server.ts so the HTTP route and the in-process
+   *  outbound-gate caller use the same classifier. */
+  arcCheck?: ArcCheck | null;
+  /** Legacy entrypoint — when `arcCheck` is not provided but a classifier
+   *  function is, construct a per-route ArcCheck instance from it. Kept so
+   *  pre-existing tests and out-of-process integrations keep working
+   *  unchanged. Production passes `arcCheck` directly. */
   arcCheckClassify?: ArcCheckClassifyFn | null;
 }): Router {
   const router = Router();
   const { topicIntentStore: store } = deps;
-  const arcCheck = store && deps.arcCheckClassify ? new ArcCheck(store, deps.arcCheckClassify) : null;
+  const arcCheck = !store
+    ? null
+    : deps.arcCheck ?? (deps.arcCheckClassify ? new ArcCheck(store, deps.arcCheckClassify) : null);
 
   if (!store) {
     // Wire a 503 stub so the route surface exists even when the feature is disabled

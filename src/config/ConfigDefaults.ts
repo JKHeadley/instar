@@ -124,6 +124,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     capture: {
       enabled: true,
     },
+    // ArcCheck (Layer 3) — pre-send classifier wired into the outbound tone
+    // gate as one more signal source. Default ON (ratified). Kill switch:
+    // arccheck.enabled=false leaves the HTTP route mounted but the classifier
+    // dark (returns degrade-open verdict), and skips the in-process call in
+    // checkOutboundMessage. Spec: docs/specs/topic-intent-arccheck-wiring.md.
+    arccheck: {
+      enabled: true,
+    },
   },
   // Framework-Onboarding Mentor System (§19.4). Ships DORMANT: enabled:false +
   // mode:'off' so POST /mentor/tick returns {ran:false,reason:'disabled'} and

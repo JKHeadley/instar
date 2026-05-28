@@ -599,6 +599,11 @@ export interface RouteContext {
    *  Uses the shared IntelligenceProvider (Claude CLI subscription or Anthropic API).
    *  Catches CLI commands, file paths, config syntax leaking to users. */
   messagingToneGate: MessagingToneGate | null;
+  /** Layer 3 of the Topic Intent Layer — pre-send arc-check. Same instance
+   *  is wired behind the HTTP route (createTopicIntentRoutes) and consumed
+   *  in-process by checkOutboundMessage so the tone gate sees ArcCheck's
+   *  signal alongside junk/jargon/duplicate. Null when disabled. */
+  topicIntentArcCheck: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
   /** Deterministic dedup gate. Blocks near-duplicate outbound messages in
    *  the same conversation — universal safety net against respawn races,
    *  idempotency gaps, and other lifecycle hazards. No LLM call, runs on
@@ -1074,6 +1079,34 @@ export function createRoutes(ctx: RouteContext): Router {
             similarity: dupResult.similarity,
             matchedText: dupResult.matchedText,
           };
+        } catch {
+          // Detector errors are never authoritative — just skip the signal.
+        }
+      }
+
+      // ── Topic-Intent ArcCheck signal (Layer 3) ──
+      // In-process call against the same ArcCheck instance the HTTP route
+      // uses. Concurrent-eligible with the rest of the signal collection;
+      // hard timeout means a slow classifier never reaches the gate's hot
+      // path. Failures are silent — ArcCheck is signal-only and MUST NOT
+      // block delivery. Spec: docs/specs/topic-intent-arccheck-wiring.md.
+      if (options.topicId !== undefined && ctx.topicIntentArcCheck) {
+        try {
+          const ARC_CHECK_TIMEOUT_MS = 200;
+          const arcVerdict = await Promise.race([
+            ctx.topicIntentArcCheck.check({ topicId: options.topicId, draftText: text }),
+            new Promise<{ fire: false }>((resolve) =>
+              setTimeout(() => resolve({ fire: false }), ARC_CHECK_TIMEOUT_MS),
+            ),
+          ]);
+          if (arcVerdict.fire) {
+            signals.arcCheck = {
+              fire: true,
+              kind: arcVerdict.kind,
+              refText: arcVerdict.refText,
+              suggestedRewriteHint: arcVerdict.suggestedRewriteHint,
+            };
+          }
         } catch {
           // Detector errors are never authoritative — just skip the signal.
         }

@@ -1853,6 +1853,16 @@ export interface InstarConfig {
        */
       decayProfiles?: Record<string, { graceDays?: number; halfLifeDays?: number }>;
     };
+    /**
+     * Topic-intent ArcCheck config (rung 3 / Layer 3 — pre-send classifier).
+     * `arccheck.enabled` (default true) is the kill switch for the classifier
+     * + the in-process check from checkOutboundMessage. The HTTP route
+     * surface remains either way; with the classifier disabled, it returns a
+     * degrade-open verdict. See docs/specs/topic-intent-arccheck-wiring.md.
+     */
+    arccheck?: {
+      enabled?: boolean;
+    };
   };
   /**
    * Spec-review standards-conformance gate (rung-3 normative slice).

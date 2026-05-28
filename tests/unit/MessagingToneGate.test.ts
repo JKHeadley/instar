@@ -283,6 +283,47 @@ describe('MessagingToneGate', () => {
       expect(capturedPrompt).toContain('UPSTREAM SIGNALS');
       expect(capturedPrompt).toContain('no signals reported');
     });
+
+    it('includes topic-intent ArcCheck signal with kind, ref text, and rewrite hint', async () => {
+      let capturedPrompt = '';
+      const provider = mockProvider((p) => {
+        capturedPrompt = p;
+        return JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('We need a second machine.', {
+        channel: 'telegram',
+        signals: {
+          arcCheck: {
+            fire: true,
+            kind: 'contradicts-settled',
+            refText: 'The mac-mini is already configured and SSH-reachable.',
+            suggestedRewriteHint:
+              'Pause and surface the contradiction; the mac-mini is already configured.',
+          },
+        },
+      });
+      expect(capturedPrompt).toContain('topic-intent ArcCheck');
+      expect(capturedPrompt).toContain('signal-only, never blocks');
+      expect(capturedPrompt).toContain('fire=true');
+      expect(capturedPrompt).toContain('kind=contradicts-settled');
+      expect(capturedPrompt).toContain('mac-mini is already configured');
+      expect(capturedPrompt).toContain('rewrite hint:');
+    });
+
+    it('omits ArcCheck block when fire=false', async () => {
+      let capturedPrompt = '';
+      const provider = mockProvider((p) => {
+        capturedPrompt = p;
+        return JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('Plain message', {
+        channel: 'telegram',
+        signals: { arcCheck: { fire: false } },
+      });
+      expect(capturedPrompt).not.toContain('topic-intent ArcCheck');
+    });
   });
 
   describe('fail-open behavior', () => {

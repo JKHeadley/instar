@@ -128,6 +128,26 @@ export interface ToneReviewSignals {
     score?: number;
   };
   /**
+   * Topic-Intent ArcCheck verdict (Layer 3 of the Topic Intent Layer).
+   *
+   * SIGNAL ONLY. ArcCheck classifies the outbound draft against the topic's
+   * tracked refs and emits a verdict when the draft contradicts a settled
+   * item, drifts from the active task frame, or acts on an unconfirmed
+   * tentative item. The classifier itself never blocks — the tone gate
+   * consumes the signal and may fold the suggested rewrite hint into its
+   * rewrite plan. Spec: docs/specs/topic-intent-arccheck-wiring.md.
+   */
+  arcCheck?: {
+    /** Did ArcCheck identify a draft-vs-tracked-ref engagement worth flagging? */
+    fire: boolean;
+    /** Verdict kind when fire=true. */
+    kind?: 'acting-on-tentative' | 'contradicts-settled' | 'contradicts-frame';
+    /** Short excerpt of the tracked-ref text the draft engaged with. */
+    refText?: string;
+    /** Natural-language rewrite hint the gate may include in its review prompt. */
+    suggestedRewriteHint?: string;
+  };
+  /**
    * Self-heal-first signal (see DegradationReporter).
    *
    * SIGNAL ONLY. Producers of internal-health alerts must attempt at least
@@ -403,7 +423,7 @@ ${JSON.stringify(text)}
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal)) {
+    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -434,6 +454,17 @@ ${JSON.stringify(text)}
     }
     if (signals.selfHeal) {
       lines.push(`- self-heal: attempted=${signals.selfHeal.attempted} succeeded=${signals.selfHeal.succeeded ?? 'n/a'} attempts=${signals.selfHeal.attempts}`);
+    }
+    if (signals.arcCheck && signals.arcCheck.fire) {
+      // ArcCheck is SIGNAL ONLY. The gate may fold the rewrite hint into its
+      // rewrite plan via the suggestion field, but never blocks on this alone.
+      lines.push(`- topic-intent ArcCheck (signal-only, never blocks on its own): fire=true kind=${signals.arcCheck.kind ?? 'unknown'}`);
+      if (signals.arcCheck.refText) {
+        lines.push(`    engaged ref: ${JSON.stringify(signals.arcCheck.refText.slice(0, 200))}`);
+      }
+      if (signals.arcCheck.suggestedRewriteHint) {
+        lines.push(`    rewrite hint: ${JSON.stringify(signals.arcCheck.suggestedRewriteHint.slice(0, 400))}`);
+      }
     }
     return lines.join('\n') + '\n';
   }

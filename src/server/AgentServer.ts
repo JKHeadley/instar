@@ -282,6 +282,9 @@ export class AgentServer {
     worktreeManager?: WorktreeManager;
     /** Layer 1 of the Topic Intent Layer — per-topic confidence tracker. Null/undefined when disabled. */
     topicIntentStore?: TopicIntentStore;
+    /** Layer 3 of the Topic Intent Layer — pre-send classifier. Same instance is used
+     *  by the HTTP route AND the in-process outbound-gate caller in routes.ts. */
+    topicIntentArcCheck?: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
     /** Shared intelligence provider (subscription/REPL-pool) for the standards-conformance gate. */
     intelligence?: import('../core/types.js').IntelligenceProvider | null;
     /** Usher signal store (rung 4) — the read-only pull surface for re-surface signals. */
@@ -668,6 +671,7 @@ export class AgentServer {
       listenerManager: options.listenerManager ?? null,
       responseReviewGate: options.responseReviewGate ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
+      topicIntentArcCheck: options.topicIntentArcCheck ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
       pasteManager: options.pasteManager ?? null,
@@ -752,6 +756,7 @@ export class AgentServer {
     // returns a 503 stub so the surface always exists for capability probing.
     const topicIntentRoutes = createTopicIntentRoutes({
       topicIntentStore: options.topicIntentStore ?? null,
+      arcCheck: options.topicIntentArcCheck ?? null,
     });
     this.app.use(topicIntentRoutes);
 
