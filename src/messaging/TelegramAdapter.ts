@@ -1861,6 +1861,15 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * The topic IDs this adapter has registered a session for — the set of "live"
+   * conversations. Used by the live-tail streamer (spec §8 G3b) to enumerate the
+   * active topics whose tail should be pushed to the standby.
+   */
+  getKnownTopicIds(): number[] {
+    return [...this.topicToSession.keys()];
+  }
+
+  /**
    * Actively resolve a topic's name from Telegram by sending a temporary probe message
    * that replies to the topic's service message (whose message_id = topic_id).
    * The API response includes reply_to_message.forum_topic_created.name.

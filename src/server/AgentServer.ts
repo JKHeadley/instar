@@ -49,6 +49,7 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
+import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders } from './middleware.js';
@@ -181,6 +182,60 @@ export class AgentServer {
     autonomousEvolution?: import('../core/AutonomousEvolution.js').AutonomousEvolution;
     coordinator?: MultiMachineCoordinator;
     localSigningKeyPem?: string;
+    /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
+    leaseTransport?: { recordObserved: (lease: any) => void };
+    /**
+     * Handoff wire transport — the point-to-point ack/yield channel for the
+     * planned handoff (spec §8 G3d/G3e). The /api/handoff/ack route delivers the
+     * incoming machine's verified echo via recordAck (resolves the outgoing's
+     * awaitAck); /api/handoff/yield delivers the explicit yield via recordYield
+     * (fires the incoming's registered yield handler → lease CAS). Absent → both
+     * routes 503 (honest not-wired), never a silent ok.
+     */
+    handoffWireTransport?: { recordAck: (ack: any) => void; recordYield: () => void };
+    /**
+     * Incoming-side begin handler — invoked when a peer POSTs /api/handoff/begin
+     * with its flush manifest (spec §8 G3d). server.ts binds this to store the
+     * manifest and drive the HandoffReceiver's onBeginHandoff (build + send ack).
+     * Absent → the begin route 503s.
+     */
+    onHandoffBegin?: (manifest: unknown, fromMachineId: string) => void;
+    /**
+     * Outgoing-side planned-handoff trigger (spec §8 G3e). server.ts binds this
+     * to handoffSentinelWiring.initiate — the operator/test "hand off now" entry
+     * point behind POST /handoff/initiate. Absent → the route 503s (not wired).
+     */
+    onHandoffInitiate?: () => Promise<'handed-off' | 'aborted-stay-awake' | 'failed'>;
+    /**
+     * Race-guard read for the planned handoff (HandoffSentinel.inProgress). The
+     * reaper/scheduler can consult it so they do not act mid-handoff; also
+     * surfaced at GET /handoff/status.
+     */
+    handoffInProgress?: () => boolean;
+    /**
+     * Exactly-once ingress ledger (spec §8 G3a) — present ONLY when
+     * multiMachine.exactlyOnceIngress is enabled (server.ts constructs it).
+     * Absent → the inbound/outbound message path behaves exactly as before.
+     */
+    messageLedger?: import('../messaging/MessageProcessingLedger.js').MessageProcessingLedger;
+    /** Per-topic current-inbound dedupeKey map; paired with messageLedger. */
+    currentInboundByTopic?: Map<string, string>;
+    /**
+     * Cross-machine reply-marker propagation (spec §8 G3a). The outbound reply
+     * path broadcasts a marker to standby peers when a reply commits; present only
+     * when the exactly-once ledger is wired. Absent → no cross-machine propagation.
+     */
+    replyMarkerTransport?: import('../core/ReplyMarkerTransport.js').ReplyMarkerTransport;
+    /** Apply a peer's reply marker (→ machineRoutes /api/message-marker → ledger.applyRemoteReplyMarker). */
+    onReplyMarker?: (marker: unknown, fromMachineId: string) => void;
+    /**
+     * Live-tail receiver — decrypts + applies a peer's encrypted live-tail flush
+     * received at /api/live-tail (spec §8 G3b/c). Throws on decrypt/verify failure.
+     */
+    liveTailReceiver?: (
+      flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
+      fromMachineId: string,
+    ) => { applied: boolean; reason: string } | void;
     whatsapp?: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter;
     slack?: import('../messaging/slack/SlackAdapter.js').SlackAdapter;
     imessage?: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter;
@@ -371,6 +426,18 @@ export class AgentServer {
           state: { jobs: [], sessions: [] },
         }),
         messageRouter: options.messageRouter ?? null,
+        onLeaseReceived: options.leaseTransport
+          ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
+          : undefined,
+        onLiveTailReceived: options.liveTailReceiver,
+        onHandoffAck: options.handoffWireTransport
+          ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)
+          : undefined,
+        onHandoffYield: options.handoffWireTransport
+          ? () => options.handoffWireTransport!.recordYield()
+          : undefined,
+        onHandoffBegin: options.onHandoffBegin,
+        onReplyMarker: options.onReplyMarker,
       });
       this.app.use(machineRoutes);
     }
@@ -630,6 +697,9 @@ export class AgentServer {
       taskFlowRegistry: options.taskFlowRegistry ?? null,
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
+      messageLedger: options.messageLedger ?? null,
+      currentInboundByTopic: options.currentInboundByTopic ?? null,
+      replyMarkerTransport: options.replyMarkerTransport ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
@@ -703,6 +773,15 @@ export class AgentServer {
     // Mounted unconditionally; 503-stubs when the store is absent. Signal-only.
     // Spec: docs/specs/cwa-usher.md.
     this.app.use(createUsherRoutes({ signalStore: options.usherSignalStore ?? null }));
+
+    // Planned-handoff operator/test trigger (spec §8 G3e). Bearer-authed (mounted
+    // after the global auth middleware). server.ts supplies onHandoffInitiate +
+    // handoffInProgress from the outgoing-side handoffSentinelWiring; absent →
+    // the /handoff surface 503s honestly.
+    this.app.use(createHandoffInitiateRoutes({
+      onInitiate: options.onHandoffInitiate ?? null,
+      inProgress: options.handoffInProgress ?? null,
+    }));
 
     // Error handler (must be last)
     this.app.use(errorHandler);

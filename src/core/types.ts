@@ -1625,6 +1625,12 @@ export interface MultiMachineConfig {
   /** A message-ledger entry left 'processing' past this is re-runnable by the new holder. Default 5min. */
   maxProcessingMs?: number;
   /**
+   * Exactly-once ingress gate (spec §8 G3a). DEFAULT false — when true, inbound
+   * Telegram forwards are deduped via the MessageProcessingLedger and replies
+   * commit reply_committed. Ships dark; flip ON only after live test-as-self.
+   */
+  exactlyOnceIngress?: boolean;
+  /**
    * Mesh protocol version override. Normally left unset (the build constant
    * SEAMLESSNESS_PROTOCOL_VERSION applies); present so migrations/tests can pin it.
    */

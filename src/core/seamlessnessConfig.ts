@@ -37,6 +37,14 @@ export interface ResolvedSeamlessnessConfig {
   splitBrainEscalationCooldownMs: number;
   handoffBar: 'near-instant' | 'relaxed';
   maxProcessingMs: number;
+  /**
+   * Exactly-once ingress (spec §8 G3a). When true, the inbound forward path
+   * gates each message through the MessageProcessingLedger (dedup redeliveries)
+   * and the outbound reply path commits reply_committed. DEFAULT false — ships
+   * dark; flip ON only after a live test-as-self confirms no false-drops, since
+   * this is the most critical path (every user message).
+   */
+  exactlyOnceIngress: boolean;
   protocolVersion: number;
 }
 
@@ -92,6 +100,7 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     splitBrainEscalationCooldownMs: mm?.splitBrainEscalationCooldownMs ?? 5 * 60_000,
     handoffBar: mm?.handoffBar ?? 'near-instant',
     maxProcessingMs: mm?.maxProcessingMs ?? 5 * 60_000,
+    exactlyOnceIngress: mm?.exactlyOnceIngress ?? false,
     protocolVersion: mm?.protocolVersion ?? SEAMLESSNESS_PROTOCOL_VERSION,
   };
 }

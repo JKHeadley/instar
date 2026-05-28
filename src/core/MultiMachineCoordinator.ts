@@ -390,6 +390,15 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * The current lease fencing epoch (0 if no lease is attached). Used as the
+   * fencing token for message-ledger transitions (spec §8 G3a) so a stale-epoch
+   * holder's writes are distinguishable from the current holder's.
+   */
+  getLeaseEpoch(): number {
+    return this.leaseCoordinator?.currentEpoch() ?? 0;
+  }
+
+  /**
    * Observability snapshot for /health.multiMachine.syncStatus (spec §11).
    * Always returns valid fields (never null/throws) — this is the Phase-1
    * "feature is alive" surface. On a single-machine install it reports the
@@ -432,6 +441,20 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this.leaseCoordinator) return;
     await this.leaseCoordinator.acquireIfEligible();
     this.reconcileRoleToLease('lease-init');
+  }
+
+  /**
+   * Acquire the lease on an explicit yield from the outgoing holder (planned
+   * handoff, spec §8 G3e). Called by the /api/handoff/yield handler on the
+   * INCOMING machine. Delegates to the guarded consent path (which refuses a
+   * yield from any non-holder), then reconciles role → awake on success.
+   * Returns true if this machine now holds the lease.
+   */
+  async acquireLeaseOnConsent(yieldFromMachineId: string): Promise<boolean> {
+    if (!this.leaseCoordinator) return false;
+    const acquired = await this.leaseCoordinator.acquireOnConsent(yieldFromMachineId);
+    this.reconcileRoleToLease('handoff-yield');
+    return acquired;
   }
 
   /**

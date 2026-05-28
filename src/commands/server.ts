@@ -67,6 +67,19 @@ import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
 import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
+import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
+import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
+import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
+import { LiveTailSource } from '../core/LiveTailSource.js';
+import { HandoffWireTransport } from '../core/HandoffWireTransport.js';
+import { createHandoffReceiverWiring } from '../core/handoffReceiverWiring.js';
+import { createHandoffSentinelBootWiring } from '../core/handoffSentinelBootWiring.js';
+import type { HandoffOutcome } from '../core/HandoffSentinel.js';
+import { MessageProcessingLedger } from '../messaging/MessageProcessingLedger.js';
+import { recoverStuckMessages } from '../messaging/stuckMessageRecovery.js';
+import { ReplyMarkerTransport } from '../core/ReplyMarkerTransport.js';
+import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
+import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -2408,6 +2421,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Standalone agents don't have git repos unless the user opted into cloud backup.
     let gitSync: GitSyncManager | undefined;
     let registrySyncDebouncer: RegistrySyncDebouncer | undefined;
+    let leaseTransport: HttpLeaseTransport | undefined;
+    let liveTailBuffer: LiveTailBuffer | undefined;
+    let liveTailSendTransport: HttpLiveTailTransport | undefined;
+    let handoffWireTransport: HandoffWireTransport | undefined;
+    let replyMarkerTransport: ReplyMarkerTransport | undefined;
+    let liveTailReceiver:
+      | ((
+          flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
+          fromMachineId: string,
+        ) => { applied: boolean; reason: string } | void)
+      | undefined;
     const isGitRepo = fs.existsSync(path.join(config.projectDir, '.git'));
     const gitBackupEnabled = config.gitBackup?.enabled !== false;
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
@@ -2485,11 +2509,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
           logger: (m) => console.log(pc.dim(m)),
         });
+        // Lease wire transport (spec §6) — the low-latency authoritative copy
+        // travels over the existing authenticated machine channel. For a
+        // single-machine mesh (no peers) broadcast is a no-op and isReachable()
+        // stays true, so the lease behaves exactly as git-only. Multi-machine
+        // meshes get RTT-bounded acquisition + the renewal-requires-medium rule.
+        let leaseSeq = Date.now();
+        leaseTransport = new HttpLeaseTransport({
+          selfMachineId,
+          signingKeyPem: idMgr.loadSigningKey(),
+          peers: () => {
+            const reg = idMgr.loadRegistry();
+            return Object.entries(reg.machines ?? {})
+              .filter(([id, e]) => id !== selfMachineId && !!e.lastKnownUrl && !e.revokedAt)
+              .map(([id, e]) => ({ machineId: id, url: e.lastKnownUrl as string }));
+          },
+          nextSequence: () => ++leaseSeq,
+          reachabilityWindowMs: seamlessness.leaseTtlMs,
+          logger: (m) => console.log(pc.dim(m)),
+        });
         const leaseCoordinator = new LeaseCoordinator({
           lease: fencedLease,
           store: leaseStore,
-          // tunnel accelerator omitted for the launch increment (git-only is
-          // correct; tunnel transport tracked for the follow-on).
+          tunnel: leaseTransport,
           presumedDeadHolders: () => {
             const reg = idMgr.loadRegistry();
             const nowMs = Date.now();
@@ -2509,6 +2551,108 @@ export async function startServer(options: StartOptions): Promise<void> {
         coordinator.attachLeaseCoordinator(leaseCoordinator);
         await coordinator.initializeLease();
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
+
+        // ── Handoff ack/yield wire (spec §8 G3d/G3e) ───────────────
+        // The point-to-point channel the two machines use to negotiate a
+        // verified, lease-safe planned handoff. The /api/handoff/ack route
+        // delivers the incoming machine's caught-up echo via recordAck (resolves
+        // the outgoing's awaitAck); /api/handoff/yield delivers the explicit
+        // yield via recordYield (fires the incoming's registered handler → lease
+        // CAS). A handoff is strictly 1:1, so peer() resolves the single
+        // reachable counterpart. Solo agent (no peer) → sends are reachable
+        // no-ops, so a single-machine mesh behaves exactly as before.
+        let handoffSeq = Date.now();
+        handoffWireTransport = new HandoffWireTransport({
+          selfMachineId,
+          signingKeyPem: idMgr.loadSigningKey(),
+          peer: () => {
+            const reg = idMgr.loadRegistry();
+            for (const [id, e] of Object.entries(reg.machines ?? {})) {
+              if (id === selfMachineId || !e.lastKnownUrl || e.revokedAt) continue;
+              return { machineId: id, url: e.lastKnownUrl as string };
+            }
+            return null;
+          },
+          nextSequence: () => ++handoffSeq,
+          logger: (m) => console.log(pc.dim(m)),
+        });
+
+        // Cross-machine reply-marker propagation (spec §8 G3a) — only when the
+        // exactly-once ledger is active. Broadcasts "this event was answered" to
+        // standby peers so a post-handoff redelivery is deduped on the new holder.
+        if (seamlessness.exactlyOnceIngress) {
+          let markerSeq = Date.now();
+          replyMarkerTransport = new ReplyMarkerTransport({
+            selfMachineId,
+            signingKeyPem: idMgr.loadSigningKey(),
+            peers: () => {
+              const reg = idMgr.loadRegistry();
+              const out: { machineId: string; url: string }[] = [];
+              for (const [id, e] of Object.entries(reg.machines ?? {})) {
+                if (id === selfMachineId || !e.lastKnownUrl || e.revokedAt) continue;
+                out.push({ machineId: id, url: e.lastKnownUrl as string });
+              }
+              return out;
+            },
+            nextSequence: () => ++markerSeq,
+            logger: (m) => console.log(pc.dim(m)),
+          });
+        }
+        console.log(pc.dim('  Handoff ack/yield wire active (ack→recordAck, yield→recordYield)'));
+
+        // ── Live-tail RECEIVER (spec §8 G3b/c) ─────────────────────
+        // The standby receives the holder's redacted+encrypted live-tail flushes
+        // at /api/live-tail, decrypts them with THIS machine's X25519 private key,
+        // and sequence-dedups them into a persisted buffer so a failover resumes
+        // from a durable (not merely in-memory) copy. The HOLDER-side sender
+        // (HttpLiveTailTransport.broadcast) is driven by the flush producer wired
+        // in the inbound-dispatch + handoff integration (next increment piece).
+        // Solo agent (no peers ever POST here) → the receiver simply never fires.
+        if (seamlessness.liveTailTransport === 'tunnel') {
+          liveTailBuffer = new LiveTailBuffer({
+            outOfOrderTimeoutMs: seamlessness.liveTailOutOfOrderTimeoutMs,
+            maxBytesPerTopic: seamlessness.liveTailMaxBytesPerTopic,
+            logger: (m) => console.log(pc.dim(m)),
+          });
+          const liveTailBufferRef = liveTailBuffer;
+          // Decrypt with THIS machine's X25519 private key, then apply
+          // (sequence-deduped). Throws on a bad payload → the route returns 400.
+          const ownEncryptionKey = createPrivateKey(idMgr.loadEncryptionKey());
+          liveTailReceiver = (flush) => {
+            const decrypted = decryptFromSync(flush.enc as any, ownEncryptionKey) as { content?: unknown };
+            const content = typeof decrypted.content === 'string' ? decrypted.content : '';
+            return liveTailBufferRef.applyFlush({ topic: flush.topic, seq: flush.seq, content });
+          };
+          console.log(pc.dim('  Live-tail receiver active (standby decrypts + sequence-dedups holder stream)'));
+
+          // Holder-side SENDER transport (the LiveTailSource that drives it is
+          // constructed after the Telegram adapter is up — it needs the content
+          // provider). Built here because it needs idMgr (signing key + peer
+          // registry). No peers → broadcast is a reachable no-op.
+          let liveTailWireSeq = Date.now();
+          liveTailSendTransport = new HttpLiveTailTransport({
+            selfMachineId,
+            signingKeyPem: idMgr.loadSigningKey(),
+            peers: () => {
+              const reg = idMgr.loadRegistry();
+              const out: { machineId: string; url: string; encryptionPublicKey: string }[] = [];
+              for (const [id, e] of Object.entries(reg.machines ?? {})) {
+                if (id === selfMachineId || !e.lastKnownUrl || e.revokedAt) continue;
+                const pem = idMgr.getEncryptionPublicKeyPem(id);
+                if (!pem) continue; // can't encrypt for a peer whose X25519 key we lack
+                try {
+                  const encB64 = createPublicKey(pem).export({ type: 'spki', format: 'der' }).toString('base64');
+                  out.push({ machineId: id, url: e.lastKnownUrl, encryptionPublicKey: encB64 });
+                } catch { /* skip a peer with an unusable key */ }
+              }
+              return out;
+            },
+            nextSequence: () => ++liveTailWireSeq,
+            encryptFor: (content, recipientEncPubB64) => encryptForSync({ content }, recipientEncPubB64),
+            reachabilityWindowMs: seamlessness.leaseTtlMs,
+            logger: (m) => console.log(pc.dim(m)),
+          });
+        }
       } catch (err) {
         // @silent-fallback-ok — git sync disabled gracefully
         console.log(pc.yellow(`  Git sync setup: ${err instanceof Error ? err.message : String(err)}`));
@@ -8115,6 +8259,114 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
+    // ── Live-tail STREAMING (spec §8 G3b) ──────────────────────────
+    // The holder pushes the live conversation tail to the standby on a cadence,
+    // keeping the standby's persisted copy fresh (RPO = liveTailMaxStalenessMs).
+    // Gated on holding the lease, so only the awake machine streams. Solo agent
+    // (no peers) → the transport's broadcast is a reachable no-op. The sender
+    // transport was built in the lease block; the source + cadence are wired here
+    // because the content provider needs the Telegram adapter.
+    //
+    // The outgoing-side planned-handoff trigger (spec §8 G3e) is assigned INSIDE
+    // this block too: the sentinel must drive liveTailSource.pushTick to make the
+    // standby current before it flushes the manifest, so liveTailSource has to be
+    // in scope. Declared out here so the AgentServer mount (POST /handoff/initiate)
+    // can read it; undefined on a solo agent / multi-machine off.
+    let handoffInitiate: (() => Promise<HandoffOutcome>) | undefined;
+    let handoffSentinelInProgress: (() => boolean) | undefined;
+    if (liveTailSendTransport && telegram && coordinator.enabled) {
+      const sendTransport = liveTailSendTransport;
+      const liveTailSource = new LiveTailSource({
+        // Full current tail for a topic — recent history formatted append-only.
+        // (A window shift past the limit triggers a one-off full resend, which the
+        // standby buffer dedups by seq + caps by bytes — correct, just occasional.)
+        getTopicContent: (topic) => {
+          const entries = telegram.getTopicHistory(Number(topic), 500);
+          return entries.map((e) => `[${e.timestamp}] ${e.text}`).join('\n') + (entries.length ? '\n' : '');
+        },
+        activeTopics: () => telegram.getKnownTopicIds().map((id) => String(id)),
+        transport: sendTransport,
+        logger: (m) => console.log(pc.dim(m)),
+      });
+      const liveTailTimer = setInterval(() => {
+        // Only the lease holder streams (mirrors the scheduler/sentinel gating).
+        if (!coordinator.holdsLease()) return;
+        liveTailSource.pushTick().catch((err) => {
+          console.error(`[live-tail] push tick failed: ${err instanceof Error ? err.message : err}`);
+        });
+      }, seamlessness.liveTailPushRateMs);
+      if (liveTailTimer.unref) liveTailTimer.unref();
+      console.log(pc.dim(`  Live-tail streaming active (holder pushes every ${seamlessness.liveTailPushRateMs}ms when peers present)`));
+
+      // ── Outgoing-side planned-handoff sentinel (spec §8 G3e) ──
+      // The conductor: flush the live tail → POST the begin manifest → await +
+      // VERIFY the incoming's caught-up echo → validate → yield → demote. The
+      // CRITICAL invariant lives in HandoffSentinel: it NEVER yields the lease
+      // unless the echo verifies AND validation passes — on any mismatch/timeout
+      // it aborts and stays awake (no two-holders window). This block only binds
+      // the ops to the live components. Additionally gated on handoffWireTransport
+      // (the signed begin/ack/yield channel). The trigger is the explicit
+      // POST /handoff/initiate route (no sleep auto-trigger — SleepWakeDetector
+      // emits only 'wake', so there is no pre-sleep hook for v1).
+      if (handoffWireTransport) {
+        // The active-topic selection + dep binding live in the extracted
+        // createHandoffSentinelBootWiring factory so the boot glue is unit-tested
+        // (wiring-integrity), not inline here.
+        const sentinelWiring = createHandoffSentinelBootWiring({
+          telegram,
+          coordinator,
+          liveTailSource,
+          wire: handoffWireTransport,
+          handoffAckTimeoutMs: seamlessness.handoffAckTimeoutMs,
+          minHandoffIntervalMs: seamlessness.minHandoffIntervalMs,
+          logger: (m) => console.log(pc.dim(`  ${m}`)),
+        });
+        handoffInitiate = sentinelWiring.initiate;
+        handoffSentinelInProgress = () => sentinelWiring.sentinel.inProgress;
+        console.log(pc.dim('  Handoff sentinel active (operator trigger: POST /handoff/initiate)'));
+      }
+    }
+
+    // ── Incoming-side planned-handoff receiver (spec §8 G3d/G3e) ──
+    // Constructed on every mesh machine; it acts only while this machine is the
+    // standby being handed to. The begin route hands us the outgoing's flush
+    // manifest; buildAck echoes its tailSeq + ingressPosition and recomputes the
+    // thread-history hash from OUR own synced state (matches iff the live-tail
+    // kept us caught up — same hash function the outgoing's flush uses). The lease
+    // CAS is attempted ONLY on the explicit yield, never on the ack.
+    let onHandoffBegin: ((manifest: unknown, fromMachineId: string) => void) | undefined;
+    if (handoffWireTransport && telegram && coordinator.enabled) {
+      const hwt = handoffWireTransport;
+      const handoffWiring = createHandoffReceiverWiring({
+        sendAck: (ack) => hwt.sendAck(ack),
+        acquireLeaseOnConsent: (from) => coordinator.acquireLeaseOnConsent(from),
+        getTopicHistory: (topic, limit) => telegram.getTopicHistory(topic, limit),
+        logger: (m) => console.log(pc.dim(`  ${m}`)),
+      });
+      // The yield route → transport.recordYield → this handler → receiver.onYield → lease CAS.
+      hwt.onYield(handoffWiring.yieldHandler);
+      // The begin route → store the manifest + drive the caught-up ack build/send.
+      onHandoffBegin = handoffWiring.onBegin;
+      console.log(pc.dim('  Handoff receiver active (begin→ack, yield→lease CAS)'));
+    }
+
+    // ── Exactly-once ingress ledger (spec §8 G3a) ──────────────────
+    // Constructed ONLY when multiMachine.exactlyOnceIngress is enabled (default
+    // off). When absent the inbound/outbound message path is byte-for-byte
+    // unchanged — this ships dark and is flipped on only after a live
+    // test-as-self confirms no false-drops on the most critical path.
+    let messageLedger: MessageProcessingLedger | undefined;
+    let currentInboundByTopic: Map<string, string> | undefined;
+    if (seamlessness.exactlyOnceIngress) {
+      try {
+        messageLedger = MessageProcessingLedger.open(config.projectName, config.stateDir);
+        currentInboundByTopic = new Map<string, string>();
+        console.log(pc.dim('  Exactly-once ingress ledger ACTIVE (spec §8 G3a — inbound dedup + reply commit)'));
+      } catch (err) {
+        console.error(`[exactly-once] ledger open failed, gate stays dark: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     // ── ReleaseReadinessSentinel (Layer B of release-readiness-visibility) ──
     // Repo-gated dev-environment watchdog: only constructed when the install has
     // an analyzable instar git repo AND the feature is enabled in config. On a
@@ -8155,7 +8407,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
@@ -8168,6 +8420,48 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
+
+    // ── No-LOSS recovery: re-run inbound events stranded in 'processing' (spec §8 G3a) ──
+    // The complement to the inbound dedup gate: an event claimed but never
+    // reply_committed (the holder crashed or was fenced mid-turn) is re-run by the
+    // current lease holder from its stored input, via the SAME onTopicMessage path a
+    // fresh forward uses — so the lost reply is produced. Only active when the
+    // exactly-once ledger is wired (flag on). Lease-gated (a standby never injects),
+    // attempts-capped (an unanswered message is not re-run forever). Telegram-only for
+    // v1 (the --no-telegram sessionManager path is a tracked refinement).
+    if (messageLedger && currentInboundByTopic && telegram) {
+      const ledgerForRecovery = messageLedger;
+      const inboundMap = currentInboundByTopic;
+      const reinjectStuck = (topicId: string, dedupeKey: string, replayText: string): void => {
+        inboundMap.set(topicId, dedupeKey); // so the eventual reply commits THIS entry
+        void telegram.onTopicMessage?.({
+          id: `replay-${dedupeKey}`,
+          userId: 'unknown',
+          content: replayText,
+          channel: { type: 'telegram', identifier: topicId },
+          receivedAt: new Date().toISOString(),
+          metadata: { messageThreadId: Number(topicId), viaLifeline: true, replay: true },
+        } as Message);
+      };
+      const runStuckRecovery = (): void => {
+        try {
+          recoverStuckMessages({
+            ledger: ledgerForRecovery,
+            holdsLease: () => coordinator.holdsLease(),
+            epoch: coordinator.getLeaseEpoch(),
+            maxProcessingMs: seamlessness.maxProcessingMs,
+            reinject: reinjectStuck,
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          });
+        } catch (err) {
+          console.error(`[stuck-recovery] ${err instanceof Error ? err.message : err}`);
+        }
+      };
+      runStuckRecovery(); // boot: re-run anything a prior crash left mid-turn
+      const stuckTimer = setInterval(runStuckRecovery, Math.max(30_000, seamlessness.maxProcessingMs));
+      if (stuckTimer.unref) stuckTimer.unref();
+      console.log(pc.dim('  Stuck-message recovery active (no-loss half, spec §8 G3a)'));
+    }
 
     // Connect DegradationReporter downstream systems now that everything is initialized.
     // Any degradation events queued during startup will drain to feedback + telegram.
