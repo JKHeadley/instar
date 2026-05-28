@@ -410,6 +410,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Enable (after reviewing the dry-run log): in \`.instar/config.json\` set \`{"monitoring": {"sessionReaper": {"enabled": true, "dryRun": false}}}\`. Leave \`dryRun: true\` first to watch what it WOULD reap (logged to \`logs/sentinel-events.jsonl\`) without killing anything.
 - Proactive: user asks "why are sessions piling up?" / "clean up idle sessions" / "are we low on memory?" → GET /sessions/reaper for the pressure tier + per-session verdict.
 
+**Reap-log** — The durable "why did my session vanish?" answer. EVERY session shutoff (and every refused/skipped shutoff — protected, not-lease-holder, a KEEP-guard hold, in-flight) is recorded as one JSON line, so a session never disappears without a trace. Distinct from /sessions/reaper (which shows live verdicts): the reap-log is the historical record of what actually happened.
+- Read it: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/sessions/reap-log?limit=50"\` → \`{ entries: [{ ts, type:'reaped'|'skipped', session, reason, disposition, origin, skipped?, machine? }] }\`. Read-only.
+- Also: when a session is autonomously shut down, you get a "your session was shut down — <reason>" notice (recovery-bounces and your own operator kills stay silent). Turn the notice off with \`{"monitoring": {"reapNotify": {"enabled": false}}}\`.
+- Proactive: user asks "where did my session go?" / "why did X disappear?" / "did something get killed?" → GET /sessions/reap-log and explain the most recent reaped/skipped entries for that session.
+
 **Multi-Session Autonomy** — I can run multiple autonomous jobs at once, one per topic (default cap 5, set \`autonomousSessions.maxConcurrent\` in config). Each topic's job is isolated, survives restarts, and is keyed on its topic.
 - What's running: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/sessions\`
 - The cap + budget gate is checked automatically when a job starts (\`GET /autonomous/can-start\`); a start is refused when at the cap or under budget pressure.

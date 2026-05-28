@@ -2788,6 +2788,28 @@ A nudge can't fix this (re-engaging re-sends the corrupted turn). Recovery is a 
       result.skipped.push('CLAUDE.md: Stuck-Context Recovery section already present');
     }
 
+    // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4) — tells the agent the durable
+    // "why did my session vanish?" answer exists and where to read it. Without
+    // this, an agent asked "where did my session go?" has no grounded answer.
+    // Idempotent via content-sniffing on the route path.
+    if (!content.includes('/sessions/reap-log')) {
+      const section = `
+## Reap-Log — why a session vanished
+
+Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder, a KEEP-guard hold, in-flight) — is recorded as one JSON line in \`logs/reap-log.jsonl\` and served read-only at \`GET /sessions/reap-log\`. A session can never disappear without a trace.
+
+- Read it: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/reap-log?limit=50"\` → \`{ entries: [{ ts, type:'reaped'|'skipped', session, reason, disposition, origin, skipped?, machine? }] }\`.
+- Distinct from \`/sessions/reaper\` (live verdicts): the reap-log is the historical record of what ACTUALLY happened.
+- When a session is autonomously shut down you also get a "your session was shut down — <reason>" notice. Recovery-bounces (kill-to-respawn) and your own operator kills stay silent. Off-switch: \`{"monitoring": {"reapNotify": {"enabled": false}}}\`.
+- Proactive: user asks "where did my session go?" / "why did X disappear?" / "did something get killed?" → GET /sessions/reap-log and explain the most recent entries for that session. Spec: \`docs/specs/unified-session-lifecycle-robustness.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Reap-Log section');
+    } else {
+      result.skipped.push('CLAUDE.md: Reap-Log section already present');
+    }
+
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
     // and lifeline drift auto-promote. Complementary to Version-Skew Self-
     // Recovery above (that one handles major.minor crossings; this one handles
