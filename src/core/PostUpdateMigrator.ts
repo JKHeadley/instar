@@ -205,6 +205,8 @@ export class PostUpdateMigrator {
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateLegacyMaxSessions(result);
+    this.migrateRetireDeadMentorConfig(result);
+    this.migrateRetireMentorOutbox(result);
     this.migratePrPipelineArtifacts(result);
     this.migrateBackupManifest(result);
     this.migrateGitignore(result);
@@ -4077,6 +4079,141 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       } catch { /* audit log is best-effort */ }
     } catch (err) {
       result.errors.push(`legacy maxSessions migration write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Retire `mentor.dailySpendCapUsd` — a config field that was DECORATIVE (read nowhere
+   * in code; spec MENTOR-LIVE-READINESS §Migration parity called it out as the
+   * silent-dead-config bug we shouldn't repeat at migration time). On a Claude
+   * subscription there's no per-token dollar charge to cap; the real budget is quota-
+   * aware (a separate future PR ships `mentor.stageBTokenCeiling`).
+   *
+   * Behavior:
+   *  - field absent → silent skip
+   *  - field present at the default (0.5) → silent delete (no warning)
+   *  - field present at a NON-default value → delete + LOUD `result.upgraded` entry with
+   *    a REVIEW prefix (operator never set this thinking it was enforced; they deserve
+   *    to know). Don't repeat the original silent-dead-config bug at migration time.
+   * Idempotent via the `_instar_migrations` marker.
+   */
+  private migrateRetireDeadMentorConfig(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('mentor dailySpendCapUsd retirement (config.json not found)');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`mentor dailySpendCapUsd retirement: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'mentor-dailySpendCapUsd-retire-v1';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('mentor dailySpendCapUsd retirement (already migrated)');
+      return;
+    }
+
+    const mentor = (config.mentor as Record<string, unknown> | undefined) ?? undefined;
+    if (!mentor || !('dailySpendCapUsd' in mentor)) {
+      // Field never present — mark + skip.
+      migrations.push(`${marker}-${new Date().toISOString()}`);
+      config._instar_migrations = migrations;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      result.skipped.push('mentor dailySpendCapUsd retirement (field never present)');
+      return;
+    }
+
+    const value = mentor.dailySpendCapUsd;
+    const isDefault = value === 0.5;
+    delete mentor.dailySpendCapUsd;
+    config.mentor = mentor;
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      if (isDefault) {
+        result.upgraded.push('mentor.dailySpendCapUsd retired (was default 0.5; field was decorative — never read)');
+      } else {
+        // LOUD prefix so the operator notices in post-update output (this is the
+        // "non-silent removal" the spec specifically calls for).
+        result.upgraded.push(
+          `REVIEW: mentor.dailySpendCapUsd=${JSON.stringify(value)} was retired. ` +
+          `The field was decorative (never enforced) — Echo runs on a Claude subscription, ` +
+          `so there is no per-token dollar charge to cap. A future update introduces ` +
+          `mentor.stageBTokenCeiling (quota-aware) as the real replacement. ` +
+          `If you set this value expecting enforcement, adjust your expectations accordingly.`
+        );
+      }
+    } catch (err) {
+      result.errors.push(`mentor dailySpendCapUsd retirement write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Retire the legacy `{stateDir}/mentor-outbox/` directory — the file-based mentor
+   * delivery design that Justin's substrate correction replaced (spec MENTOR-LIVE-
+   * READINESS §Migration parity). The new mentor delivery goes through the agent-to-
+   * agent Telegram comms primitive (sendAgentMessage); the outbox files are now dead
+   * state and should be swept so they don't accumulate or mislead a future operator.
+   *
+   * Idempotent via the `_instar_migrations` marker. The first run deletes if present;
+   * subsequent runs are no-ops. Best-effort — a removal failure logs + continues.
+   */
+  private migrateRetireMentorOutbox(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      // Still try to retire the outbox if present, even without config.json — but mark
+      // via state-file marker since we can't write to config. Simpler: skip entirely.
+      result.skipped.push('mentor outbox retirement (config.json not found)');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`mentor outbox retirement: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'mentor-outbox-retire-v1';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('mentor outbox retirement (already migrated)');
+      return;
+    }
+
+    const outboxDir = path.join(this.config.stateDir, 'mentor-outbox');
+    let removed = false;
+    let filesRemoved = 0;
+    if (fs.existsSync(outboxDir)) {
+      try {
+        // Count files before removing for the audit entry.
+        try {
+          filesRemoved = fs.readdirSync(outboxDir).length;
+        } catch { /* ignore, just for the audit */ }
+        SafeFsExecutor.safeRmSync(outboxDir, { recursive: true, force: true, operation: 'migrateRetireMentorOutbox' });
+        removed = true;
+      } catch (err) {
+        result.errors.push(`mentor outbox retirement removeSync failed: ${err instanceof Error ? err.message : String(err)}`);
+        // Don't mark migrated on failure — retry on next run.
+        return;
+      }
+    }
+
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      if (removed) {
+        result.upgraded.push(`mentor-outbox directory retired (removed ${filesRemoved} file(s) — legacy file-based mentor delivery; replaced by the agent-to-agent Telegram comms primitive)`);
+      } else {
+        result.skipped.push('mentor outbox retirement (directory not present; marker set so we don\'t re-check)');
+      }
+    } catch (err) {
+      result.errors.push(`mentor outbox retirement marker write: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
