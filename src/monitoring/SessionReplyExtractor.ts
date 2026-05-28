@@ -20,6 +20,9 @@
  * (the caller then falls back to the tmux capture).
  */
 
+import fs from 'fs';
+import path from 'path';
+
 /** Extract the final assistant message from a Codex rollout JSONL file's content. */
 export function extractCodexFinalMessage(content: string): string | null {
   if (!content) return null;
@@ -103,4 +106,47 @@ export function extractClaudeFinalMessage(content: string): string | null {
     if (text) last = text;
   }
   return last;
+}
+
+/**
+ * Locate a Claude Code session's transcript file by its session id, scanning
+ * ONLY the immediate layout Claude Code actually uses:
+ * `<projectsDir>/<encoded-cwd>/<claudeSessionId>.jsonl` (depth 1), plus the
+ * root defensively.
+ *
+ * Why not a recursive walk: `~/.claude/projects` accumulates >10k nested
+ * directories across many encoded-cwd subtrees on a busy agent. A depth-first
+ * walk with any finite iteration guard exhausts the guard deep inside an
+ * unrelated subtree before it ever reaches the right subdir — so it returns
+ * "not found" even though the file is sitting one level down. That was the
+ * exact bug that made Stage-A prompt capture silently return empty. Scanning
+ * the immediate children is both correct (matches Claude's real layout) and
+ * O(number-of-projects) instead of O(every-nested-dir).
+ *
+ * Pure w.r.t. inputs (no globals); returns the absolute path or null.
+ */
+export function findClaudeTranscriptShallow(
+  projectsDir: string,
+  claudeSessionId: string,
+): string | null {
+  if (!projectsDir || !claudeSessionId) return null;
+  const fileName = `${claudeSessionId}.jsonl`;
+  const rootCand = path.join(projectsDir, fileName);
+  try {
+    if (fs.existsSync(rootCand)) return rootCand;
+  } catch { /* fall through to subdir scan */ }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const cand = path.join(projectsDir, e.name, fileName);
+    try {
+      if (fs.existsSync(cand)) return cand;
+    } catch { /* try next */ }
+  }
+  return null;
 }

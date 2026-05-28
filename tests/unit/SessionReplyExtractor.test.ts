@@ -3,8 +3,11 @@
  * message out of a completed mentee session's transcript (the robust reply
  * capture that replaces the racy tmux-pane read).
  */
-import { describe, it, expect } from 'vitest';
-import { extractCodexFinalMessage, extractClaudeFinalMessage } from '../../src/monitoring/SessionReplyExtractor.js';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { extractCodexFinalMessage, extractClaudeFinalMessage, findClaudeTranscriptShallow } from '../../src/monitoring/SessionReplyExtractor.js';
 
 describe('extractCodexFinalMessage', () => {
   it('prefers task_complete.last_agent_message (the canonical final reply)', () => {
@@ -77,5 +80,67 @@ describe('extractClaudeFinalMessage', () => {
   it('returns null when no assistant turns + tolerates malformed lines', () => {
     expect(extractClaudeFinalMessage('')).toBeNull();
     expect(extractClaudeFinalMessage('{"type":"user","message":{"content":"hi"}}\nbad line')).toBeNull();
+  });
+});
+
+describe('findClaudeTranscriptShallow — depth-1 transcript locator (Stage-A capture fix)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-projects-'));
+  });
+  afterEach(() => {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('finds the transcript one level down (the real Claude layout: <projects>/<encoded-cwd>/<id>.jsonl)', () => {
+    const cwdDir = path.join(root, '-Users-justin--instar-agents-echo');
+    fs.mkdirSync(cwdDir, { recursive: true });
+    const target = path.join(cwdDir, 'sess-abc-123.jsonl');
+    fs.writeFileSync(target, '{"type":"assistant","message":{"content":"hi"}}');
+    expect(findClaudeTranscriptShallow(root, 'sess-abc-123')).toBe(target);
+  });
+
+  it('finds the transcript at the projects root, too (defensive)', () => {
+    const target = path.join(root, 'root-level-id.jsonl');
+    fs.writeFileSync(target, '{}');
+    expect(findClaudeTranscriptShallow(root, 'root-level-id')).toBe(target);
+  });
+
+  it('REGRESSION: still finds it at depth 1 amid a huge unrelated deep subtree (where the recursive walk gave up)', () => {
+    // Build a deep unrelated subtree — the kind of structure that exhausted the
+    // old recursive walk's 10k-step budget before it reached the real file.
+    let deep = path.join(root, 'noise-cwd');
+    fs.mkdirSync(deep, { recursive: true });
+    for (let i = 0; i < 50; i++) {
+      deep = path.join(deep, `nested-${i}`);
+      fs.mkdirSync(deep);
+    }
+    // Many sibling encoded-cwd dirs, each with their own unrelated transcripts.
+    for (let i = 0; i < 30; i++) {
+      const d = path.join(root, `-Users-justin-other-project-${i}`);
+      fs.mkdirSync(d);
+      fs.writeFileSync(path.join(d, `unrelated-${i}.jsonl`), '{}');
+    }
+    // The real one is at depth 1 in its own encoded-cwd dir.
+    const cwdDir = path.join(root, '-Users-justin--instar-agents-echo');
+    fs.mkdirSync(cwdDir);
+    const target = path.join(cwdDir, 'the-real-session.jsonl');
+    fs.writeFileSync(target, '{"type":"assistant","message":{"content":"found"}}');
+    expect(findClaudeTranscriptShallow(root, 'the-real-session')).toBe(target);
+  });
+
+  it('does NOT descend into nested subdirs (a transcript buried >1 level deep is intentionally not matched)', () => {
+    // Claude never writes here, so we must NOT pay the recursive-walk cost to find it.
+    const buried = path.join(root, 'cwd', 'deeper');
+    fs.mkdirSync(buried, { recursive: true });
+    fs.writeFileSync(path.join(buried, 'buried-id.jsonl'), '{}');
+    expect(findClaudeTranscriptShallow(root, 'buried-id')).toBeNull();
+  });
+
+  it('returns null on missing dir / empty inputs (no throw)', () => {
+    expect(findClaudeTranscriptShallow(path.join(root, 'does-not-exist'), 'x')).toBeNull();
+    expect(findClaudeTranscriptShallow('', 'x')).toBeNull();
+    expect(findClaudeTranscriptShallow(root, '')).toBeNull();
   });
 });
