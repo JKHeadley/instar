@@ -24,6 +24,14 @@ const sessionManagerSource = fs.readFileSync(
   path.join(process.cwd(), 'src/core/SessionManager.ts'),
   'utf-8',
 );
+const recoverySource = fs.readFileSync(
+  path.join(process.cwd(), 'src/monitoring/SessionRecovery.ts'),
+  'utf-8',
+);
+const serverSource = fs.readFileSync(
+  path.join(process.cwd(), 'src/commands/server.ts'),
+  'utf-8',
+);
 
 describe('Phase 2 — per-killer routing contracts', () => {
   describe('#5 SessionWatchdog → ReapAuthority', () => {
@@ -78,6 +86,41 @@ describe('Phase 2 — per-killer routing contracts', () => {
       expect(orphanSource).toMatch(/terminateSession\(\s*trackedNow\.id\s*,\s*'orphan-reap'/);
       expect(orphanSource).toContain("disposition: 'terminal'");
       expect(orphanSource).toContain("finalStatus: 'killed'");
+    });
+  });
+
+  describe('#8 SessionRecovery → P1/P2 cross-check + recovery-bounce disposition', () => {
+    it('all kill-to-respawn paths go through killForRecovery (single shared chokepoint)', () => {
+      // Direct deps.killSession calls must only appear inside the helper itself.
+      const directCalls = recoverySource.match(/this\.deps\.killSession\(/g) ?? [];
+      // Exactly one — the helper.
+      expect(directCalls.length).toBe(1);
+      // And the helper performs the P1/P2 cross-check first.
+      const helper = recoverySource.match(/private async killForRecovery[\s\S]*?\n {2}\}/);
+      expect(helper).toBeTruthy();
+      expect(helper![0]).toContain('hasActiveProcesses');
+      expect(helper![0]).toContain('deferred-still-working');
+    });
+
+    it('the work-check vetoes the kill (the JSONL reading is unreliable while the process produces work)', () => {
+      // Every recovery method bails with a deferred-still-working result when
+      // the cross-check fires.
+      const deferredReturns = recoverySource.match(/deferred-still-working/g) ?? [];
+      // The helper returns it; each of the 4 recovery methods checks it.
+      expect(deferredReturns.length).toBeGreaterThanOrEqual(5);
+    });
+
+    it('the wiring routes the kill through terminateSession with recovery-bounce disposition + bypassRecoveryFlag', () => {
+      // server.ts wires the dep.killSession to terminateSession with the right opts.
+      expect(serverSource).toMatch(/terminateSession\([^)]*'session-recovery'/);
+      expect(serverSource).toContain("disposition: 'recovery-bounce'");
+      expect(serverSource).toContain('bypassRecoveryFlag: true');
+    });
+
+    it('terminateSession respects bypassRecoveryFlag for the recovery-in-flight guard ONLY', () => {
+      // The bypass is scoped to the recovery-in-flight reason, not the whole guard.
+      expect(sessionManagerSource).toContain('bypassRecoveryFlag');
+      expect(sessionManagerSource).toMatch(/blocked\?\.reason\s*===\s*'recovery-in-flight'/);
     });
   });
 });

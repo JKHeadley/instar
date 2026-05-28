@@ -296,3 +296,36 @@ The server session remains excluded unconditionally.
 **Tests:** OrphanProcessReaper (9) + Phase-2 wiring (6) green; typecheck clean.
 
 **Rollback:** revert this commit. `listKnownTmuxSessions()` becomes unused but harmless.
+
+## Phase 2 — Commit #8: SessionRecovery → P1/P2 cross-check + recovery-bounce disposition
+
+**Files:** `src/monitoring/SessionRecovery.ts`, `src/core/SessionManager.ts`,
+`src/commands/server.ts`, `tests/unit/session-lifecycle-phase-2-wiring.test.ts`.
+
+Three spec-faithful changes:
+1. **P1/P2 cross-check** — a new shared `killForRecovery(name)` helper inside
+   `SessionRecovery` consults `deps.hasActiveProcesses` BEFORE any kill. When
+   the tmux pane has active child processes, the recovery DEFERS this attempt
+   and returns a structured `deferred-still-working` result with the correct
+   `failureType` (stall / context_exhaustion / crash / error_loop). All four
+   recovery paths route through this helper — `deps.killSession` is no longer
+   called directly from any recovery method.
+2. **`disposition:'recovery-bounce'`** — the dep's `killSession` is rewired in
+   server.ts to route through
+   `sessionManager.terminateSession(id, 'session-recovery', { disposition:
+   'recovery-bounce', finalStatus: 'killed', bypassRecoveryFlag: true })`. The
+   §P3 notifier is silent on recovery-bounce, so the user isn't told "shut
+   down" when the bounce immediately respawns; the reap-log still records it.
+3. **`bypassRecoveryFlag` (scoped)** — terminateSession gains an opt that
+   skips ONLY the `recovery-in-flight` KEEP-guard reason (not the whole guard).
+   Without it the recovery would refuse to kill its OWN in-flight session.
+   Other KEEP-guards (active subagent, recent-user-message, etc.) still apply
+   so a session mid-conversation is not killed-to-respawn under the cover of
+   "recovery."
+
+`SessionRecoveryDeps.killSession` is now `() => void | Promise<void>` so the
+implementation can await terminateSession.
+
+**Tests:** SessionRecovery (9) + terminate-CAS (9) + Phase-2 wiring (10) green; typecheck clean.
+
+**Rollback:** revert this commit. `bypassRecoveryFlag` becomes unused but harmless.

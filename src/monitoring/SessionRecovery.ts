@@ -62,8 +62,23 @@ export interface SessionRecoveryDeps {
   isSessionAlive: (sessionName: string) => boolean;
   /** Get the PID of the pane in a tmux session */
   getPanePid?: (sessionName: string) => number | null;
-  /** Kill a tmux session */
-  killSession: (sessionName: string) => void;
+  /**
+   * Kill a tmux session — for kill-to-respawn paths this should route through
+   * `SessionManager.terminateSession(id, 'session-recovery', { disposition:
+   * 'recovery-bounce', finalStatus: 'killed', bypassRecoveryFlag: true })` so the
+   * §P3 notifier stays silent (a bounce is not a disappearance) and the kill
+   * lands in the reap-log as a recovery-bounce (UNIFIED-SESSION-LIFECYCLE §P0 #8).
+   * Implementations may be async; callers `await` the result.
+   */
+  killSession: (sessionName: string) => void | Promise<void>;
+  /**
+   * P1/P2 cross-check (UNIFIED-SESSION-LIFECYCLE §P0 #8): does the session's
+   * tmux pane have active child processes? A JSONL stall on a process that is
+   * still producing real work is almost always a false read — keep the session
+   * and let the next tick re-evaluate. Undefined ⇒ check is skipped (defaults
+   * to the pre-Phase-2 behavior).
+   */
+  hasActiveProcesses?: (sessionName: string) => boolean;
   /** Respawn a session for a topic, optionally with a recovery prompt */
   respawnSession: (topicId: number, sessionName?: string, recoveryPrompt?: string) => Promise<void>;
   /** Send a message to a topic */
@@ -243,6 +258,31 @@ export class SessionRecovery extends EventEmitter {
   // Recovery Methods
   // ============================================================================
 
+  /**
+   * Shared kill-to-respawn entry (UNIFIED-SESSION-LIFECYCLE §P0 #8).
+   *  - P1/P2 cross-check first: if the tmux pane has active child processes the
+   *    session is doing real work and the JSONL "stall/crash" reading is almost
+   *    certainly stale — defer this recovery attempt, let the next tick re-read.
+   *  - Otherwise route through the dep's killSession (which is wired in
+   *    server.ts to `terminateSession(disposition:'recovery-bounce',
+   *    bypassRecoveryFlag:true)` so the §P3 notifier stays silent — a bounce is
+   *    not a disappearance — and the kill lands in the reap-log).
+   *
+   *  @returns `'killed'` on a kill we performed; `'deferred-still-working'`
+   *           when the work-check vetoed the kill.
+   */
+  private async killForRecovery(sessionName: string): Promise<'killed' | 'deferred-still-working'> {
+    if (this.deps.hasActiveProcesses && this.deps.hasActiveProcesses(sessionName)) {
+      console.log(
+        `[SessionRecovery] "${sessionName}": P1/P2 cross-check found active child processes — `
+          + `deferring recovery (JSONL stall but the process is still producing work)`,
+      );
+      return 'deferred-still-working';
+    }
+    await this.deps.killSession(sessionName);
+    return 'killed';
+  }
+
   private async recoverFromStall(
     topicId: number,
     sessionName: string,
@@ -263,7 +303,12 @@ export class SessionRecovery extends EventEmitter {
     this.emit('recovery:stall', { topicId, sessionName, stall, attemptNumber });
 
     // Kill and respawn (stalls don't need truncation — just resume)
-    this.deps.killSession(sessionName);
+    if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
+      return {
+        recovered: false, failureType: 'stall', attemptNumber,
+        message: `Stall recovery deferred for ${sessionName} — work-check found active children; the JSONL "stall" reading is unreliable while the process is producing work`,
+      };
+    }
 
     await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -320,7 +365,12 @@ export class SessionRecovery extends EventEmitter {
     const detectedAt = Date.now();
 
     // Kill the session — it's stuck at the "conversation too long" prompt
-    this.deps.killSession(sessionName);
+    if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
+      return {
+        recovered: false, failureType: 'context_exhaustion', attemptNumber,
+        message: `Context-exhaustion recovery deferred for ${sessionName} — work-check found active children`,
+      };
+    }
 
     // Grace period: poll topic history for any in-flight agent reply from the
     // dying session. If one lands, capture its text so the fresh session can
@@ -443,7 +493,12 @@ export class SessionRecovery extends EventEmitter {
     }
 
     // Kill (might already be dead) and respawn
-    this.deps.killSession(sessionName);
+    if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
+      return {
+        recovered: false, failureType: 'crash', attemptNumber,
+        message: `Crash recovery deferred for ${sessionName} — work-check found active children (the JSONL "crashed" reading conflicts with a running process)`,
+      };
+    }
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     const recoveryPrompt = this.buildCrashRecoveryPrompt(crash, strategy);
@@ -504,7 +559,12 @@ export class SessionRecovery extends EventEmitter {
     }
 
     // Kill and respawn
-    this.deps.killSession(sessionName);
+    if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
+      return {
+        recovered: false, failureType: 'error_loop', attemptNumber,
+        message: `Error-loop recovery deferred for ${sessionName} — work-check found active children`,
+      };
+    }
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     const recoveryPrompt = this.buildErrorLoopRecoveryPrompt(loop, strategy);

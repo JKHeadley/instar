@@ -528,6 +528,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       disposition?: 'terminal' | 'recovery-bounce';
       origin?: 'operator' | 'autonomous';
       knownDead?: boolean;
+      bypassRecoveryFlag?: boolean;
     },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     const session = this.state.getSession(sessionId);
@@ -569,7 +570,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // liveness to protect, so skip the guard. Lease + protected + CAS still apply.
       if (!opts?.knownDead) {
         const blocked = this.reapGuard?.blockedReason(session);
-        if (blocked) {
+        // `bypassRecoveryFlag` (UNIFIED-SESSION-LIFECYCLE §P0 #8): the recovery
+        // engine itself sets the recovery-in-flight flag synchronously before
+        // its kill-to-respawn, so the guard would otherwise refuse the
+        // recovery's own kill. Bypass ONLY the recovery-in-flight check — all
+        // other KEEP-guards (active subagent, recent-user-message, etc.) still
+        // apply, so a session mid-conversation isn't killed-to-respawn under
+        // the cover of "recovery."
+        const bypassThis = !!(opts?.bypassRecoveryFlag && blocked?.reason === 'recovery-in-flight');
+        if (blocked && !bypassThis) {
           this.emit('reapBlocked', { session, reason, skipped: blocked.reason, origin });
           return { terminated: false, skipped: blocked.reason };
         }
