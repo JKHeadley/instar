@@ -112,7 +112,10 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
 
     // Message relay endpoints use their own auth (agent tokens / machine-HMAC),
     // not the general API bearer token. Auth is enforced in the route handlers.
-    if (req.path === '/messages/relay-agent' || req.path === '/messages/relay-machine') {
+    // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET
+    // agent's per-agent token (from AgentRegistry), not the API bearer token,
+    // so the inbox route enforces `verifyAgentToken` in its handler.
+    if (req.path === '/messages/relay-agent' || req.path === '/messages/relay-machine' || req.path === '/a2a/inbox') {
       next();
       return;
     }

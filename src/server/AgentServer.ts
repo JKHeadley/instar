@@ -1261,13 +1261,12 @@ export class AgentServer {
         // the bot isn't configured yet, this no-ops with a log — the dark default.
         deliverToMentee: async (framework: string, message: string) => {
           const cfg = getConfig();
-          if (!cfg.botToken || !cfg.menteeBotId || !cfg.menteeChatId || cfg.menteeTopicId === undefined) {
-            console.warn(`[mentor] deliverToMentee skipped — mentor-bot config incomplete (need mentor.botToken + menteeBotId + menteeChatId + menteeTopicId; framework=${framework})`);
-            return;
-          }
           const menteeAgent = `instar-${framework}`;
-          // Anti-ping-pong (spec §Fix 2b item 4 + Justin's original concern). Refuse to
-          // send a new prompt while a prior one is unanswered within replyTimeoutMs.
+          const corr = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+          // Anti-ping-pong (spec §Fix 2b item 4 + Justin's original concern). Same
+          // logic regardless of transport. Refuse to send a new prompt while a
+          // prior one is unanswered within replyTimeoutMs.
           const outstanding = self.getOrCreateMentorOutstanding();
           const orphans = outstanding.sweepExpired();
           for (const orphan of orphans) {
@@ -1290,10 +1289,87 @@ export class AgentServer {
             return;
           }
 
+          // Same-machine HTTP transport (post-bot-to-bot-block fix). Try
+          // delivering to the peer's `/a2a/inbox` endpoint when the mentee
+          // is registered as a local peer. Telegram structurally blocks
+          // bot-to-bot delivery, so the bot path can't reach a same-machine
+          // peer's primary adapter; the inbox route is the canonical local
+          // transport. If no local peer is found we fall through to the
+          // Telegram bot path (preserved for the cross-machine case;
+          // currently doesn't deliver due to the same block, tracked as a
+          // follow-up).
+          let deliveredLocally = false;
+          try {
+            const { listAgents } = await import('../core/AgentRegistry.js');
+            const { getAgentToken } = await import('../messaging/AgentTokenManager.js');
+            const peers = listAgents();
+            const localPeer = peers.find(
+              (a) => a.name === menteeAgent && a.name !== self.config.projectName,
+            );
+            if (localPeer?.port) {
+              const peerToken = getAgentToken(localPeer.name);
+              if (peerToken) {
+                const tsNow = Date.now();
+                const marker = `[a2a:from=echo to=${menteeAgent} role=mentor id=${corr} corr=${corr} ts=${tsNow} v=1]`;
+                const fullText = `${marker}\n${message}`;
+                const resp = await fetch(`http://localhost:${localPeer.port}/a2a/inbox`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${peerToken}`,
+                  },
+                  body: JSON.stringify({
+                    text: fullText,
+                    topicId: cfg.menteeTopicId ?? 0,
+                    senderAgent: 'echo',
+                    senderIsBot: true,
+                    senderBotId: cfg.botToken ? cfg.botToken.split(':')[0] : 'echo-local',
+                  }),
+                  signal: AbortSignal.timeout(10_000),
+                });
+                if (resp.ok) {
+                  const result = (await resp.json().catch(() => ({}))) as { agentMessage?: boolean; reason?: string };
+                  if (result.agentMessage === true) {
+                    outstanding.markSent(corr, menteeAgent);
+                    try {
+                      const ledger = self.getOrCreateA2aLedger();
+                      ledger.appendSent({
+                        ts: tsNow,
+                        from: 'echo',
+                        to: menteeAgent,
+                        role: 'mentor',
+                        id: corr,
+                        corr,
+                        result: 'sent',
+                        transport: 'a2a-inbox-local',
+                      } as never);
+                    } catch { /* best-effort */ }
+                    console.log(`[mentor] deliverToMentee → local a2a inbox (peer=${menteeAgent}:${localPeer.port}, corr=${corr})`);
+                    deliveredLocally = true;
+                  } else {
+                    console.warn(`[mentor] deliverToMentee local-inbox refused (reason=${result.reason ?? 'unknown'}, peer=${menteeAgent}); falling back to Telegram bot transport`);
+                  }
+                } else {
+                  console.warn(`[mentor] deliverToMentee local-inbox HTTP ${resp.status} (peer=${menteeAgent}); falling back to Telegram bot transport`);
+                }
+              } else {
+                console.warn(`[mentor] deliverToMentee local-inbox skipped — no token for peer ${localPeer.name}; falling back to Telegram bot transport`);
+              }
+            }
+          } catch (err) {
+            console.warn(`[mentor] deliverToMentee local-inbox attempt failed (non-fatal, falling back to Telegram): ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (deliveredLocally) return;
+
+          // Telegram bot fallback — preserved for cross-machine peers (not
+          // currently deliverable due to Telegram bot-to-bot block; tracked).
+          if (!cfg.botToken || !cfg.menteeBotId || !cfg.menteeChatId || cfg.menteeTopicId === undefined) {
+            console.warn(`[mentor] deliverToMentee skipped — mentor-bot config incomplete (need mentor.botToken + menteeBotId + menteeChatId + menteeTopicId; framework=${framework})`);
+            return;
+          }
           const bot = self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId);
           if (!bot) return;
           const ledger = self.getOrCreateA2aLedger();
-          const corr = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
           try {
             const result = await sendAgentMessage(
               {
