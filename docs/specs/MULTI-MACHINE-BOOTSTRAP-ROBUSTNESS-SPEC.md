@@ -1,6 +1,6 @@
 ---
-approved: false
-review-convergence: draft (awaiting Justin go; conformance pass against the six Instar standards documented in §Conformance below)
+approved: true
+review-convergence: justin-approved-2026-05-27 (Telegram greenlight topic 13481 "I approve the spec. Please enter autonomous mode for the night." + the test-as-self-means-drive-Justins-real-Telegram correction folded into §6/§Track E; conformance pass against the six Instar standards documented in §Conformance below)
 parent-specs:
   - CROSS-MACHINE-SEAMLESSNESS-SPEC.md
   - SELF-PROPAGATION-HARNESS-SPEC.md
@@ -425,6 +425,21 @@ the test agents are `mmtest2` on each, NOT Echo, NOT Bob).
    only one as "answered". Failover the holder mid-flight, verify the new
    holder receives the `reply_committed` marker via
    `ReplyMarkerTransport`, refuses to re-send.
+
+7b. **THE PROVING TEST — drive Justin's real Telegram (test-as-self, true sense).**
+   Per Justin's 2026-05-27 correction, the *final* validation is NOT a
+   synthetic bot round-trip — it is Echo DIRECTLY USING JUSTIN'S real
+   Telegram (the logged-in browser profile) to drive the scenario from the
+   user's chair. Concretely: the mmtest2 mesh is bound to a real Telegram
+   bot Echo minted itself via @BotFather (through the same logged-in
+   profile — NOT via Secret Drop, NOT via a Justin ask). Echo then, AS
+   JUSTIN in his logged-in Telegram, sends a real message to that bot,
+   observes the agent reply, forces a cross-machine handoff mid-exchange,
+   and confirms from the user-facing Telegram view that: the reply still
+   arrives, it arrives exactly once, and the conversation continues
+   seamlessly across the machine boundary. The observed Telegram
+   experience — not the logs — is the verdict. Logs corroborate; the
+   real Telegram view decides.
 8. **Teardown.** `instar test-as-self --target ... --teardown` on both
    ends (extends Part 2.1's CLI: new `--teardown` flag for explicit
    already-running cleanup).
@@ -527,17 +542,20 @@ Total: ~6–8 hours of autonomous execution.
 Truly Justin-only items, surfaced as **single Telegram message** if encountered,
 with the work paused on that track only (other tracks continue):
 
-1. **Live-test bot acquisition** (Track E precondition). Two test bots are
-   needed for the round-trip (one for the holder, one for the simulated
-   provider). Echo opens a Secret Drop request; Justin mints two bots via
-   @BotFather and submits the tokens.
-2. **Revoke the leaked GitHub token** (from tonight's incident). Echo
+1. **Revoke the leaked GitHub token** (from the 2026-05-27 incident). Echo
    surfaces the token prefix to revoke; Justin clicks revoke on the github
-   settings page.
-3. **Approve any deviation from this spec.** If the implementation surfaces
+   settings page. (This is the ONLY genuine Justin-only item.)
+2. **Approve any deviation from this spec.** If the implementation surfaces
    a design choice not enumerated here, Echo stops on THAT track only and
    asks (single Telegram message, plain English, with the choice + Echo's
    recommendation).
+
+**NOT a Justin-only item (corrected 2026-05-27):** test bot acquisition.
+Echo mints throwaway bots itself via @BotFather through the logged-in
+Telegram browser profile, and drives Justin's real Telegram as the user
+for the proving test. Echo never needs Justin to create or supply a bot
+token. The earlier draft's "two bots via Secret Drop" ask was a
+false-blocker and has been removed — see [[reference_telegram_access_via_playwright]].
 
 ---
 
@@ -550,6 +568,11 @@ skill) is only satisfied when ALL of the following are true on main:
 - ✅ Track F's `instar test-as-self` lands and `tsc --noEmit` clean
 - ✅ Track E's `tests/e2e/cross-machine-seamlessness-live.test.ts` runs
   end-to-end and the JSON verdict report shows all 7 procedure steps PASS
+- ✅ Track E step 7b (THE PROVING TEST) executed: Echo drove Justin's real
+  Telegram against the live mmtest2 mesh, forced a handoff mid-exchange,
+  and confirmed from the user-facing Telegram view that the reply arrived
+  exactly once and the conversation continued seamlessly across machines.
+  Screenshots/snapshots of the Telegram view captured as evidence.
 - ✅ Final's PR (default-on flip) merged with CI green
 - ✅ A summary report sent to topic 13481 listing what landed and the
   observed live-test latencies (lease transition, live-tail catch-up,
