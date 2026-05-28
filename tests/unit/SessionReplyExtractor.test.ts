@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { extractCodexFinalMessage, extractClaudeFinalMessage, findClaudeTranscriptShallow } from '../../src/monitoring/SessionReplyExtractor.js';
 
 describe('extractCodexFinalMessage', () => {
@@ -90,7 +91,7 @@ describe('findClaudeTranscriptShallow — depth-1 transcript locator (Stage-A ca
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-projects-'));
   });
   afterEach(() => {
-    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
+    SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/SessionReplyExtractor.test.ts:afterEach' });
   });
 
   it('finds the transcript one level down (the real Claude layout: <projects>/<encoded-cwd>/<id>.jsonl)', () => {
