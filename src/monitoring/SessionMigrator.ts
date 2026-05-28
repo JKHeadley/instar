@@ -35,6 +35,17 @@ export interface MigrationThresholds {
   minimumHeadroom: number;
   /** Grace period for session shutdown in ms (default 5000) */
   gracePeriodMs: number;
+  /**
+   * UNIFIED-SESSION-LIFECYCLE §P0 #7 — bounded soft-check.
+   * When `softCheckEnabled` and the current usage is at or below
+   * `softCheckMaxUsagePercent`, build/autonomous-active sessions get ONE extra
+   * Ctrl+C grace round of `softCheckExtraGraceMs` before force-kill. Above the
+   * ceiling the soft check is DISABLED so quota can never push real usage to
+   * 100%/lockout (SE-9) — the force-kill happens immediately.
+   */
+  softCheckEnabled?: boolean;
+  softCheckMaxUsagePercent?: number;
+  softCheckExtraGraceMs?: number;
 }
 
 export interface MigrationEvent {
@@ -104,6 +115,30 @@ export interface SessionMigratorDeps {
   getAccountStatuses: () => AccountSnapshot[];
   /** Switch to a target account */
   switchAccount: (email: string) => Promise<{ success: boolean; message: string }>;
+  /**
+   * UNIFIED-SESSION-LIFECYCLE §P0 #7 — when set, force-kills route through
+   * the single ReapAuthority so the kill emits sessionReaped and lands in the
+   * reap-log. Returns the standard `{ terminated, skipped? }` result.
+   */
+  terminateSession?: (
+    sessionId: string,
+    reason: string,
+    opts?: { disposition?: 'terminal' | 'recovery-bounce'; finalStatus?: 'completed' | 'killed' },
+  ) => Promise<{ terminated: boolean; skipped?: string }>;
+  /**
+   * P2-style soft check (§P0 #7) — does the tmux pane belong to a build or an
+   * active autonomous run? When true and the soft check is enabled (per
+   * thresholds), the session gets ONE extra Ctrl+C grace round before
+   * force-kill. Undefined ⇒ soft check is skipped (defaults to pre-Phase-3
+   * straight force-kill behavior).
+   */
+  isBuildOrAutonomousActive?: (tmuxSession: string) => boolean;
+  /**
+   * Current Anthropic-account usage percentage (0–100). Used by the bounded
+   * soft check to disable itself above `softCheckMaxUsagePercent` so quota's
+   * final authority cannot be undermined when usage is already near 100%.
+   */
+  quotaUsagePercent?: () => number;
 }
 
 export interface SessionMigratorConfig {
@@ -523,12 +558,61 @@ export class SessionMigrator extends EventEmitter {
     // Phase 2: Wait for grace period
     await this.sleep(this.thresholds.gracePeriodMs);
 
+    // §P0 #7 — bounded soft-check (SE-9): when current usage is at/below the
+    // configured ceiling, build/autonomous-active sessions get ONE extra Ctrl+C
+    // grace round before force-kill. Above the ceiling the soft check is
+    // disabled — quota's final authority cannot be undermined when usage is
+    // already near 100%/lockout.
+    const softEnabled = this.thresholds.softCheckEnabled !== false;
+    const softCeilingPct = this.thresholds.softCheckMaxUsagePercent ?? 95;
+    const softExtraGraceMs = this.thresholds.softCheckExtraGraceMs ?? this.thresholds.gracePeriodMs;
+    const currentUsagePct = this.deps.quotaUsagePercent?.() ?? 100;
+    const softCheckActive = softEnabled && currentUsagePct <= softCeilingPct;
+
     // Phase 3: Kill any sessions still alive
     const halted: HaltableSession[] = [];
     for (const session of sessions) {
       try {
         if (this.deps.isSessionAlive(session.tmuxSession)) {
-          this.deps.killSession(session.id);
+          // Soft check: give a working session one more chance before force-kill.
+          if (softCheckActive && this.deps.isBuildOrAutonomousActive?.(session.tmuxSession)) {
+            console.log(
+              `[SessionMigrator] "${session.tmuxSession}": active build/autonomous run — `
+                + `granting one extra ${Math.round(softExtraGraceMs / 1000)}s Ctrl+C grace before force-kill `
+                + `(usage ${currentUsagePct}% ≤ ceiling ${softCeilingPct}%)`,
+            );
+            try { this.deps.sendKey(session.tmuxSession, 'C-c'); } catch { /* @silent-fallback-ok */ }
+            await this.sleep(softExtraGraceMs);
+            if (!this.deps.isSessionAlive(session.tmuxSession)) {
+              halted.push(session);
+              continue;
+            }
+          }
+
+          // Emit the structural force-kill decision so a tier1 supervisor (LLM
+          // Haiku wrap, future) can observe inputs + outcome. The kill still
+          // happens — this is observability, not a gate.
+          this.emit('quota-force-kill-decision', {
+            tmuxSession: session.tmuxSession,
+            sessionId: session.id,
+            jobSlug: session.jobSlug,
+            currentUsagePct,
+            softCheckActive,
+            workingSoftCheckFired: softCheckActive && (this.deps.isBuildOrAutonomousActive?.(session.tmuxSession) ?? false),
+          });
+
+          // §P0 #7 route the force-kill through the single ReapAuthority when
+          // available (the §P3 notifier surfaces it; the reap-log records the
+          // `quota-shed` reason). Falls back to the raw killSession when the
+          // dep is unwired (older agents).
+          if (this.deps.terminateSession) {
+            await this.deps.terminateSession(session.id, 'quota-shed', {
+              disposition: 'terminal',
+              finalStatus: 'killed',
+            });
+          } else {
+            this.deps.killSession(session.id);
+          }
         }
         halted.push(session);
       } catch (err) {
