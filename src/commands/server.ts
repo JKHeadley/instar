@@ -30,6 +30,7 @@ import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProv
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
+import { lifelineOwnsPoll as lifelineOwnsTelegramPoll } from '../lifeline/TelegramPollOwnerLease.js';
 import { DispatchManager } from '../core/DispatchManager.js';
 import { UpdateChecker } from '../core/UpdateChecker.js';
 import { AutoUpdater } from '../core/AutoUpdater.js';
@@ -3033,7 +3034,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     const skipTelegram = options.telegram === false; // --no-telegram sets telegram: false
     // Standby machines use send-only Telegram — they don't poll for messages
     const isStandbyTelegram = !coordinator.isAwake && telegramConfig;
-    if ((skipTelegram || isStandbyTelegram) && telegramConfig) {
+    // Poll-ownership lease (Task 4 / 2026-05-27 silent-stalls postmortem,
+    // SELF-PROPAGATION-HARNESS-SPEC.md Part 1): if a lifeline is already polling
+    // this bot token (lease present + fresh + token-hash match), the server
+    // auto-demotes to send-only — Telegram allows exactly one long-poller per
+    // token, and dual-polling would 409. Fail-OPEN: any read miss/stale/
+    // mismatch ⇒ false ⇒ server polls as today, so setups without a lifeline
+    // are unaffected. Reads only — never writes the lease here.
+    const telegramBotToken = telegramConfig ? (telegramConfig.config as { token?: string }).token : undefined;
+    const lifelineOwnsPolling = telegramConfig && telegramBotToken
+      ? lifelineOwnsTelegramPoll(config.stateDir, telegramBotToken)
+      : false;
+    if ((skipTelegram || isStandbyTelegram || lifelineOwnsPolling) && telegramConfig) {
       // Send-only mode: no polling, but sendToTopic() works for session replies
       telegram = new TelegramAdapter(
         {
@@ -3048,7 +3060,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
-      console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : 'lifeline owns polling'})`));
+      console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
 
       // Resolve any topic names still using the fallback "topic-NNNN" pattern
       telegram.resolveUnknownTopicNames().catch(err => {
@@ -3122,7 +3134,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
 
-    if (telegramConfig && !skipTelegram && !isStandbyTelegram) {
+    if (telegramConfig && !skipTelegram && !isStandbyTelegram && !lifelineOwnsPolling) {
       telegram = new TelegramAdapter(
         {
           ...(telegramConfig.config as any),
