@@ -20,9 +20,17 @@
  *     item per stall episode above it, keyed on the OLDEST unreleased commit
  *     SHA (stable across ticks — not a resettable per-tick id), priority scaled
  *     by backlog age, 12h hysteresis on re-raise after an auto-resolve.
- *   - Fail-loud: any evaluation failure (fetch error, analyzer error) raises a
- *     low-priority Attention item — never a silent catch (that would re-create
- *     the exact bug this fixes).
+ *   - Fail-loud: any evaluation failure (fetch error, analyzer error, top-level
+ *     tick error) writes a structured audit entry (sentinel-events.jsonl) and a
+ *     dedup-keyed `eval-failed` emit — never a silent catch (that would re-create
+ *     the exact bug this fixes). User-facing Telegram escalation of these
+ *     evaluator-self-failures is HOUSEKEEPING by default, gated behind
+ *     `escalateEvalFailures` (config: `monitoring.releaseReadiness.escalateEvalFailures`,
+ *     default false), per the sentinel-trio standard ("Sentinel Notifications"
+ *     in CLAUDE.md, post-2026-05-22 topic-spam fix). The audit log + server.log
+ *     are the canonical observability surface; only the user-actionable
+ *     "release blocked / unreleased work piling up" signal posts to Attention
+ *     by default — that one is genuinely actionable.
  *   - Lifecycle owner: detect → surface → auto-resolve → reap, with
  *     resolveEpisodesInRange consulted by the publish-finalize path.
  *   - Repo-gated: needs an analyzable instar git repo (dev/maintainer env). On
@@ -120,6 +128,16 @@ export interface ReleaseReadinessSentinelConfig {
   backlogAgeDaysHigh?: number;
   hysteresisHours?: number;
   staleEpisodeTtlDays?: number;
+  /**
+   * When true, evaluator-self-failures (fetch / analyzer / top-level tick stages)
+   * post a low-priority Attention item in addition to the audit log. Default
+   * false: housekeeping per the sentinel-trio standard — the audit log
+   * (logs/sentinel-events.jsonl) + server.log are the canonical observability
+   * surface for internal-plumbing failures, so the user is not spammed with a
+   * Telegram topic per stage that breaks. The user-actionable "release blocked"
+   * signal is unaffected by this flag and always posts to Attention.
+   */
+  escalateEvalFailures?: boolean;
 }
 
 const DEFAULTS: Required<ReleaseReadinessSentinelConfig> = {
@@ -131,6 +149,7 @@ const DEFAULTS: Required<ReleaseReadinessSentinelConfig> = {
   backlogAgeDaysHigh: 7,
   hysteresisHours: 12,
   staleEpisodeTtlDays: 30,
+  escalateEvalFailures: false,
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -346,17 +365,28 @@ export class ReleaseReadinessSentinel extends EventEmitter {
 
   private async failLoud(state: ReadinessState, stage: string, err: unknown): Promise<void> {
     const key = `failure:${stage}`;
+    // Always audit — the audit log is the canonical observability surface for
+    // evaluator-self-failures. Both the dedup-suppressed and the un-suppressed
+    // paths produce an audit line so frequency is countable from disk.
     this.deps.audit({ kind: 'release-readiness', event: 'eval-failed', stage, error: String(err) });
     if (state.lastFailureKey === key) return; // dedupe per failure episode
     state.lastFailureKey = key;
-    await this.deps.postAttention({
-      id: `release-readiness-eval-failure-${stage}`,
-      title: 'Release-readiness check could not evaluate',
-      summary: `The release-readiness check failed at the "${stage}" stage: ${String(err)}. Last evaluated ${state.lastSignalAt ? new Date(state.lastSignalAt).toISOString() : 'never'}.`,
-      category: 'degradation',
-      priority: 'LOW',
-    });
-    state.lastSignalAt = this.deps.now();
+    // HOUSEKEEPING by default: do NOT post a per-stage Attention item (which
+    // would create a per-event Telegram topic — the exact anti-pattern banned
+    // by the sentinel-trio standard post-2026-05-22 topic-spam fix). The user
+    // hears about this kind of failure only when escalateEvalFailures is
+    // explicitly enabled. The audit emission above + the `eval-failed` event
+    // remain the supported observability handles.
+    if (this.cfg.escalateEvalFailures) {
+      await this.deps.postAttention({
+        id: `release-readiness-eval-failure-${stage}`,
+        title: 'Release-readiness check could not evaluate',
+        summary: `The release-readiness check failed at the "${stage}" stage: ${String(err)}. Last evaluated ${state.lastSignalAt ? new Date(state.lastSignalAt).toISOString() : 'never'}.`,
+        category: 'degradation',
+        priority: 'LOW',
+      });
+      state.lastSignalAt = this.deps.now();
+    }
     this.emit('eval-failed', { stage });
   }
 

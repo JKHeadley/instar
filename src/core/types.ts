@@ -2775,6 +2775,17 @@ export interface MonitoringConfig {
     canonicalRemote?: string;
     /** Override the instar repo path to analyze (default: the agent home). */
     repoPath?: string;
+    /**
+     * When true, evaluator-self-failures (fetch / analyzer / top-level tick
+     * stages of the watchdog itself) post a LOW-priority Attention item — and
+     * therefore a Telegram topic — in addition to the audit-log entry. Default
+     * false: per the sentinel-trio standard ("Sentinel Notifications" in the
+     * agent CLAUDE.md, post-2026-05-22 topic-spam fix), internal-plumbing
+     * failures are housekeeping and stay in logs/sentinel-events.jsonl +
+     * server.log. The user-actionable "release blocked — unreleased work
+     * piling up" signal always posts regardless of this flag. Flip on only if
+     * you also want catastrophic-failure surfacing in chat. */
+    escalateEvalFailures?: boolean;
   };
   /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations

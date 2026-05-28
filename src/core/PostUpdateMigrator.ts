@@ -229,8 +229,80 @@ export class PostUpdateMigrator {
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
+    this.migrateRetireStaleReleaseReadinessEvalFailureAttention(result);
 
     return result;
+  }
+
+  /**
+   * Retire stale `release-readiness-eval-failure-*` attention items left behind
+   * by the pre-housekeeping watchdog. From v1.3.43 down, ReleaseReadinessSentinel
+   * posted an Attention item — and therefore a new Telegram topic — every time
+   * the watchdog's own fetch / analyzer / tick stage broke. That violated the
+   * sentinel-trio standard (post-2026-05-22 topic-spam fix): internal-plumbing
+   * failures are housekeeping and belong in logs/sentinel-events.jsonl +
+   * server.log, not on the user's Telegram surface.
+   *
+   * The code-level fix demotes those emissions to audit-only (gated behind
+   * `monitoring.releaseReadiness.escalateEvalFailures`, default false). This
+   * migration cleans up the stragglers already on-disk so the topics don't
+   * keep haunting the topic list after update.
+   *
+   * Behaviour:
+   *   - Reads .instar/state/attention-items.json. If absent, skip.
+   *   - For every item whose id starts with `release-readiness-eval-failure-`:
+   *     drop it from the items array. (The Telegram topic itself is left as-is;
+   *     it was either /done'd by the user already, or will be unreferenced. We
+   *     don't synchronously call Telegram from PostUpdateMigrator — the
+   *     adapter isn't constructed at this point in startup.)
+   *   - Atomic write (tmp + rename) so a crash mid-migration can't corrupt
+   *     attention-items.json.
+   *   - Idempotent: a second run finds zero matches and no-ops.
+   *
+   * Origin: 2026-05-27 dogfood feedback on Echo — repeated
+   * "Release-readiness check could not evaluate" topics violating the user's
+   * "no topic clutter for housekeeping" standard.
+   */
+  private migrateRetireStaleReleaseReadinessEvalFailureAttention(result: MigrationResult): void {
+    const attentionPath = path.join(this.config.stateDir, 'state', 'attention-items.json');
+    if (!fs.existsSync(attentionPath)) {
+      result.skipped.push('retire-stale-release-readiness-eval-failure-attention: no attention-items.json');
+      return;
+    }
+
+    let parsed: { items?: Array<{ id?: string }> };
+    try {
+      parsed = JSON.parse(fs.readFileSync(attentionPath, 'utf-8')) as { items?: Array<{ id?: string }> };
+    } catch (err) {
+      result.errors.push(`retire-stale-release-readiness-eval-failure-attention read: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (!Array.isArray(parsed.items) || parsed.items.length === 0) {
+      result.skipped.push('retire-stale-release-readiness-eval-failure-attention: empty attention items');
+      return;
+    }
+
+    const before = parsed.items.length;
+    const filtered = parsed.items.filter((it) => {
+      const id = typeof it?.id === 'string' ? it.id : '';
+      return !id.startsWith('release-readiness-eval-failure-');
+    });
+    const dropped = before - filtered.length;
+    if (dropped === 0) {
+      result.skipped.push('retire-stale-release-readiness-eval-failure-attention: none on disk');
+      return;
+    }
+
+    parsed.items = filtered;
+    try {
+      const tmpPath = `${attentionPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2));
+      fs.renameSync(tmpPath, attentionPath);
+      result.upgraded.push(`retire-stale-release-readiness-eval-failure-attention: dropped ${dropped} stale item(s)`);
+    } catch (err) {
+      result.errors.push(`retire-stale-release-readiness-eval-failure-attention write: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

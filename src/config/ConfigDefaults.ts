@@ -88,6 +88,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       hysteresisHours: 12,
       staleEpisodeTtlDays: 30,
       fetchTimeoutMs: 30_000,
+      // Evaluator-self-failures (fetch / analyzer / top-level tick) are
+      // HOUSEKEEPING by default — they write to the audit log + server.log
+      // but do not post a per-stage Attention item / Telegram topic. The
+      // user-actionable "release blocked" signal is unaffected. Set true to
+      // surface catastrophic watchdog failures in chat. Sentinel-trio standard.
+      escalateEvalFailures: false,
     },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
