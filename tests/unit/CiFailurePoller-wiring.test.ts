@@ -28,31 +28,40 @@ function build(project: TempProject, failureLearning: unknown) {
     sessionManager: createMockSessionManager() as never,
     state: project.state,
     initiativeTracker: trackerStub,
-  } as never) as unknown as { ciFailurePoller: unknown; failureLedger: unknown };
+  } as never) as unknown as { ciFailurePoller: unknown; revertDetector: unknown; failureLedger: unknown };
 }
 
-describe('CiFailurePoller wiring (constructed iff gated)', () => {
+describe('CI poller + revert detector wiring (each constructed iff its flag is set)', () => {
   let project: TempProject;
   afterEach(() => project?.cleanup?.());
 
-  it('constructed when failureLearning.enabled && sources.ci', () => {
+  it('ci poller constructed when failureLearning.enabled && sources.ci', () => {
     project = createTempProject();
     const s = build(project, { enabled: true, sources: { ci: true } });
     expect(s.failureLedger).not.toBeNull();
     expect(s.ciFailurePoller).not.toBeNull();
   });
 
-  it('NOT constructed when sources.ci is false (but the ledger still is)', () => {
+  it('revert detector constructed when failureLearning.enabled && sources.revert', () => {
     project = createTempProject();
-    const s = build(project, { enabled: true, sources: { ci: false } });
-    expect(s.failureLedger).not.toBeNull();
-    expect(s.ciFailurePoller).toBeNull();
+    const s = build(project, { enabled: true, sources: { revert: true } });
+    expect(s.revertDetector).not.toBeNull();
+    expect(s.ciFailurePoller).toBeNull(); // independent flags
   });
 
-  it('NOT constructed when failureLearning is disabled', () => {
+  it('NEITHER constructed when their flags are false (but the ledger still is)', () => {
     project = createTempProject();
-    const s = build(project, { enabled: false, sources: { ci: true } });
+    const s = build(project, { enabled: true, sources: { ci: false, revert: false } });
+    expect(s.failureLedger).not.toBeNull();
+    expect(s.ciFailurePoller).toBeNull();
+    expect(s.revertDetector).toBeNull();
+  });
+
+  it('NEITHER constructed when failureLearning is disabled', () => {
+    project = createTempProject();
+    const s = build(project, { enabled: false, sources: { ci: true, revert: true } });
     expect(s.failureLedger).toBeNull();
     expect(s.ciFailurePoller).toBeNull();
+    expect(s.revertDetector).toBeNull();
   });
 });
