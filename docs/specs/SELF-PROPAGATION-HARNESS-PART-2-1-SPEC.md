@@ -1,6 +1,6 @@
 ---
-approved: false
-review-convergence: draft (awaiting Justin go + conformance pass)
+approved: true
+review-convergence: justin-approved-option-A-2026-05-27 (Telegram greenlight for full Part 2.1 — auto-mint via Secret Drop + Playwright Telegram round-trip + one-button CLI; conformance pass against the six Instar standards: no-manual-work / structure>willpower / signal-vs-authority / near-silent / 3-tier-testing / migration-parity)
 parent-spec: SELF-PROPAGATION-HARNESS-SPEC.md
 ---
 
