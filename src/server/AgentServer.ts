@@ -67,6 +67,7 @@ import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
 import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { sendAgentMessage, A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
 import { AgentTelegramLedger, defaultLedgerPaths as defaultA2aLedgerPaths } from '../messaging/AgentTelegramLedger.js';
+import { DEFAULT_MENTEE_CONFIG, type MenteeConfig } from '../messaging/MenteeReceiverConfig.js';
 import { ProcessedIdStore } from '../messaging/ProcessedIdStore.js';
 import { buildAgentMessageHook, type RoleHandler } from '../messaging/installAgentMessageHook.js';
 import { OutstandingPromptTracker } from '../scheduler/OutstandingPromptTracker.js';
@@ -959,6 +960,191 @@ export class AgentServer {
     bot.setAgentMessageHook(hook);
   }
 
+  /**
+   * Install the agent-message hook on the PRIMARY TelegramAdapter for mentee
+   * agents. Mirror of `installMentorReceiverHook` (which runs on the mentor BOT
+   * adapter to catch mentor-REPLIES); this runs on the primary adapter where
+   * the agent normally polls for user messages, and catches inbound
+   * mentor PROMPTS from allowlisted mentor agents
+   * (MENTOR-LIVE-READINESS-SPEC §Recipient side).
+   *
+   * Hook is installed iff `config.mentee.enabled === true` AND all of
+   * `localAgentName`, `knownMentors`, `replyChatId`, `replyTopicId` are set.
+   * Each missing piece logs a one-line skip and bails — no partial wiring.
+   * The wiring stays dark by default (`enabled: false`).
+   *
+   * The role-handler:
+   *   1. Spawns a mentee session with `msg.body` as the prompt (the agent's
+   *      default tool grant — not the Stage-A empty-tools constraint).
+   *   2. Bounded-waits up to `sessionTimeoutMs` (default 5 min). On timeout
+   *      the session is killed and an empty reply is logged — no partial
+   *      transcript is sent.
+   *   3. Captures the tmux pane transcript as the reply.
+   *   4. Sends the reply back via `sendAgentMessage` with
+   *      `role='mentor-reply'` and `corr=msg.corr || msg.id` so the
+   *      mentor's `OutstandingPromptTracker` can clear by correlation.
+   *
+   * Reply-out happens in the handler's orchestrator section (NOT through a
+   * capability passed to the handler) per the spec's capability-handle
+   * anti-loop discipline: handlers are capture-only, and the only outbound
+   * role they may emit is `mentor-reply` (declared in `allowedRoles`).
+   */
+  private installMentorMessageHook(): void {
+    const adapter = this.telegramAdapter;
+    if (!adapter) return;
+    const cfg = this.getMenteeConfigSnapshot();
+    if (!cfg.enabled) return;
+    if (!cfg.localAgentName) {
+      console.warn('[mentee] receiver wiring skipped — mentee.localAgentName required');
+      return;
+    }
+    if (Object.keys(cfg.knownMentors).length === 0) {
+      console.warn('[mentee] receiver wiring skipped — mentee.knownMentors is empty');
+      return;
+    }
+    if (!cfg.replyChatId || !cfg.replyTopicId) {
+      console.warn(
+        '[mentee] receiver wiring skipped — mentee.replyChatId + mentee.replyTopicId required for reply path',
+      );
+      return;
+    }
+
+    const acceptRoles: Record<string, string[]> = {};
+    for (const mentorName of Object.keys(cfg.knownMentors)) {
+      acceptRoles[mentorName] = ['mentor'];
+    }
+
+    const recipientCfg: RecipientConfig = {
+      localAgent: cfg.localAgentName,
+      knownAgents: cfg.knownMentors,
+      acceptRoles,
+      skewWindowMs: 24 * 60 * 60 * 1000,
+      maxVersion: A2A_VERSION,
+    };
+
+    const self = this;
+    const ledger = this.getOrCreateA2aLedger();
+    const sessionTimeoutMs = cfg.sessionTimeoutMs;
+
+    const mentorMessageHandler: RoleHandler = async (msg, _ctx) => {
+      // 1. Spawn a mentee session and bounded-wait for completion. The
+      //    mentee's normal default-tool agent (not the Stage-A constrained
+      //    one) — the mentor is asking this agent to do real work.
+      let reply = '';
+      let sessionId = '';
+      try {
+        const session = await self.sessionManager.spawnSession({
+          name: `mentee-handle-${Date.now()}`,
+          prompt: msg.body,
+          maxDurationMinutes: Math.max(1, Math.ceil(sessionTimeoutMs / 60_000)),
+        });
+        sessionId = session.id;
+        const tmux = session.tmuxSession;
+        const pollIntervalMs = 2_000;
+        const pollIterations = Math.max(1, Math.ceil(sessionTimeoutMs / pollIntervalMs));
+        let finished = false;
+        for (let i = 0; i < pollIterations; i++) {
+          const stillRunning = self.sessionManager
+            .listRunningSessions()
+            .some((s) => s.id === session.id);
+          if (!stillRunning) {
+            finished = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, pollIntervalMs));
+        }
+        if (!finished) {
+          try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
+          console.warn(
+            `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); skipping reply-out`,
+          );
+          return;
+        }
+        reply = self.sessionManager.captureOutput(tmux, 200) ?? '';
+      } catch (err) {
+        console.warn(
+          `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+
+      if (!reply.trim()) {
+        console.warn(
+          `[mentee] mentee session produced empty reply for corr=${msg.corr}; skipping reply-out`,
+        );
+        return;
+      }
+
+      // 2. Reply OUT — orchestrator-level (NOT a capability passed to the
+      //    handler — see installMentorMessageHook docs above).
+      const senderBotId = cfg.knownMentors[msg.from]?.botId ?? '';
+      try {
+        const result = await sendAgentMessage(
+          {
+            fromAgent: cfg.localAgentName,
+            toAgent: msg.from,
+            role: 'mentor-reply',
+            toTopicId: cfg.replyTopicId,
+            message: reply,
+            id: `mr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            correlationId: msg.corr || msg.id,
+          },
+          {
+            send: async (topicId, text) => {
+              try {
+                const res = await adapter.sendToTopic(topicId, text);
+                return { ok: true, messageId: String(res.messageId) };
+              } catch (e) {
+                return { ok: false, error: e };
+              }
+            },
+            appendAudit: (row) => ledger.appendSent(row),
+            now: () => Date.now(),
+            mintId: () => `mr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            allowedRoles: new Set(['mentor-reply']),
+            // Note: the primary adapter's token is not surfaced on the
+            // adapter (intentionally — receiver doesn't need it). Scrubbing
+            // is best-effort on the adapter-side; this caller is a no-op
+            // for the botToken-scrub helper.
+            botToken: undefined,
+            fromBotId: '',
+            toBotId: senderBotId,
+          },
+        );
+        if (!result.ok) {
+          console.warn(
+            `[mentee] mentor-reply send refused (corr=${msg.corr}): ${result.reason ?? 'unknown'}`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[mentee] mentor-reply send failed (corr=${msg.corr}):`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    };
+
+    const hook = buildAgentMessageHook({
+      config: recipientCfg,
+      ledger,
+      processedIds: this.getOrCreateA2aProcessedIds(),
+      roleHandlers: new Map<string, RoleHandler>([['mentor', mentorMessageHandler]]),
+    });
+    adapter.setAgentMessageHook(hook);
+    console.log(
+      `[mentee] receiver wiring installed — localAgent=${cfg.localAgentName}, knownMentors=[${Object.keys(cfg.knownMentors).join(',')}], reply→${cfg.replyChatId}/topic ${cfg.replyTopicId}`,
+    );
+  }
+
+  /** Snapshot of mentee config for the receiver-wiring installer. */
+  private getMenteeConfigSnapshot(): MenteeConfig {
+    return {
+      ...DEFAULT_MENTEE_CONFIG,
+      ...((this.config as unknown as { mentee?: Partial<MenteeConfig> }).mentee ?? {}),
+    };
+  }
+
   /** Snapshot of mentor config for use outside the runner's getConfig closure. */
   private getMentorConfigSnapshot(): MentorConfig {
     return {
@@ -1259,6 +1445,20 @@ export class AgentServer {
           } catch (err) {
             console.warn('[instar] burn-detection start failed (non-fatal):', err);
           }
+        }
+
+        // ── Mentee receiver wiring (MENTOR-LIVE-READINESS-SPEC §Recipient side) ──
+        // Installs the agent-message hook on the PRIMARY TelegramAdapter so
+        // inbound mentor PROMPTS from allowlisted mentor agents are routed
+        // to a mentee role-handler (spawn session → bounded-wait →
+        // mentor-reply). Ships dormant: `mentee.enabled` defaults false.
+        // No-ops cleanly when `telegramAdapter === null` (agents without
+        // Telegram) or when the config block is incomplete (each missing
+        // piece logs one line and bails — no partial wiring).
+        try {
+          this.installMentorMessageHook();
+        } catch (err) {
+          console.warn('[mentee] receiver wiring raised (non-fatal):', err);
         }
 
         // ── Layer 3 DeliveryFailureSentinel — default-OFF feature flag ──

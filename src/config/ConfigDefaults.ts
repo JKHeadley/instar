@@ -137,6 +137,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     maxRoundsPerDay: 24,
     dailySpendCapUsd: 0.5,
   },
+  // Mentee receiver wiring (MENTOR-LIVE-READINESS-SPEC §Recipient side).
+  // The mirror of the mentor block: this agent ACCEPTS inbound mentor prompts
+  // from allowlisted mentor agents (anti-spoof gated on bot id), spawns a
+  // mentee session, and sends the reply back via sendAgentMessage role=
+  // 'mentor-reply' correlated to the incoming marker. Ships DORMANT
+  // (enabled:false). When enabled, requires localAgentName + knownMentors +
+  // replyChatId + replyTopicId to actually install the hook — any missing
+  // piece logs a one-line skip and the wiring stays dark.
+  mentee: {
+    enabled: false,
+    localAgentName: '',
+    knownMentors: {},
+    replyChatId: '',
+    replyTopicId: 0,
+    sessionTimeoutMs: 300000, // 5 min bounded-wait per session
+  },
   // Spec-review standards-conformance gate (rung-3 normative slice). Default-on:
   // the gate reads docs/STANDARDS-REGISTRY.md and signals possible standard
   // violations in a draft spec. Signal-only (never blocks); 503-stubs where the
