@@ -4277,6 +4277,60 @@ export async function startServer(options: StartOptions): Promise<void> {
     // so it can wire episodicMemory from the sentinel.
     let workingMemory: WorkingMemoryAssembler | undefined;
 
+    // ── Reap observability + notify (UNIFIED-SESSION-LIFECYCLE §P3/§P4) ──
+    // Wired BEFORE the boot purge so even boot-time reaps land in the reap-log
+    // and surface a notice. The awake-checker is also wired here so the boot
+    // purge is lease-gated (a standby never reaps another machine's sessions).
+    // (The KEEP-guard is wired later, once its tracker deps exist — that is safe:
+    //  the boot purge passes knownDead and bypasses the guard, and the only other
+    //  guard consumers (monitorTick #2 age-limit / #3 idle-zombie) cannot fire a
+    //  kill in the first monitoring seconds — they require multi-hour age or 15+m
+    //  of observed idle — long after the guard is set below.)
+    const { ReapLog } = await import('../monitoring/ReapLog.js');
+    const { ReapNotifier } = await import('../monitoring/ReapNotifier.js');
+    const reapLog = new ReapLog(
+      config.stateDir,
+      () => (coordinator.enabled ? coordinator.identity?.machineId : undefined),
+    );
+    const reapNotifier = new ReapNotifier(
+      {
+        resolveTopic: (tmuxSession) => {
+          const t = telegram?.getTopicForSession(tmuxSession);
+          if (t == null) return null;
+          const n = typeof t === 'number' ? t : Number(t);
+          return Number.isFinite(n) ? n : null;
+        },
+        lifelineTopic: () => telegram?.getLifelineTopicId() ?? null,
+        // SUMMARY tier → through the formatter/tone-gate (HTML-escaped, quiet-hours
+        // aware). The notifier already coalesces, so a burst is one message.
+        send: (topicId, text) => notify('SUMMARY', 'session-reap', text, topicId),
+      },
+      {
+        enabled: config.monitoring?.reapNotify?.enabled ?? true,
+        coalesceWindowMs: config.monitoring?.reapNotify?.coalesceWindowMs ?? 60_000,
+      },
+    );
+    sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
+    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous' }) => {
+      reapLog.recordReaped({
+        session: e.session.name,
+        tmuxSession: e.session.tmuxSession,
+        reason: e.reason,
+        disposition: e.disposition,
+        origin: e.origin,
+      });
+      reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin });
+    });
+    sessionManager.on('reapBlocked', (e: { session: import('../core/types.js').Session; reason: string; skipped: string; origin?: 'operator' | 'autonomous' }) => {
+      reapLog.recordSkipped({
+        session: e.session.name,
+        tmuxSession: e.session.tmuxSession,
+        reason: e.reason,
+        skipped: e.skipped,
+        origin: e.origin,
+      });
+    });
+
     // Fast startup purge — remove session records for dead tmux sessions BEFORE
     // monitoring starts. Prevents the death spiral where stale sessions overwhelm
     // the health endpoint (synchronous tmux has-session calls) and cause the
@@ -8304,39 +8358,58 @@ export async function startServer(options: StartOptions): Promise<void> {
       const n = typeof t === 'number' ? t : Number(t);
       return Number.isFinite(n) ? n : null;
     };
+    // Shared stateless KEEP-guard deps (UNIFIED-SESSION-LIFECYCLE §P2). Built
+    // once here and used to back BOTH the SessionReaper and the ReapAuthority's
+    // guard (`sessionManager.setReapGuard`), so a killer cannot end a session the
+    // reaper would have kept — the same chain protects every kill path.
+    const reapGuardDeps: import('../core/ReapGuard.js').ReapGuardDeps = {
+      protectedSessions: () => sessionManager.getProtectedSessions(),
+      isRecoveryActive: (session) => composedRecoveryActive(session),
+      hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
+      isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
+      topicBinding: _resolveTopic,
+      // Gate I is a v1 stub (returns false): active conversation is already
+      // covered by the relay-lease + pending-injection gates and by render
+      // stasis (a session being talked to is not render-static for the full
+      // hysteresis+threshold window). Promoting to a real message-recency
+      // query is a tracked tuning follow-up.
+      recentUserMessage: () => false,
+      activeCommitmentForTopic: (topicId) => {
+        try { return commitmentTracker.getActive().some(c => c.topicId === topicId); }
+        catch { return true; } // cannot tell → protect
+      },
+      activeSubagentCount: (csid) => {
+        try { return csid ? subagentTracker.getActiveSubagents(csid).length : 0; }
+        catch { return 1; } // cannot tell → protect
+      },
+      buildOrAutonomousActive: (topicId) => {
+        const fresh = (p: string): boolean => {
+          try { return fs.existsSync(p) && (Date.now() - fs.statSync(p).mtimeMs) < 30 * 60_000; }
+          catch { return false; }
+        };
+        if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
+        return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
+      },
+      hasActiveProcesses: (s) => sessionManager.hasActiveProcesses(s),
+    };
+
+    // Wire the ReapAuthority's KEEP-guard. minAgeMs:0 disables spawn-grace here —
+    // the killers that consult this guard (age-limit #2, idle-zombie #3) already
+    // gate on their own age/idle thresholds, so the reaper-specific spawn-grace
+    // would otherwise delay legitimate zombie kills for young-but-stuck sessions.
+    {
+      const { ReapGuard } = await import('../core/ReapGuard.js');
+      sessionManager.setReapGuard(new ReapGuard(reapGuardDeps, { minAgeMs: 0 }));
+    }
+    // (setAwakeChecker is wired earlier, before the boot purge, so the purge is
+    //  lease-gated — see the §P3/§P4 block above.)
+
     const sessionReaper = new SessionReaper(
       {
+        ...reapGuardDeps,
         listRunningSessions: () => sessionManager.listRunningSessions(),
         captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
-        hasActiveProcesses: (s) => sessionManager.hasActiveProcesses(s),
         frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,
-        isRecoveryActive: (session) => composedRecoveryActive(session),
-        isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
-        hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
-        topicBinding: _resolveTopic,
-        // Gate I is a v1 stub (returns false): active conversation is already
-        // covered by the relay-lease + pending-injection gates and by render
-        // stasis (a session being talked to is not render-static for the full
-        // hysteresis+threshold window). Promoting to a real message-recency
-        // query is a tracked tuning follow-up.
-        recentUserMessage: () => false,
-        activeCommitmentForTopic: (topicId) => {
-          try { return commitmentTracker.getActive().some(c => c.topicId === topicId); }
-          catch { return true; } // cannot tell → protect
-        },
-        activeSubagentCount: (csid) => {
-          try { return csid ? subagentTracker.getActiveSubagents(csid).length : 0; }
-          catch { return 1; } // cannot tell → protect
-        },
-        buildOrAutonomousActive: (topicId) => {
-          const fresh = (p: string): boolean => {
-            try { return fs.existsSync(p) && (Date.now() - fs.statSync(p).mtimeMs) < 30 * 60_000; }
-            catch { return false; }
-          };
-          if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
-          return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
-        },
-        protectedSessions: () => sessionManager.getProtectedSessions(),
         pressure: () => {
           const total = _os.totalmem();
           const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;
@@ -8351,6 +8424,65 @@ export async function startServer(options: StartOptions): Promise<void> {
       config.monitoring?.sessionReaper,
     );
     sessionReaper.start();
+
+    // ── Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5) ───────────────
+    // Signal-only: raises ONE deduped Attention item (never auto-kills) when a
+    // session is KEPT forever despite faking work, or is stuck indeterminate.
+    {
+      const { StaleSessionBackstop } = await import('../monitoring/StaleSessionBackstop.js');
+      const { probeTranscript } = await import('../monitoring/transcriptProber.js');
+      const { makeAttentionPoster } = await import('../monitoring/sentinelWiring.js');
+      const _crypto = await import('node:crypto');
+      const staleCfg = config.monitoring?.staleBackstop ?? {};
+      const progressFloorBytes = staleCfg.progressFloorBytes ?? 512;
+      const hash = (s: string): string => _crypto.createHash('sha1').update(s).digest('hex').slice(0, 16);
+      const backstop = new StaleSessionBackstop(
+        {
+          listRunningSessions: () => sessionManager.listRunningSessions(),
+          probeLiveness: (names) => sessionManager.probeLivenessBatch(names),
+          snapshot: (session) => {
+            const framework = session.framework ?? sessionManager.frameworkForSession(session.tmuxSession) ?? 'claude-code';
+            const sessionId = framework === 'claude-code' ? (session.claudeSessionId ?? '') : '';
+            const tp = probeTranscript({ framework, sessionId, projectDir: '' });
+            // Tail hash: read the last progressFloorBytes so a heartbeat-byte append
+            // (same tail) is NOT counted as a meaningful advance.
+            let tailHash: string | null = null;
+            if (tp.resolved && tp.path) {
+              try {
+                const fd = fs.openSync(tp.path, 'r');
+                try {
+                  const start = Math.max(0, tp.size - progressFloorBytes);
+                  const len = tp.size - start;
+                  const buf = Buffer.alloc(len);
+                  fs.readSync(fd, buf, 0, len, start);
+                  tailHash = hash(buf.toString('utf-8'));
+                } finally { fs.closeSync(fd); }
+              } catch {
+                // @silent-fallback-ok — an unreadable transcript tail just means
+                // "no meaningful-advance signal this tick"; the backstop treats a
+                // null tail as ambiguous (never as progress), which is safe.
+                tailHash = null;
+              }
+            }
+            const frame = sessionManager.captureOutput(session.tmuxSession, 8) ?? '';
+            return {
+              transcriptResolved: tp.resolved,
+              transcriptSize: tp.size,
+              transcriptTailHash: tailHash,
+              mainProcessActive: sessionManager.hasActiveProcesses(session.tmuxSession),
+              idleStateToken: hash(frame),
+            };
+          },
+          raiseAttention: makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' }),
+          setLongIndeterminate: (id, isLong) => sessionManager.markLongIndeterminate(id, isLong),
+        },
+        staleCfg,
+      );
+      backstop.start();
+      if (staleCfg.enabled !== false) {
+        console.log(pc.green('  Unkillability backstop enabled (§P5 — signal-only, never auto-kills)'));
+      }
+    }
     if (config.monitoring?.sessionReaper?.enabled) {
       console.log(pc.green(
         config.monitoring.sessionReaper.dryRun === false
@@ -8507,7 +8639,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, reapLog, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

@@ -219,6 +219,7 @@ describe('Feature Delivery Completeness', () => {
       'ContextWedgeSentinel',                              // thinking-block-400 wedge recovery; operational self-heal awareness, migrator-only (no template parity) — see context-wedge-sentinel.md
       '/release-readiness',                                // alternate endpoint check for the templated Release Readiness section
       'Agent Updates topic (self-broadcasts about ships, restarts, updates)', // self-broadcast routing operational knowledge, migrator-only
+      '/sessions/reap-log',                               // UNIFIED-SESSION-LIFECYCLE §P4 reap-log: operational observability the agent READS to answer "where did my session go?" — like Sentinel Notifications, not a user-invokable capability requiring framework-shadow parity
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

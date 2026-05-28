@@ -20,6 +20,7 @@ import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Session } from '../core/types.js';
+import { ReapGuard } from '../core/ReapGuard.js';
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import { probeTranscript, transcriptDelta, type TranscriptProbe } from './transcriptProber.js';
 
@@ -149,11 +150,21 @@ export class SessionReaper extends EventEmitter {
   private autoDisabled = false;
   private lastTickAt = 0;
 
+  /** Shared stateless KEEP-guards (UNIFIED-SESSION-LIFECYCLE §P2). The reaper
+   *  consults this first, then layers its stateful transcript-growth + positive-idle
+   *  checks — so the same guard backs both the reaper and terminateSession(). */
+  private readonly guard: ReapGuard;
+
   constructor(deps: SessionReaperDeps, cfg?: Partial<SessionReaperConfig>) {
     super();
     this.deps = deps;
     this.cfg = { ...DEFAULT_SESSION_REAPER_CONFIG, ...(cfg ?? {}) };
     this.now = deps.now ?? (() => Date.now());
+    this.guard = new ReapGuard(deps, {
+      minAgeMs: this.cfg.minAgeMinutes * 60_000,
+      recentUserWindowMs: this.cfg.recentUserWindowMinutes * 60_000,
+      protectOpenCommitments: this.cfg.protectOpenCommitments,
+    });
   }
 
   start(): void {
@@ -217,40 +228,15 @@ export class SessionReaper extends EventEmitter {
     const keep = (reason: string, confidence: Confidence = 'high'): SessionEvaluation =>
       ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript });
 
-    // A. Protected set
-    if (this.deps.protectedSessions().includes(session.tmuxSession)) return keep('protected');
-    // M. Spawn grace
-    const ageMs = this.now() - Date.parse(session.startedAt);
-    if (!(ageMs >= this.cfg.minAgeMinutes * 60_000)) return keep('spawn-grace');
-    // G. Recovery in flight
-    if (this.deps.isRecoveryActive(session)) return keep('recovery-in-flight');
-    // H. Pending injection / relay lease
-    if (this.deps.hasPendingInjection(session.tmuxSession)) return keep('pending-injection');
-    if (this.deps.isRelayLeaseActive(session.id)) return keep('relay-lease');
+    // ── Stateless KEEP-guards (§P2): protected, spawn-grace, recovery,
+    //    pending-injection, relay-lease, recent-user, open-commitment,
+    //    active-subagent, structural-long-work, active-process, main-process.
+    //    Extracted to the shared ReapGuard so terminateSession() enforces the
+    //    identical chain. Order + reasons preserved exactly. ──
+    const blocked = this.guard.blockedReason(session);
+    if (blocked) return keep(blocked.reason, blocked.confidence);
 
-    const topicId = this.deps.topicBinding(session.tmuxSession);
-    // I. Recent user interaction (topic unresolved while bound → cannot tell → KEEP)
-    if (topicId != null && this.deps.recentUserMessage(topicId, this.cfg.recentUserWindowMinutes * 60_000)) {
-      return keep('recent-user-message');
-    }
-    // J. Open commitment on the bound topic
-    if (this.cfg.protectOpenCommitments && topicId != null && this.deps.activeCommitmentForTopic(topicId)) {
-      return keep('open-commitment');
-    }
-    // K. Active subagent
-    if (this.deps.activeSubagentCount(session.claudeSessionId) > 0) return keep('active-subagent');
-    // L. Structural long-work (build/autonomous) on the topic/project
-    if (this.deps.buildOrAutonomousActive(topicId)) return keep('structural-long-work');
-
-    // ── Activeness (positive-evidence) ──
-    // C. Process tree: any non-baseline child ⇒ working.
-    if (this.deps.hasActiveProcesses(session.tmuxSession)) return keep('active-process');
-    // C(main): main-process CPU/IO delta. undefined ⇒ cannot inspect ⇒ KEEP.
-    if (this.deps.mainProcessActive) {
-      const mp = this.deps.mainProcessActive(session.tmuxSession);
-      if (mp === undefined) return keep('process-uninspectable', 'low');
-      if (mp === true) return keep('main-process-active');
-    }
+    // ── Stateful checks (stay in the reaper; need per-tick obs / captured frame) ──
     // E. Transcript growth this tick (vs last tick). 'grew' ⇒ working;
     //    'unknown' (unresolved/rotated) ⇒ KEEP.
     const prev = this.obs.get(session.id)?.lastTranscript;

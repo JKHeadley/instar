@@ -180,6 +180,11 @@ export interface SessionManagerConfig {
   /** Absolute maximum session duration in minutes — safety net for sessions
    *  without an explicit timeout (default: 240) */
   defaultMaxDurationMinutes?: number;
+  /** Tri-state liveness-oracle tuning (UNIFIED-SESSION-LIFECYCLE §P1). Partial —
+   *  unset fields fall back to DEFAULT_LIVENESS_CONFIG. Validated at startup so a
+   *  sub-floor probe timeout (which would re-create the 2026-05-27 false-purge)
+   *  is rejected loudly. */
+  liveness?: Partial<import('./SessionLivenessOracle.js').SessionLivenessOracleConfig>;
 }
 
 // ── Job Scheduling ──────────────────────────────────────────────────
@@ -2778,6 +2783,31 @@ export interface MonitoringConfig {
     maxReapsPerHour?: number;
     finalGraceSec?: number;
     protectOpenCommitments?: boolean;
+  };
+  /**
+   * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing
+   * listener on `sessionReaped` that surfaces a "your session was shut down"
+   * notice so a session never silently vanishes. Default ON (the disappearing-
+   * session incident is exactly the silence this closes); recovery-bounce and
+   * operator kills stay silent regardless. Terminal reaps within
+   * `coalesceWindowMs` collapse into one consolidated lifeline message.
+   */
+  reapNotify?: {
+    enabled?: boolean;
+    coalesceWindowMs?: number;
+  };
+  /**
+   * Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Watches for sessions
+   * the conservative KEEP-rules would protect forever — one that FAKES work, or
+   * one stuck `indeterminate` — and raises a SINGLE deduped Attention item for an
+   * operator decision (never an auto-kill). Default ON; signal-only.
+   */
+  staleBackstop?: {
+    enabled?: boolean;
+    tickIntervalSec?: number;
+    unverifiableEscalateMinutes?: number;
+    indeterminateEscalateCount?: number;
+    progressFloorBytes?: number;
   };
   /**
    * Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar

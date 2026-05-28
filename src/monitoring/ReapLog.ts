@@ -1,0 +1,112 @@
+/**
+ * ReapLog — durable, JSON-encoded audit of every session reap and every
+ * skipped-reap (UNIFIED-SESSION-LIFECYCLE §P4).
+ *
+ * The pull-surface answer to "why did my session vanish?": one line per reap
+ * (`sessionReaped`) and one per refused/skipped terminate (`reapBlocked`), so a
+ * dropped kill (not-lease-holder / protected / a KEEP / in-flight) is never
+ * invisible. Mirrors `sentinel-events.jsonl`: append-only JSONL under
+ * `logs/`, written with JSON.stringify (never raw concat — closes
+ * newline-injection of user-controlled session names / reasons).
+ *
+ * Read-only from the API (`GET /sessions/reap-log`, Bearer-auth). The log never
+ * gates or mutates a session — it only records.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+
+export interface ReapLogEntry {
+  ts: string;
+  /** 'reaped' = a kill happened; 'skipped' = a terminate was refused/no-op. */
+  type: 'reaped' | 'skipped';
+  session: string;
+  tmuxSession: string;
+  /** The reason the killer requested (e.g. 'idle-zombie', 'age-limit'). */
+  reason: string;
+  disposition?: 'terminal' | 'recovery-bounce';
+  origin?: 'operator' | 'autonomous';
+  /** For 'skipped': why the authority refused (protected / not-lease-holder / a KEEP / in-flight). */
+  skipped?: string;
+  machine?: string;
+}
+
+export class ReapLog {
+  private readonly logPath: string;
+  private readonly machineId?: () => string | undefined;
+
+  constructor(stateDir: string, machineId?: () => string | undefined) {
+    this.logPath = path.join(stateDir, '..', 'logs', 'reap-log.jsonl');
+    this.machineId = machineId;
+  }
+
+  recordReaped(e: {
+    session: string;
+    tmuxSession: string;
+    reason: string;
+    disposition?: 'terminal' | 'recovery-bounce';
+    origin?: 'operator' | 'autonomous';
+  }): void {
+    this.append({
+      ts: new Date().toISOString(),
+      type: 'reaped',
+      session: e.session,
+      tmuxSession: e.tmuxSession,
+      reason: e.reason,
+      disposition: e.disposition,
+      origin: e.origin,
+      machine: this.machineId?.(),
+    });
+  }
+
+  recordSkipped(e: {
+    session: string;
+    tmuxSession: string;
+    reason: string;
+    skipped: string;
+    origin?: 'operator' | 'autonomous';
+  }): void {
+    this.append({
+      ts: new Date().toISOString(),
+      type: 'skipped',
+      session: e.session,
+      tmuxSession: e.tmuxSession,
+      reason: e.reason,
+      skipped: e.skipped,
+      origin: e.origin,
+      machine: this.machineId?.(),
+    });
+  }
+
+  private append(entry: ReapLogEntry): void {
+    try {
+      fs.mkdirSync(path.dirname(this.logPath), { recursive: true });
+      fs.appendFileSync(this.logPath, JSON.stringify(entry) + '\n');
+    } catch {
+      // never throw from the audit sink
+    }
+  }
+
+  /** Read the most-recent `limit` entries (newest last), tolerating partial/corrupt lines. */
+  read(limit = 200): ReapLogEntry[] {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.logPath, 'utf-8');
+    } catch {
+      // @silent-fallback-ok — no log file yet means no reaps recorded; an empty
+      // list is the correct answer, not a degraded one.
+      return [];
+    }
+    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    const tail = limit > 0 ? lines.slice(-limit) : lines;
+    const out: ReapLogEntry[] = [];
+    for (const line of tail) {
+      try {
+        out.push(JSON.parse(line) as ReapLogEntry);
+      } catch {
+        // skip a corrupt/partial line rather than failing the whole read
+      }
+    }
+    return out;
+  }
+}

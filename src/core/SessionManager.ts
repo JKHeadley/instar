@@ -14,6 +14,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
+import type { ReapGuard } from './ReapGuard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -157,6 +159,13 @@ export class SessionManager extends EventEmitter {
 
   /** Optional callback: is this session currently in active compaction recovery? If so, skip zombie kill. */
   private activeRecoveryChecker?: (session: Session) => boolean;
+  /** Shared stateless KEEP-guard consulted by terminateSession (§P2). */
+  private reapGuard?: ReapGuard;
+  /** Sessions the §P5 backstop has flagged long-`indeterminate` — excluded from
+   *  the ABSOLUTE spawn cap so unverifiable panes can't lock out spawning. */
+  private longIndeterminateSessions = new Set<string>();
+  /** Multi-machine lease/awake predicate gating autonomous reaps (§Multi-machine). */
+  private isAwakeMachine?: () => boolean;
 
   /** Optional callback: is this tmux session currently bound to a live messaging topic
    *  (Telegram/Slack/iMessage)? Returns a stable identifier (e.g. topic ID or channel ID)
@@ -214,6 +223,27 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+  }
+
+  /** Lazily-constructed tri-state liveness oracle (UNIFIED-SESSION-LIFECYCLE §P1).
+   *  Backs the boot purge and isSessionAliveAsync so a slow/unreachable tmux is
+   *  treated as `indeterminate`, never `dead`. */
+  private _livenessOracle: SessionLivenessOracle | null = null;
+  private get livenessOracle(): SessionLivenessOracle {
+    if (!this._livenessOracle) {
+      this._livenessOracle = new SessionLivenessOracle(
+        { tmuxPath: this.config.tmuxPath, exec: execFileAsync },
+        this.config.liveness,
+      );
+    }
+    return this._livenessOracle;
+  }
+
+  /** Test/DI seam: inject a liveness oracle (e.g. one with a scripted exec).
+   *  Production builds the oracle lazily from config; this lets unit tests drive
+   *  the alive/dead/indeterminate verdicts deterministically. */
+  setLivenessOracle(oracle: SessionLivenessOracle): void {
+    this._livenessOracle = oracle;
   }
 
   /** Effective idle-at-prompt kill threshold (config override or hardcoded default) */
@@ -343,6 +373,60 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Register the shared ReapGuard (UNIFIED-SESSION-LIFECYCLE §P2). Once set,
+   * every AUTONOMOUS terminate consults it: a non-null KEEP reason makes the
+   * terminate a no-op `{ terminated:false, skipped:<reason> }`. Wired in server.ts
+   * with the same signal closures that back SessionReaper, so a killer can only
+   * *request* a kill — the authority refuses to end a guarded session. Operator
+   * kills bypass the guard. Unset (tests/standalone) → no guard consult.
+   */
+  setReapGuard(guard: ReapGuard): void {
+    this.reapGuard = guard;
+  }
+
+  /**
+   * Flag/unflag a session as long-`indeterminate` (UNIFIED-SESSION-LIFECYCLE §P5).
+   * Driven by the StaleSessionBackstop. A flagged session still counts toward the
+   * soft scheduler cap, but is excluded from the ABSOLUTE `maxSessions × 3` cap so
+   * a fleet of unverifiable panes can never lock a human out of spawning.
+   */
+  markLongIndeterminate(sessionId: string, isLong: boolean): void {
+    if (isLong) this.longIndeterminateSessions.add(sessionId);
+    else this.longIndeterminateSessions.delete(sessionId);
+  }
+
+  /**
+   * Resolve tri-state liveness for many sessions from ONE tmux snapshot via the
+   * P1 oracle (UNIFIED-SESSION-LIFECYCLE §P5 backstop). `reachable` is false when
+   * the snapshot was non-authoritative (control plane unreachable) — in which
+   * case every session resolves `indeterminate`. Shares the oracle's short-TTL
+   * cache, so the backstop and boot-purge never double-probe within a tick.
+   */
+  async probeLivenessBatch(
+    tmuxSessions: string[],
+  ): Promise<{ reachable: boolean; liveness: Map<string, 'alive' | 'dead' | 'indeterminate'> }> {
+    const results = await this.livenessOracle.probeAll(tmuxSessions);
+    const liveness = new Map<string, 'alive' | 'dead' | 'indeterminate'>();
+    for (const [name, r] of results) liveness.set(name, r.liveness);
+    // With a single authoritative snapshot, a session is only `indeterminate`
+    // when the whole snapshot was non-authoritative — i.e. the server is
+    // unreachable. So "reachable" ⟺ at least one definitive (alive/dead) verdict.
+    const reachable = tmuxSessions.length === 0 || [...liveness.values()].some((l) => l !== 'indeterminate');
+    return { reachable, liveness };
+  }
+
+  /**
+   * Register the multi-machine lease/awake predicate. When set and it returns
+   * false, an AUTONOMOUS terminate is a no-op `skipped:'not-lease-holder'` — only
+   * the awake/lease-holding machine may autonomously reap; a standby may detect
+   * and signal but never kill another machine's sessions. Operator kills bypass.
+   * Unset → treated as awake (single-machine default).
+   */
+  setAwakeChecker(fn: () => boolean): void {
+    this.isAwakeMachine = fn;
+  }
+
+  /**
    * Set the Prompt Gate InputDetector for prompt monitoring.
    * When set, monitorTick() will capture output and feed it to the detector.
    */
@@ -407,14 +491,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Single-writer session termination (SESSION-REAPER-SPEC §3.6). Both the
-   * idle-kill path and the SessionReaper funnel through this so a session is
-   * killed at most once with exactly-once `beforeSessionKill`/`sessionComplete`
+   * Single-writer session termination — the sole ReapAuthority
+   * (UNIFIED-SESSION-LIFECYCLE §P0, building on SESSION-REAPER-SPEC §3.6). EVERY
+   * autonomous killer funnels through this so a session is killed at most once,
+   * with exactly-once `beforeSessionKill`/`sessionComplete`/`sessionReaped`
    * emission and a correct `endedReason`.
    *
-   * Compare-and-set semantics: a session that is not in a live state
-   * ('starting'/'running'), or whose termination is already in flight, is a
-   * no-op — this is what prevents the idle-kill ↔ reaper double-kill race.
+   * The authority holds the safety checks so a killer can only *request* a kill:
+   *  - CAS on live status + an in-flight guard (prevents the double-kill race).
+   *  - `protectedSessions` (never kill).
+   *  - Lease-holder gate: an AUTONOMOUS reap on a standby machine is a no-op
+   *    `skipped:'not-lease-holder'` — only the awake machine reaps.
+   *  - ReapGuard (§P2): an AUTONOMOUS reap of a session the guard says to KEEP is
+   *    a no-op `skipped:<keep-reason>` — even a buggy killer cannot end a guarded
+   *    session.
+   * `origin:'operator'` bypasses the lease-gate and the guard (an explicit human
+   * kill must always happen). Default `origin` is `'autonomous'` so an in-process
+   * caller can never accidentally mint operator privilege.
+   *
+   * Re-entrancy: the guard is consulted BEFORE this call acquires its own
+   * in-flight lock, so the authority's lock for the kill it is performing is
+   * never misread by the guard.
+   *
+   * `disposition:'recovery-bounce'` marks a kill-to-respawn (SessionRecovery,
+   * version-skew, context-exhaustion) so the §P3 notifier stays silent — that is
+   * a bounce, not a disappearance. Default `'terminal'`.
    *
    * @returns `{ terminated: true }` on a kill performed by THIS call, or
    *          `{ terminated: false, skipped }` describing why it was a no-op.
@@ -422,7 +523,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
   async terminateSession(
     sessionId: string,
     reason: string,
-    opts?: { finalStatus?: 'completed' | 'killed' },
+    opts?: {
+      finalStatus?: 'completed' | 'killed';
+      disposition?: 'terminal' | 'recovery-bounce';
+      origin?: 'operator' | 'autonomous';
+      knownDead?: boolean;
+    },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     const session = this.state.getSession(sessionId);
     if (!session) return { terminated: false, skipped: 'not-found' };
@@ -430,9 +536,46 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (session.status !== 'running' && session.status !== 'starting') {
       return { terminated: false, skipped: `already-${session.status}` };
     }
-    if (this.config.protectedSessions.includes(session.tmuxSession)) {
-      return { terminated: false, skipped: 'protected' };
+
+    const origin = opts?.origin ?? 'autonomous';
+    const disposition = opts?.disposition ?? 'terminal';
+
+    // ── Authority gates (autonomous only; operator bypasses) ──
+    // An `origin:'operator'` kill — stamped ONLY by the Bearer-authed HTTP route
+    // layer — must always happen: the user clicked "kill". It bypasses protected,
+    // the lease gate, and the KEEP-guard. Autonomous killers (the default) can
+    // only *request*; the authority holds the safety checks.
+    if (origin === 'autonomous') {
+      // Protected set — never autonomously reap a protected session.
+      if (this.config.protectedSessions.includes(session.tmuxSession)) {
+        this.emit('reapBlocked', { session, reason, skipped: 'protected', origin });
+        return { terminated: false, skipped: 'protected' };
+      }
+      // Lease-holder gate: a standby machine never reaps another machine's sessions.
+      if (this.isAwakeMachine && !this.isAwakeMachine()) {
+        this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
+        return { terminated: false, skipped: 'not-lease-holder' };
+      }
+      // ReapGuard: refuse to end a session the guard says to KEEP. Consulted
+      // before the in-flight lock is acquired (re-entrancy ordering).
+      //
+      // `knownDead` bypass (boot-purge, #1): the caller has already proven the
+      // session is `dead` via the P1 oracle (tmux server reachable + exact id
+      // absent). The guard exists to protect a LIVE-but-busy session from being
+      // mistaken for dead — its topic-state KEEP reasons (recent-user-message,
+      // open-commitment) are liveness-blind, so consulting it on a proven-dead
+      // session would pin a tombstone in the running list and re-create the boot
+      // death-spiral the purge guards against. A proven-dead session has no
+      // liveness to protect, so skip the guard. Lease + protected + CAS still apply.
+      if (!opts?.knownDead) {
+        const blocked = this.reapGuard?.blockedReason(session);
+        if (blocked) {
+          this.emit('reapBlocked', { session, reason, skipped: blocked.reason, origin });
+          return { terminated: false, skipped: blocked.reason };
+        }
+      }
     }
+
     // In-flight guard: a concurrent terminate already owns this session.
     if (this.terminating.has(sessionId)) {
       return { terminated: false, skipped: 'in-flight' };
@@ -450,6 +593,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       session.endedReason = reason;
       this.state.saveSession(session);
       this.emit('sessionComplete', session);
+      // The single reap-notification signal (§P3): terminal reaps may reach the
+      // user; recovery-bounce reaps are silent. One emission, at the one chokepoint.
+      this.emit('sessionReaped', { session, reason, disposition, origin });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
       return { terminated: true };
@@ -633,19 +779,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   injectedAt: pendingInjection.injectedAt,
                 });
               }
-              console.warn(`[SessionManager] Session "${session.name}" exceeded timeout (${Math.round(elapsed)}m > ${maxMinutes}m) and is idle. Killing.`);
-              // Emit beforeSessionKill BEFORE destroying the tmux session so
-              // listeners (e.g. TopicResumeMap) can discover the Claude UUID.
-              this.emit('beforeSessionKill', session);
-              try {
-                await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
-              } catch {
-                // @silent-fallback-ok — tmux kill, session may be dead
-              }
-              session.status = 'killed';
-              session.endedAt = new Date().toISOString();
-              this.state.saveSession(session);
-              this.emit('sessionComplete', session);
+              console.warn(`[SessionManager] Session "${session.name}" exceeded timeout (${Math.round(elapsed)}m > ${maxMinutes}m) and is idle. Requesting kill via ReapAuthority.`);
+              // Route through the single ReapAuthority (§P0) instead of an inline
+              // kill: this restores the beforeSessionKill/sessionComplete emission,
+              // adds the sessionReaped signal + reap-log entry, applies the lease
+              // gate, and — critically — gains the P2 KEEP-guard's topic-bound
+              // grace, so a session that just received a user message is not
+              // age-killed out from under the user.
+              await this.terminateSession(session.id, 'age-limit', {
+                finalStatus: 'killed',
+                disposition: 'terminal',
+              });
               continue;
             }
           }
@@ -756,8 +900,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 const bindingNote = binding != null ? ` (topic-bound, threshold ${killThresholdMinutes}m)` : ` (threshold ${killThresholdMinutes}m)`;
                 console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
                 // Funnel through the single-writer path so the reaper and this
-                // idle-kill can never double-kill or double-emit (§3.6).
-                await this.terminateSession(session.id, 'idle-zombie');
+                // idle-kill can never double-kill or double-emit (§3.6). Explicit
+                // terminal disposition → the §P3 notifier surfaces it to the user.
+                await this.terminateSession(session.id, 'idle-zombie', {
+                  disposition: 'terminal',
+                });
                 continue;
               }
             }
@@ -1373,32 +1520,58 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Fast startup purge — immediately remove session records for dead tmux sessions.
-   * Called once at server boot BEFORE monitoring starts, to prevent the death spiral
-   * where stale sessions overwhelm startup and block health checks.
-   * Uses a short timeout (1s) per session to fail fast.
+   * Fast startup purge — remove session records for sessions that are *definitively*
+   * dead. Called once at server boot BEFORE monitoring starts, to prevent the death
+   * spiral where stale records overwhelm startup and block health checks.
+   *
+   * UNIFIED-SESSION-LIFECYCLE §P1 (the 2026-05-27 fix): liveness is resolved from a
+   * single `tmux list-sessions` via the tri-state oracle, NOT a per-session
+   * `has-session` with a 1s timeout. The old code treated a timeout (tmux busy at
+   * boot) identically to "session gone" and mass-purged live sessions — "9 of 9".
+   * Now ONLY a `dead` verdict (server reachable + exact id absent) purges; `alive`
+   * and `indeterminate` are kept. An indeterminate session lingers one extra tick
+   * (cheap, caught by monitoring) rather than being falsely reaped (expensive).
    */
   async purgeDeadSessions(): Promise<number> {
     const running = this.state.listSessions({ status: 'running' });
     if (running.length === 0) return 0;
 
+    const verdicts = await this.livenessOracle.probeAll(running.map((s) => s.tmuxSession));
+
     let purged = 0;
+    let kept = 0;
+    let indeterminate = 0;
+    let skipped = 0;
     for (const session of running) {
-      try {
-        execFileSync(this.config.tmuxPath, ['has-session', '-t', `=${session.tmuxSession}`], {
-          stdio: 'ignore', timeout: 1000,
+      const v = verdicts.get(session.tmuxSession);
+      if (v?.liveness === 'dead') {
+        // Route through the single ReapAuthority (§P0) so the reap is lease-gated,
+        // recorded in the reap-log, and emits the standard lifecycle events. The
+        // KEEP-guard is bypassed via `knownDead` — the oracle has already proven
+        // this session dead, and the guard's liveness-blind topic-state KEEPs would
+        // otherwise pin a tombstone and re-create the death-spiral.
+        const r = await this.terminateSession(session.id, 'boot-purge-dead', {
+          knownDead: true,
+          finalStatus: 'completed',
         });
-      } catch {
-        // tmux session doesn't exist — purge the record
-        session.status = 'completed';
-        session.endedAt = new Date().toISOString();
-        this.state.saveSession(session);
-        purged++;
+        if (r.terminated) purged++;
+        else skipped++; // not-lease-holder / protected — recorded, kept for next awake tick
+      } else {
+        kept++;
+        if (v?.liveness === 'indeterminate') indeterminate++;
       }
     }
 
-    if (purged > 0) {
-      console.log(`[SessionManager] Startup purge: removed ${purged} dead session(s) of ${running.length} tracked`);
+    if (purged > 0 || indeterminate > 0 || skipped > 0) {
+      console.log(
+        `[SessionManager] Startup purge: removed ${purged} dead session(s) of ${running.length} tracked` +
+          (indeterminate > 0
+            ? ` (${indeterminate} indeterminate — KEPT, will re-verify on the next tick rather than risk a false purge)`
+            : '') +
+          (skipped > 0
+            ? ` (${skipped} dead but not reaped here — standby/protected, deferred to the awake machine)`
+            : ''),
+      );
     }
     return purged;
   }
@@ -1620,7 +1793,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Safety valve: still cap at maxSessions * 3 to prevent runaway sessions.
     const runningSessions = this.listRunningSessions();
     const absoluteLimit = this.config.maxSessions * 3;
-    if (runningSessions.length >= absoluteLimit) {
+    // §P5: exclude long-`indeterminate` sessions (unverifiable panes flagged by the
+    // StaleSessionBackstop) from the ABSOLUTE cap, so a fleet of them can never lock
+    // a human out of spawning — the death-spiral the boot purge guarded against
+    // cannot relocate here.
+    const countable = runningSessions.filter(s => !this.longIndeterminateSessions.has(s.id));
+    if (countable.length >= absoluteLimit) {
       throw new Error(
         `Absolute session limit (${absoluteLimit}) reached. ` +
         `Running: ${runningSessions.map(s => s.name).join(', ')}`

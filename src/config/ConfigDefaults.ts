@@ -79,6 +79,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       finalGraceSec: 60,
       protectOpenCommitments: true,
     },
+    // Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). Default ON — the single
+    // coalescing listener that surfaces "your session was shut down" so a reap is
+    // never silent (the disappearing-session incident). recovery-bounce + operator
+    // kills stay silent regardless; terminal reaps within the window collapse into
+    // one consolidated lifeline message.
+    reapNotify: {
+      enabled: true,
+      coalesceWindowMs: 60_000,
+    },
+    // Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Default ON, signal-
+    // only: raises ONE deduped Attention item (never auto-kills) when a session is
+    // KEPT forever despite faking work, or is stuck indeterminate. The escalation
+    // thresholds match the spec (30 min no-forward-progress / 15 indeterminate).
+    staleBackstop: {
+      enabled: true,
+      tickIntervalSec: 120,
+      unverifiableEscalateMinutes: 30,
+      indeterminateEscalateCount: 15,
+      progressFloorBytes: 512,
+    },
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md). Ships
     // OFF — when disabled, the /failures routes 503-stub (surface still exists
     // for capability probing). Registers itself on the rollout board.
