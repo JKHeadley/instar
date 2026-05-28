@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
+import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
@@ -285,7 +286,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         execFileSync('git', ['clone', repoUrl, projectDir], { stdio: 'inherit', timeout: 60_000 });
         console.log(pc.green('  Cloned.'));
       } catch (err) {
-        console.log(pc.red(`  Failed to clone: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(pc.red(`  Failed to clone: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`));
         process.exit(1);
       }
     }
@@ -339,7 +340,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // Step 4: Contact the awake machine's pairing endpoint (if URL is a tunnel)
   const isTunnelUrl = repoUrl.startsWith('http://') || repoUrl.startsWith('https://');
   if (isTunnelUrl) {
-    console.log(`  Contacting ${repoUrl}...`);
+    console.log(`  Contacting ${redactUrl(repoUrl)}...`);
     try {
       const identity = mgr.loadIdentity();
       const resp = await fetch(`${repoUrl}/api/pair`, {
@@ -367,7 +368,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
       }
     } catch (err) {
-      console.log(pc.red(`  Failed to contact server: ${err instanceof Error ? err.message : String(err)}`));
+      console.log(pc.red(`  Failed to contact server: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`));
       console.log(pc.dim('  If the server is not running, clone the repo with git and register manually.'));
     }
   }
