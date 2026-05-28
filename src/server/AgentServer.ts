@@ -47,6 +47,7 @@ import { createTopicIntentRoutes } from './topicIntentRoutes.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
+import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -122,6 +123,7 @@ export class AgentServer {
   private failureLedger: FailureLedger | null = null;
   private failureAttributionEngine: FailureAttributionEngine | null = null;
   private ciFailurePoller: CiFailurePoller | null = null;
+  private revertDetector: RevertDetector | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -627,12 +629,27 @@ export class AgentServer {
             maxRunsPerTick: sources.ciMaxRunsPerTick,
           });
         }
+
+        // Ingestion source: `revert` (spec §3.2). Gated on sources.revert;
+        // started post-listen, stopped on shutdown.
+        if (sources?.revert === true && this.failureLedger) {
+          this.revertDetector = new RevertDetector({
+            ledger: this.failureLedger,
+            cwd: projectDir,
+            resolveByCommit: (oid) => {
+              const i = tracker?.findByMergeCommit(oid);
+              // `origin` (loop self-exclusion §4.3) arrives with slice 2; inert until then.
+              return i ? { id: i.id, projectId: i.parentProjectId ?? undefined, specPath: i.specPath ?? undefined } : undefined;
+            },
+          });
+        }
       }
     } catch (err) {
       console.warn('[instar] failure-learning init failed (non-fatal):', err);
       this.failureLedger = null;
       this.failureAttributionEngine = null;
       this.ciFailurePoller = null;
+      this.revertDetector = null;
     }
 
     // Routes
@@ -1750,6 +1767,14 @@ export class AgentServer {
             console.warn('[instar] ci-failure poller start failed:', err);
           }
         }
+        // Ingestion source `revert` (spec §3.2).
+        if (this.revertDetector) {
+          try {
+            this.revertDetector.start();
+          } catch (err) {
+            console.warn('[instar] revert-detector start failed:', err);
+          }
+        }
 
         resolve();
       });
@@ -1880,6 +1905,15 @@ export class AgentServer {
         // best-effort
       }
       this.ciFailurePoller = null;
+    }
+    // Stop the revert detector (ingestion source §3.2).
+    if (this.revertDetector) {
+      try {
+        this.revertDetector.stop();
+      } catch {
+        // best-effort
+      }
+      this.revertDetector = null;
     }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {

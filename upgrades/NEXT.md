@@ -4,7 +4,7 @@
 
 ## What Changed
 
-Second automatic feed for the Failure-Learning Loop: the **revert source** (spec `docs/specs/FAILURE-LEARNING-INGESTION-SOURCES-SPEC.md` §3.2). This completes the approved "CI + reverts" first slice — the CI source shipped in the prior release; this adds detection of *undone changes*. Off by default (`monitoring.failureLearning.sources.revert`); no change when off.
+Second automatic feed for the Failure-Learning Loop: the **revert source** (spec `docs/specs/FAILURE-LEARNING-INGESTION-SOURCES-SPEC.md` §3.2). This completes the approved "CI + reverts" first slice — the CI source shipped already; this adds detection of *undone changes*. Off by default (`monitoring.failureLearning.sources.revert`); no change when off.
 
 When a change is reverted, that's strong evidence the original was bad enough to pull. The revert source scans recent commits for `Revert "…"` and records it — but it is careful, because commit messages are attacker-authorable: it will only mark an existing recorded failure as resolved if the revert genuinely reverses that commit (the reverted commit is real and reachable AND the revert's diff actually touches the same files), and the match is on both the feature and the exact commit — so a hand-written "this reverts X" can't quietly close someone else's record. A revert that fails those checks can at most file a low-confidence note, never close anything. A revert-of-a-revert (a re-land) is ignored — it isn't a failure.
 
