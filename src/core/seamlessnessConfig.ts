@@ -100,7 +100,15 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     splitBrainEscalationCooldownMs: mm?.splitBrainEscalationCooldownMs ?? 5 * 60_000,
     handoffBar: mm?.handoffBar ?? 'near-instant',
     maxProcessingMs: mm?.maxProcessingMs ?? 5 * 60_000,
-    exactlyOnceIngress: mm?.exactlyOnceIngress ?? false,
+    // Default-ON since 2026-05-28: proven live via test-as-self — a real
+    // message from the operator's own Telegram was handled exactly once
+    // (forwarded once, redelivery deduped) on a two-machine mesh, with no
+    // false-drop on the critical path. The dedupeKey is the Telegram update_id
+    // (unique per update), so two DISTINCT messages can never collide — the
+    // only thing deduped is a genuine same-update redelivery — and the gate is
+    // fail-open (any ledger error falls through to normal routing). Set
+    // multiMachine.exactlyOnceIngress:false to opt out.
+    exactlyOnceIngress: mm?.exactlyOnceIngress ?? true,
     protocolVersion: mm?.protocolVersion ?? SEAMLESSNESS_PROTOCOL_VERSION,
   };
 }

@@ -70,3 +70,22 @@ when absent. No `.instar` schema change.
 
 No agent-installed file template changed (no settings.json/hook/CLAUDE.md/skill
 edits). Changes ship in the instar dist and reach existing agents on update.
+
+## Addendum — exactly-once ingress default-ON (2026-05-28)
+
+`src/core/seamlessnessConfig.ts`: `multiMachine.exactlyOnceIngress` default flipped
+`false → true`, per the spec's "flip once the live test-as-self passes" gate.
+
+**Proof:** a REAL message from the operator's own Telegram (driven via the
+logged-in Playwright profile — update_id 969389534) was forwarded into the live
+two-machine mmtest3 mesh and handled EXACTLY ONCE: first delivery
+`forwarded:true (spawn)`, redelivery `deduped:true`. No false-drop on the
+critical path.
+
+**Safety of default-on:** the dedupeKey is the Telegram `update_id` (unique per
+update), so two DISTINCT messages can never collide — only a genuine same-update
+redelivery is dropped. The gate is FAIL-OPEN (any ledger error falls through to
+normal routing). Opt out with `multiMachine.exactlyOnceIngress: false`.
+
+**Rollback:** set the default back to `?? false` (one line) — fully reversible,
+no data migration.
