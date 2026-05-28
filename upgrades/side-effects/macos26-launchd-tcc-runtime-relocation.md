@@ -106,6 +106,20 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > root resolution from plist (replaces `$project_dir/.instar` reads), direct-
 > Telegram delivery (needs Scope C credential), SessionStart-hook drain.
 
+> **Increment 8 (EscalationCredential — Scope C delivery foundation):** adds
+> `src/core/EscalationCredential.ts` — minimal per-agent `{ ownerTopicId, botToken }`
+> at `~/.instar/registry/<bundleId>.json`, mode 0600 in 0700 dir, atomic mode-at-
+> creation write, structural protections (outside any TCC folder, outside any
+> project git tree — both the launchd-spawned watchdog can read it AND the Luna
+> `.bak`-in-git-tree leak vector cannot apply). Validates token shape before
+> writing (an empty/garbage credential would have the watchdog 401-forever
+> instead of falling through to the consented drain). Rejects path-traversal
+> bundle ids at the filename layer. Idempotent re-write (`unchanged` return)
+> avoids fsync churn on every healthy boot. 12 unit tests. **Not yet consumed:**
+> setup needs to write it (consented); server boot needs to refresh it on
+> healthy start; watchdog needs to read it for direct Telegram send. Those wire
+> up in the next increment.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
