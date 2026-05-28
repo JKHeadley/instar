@@ -102,3 +102,21 @@ sees the holder's CURRENT heartbeat. Split-brain CAS gate untouched; steady-stat
 ticks already self-correct — this only closes the boot-time stale-data window.
 Test: `tests/unit/lease-fresh-join-prime.test.ts` (with-vs-without priming).
 Rollback: revert; no data/schema change.
+
+## Addendum 3 — lease-renewal robustness (partial, 2026-05-28)
+
+Two genuine lease-renewal bugs fixed while staging the live handoff demo:
+- `MultiMachineCoordinator`: lease was renewed only on the 2-min heartbeat timer
+  while the TTL is ~60s → the lease lapsed between renewals and any observer
+  (incl. a fresh join) could grab it. New `leaseTickTimer` renews at leaseTtlMs/2.
+- `GitSync.pullRebase`: bare `git pull --rebase` fails ("specify which branch")
+  with no upstream — the lease store pulls before every CAS/refresh, so renewal
+  silently died. Now upstream-aware (explicit `origin <branch>` fallback).
+
+**HONEST STATUS — NOT fully validated.** Even with both, the live two-machine
+renewal still did not fire reliably (the lease stayed at epoch 1 and expired with
+no renewal commit, registry valid + git unwedged — the renewal silently no-ops,
+suspected git-op concurrency / a hung await in the tick path). The lease-renewal-
+over-git path needs a focused hardening cycle (its own spec), not more live
+patching. These two fixes are correct + necessary but insufficient alone.
+Rollback: revert; both are additive/defensive.

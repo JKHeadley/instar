@@ -569,7 +569,27 @@ export class GitSyncManager {
   pullRebase(): boolean {
     if (!this.isGitRepo()) return false;
     try {
-      this.gitExec(['pull', '--rebase', '--autostash']);
+      // Upstream-aware: a bare `git pull --rebase` fails with "Please specify
+      // which branch you want to rebase against" when the branch has no
+      // upstream — the same no-upstream gap that broke push. The lease store
+      // pulls before every CAS/refresh, so this silently killed LEASE RENEWAL
+      // (renewal never reached the substrate → the lease expired → bounced
+      // between machines, verified live on a two-machine mesh 2026-05-28). Fall
+      // back to an explicit `origin <branch>` pull when no upstream is set.
+      let hasUpstream = false;
+      try {
+        this.gitExec(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+        hasUpstream = true;
+      } catch {
+        // @silent-fallback-ok — no upstream yet; explicit pull below.
+      }
+      if (hasUpstream) {
+        this.gitExec(['pull', '--rebase', '--autostash']);
+      } else {
+        let branch = 'main';
+        try { branch = this.gitExec(['rev-parse', '--abbrev-ref', 'HEAD']).trim() || 'main'; } catch { /* default main */ }
+        this.gitExec(['pull', '--rebase', '--autostash', 'origin', branch]);
+      }
       return true;
     } catch {
       // @silent-fallback-ok — lease CAS re-reads and retries on failure
