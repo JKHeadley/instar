@@ -2045,6 +2045,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
   } catch { /* non-fatal */ }
 
+  // Scope C — arm the per-agent escalation credential so the fleet watchdog can
+  // autonomously page the user about an outage. Runs on every healthy boot
+  // (cheap + idempotent — re-write returns "unchanged" when the file already
+  // matches), so a rotated token propagates within one healthy boot and a newly-
+  // relocated agent self-arms before it can die again. We pull from the agent's
+  // own Telegram messaging config — same source the lifeline polls, so the
+  // credential is always in lockstep with what's authoritative.
+  try {
+    const tg = config.messaging?.find((m: { type: string }) => m.type === 'telegram') as
+      | { token?: string; chatId?: string }
+      | undefined;
+    if (tg?.token && tg?.chatId) {
+      const { writeCredential } = await import('../core/EscalationCredential.js');
+      writeCredential(`ai.instar.${config.projectName}`, {
+        ownerTopicId: tg.chatId,
+        botToken: tg.token,
+      });
+    }
+  } catch { /* non-fatal — credential arming should never block boot */ }
+
   // LiveConfig: dynamic config re-reading for long-running server process.
   // Solves the "Written But Not Re-Read" class of bugs — sessions modify
   // config.json but the server process never picks up the changes.

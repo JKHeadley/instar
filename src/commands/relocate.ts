@@ -49,6 +49,24 @@ export async function relocateCommand(opts: { dir?: string }): Promise<void> {
     process.exit(1);
   }
   if (result.upgraded.length > 0) {
+    // Arm the per-agent escalation credential so the watchdog can autonomously
+    // page on future outages (the b2lead bootstrap path: one consented run
+    // both recovers AND arms — every death AFTER that pages autonomously).
+    try {
+      const tg = config.messaging?.find((m) => m.type === 'telegram') as
+        | { token?: string; chatId?: string }
+        | undefined;
+      if (tg?.token && tg?.chatId) {
+        const { writeCredential } = await import('../core/EscalationCredential.js');
+        const armed = writeCredential(`ai.instar.${config.projectName}`, {
+          ownerTopicId: tg.chatId,
+          botToken: tg.token,
+        });
+        if (armed === 'written') {
+          console.log(pc.green('  ✓ escalation credential armed — future outages will page you autonomously'));
+        }
+      }
+    } catch { /* non-fatal — relocation already succeeded */ }
     console.log(pc.green('\nDone. Your agent now boots from a location macOS lets launchd reach.'));
     console.log(pc.dim('The launchd job has been re-pointed; it will use the new location on its next start.'));
   } else if (result.skipped.some((s) => s.includes('already relocated'))) {

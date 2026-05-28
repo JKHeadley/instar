@@ -137,6 +137,22 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > needed:** wire setup + healthy-boot to WRITE the credential (the writer side
 > of Scope C); without it, no agent gets armed.
 
+> **Increment 10 (credential-writer wiring — chain end-to-end for armed agents):**
+> `startServer` now writes/refreshes the per-agent EscalationCredential on every
+> healthy boot (idempotent — `unchanged` return avoids fsync churn). `instar
+> relocate` writes the credential after a successful relocation (the b2lead
+> bootstrap path: one consented run both recovers AND arms — every death AFTER
+> that pages autonomously). Both pull `{ token, chatId }` from the agent's own
+> Telegram messaging config (same source the lifeline polls), so the credential
+> stays in lockstep with what's authoritative; a rotated token propagates within
+> one healthy boot. **The autonomous-paging chain is now end-to-end functional
+> for armed agents** (exit-78 → spool → direct Telegram via the credential,
+> token never in argv). **Still ahead:** Scope D's SessionStart-hook spool drain
+> (the b2lead-before-fix path, where no credential exists yet) + the watchdog's
+> own runtime-root resolution rework (stops reading `$project_dir/.instar` for
+> relocated agents) + Scope E FDA bootstrap + e2e tier + migration parity + CI
+> grep-gate + live verification + merge.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
