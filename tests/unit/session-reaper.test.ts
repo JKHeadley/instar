@@ -296,7 +296,12 @@ describe('SessionReaper — robustness', () => {
     const h = harness({ deps: { isRecoveryActive: () => { throw new Error('boom'); } } });
     const snap = h.reaper.snapshot();
     expect(snap.sessions[0].verdict).toBe('keep');
-    expect(snap.sessions[0].keptBy).toBe('eval-error');
+    // The shared ReapGuard (§P2) catches a throwing stateless signal internally and
+    // resolves it to a KEEP ('guard-error') — safe-by-default for every killer that
+    // calls the guard. The KEEP-never-reap intent is unchanged (asserted above); only
+    // the diagnostic label moved from the reaper's outer catch ('eval-error', still
+    // live for a throw in the stateful transcript/idle checks) to the guard's.
+    expect(snap.sessions[0].keptBy).toBe('guard-error');
   });
 });
 
