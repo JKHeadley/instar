@@ -2520,6 +2520,27 @@ A repo-gated watchdog that makes a stalled instar release impossible to miss: it
       result.upgraded.push('CLAUDE.md: added Release Readiness watchdog awareness (release-readiness-visibility)');
     }
 
+    // update-message-topic-routing §Fix 3 — existing agents need to learn that
+    // self-broadcast about ships/restarts/updates must route through the
+    // post-update channel (lands in the Agent Updates topic), not the active
+    // session topic. Without this, the agent authors update narration into
+    // whatever conversation the user happened to be in — the exact bug Justin
+    // flagged 2026-05-27. Content-sniff on a distinctive marker.
+    if (!content.includes('Agent Updates topic (self-broadcasts about ships, restarts, updates)')) {
+      const selfBroadcastSection = `
+### Agent Updates topic (self-broadcasts about ships, restarts, updates)
+
+When narrating a ship, an update I just applied, or a restart I just completed (e.g. "Just shipped X", "Back up and running on vN", "Bounced cleanly after the update"), route the message through the post-update channel so it lands in the dedicated Agent Updates topic — NOT the active session topic the user happened to be chatting in.
+- Post: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/post-update -H 'Content-Type: application/json' -d '{"text":"Your update narration here"}'\`
+- The endpoint resolves the Updates topic from state server-side; you cannot specify a topic and you should not try to.
+- If Updates is not configured, the endpoint returns 400 — do NOT fall back to sending in the active topic. Update-class messages belong in Updates or they don't go out at all.
+- **When to use** (PROACTIVE — this is the trigger): the moment I am about to author a conversational message whose subject is *me* shipping, updating, or restarting — including post-restart "I'm back" confirmations — I use this endpoint. Authoring such a message via the standard Telegram reply path puts release chatter into whatever conversation the user was last in, which is the bug this routing closes.
+`;
+      content += '\n' + selfBroadcastSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent Updates topic self-broadcast guidance (update-message-topic-routing)');
+    }
+
     // CMT-529 — agents migrated under CMT-519 got the OLD "call the bind endpoint"
     // wording; "open this" is now a STRUCTURAL intercept (handled before the agent).
     // Re-patch the stale sentence so the agent doesn't try to call the endpoint /

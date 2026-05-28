@@ -5066,8 +5066,17 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Phase 1C of GRACEFUL_UPDATES: reduce noise for routine maintenance.
         const runningSessions = sessionManager.listRunningSessions();
         if (runningSessions.length > 0) {
+          // Route the pre-restart heads-up to the dedicated Agent Updates
+          // topic, not the central-notify default (Attention). Every other
+          // update-class emitter (AutoUpdater, AutoDispatcher, the restart
+          // handshake, /telegram/post-update) routes here; this caller was
+          // the lone path going to Attention. Falls through to the central
+          // default when Updates is unset, preserving prior behavior for
+          // agents without an Updates topic.
+          const updatesTopicId = state.get<number>('agent-updates-topic') || undefined;
           notify('IMMEDIATE', 'system',
-            `Applying update to v${request.targetVersion} — restarting now. Active sessions will resume automatically.`
+            `Applying update to v${request.targetVersion} — restarting now. Active sessions will resume automatically.`,
+            updatesTopicId,
           );
         } else {
           console.log(`[ForegroundRestartWatcher] Silent restart — no active sessions (v${request.previousVersion} → v${request.targetVersion})`);

@@ -443,6 +443,12 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 
 **Use private views for sensitive content. Use Telegraph for public content.**
 
+**Agent Updates topic (self-broadcasts about ships, restarts, updates)** — When narrating a ship, an update I just applied, or a restart I just completed (e.g. "Just shipped X", "Back up and running on vN", "Bounced cleanly after the update"), route the message through the post-update channel so it lands in the dedicated Agent Updates topic — NOT the active session topic the user happened to be chatting in.
+- Post: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/post-update -H 'Content-Type: application/json' -d '{"text":"Your update narration here"}'\`
+- The endpoint resolves the Updates topic from state server-side; you cannot specify a topic and you should not try to.
+- If Updates is not configured, the endpoint returns 400 — do NOT fall back to sending in the active topic. Update-class messages belong in Updates or they don't go out at all.
+- **When to use** (PROACTIVE — this is the trigger): the moment I am about to author a conversational message whose subject is *me* shipping, updating, or restarting — including post-restart "I'm back" confirmations — I use this endpoint. Authoring such a message via the standard Telegram reply path puts release chatter into whatever conversation the user was last in, which is the bug this routing closes.
+
 **Secret Drop** — Securely collect secrets (API keys, passwords, tokens) from users without exposing them in chat history.
 - Request a secret: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/request -H 'Content-Type: application/json' -d '{"label":"OpenAI API Key","description":"Needed for GPT integration","topicId":TOPIC_ID}'\`
 - The response includes a one-time URL (\`localUrl\` and \`tunnelUrl\`). Send this link to the user.

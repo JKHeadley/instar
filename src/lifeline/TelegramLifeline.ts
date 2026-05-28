@@ -1413,12 +1413,50 @@ export class TelegramLifeline {
   }
 
   /**
+   * Resolve the destination topic for update-class alerts (version-skew,
+   * delivery-health). Reads `agent-updates-topic` from server state. If
+   * unset, falls back to the Lifeline topic — Lifeline is the always-
+   * reachable channel for delivery-health alerts, so a misconfigured
+   * Updates topic must never *prevent* the alert from being seen.
+   *
+   * Returns null only if neither topic is configured (e.g. early boot
+   * before Lifeline topic is ensured). Caller should drop the alert in
+   * that case rather than picking an arbitrary topic.
+   */
+  private resolveUpdatesAlertTopic(): number | null {
+    try {
+      const updatesFile = path.join(
+        this.projectConfig.stateDir,
+        'state',
+        'agent-updates-topic.json',
+      );
+      if (fs.existsSync(updatesFile)) {
+        const raw = fs.readFileSync(updatesFile, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'number' && parsed > 0) {
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Lifeline] failed to read agent-updates-topic state (falling back to Lifeline topic): ` +
+        `${err instanceof Error ? err.message : err}`,
+      );
+    }
+    return this.lifelineTopicId ?? null;
+  }
+
+  /**
    * Handle a 426 response from the server. Validates the response body's
    * `serverVersion` differs from this lifeline's, then requests restart
    * through the orchestrator. If the body is malformed or the versions
    * match (loopback impostor), treat as transient.
+   *
+   * The `inboundTopicId` parameter is kept for diagnostics/logging only;
+   * the destination for the user-visible alert is resolved via
+   * resolveUpdatesAlertTopic() — never the inbound topic.
    */
-  private handleVersionSkew(err: ForwardVersionSkewError, topicId: number): void {
+  private handleVersionSkew(err: ForwardVersionSkewError, inboundTopicId: number): void {
     const { body } = err;
     if (body.upgradeRequired !== true) {
       // Not a genuine Stage-B upgrade directive; treat as transient noise.
@@ -1444,13 +1482,28 @@ export class TelegramLifeline {
         `lifeline is still on v${this.lifelineVersion}. Ingress is paused ` +
         `until the lifeline restarts onto the new version. Your messages ` +
         `are NOT lost — they will replay automatically on recovery.`;
-      // Best-effort fire-and-forget — never block the forward path.
-      this.sendToTopic(topicId, alertBody).catch((sendErr) => {
+      const alertTopicId = this.resolveUpdatesAlertTopic();
+      if (alertTopicId !== null) {
+        // Best-effort fire-and-forget — never block the forward path.
+        this.sendToTopic(alertTopicId, alertBody).catch((sendErr) => {
+          console.warn(
+            `[Lifeline] failed to send version-skew alert to topic ${alertTopicId} ` +
+            `(inbound was ${inboundTopicId}): ` +
+            `${sendErr instanceof Error ? sendErr.message : sendErr}`
+          );
+        });
+      } else {
+        // Neither Updates topic nor Lifeline topic is configured. Don't
+        // pick the inbound topic — that's the bug this code is closing.
+        // Log loudly so an operator can fix the state.
         console.warn(
-          `[Lifeline] failed to send version-skew alert to topic ${topicId}: ` +
-          `${sendErr instanceof Error ? sendErr.message : sendErr}`
+          `[Lifeline] version-skew alert dropped — no Updates topic and no Lifeline topic configured ` +
+          `(inbound was ${inboundTopicId}, server=v${body.serverVersion}, lifeline=v${this.lifelineVersion})`,
         );
-      });
+        // Restart will still be initiated below; the user will at least
+        // see the post-restart "verified" notification via the standard
+        // handshake path once the lifeline catches up.
+      }
     }
     this.initiateRestart('versionSkew', 'version-skew', {
       serverVersion: body.serverVersion,
