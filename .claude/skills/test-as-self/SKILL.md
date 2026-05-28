@@ -5,9 +5,21 @@ metadata:
   user_invocable: "true"
 ---
 
-# /test-as-self — Throwaway-Deploy Harness (Task 4 / Part 2 v1)
+# /test-as-self — Throwaway-Deploy Harness (Part 2.1)
 
-> Spec: `docs/specs/SELF-PROPAGATION-HARNESS-SPEC.md`. Part 1 (the structural poll-ownership lease) ships in the same release. This is the MVP runbook + a deterministic verifier; full one-button automation (bot minting, Telegram round-trip via Playwright, OOM reproduction) is the follow-up Part 2.1.
+> Spec: `docs/specs/SELF-PROPAGATION-HARNESS-SPEC.md` + the Track F section of `docs/specs/MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS-SPEC.md`. Part 1 (the structural poll-ownership lease) ships alongside. Part 2.1 folded the manual recipe below into a single command — use that first; the manual recipe is the fallback for fine-grained control.
+
+## The one-button path (Part 2.1 — use this first)
+
+```bash
+instar test-as-self --no-roundtrip                  # deploy + verify only (no bot)
+instar test-as-self --bot-token <secret-drop-id>    # + a real Telegram round-trip
+instar test-as-self --keep                          # leave it running for inspection
+```
+
+The command runs the seven gated steps automatically (bot-acquire via Secret Drop / target-prep with Bob+canonical-home guards / dist-deploy / process-start + wait for /health + lease / Telegram-Bot-HTTP-API round-trip / `verify.mjs` / signal-safe teardown) and emits a single JSON report; exit 0 = all PASS. Structural guards make it impossible to target your real agent home or Bob, and it refuses a raw bot token on the command line (Secret Drop only). The round-trip uses the Telegram Bot HTTP API directly (not Playwright) — no browser, no flake.
+
+Fall back to the manual recipe below only when you need step-by-step control or to debug a single step.
 
 ## When to use
 

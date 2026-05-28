@@ -215,6 +215,7 @@ export class PostUpdateMigrator {
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
+    this.migrateTestAsSelfSkill(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -1289,6 +1290,41 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/build/SKILL.md methodology migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed test-as-self SKILL.md to the Part 2.1 version that leads
+   * with the one-button `instar test-as-self` command (manual recipe demoted to
+   * fallback). installBuiltinSkills is install-if-missing, so existing agents
+   * never get the updated content through init — this dedicated migration is the
+   * only path (Migration Parity Standard, "updating existing skill content").
+   *
+   * Idempotent + conservative: re-copy the bundled SKILL.md only when the
+   * installed copy (a) lacks the Part 2.1 MARKER AND (b) still matches the stock
+   * FINGERPRINT. A customized skill is left untouched.
+   */
+  private migrateTestAsSelfSkill(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'test-as-self', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'The one-button path (Part 2.1';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      // Stock-fingerprint guard: don't clobber a customized test-as-self skill.
+      if (!current.includes('Throwaway-Deploy Harness') || !current.includes('verify.mjs')) {
+        result.skipped.push('skills/test-as-self/SKILL.md: customized — left untouched (no Part 2.1 update)');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', '.claude', 'skills', 'test-as-self', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/test-as-self/SKILL.md (Part 2.1: one-button instar test-as-self leads; manual recipe demoted)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/test-as-self/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
