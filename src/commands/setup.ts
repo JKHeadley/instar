@@ -935,8 +935,12 @@ function pickDurableNodePath(candidates: string[], nativeModulePath?: string): s
  *
  * Returns the symlink path.
  */
-export function ensureStableNodeSymlink(projectDir: string): string {
-  const binDir = path.join(projectDir, '.instar', 'bin');
+export function ensureStableNodeSymlink(projectDir: string, stateDir?: string): string {
+  // `stateDir` defaults to <projectDir>/.instar (unchanged behavior). When an
+  // agent is relocated (macOS 26 TCC), the caller passes the runtime root so the
+  // node symlink + ABI anchor live in the safe location launchd can reach.
+  const root = stateDir ?? path.join(projectDir, '.instar');
+  const binDir = path.join(root, 'bin');
   const symlinkPath = path.join(binDir, 'node');
 
   fs.mkdirSync(binDir, { recursive: true });
@@ -945,7 +949,7 @@ export function ensureStableNodeSymlink(projectDir: string): string {
   // pickDurableNodePath uses it to avoid selecting a node major that can't
   // load it (the recurring-SQLite-bane fix).
   const nativeModulePath = path.join(
-    projectDir, '.instar', 'shadow-install', 'node_modules',
+    root, 'shadow-install', 'node_modules',
     'better-sqlite3', 'build', 'Release', 'better_sqlite3.node',
   );
   const nativeModuleExists = fs.existsSync(nativeModulePath);
@@ -1064,8 +1068,11 @@ function escapeXml(str: string): string {
  * Using node directly as the plist entry point bypasses this because
  * user-installed binaries (homebrew, nvm) are not subject to TCC restrictions.
  */
-export function installBootWrapper(projectDir: string): { sh: string; js: string } {
-  const stateDir = path.join(projectDir, '.instar');
+export function installBootWrapper(projectDir: string, stateDirOverride?: string): { sh: string; js: string } {
+  // Defaults to <projectDir>/.instar (unchanged). Relocated agents (macOS 26
+  // TCC) pass the runtime root so the boot wrapper + its node symlink live where
+  // launchd can reach them.
+  const stateDir = stateDirOverride ?? path.join(projectDir, '.instar');
   const shPath = path.join(stateDir, 'instar-boot.sh');
 
   // Always write .cjs. Node treats .cjs as CommonJS regardless of the parent
@@ -1597,60 +1604,45 @@ export function installFleetWatchdog(): boolean {
   }
 }
 
-function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
-  const label = `ai.instar.${projectName}`;
-  const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
-  const plistPath = path.join(launchAgentsDir, `${label}.plist`);
-  const logDir = path.join(projectDir, '.instar', 'logs');
-
-  // Install boot wrappers that resolve shadow install at startup time.
-  // This ensures machine reboots use the auto-updated version, not the version
-  // that was global when setup ran. See: github issue / cluster-shadow-install-*
-  const wrappers = installBootWrapper(projectDir);
-
-  // Determine what to start: lifeline if Telegram configured, otherwise just the server
-  const command = hasTelegram ? 'lifeline' : 'server';
-  const args = hasTelegram
-    ? ['lifeline', 'start', '--dir', projectDir]
-    : ['server', 'start', '--foreground', '--dir', projectDir];
-
-  // Use node + JS wrapper instead of /bin/bash + shell wrapper.
-  // On macOS Sequoia+, launchd-spawned /bin/bash lacks Full Disk Access (TCC),
-  // causing "Operation not permitted" on project files. User-installed node
-  // (homebrew, nvm) is not subject to TCC restrictions.
-  //
-  // We use a stable symlink (.instar/bin/node) so NVM/asdf version switches
-  // don't break the plist. The symlink is updated by self-healing on every startup.
-  const nodeSymlink = ensureStableNodeSymlink(projectDir);
-  const programArgs = [nodeSymlink, wrappers.js, ...args];
-
-  // Build the plist XML
-  const argsXml = programArgs.map(a => `      <string>${escapeXml(a)}</string>`).join('\n');
-
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+/**
+ * Pure builder for the LaunchAgent plist XML. Extracted from
+ * installMacOSLaunchAgent so the runtime-root-aware wiring (ProgramArguments,
+ * WorkingDirectory, log paths all pointing OUT of a TCC-locked folder) is
+ * unit-testable without launchctl side effects.
+ */
+export function buildLaunchAgentPlist(opts: {
+  label: string;
+  programArgs: string[];
+  workingDirectory: string;
+  stdoutPath: string;
+  stderrPath: string;
+  pathEnv: string;
+}): string {
+  const argsXml = opts.programArgs.map(a => `      <string>${escapeXml(a)}</string>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${escapeXml(label)}</string>
+    <string>${escapeXml(opts.label)}</string>
     <key>ProgramArguments</key>
     <array>
 ${argsXml}
     </array>
     <key>WorkingDirectory</key>
-    <string>${escapeXml(projectDir)}</string>
+    <string>${escapeXml(opts.workingDirectory)}</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${escapeXml(path.join(logDir, `${command}-launchd.log`))}</string>
+    <string>${escapeXml(opts.stdoutPath)}</string>
     <key>StandardErrorPath</key>
-    <string>${escapeXml(path.join(logDir, `${command}-launchd.err`))}</string>
+    <string>${escapeXml(opts.stderrPath)}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${escapeXml(process.env.PATH || '/usr/local/bin:/usr/bin:/bin')}</string>
+        <string>${escapeXml(opts.pathEnv)}</string>
         <key>INSTAR_SUPERVISED</key>
         <string>1</string>
     </dict>
@@ -1658,6 +1650,59 @@ ${argsXml}
     <integer>10</integer>
 </dict>
 </plist>`;
+}
+
+function installMacOSLaunchAgent(
+  projectName: string,
+  projectDir: string,
+  hasTelegram: boolean,
+  runtimeRoot?: string,
+): boolean {
+  const label = `ai.instar.${projectName}`;
+  const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+  const plistPath = path.join(launchAgentsDir, `${label}.plist`);
+  // The RUNTIME ROOT is where the artifacts launchd must touch on boot live.
+  // Defaults to <projectDir>/.instar (unchanged for non-relocated / non-macOS-26
+  // agents). For a relocated agent (macOS 26 TCC), the caller passes the
+  // ~/Library/Application Support/instar/<name>-<hash> root so node, the boot
+  // wrapper, the logs, and the working directory are all OUT of the TCC-locked
+  // folder — the fix for the 0-byte-log + posix_spawn-EPERM root cause.
+  const root = runtimeRoot ?? path.join(projectDir, '.instar');
+  const logDir = path.join(root, 'logs');
+
+  // Install boot wrappers that resolve shadow install at startup time.
+  // This ensures machine reboots use the auto-updated version, not the version
+  // that was global when setup ran. See: github issue / cluster-shadow-install-*
+  const wrappers = installBootWrapper(projectDir, root);
+
+  // Determine what to start: lifeline if Telegram configured, otherwise just the server
+  const command = hasTelegram ? 'lifeline' : 'server';
+  // --runtime-root makes the launchd-spawned process resolve its state dir from
+  // an absolute Library path WITHOUT traversing the (possibly TCC-locked)
+  // Documents-resident `.instar` symlink (see Config.resolveStateDir).
+  const baseArgs = hasTelegram
+    ? ['lifeline', 'start', '--dir', projectDir]
+    : ['server', 'start', '--foreground', '--dir', projectDir];
+  const args = [...baseArgs, '--runtime-root', root];
+
+  // Use node + JS wrapper instead of /bin/bash + shell wrapper.
+  // On macOS Sequoia+, launchd-spawned /bin/bash lacks Full Disk Access (TCC),
+  // causing "Operation not permitted" on project files. User-installed node
+  // (homebrew, nvm) is not subject to TCC restrictions.
+  //
+  // We use a stable symlink (<root>/bin/node) so NVM/asdf version switches
+  // don't break the plist. The symlink is updated by self-healing on every startup.
+  const nodeSymlink = ensureStableNodeSymlink(projectDir, root);
+  const programArgs = [nodeSymlink, wrappers.js, ...args];
+
+  const plist = buildLaunchAgentPlist({
+    label,
+    programArgs,
+    workingDirectory: root,
+    stdoutPath: path.join(logDir, `${command}-launchd.log`),
+    stderrPath: path.join(logDir, `${command}-launchd.err`),
+    pathEnv: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+  });
 
   try {
     fs.mkdirSync(launchAgentsDir, { recursive: true });

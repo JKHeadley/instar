@@ -32,6 +32,23 @@
 
 Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an agent's runtime should live so launchd can always reach it (`~/Library/Application Support/instar/<name>-<hash>/` on macOS, `~/.local/share/instar/...` on Linux), detects whether a directory is under a TCC-protected user folder (Documents/Desktop/Downloads/iCloud), reads the persisted `relocate.json` record, and exposes `resolveStateDir(projectDir, env)` — the two-layer pointer (boot layer reads `INSTAR_RUNTIME_ROOT`; consented layer uses `<projectDir>/.instar`). Wires `loadConfig` (`src/core/Config.ts`) to derive `stateDir`/`configPath` from `resolveStateDir` instead of an inline `path.join(projectDir, '.instar')`. The module has NO filesystem side effects (no moves) — relocation itself is a later increment. Files: `src/core/InstarRuntimeRoot.ts` (new), `src/core/Config.ts` (resolver wiring + import), `tests/unit/InstarRuntimeRoot.test.ts` (new, 19 tests).
 
+> **Increment 3 (plist runtime-root-aware + boot --runtime-root parse):**
+> `installMacOSLaunchAgent` now accepts an optional `runtimeRoot` (defaults to
+> `<projectDir>/.instar` — byte-identical for non-relocated agents) and threads
+> it through: ProgramArguments spawn node + boot wrapper from the root and pass
+> `--runtime-root <root>`; `WorkingDirectory` + launchd `StandardOut/ErrPath` →
+> the root (fixes the 0-byte-log root cause — launchd couldn't create logs under
+> the locked folder). `ensureStableNodeSymlink` + `installBootWrapper` gained an
+> optional state-dir override (default unchanged). The plist XML was extracted to
+> a pure exported `buildLaunchAgentPlist()` for unit testing. `cli.ts` `server
+> start` + `lifeline start` gained `--runtime-root`, setting `INSTAR_RUNTIME_ROOT`
+> before `loadConfig` so `resolveStateDir` consumes it — this is the WIRED link
+> that makes the boot layer real. Backward-compat verified: 55 existing
+> boot/relocation unit tests green. **Still not wired end-to-end:** the
+> orchestrator (`migrateRuntimeRoot`) that DECIDES the root + performs the move +
+> rewrites the plist is the next increment; until then `installMacOSLaunchAgent`
+> is called with no `runtimeRoot` (legacy behavior) everywhere.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.

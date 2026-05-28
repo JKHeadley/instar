@@ -1386,8 +1386,14 @@ serverCmd
   .option('--foreground', 'Run in foreground (default: background via tmux)')
   .option('--no-telegram', 'Skip Telegram polling (use when lifeline manages Telegram)')
   .option('-d, --dir <path>', 'Project directory')
+  .option('--runtime-root <path>', 'Absolute runtime root (macOS 26 TCC relocation; set by the launchd plist)')
   .action(async (name, opts) => {
     if (rejectIfInsideSession('server start')) return;
+    // macOS 26 TCC relocation: the launchd plist passes the absolute runtime
+    // root so the boot path resolves its state dir from Library WITHOUT
+    // traversing the (possibly TCC-locked) Documents-resident `.instar` symlink.
+    // Setting the env var here makes Config.resolveStateDir pick it up.
+    if (opts.runtimeRoot) process.env['INSTAR_RUNTIME_ROOT'] = String(opts.runtimeRoot);
     if (name && !opts.dir) {
       // Resolve standalone agent name to directory
       const { resolveAgentDir } = await import('./core/Config.js');
@@ -1599,7 +1605,11 @@ lifelineCmd
   .command('start')
   .description('Start the Telegram lifeline (owns Telegram polling, supervises server)')
   .option('-d, --dir <path>', 'Project directory')
+  .option('--runtime-root <path>', 'Absolute runtime root (macOS 26 TCC relocation; set by the launchd plist)')
   .action(async (opts) => {
+    // See server start: makes Config.resolveStateDir resolve from the absolute
+    // Library root without traversing a TCC-locked Documents `.instar` symlink.
+    if (opts.runtimeRoot) process.env['INSTAR_RUNTIME_ROOT'] = String(opts.runtimeRoot);
     const { TelegramLifeline } = await import('./lifeline/TelegramLifeline.js');
     try {
       const lifeline = new TelegramLifeline(opts.dir);
