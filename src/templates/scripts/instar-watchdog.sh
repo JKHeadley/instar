@@ -661,7 +661,8 @@ is_tcc_protected_path() {
 episode_first_detected_down() {
   local label="$1"
   local safe_label
-  safe_label=$(echo "$label" | tr -c 'A-Za-z0-9._-' '_')
+  # printf (not echo) so we don't translate echo's trailing \n into a trailing _.
+  safe_label=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')
   local marker="$EPISODE_DIR/${safe_label}.json"
   if [ -r "$marker" ]; then
     local existing
@@ -718,6 +719,65 @@ spool_append() {
   return 0
 }
 
+# Try to send a Telegram page directly using the per-agent escalation credential
+# at ~/.instar/registry/<label>.json. Token NEVER appears in argv — the curl
+# config is piped to `curl -K -` via stdin, and bash's `printf` is a builtin
+# (no separate process, no ps exposure). Returns 0 on Telegram ok=200, 1 on
+# missing credential / unreadable / non-200 / network error.
+try_direct_telegram_send() {
+  local label="$1"
+  local text="$2"
+
+  local safe_label
+  # printf (not echo) so we don't translate echo's trailing \n into a trailing _.
+  safe_label=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')
+  local cred_file="$INSTAR_MACHINE_DIR/registry/${safe_label}.json"
+  [ -r "$cred_file" ] || return 1
+
+  # Parse JSON with python3 (jq isn't a guaranteed dependency); fall back to a
+  # narrow grep-based parse if python3 is unavailable.
+  local token topic
+  if command -v python3 &>/dev/null; then
+    local pair
+    pair=$(python3 -c "
+import json,sys
+try:
+    c = json.load(open(sys.argv[1]))
+    tok = c.get('botToken','')
+    top = c.get('ownerTopicId','')
+    print(f'{tok}\t{top}')
+except Exception:
+    pass
+" "$cred_file" 2>/dev/null)
+    token="${pair%%	*}"
+    topic="${pair##*	}"
+  else
+    return 1
+  fi
+  [ -z "$token" ] && return 1
+  [ -z "$topic" ] && return 1
+
+  # Token shape sanity check (matches EscalationCredential.isValidBotToken).
+  case "$token" in
+    [0-9]*:*) : ;;
+    *) return 1 ;;
+  esac
+
+  # printf is a bash builtin → no separate process → token is NEVER on argv of
+  # any visible process. Pipe the curl config (which carries the URL containing
+  # the token) into `curl -K -` via stdin.
+  local http_code
+  http_code=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata-urlencode = "chat_id=%s"\ndata-urlencode = "text=%s"\nsilent\n' \
+    "$token" "$topic" "$text" \
+    | curl -K - -o /dev/null --max-time 10 -w '%{http_code}' 2>/dev/null)
+
+  if [ "$http_code" = "200" ]; then
+    return 0
+  fi
+  log "DIRECT-TELEGRAM-FAIL: $label — http=${http_code:-none}"
+  return 1
+}
+
 # Try to classify a non-zero-exit crash-loop as macOS 26 TCC-spawn-blocked.
 # When matched: appends to the spool (deduped per episode), logs the
 # classification, and returns 0 (caller should SKIP generic self-heal). When
@@ -743,10 +803,18 @@ classify_and_spool_tcc_blocked() {
 
   log "TCC-SPAWN-BLOCKED: $label — exit 78 + ProgramArguments[0] under TCC folder ($argv0)"
 
-  if spool_append "$label" "$project_dir" "tcc-spawn-blocked" \
-       "my startup files are in a folder macOS now locks — run 'instar relocate' once, or grant Full Disk Access to node" \
-       "$first_down"; then
+  local remediation="my startup files are in a folder macOS now locks — run 'instar relocate' once, or grant Full Disk Access to node"
+  if spool_append "$label" "$project_dir" "tcc-spawn-blocked" "$remediation" "$first_down"; then
     log "SPOOLED: $label — escalation queued (episode $first_down)"
+    # Best-effort autonomous direct Telegram send (the b2lead-armed case). On a
+    # not-yet-armed agent (no credential), this fails and the entry stays in
+    # the spool for the consented SessionStart drain. Non-fatal either way.
+    if try_direct_telegram_send "$label" "${label#ai.instar.}: ${remediation}"; then
+      log "DIRECT-TELEGRAM-OK: $label — episode $first_down delivered autonomously"
+      # We don't mark-delivered from bash (the TS-side EscalationSpool owns that
+      # mutation atomically); the consented drainer will see http_code via spool
+      # state in a follow-up. For now the delivery itself is the user-visible win.
+    fi
   else
     $VERBOSE && log "SPOOL-DEDUP: $label — episode $first_down already queued"
   fi

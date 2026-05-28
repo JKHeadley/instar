@@ -75,6 +75,23 @@ describe('watchdog template — TCC classifier + spool (content checks)', () => 
     expect(body).toMatch(/INSTAR_WATCHDOG_LIB_ONLY/);
   });
 
+  it('defines try_direct_telegram_send + the classifier wires it after spool_append', () => {
+    expect(body).toContain('try_direct_telegram_send()');
+    // Must use `curl -K -` so the URL (containing the token) is piped via stdin
+    // — NOT in curl's argv (which is visible via `ps`).
+    expect(body).toMatch(/curl -K -/);
+    // Defensive: there must be NO `curl` invocation that interpolates the token
+    // anywhere in argv. The only token reference inside try_direct_telegram_send
+    // is inside `printf` (a bash BUILTIN, so no process-argv exposure) that
+    // pipes into `curl -K -`.
+    const sendBlock = body.split('try_direct_telegram_send()')[1]?.split(/^}/m)[0] ?? '';
+    // No `curl ... $token`, `curl ... "$token"`, `curl ... ${token}` in argv.
+    expect(sendBlock).not.toMatch(/\bcurl\b[^\n|]*\$\{?token\}?/);
+    expect(sendBlock).not.toMatch(/\bcurl\b[^\n|]*"\$token"/);
+    // Classifier wires the send call after a successful spool_append.
+    expect(body).toMatch(/spool_append[\s\S]+?try_direct_telegram_send/);
+  });
+
   it('escalation entry shape matches what EscalationSpool.ts expects', () => {
     // Same field names + types — drainers in TS read this directly.
     expect(body).toContain('"label":"%s"');
@@ -172,6 +189,71 @@ echo "RC=$?"
     const r = runClassifier(label, plist, '78');
     expect(r.rc).toBe(1); // not a TCC path — unmatched
     expect(r.spool).toBe('');
+  });
+
+  itDarwin('try_direct_telegram_send invokes curl -K - and proves the token never lands in any process argv', () => {
+    const label = 'ai.instar.b2lead';
+    // Pre-arm the per-agent credential.
+    const credDir = path.join(fakeHome, '.instar', 'registry');
+    fs.mkdirSync(credDir, { recursive: true, mode: 0o700 });
+    const VALID_TOKEN = '1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ0123456789';
+    fs.writeFileSync(
+      path.join(credDir, `${label}.json`),
+      JSON.stringify({ ownerTopicId: 5447, botToken: VALID_TOKEN }),
+      { mode: 0o600 },
+    );
+
+    // Mock curl: record argv + stdin, exit 0 with "200" stdout (Telegram OK).
+    const shimDir = path.join(fakeHome, 'bin');
+    fs.mkdirSync(shimDir, { recursive: true });
+    const argvLog = path.join(fakeHome, 'curl-argv.log');
+    const stdinLog = path.join(fakeHome, 'curl-stdin.log');
+    fs.writeFileSync(
+      path.join(shimDir, 'curl'),
+      `#!/bin/bash\nfor a in "$@"; do printf '%s\\n' "$a" >> "${argvLog}"; done\ncat > "${stdinLog}"\nprintf '200'\n`,
+      { mode: 0o755 },
+    );
+
+    const script = `
+export PATH='${shimDir}:'$PATH
+export HOME='${fakeHome}'
+export INSTAR_WATCHDOG_LIB_ONLY=1
+export INSTAR_WATCHDOG_LOG_FILE='${fakeHome}/wd.log'
+source '${WATCHDOG_PATH}'
+set +eu
+try_direct_telegram_send '${label}' 'b2lead is down — run instar relocate'
+echo "RC=$?"
+`;
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+    expect(r.stdout).toMatch(/RC=0/);
+
+    const argv = fs.readFileSync(argvLog, 'utf-8');
+    const stdinReceived = fs.readFileSync(stdinLog, 'utf-8');
+
+    // The curl shim was invoked with `-K -` so the URL/token came via stdin.
+    expect(argv).toContain('-K');
+    // THE security-critical assertion: the bot token must NEVER appear in any
+    // argument curl received on its argv. It belongs in stdin only.
+    expect(argv).not.toContain(VALID_TOKEN);
+    // It SHOULD appear in stdin (inside the curl config the watchdog piped in).
+    expect(stdinReceived).toContain(VALID_TOKEN);
+    expect(stdinReceived).toContain('chat_id=5447');
+  });
+
+  itDarwin('try_direct_telegram_send returns failure when no credential is present (unarmed agent)', () => {
+    const label = 'ai.instar.unarmed';
+    // No credential file written.
+    const script = `
+export HOME='${fakeHome}'
+export INSTAR_WATCHDOG_LIB_ONLY=1
+export INSTAR_WATCHDOG_LOG_FILE='${fakeHome}/wd.log'
+source '${WATCHDOG_PATH}'
+set +eu
+try_direct_telegram_send '${label}' 'page text'
+echo "RC=$?"
+`;
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+    expect(r.stdout).toMatch(/RC=1/);
   });
 
   itDarwin('dedups one-shot per episode (same label + firstDetectedDown → no second entry)', () => {

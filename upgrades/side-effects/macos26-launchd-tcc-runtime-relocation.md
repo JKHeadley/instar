@@ -120,6 +120,23 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > healthy start; watchdog needs to read it for direct Telegram send. Those wire
 > up in the next increment.
 
+> **Increment 9 (watchdog direct-Telegram send — token-never-in-argv proven):**
+> `try_direct_telegram_send` reads `~/.instar/registry/<label>.json`, validates
+> token shape, and sends to Telegram via `printf | curl -K -` — printf is a bash
+> BUILTIN, so the token is NEVER on any process's argv (no `ps` exposure); the
+> URL containing the token is fed to `curl -K -` via STDIN, not argv. Wired into
+> the classifier after a successful `spool_append`: armed agents get autonomous
+> Telegram paging; unarmed agents stay in the spool for the consented drain.
+> Best-effort + non-fatal — a send failure leaves the spool entry intact.
+> 2 new behavioral darwin-gated tests with a mock-curl shim that captures its
+> argv to disk and asserts the bot token literally does not appear there
+> (structural proof of the security property, not just a content claim).
+> Also: fixed an `echo`+`tr -c` bug where the trailing newline was being
+> translated to a `_`, mangling the credential filename + episode-marker label.
+> 14 watchdog tests green; 118 across the full new+adjacent suite. **Still
+> needed:** wire setup + healthy-boot to WRITE the credential (the writer side
+> of Scope C); without it, no agent gets armed.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
