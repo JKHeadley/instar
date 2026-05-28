@@ -23,7 +23,22 @@ export interface MentorConfig {
   menteeFramework: string;
   minIntervalMs: number;
   maxRoundsPerDay: number;
+  /** @deprecated dead config — we run on a Claude subscription; replacement is the
+   *  quota-aware Stage-B token ceiling (Fix 3 of MENTOR-LIVE-READINESS, separate PR).
+   *  Retained for backward-compat read; removed by migrateRetireDeadMentorConfig. */
   dailySpendCapUsd: number;
+  /** Telegram bot token Echo uses to send to the mentee (Secret-Drop-collected). When
+   *  unset, the mentor refuses to deliver (logs + no-op) — the wiring stays dark even
+   *  with mentor.enabled true, until a token is configured. */
+  botToken?: string;
+  /** Mentee's Telegram bot id (the recipient — Codey's bot). Used by Echo's mentor
+   *  bot to address its sends + by Codey-side allowlist for the spoof defense. */
+  menteeBotId?: string;
+  /** Mentee's Telegram chat id (the supergroup where Codey's topics live). Echo's
+   *  mentor bot sends INTO this chat (it's Codey's universe, not Echo's). */
+  menteeChatId?: string;
+  /** Topic id within menteeChatId that Echo writes mentor prompts to. */
+  menteeTopicId?: number;
 }
 
 export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
@@ -33,6 +48,8 @@ export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
   minIntervalMs: 600_000, // 10 min floor
   maxRoundsPerDay: 24,
   dailySpendCapUsd: 0.5,
+  // botToken / menteeBotId / menteeTopicId default undefined → mentor wiring stays
+  // dark until they are explicitly configured (per /mentor/bot-setup, future PR).
 };
 
 export interface MentorRunnerServices {

@@ -63,6 +63,9 @@ import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { STAGE_A_ALLOWED_TOOLS } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
+import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { sendAgentMessage } from '../messaging/AgentTelegramComms.js';
+import { AgentTelegramLedger, defaultLedgerPaths as defaultA2aLedgerPaths } from '../messaging/AgentTelegramLedger.js';
 import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector } from '../monitoring/BurnDetector.js';
@@ -96,6 +99,13 @@ export class AgentServer {
   /** UTC day + run count for the per-day mentor cap (resets across days). */
   private mentorDayKey = '';
   private mentorRunsToday = 0;
+  /** Lazily-constructed second TelegramAdapter for the mentor bot (gated on
+   *  mentor.botToken). Per-token-cached so config reloads with the same token reuse the
+   *  same adapter (avoids leaking a new bot poll loop on every send). Spec §Fix 2b. */
+  private mentorBotAdapter: MentorTelegramAdapter | null = null;
+  private mentorBotAdapterToken: string | null = null;
+  /** Lazily-constructed a2a audit ledger (shared across mentor sends/recvs). */
+  private a2aLedger: AgentTelegramLedger | null = null;
   private failureLedger: FailureLedger | null = null;
   private failureAttributionEngine: FailureAttributionEngine | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
@@ -740,6 +750,46 @@ export class AgentServer {
     return found.sort((a, b) => b.mtime - a.mtime).slice(0, n).map((f) => f.path);
   }
 
+  /**
+   * Lazily construct + cache the mentor-bot TelegramAdapter for the given token. Uses
+   * PR 2a's multi-instance support (subDir + suppressLifelineAutoCreate) so the second
+   * bot can't clobber the primary bot's state files OR auto-create a second Lifeline
+   * topic. Reconfiguration (token change) tears down the old adapter first.
+   * Returns null on construction failure (logged) — caller treats as "no delivery."
+   */
+  private getOrCreateMentorBot(botToken: string, menteeChatId: string): MentorTelegramAdapter | null {
+    if (this.mentorBotAdapter && this.mentorBotAdapterToken === botToken) {
+      return this.mentorBotAdapter;
+    }
+    if (this.mentorBotAdapter && this.mentorBotAdapterToken !== botToken) {
+      this.mentorBotAdapter.stop().catch(() => {});
+      this.mentorBotAdapter = null;
+      this.mentorBotAdapterToken = null;
+    }
+    try {
+      this.mentorBotAdapter = new MentorTelegramAdapter(
+        { token: botToken, chatId: menteeChatId },
+        this.config.stateDir,
+        { subDir: 'agent-telegram/mentor-bot', suppressLifelineAutoCreate: true },
+      );
+      this.mentorBotAdapterToken = botToken;
+      return this.mentorBotAdapter;
+    } catch (err) {
+      console.warn('[mentor] mentor-bot adapter construction failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      this.mentorBotAdapter = null;
+      this.mentorBotAdapterToken = null;
+      return null;
+    }
+  }
+
+  /** Lazily construct + cache the a2a audit ledger. Paths default under stateDir. */
+  private getOrCreateA2aLedger(): AgentTelegramLedger {
+    if (!this.a2aLedger) {
+      this.a2aLedger = new AgentTelegramLedger(defaultA2aLedgerPaths(this.config.stateDir));
+    }
+    return this.a2aLedger;
+  }
+
   private buildMentorRunner(
     ledger: FrameworkIssueLedger,
     options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
@@ -839,19 +889,51 @@ export class AgentServer {
           return self.mentorRunsToday < cfg.maxRoundsPerDay;
         },
         getSurface: (framework: string) => ({ framework, threadlineHistory: '' }),
-        // Persist-only delivery (§6): append the Stage-A message to a durable
-        // per-mentee outbox the mentee's already-running session picks up. This
-        // does NOT call threadline_send / spawn a counterpart session — the
-        // structural fix for the cross-agent spawn loop. Best-effort + never throws
-        // (delivery failure must not crash a tick). Called ONLY in live mode.
-        deliverToMentee: (framework: string, message: string) => {
+        // Live delivery via the agent-to-agent Telegram comms primitive (spec
+        // MENTOR-LIVE-READINESS §Fix 2b — Justin's substrate correction replaced the
+        // earlier file-outbox design). Echo's mentor-bot (a second TelegramAdapter, gated
+        // on mentor.botToken being set) sends a tagged [a2a:…] message to the mentee's
+        // bot in a dedicated mentor topic. The anti-spawn-loop discipline lives in the
+        // primitive (one outbound producer per role, no auto-reply, audit ledger). If
+        // the bot isn't configured yet, this no-ops with a log — the dark default.
+        deliverToMentee: async (framework: string, message: string) => {
+          const cfg = getConfig();
+          if (!cfg.botToken || !cfg.menteeBotId || !cfg.menteeChatId || cfg.menteeTopicId === undefined) {
+            console.warn(`[mentor] deliverToMentee skipped — mentor-bot config incomplete (need mentor.botToken + menteeBotId + menteeChatId + menteeTopicId; framework=${framework})`);
+            return;
+          }
+          const bot = self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId);
+          if (!bot) return;
+          const ledger = self.getOrCreateA2aLedger();
           try {
-            const outboxDir = path.join(serverDataDir, 'mentor-outbox');
-            fs.mkdirSync(outboxDir, { recursive: true });
-            const line = JSON.stringify({ ts: Date.now(), framework, message }) + '\n';
-            fs.appendFileSync(path.join(outboxDir, `${framework.replace(/[^\w.-]/g, '_')}.jsonl`), line);
+            await sendAgentMessage(
+              {
+                fromAgent: 'echo',
+                toAgent: `instar-${framework}`,
+                role: 'mentor',
+                toTopicId: cfg.menteeTopicId,
+                message,
+              },
+              {
+                send: async (topicId, text) => {
+                  try {
+                    const id = await bot.sendToTopic(topicId, text);
+                    return { ok: true, messageId: String(id ?? '') };
+                  } catch (err) {
+                    return { ok: false, error: err };
+                  }
+                },
+                appendAudit: (row) => ledger.appendSent(row),
+                now: () => Date.now(),
+                mintId: () => `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                allowedRoles: new Set(['mentor']),
+                botToken: cfg.botToken,
+                fromBotId: cfg.botToken.split(':')[0], // bot id is the prefix before the secret
+                toBotId: cfg.menteeBotId,
+              },
+            );
           } catch (err) {
-            console.warn('[mentor] deliverToMentee outbox write failed (non-fatal):', err);
+            console.warn('[mentor] deliverToMentee send failed (non-fatal):', err instanceof Error ? err.message : String(err));
           }
         },
         onTickRan: () => {
@@ -1063,6 +1145,17 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    // Stop the mentor bot adapter first (it has its own poll loop + state files
+    // under the subDir; clean shutdown avoids stranded background work).
+    if (this.mentorBotAdapter) {
+      try {
+        await this.mentorBotAdapter.stop();
+      } catch (err) {
+        console.warn('[mentor] mentor-bot adapter stop raised:', err);
+      }
+      this.mentorBotAdapter = null;
+      this.mentorBotAdapterToken = null;
+    }
     // Stop the Layer 3 sentinel BEFORE the WebSocket manager — the
     // sentinel's SSE subscription needs an alive wsManager to clean up
     // its listener. Order: sentinel → wsManager → server.
