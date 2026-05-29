@@ -21,9 +21,9 @@ hasn't configured it).
 ## What to Tell Your User
 
 If you run the mentor cycle and don't want its automated check-ins mixed into
-your own conversation topic with the mentee, give it a dedicated topic: set
-`mentor.mentorTopicId` in `.instar/config.json` to a topic id in the mentee's
-chat. Leave it unset to keep today's behavior.
+your own conversation topic with the agent, you can now give the mentor its own
+dedicated topic — just point the mentor's topic setting at a separate topic in
+the mentee's chat. Leave it as-is to keep today's behavior.
 
 ## Summary of New Capabilities
 
