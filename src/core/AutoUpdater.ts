@@ -96,6 +96,18 @@ export interface AutoUpdaterStatus {
   deferralElapsedMinutes: number;
   /** Max deferral before forced restart */
   maxDeferralHours: number;
+  /** Persisted restart deferral details, surfaced for "installed but not active" diagnosis */
+  restartDeferral: RestartDeferralState | null;
+}
+
+export interface RestartDeferralState {
+  active: boolean;
+  targetVersion: string;
+  firstDeferredAt: string;
+  reason: string;
+  currentBlockers: string[];
+  nextRetryAt: string | null;
+  updatedAt: string;
 }
 
 export class AutoUpdater {
@@ -124,6 +136,7 @@ export class AutoUpdater {
   private sessionManager: SessionManagerLike | null = null;
   private sessionMonitor: SessionMonitorLike | null = null;
   private deferralTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartDeferral: RestartDeferralState | null = null;
 
   // Loop prevention — track version mismatch notifications to avoid spam
   private notifiedVersionMismatch: string | null = null;
@@ -249,6 +262,7 @@ export class AutoUpdater {
       deferralReason: gateStatus.deferralReason,
       deferralElapsedMinutes: gateStatus.deferralElapsedMinutes,
       maxDeferralHours: gateStatus.maxDeferralHours,
+      restartDeferral: this.restartDeferral ? { ...this.restartDeferral } : null,
     };
   }
 
@@ -329,6 +343,7 @@ export class AutoUpdater {
         this.pendingUpdate = null;
         this.pendingUpdateDetectedAt = null;
         this.coalescingUntil = null;
+        this.clearRestartDeferral();
         if (this.applyTimer) {
           clearTimeout(this.applyTimer);
           this.applyTimer = null;
@@ -343,20 +358,28 @@ export class AutoUpdater {
       // is broken (e.g., npx cache vs global install). Don't keep re-applying.
       // This prevents the update→restart→detect→update→restart loop.
       if (this.lastAppliedVersion === info.latestVersion) {
-        console.log(
-          `[AutoUpdater] Skipping — v${info.latestVersion} was already applied ` +
-          `(at ${this.lastApply}) but getInstalledVersion() still reports v${info.currentVersion}. ` +
-          `Binary resolution mismatch — manual restart may be needed.`
-        );
+        const deferral = this.getActiveRestartDeferral(info.latestVersion);
+        if (deferral) {
+          console.log(
+            `[AutoUpdater] Skipping — v${info.latestVersion} is installed in the shadow install ` +
+            `(at ${this.lastApply}) but the running process is still v${info.currentVersion}. ` +
+            `Restart activation is intentionally deferred: ${deferral.reason}.`
+          );
+        } else {
+          console.log(
+            `[AutoUpdater] Skipping — v${info.latestVersion} was already applied ` +
+            `(at ${this.lastApply}) but getInstalledVersion() still reports v${info.currentVersion}. ` +
+            `A restart has not activated the new version yet.`
+          );
+        }
         // Only notify once about the mismatch
         if (!this.notifiedVersionMismatch) {
           this.notifiedVersionMismatch = info.latestVersion;
           // Check if restart is actively deferred — if so, clarify that's the reason
-          const gateStatus = this.gate.getStatus();
-          if (gateStatus.deferring) {
+          if (deferral) {
             await this.notify(
               `v${info.latestVersion} is downloaded and waiting for a restart — still running v${info.currentVersion}. ` +
-              `Restart is being held back by ${gateStatus.deferralReason ?? 'active sessions'}. ` +
+              `Restart is being held back by ${deferral.reason}. ` +
               `I'll switch over automatically once they finish.`
             );
           } else {
@@ -604,6 +627,12 @@ export class AutoUpdater {
       const waitMs = this.msUntilRestartWindow();
       const waitH = Math.round(waitMs / 3600_000 * 10) / 10;
       console.log(`[AutoUpdater] Outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}). Deferring restart for v${newVersion} (~${waitH}h)`);
+      this.recordRestartDeferral({
+        targetVersion: newVersion,
+        reason: `outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end})`,
+        currentBlockers: [],
+        nextRetryAt: new Date(Date.now() + waitMs).toISOString(),
+      });
 
       // Schedule a retry at the window start
       if (this.deferralTimer) clearTimeout(this.deferralTimer);
@@ -631,6 +660,9 @@ export class AutoUpdater {
 
     if (result.unresponsiveSessions?.length) {
       console.log(`[AutoUpdater] Unresponsive sessions (not blocking): ${result.unresponsiveSessions.join(', ')}`);
+    }
+    if (result.nonBlockingJobSessions?.length) {
+      console.log(`[AutoUpdater] Idle background job sessions (not blocking): ${result.nonBlockingJobSessions.join(', ')}`);
     }
 
     if (result.allowed) {
@@ -710,6 +742,7 @@ export class AutoUpdater {
       // of the v0.12.10 notification spam bug.
       this.lastRestartRequestedAt = new Date().toISOString();
       this.lastRestartRequestedVersion = newVersion;
+      this.clearRestartDeferral();
       this.saveState();
 
       await new Promise(r => setTimeout(r, 2000));
@@ -719,6 +752,12 @@ export class AutoUpdater {
 
     // Sessions are blocking — defer
     console.log(`[AutoUpdater] Restart deferred: ${result.reason}. Will retry in ${Math.round((result.retryInMs ?? 300_000) / 60_000)}m`);
+    this.recordRestartDeferral({
+      targetVersion: newVersion,
+      reason: result.reason ?? 'active sessions',
+      currentBlockers: result.blockingSessions ?? [],
+      nextRetryAt: new Date(Date.now() + (result.retryInMs ?? 300_000)).toISOString(),
+    });
 
     // Send warnings at thresholds
     if (this.gate.shouldSendFinalWarning()) {
@@ -967,6 +1006,7 @@ export class AutoUpdater {
         // Restart cooldown — prevents rapid restart cycling
         this.lastRestartRequestedAt = data.lastRestartRequestedAt ?? null;
         this.lastRestartRequestedVersion = data.lastRestartRequestedVersion ?? null;
+        this.restartDeferral = this.parseRestartDeferral(data.restartDeferral);
         // Don't restore coalescingUntil — the timer is in-memory only.
         // On restart, if there's still a pendingUpdate, the next tick()
         // will re-detect it and start a fresh coalescing timer.
@@ -994,6 +1034,7 @@ export class AutoUpdater {
       // Restart cooldown — prevents rapid restart cycling
       lastRestartRequestedAt: this.lastRestartRequestedAt,
       lastRestartRequestedVersion: this.lastRestartRequestedVersion,
+      restartDeferral: this.restartDeferral,
       savedAt: new Date().toISOString(),
     };
 
@@ -1005,5 +1046,55 @@ export class AutoUpdater {
     } catch {
       try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/AutoUpdater.ts:786' }); } catch { /* ignore */ }
     }
+  }
+
+  private getActiveRestartDeferral(targetVersion?: string): RestartDeferralState | null {
+    if (!this.restartDeferral?.active) return null;
+    if (targetVersion && this.restartDeferral.targetVersion !== targetVersion) return null;
+    return this.restartDeferral;
+  }
+
+  private recordRestartDeferral(input: {
+    targetVersion: string;
+    reason: string;
+    currentBlockers: string[];
+    nextRetryAt: string | null;
+  }): void {
+    const existing = this.restartDeferral?.targetVersion === input.targetVersion
+      ? this.restartDeferral
+      : null;
+    this.restartDeferral = {
+      active: true,
+      targetVersion: input.targetVersion,
+      firstDeferredAt: existing?.firstDeferredAt ?? new Date().toISOString(),
+      reason: input.reason,
+      currentBlockers: input.currentBlockers,
+      nextRetryAt: input.nextRetryAt,
+      updatedAt: new Date().toISOString(),
+    };
+    this.saveState();
+  }
+
+  private clearRestartDeferral(): void {
+    this.restartDeferral = null;
+  }
+
+  private parseRestartDeferral(value: unknown): RestartDeferralState | null {
+    if (!value || typeof value !== 'object') return null;
+    const data = value as Partial<RestartDeferralState>;
+    if (!data.active || typeof data.targetVersion !== 'string' || typeof data.reason !== 'string') {
+      return null;
+    }
+    return {
+      active: true,
+      targetVersion: data.targetVersion,
+      firstDeferredAt: typeof data.firstDeferredAt === 'string' ? data.firstDeferredAt : new Date().toISOString(),
+      reason: data.reason,
+      currentBlockers: Array.isArray(data.currentBlockers)
+        ? data.currentBlockers.filter((b): b is string => typeof b === 'string')
+        : [],
+      nextRetryAt: typeof data.nextRetryAt === 'string' ? data.nextRetryAt : null,
+      updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : new Date().toISOString(),
+    };
   }
 }

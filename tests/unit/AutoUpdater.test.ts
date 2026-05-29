@@ -196,6 +196,37 @@ describe('AutoUpdater', () => {
 
       expect(updater.getStatus().lastCheck).toBeNull();
     });
+
+    it('loads persisted restart deferral details', () => {
+      const stateFile = path.join(tmpDir, 'state', 'auto-updater.json');
+      fs.writeFileSync(stateFile, JSON.stringify({
+        restartDeferral: {
+          active: true,
+          targetVersion: '1.3.78',
+          firstDeferredAt: '2026-05-29T08:00:00.000Z',
+          reason: '1 active session(s): topic-458',
+          currentBlockers: ['topic-458'],
+          nextRetryAt: '2026-05-29T08:05:00.000Z',
+          updatedAt: '2026-05-29T08:00:00.000Z',
+        },
+      }));
+
+      const updater = new AutoUpdater(
+        createMockUpdateChecker(),
+        createMockState(),
+        tmpDir,
+      );
+
+      expect(updater.getStatus().restartDeferral).toEqual({
+        active: true,
+        targetVersion: '1.3.78',
+        firstDeferredAt: '2026-05-29T08:00:00.000Z',
+        reason: '1 active session(s): topic-458',
+        currentBlockers: ['topic-458'],
+        nextRetryAt: '2026-05-29T08:05:00.000Z',
+        updatedAt: '2026-05-29T08:00:00.000Z',
+      });
+    });
   });
 
   describe('loop guard', () => {
@@ -249,6 +280,59 @@ describe('AutoUpdater', () => {
   });
 
   describe('gatedRestart notification dedup', () => {
+    it('persists restart deferral details when active sessions block activation', async () => {
+      const stateFile = path.join(tmpDir, 'state', 'auto-updater.json');
+
+      const mockChecker = createMockUpdateChecker({
+        check: vi.fn().mockResolvedValue({
+          currentVersion: '0.9.8',
+          latestVersion: '0.9.9',
+          updateAvailable: true,
+          checkedAt: new Date().toISOString(),
+        }),
+        applyUpdate: vi.fn().mockResolvedValue({
+          success: true,
+          previousVersion: '0.9.8',
+          newVersion: '0.9.9',
+          message: 'Updated',
+          restartNeeded: true,
+          healthCheck: 'skipped',
+        }),
+      });
+
+      const mockSessionManager = {
+        listRunningSessions: vi.fn().mockReturnValue([{ name: 'topic-458', topicId: 458 }]),
+      };
+      const mockSessionMonitor = {
+        getStatus: vi.fn().mockReturnValue({
+          sessionHealth: [{ sessionName: 'topic-458', topicId: 458, status: 'healthy', idleMinutes: 0 }],
+        }),
+      };
+
+      const updater = new AutoUpdater(
+        mockChecker,
+        createMockState(),
+        tmpDir,
+        { autoApply: true, applyDelayMinutes: 0 },
+      );
+      updater.setSessionDeps(mockSessionManager as any, mockSessionMonitor as any);
+      updater.start();
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      updater.stop();
+
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+      expect(state.restartDeferral).toMatchObject({
+        active: true,
+        targetVersion: '0.9.9',
+        reason: '1 active session(s): topic-458',
+        currentBlockers: ['topic-458'],
+      });
+      expect(state.restartDeferral.firstDeferredAt).toBeTruthy();
+      expect(state.restartDeferral.nextRetryAt).toBeTruthy();
+      expect(updater.getStatus().restartDeferral?.currentBlockers).toEqual(['topic-458']);
+    });
+
     it('persists lastNotifiedRestartVersion to state file before restart', async () => {
       // This is the root cause of the v0.12.10 notification spam:
       // gatedRestart() set lastNotifiedRestartVersion in memory but never

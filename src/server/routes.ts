@@ -1307,6 +1307,17 @@ export function createRoutes(ctx: RouteContext): Router {
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
         heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
       };
+      if (ctx.autoUpdater) {
+        const auto = ctx.autoUpdater.getStatus();
+        base.autoUpdater = {
+          lastCheck: auto.lastCheck,
+          lastApply: auto.lastApply,
+          lastAppliedVersion: auto.lastAppliedVersion,
+          pendingUpdate: auto.pendingUpdate,
+          restartDeferral: auto.restartDeferral,
+          lastError: auto.lastError,
+        };
+      }
 
       // System-wide memory state (prefer MemoryPressureMonitor's vm_stat-based
       // calculation on macOS — os.freemem() only counts "Pages free" and ignores
@@ -7992,6 +8003,7 @@ export function createRoutes(ctx: RouteContext): Router {
         deferralReason: auto.deferralReason,
         deferralElapsedMinutes: auto.deferralElapsedMinutes,
         maxDeferralHours: auto.maxDeferralHours,
+        restartDeferral: auto.restartDeferral,
         lastCheck: auto.lastCheck,
         lastApply: auto.lastApply,
         lastAppliedVersion: auto.lastAppliedVersion,

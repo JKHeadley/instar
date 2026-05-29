@@ -12,7 +12,11 @@
 
 export interface SessionInfo {
   name: string;
+  /** tmux session name; required for process-tree idle checks */
+  tmuxSession?: string;
   topicId?: number;
+  /** The job that spawned this session, if any */
+  jobSlug?: string;
 }
 
 export interface SessionHealthEntry {
@@ -30,6 +34,8 @@ export interface GateResult {
   blockingSessions?: string[];
   /** Sessions that are unresponsive (warned but not blocking) */
   unresponsiveSessions?: string[];
+  /** Background job sessions that were safe to ignore for restart gating */
+  nonBlockingJobSessions?: string[];
 }
 
 export interface UpdateGateConfig {
@@ -54,6 +60,8 @@ export interface UpdateGateStatus {
   maxDeferralHours: number;
   /** Reason for current deferral */
   deferralReason: string | null;
+  /** Sessions currently blocking restart */
+  blockingSessions: string[];
   /** Whether the first warning (T-30min) has been sent */
   firstWarningSent: boolean;
   /** Whether the final warning (T-5min) has been sent */
@@ -63,6 +71,7 @@ export interface UpdateGateStatus {
 /** Minimal interface for SessionManager — only what we need */
 export interface SessionManagerLike {
   listRunningSessions(): SessionInfo[];
+  hasActiveProcesses?(tmuxSession: string): boolean;
 }
 
 /** Minimal interface for SessionMonitor — only what we need */
@@ -76,6 +85,7 @@ export class UpdateGate {
   private config: Required<UpdateGateConfig>;
   private deferralStartedAt: number | null = null;
   private deferralReason: string | null = null;
+  private blockingSessions: string[] = [];
   private firstWarningSent = false;
   private firstWarningPending = false;
   private finalWarningSent = false;
@@ -114,8 +124,14 @@ export class UpdateGate {
 
     const activeSessions: string[] = [];
     const unresponsiveSessions: string[] = [];
+    const nonBlockingJobSessions: string[] = [];
 
     for (const session of sessions) {
+      if (this.isSafeIdleJobSession(session, sessionManager)) {
+        nonBlockingJobSessions.push(session.name);
+        continue;
+      }
+
       const h = healthMap.get(session.name);
       if (!h) {
         // No health data — be conservative, treat as active
@@ -134,6 +150,7 @@ export class UpdateGate {
       return {
         allowed: true,
         unresponsiveSessions: unresponsiveSessions.length > 0 ? unresponsiveSessions : undefined,
+        nonBlockingJobSessions: nonBlockingJobSessions.length > 0 ? nonBlockingJobSessions : undefined,
       };
     }
 
@@ -147,6 +164,7 @@ export class UpdateGate {
     const remainingMs = maxDeferralMs - elapsedMs;
 
     this.deferralReason = `${activeSessions.length} active session(s): ${activeSessions.join(', ')}`;
+    this.blockingSessions = activeSessions;
 
     // Max deferral exceeded — but only force restart if no HEALTHY sessions.
     // Active, healthy sessions should NEVER be killed for an update.
@@ -174,7 +192,15 @@ export class UpdateGate {
       retryInMs: this.config.retryIntervalMs,
       blockingSessions: activeSessions,
       unresponsiveSessions: unresponsiveSessions.length > 0 ? unresponsiveSessions : undefined,
+      nonBlockingJobSessions: nonBlockingJobSessions.length > 0 ? nonBlockingJobSessions : undefined,
     };
+  }
+
+  private isSafeIdleJobSession(session: SessionInfo, sessionManager: SessionManagerLike): boolean {
+    if (!session.jobSlug || !session.tmuxSession || !sessionManager.hasActiveProcesses) {
+      return false;
+    }
+    return !sessionManager.hasActiveProcesses(session.tmuxSession);
   }
 
   /**
@@ -188,6 +214,7 @@ export class UpdateGate {
       deferralElapsedMinutes: Math.round(elapsedMs / 60_000),
       maxDeferralHours: this.config.maxDeferralHours,
       deferralReason: this.deferralReason,
+      blockingSessions: this.blockingSessions,
       firstWarningSent: this.firstWarningSent,
       finalWarningSent: this.finalWarningSent,
     };
@@ -223,6 +250,7 @@ export class UpdateGate {
   reset(): void {
     this.deferralStartedAt = null;
     this.deferralReason = null;
+    this.blockingSessions = [];
     this.firstWarningSent = false;
     this.firstWarningPending = false;
     this.finalWarningSent = false;
