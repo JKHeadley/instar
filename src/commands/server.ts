@@ -98,6 +98,7 @@ import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
+import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
@@ -6408,7 +6409,18 @@ export async function startServer(options: StartOptions): Promise<void> {
         const beforeHadCallback = telegram.onMessageLogged;
         telegram.onMessageLogged = (entry) => {
           if (beforeHadCallback) beforeHadCallback(entry);
-          observeInboundMessage(humanAsDetectorLog, entry);
+          const missSignal = observeInboundMessage(humanAsDetectorLog, entry);
+          // ── Usher precision, path (b): the user just had to correct me (a
+          // human-as-detector miss). If a recent faded-context nudge on this
+          // topic covers what they're correcting, that nudge was a REAL catch I
+          // ignored → mark it acted. This is the miss-map → precision-numerator
+          // correlation that pairs with path (a). Best-effort (never throws).
+          if (missSignal && usherSignalStore) {
+            const credited = creditUsherOnMiss(usherSignalStore, missSignal, entry);
+            if (credited.length) {
+              console.log(`[Usher] ${credited.length} signal(s) marked acted (miss) on topic ${entry.topicId}`);
+            }
+          }
         };
 
         // ── Topic-Intent ArcCheck (rung 3 / Layer 3) ────────────────────

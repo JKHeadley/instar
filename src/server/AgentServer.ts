@@ -723,6 +723,7 @@ export class AgentServer {
       responseReviewGate: options.responseReviewGate ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
+      usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
       pasteManager: options.pasteManager ?? null,

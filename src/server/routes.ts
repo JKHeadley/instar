@@ -20,6 +20,7 @@ import type { InstarConfig, JobPriority } from '../core/types.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
+import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -604,6 +605,10 @@ export interface RouteContext {
    *  in-process by checkOutboundMessage so the tone gate sees ArcCheck's
    *  signal alongside junk/jargon/duplicate. Null when disabled. */
   topicIntentArcCheck: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
+  /** Usher signal store (rung 4). Used by the outbound-reply path to credit a
+   *  re-surface nudge the agent's reply actually used (precision numerator,
+   *  path (a)). Optional/null when the Usher is disabled. */
+  usherSignalStore?: import('../core/UsherSignalStore.js').UsherSignalStore | null;
   /** Deterministic dedup gate. Blocks near-duplicate outbound messages in
    *  the same conversation — universal safety net against respawn races,
    *  idempotency gaps, and other lifecycle hazards. No LLM call, runs on
@@ -5550,6 +5555,17 @@ export function createRoutes(ctx: RouteContext): Router {
       // Proxy messages should not reset stall detection timers
       if (!isProxy) {
         ctx.sessionManager.clearInjectionTracker(topicId);
+      }
+      // ── Usher precision, path (a): the agent's genuine reply just went out. If
+      // it actually USED a faded context the Usher re-surfaced for this topic,
+      // mark that signal acted — the precision numerator that gates rung-5
+      // mid-task injection. Proxy/system templates aren't the agent reasoning, so
+      // they can't "use" a nudge and are excluded. Best-effort (never throws).
+      if (!isProxy && !isSystemTemplate) {
+        const credited = creditUsherOnOutbound(ctx.usherSignalStore, topicId, text);
+        if (credited.length) {
+          console.log(`[Usher] ${credited.length} signal(s) marked acted (use) on topic ${topicId}`);
+        }
       }
       // ── Exactly-once ingress: commit reply_committed (spec §8 G3a) ──
       // The agent's real reply just went out → mark the inbound event this topic

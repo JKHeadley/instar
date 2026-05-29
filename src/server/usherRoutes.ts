@@ -38,8 +38,14 @@ export function createUsherRoutes(deps: { signalStore: UsherSignalStore | null }
     const m = store.getMetrics(parsed.data);
     // Precision = acted / fired (the read that gates rung 5; paired externally
     // with the human-as-detector miss-map for the "what it missed" half).
+    // acted_by_use / acted_by_miss split the numerator by which correlation path
+    // confirmed usefulness (agent used it vs user had to correct on it); defaulted
+    // so legacy topic files (pre-split) report 0 rather than undefined.
     const precision = m.fired > 0 ? m.acted / m.fired : null;
-    res.json({ topicId: parsed.data, metrics: { ...m, precision } });
+    res.json({
+      topicId: parsed.data,
+      metrics: { ...m, acted_by_use: m.acted_by_use ?? 0, acted_by_miss: m.acted_by_miss ?? 0, precision },
+    });
   });
 
   return router;
