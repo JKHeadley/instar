@@ -75,8 +75,17 @@ if [ -z "$MSG" ]; then
 fi
 
 # Resolve config-derived values from .instar/config.json (single python3
-# invocation). Env > config > 4040-warn for port; config-only for authToken
-# and agentId.
+# invocation). Env > config > 4040-warn for port; agentId from config.
+#
+# authToken: prefer the INSTAR_AUTH_TOKEN env var (applied just below) over
+# config.json. With secret-externalization enabled, config.json's `authToken`
+# is no longer the plaintext token — it becomes a secret-REFERENCE object like
+# {"secret":true}, and the real token moves into the encrypted store
+# (.instar/secrets/config.secrets.enc). The launcher injects the RESOLVED token
+# into every session as $INSTAR_AUTH_TOKEN, so that env var is authoritative.
+# We still read config.json as a legacy fallback, but guard the non-string
+# (object) case so a secret-ref can never yield a bogus token (it would
+# otherwise print as a Python dict repr and 403 every send).
 AUTH_TOKEN=""
 AGENT_ID=""
 CONFIG_PORT=""
@@ -87,13 +96,22 @@ try:
     c = json.load(open('.instar/config.json'))
 except Exception:
     sys.exit(0)
-print(c.get('authToken', ''))
+t = c.get('authToken', '')
+print(t if isinstance(t, str) else '')
 print(c.get('projectName', ''))
 print(c.get('port', ''))
 " 2>/dev/null)
   AUTH_TOKEN=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
   AGENT_ID=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '2p')
   CONFIG_PORT=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '3p')
+fi
+
+# Env var wins: the launcher injects the RESOLVED auth token here, which is
+# correct even when config.json holds an externalized secret-reference. Fall
+# back to the config.json value only when the env var is unset (e.g. a manual
+# invocation outside a launched session).
+if [ -n "$INSTAR_AUTH_TOKEN" ]; then
+  AUTH_TOKEN="$INSTAR_AUTH_TOKEN"
 fi
 
 if [ -n "$INSTAR_PORT" ]; then

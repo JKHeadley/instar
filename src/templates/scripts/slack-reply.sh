@@ -44,7 +44,15 @@ if [ -f ".instar/config.json" ]; then
     CONFIG_PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',''))" 2>/dev/null)
     [ -n "$CONFIG_PORT" ] && PORT="$CONFIG_PORT"
   fi
-  AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+  # Guard the non-string case: with secret-externalization, config.json's
+  # authToken becomes a secret-REFERENCE object ({"secret":true}); print '' for
+  # it so we never emit a Python dict-repr as the token (which would 403).
+  AUTH=$(python3 -c "import json; t=json.load(open('.instar/config.json')).get('authToken',''); print(t if isinstance(t,str) else '')" 2>/dev/null)
+fi
+# Env wins: the launcher injects the RESOLVED auth token as INSTAR_AUTH_TOKEN,
+# correct even when config.json holds an externalized secret-reference.
+if [ -n "$INSTAR_AUTH_TOKEN" ]; then
+  AUTH="$INSTAR_AUTH_TOKEN"
 fi
 
 PORT="${PORT:-4042}"

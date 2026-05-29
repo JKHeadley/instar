@@ -86,13 +86,30 @@ interface RunResult {
 
 // Async spawn so the mock server on the same event loop can respond.
 // spawnSync would block the loop and cause the in-process server to hang.
-async function runScript(script: string, args: string[], port: number, stdin?: string): Promise<RunResult> {
+interface RunOpts {
+  /** Written to .instar/config.json in the script's cwd before running. */
+  config?: unknown;
+  /** Extra env vars merged into the spawn environment. */
+  env?: Record<string, string>;
+}
+
+async function runScript(
+  script: string,
+  args: string[],
+  port: number,
+  stdin?: string,
+  opts: RunOpts = {},
+): Promise<RunResult> {
   const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'reply-script-test-'));
+  if (opts.config !== undefined) {
+    fs.mkdirSync(path.join(tmpCwd, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(tmpCwd, '.instar', 'config.json'), JSON.stringify(opts.config));
+  }
   try {
     return await new Promise<RunResult>((resolve, reject) => {
       const proc = spawn('bash', [path.join(SCRIPT_DIR, script), ...args], {
         cwd: tmpCwd,
-        env: { ...process.env, INSTAR_PORT: String(port), PATH: process.env.PATH },
+        env: { ...process.env, INSTAR_PORT: String(port), PATH: process.env.PATH, ...(opts.env ?? {}) },
       });
       let stdout = '';
       let stderr = '';
@@ -190,6 +207,61 @@ describe('reply scripts — existing contract preserved (200, 422, 5xx)', () => 
 
         expect(result.status).toBe(1);
         expect(result.stderr).toMatch(/HTTP 500|Failed/);
+      });
+    });
+  }
+});
+
+describe('reply scripts — auth token resolution under secret-externalization', () => {
+  let mock: MockServer;
+
+  beforeAll(async () => { mock = await startMockServer(); });
+  afterAll(async () => { await mock.close(); });
+
+  for (const script of ['telegram-reply.sh', 'slack-reply.sh', 'whatsapp-reply.sh']) {
+    describe(script, () => {
+      it('uses INSTAR_AUTH_TOKEN env when config.json authToken is an externalized secret-ref object', async () => {
+        // Reproduces the fleet bug: secret-externalization rewrites config.json's
+        // authToken from a plaintext string into a reference object {"secret":true}.
+        // The launcher still injects the RESOLVED token as $INSTAR_AUTH_TOKEN, so
+        // the script must send THAT — not a Python dict-repr of the object.
+        mock.setResponse(200, { ok: true });
+        const target = script.startsWith('whatsapp') ? '12345@s.whatsapp.net' : '42';
+        const result = await runScript(script, [target], mock.port, 'hello from test\n', {
+          config: { authToken: { secret: true }, projectName: 'echo', port: mock.port },
+          env: { INSTAR_AUTH_TOKEN: 'env-resolved-token-xyz' },
+        });
+
+        expect(result.status).toBe(0);
+        expect(mock.lastAuthHeader()).toBe('Bearer env-resolved-token-xyz');
+      });
+
+      it('never sends a stringified object as the token (no [object]/dict-repr leak) when env is unset', async () => {
+        // Defense in depth: even WITHOUT the env var, a secret-ref object in
+        // config.json must resolve to NO token, never to "{'secret': True}".
+        mock.setResponse(200, { ok: true });
+        const target = script.startsWith('whatsapp') ? '12345@s.whatsapp.net' : '42';
+        const result = await runScript(script, [target], mock.port, 'hello from test\n', {
+          config: { authToken: { secret: true }, projectName: 'echo', port: mock.port },
+          env: { INSTAR_AUTH_TOKEN: '' },
+        });
+
+        const auth = mock.lastAuthHeader();
+        if (auth !== undefined) {
+          expect(auth).not.toMatch(/secret|True|object|\{/i);
+        }
+      });
+
+      it('env token overrides a stale plaintext authToken in config.json', async () => {
+        mock.setResponse(200, { ok: true });
+        const target = script.startsWith('whatsapp') ? '12345@s.whatsapp.net' : '42';
+        const result = await runScript(script, [target], mock.port, 'hello from test\n', {
+          config: { authToken: 'stale-config-token', projectName: 'echo', port: mock.port },
+          env: { INSTAR_AUTH_TOKEN: 'fresh-env-token' },
+        });
+
+        expect(result.status).toBe(0);
+        expect(mock.lastAuthHeader()).toBe('Bearer fresh-env-token');
       });
     });
   }
