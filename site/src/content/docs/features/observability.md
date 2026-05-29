@@ -98,6 +98,21 @@ Read-only token-usage observability. The ledger scans Claude Code's JSONL sessio
 
 The ledger never mutates source files — it only reads. The poller is the only writer (to its own SQLite index), and even that is restartable from any state.
 
+## Usher precision (continuous-working-awareness)
+
+Components: `UsherSignalStore`, `UsherActedCorrelator`.
+
+The Usher (rung 4 of the [Continuous Working Awareness](/foundations/north-star/) loop) watches mid-task and fires a *re-surface signal* when a faded-but-now-relevant context comes back. Those signals are signal-only — they never interrupt the agent yet. Whether they ever earn the right to interrupt (rung 5) is gated on one number: **precision** = how often a re-surfaced nudge was actually useful.
+
+`UsherSignalStore` records every fired signal and exposes the precision funnel at `GET /usher/metrics?topicId=N` — `fired`, `acted`, and `precision` (`acted / fired`), plus `acted_by_use` / `acted_by_miss` so the numerator is visible split by which path earned it. `GET /usher/signals?topicId=N` is the read-only pull surface of recent suggestions.
+
+`UsherActedCorrelator` is what moves the `acted` numerator. A nudge is credited two ways, both best-effort and never blocking delivery:
+
+- **auto-use** — when the agent's next reply on the topic actually uses the re-surfaced context (salient-term coverage match), the signal is marked acted (`via: 'use'`).
+- **miss-map** — when the user later has to *correct* the agent on a context a recent nudge already flagged (a `HumanAsDetectorLog` signal), that nudge was a genuine catch the agent ignored — still a true positive, marked acted (`via: 'miss'`).
+
+Matching is precision-over-recall: a falsely-high precision is the dangerous direction (it gates interruption), so the correlator under-credits a fast or marginal reply rather than inflating the gate. Pair `/usher/metrics` (what the Usher caught and used) with `/human-as-detector/summary` (what the user still had to catch) for the full "is the working-awareness loop actually working?" read.
+
 ## What the agent does with all this
 
 Every observability signal lands in the `DegradationReporter` channel, which dedupes, prioritizes, and surfaces signals to whichever notification path is configured (Telegram by default). Repeating patterns get grouped — three similar burns in one day become "Burn pattern: heavy reflection-trigger runs" rather than three separate alerts.
