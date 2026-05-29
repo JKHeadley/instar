@@ -3,8 +3,8 @@ title: "Multi-Machine Session Pool"
 slug: "multi-machine-session-pool"
 author: "echo"
 eli16-overview: "MULTI-MACHINE-SESSION-POOL-SPEC.eli16.md"
-approved: false  # awaiting Justin sign-off after spec-converge
-principal-signoff: pending
+approved: true  # Justin's conversational "go!" on topic 13481, 2026-05-28 — self-applied by Echo per the established conversational-go pattern; flagged to Justin in the same exchange
+principal-signoff: signed  # Justin, 2026-05-28, topic 13481 ("go! ... lets get this completely working")
 layer: "core-instar-primitive"  # NOT a deployment pattern — ships in core instar src/
 topology: |
   This spec defines NEW instar primitives that ship in core instar source (src/),
@@ -50,10 +50,10 @@ deferral-approvals:  # P10 — every recurrence-risking deferral needs explicit 
         sharding design is pre-specified in §L1 so it is not retrofit debt.
       carries-recurrence-risk: false  # nothing is deferred un-built; only the supported envelope is bounded
       requires: "Justin's explicit confirmation at approval (see Open Design Decision #5)"
-      approver-signoff: pending
+      approver-signoff: signed  # Justin confirmed the ≤10-machine / 500-msg-sec single-router v0.1 envelope via "go!" (topic 13481, 2026-05-28); multi-shard remains a separate future spec on the RouterShardKey seam
   asserted-no-recurrence-risk-deferrals: true  # the one scope decision above defers no component, only bounds the envelope
   approver: "Justin"            # signs at approval, converting principal-signoff: pending → signed
-  approver-signoff: pending
+  approver-signoff: signed  # Justin, 2026-05-28, topic 13481
 review-convergence: "2026-05-29T05:45:28.202Z"
 review-iterations: 4
 review-completed-at: "2026-05-29T05:45:28.202Z"
@@ -64,7 +64,7 @@ review-report: "docs/specs/reports/multi-machine-session-pool-convergence.md"
 
 > One agent identity, many machines, all awake at once. Each conversation runs on the best-fit machine, can move between machines like a session restart, and never drops or doubles a reply. The "who's in charge" role is held by exactly one machine at a time and re-elected on failure.
 
-**Status**: Draft v1 (pre-convergence)
+**Status**: Converged + Approved (Justin "go!", 2026-05-28, topic 13481) — building Tracks A–H
 **Author**: Echo (with Justin's direction, topic 13481)
 **Builds on** (does NOT replace):
 - [`CROSS-MACHINE-SEAMLESSNESS-SPEC.md`](./CROSS-MACHINE-SEAMLESSNESS-SPEC.md) (approved) — established the fenced lease, leader resolution, state sync, and the seamless channel experience for the **active-passive** ("one awake machine") model. This spec **generalizes** that model to **active-active**.
