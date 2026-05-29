@@ -761,45 +761,83 @@ export class ServerSupervisor extends EventEmitter {
             console.error('[Supervisor] Preflight: no npm binary found — cannot rebuild better-sqlite3');
             continue;
           }
-          const rebuildEnv: Record<string, string | undefined> = { ...process.env, npm_config_node_gyp: undefined };
-          if (checkNode !== process.execPath) {
-            rebuildEnv.npm_node_execpath = checkNode;
-          }
-          // `--build-from-source` forces npm to compile the native module
-          // against the current Node ABI instead of falling back to a
-          // cached prebuilt binary. Without this flag, npm rebuild can
-          // exit 0 having installed the SAME wrong-ABI prebuilt that was
-          // there before — producing the "rebuild succeeded but module
-          // still fails to load" pattern observed in the 2026-05-20
-          // b2lead-insights incident.
-          // `--ignore-scripts` prevents this rebuild from running every
-          // dependency's postinstall hooks (large surface, slow, and a
-          // supply-chain risk per the SELF-HEALING-REMEDIATOR-V3 §A45).
-          const rebuildArgs = [
-            'rebuild',
-            '--build-from-source',
-            '--ignore-scripts',
-            'better-sqlite3',
-            '--prefix', copy.prefixDir,
+          // FLEET FIX (wrong-ABI rebuild + binary-deletion footgun, 2026-05-29 —
+          // instar-codey sqlite offline 16h). Three problems the old single
+          // `--build-from-source` path had:
+          //  (1) node-gyp / prebuild-install resolve `node` from PATH. If a
+          //      different Node (e.g. an asdf-managed 22.x, ABI 127) is ahead of
+          //      the server's Node (e.g. 25.x, ABI 141) on PATH, the rebuild
+          //      "succeeds" but targets the WRONG ABI — the server's Node then
+          //      can't load it ("rebuild succeeded but module still fails to
+          //      load"). Pin the toolchain to the server Node's dir so every
+          //      `env node` in the chain resolves the correct ABI.
+          //  (2) from-source compile can fail entirely on a box without a
+          //      working C++ toolchain. Prefer the PREBUILT (fast, no compiler);
+          //      with the toolchain pinned, the prebuilt fetched is the correct
+          //      ABI. Only compile from source as a fallback.
+          //  (3) `--build-from-source` deletes build/Release/*.node before
+          //      compiling — a failed compile left the agent with NO module at
+          //      all (worse than the wrong-ABI degradation it started from). Back
+          //      the binary up first and RESTORE it if the rebuild can't produce
+          //      a loadable module.
+          const serverNodeDir = path.dirname(checkNode);
+          const rebuildEnv: Record<string, string | undefined> = {
+            ...process.env,
+            npm_config_node_gyp: undefined,
+            npm_node_execpath: checkNode,
+            // Server Node dir FIRST so node-gyp / prebuild-install / any
+            // `#!/usr/bin/env node` shebang resolves the server's Node ABI.
+            PATH: `${serverNodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
+          };
+          const verifyLoadable = (): boolean =>
+            spawnSync(checkNode, ['-e', `require('${copy.binaryPath.replace(/'/g, "\\'")}')`], {
+              encoding: 'utf-8', timeout: 10_000, cwd: this.projectDir,
+            }).status === 0;
+          // Back up the current (wrong-ABI) binary so a failed rebuild can't
+          // leave the agent with no module.
+          const backupPath = `${copy.binaryPath}.heal-bak`;
+          let hasBackup = false;
+          try {
+            if (fs.existsSync(copy.binaryPath)) { fs.copyFileSync(copy.binaryPath, backupPath); hasBackup = true; }
+          } catch { /* best-effort backup */ }
+          // Prebuilt-first, then compile-fallback. `npm install` runs
+          // better-sqlite3's install script (`prebuild-install`), which fetches
+          // the prebuilt for the SERVER Node's ABI — NO compiler needed and ~2s.
+          // (`npm rebuild` always node-gyp-compiles and never fetches a prebuilt,
+          // so it can't heal a box without a working toolchain — which is exactly
+          // where instar-codey was stuck.) Pin to the exact version instar ships.
+          // The from-source fallback keeps `--ignore-scripts` (no arbitrary
+          // postinstalls; supply-chain per SELF-HEALING-REMEDIATOR-V3 §A45).
+          let pkgVersion = '';
+          try {
+            pkgVersion = (JSON.parse(fs.readFileSync(path.join(copy.packageDir, 'package.json'), 'utf-8')).version as string) || '';
+          } catch { /* no version → install whatever resolves */ }
+          const installSpec = pkgVersion ? `better-sqlite3@${pkgVersion}` : 'better-sqlite3';
+          const attempts: string[][] = [
+            ['install', installSpec, '--no-save', '--prefix', copy.prefixDir],
+            ['rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', copy.prefixDir],
           ];
-          const rebuildResult = spawnSync(checkNode, [npmPath, ...rebuildArgs], {
-            encoding: 'utf-8',
-            timeout: 120_000,
-            cwd: this.projectDir,
-            env: rebuildEnv,
-          });
-          if (rebuildResult.status !== 0) {
-            console.error(`[Supervisor] Preflight: better-sqlite3 rebuild failed at ${copy.packageDir}: ${(rebuildResult.stderr || '').slice(-200)}`);
-            continue;
+          let rebuilt = false;
+          let lastErr = '';
+          for (const args of attempts) {
+            const r = spawnSync(checkNode, [npmPath, ...args], {
+              encoding: 'utf-8', timeout: 120_000, cwd: this.projectDir, env: rebuildEnv,
+            });
+            if (r.status === 0 && verifyLoadable()) { rebuilt = true; break; }
+            lastErr = (r.stderr || '').slice(-200);
           }
-          const verifyResult = spawnSync(checkNode, ['-e', `require('${copy.binaryPath.replace(/'/g, "\\'")}')`], {
-            encoding: 'utf-8', timeout: 10_000, cwd: this.projectDir,
-          });
-          if (verifyResult.status === 0) {
+          if (rebuilt) {
+            try { if (hasBackup) fs.unlinkSync(backupPath); } catch { /* ignore */ }
             healed.push(`better-sqlite3 rebuilt at ${path.relative(this.stateDir, copy.packageDir)}`);
             console.log(`[Supervisor] Preflight: better-sqlite3 rebuilt and verified at ${copy.packageDir}`);
           } else {
-            console.error(`[Supervisor] Preflight: better-sqlite3 rebuild succeeded but module still fails to load at ${copy.packageDir}: ${(verifyResult.stderr || '').slice(-200)}`);
+            // Restore the prior binary — wrong-ABI degraded beats a missing
+            // module that crashes subsystem init.
+            let restored = false;
+            try {
+              if (hasBackup) { fs.copyFileSync(backupPath, copy.binaryPath); fs.unlinkSync(backupPath); restored = true; }
+            } catch { /* ignore */ }
+            console.error(`[Supervisor] Preflight: better-sqlite3 rebuild could not produce a loadable module at ${copy.packageDir}${restored ? ' — restored prior binary (sqlite stays degraded, not bricked)' : ''}: ${lastErr}`);
           }
         } catch (err) {
           console.error(`[Supervisor] Preflight: native module check failed at ${copy.packageDir}: ${err}`);

@@ -131,6 +131,12 @@ describe('ServerSupervisor preflight self-heal', () => {
     const args = call[1] as string[] | undefined;
     return Array.isArray(args) && args.includes('rebuild') && args.includes('better-sqlite3');
   }
+  // The prebuilt-first attempt is `npm install better-sqlite3[@ver]` (runs
+  // prebuild-install). Distinct from the `npm install instar` shadow-restore.
+  function isBsqInstallCall(call: any): boolean {
+    const args = call[1] as string[] | undefined;
+    return Array.isArray(args) && args.includes('install') && args.some((x) => String(x).startsWith('better-sqlite3'));
+  }
   function isLoadCheck(call: any): boolean {
     const args = call[1] as string[] | undefined;
     return Array.isArray(args) && args[0] === '-e' && String(args[1] ?? '').includes('require');
@@ -175,6 +181,89 @@ describe('ServerSupervisor preflight self-heal', () => {
 
     const rebuildCalls = mockSpawnSync.mock.calls.filter(isRebuildCall);
     expect(rebuildCalls.length).toBeGreaterThanOrEqual(1); // genuine ABI failure still self-heals
+  });
+
+  // ── Fleet fix (2026-05-29, instar-codey sqlite offline 16h): the rebuild must
+  // target the SERVER's Node ABI, prefer the prebuilt, and never delete the only
+  // binary on a failed compile. ──────────────────────────────────────────────
+  function seedServerNode(): string {
+    const binDir = path.join(tmpDir, '.instar', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const nodePath = path.join(binDir, 'node');
+    fs.writeFileSync(nodePath, '#!/bin/sh\n'); // existence is what matters (checkNode = serverNode)
+    return binDir;
+  }
+  // First `-e require(...)` call = ABI-mismatch DETECTION (fail); later ones =
+  // post-rebuild verify. `failVerify` controls whether verify also fails.
+  function mockAbiMismatch(failVerify: boolean, onRebuild?: (args: string[]) => void) {
+    const mockSpawnSync = vi.mocked(spawnSync);
+    let eCalls = 0;
+    mockSpawnSync.mockImplementation((_cmd: string, args?: readonly string[]) => {
+      const a = (args as string[] | undefined) ?? [];
+      if (a[0] === '-e' && String(a[1] ?? '').includes('require')) {
+        eCalls += 1;
+        const fail = eCalls === 1 || failVerify; // detection always fails; verify per flag
+        return { stdout: '', stderr: fail ? 'NODE_MODULE_VERSION 127 ... requires 141' : '', status: fail ? 1 : 0, signal: null, pid: 0, output: [] } as unknown as SpawnSyncReturns<string>;
+      }
+      if (Array.isArray(a) && a.includes('rebuild') && a.includes('better-sqlite3') && onRebuild) onRebuild(a);
+      return { stdout: '', stderr: '', status: 0, signal: null, pid: 0, output: [] } as unknown as SpawnSyncReturns<string>;
+    });
+    return mockSpawnSync;
+  }
+
+  it('pins the rebuild toolchain PATH to the server Node dir (correct-ABI rebuild)', () => {
+    seedSqliteCopy();
+    const binDir = seedServerNode();
+    (supervisor as any).consecutiveBindFailures = 0;
+    (supervisor as any).findNpmPath = () => '/usr/bin/npm';
+    const mockSpawnSync = mockAbiMismatch(/*failVerify*/ false); // first attempt heals
+
+    (supervisor as any).preflightSelfHeal();
+
+    const healCall = mockSpawnSync.mock.calls.find(isBsqInstallCall);
+    expect(healCall).toBeDefined();
+    const env = (healCall![2] as any)?.env as Record<string, string>;
+    // Server Node dir must be FIRST on PATH so node-gyp/prebuild-install resolve it.
+    expect(env.PATH.split(path.delimiter)[0]).toBe(binDir);
+    expect(env.npm_node_execpath).toBe(path.join(binDir, 'node'));
+  });
+
+  it('tries the prebuilt (npm install) before compiling from source', () => {
+    seedSqliteCopy();
+    seedServerNode();
+    (supervisor as any).consecutiveBindFailures = 0;
+    (supervisor as any).findNpmPath = () => '/usr/bin/npm';
+    const mockSpawnSync = mockAbiMismatch(/*failVerify*/ false); // prebuilt attempt verifies OK
+
+    (supervisor as any).preflightSelfHeal();
+
+    const installCalls = mockSpawnSync.mock.calls.filter(isBsqInstallCall);
+    const fromSourceCalls = mockSpawnSync.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && (c[1] as string[]).includes('--build-from-source'),
+    );
+    expect(installCalls.length).toBe(1);     // healed via the prebuilt
+    expect(fromSourceCalls.length).toBe(0);  // never fell back to a compile
+  });
+
+  it('restores the prior binary if the rebuild cannot produce a loadable module (no-brick)', () => {
+    seedSqliteCopy();
+    seedServerNode();
+    const binaryPath = path.join(tmpDir, '.instar', 'shadow-install', 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+    (supervisor as any).consecutiveBindFailures = 0;
+    (supervisor as any).findNpmPath = () => '/usr/bin/npm';
+    // Both attempts "succeed" (status 0) but verify always fails; the
+    // from-source attempt DELETES the binary (the real footgun) to prove the
+    // restore brings it back.
+    mockAbiMismatch(/*failVerify*/ true, (a) => {
+      if (a.includes('--build-from-source')) { try { fs.unlinkSync(binaryPath); } catch { /* ignore */ } }
+    });
+
+    (supervisor as any).preflightSelfHeal();
+
+    // The binary must still exist (restored from backup) and the backup cleaned up.
+    expect(fs.existsSync(binaryPath)).toBe(true);
+    expect(fs.readFileSync(binaryPath, 'utf-8')).toBe('binary');
+    expect(fs.existsSync(`${binaryPath}.heal-bak`)).toBe(false);
   });
 });
 

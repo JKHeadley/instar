@@ -412,37 +412,59 @@ class NativeModuleHealerImpl {
       `[${component}] NativeModuleHealer: rebuilding better-sqlite3 for Node ${process.version} (prefix=${installPrefix}). This may take ~30s.`
     );
 
-    let result: SpawnSyncReturns<string>;
+    // FLEET FIX (wrong-ABI rebuild on a PATH-shadowed Node + compile-only heal,
+    // 2026-05-29 — mirrors the supervisor preflight; instar-codey sqlite offline
+    // 16h). Two changes:
+    //  (1) Pin the toolchain to THIS process's Node dir so node-gyp /
+    //      prebuild-install / any `#!/usr/bin/env node` shebang resolve the
+    //      correct ABI even when another Node (e.g. an asdf 22.x) is first on
+    //      PATH — otherwise the rebuild "succeeds" but targets the wrong ABI.
+    //  (2) Prefer the PREBUILT via `npm install` (runs better-sqlite3's install
+    //      script → prebuild-install → fetches the correct-ABI prebuilt, ~2s, NO
+    //      compiler) and only compile from source as a fallback. `npm rebuild`
+    //      ALWAYS node-gyp-compiles and never fetches a prebuilt, so it cannot
+    //      heal a box without a working C++ toolchain.
+    const nodeDir = path.dirname(process.execPath);
+    const rebuildEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      npm_config_node_gyp: undefined,
+      npm_node_execpath: process.execPath,
+      PATH: `${nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    };
+    let pkgVersion = '';
     try {
-      // `--build-from-source` forces npm to compile against the current
-      // Node ABI instead of installing a cached prebuilt that may match
-      // the SAME wrong ABI the existing broken binary has. Without it,
-      // `npm rebuild` can exit 0 while leaving the failure mode intact —
-      // the "rebuild succeeded but module still fails to load" pattern.
-      // `--ignore-scripts` keeps the rebuild scoped to the named package
-      // and avoids running every dependency's postinstall hooks.
-      result = spawnSync(
-        process.execPath,
-        [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
-        {
+      pkgVersion = (JSON.parse(
+        fs.readFileSync(path.join(installPrefix, 'node_modules', 'better-sqlite3', 'package.json'), 'utf-8')
+      ).version as string) || '';
+    } catch { /* version optional */ }
+    const installSpec = pkgVersion ? `better-sqlite3@${pkgVersion}` : 'better-sqlite3';
+    // `--ignore-scripts` on the from-source fallback keeps it scoped (no arbitrary
+    // postinstalls). The prebuilt attempt MUST run scripts (that is how
+    // prebuild-install fetches the binary), so it is a plain `npm install`.
+    const attempts: string[][] = [
+      [npmPath, 'install', installSpec, '--no-save', '--prefix', installPrefix],
+      [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
+    ];
+    let result: SpawnSyncReturns<string> | null = null;
+    for (const args of attempts) {
+      try {
+        // Namespace access so tests can monkey-patch child_process.spawnSync.
+        result = child_process.spawnSync(process.execPath, args, {
           encoding: 'utf-8',
           timeout: 120_000,
           cwd: installPrefix,
-          env: { ...process.env, npm_config_node_gyp: undefined },
-        }
-      );
-    } catch (spawnErr) {
-      event.errorTail = `spawn failed: ${spawnErr instanceof Error ? spawnErr.message : String(spawnErr)}`;
-      event.durationMs = Date.now() - started;
-      console.error(`[${component}] NativeModuleHealer: ${event.errorTail}`);
-      this.logHealEvent(event);
-      this.lastResult = event;
-      return false;
+          env: rebuildEnv,
+        }) as SpawnSyncReturns<string>;
+      } catch (spawnErr) {
+        event.errorTail = `spawn failed: ${spawnErr instanceof Error ? spawnErr.message : String(spawnErr)}`;
+        continue;
+      }
+      if (result && result.status === 0) break;
     }
 
     event.durationMs = Date.now() - started;
 
-    if (result.status === 0) {
+    if (result && result.status === 0) {
       event.success = true;
       console.log(`[${component}] NativeModuleHealer: rebuild succeeded in ${event.durationMs}ms`);
       this.logHealEvent(event);
@@ -450,10 +472,10 @@ class NativeModuleHealerImpl {
       return true;
     }
 
-    const stderrTail = (result.stderr || result.stdout || '').slice(-300);
-    event.errorTail = stderrTail || `npm exited ${result.status}`;
+    const stderrTail = (result?.stderr || result?.stdout || '').slice(-300);
+    event.errorTail = stderrTail || event.errorTail || `npm exited ${result?.status ?? 'n/a'}`;
     console.error(
-      `[${component}] NativeModuleHealer: rebuild failed (status=${result.status}): ${event.errorTail}`
+      `[${component}] NativeModuleHealer: rebuild failed (status=${result?.status ?? 'n/a'}): ${event.errorTail}`
     );
     this.logHealEvent(event);
     this.lastResult = event;
