@@ -38,6 +38,16 @@ it feels exactly like when a session "restarts" today — the new machine reads 
 conversation history and your synced files and picks right up where you left off. No
 starting over, no "wait, who am I talking to?"
 
+## Naming your machines (and moving a chat to one)
+The dashboard has a **Machines tab** that lists every computer the agent lives on, with
+its specs (chip, memory) and how busy each one is. Every machine gets a friendly
+**nickname** automatically (like "MacBook Pro" or "mac mini"), and you can rename them to
+whatever you want. Once a machine has a nickname, you can just say **"move this to the
+mini"** in the middle of a conversation and the chat hops to that machine and keeps going —
+same thread, nothing lost. That move-by-nickname is exactly the headline thing we'll test
+end-to-end: start talking on one machine, say "move this to &lt;name&gt;", and watch the
+conversation continue smoothly on the other one.
+
 ## Never drop, never double
 The whole point is it stays invisible. Across any move or any machine dying, you get
 **exactly one** reply — never a dropped message, never the same reply twice. We already
