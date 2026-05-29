@@ -343,6 +343,16 @@ let _fixDeps: FixCommandDeps | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+
+// ── Multi-Machine Session Pool (§L4) activation refs ──────────────────────
+// The SessionRouter is constructed in startServer()'s mesh block, but the inbound
+// dispatch handler that consults it is defined ABOVE startServer — so the router is
+// shared via this module-level ref (the same pattern as _orphanReaper/_topicResumeMap).
+// `_sessionPoolStage()` reads the live rollout stage; the inbound interception only
+// routes through the pool when it returns a non-'dark' stage, so DARK (the default)
+// is byte-identical to today's always-local dispatch. Set once in startServer().
+let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
+let _sessionPoolStage: () => string = () => 'dark';
 /** Per-topic framework override (claude-code | codex-cli). Populated from
  *  `config.topicFrameworks` at server boot. Boot-immutable; runtime
  *  mutations go through `_topicFrameworksStore` instead so they persist
@@ -1306,6 +1316,31 @@ function wireTelegramRouting(
 
     // Route message to corresponding session
     const targetSession = telegram.getSessionForTopic(topicId);
+
+    // ── Multi-Machine Session Pool (§L4): route through the pool when active ──
+    // When the rollout stage is past 'dark', consult the SessionRouter: it may
+    // forward this topic's message to the machine that OWNS the session (over the
+    // mesh) instead of handling it locally. DARK (the default) skips this block
+    // entirely → byte-identical to single-machine dispatch. Any error falls back
+    // to the local path below (fail-safe). The live-transfer behavior is gated by
+    // the staged rollout (StageAdvancer); shadow records ownership but stays local.
+    if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+      try {
+        const outcome = await _sessionRouter.route({
+          sessionKey: String(topicId),
+          messageId: String(msg.id),
+          payload: text,
+        });
+        if (outcome.action === 'forwarded' || outcome.action === 'duplicate') {
+          console.log(`[session-pool] topic ${topicId} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
+          return;
+        }
+        // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced' / 'queued' /
+        // 'placement-blocked' → fall through to the existing local dispatch below.
+      } catch (err) {
+        console.warn(`[session-pool] route error for topic ${topicId} — falling back to local dispatch: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     if (targetSession) {
       // Session is mapped — check if it's alive, inject or respawn
@@ -8911,6 +8946,71 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
+
+        // ── L4 SessionRouter (activation transport) — shared via _sessionRouter ──
+        // Constructed with the real registry/ownership/placement + the outbound
+        // MeshRpcClient so it can reach peers. INERT until the rollout stage advances
+        // past 'dark': the inbound dispatch interception only consults it when
+        // _sessionPoolStage() !== 'dark'. Single-machine → placement keeps everything local.
+        try {
+          const routerMod = await import('../core/SessionRouter.js');
+          const placeMod = await import('../core/PlacementExecutor.js');
+          const clientMod = await import('../core/MeshRpcClient.js');
+          let routerNonce = 0;
+          const meshClient = new clientMod.MeshRpcClient({
+            selfMachineId: meshSelfId,
+            sign: (c) => idMod.sign(c, localSigningKeyPem),
+            nonce: () => `${meshSelfId}:r:${Date.now()}:${++routerNonce}`,
+            now: () => Date.now(),
+          });
+          const peerUrl = (machineId: string): string | null =>
+            meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
+          _sessionRouter = new routerMod.SessionRouter({
+            selfMachineId: meshSelfId,
+            placement: new placeMod.PlacementExecutor(),
+            machineRegistry: () => machinePoolRegistry?.getCapacities() ?? [],
+            resolveOwnership: (sk) => {
+              const r = ownReg.read(sk);
+              if (!r) return { owner: null, epoch: 0, status: null };
+              const status = r.status === 'released' ? null : (r.status as 'active' | 'placing' | 'transferring');
+              return { owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, status, target: ownReg.placementTargetOf(sk) ?? undefined };
+            },
+            isMachineAlive: (m) => m === meshSelfId || (machinePoolRegistry?.getCapacity(m)?.online ?? false),
+            casClaimOwnership: (sk, machineId) => {
+              const r = ownReg.cas({ type: 'place', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:c:${++routerNonce}` });
+              return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };
+            },
+            deliverMessage: async (target, env) => {
+              const url = peerUrl(target);
+              if (!url) throw new Error(`no peer url for ${target}`);
+              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch }, env.ownershipEpoch);
+              if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' };
+              }
+              throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
+            },
+            spawnOnMachine: async (machineId, msg) => {
+              const url = peerUrl(machineId);
+              if (!url) throw new Error(`no peer url for ${machineId}`);
+              await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: 0 }, 0);
+            },
+            handleLocally: async () => { /* inbound interception falls through to the existing local spawn */ },
+            queueMessage: () => { /* queued — left for the inbound path's redelivery/retry */ },
+            raiseAttention: (title, body) => console.log(pc.dim(`  [session-router] attention: ${title} — ${body}`)),
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            log: (line) => console.log(pc.dim(`  [session-router] ${line}`)),
+          });
+          _sessionPoolStage = () => {
+            try {
+              const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
+              const live = liveConfig.get('multiMachine.sessionPool', fallback) as { enabled?: boolean; stage?: string };
+              return live?.enabled && live?.stage ? String(live.stage) : 'dark';
+            } catch { return 'dark'; }
+          };
+          console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
+        } catch (err) {
+          console.log(pc.dim(`  [session-router] not wired: ${err instanceof Error ? err.message : String(err)}`));
+        }
       }
     } catch (err) {
       console.log(pc.dim(`  [mesh-rpc] dispatcher not wired: ${err instanceof Error ? err.message : String(err)}`));
