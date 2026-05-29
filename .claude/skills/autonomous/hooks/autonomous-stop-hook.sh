@@ -30,6 +30,23 @@ set -uo pipefail   # NOTE: -e intentionally omitted; field lookups for optional
 # Read hook input from stdin
 HOOK_INPUT=$(cat)
 
+# ── Anchor to the agent home, NOT the session's CWD ───────────────────
+# All state paths below are relative (.instar/autonomous/<topic>.local.md, the
+# registry, the legacy file). The Stop hook inherits the session's working
+# directory — and a session working inside a git worktree (~/.instar/agents/
+# <name>/.worktrees/<slug>) would resolve those paths against the WORKTREE,
+# which has no autonomous state, so the hook sees "no active job" and lets the
+# session exit — silently stranding the autonomous loop. Anchor to the agent
+# home (where this hook is installed) so the paths resolve regardless of CWD.
+# (Root cause of the 2026-05-29 strand: CWD was a worktree.)
+# Anchor to CLAUDE_PROJECT_DIR — Claude Code always sets it for hooks to the
+# agent home (the hook itself is wired as `${CLAUDE_PROJECT_DIR}/.claude/...`).
+# Guard on its `.instar` so a misconfigured value can't send us somewhere wrong;
+# when unset (e.g. an isolated test harness) we stay in the caller's CWD.
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]] && [[ -d "${CLAUDE_PROJECT_DIR}/.instar" ]]; then
+  cd "$CLAUDE_PROJECT_DIR" || true
+fi
+
 REGISTRY_FILE=".instar/topic-session-registry.json"
 RECOVERY_AUDIT=".instar/autonomous-recovery.jsonl"
 LEGACY_STATE=".instar/autonomous-state.local.md"
