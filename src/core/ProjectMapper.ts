@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 
 export interface ProjectMapConfig {
@@ -29,6 +29,8 @@ export interface ProjectMapConfig {
   skipDirs?: string[];
   /** Max files to enumerate per directory (default: 50) */
   maxFilesPerDir?: number;
+  /** Additional roots containing related git worktrees to summarize */
+  relatedWorktreeRoots?: string[];
 }
 
 export interface ProjectMapEntry {
@@ -65,8 +67,23 @@ export interface ProjectMap {
   projectType: string;
   /** Deployment targets detected */
   deploymentTargets: string[];
+  /** Nearby worktrees that are part of the same agent workspace */
+  relatedWorktrees?: RelatedWorktreeSummary[];
   /** Generated at timestamp */
   generatedAt: string;
+}
+
+export interface RelatedWorktreeSummary {
+  /** Worktree directory name */
+  name: string;
+  /** Absolute path to the worktree */
+  path: string;
+  /** Current git branch */
+  gitBranch: string | null;
+  /** Git remote URL */
+  gitRemote: string | null;
+  /** High-signal top-level directories present in the worktree */
+  keyDirectories: string[];
 }
 
 const DEFAULT_SKIP_DIRS = new Set([
@@ -116,6 +133,7 @@ export class ProjectMapper {
       keyFiles: this.findKeyFiles(),
       projectType: this.detectProjectType(),
       deploymentTargets: this.detectDeploymentTargets(),
+      relatedWorktrees: this.findRelatedWorktrees(),
       generatedAt: new Date().toISOString(),
     };
   }
@@ -141,6 +159,7 @@ export class ProjectMapper {
    * Convert a project map to human-readable markdown for session injection.
    */
   toMarkdown(map: ProjectMap): string {
+    const relatedWorktrees = map.relatedWorktrees ?? [];
     const lines: string[] = [
       `# Project Map: ${map.projectName}`,
       '',
@@ -160,6 +179,10 @@ export class ProjectMapper {
       lines.push(`**Deployment Targets**: ${map.deploymentTargets.join(', ')}`);
     }
 
+    if (relatedWorktrees.length > 0) {
+      lines.push(`**Related Worktrees**: ${relatedWorktrees.length}`);
+    }
+
     lines.push('');
     lines.push('## Directory Structure');
     lines.push('');
@@ -177,6 +200,22 @@ export class ProjectMapper {
       }
     }
 
+    if (relatedWorktrees.length > 0) {
+      lines.push('');
+      lines.push('## Related Worktrees');
+      lines.push('');
+      for (const worktree of relatedWorktrees.slice(0, 12)) {
+        const branch = worktree.gitBranch ? ` [${worktree.gitBranch}]` : '';
+        const dirs = worktree.keyDirectories.length > 0
+          ? ` — ${worktree.keyDirectories.join(', ')}`
+          : '';
+        lines.push(`- **${worktree.name}/**${branch}${dirs}`);
+      }
+      if (relatedWorktrees.length > 12) {
+        lines.push(`- ... and ${relatedWorktrees.length - 12} more worktrees`);
+      }
+    }
+
     lines.push('');
     lines.push(`*Generated: ${map.generatedAt}*`);
 
@@ -189,6 +228,7 @@ export class ProjectMapper {
   getCompactSummary(map?: ProjectMap): string {
     const m = map || this.loadSavedMap();
     if (!m) return '';
+    const relatedWorktrees = m.relatedWorktrees ?? [];
 
     const lines: string[] = [
       `Project: ${m.projectName} (${m.projectType})`,
@@ -204,6 +244,10 @@ export class ProjectMapper {
     }
 
     lines.push(`Files: ${m.totalFiles} across ${m.directories.length} directories`);
+
+    if (relatedWorktrees.length > 0) {
+      lines.push(`Related worktrees: ${relatedWorktrees.length}`);
+    }
     lines.push('');
 
     // Top directories
@@ -213,6 +257,17 @@ export class ProjectMapper {
     }
     if (m.directories.length > 8) {
       lines.push(`  ... and ${m.directories.length - 8} more directories`);
+    }
+
+    for (const worktree of relatedWorktrees.slice(0, 5)) {
+      const branch = worktree.gitBranch ? ` [${worktree.gitBranch}]` : '';
+      const dirs = worktree.keyDirectories.length > 0
+        ? ` — ${worktree.keyDirectories.join(', ')}`
+        : '';
+      lines.push(`  worktree: ${worktree.name}${branch}${dirs}`);
+    }
+    if (relatedWorktrees.length > 5) {
+      lines.push(`  ... and ${relatedWorktrees.length - 5} more worktrees`);
     }
 
     return lines.join('\n');
@@ -412,6 +467,106 @@ export class ProjectMapper {
     return found;
   }
 
+  private findRelatedWorktrees(): RelatedWorktreeSummary[] {
+    const roots = this.findRelatedWorktreeRoots();
+    const byPath = new Map<string, RelatedWorktreeSummary>();
+
+    for (const root of roots) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(root, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+        const worktreePath = path.join(root, entry.name);
+        if (!this.isGitWorktree(worktreePath)) continue;
+        const realPath = this.realpathOrNull(worktreePath);
+        if (!realPath || byPath.has(realPath)) continue;
+
+        byPath.set(realPath, {
+          name: entry.name,
+          path: realPath,
+          gitBranch: this.detectGitBranchFor(realPath),
+          gitRemote: this.detectGitRemoteFor(realPath),
+          keyDirectories: this.findKeyDirectories(realPath),
+        });
+      }
+    }
+
+    return [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private findRelatedWorktreeRoots(): string[] {
+    const roots = new Set<string>();
+
+    for (const configured of this.config.relatedWorktreeRoots ?? []) {
+      if (!configured.trim()) continue;
+      roots.add(path.resolve(configured));
+    }
+
+    const projectBasename = path.basename(this.config.projectDir);
+    roots.add(path.join(os.homedir(), '.instar', 'agents', projectBasename, '.worktrees'));
+
+    return [...roots]
+      .map((root) => this.realpathOrNull(root))
+      .filter((root): root is string => Boolean(root));
+  }
+
+  private isGitWorktree(dir: string): boolean {
+    return fs.existsSync(path.join(dir, '.git'));
+  }
+
+  private detectGitRemoteFor(dir: string): string | null {
+    try {
+      const result = SafeGitExecutor.readSync(['remote', 'get-url', 'JKHeadley'], { cwd: dir,
+        encoding: 'utf-8',
+        stdio: 'pipe', sourceTreeReadOk: true, operation: 'src/core/ProjectMapper.ts:related-remote-jkheadley' });
+      return result.trim() || null;
+    } catch {
+      try {
+        const result = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: dir,
+          encoding: 'utf-8',
+          stdio: 'pipe', sourceTreeReadOk: true, operation: 'src/core/ProjectMapper.ts:related-remote-origin' });
+        return result.trim() || null;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  private detectGitBranchFor(dir: string): string | null {
+    try {
+      const result = SafeGitExecutor.readSync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir,
+        encoding: 'utf-8', sourceTreeReadOk: true,
+        stdio: 'pipe', operation: 'src/core/ProjectMapper.ts:related-branch' });
+      return result.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private findKeyDirectories(dir: string): string[] {
+    const priority = ['src', 'tests', 'docs', 'dashboard', 'scripts', 'upgrades', 'skills', 'packages'];
+    return priority.filter((name) => {
+      try {
+        return fs.statSync(path.join(dir, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  private realpathOrNull(target: string): string | null {
+    try {
+      return fs.realpathSync(target);
+    } catch {
+      return null;
+    }
+  }
+
   private countFiles(dir: string, depth: number): number {
     const maxDepth = this.config.maxDepth ?? 4;
     if (depth > maxDepth) return 0;
@@ -421,7 +576,7 @@ export class ProjectMapper {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (this.skipDirs.has(entry.name)) continue;
-        if (entry.name.startsWith('.') && depth > 0) continue;
+        if (entry.isDirectory() && entry.name.startsWith('.')) continue;
 
         if (entry.isFile()) {
           count++;
