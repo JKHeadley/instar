@@ -27,6 +27,13 @@ entire layer is inert unless explicitly enabled and its rollout stage advanced):
   turned off (`enabled: false`, `stage: 'dark'`, `dryRun: true`). Existing
   agents receive these dark defaults automatically on update.
 
+**Track B (part 1: machine nicknames).** Every machine the agent is installed on
+now gets a friendly, auto-assigned **nickname** (e.g. "Mac Mini", "Justins Macbook
+Pro") — the handle you'll use to say "run this on the mini" / "move this to <name>".
+Nicknames are unique within the pool, editable, and derived deterministically from
+the machine's hostname. Still dark (the Machines dashboard tab + the placement
+commands that consume nicknames land in the next part of Track B).
+
 ## What to Tell Your User
 
 Nothing changes for you yet — this ships turned off. When the full feature is
