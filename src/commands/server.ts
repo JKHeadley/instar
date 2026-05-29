@@ -2411,7 +2411,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     let localSigningKeyPem = '';
     if (coordinator.enabled && coordinator.identity) {
       try {
-        const keyPath = path.join(config.stateDir, 'machine', 'signing-private.pem');
+        // Canonical machine signing key (MachineIdentity SIGNING_KEY_FILE).
+        // Was `signing-private.pem` — a name only the old join path wrote, so a
+        // joined standby's key was never found here. Unified 2026-05-28.
+        const keyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
         if (fs.existsSync(keyPath)) {
           localSigningKeyPem = fs.readFileSync(keyPath, 'utf-8');
         }

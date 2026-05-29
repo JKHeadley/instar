@@ -32,6 +32,14 @@ describe('resolveSeamlessnessConfig', () => {
     expect(c.liveTailPushRateMs).toBe(5_000); // = staleness
     expect(c.handoffBar).toBe('near-instant');
     expect(c.protocolVersion).toBe(SEAMLESSNESS_PROTOCOL_VERSION);
+    // Default-ON since 2026-05-28 (proven live via real-Telegram test-as-self:
+    // a real operator message was handled exactly once, redelivery deduped).
+    expect(c.exactlyOnceIngress).toBe(true);
+  });
+
+  it('exactlyOnceIngress can be explicitly opted out', () => {
+    expect(resolveSeamlessnessConfig(baseMM({ exactlyOnceIngress: false })).exactlyOnceIngress).toBe(false);
+    expect(resolveSeamlessnessConfig(baseMM({ exactlyOnceIngress: true })).exactlyOnceIngress).toBe(true);
   });
 
   it('auto-derives standbyPullIntervalMs under BOTH bounds (min of fo/4 and leaseTtl/2)', () => {

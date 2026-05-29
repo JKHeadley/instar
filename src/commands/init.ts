@@ -1294,6 +1294,19 @@ async function setupCloudBackup(projectDir: string, stateDir: string, agentName:
           cwd: projectDir,
           stdio: 'pipe',
         });
+        // Establish branch tracking so GitSync's `git push` lands instead of
+        // silently failing with "no upstream branch". `git remote add` alone
+        // leaves the branch untracked — which silently killed all
+        // cross-machine lease sync on the connect-to-existing-repo path
+        // (verified live on a two-machine mesh, 2026-05-28). autoSetupRemote
+        // makes the first push set its own upstream; GitSync.pushCurrentBranch
+        // is the belt-and-suspenders for repos created before this fix.
+        try {
+          execFileSync(gitPath, ['config', 'push.autoSetupRemote', 'true'], { cwd: projectDir, stdio: 'pipe' });
+          execFileSync(gitPath, ['config', 'push.default', 'current'], { cwd: projectDir, stdio: 'pipe' });
+        } catch {
+          // @silent-fallback-ok — GitSync.pushCurrentBranch still handles tracking.
+        }
         console.log(`  ${pc.green('✓')} Connected to existing repository`);
       } catch {
         console.log(pc.dim('  Could not auto-connect. Run: git remote add origin https://github.com/YOUR_USERNAME/instar-' + agentName + '.git'));

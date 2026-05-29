@@ -45,6 +45,21 @@ export class GitLeaseStore implements LeaseStore {
     return { lease: reg.lease ?? null, epoch: reg.lease?.epoch ?? 0 };
   }
 
+  /**
+   * Pull the latest durable state into the local working tree WITHOUT writing,
+   * so a subsequent loadRegistry() (incl. the presumedDeadHolders liveness
+   * check) sees the holder's CURRENT heartbeat rather than a stale seed
+   * timestamp. Used to prime a freshly-booted/joined machine before its first
+   * failover decision (the fresh-join-grabs-lease bug, 2026-05-28).
+   */
+  syncDown(): void {
+    try {
+      this.d.pullRebase();
+    } catch {
+      // @silent-fallback-ok — best-effort prime; the CAS in casWrite still pulls.
+    }
+  }
+
   casWrite(candidate: LeaseRecord): { ok: boolean; observed: { lease: LeaseRecord | null; epoch: number } } {
     // 1. Pull-rebase to shrink the reject window, then re-read the committed epoch.
     this.d.pullRebase();

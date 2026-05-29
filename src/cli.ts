@@ -2027,6 +2027,8 @@ program
   .description('Join an existing agent mesh (run on the new machine)')
   .option('--code <code>', 'Pairing code from `instar pair`')
   .option('--name <name>', 'Display name for this machine')
+  .option('-d, --dir <path>', 'Joined-home directory (default: ./<repo-name>)')
+  .option('--port <port>', 'Server port for this machine (default: inherited/4040)', (v) => parseInt(v, 10))
   .action(joinMesh);
 
 program

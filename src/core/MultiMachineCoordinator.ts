@@ -23,7 +23,7 @@ import { SecurityLog } from './SecurityLog.js';
 import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
 import type { LeaseCoordinator } from './LeaseCoordinator.js';
-import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
+import { SEAMLESSNESS_PROTOCOL_VERSION, resolveSeamlessnessConfig } from './seamlessnessConfig.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
 /** Observability shape for /health.multiMachine.syncStatus (spec §11). */
@@ -79,6 +79,7 @@ export class MultiMachineCoordinator extends EventEmitter {
   private _enabled: boolean = false;
   private heartbeatWriteTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private leaseTickTimer: ReturnType<typeof setInterval> | null = null;
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
   private integratedBeingWarningEmitted: boolean = false;
@@ -275,6 +276,10 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearInterval(this.heartbeatCheckTimer);
       this.heartbeatCheckTimer = null;
     }
+    if (this.leaseTickTimer) {
+      clearInterval(this.leaseTickTimer);
+      this.leaseTickTimer = null;
+    }
     this.nonceStore.destroy();
   }
 
@@ -382,6 +387,20 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   attachLeaseCoordinator(lc: LeaseCoordinator): void {
     this.leaseCoordinator = lc;
+
+    // Renew the lease on a SUB-TTL cadence. The shared heartbeat-check timer
+    // runs every 2 min, but the lease TTL is ~60s — so renewing only on that
+    // timer let the lease EXPIRE in the substrate between renewals, and any
+    // observer (e.g. a freshly-joined machine) landing in that window would see
+    // an expired lease and legitimately grab it → the lease bounced between
+    // machines (verified live on a two-machine mesh, 2026-05-28). Drive
+    // tickLease() at leaseTtlMs/2 so the durable lease never lapses while the
+    // holder is alive.
+    if (this.leaseTickTimer) clearInterval(this.leaseTickTimer);
+    const ttlMs = resolveSeamlessnessConfig(this.config.multiMachine).leaseTtlMs;
+    const renewMs = Math.max(5_000, Math.floor(ttlMs / 2));
+    this.leaseTickTimer = setInterval(() => { void this.tickLease(); }, renewMs);
+    if (this.leaseTickTimer.unref) this.leaseTickTimer.unref();
   }
 
   /** Whether this machine structurally holds the lease (false if none attached). */
@@ -439,6 +458,11 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   async initializeLease(): Promise<void> {
     if (!this.leaseCoordinator) return;
+    // Prime from the durable medium FIRST so this boot's failover-eligibility
+    // check sees the holder's current heartbeat — not a stale seed `lastSeen`
+    // that a freshly-joined standby would misread as "holder dead" and grab the
+    // live holder's lease (verified live on a two-machine mesh, 2026-05-28).
+    this.leaseCoordinator.primeFromDurable();
     await this.leaseCoordinator.acquireIfEligible();
     this.reconcileRoleToLease('lease-init');
   }

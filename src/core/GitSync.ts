@@ -155,15 +155,64 @@ export class GitSyncManager {
    * Requires git >= 2.34 for SSH signing support.
    */
   configureCommitSigning(): void {
-    const keyPath = path.join(this.stateDir, 'machine', 'signing-private.pem');
+    // Canonical machine signing key (MachineIdentity SIGNING_KEY_FILE). The
+    // join path used to write `signing-private.pem` while this reader expected
+    // a different name — the mismatch is now gone (join uses generateIdentity).
+    const keyPath = path.join(this.stateDir, 'machine', 'signing-key.pem');
     if (!fs.existsSync(keyPath)) {
       throw new Error('Machine signing key not found. Run `instar pair` first.');
     }
 
-    // Git uses SSH-format keys for signing. Our Ed25519 PEM works with git's ssh signing.
-    this.gitConfig('user.signingkey', keyPath);
-    this.gitConfig('gpg.format', 'ssh');
-    this.gitConfig('commit.gpgsign', 'true');
+    // Git's SSH signing needs the PUBLIC key: when user.signingkey points at a
+    // private key, ssh-keygen looks for a sibling `<path>.pub`. The identity
+    // writer never created it, so every signed commit failed with "Couldn't
+    // load public key …: No such file or directory" — silently killing ALL
+    // commits on a machine where signing got enabled (verified live on a real
+    // two-machine mesh, 2026-05-28). Derive the .pub, then VALIDATE a real
+    // test-sign before enabling gpgsign; if signing can't be made to work here,
+    // leave it OFF and keep commits unsigned-but-working. Commit verification
+    // (verifyPulledCommits) is currently a no-op, so unsigned commits are safe —
+    // whereas broken signing fails every commit and stalls the whole mesh.
+    const pubPath = `${keyPath}.pub`;
+    const probePath = path.join(this.stateDir, 'machine', '.sign-probe');
+    let signingWorks = false;
+    try {
+      if (!fs.existsSync(pubPath)) {
+        const pub = execFileSync('ssh-keygen', ['-y', '-f', keyPath], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        fs.writeFileSync(pubPath, pub, { mode: 0o644 });
+      }
+      // Exercise the exact mechanism git uses for an SSH-signed commit.
+      fs.writeFileSync(probePath, 'instar-sign-probe');
+      execFileSync('ssh-keygen', ['-Y', 'sign', '-n', 'git', '-f', keyPath, probePath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      signingWorks = true;
+    } catch {
+      // @silent-fallback-ok — signing simply won't be enabled; handled below.
+      signingWorks = false;
+    } finally {
+      SafeFsExecutor.safeRmSync(probePath, { force: true, operation: 'src/core/GitSync.ts:configureCommitSigning' });
+      SafeFsExecutor.safeRmSync(`${probePath}.sig`, { force: true, operation: 'src/core/GitSync.ts:configureCommitSigning' });
+    }
+
+    if (signingWorks) {
+      this.gitConfig('user.signingkey', keyPath);
+      this.gitConfig('gpg.format', 'ssh');
+      this.gitConfig('commit.gpgsign', 'true');
+    } else {
+      // Explicitly disable so a stale/broken signing config can't fail commits.
+      this.gitConfig('commit.gpgsign', 'false');
+      DegradationReporter.getInstance().report({
+        feature: 'GitSync.commitSigning',
+        primary: 'Sign mesh commits with the machine SSH key',
+        fallback: 'Commit unsigned (verification is currently a no-op — safe)',
+        reason: 'Why: ssh-keygen could not sign with the machine key (key format or ssh-keygen unavailable)',
+        impact: 'Mesh commits are unsigned until signing is repaired; cross-machine sync still works',
+      });
+    }
   }
 
   /**
@@ -270,6 +319,17 @@ export class GitSyncManager {
         const log = this.gitExec(['log', '--oneline', `${beforeHead}..${afterHead}`]);
         result.commitsPulled = log.trim().split('\n').filter(l => l.trim()).length;
       }
+
+      // Even on a CLEAN exit (code 0), `--autostash` can leave UNMERGED files
+      // with conflict markers: git fast-forwards/rebases fine, then the autostash
+      // pop conflicts and git prints "Applying autostash resulted in conflicts"
+      // and exits 0. That silently corrupted machines/registry.json on a standby
+      // that joined while the awake machine was bumping its lease (verified live
+      // 2026-05-28 — the conflict markers made registry.json unparseable). The
+      // resolvers below were only reachable from the catch block, so this path
+      // slipped through. Detect post-pull unmerged files and run the same
+      // deterministic resolvers, then drop the now-redundant autostash.
+      await this.resolvePostPullAutostashConflicts(result);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       // Check for merge conflicts
@@ -436,11 +496,15 @@ export class GitSyncManager {
       try {
         const status = this.gitExec(['status', '--porcelain']);
         if (status.trim()) {
-          // There are changes to push
-          result.pushed = this.commitAndPush('sync: auto-commit');
+          // There are changes to push. Use the rebase-retry path: the awake
+          // machine renews its lease every few seconds, so a standby's
+          // registry/state push frequently loses the race and is rejected
+          // non-fast-forward (the "starvation" observed live 2026-05-28). A
+          // single attempt would stall a full sync cycle; we rebase + retry.
+          result.pushed = await this.commitAndPushWithRebaseRetry('sync: auto-commit', result);
         }
       } catch {
-        // Push failures are non-fatal for sync
+        // @silent-fallback-ok — push failures are non-fatal for sync
       }
     }
 
@@ -505,7 +569,27 @@ export class GitSyncManager {
   pullRebase(): boolean {
     if (!this.isGitRepo()) return false;
     try {
-      this.gitExec(['pull', '--rebase', '--autostash']);
+      // Upstream-aware: a bare `git pull --rebase` fails with "Please specify
+      // which branch you want to rebase against" when the branch has no
+      // upstream — the same no-upstream gap that broke push. The lease store
+      // pulls before every CAS/refresh, so this silently killed LEASE RENEWAL
+      // (renewal never reached the substrate → the lease expired → bounced
+      // between machines, verified live on a two-machine mesh 2026-05-28). Fall
+      // back to an explicit `origin <branch>` pull when no upstream is set.
+      let hasUpstream = false;
+      try {
+        this.gitExec(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+        hasUpstream = true;
+      } catch {
+        // @silent-fallback-ok — no upstream yet; explicit pull below.
+      }
+      if (hasUpstream) {
+        this.gitExec(['pull', '--rebase', '--autostash']);
+      } else {
+        let branch = 'main';
+        try { branch = this.gitExec(['rev-parse', '--abbrev-ref', 'HEAD']).trim() || 'main'; } catch { /* default main */ }
+        this.gitExec(['pull', '--rebase', '--autostash', 'origin', branch]);
+      }
       return true;
     } catch {
       // @silent-fallback-ok — lease CAS re-reads and retries on failure
@@ -529,14 +613,117 @@ export class GitSyncManager {
       if (!diff.trim()) return false;
 
       this.gitExec(['commit', '-m', message]);
-
-      if (this.autoPush) {
-        this.gitExec(['push']);
-      }
-
-      return true;
     } catch {
-      // @silent-fallback-ok — push failure boolean return
+      // @silent-fallback-ok — nothing-to-commit / add race; no commit was made.
+      return false;
+    }
+
+    // The commit landed locally. Push it — upstream-aware so a repo wired by
+    // init's connect-to-existing-repo path (remote added, but the branch never
+    // set to track it) still pushes instead of silently failing.
+    if (this.autoPush) {
+      return this.pushCurrentBranch();
+    }
+    return true;
+  }
+
+  /** Count of local commits not yet on the upstream (0 if no upstream). */
+  private unpushedCount(): number {
+    try {
+      const out = this.gitExec(['log', '@{u}..HEAD', '--oneline']).trim();
+      return out ? out.split('\n').filter((l) => l.trim()).length : 0;
+    } catch {
+      // @silent-fallback-ok — no upstream yet → treat as nothing-pending here.
+      return 0;
+    }
+  }
+
+  /**
+   * Commit the sync auto-commit and push it, retrying through a rebase when the
+   * push is rejected non-fast-forward.
+   *
+   * The awake machine renews its lease every few seconds, so a standby's
+   * registry/state push frequently races and is rejected — a single attempt
+   * would miss the window and stall a whole sync cycle (the "starvation"
+   * observed live 2026-05-28). We pull --rebase (+ deterministically resolve the
+   * autostash-pop conflict) and re-push, bounded, so the standby converges
+   * within one sync. Lease commits use GitLeaseStore's own epoch CAS — NOT this
+   * path — so this never interferes with lease correctness.
+   */
+  private async commitAndPushWithRebaseRetry(message: string, result: SyncResult, maxAttempts = 3): Promise<boolean> {
+    if (this.commitAndPush(message)) return true;
+    // commitAndPush returns false for "nothing to commit" OR a failed push.
+    // If nothing is actually pending on the upstream, there's nothing to retry.
+    if (this.unpushedCount() === 0) return false;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        this.gitExec(['pull', '--rebase', '--autostash']);
+        await this.resolvePostPullAutostashConflicts(result);
+      } catch {
+        // @silent-fallback-ok — the push retry below reflects the real state.
+      }
+      if (this.pushCurrentBranch() || this.unpushedCount() === 0) return true;
+    }
+
+    DegradationReporter.getInstance().report({
+      feature: 'GitSync.syncPush',
+      primary: 'Push this machine’s state/registry update to the mesh',
+      fallback: 'Land it on the next sync cycle',
+      reason: `Why: push kept getting rejected non-fast-forward after ${maxAttempts} rebase attempts (awake-machine lease churn)`,
+      impact: 'This machine’s state lands on a later sync instead of immediately',
+    });
+    return false;
+  }
+
+  /**
+   * Push the current branch, establishing upstream tracking on first push.
+   *
+   * Bare `git push` fails with "no upstream branch" when the local branch
+   * isn't tracking a remote — exactly what init's connect-to-existing-repo path
+   * leaves behind (it runs `git remote add origin <url>` but never sets
+   * tracking). That failure used to be swallowed here, silently killing ALL
+   * cross-machine sync: the awake machine committed lease epochs locally that
+   * never reached origin, with no log. Verified live on a real two-machine
+   * mesh, 2026-05-28.
+   *
+   * Fix: detect the missing upstream and push with `-u origin <branch>` so
+   * tracking is set on first push and every later bare push works; and surface
+   * a genuine push failure (non-fast-forward / offline) via the degradation
+   * reporter rather than swallowing it. Returns true if the push landed.
+   */
+  private pushCurrentBranch(): boolean {
+    let branch = 'main';
+    try {
+      branch = this.gitExec(['rev-parse', '--abbrev-ref', 'HEAD']).trim() || 'main';
+    } catch {
+      // @silent-fallback-ok — detached/odd state; default to main.
+    }
+
+    let hasUpstream = false;
+    try {
+      this.gitExec(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+      hasUpstream = true;
+    } catch {
+      // @silent-fallback-ok — no upstream configured yet (first push).
+    }
+
+    try {
+      if (hasUpstream) {
+        this.gitExec(['push']);
+      } else {
+        this.gitExec(['push', '-u', 'origin', branch]);
+      }
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      DegradationReporter.getInstance().report({
+        feature: 'GitSync.push',
+        primary: 'Push committed changes to origin',
+        fallback: 'Leave the commit local; retry on the next sync',
+        reason: `Why: ${msg.slice(0, 200)}`,
+        impact: 'Cross-machine sync is stalled until the push succeeds (check: git push)',
+      });
       return false;
     }
   }
@@ -664,6 +851,46 @@ export class GitSyncManager {
    *   3. If LLM resolves: validate (build/test), rollback on failure
    *   4. Any still-unresolved files: report as Tier 3 (human escalation)
    */
+  /**
+   * Resolve conflicts left behind by a clean-exit `--autostash` pop.
+   *
+   * `git pull --rebase --autostash` exits 0 even when the autostash pop
+   * conflicts — leaving unmerged files (with `:2:`/`:3:` index stages AND
+   * working-tree conflict markers) that never reached the catch-block resolver.
+   * For machines/registry.json this corrupted the file into unparseable JSON
+   * and broke all mesh sync. We detect those unmerged files, run the same
+   * deterministic resolvers, and drop the redundant autostash once clean.
+   */
+  private async resolvePostPullAutostashConflicts(result: SyncResult): Promise<void> {
+    let unmerged: string[];
+    try {
+      unmerged = this.gitExec(['diff', '--name-only', '--diff-filter=U'])
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+    } catch {
+      // @silent-fallback-ok — no diff available; nothing to do.
+      return;
+    }
+    if (unmerged.length === 0) return;
+
+    result.conflicts = Array.from(new Set([...result.conflicts, ...unmerged]));
+    await this.resolveConflicts(result);
+
+    // If the resolvers cleared every unmerged file, the autostash the failed pop
+    // left behind is now redundant (its content was merged in) — drop it so it
+    // can't re-apply stale state or accumulate across syncs.
+    try {
+      const stillUnmerged = this.gitExec(['diff', '--name-only', '--diff-filter=U']).trim();
+      if (!stillUnmerged) {
+        const top = this.gitExec(['stash', 'list', '-1']);
+        if (/autostash/i.test(top)) {
+          this.gitExec(['stash', 'drop']);
+        }
+      }
+    } catch {
+      // @silent-fallback-ok — leaving the autostash is harmless; sync never pops it manually.
+    }
+  }
+
   private async resolveConflicts(result: SyncResult): Promise<void> {
     // Step 1: Classify all conflicts and handle non-LLM strategies first
     const llmCandidates: string[] = [];
@@ -971,7 +1198,9 @@ export class GitSyncManager {
    * Try to auto-resolve a specific file conflict.
    */
   private tryAutoResolve(filePath: string): boolean {
-    const relPath = path.relative(this.projectDir, filePath);
+    // Same cwd-independence rule as FileClassifier.classify: git conflict paths
+    // are already relative to projectDir, so only relativize an absolute input.
+    const relPath = path.isAbsolute(filePath) ? path.relative(this.projectDir, filePath) : filePath;
 
     // Relationship files: field-level merge
     if (relPath.includes('relationships/') && relPath.endsWith('.json')) {
