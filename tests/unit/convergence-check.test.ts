@@ -17,21 +17,47 @@
 
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.resolve(__dirname, '../../src/templates/scripts/convergence-check.sh');
 
-function runCheck(message: string): { exitCode: number; output: string } {
+function runCheck(
+  message: string,
+  opts: { projectDir?: string } = {},
+): { exitCode: number; output: string } {
   try {
     const output = execSync(`echo ${JSON.stringify(message)} | bash ${JSON.stringify(SCRIPT_PATH)}`, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        ...(opts.projectDir ? { CLAUDE_PROJECT_DIR: opts.projectDir } : {}),
+      },
     });
     return { exitCode: 0, output };
   } catch (err: any) {
     return { exitCode: err.status ?? 1, output: (err.stdout ?? '') + (err.stderr ?? '') };
+  }
+}
+
+function withConfig(config: Record<string, unknown>, fn: (projectDir: string) => void): void {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'convergence-check-config-'));
+  try {
+    const instarDir = path.join(projectDir, '.instar');
+    fs.mkdirSync(instarDir, { recursive: true });
+    fs.writeFileSync(path.join(instarDir, 'config.json'), JSON.stringify(config), 'utf-8');
+    fn(projectDir);
+  } finally {
+    SafeFsExecutor.safeRmSync(projectDir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/convergence-check.test.ts:cleanup',
+    });
   }
 }
 
@@ -211,6 +237,38 @@ describe('Convergence Check', () => {
     it('passes localhost URLs', () => {
       const result = runCheck('Server running at http://localhost:4040/health');
       expect(result.exitCode).toBe(0);
+    });
+
+    it('passes the agent own configured tunnel hostname', () => {
+      withConfig({ tunnel: { hostname: 'codey.dawn-tunnel.dev' } }, (projectDir) => {
+        const result = runCheck('Secret Drop link: https://codey.dawn-tunnel.dev/secrets/drop/abc123', {
+          projectDir,
+        });
+        expect(result.exitCode).toBe(0);
+      });
+    });
+
+    it('passes Cloudflare quick-tunnel URLs without config', () => {
+      const result = runCheck('Private view: https://quiet-river.trycloudflare.com/view/abc123');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('falls back cleanly when config is missing and still flags unfamiliar domains', () => {
+      const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'convergence-check-no-config-'));
+      try {
+        const result = runCheck('Suspicious link: https://fabricated-agent-domain.examplething/view/abc', {
+          projectDir,
+        });
+        expect(result.exitCode).toBe(1);
+        expect(result.output).toContain('URL_PROVENANCE');
+        expect(result.output).toContain('fabricated-agent-domain.examplething');
+      } finally {
+        SafeFsExecutor.safeRmSync(projectDir, {
+          recursive: true,
+          force: true,
+          operation: 'tests/unit/convergence-check.test.ts:missing-config-cleanup',
+        });
+      }
     });
 
     it('passes messages with no URLs', () => {
