@@ -827,7 +827,7 @@ export class ServerSupervisor extends EventEmitter {
             lastErr = (r.stderr || '').slice(-200);
           }
           if (rebuilt) {
-            try { if (hasBackup) fs.unlinkSync(backupPath); } catch { /* ignore */ }
+            try { if (hasBackup) SafeFsExecutor.safeUnlinkSync(backupPath, { operation: 'ServerSupervisor.preflight:bsq-backup-cleanup' }); } catch { /* ignore */ }
             healed.push(`better-sqlite3 rebuilt at ${path.relative(this.stateDir, copy.packageDir)}`);
             console.log(`[Supervisor] Preflight: better-sqlite3 rebuilt and verified at ${copy.packageDir}`);
           } else {
@@ -835,7 +835,7 @@ export class ServerSupervisor extends EventEmitter {
             // module that crashes subsystem init.
             let restored = false;
             try {
-              if (hasBackup) { fs.copyFileSync(backupPath, copy.binaryPath); fs.unlinkSync(backupPath); restored = true; }
+              if (hasBackup) { fs.copyFileSync(backupPath, copy.binaryPath); SafeFsExecutor.safeUnlinkSync(backupPath, { operation: 'ServerSupervisor.preflight:bsq-backup-restore' }); restored = true; }
             } catch { /* ignore */ }
             console.error(`[Supervisor] Preflight: better-sqlite3 rebuild could not produce a loadable module at ${copy.packageDir}${restored ? ' — restored prior binary (sqlite stays degraded, not bricked)' : ''}: ${lastErr}`);
           }

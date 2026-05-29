@@ -39,3 +39,17 @@ Revert the commit. No persisted state or schema affected; the load-test gate is 
 ## Tests
 
 `tests/unit/server-supervisor-preflight.test.ts` (+3: PATH-pin, prebuilt-first, restore-on-failure) and `tests/unit/NativeModuleHealer.test.ts` (+1: prebuilt-first + PATH-pin). 32 tests across the two files green; existing 37 healer tests + preflight tests still pass; `tsc --noEmit` clean. At-scale: `npm install better-sqlite3@12.10.0` (PATH-pinned) fetched the ABI-141 prebuilt in ~2s on the affected box.
+
+## Fix-forward note (CI green-up)
+
+The first cut of this change (shipped functionally in v1.3.100) tripped two CI
+checks that are non-functional: (1) the destructive-tool-containment lint —
+the backup cleanup/restore used direct `fs.unlinkSync` instead of
+`SafeFsExecutor.safeUnlinkSync`; and (2) a stale source-text test
+(`version-skew-recovery.test.ts`) that asserted the rebuild "uses
+--build-from-source" as its only strategy — the exact policy this change
+replaces with prebuilt-first. This follow-up swaps the `fs.unlinkSync` calls for
+`SafeFsExecutor.safeUnlinkSync` and updates that test to assert the new
+invariants (ABI-pinned + prebuilt-first, with `--build-from-source` retained as
+the compile fallback). Pure compliance/test correctness — no runtime behavior
+change beyond what v1.3.100 already shipped.
