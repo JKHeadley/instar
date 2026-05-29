@@ -70,6 +70,19 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'crossSessionCoordination',
+    prefixes: ['/coordination'],
+    description: 'Cross-session coordination — light, advisory signal so concurrent sessions on one agent home see each other before high-impact actions (config flips, commitment withdrawals). Never blocks; surfaces a coordinationWarning. See docs/specs/cross-session-coordination.md.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.crossSessionCoordinator,
+      enabled: !!ctx.crossSessionCoordinator?.isEnabled(),
+      endpoints: [
+        'POST /coordination/intent — announce "I\'m about to do X" so other sessions see it',
+        'GET /coordination/recent — recent structural actions + intents (newest first)',
+      ],
+    }),
+  },
+  {
     key: 'telegram',
     prefixes: ['/telegram'],
     description: 'Telegram messaging adapter (bidirectional)',

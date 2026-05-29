@@ -58,6 +58,9 @@ The proactive eye. Polls every 60 seconds to classify each session as healthy, i
 
 **How they connect:** SessionMonitor detects the problem → SessionRecovery tries a fast fix → if that doesn't work, TriageOrchestrator runs heuristics → if those don't match, it spawns an LLM diagnosis. Meanwhile, SessionWatchdog independently catches stuck commands at the process level.
 
+### CrossSessionCoordinator
+A light, advisory signal for when more than one session runs against the same agent home at once — they otherwise share `.instar/` state while blind to each other. CrossSessionCoordinator keeps a shared, append-only scratchpad of recent high-impact actions (feature-flag flips, commitment withdrawals) plus voluntary "I'm about to do X" intents. When a session takes a structural action, it surfaces any recent action by a *different* session as an advisory `coordinationWarning` ("⚠ another session withdrew 19 commitments 4m ago — confirm first"). It never blocks and never mutates the target state — it's a heads-up, not a lock. Default-on, near-silent (no Telegram); audit trail at `logs/cross-session-events.jsonl`.
+
 </details>
 
 ---

@@ -547,6 +547,11 @@ export interface RouteContext {
   orphanReaper: OrphanProcessReaper | null;
   coherenceMonitor: CoherenceMonitor | null;
   commitmentTracker: CommitmentTracker | null;
+  /** CrossSessionCoordinator — light, advisory cross-session coordination signal.
+   *  Distinct from the multi-MACHINE `coordinator` below. Always constructed
+   *  inside AgentServer (read routes stay alive), so rarely null. See
+   *  docs/specs/cross-session-coordination.md. */
+  crossSessionCoordinator: import('../monitoring/CrossSessionCoordinator.js').CrossSessionCoordinator | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -918,6 +923,57 @@ export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // (tests/unit/feature-enableaction-validity.test.ts) caught both.
   'dispatches', 'feedback',
 ]);
+
+// ── Cross-session coordination helpers (see docs/specs/cross-session-coordination.md) ──
+
+/**
+ * Top-level config prefixes whose flips are "structural" enough to auto-record on
+ * the cross-session ledger (feature on/off toggles, tunnel, autonomy, lifeline,
+ * updates). A flip to `monitoring.x.enabled` matches the `monitoring` prefix.
+ * Overridable per-agent via `monitoring.crossSessionCoordination.sensitiveConfigKeys`.
+ */
+const DEFAULT_SENSITIVE_CONFIG_KEYS: readonly string[] = [
+  'monitoring', 'tunnel', 'autonomousSessions', 'lifeline', 'updates',
+];
+
+/**
+ * Flatten a config patch into `[dottedPath, leafValue]` pairs. Objects recurse;
+ * arrays + primitives are leaves. Used to record which sensitive keys a
+ * `PATCH /config` flipped.
+ */
+function* flattenConfigFlips(obj: unknown, prefix = ''): Generator<[string, unknown]> {
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+    if (prefix) yield [prefix, obj];
+    return;
+  }
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const p = prefix ? `${prefix}.${k}` : k;
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      yield* flattenConfigFlips(v, p);
+    } else {
+      yield [p, v];
+    }
+  }
+}
+
+/**
+ * Best-effort actor hint for the cross-session ledger. Resolves a SESSION-level
+ * discriminator only — never the agent id, because every session of one agent
+ * shares it and using it would suppress the cross-session warning we want. When
+ * nothing identifies the session, returns undefined (treated as "potentially a
+ * different session" → errs toward surfacing the signal).
+ */
+function coordinationActor(req: { headers: Record<string, unknown>; body?: unknown }): string | undefined {
+  const h = (k: string): string | undefined => {
+    const v = req.headers[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  const bodyActor =
+    req.body && typeof req.body === 'object' && typeof (req.body as Record<string, unknown>).actor === 'string'
+      ? ((req.body as Record<string, unknown>).actor as string).trim() || undefined
+      : undefined;
+  return h('x-instar-session') || h('x-instar-actor') || bodyActor;
+}
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -11925,10 +11981,26 @@ export function createRoutes(ctx: RouteContext): Router {
 
       fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
 
+      // Cross-session coordination (advisory, non-blocking): record sensitive-key
+      // flips and surface any concurrent activity by another session. This is the
+      // backstop that catches the "one session flipped the engine flag while
+      // another was building a fix" failure. See cross-session-coordination.md.
+      let coordinationWarning: string | null = null;
+      if (ctx.crossSessionCoordinator?.isEnabled()) {
+        const sensitive = (ctx.config as any)?.monitoring?.crossSessionCoordination?.sensitiveConfigKeys;
+        const sensitiveKeys: readonly string[] = Array.isArray(sensitive) ? sensitive : DEFAULT_SENSITIVE_CONFIG_KEYS;
+        for (const [target, value] of flattenConfigFlips(patch)) {
+          if (!sensitiveKeys.some((k) => target === k || target.startsWith(k + '.'))) continue;
+          const r = ctx.crossSessionCoordinator.record({ kind: 'config-flag', target, value, actor: coordinationActor(req) });
+          if (r.warning) coordinationWarning = coordinationWarning ? `${coordinationWarning}\n${r.warning}` : r.warning;
+        }
+      }
+
       res.json({
         success: true,
         patched: Object.keys(patch),
         note: 'Some changes may require a server restart to take full effect.',
+        ...(coordinationWarning ? { coordinationWarning } : {}),
       });
     } catch (err) {
       res.status(500).json({ error: `Failed to patch config: ${err instanceof Error ? err.message : String(err)}` });
@@ -12413,7 +12485,56 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(404).json({ error: `Commitment ${req.params.id} not found or already resolved` });
       return;
     }
-    res.json({ withdrawn: true, id: req.params.id });
+    // Cross-session coordination (advisory): a single withdrawal is benign, but a
+    // burst across sessions is exactly the "mass-withdrew 19 commitments while
+    // another session was building" failure. Record it and surface concurrent
+    // activity to the actor. Never blocks. See cross-session-coordination.md.
+    let coordinationWarning: string | null = null;
+    if (ctx.crossSessionCoordinator?.isEnabled()) {
+      const r = ctx.crossSessionCoordinator.record({
+        kind: 'commitment-withdraw',
+        target: req.params.id,
+        reason,
+        actor: coordinationActor(req),
+      });
+      coordinationWarning = r.warning;
+    }
+    res.json({ withdrawn: true, id: req.params.id, ...(coordinationWarning ? { coordinationWarning } : {}) });
+  });
+
+  // ── Cross-session coordination (light, advisory) ───────────────────────
+  // A shared scratchpad so concurrent sessions on the same agent home see each
+  // other before taking high-impact actions. Never blocks. See
+  // docs/specs/cross-session-coordination.md.
+
+  // POST /coordination/intent — announce "I'm about to do X" so other sessions see it.
+  router.post('/coordination/intent', (req, res) => {
+    if (!ctx.crossSessionCoordinator) {
+      res.status(503).json({ error: 'CrossSessionCoordinator not configured' });
+      return;
+    }
+    const { activity, area } = req.body ?? {};
+    if (!activity || typeof activity !== 'string' || activity.length > 2000) {
+      res.status(400).json({ error: '"activity" must be a non-empty string under 2000 characters' });
+      return;
+    }
+    const r = ctx.crossSessionCoordinator.recordIntent(activity, {
+      actor: coordinationActor(req),
+      area: typeof area === 'string' ? area : undefined,
+    });
+    res.status(201).json({ recorded: r.recorded, id: r.id, concurrent: r.concurrent, coordinationWarning: r.warning });
+  });
+
+  // GET /coordination/recent — the ledger, for an explicit pre-action check / inspection.
+  router.get('/coordination/recent', (req, res) => {
+    if (!ctx.crossSessionCoordinator) {
+      res.status(503).json({ error: 'CrossSessionCoordinator not configured' });
+      return;
+    }
+    const limit = typeof req.query.limit === 'string' ? Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 100)) : 100;
+    const windowMs = typeof req.query.windowMs === 'string' ? Math.max(0, parseInt(req.query.windowMs, 10) || 0) : undefined;
+    const actions = ctx.crossSessionCoordinator.getRecent({ limit, windowMs });
+    res.json({ enabled: ctx.crossSessionCoordinator.isEnabled(), count: actions.length, actions });
   });
 
   /**

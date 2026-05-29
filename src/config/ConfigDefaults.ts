@@ -56,6 +56,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     contextWedgeSentinel: {
       enabled: true,
     },
+    // CrossSessionCoordinator — light, advisory cross-session coordination signal.
+    // Default-ON housekeeping (like the silently-stopped sentinels): it records
+    // high-impact structural actions + voluntary "I'm about to do X" intents and
+    // surfaces concurrent activity by another session as an in-response advisory
+    // warning. It NEVER blocks and never mutates target state. enabled:false =>
+    // passive (GET stays 200; nothing recorded, no warnings). No Telegram
+    // escalation in v1 (near-silent by design). sensitiveConfigKeys are the
+    // top-level prefixes whose PATCH /config flips get auto-recorded.
+    // See docs/specs/cross-session-coordination.md.
+    crossSessionCoordination: {
+      enabled: true,
+      windowMs: 600000,
+      retentionMs: 3600000,
+      sensitiveConfigKeys: ['monitoring', 'tunnel', 'autonomousSessions', 'lifeline', 'updates'],
+    },
     // SessionReaper — pressure-aware reaper of idle-but-alive sessions.
     // UNLIKE the sentinels above, default OFF + dry-run: it is the only monitor
     // that *kills* sessions on a heuristic, so it ships dark and must be flipped

@@ -2605,6 +2605,31 @@ Where to look (never guess mesh state — read it):
       result.upgraded.push('CLAUDE.md: added Cross-Machine Seamlessness section');
     }
 
+    // Cross-Session Coordination (light advisory signal) — Agent Awareness +
+    // Migration Parity. Existing agents need to know that concurrent sessions on
+    // one home are blind to each other, that high-impact actions should announce
+    // intent first, and that a coordinationWarning means STOP-and-confirm. This
+    // is the awareness half of the structural fix — without it the signal exists
+    // but no session knows to check it. Content-sniffed for idempotency.
+    // See docs/specs/cross-session-coordination.md.
+    if (!content.includes('Cross-Session Coordination (light, advisory)')) {
+      const crossSessionSection = `
+### Cross-Session Coordination (light, advisory)
+
+More than one session of me can run against this same agent home at once, blind to each other, all writing the same \`.instar/\` state. The damaging case: one session built a fix while another "hit the safety brake" (flipped a feature flag off + mass-withdrew commitments) — neither knew the other was acting, so the bug got fixed but the engine was left off and the test bed wiped. This is a LIGHT, advisory signal (never a lock): a shared scratchpad of recent high-impact actions + voluntary "I'm about to do X" intents. It NEVER blocks — it surfaces a \`coordinationWarning\` so I pause and reconsider.
+
+- **BEFORE any high-impact structural action** (flipping a feature flag, withdrawing/mass-withdrawing commitments, deleting shared state), announce intent first: \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Session: TOPIC_OR_LABEL" http://localhost:${port}/coordination/intent -H 'Content-Type: application/json' -d '{"activity":"flipping collaborationRedrive off — flood mitigation","area":"monitoring"}'\`. If the response \`coordinationWarning\` is non-null, ANOTHER session recently acted — confirm with the user before proceeding.
+- Inspect the ledger directly: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/coordination/recent\` — recent structural actions + intents, newest first.
+- Backstop (no reliance on me remembering): \`PATCH /config\` flips of sensitive keys and \`POST /commitments/:id/withdraw\` auto-record, and their responses carry a \`coordinationWarning\` when another session was recently active.
+- Pass \`X-Instar-Session: <topic id or label>\` on these calls so the signal can tell sessions apart (without it, every action reads as "unknown session" and errs toward warning).
+- Default-ON, near-silent (no Telegram). Audit trail: \`logs/cross-session-events.jsonl\`. Config: \`monitoring.crossSessionCoordination\` (enabled/windowMs/retentionMs/sensitiveConfigKeys).
+- Proactive: I see a \`coordinationWarning\` → STOP, tell the user another session of me may be acting, confirm before the durable action. User asks "is another session running?" / "what have my sessions been doing?" → GET /coordination/recent.
+`;
+      content += '\n' + crossSessionSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cross-Session Coordination (light advisory) section');
+    }
+
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
     // need to know threadline notices route parent-or-hub (never per-event topics)
     // and that "open this" / "tie this to X" in the hub means calling the bind

@@ -63,6 +63,7 @@ import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
+import { CrossSessionCoordinator } from '../monitoring/CrossSessionCoordinator.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { STAGE_A_ALLOWED_TOOLS } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
@@ -101,6 +102,7 @@ export class AgentServer {
   private tokenLedger: TokenLedger | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
+  private crossSessionCoordinator: CrossSessionCoordinator | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
   /** Wall-clock of the last mentor tick that ran, for the min-interval floor. */
   private mentorLastTickAt = 0;
@@ -570,6 +572,30 @@ export class AgentServer {
       }
     }
 
+    // CrossSessionCoordinator — light, advisory cross-session coordination signal
+    // (docs/specs/cross-session-coordination.md). Records high-impact structural
+    // actions + voluntary intents so concurrent sessions on one agent home see
+    // each other before acting. Never blocks, never mutates target state. Always
+    // constructed (read routes stay alive); records/warns only when enabled. Own
+    // try/catch so it can never cascade into the other monitors' init.
+    if (options.config.stateDir) {
+      try {
+        const xcfg =
+          ((options.config as unknown as Record<string, unknown>).monitoring as Record<string, unknown> | undefined)
+            ?.crossSessionCoordination as Record<string, unknown> | undefined;
+        this.crossSessionCoordinator = new CrossSessionCoordinator({
+          stateDir: options.config.stateDir,
+          enabled: xcfg?.enabled !== false,
+          windowMs: typeof xcfg?.windowMs === 'number' ? xcfg.windowMs : undefined,
+          retentionMs: typeof xcfg?.retentionMs === 'number' ? xcfg.retentionMs : undefined,
+          maxActions: typeof xcfg?.maxActions === 'number' ? xcfg.maxActions : undefined,
+        });
+      } catch (err) {
+        console.warn('[instar] cross-session-coordinator init failed (non-fatal):', err);
+        this.crossSessionCoordinator = null;
+      }
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -749,6 +775,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
+      crossSessionCoordinator: this.crossSessionCoordinator,
       mentorRunner: this.mentorRunner,
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
