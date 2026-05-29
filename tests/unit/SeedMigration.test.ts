@@ -420,7 +420,7 @@ function populateContextFiles(projectDir: string): void {
 
     'context/capabilities/attention.md':
       '# Attention Queue\n\nSignal important items to the user.\n\n' +
-      '- Queue: `POST /attention` with `{"title":"...","body":"...","priority":"medium"}`\n' +
+      '- Queue: `POST /attention` with `{"id":"agent:unique-item-id","title":"...","body":"...","priority":"medium"}`\n' +
       '- View: `GET /attention`\n- Resolve: `PATCH /attention/ATT-ID`\n',
 
     'context/capabilities/skip-ledger.md':

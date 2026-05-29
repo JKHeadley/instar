@@ -55,6 +55,12 @@ import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
+import {
+  ATTENTION_PRIORITIES,
+  ATTENTION_STATUSES,
+  normalizeAttentionPriority,
+  normalizeAttentionStatus,
+} from './attentionApi.js';
 
 const execFile = promisify(execFileCb);
 
@@ -6138,7 +6144,10 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { id, title, summary, category, priority, description, sourceContext } = req.body;
+    const { id, title, category, description } = req.body;
+    const summary = typeof req.body.summary === 'string' ? req.body.summary : req.body.body;
+    const sourceContext = typeof req.body.sourceContext === 'string' ? req.body.sourceContext : req.body.source;
+    const priority = normalizeAttentionPriority(req.body.priority);
     if (!id || typeof id !== 'string' || id.length > 200) {
       res.status(400).json({ error: '"id" must be a string under 200 characters' });
       return;
@@ -6151,8 +6160,8 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"summary" must be a string under 2000 characters' });
       return;
     }
-    if (priority !== undefined && !['URGENT', 'HIGH', 'NORMAL', 'LOW'].includes(priority)) {
-      res.status(400).json({ error: '"priority" must be one of: URGENT, HIGH, NORMAL, LOW' });
+    if (!priority) {
+      res.status(400).json({ error: `"priority" must be one of: ${ATTENTION_PRIORITIES.join(', ')} (aliases: urgent, high, medium, normal, low)` });
       return;
     }
 
@@ -6202,7 +6211,7 @@ export function createRoutes(ctx: RouteContext): Router {
         title,
         summary,
         category: category || 'general',
-        priority: priority || 'NORMAL',
+        priority,
         description: description || undefined,
         sourceContext: sourceContext || undefined,
       });
@@ -6218,7 +6227,8 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const status = req.query.status as string | undefined;
+    const requestedStatus = req.query.status as string | undefined;
+    const status = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
     const items = ctx.telegram.getAttentionItems(status);
     res.json({ items, count: items.length });
   });
@@ -6243,10 +6253,9 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { status } = req.body;
-    const validStatuses = ['OPEN', 'ACKNOWLEDGED', 'DONE', 'WONT_DO'];
-    if (!status || !validStatuses.includes(status)) {
-      res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
+    const status = normalizeAttentionStatus(req.body.status);
+    if (!status) {
+      res.status(400).json({ error: `"status" must be one of: ${ATTENTION_STATUSES.join(', ')} (aliases: resolved, done, ack, in_progress, wontdo, reopen)` });
       return;
     }
 
