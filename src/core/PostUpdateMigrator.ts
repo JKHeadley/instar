@@ -2785,6 +2785,27 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
     }
 
+    // Multi-Machine Session Pool (§L2) — tells the agent about the active-active
+    // pool + the Machines tab + nickname-based placement/transfer. Without it an
+    // agent asked "what machines am I on / move this to the mini / where is this
+    // running?" has no grounded answer. Idempotent via the unique marker phrase.
+    if (!content.includes('Multi-Machine Session Pool (active-active') && !content.includes('/pool/machines/')) {
+      const section = `
+## Multi-Machine Session Pool (active-active — spread conversations across machines)
+
+Beyond the one-awake-machine model: with the pool enabled I run conversations across ALL my machines at once and can MOVE a conversation between them. Ships DARK behind \`multiMachine.sessionPool.stage\` (default 'dark'); a single-machine agent is a no-op.
+
+- **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
+- **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
+- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running?" → \`GET /pool\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Multi-Machine Session Pool section');
+    } else {
+      result.skipped.push('CLAUDE.md: Multi-Machine Session Pool section already present');
+    }
+
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
     // about the thinking-block-400 wedge + that auto-recovery is opt-in. Without
     // it, an agent asked "why did my session keep failing instantly / what is

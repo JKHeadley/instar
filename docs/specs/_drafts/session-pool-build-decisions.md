@@ -54,6 +54,12 @@ Running log of judgment calls I (Echo) made autonomously during the build, per J
   1. Existing-agent delivery: extend `ensureAutonomousStopHook` force-update to re-copy the hook when the deployed copy LACKS the CLAUDE_PROJECT_DIR anchor (content-sniff), so existing agents get the fix on update (new agents already covered via bundled source).
   2. build-stop-hook.sh: re-wire its settings.json Stop entry to `${CLAUDE_PROJECT_DIR}/...` (it's currently a bare relative path → same worktree-CWD failure, non-blocking).
 
+### D9 — Track B agent-awareness: Tier-0 CLAUDE.md blurb now; code-enforced Playbook deep-trigger tracked
+- **Call:** Delivered the Agent Awareness Standard's core for Track B — a Tier-0 blurb in `generateClaudeMd()` (Multi-Machine Session Pool: Machines tab, `GET /pool`, `PATCH /pool/machines/:id`, the "run this on / move this to <nickname>" proactive triggers, "where is this running?") + a `migrateClaudeMd()` content-sniff append so existing agents get it. Migration-parity test green.
+- **Why softened the Playbook clause:** the spec's Agent Awareness also specifies a CODE-ENFORCED Playbook deep-entry (`multiMachine-placement-deep` with a trigger regex + a SelfKnowledgeTree probe — Structure>Willpower for on-demand deep mechanics). That's a larger build (playbook-manifest seed migration + probe + tests). Rather than assert a non-existent Playbook entry in the blurb (dishonest), I pointed "deep mechanics" at the Machines tab + the spec, and TRACK the code-enforced Playbook trigger as the spec-specified enhancement. The core Standard (the agent KNOWS the feature + endpoints + triggers) is met.
+- **Tracked follow-up:** seed `multiMachine-placement-deep` into the Playbook manifest (PostUpdateMigrator playbook-seed migration, like migrateConversationalCatalogPlaybookManifest) with the §L2 trigger regex + the SelfKnowledgeTree probe; then restore the Playbook reference in the blurb. <!-- tracked: session-pool-track-b -->
+- **Track B is now functionally complete:** B(1) nicknames, B(2a) registry+clock-FSM, B(2b) /pool API+hardware, B(2c) server wiring + Machines dashboard tab, agent-awareness blurb + migration parity. Remaining Track-B refinement = the Playbook deep-trigger (above). Next: Track C (MeshRpc L0).
+
 ## Track A — STATUS: built + pushed + PR #506 (CI green-trending)
 Commits: b159cc0d7 (code), be95e86f3 (spec deferral markers). Local: 155 green + tsc clean. CI on #506: fast gates pass, unit shards passing.
 

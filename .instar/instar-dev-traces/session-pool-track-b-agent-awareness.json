@@ -1,0 +1,12 @@
+{
+  "phase": "complete",
+  "slug": "session-pool-track-b-agent-awareness",
+  "coveredFiles": [
+    "src/scaffold/templates.ts",
+    "src/core/PostUpdateMigrator.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/session-pool-track-b-agent-awareness.md",
+  "artifactSha256": "5e3907c38d50089f0821be50d5913ebf0dbf71595bc3ebf0eb16d0fa304577a7",
+  "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+  "createdAt": "2026-05-29T11:00:14Z"
+}

@@ -435,6 +435,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - A genuinely **unresolvable split-brain** surfaces as ONE Attention-queue item with a Y/N decision ("demote machine X?"), deduped per partition episode — I present it to the user, I don't silently pick.
 - Dials under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …); a nonsensical combo is rejected at startup, not run silently.
 
+**Multi-Machine Session Pool (active-active — spread conversations across machines)** — The longer arc beyond one-awake-machine: with the pool enabled I run conversations across ALL my machines at once and can MOVE a conversation between them. Ships DARK behind \`multiMachine.sessionPool.stage\` (default 'dark'); a single-machine agent is a no-op.
+- **See the pool:** the **Machines tab** in the dashboard, or \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool\` → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
+- **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename: \`curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/machines/MACHINE_ID -H 'Content-Type: application/json' -d '{"nickname":"the mini"}'\` (or inline on the Machines tab).
+- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → that's a placement/transfer-by-nickname (a session moves to the named machine, resuming like a session restart). "where is this running?" → \`GET /pool\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
+
 **Relationships** — Track people I interact with.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/relationships\`
 
