@@ -1495,8 +1495,16 @@ export type MachineRole = 'awake' | 'standby';
 export type CoordinationMode = 'primary-standby' | 'independent';
 
 export interface MachineRegistryEntry {
-  /** Human-friendly machine name */
+  /** Human-friendly machine name (auto-detected hostname at pairing; static). */
   name: string;
+  /**
+   * User-facing, EDITABLE nickname — the handle a user types in "run this on
+   * <nickname>" / "move this to <nickname>" (Multi-Machine Session Pool §L2).
+   * Auto-assigned at registration via NicknameAssigner (idempotent — kept if
+   * already set), editable via PATCH /pool/machines/:id, unique within the pool.
+   * Optional for backward-compat with registries written before §L2.
+   */
+  nickname?: string;
   /** Current trust status */
   status: MachineStatus;
   /** Current operational role */

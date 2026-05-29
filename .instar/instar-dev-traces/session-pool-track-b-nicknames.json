@@ -1,0 +1,13 @@
+{
+  "phase": "complete",
+  "slug": "session-pool-track-b-nicknames",
+  "coveredFiles": [
+    "src/core/NicknameAssigner.ts",
+    "src/core/MachineIdentity.ts",
+    "src/core/types.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/session-pool-track-b-nicknames.md",
+  "artifactSha256": "87203eeb8793e6ad2e5bd9c45e7744b39a63031d0247952454572843bf2efed3",
+  "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+  "createdAt": "2026-05-29T10:03:52Z"
+}

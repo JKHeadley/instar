@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { assignNickname, isValidNickname } from './NicknameAssigner.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -303,15 +304,78 @@ export class MachineIdentityManager {
     const registry = this.loadRegistry();
     const now = new Date().toISOString();
 
+    // Nickname (Session Pool §L2): keep an already-assigned nickname (idempotent
+    // re-register), else auto-assign a friendly, collision-free one derived from
+    // the machine's own properties. Collision set = every OTHER machine's nickname.
+    const existing = registry.machines[identity.machineId];
+    const existingNicknames = Object.entries(registry.machines)
+      .filter(([id]) => id !== identity.machineId)
+      .map(([, e]) => e.nickname)
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+    const nickname =
+      existing?.nickname ??
+      assignNickname({ identityName: identity.name, platform: identity.platform, existingNicknames });
+
     registry.machines[identity.machineId] = {
+      ...(existing ?? {}),
       name: identity.name,
+      nickname,
       status: 'active',
       role,
-      pairedAt: now,
+      pairedAt: existing?.pairedAt ?? now,
       lastSeen: now,
     };
 
     this.saveRegistry(registry);
+  }
+
+  /**
+   * Set a machine's user-facing nickname (Session Pool §L2). Validates the
+   * format and pool-uniqueness (case-insensitive, excluding the machine itself);
+   * a collision is REJECTED (not silently suffixed) so the caller sees the
+   * conflict. Nickname is metadata only — renaming never moves a session or
+   * changes lease/ownership state.
+   *
+   * @throws if the machine is unknown, the nickname is malformed, or it collides.
+   */
+  updateNickname(machineId: string, nickname: string): void {
+    const trimmed = typeof nickname === 'string' ? nickname.trim() : '';
+    if (!isValidNickname(trimmed)) {
+      throw new Error(`Invalid nickname '${nickname}' — must be 1–40 chars of letters, digits, spaces, hyphens.`);
+    }
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+
+    const lower = trimmed.toLowerCase();
+    for (const [id, e] of Object.entries(registry.machines)) {
+      if (id !== machineId && (e.nickname || '').trim().toLowerCase() === lower) {
+        throw new Error(`Nickname '${trimmed}' is already used by machine ${id}.`);
+      }
+    }
+
+    entry.nickname = trimmed;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /**
+   * Resolve a user-typed nickname to a machineId (Session Pool §L4 placement /
+   * transfer command resolution). Case-insensitive, trimmed, exact match over
+   * ACTIVE machines. Returns null if unknown — the caller surfaces the valid
+   * nicknames and refuses to mis-route (never a silent fallthrough).
+   * Nicknames are pool-unique (updateNickname enforces it), so a match is unique.
+   */
+  resolveNickname(nickname: string): string | null {
+    const target = (typeof nickname === 'string' ? nickname : '').trim().toLowerCase();
+    if (!target) return null;
+    const registry = this.loadRegistry();
+    for (const [machineId, entry] of Object.entries(registry.machines)) {
+      if (entry.status === 'active' && (entry.nickname || '').trim().toLowerCase() === target) {
+        return machineId;
+      }
+    }
+    return null;
   }
 
   /**
