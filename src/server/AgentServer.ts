@@ -193,6 +193,8 @@ export class AgentServer {
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Per-session ownership registry (§L3). */
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
+    /** Signed rollout-stage E2E result store (§Rollout). */
+    sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
@@ -771,6 +773,7 @@ export class AgentServer {
       machinePoolRegistry: options.machinePoolRegistry ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
+      sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
       replyMarkerTransport: options.replyMarkerTransport ?? null,

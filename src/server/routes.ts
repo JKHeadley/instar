@@ -723,6 +723,9 @@ export interface RouteContext {
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
+  /** Signed, append-only rollout-stage E2E results (§Rollout) — backs GET
+   *  /session-pool/e2e-results so the gate state is observable. Null/absent (dark). */
+  sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null;
   /**
    * Exactly-once ingress ledger (spec §8 G3a) — non-null ONLY when
    * multiMachine.exactlyOnceIngress is enabled. When present, the inbound
@@ -7002,6 +7005,23 @@ export function createRoutes(ctx: RouteContext): Router {
         : null,
       machines,
     });
+  });
+
+  // GET /session-pool/e2e-results — the rollout gate's observable state (§Rollout).
+  // Read-only; returns the latest E2E result per stage + whether each verifies. The
+  // StageAdvancer gates activation on these; this surfaces them (no mutation here).
+  router.get('/session-pool/e2e-results', (_req, res) => {
+    const store = ctx.sessionPoolE2EResultStore;
+    if (!store) {
+      res.status(503).json({ error: 'session-pool rollout gate not available (dark / single-machine install)' });
+      return;
+    }
+    const stages = [0, 1, 2, 3];
+    const latestPerStage = stages.map((stage) => {
+      const row = store.getLatestForStage(stage);
+      return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
+    });
+    res.json({ latestPerStage, total: store.all().length });
   });
 
   // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).
