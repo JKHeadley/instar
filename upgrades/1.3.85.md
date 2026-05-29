@@ -4,27 +4,27 @@
 
 ## What Changed
 
-The Coherence Gate now represents unbound topic-project alignment as an
-indeterminate check and summarizes the result honestly. A warning-level
-indeterminate check is no longer counted as passed in the top-level pass flag or
-the human-readable summary. Recommendation behavior is unchanged: clean checks
-proceed, warning-level checks warn, and error-level checks block.
+The External Operation Gate action vocabulary is now consistent across the
+endpoint, generated hook, generated guidance, and docs. The canonical successful
+action is `proceed`; `allow` is retained only as a legacy hook compatibility
+alias. Unknown action values from the gate now block external write/delete MCP
+operations instead of being permitted through fallthrough.
 
 ## What to Tell Your User
 
-- **Coherence checks are clearer**: "When I verify a risky action, I'll now tell you when a check needs human verification instead of incorrectly saying every check passed."
+- **External operation safety is clearer**: "When I gate an external-service action, the documented decision words now match the live evaluator. Allowed operations say proceed, risky ones ask for a plan, and malformed gate responses stop instead of slipping through."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Honest indeterminate Coherence Gate summaries | Automatic for pre-action coherence checks |
+| External Operation Gate vocabulary alignment | Automatic for generated hooks and evaluator responses |
 
 ## Evidence
 
-Before the change, a live Coherence Gate request for an unbound topic returned a
-warning recommendation while the summary still said all four coherence checks
-passed. After the change, focused unit, HTTP route, and e2e lifecycle tests
-verify that the unbound topic check returns an indeterminate value, the overall
-pass flag is false, the recommendation remains warn, and the summary includes
-the indeterminate count instead of the all-passed sentence.
+Before the change, live evaluation returned `proceed` while generated docs
+described the allowed action as `allow`, and the hook accepted `proceed` only by
+falling through unrecognized actions. After the change, focused unit tests cover
+core vocabulary and hook behavior, integration tests cover representative
+evaluator route outcomes, and an e2e HTTP lifecycle verifies `proceed`,
+`show-plan`, and `block` outcomes through AgentServer.

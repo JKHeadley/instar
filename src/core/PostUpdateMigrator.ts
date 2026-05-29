@@ -3292,7 +3292,7 @@ How it works:
 1. The \`external-operation-gate.js\` hook intercepts all \`mcp__*\` tool calls
 2. It classifies the operation by mutability (read/write/modify/delete) and reversibility
 3. For non-read operations, it calls the gate API: \`POST http://localhost:${port}/operations/evaluate\`
-4. The gate returns: \`allow\`, \`block\`, \`show-plan\` (requires user approval), or \`suggest-alternative\`
+4. The gate returns: \`proceed\`, \`block\`, \`show-plan\` (requires user approval), or \`suggest-alternative\`
 
 **If an operation is blocked**, you'll see an error message with the reason. Do NOT try to bypass it.
 **If an operation requires a plan**, show the plan to the user and get explicit approval before proceeding.
@@ -6519,14 +6519,17 @@ process.stdin.on('end', async () => {
 
       const decision = await res.json();
 
-      if (decision.action === 'block') {
+      const actionDecision = decision.action;
+      const permitsOperation = actionDecision === 'proceed' || actionDecision === 'allow';
+
+      if (actionDecision === 'block') {
         process.stderr.write('BLOCKED: External operation gate denied this action.\\n');
         process.stderr.write('Reason: ' + (decision.reason || 'Operation not permitted') + '\\n');
         process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
         process.exit(2);
       }
 
-      if (decision.action === 'show-plan') {
+      if (actionDecision === 'show-plan') {
         const ctx = [
           '=== EXTERNAL OPERATION GATE: APPROVAL REQUIRED ===',
           'Operation: ' + description,
@@ -6546,12 +6549,19 @@ process.stdin.on('end', async () => {
         process.exit(0);
       }
 
-      if (decision.action === 'suggest-alternative' && decision.alternative) {
+      if (actionDecision === 'suggest-alternative' && decision.alternative) {
         process.stdout.write(JSON.stringify({
           decision: 'approve',
           additionalContext: 'External Operation Gate suggests: ' + decision.alternative,
         }));
         process.exit(0);
+      }
+
+      if (!permitsOperation) {
+        process.stderr.write('BLOCKED: External operation gate returned an unknown action.\\n');
+        process.stderr.write('Action: ' + String(actionDecision || 'missing') + '\\n');
+        process.stderr.write('Service: ' + service + ', Action: ' + action + '\\n');
+        process.exit(2);
       }
 
       // Identity grounding for external write/send/publish operations.

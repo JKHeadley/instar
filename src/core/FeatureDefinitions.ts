@@ -228,7 +228,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     enableAction: { method: 'PATCH', path: '/config', body: { externalOperations: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { externalOperations: { enabled: false } } },
     oneLiner: 'Classify and gate external operations (email, Slack, GitHub) by risk level.',
-    fullDescription: 'The external operation gate intercepts MCP tool calls that interact with external services. It classifies each operation by mutability and reversibility, then decides whether to allow, block, or require user approval. Includes adaptive trust that elevates permissions as operations succeed.',
+    fullDescription: 'The external operation gate intercepts MCP tool calls that interact with external services. It classifies each operation by mutability and reversibility, then decides whether to proceed, block, or require user approval. Includes adaptive trust that elevates permissions as operations succeed.',
     consentTier: 'local',
     dataImplications: [
       { dataType: 'operation classification logs', destination: 'local', retention: '30 days', description: 'Logs of classified operations are stored locally for audit.' },
