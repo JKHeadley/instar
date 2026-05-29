@@ -271,12 +271,26 @@ class NativeModuleHealerImpl {
     } catch (err) {
       if (!this.isNodeModuleVersionError(err)) throw err;
 
-      // Already tried this process — don't loop, surface the original error
+      // The expensive rebuild runs at most once per process. But "rebuild
+      // already ran" does NOT mean "this caller can't recover" — it depends on
+      // whether that rebuild SUCCEEDED.
       if (this.healAttempted) {
         const last = this.lastResult;
-        const hint = last && !last.success
-          ? ` (heal previously attempted and failed: ${last.errorTail ?? 'unknown'})`
-          : ' (heal previously attempted)';
+        // Multi-subsystem case: the FIRST sqlite subsystem to open (e.g.
+        // SemanticMemory) consumes the once-per-process rebuild. When that
+        // rebuild succeeded, the on-disk binding is already correct — a LATER
+        // subsystem (e.g. TokenLedger) that is still holding the stale cached
+        // binding just needs a fresh require. Clear the cache and retry the
+        // open once (cheap; no second rebuild). Without this, every sqlite
+        // subsystem opened after the first one stays broken on a node-upgraded
+        // agent — observed live as TokenLedger 503 while SemanticMemory 200.
+        if (last?.success) {
+          this.clearBetterSqlite3Cache();
+          return await opener();
+        }
+        // The prior rebuild FAILED — retrying the open won't help; surface the
+        // original error with heal context.
+        const hint = ` (heal previously attempted and failed: ${last?.errorTail ?? 'unknown'})`;
         const wrapped = err instanceof Error ? err : new Error(String(err));
         wrapped.message = `${wrapped.message}${hint}`;
         throw wrapped;
@@ -316,11 +330,19 @@ class NativeModuleHealerImpl {
     } catch (err) {
       if (!this.isNodeModuleVersionError(err)) throw err;
 
+      // The expensive rebuild runs at most once per process — but recovery for
+      // THIS caller depends on whether that rebuild succeeded (see openWithHeal).
       if (this.healAttempted) {
         const last = this.lastResult;
-        const hint = last && !last.success
-          ? ` (heal previously attempted and failed: ${last.errorTail ?? 'unknown'})`
-          : ' (heal previously attempted)';
+        // A prior rebuild succeeded → binding on disk is already correct. Clear
+        // this caller's stale cached binding and retry the open once. This is
+        // the path TokenLedger's sync constructor takes when SemanticMemory
+        // healed first.
+        if (last?.success) {
+          this.clearBetterSqlite3Cache();
+          return opener();
+        }
+        const hint = ` (heal previously attempted and failed: ${last?.errorTail ?? 'unknown'})`;
         const wrapped = err instanceof Error ? err : new Error(String(err));
         wrapped.message = `${wrapped.message}${hint}`;
         throw wrapped;

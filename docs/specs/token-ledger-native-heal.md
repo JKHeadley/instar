@@ -69,3 +69,37 @@ Revert four files (`src/memory/NativeModuleHealer.ts`, `src/server/AgentServer.t
 ## Convergence Notes
 
 Single-iteration. Conversational alignment with Justin on Telegram topic 8615 (2026-05-15, immediately following the PromptGate token-burn fix) established the scope: "restore /tokens/* endpoints by adopting the existing healer." The PROP-399 design and W-1 extension already cover the cryptographic surface; this PR is a pure consumer-side addition.
+
+## Amendment (2026-05-29): shared prior-heal retry — finish AC#7
+
+**This amendment is in-scope for the original approval** (its sole purpose is to make AC#7 — "/tokens/summary returns live data after a Node upgrade" — actually hold). It was surfaced live while dogfooding the Codey agent (Telegram topic 13435): on a node-upgraded agent, `/memory/search` (SemanticMemory) returned 200 while `/tokens/summary` (TokenLedger) still returned `{"error":"token ledger unavailable"}` (503). The binding on disk was correct (ABI-127, loads under the running Node 22), the heal log was empty, yet TokenLedger stayed dark.
+
+### Residual defect
+
+The original fix routed TokenLedger through `openWithHealSync` (✓), but the **once-per-process heal guard** (`healAttempted`) — described at "Fix" point 2 above as a loop-safety feature — is too coarse. It conflates two distinct concerns:
+
+1. *"Don't run the ~30s `npm rebuild` again this process."* — correct; the rebuild is expensive.
+2. *"Don't even retry the open."* — wrong after a **successful** prior rebuild.
+
+Boot ordering makes this bite: the FIRST sqlite subsystem to construct (e.g. `SemanticMemory`) hits the ABI mismatch, heals successfully, rebuilds the binding on disk, and sets `healAttempted = true`. Any LATER subsystem (`TokenLedger`, `TopicMemory`, `MemoryIndex`) that then constructs and throws `NODE_MODULE_VERSION` hits `if (this.healAttempted) → throw "(heal previously attempted)"` and is permanently dark for the process — **even though the binding is already fixed and a cheap re-require would succeed.** Net: every sqlite subsystem opened after the first one to heal stays broken until the next restart.
+
+### Fix
+
+In both `openWithHeal` (async) and `openWithHealSync` (sync), when `healAttempted === true`, branch on the prior outcome (`this.lastResult.success`):
+
+- **Prior heal SUCCEEDED** → the on-disk binding is already correct. `clearBetterSqlite3Cache()` (drops the stale cached `.node` require entry) then retry `opener()` **once**. No second rebuild. The lazy `bindings()` require inside `new Database()` re-loads the now-correct binding. If the retry still throws, surface that error honestly.
+- **Prior heal FAILED** → a retry can't help; throw with the existing `(heal previously attempted and failed: …)` context (unchanged behavior).
+
+This preserves the once-per-process *rebuild* guard (the expensive step still runs at most once) while removing the spurious *open* lockout. Purely additive to the decision in the `healAttempted` block; the non-mismatch passthrough, first-heal, and prior-failure paths are unchanged.
+
+### Acceptance Criteria (amendment)
+
+A1. After SemanticMemory heals successfully, a subsequent `openWithHealSync('TokenLedger', …)` whose first open throws `NODE_MODULE_VERSION` clears the cache and retries, returning the opened handle — **without** a second `healBetterSqlite3Sync` call.
+A2. Same for the async `openWithHeal` surface.
+A3. When the prior heal FAILED, a later caller still throws `(heal previously attempted and failed: …)` and does NOT retry (regression guard — both sides of the boundary).
+A4. A persistent post-retry failure surfaces the original `NODE_MODULE_VERSION` error directly (no swallowing).
+A5. All pre-existing healer tests keep passing.
+
+### Rollback (amendment)
+
+Revert the two `if (this.healAttempted)` blocks in `src/memory/NativeModuleHealer.ts` to the unconditional-throw form. One file, one revert, no state/migration/contract change. The reverted-to state is the pre-amendment behavior (TokenLedger dark after another subsystem heals first) — strictly the bug we are fixing, never worse.
