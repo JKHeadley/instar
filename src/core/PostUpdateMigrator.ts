@@ -4844,6 +4844,15 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
   }
 
   private getSessionStartHook(): string {
+    // Prefer the bundled template (src/templates/hooks/session-start.sh) so
+    // edits to the template propagate to existing agents on update — including
+    // the macOS 26 TCC escalation-spool drain. The hardcoded literal below is
+    // a backward-compat fallback for the rare case where the template is
+    // missing from a dist; it lacks the drain block, so a non-fallback path is
+    // strongly preferred.
+    const fromTemplate = this.loadTemplate('hooks', 'session-start.sh');
+    if (fromTemplate !== null) return fromTemplate;
+
     return `#!/bin/bash
 # Session start hook — injects identity context on session lifecycle events.
 # Fires on: startup, resume, clear, compact (via SessionStart hook type)

@@ -185,6 +185,20 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > probe/heal/signal a relocated agent on macOS 26 without ever traversing the
 > TCC-locked Documents path.
 
+> **Increment 13 (migration parity — session-start hook reaches existing agents):**
+> `PostUpdateMigrator.getSessionStartHook()` previously returned a HARDCODED
+> string literal — so edits to `src/templates/hooks/session-start.sh` would
+> NEVER reach existing agents on update (Migration Parity Standard violation
+> for the entire Scope C drain). Refactored to read from the bundled template
+> via the existing `loadTemplate('hooks', 'session-start.sh')` (same pattern as
+> `migrateFleetWatchdog`); the literal is kept ONLY as a backward-compat
+> fallback for dists missing the template. 1 focused regression test asserts
+> the returned content carries the drain markers. **All Scope A/B/C in-the-wild
+> propagation paths now structurally sound:** the fleet watchdog already used
+> the template; the relocation orchestrator writes from the source code; the
+> credential writer runs at every healthy boot + post-relocate; the
+> SessionStart hook now propagates via template too.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
