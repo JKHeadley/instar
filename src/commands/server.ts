@@ -8810,12 +8810,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [pool] registry not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    // ── MeshRpc dispatcher (§L0) — receive side for POST /mesh/rpc ──
-    // Built when there's a machine identity. Read-class handlers
-    // (capacity-report/session-status) are live now; mutation handlers
-    // (place/claim/release/transfer) register from L3/L4/L5 as those tracks land
-    // (a verified+authorized command with no handler returns 501, not a stub).
+    // ── MeshRpc dispatcher (§L0) + SessionOwnership registry (§L3) ──
+    // Built when there's a machine identity. The ownership registry (L3) feeds
+    // the dispatcher's RBAC (ownerOf/placementTargetOf) + the place/claim/
+    // transfer/release handlers; read-class handlers (capacity/session-status)
+    // are live too. Single-machine uses the in-memory store; the cross-machine
+    // git-backed store swaps in for the Track-H proof (the registry is store-agnostic).
     let meshRpcDispatcher: import('../core/MeshRpc.js').MeshRpcDispatcher | undefined;
+    let sessionOwnershipRegistry: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | undefined;
     try {
       const meshMod = await import('../core/MeshRpc.js');
       const idMod = await import('../core/MachineIdentity.js');
@@ -8826,6 +8828,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         const meshClockToleranceMs = config.multiMachine?.sessionPool?.meshRpcClockToleranceMs ?? 30000;
         const seenMeshNonces = new Map<string, number>(); // `${sender}:${nonce}` → ts, age-pruned
         const meshPruneMs = Math.max(meshClockToleranceMs * 4, 120_000);
+        // SessionOwnership registry (§L3) — in-memory store (single-machine correct;
+        // git-backed cross-machine store is the Track-H swap). Per-session nonce set.
+        const ownMod = await import('../core/SessionOwnershipRegistry.js');
+        const seenOwnNonces = new Set<string>();
+        sessionOwnershipRegistry = new ownMod.SessionOwnershipRegistry({
+          store: new ownMod.InMemorySessionOwnershipStore(),
+          seenNonce: (k) => seenOwnNonces.has(k),
+          recordNonce: (k) => seenOwnNonces.add(k),
+          logger: (m: string) => console.log(pc.dim(`  ${m}`)),
+        });
+        const ownReg = sessionOwnershipRegistry;
+        // The §L3 ownership commands, routed from MeshRpc to the registry CAS.
+        const ownAction = (
+          cmd: import('../core/MeshRpc.js').MeshCommand,
+          sender: string,
+          env: import('../core/MeshRpc.js').MeshEnvelope,
+        ): unknown => {
+          if (cmd.type === 'place') return ownReg.cas({ type: 'place', machineId: cmd.machine }, { sessionKey: cmd.session, sender, nonce: env.nonce });
+          if (cmd.type === 'claim') return ownReg.cas({ type: 'claim', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce });
+          if (cmd.type === 'transfer') return ownReg.cas({ type: 'transfer', to: cmd.target }, { sessionKey: cmd.session, sender, nonce: env.nonce });
+          if (cmd.type === 'release') return ownReg.cas({ type: 'release', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce });
+          return { ok: false, reason: 'unsupported' };
+        };
         meshRpcDispatcher = new meshMod.MeshRpcDispatcher({
           verify: {
             selfMachineId: meshSelfId,
@@ -8841,8 +8866,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           rbac: {
             routerHolder: () => coordinator?.getSyncStatus().leaseHolder ?? null,
-            ownerOf: () => null,          // wired by L3 (Track D)
-            placementTargetOf: () => null, // wired by L4 (Track E)
+            ownerOf: (s) => ownReg.ownerOf(s),
+            placementTargetOf: (s) => ownReg.placementTargetOf(s),
           },
           recordNonce: (s, n) => {
             const t = Date.now();
@@ -8854,6 +8879,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           handlers: {
             'capacity-report': () => machinePoolRegistry?.getCapacities() ?? [],
             'session-status': () => machinePoolRegistry?.getCapacity(meshSelfId) ?? { machineId: meshSelfId },
+            place: ownAction,
+            claim: ownAction,
+            transfer: ownAction,
+            release: ownAction,
           },
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
@@ -8862,7 +8891,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [mesh-rpc] dispatcher not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

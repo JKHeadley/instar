@@ -169,8 +169,10 @@ export function acceptEnvelope(
 
 // ── Dispatcher (transport-agnostic: the receive side of MeshRpc) ──────
 
-/** A handler for one command type. Receives the (already-authorized) command + verified sender. */
-export type MeshCommandHandler = (command: MeshCommand, sender: MachineId) => Promise<unknown> | unknown;
+/** A handler for one command type. Receives the (already-authorized) command, the
+ *  verified sender, and the full envelope (for nonce/epoch/timestamp, e.g. the
+ *  per-session ownership CAS uses `env.nonce`). */
+export type MeshCommandHandler = (command: MeshCommand, sender: MachineId, env: MeshEnvelope) => Promise<unknown> | unknown;
 
 export interface MeshRpcDispatcherDeps {
   verify: VerifyEnvelopeDeps;
@@ -235,7 +237,7 @@ export class MeshRpcDispatcher {
     if (!handler) {
       return { ok: false, reason: 'no-handler', status: statusForReason('no-handler') };
     }
-    const result = await handler(env.command, env.sender);
+    const result = await handler(env.command, env.sender, env);
     return { ok: true, result };
   }
 }

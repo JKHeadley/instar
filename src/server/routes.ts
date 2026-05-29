@@ -720,6 +720,9 @@ export interface RouteContext {
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
+  /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
+   *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
+  sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
   /**
    * Exactly-once ingress ledger (spec §8 G3a) — non-null ONLY when
    * multiMachine.exactlyOnceIngress is enabled. When present, the inbound

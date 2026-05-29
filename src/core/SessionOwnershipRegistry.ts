@@ -28,6 +28,33 @@ import {
   type SessionOwnershipRecord,
 } from './SessionOwnership.js';
 
+/**
+ * In-memory per-session ownership store with fast-forward CAS — correct for a
+ * single machine (no cross-machine contention) and for the dark v0.1 state.
+ * The CROSS-MACHINE durable store (git single-ref-per-session push, mirroring
+ * GitLeaseStore) swaps in for the Track-H real-hardware proof; the registry/FSM/
+ * CAS logic above is store-agnostic. A candidate lands only if it fast-forwards
+ * from the current epoch (`candidate.ownershipEpoch === current.epoch + 1`).
+ */
+export class InMemorySessionOwnershipStore {
+  private recs = new Map<string, import('./SessionOwnership.js').SessionOwnershipRecord>();
+  read(sessionKey: string) {
+    return this.recs.get(sessionKey) ?? null;
+  }
+  casWrite(candidate: import('./SessionOwnership.js').SessionOwnershipRecord) {
+    const current = this.recs.get(candidate.sessionKey) ?? null;
+    const curEpoch = current?.ownershipEpoch ?? 0;
+    if (candidate.ownershipEpoch === curEpoch + 1) {
+      this.recs.set(candidate.sessionKey, candidate);
+      return { ok: true, observed: candidate };
+    }
+    return { ok: false, observed: current };
+  }
+  all() {
+    return [...this.recs.values()];
+  }
+}
+
 /** Durable per-session CAS substrate (git single-ref fast-forward push). */
 export interface SessionOwnershipStore {
   /** Read the current committed record for a session (null if none). */

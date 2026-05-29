@@ -191,6 +191,8 @@ export class AgentServer {
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
+    /** Per-session ownership registry (§L3). */
+    sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     localSigningKeyPem?: string;
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
@@ -768,6 +770,7 @@ export class AgentServer {
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
+      sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
       replyMarkerTransport: options.replyMarkerTransport ?? null,
