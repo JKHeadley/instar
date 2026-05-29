@@ -10,9 +10,16 @@ approved: true
 approved-by: Justin (Telegram topic 13435, 2026-05-27 — after substrate + /idle + dollar-cap user-fidelity corrections)
 supersedes-rounds: 2 prior convergence rounds on file-based mentor-outbox design (committed but re-architected after Justin substrate correction, topic 13435, 2026-05-27)
 supervision: tier1
+amendments:
+  - date: "2026-05-28"
+    by: "echo"
+    approved-by: "justin (topic 13435 — Codey-dogfooding 'P3 - agreed')"
+    summary: "Dedicated mentor topic: add optional mentor.mentorTopicId; the mentor exchange's telegramTopicId resolves to mentorTopicId ?? menteeTopicId, so mentor a2a no longer interleaves with the human↔mentee conversation topic. Backward-compatible (falls back to menteeTopicId)."
 ---
 
 # Agent-to-Agent Telegram comms primitive + Mentor live-readiness
+
+> **Amendment 2026-05-28 — dedicated mentor topic (P3).** During the Codey-over-Telegram dogfooding run, the mentor cycle's a2a check-ins were observed interleaving with the topic Justin chats with Codey in (`menteeTopicId`, topic 458) — the mentor delivery passed `menteeTopicId` as its `telegramTopicId`, which drives both the `/a2a/inbox` body (where the mentee binds its session + reply) and the Telegram fallback. Fix: an optional `mentor.mentorTopicId`; `resolveMentorDeliveryTopic(cfg)` returns `mentorTopicId ?? menteeTopicId`, so configuring a dedicated topic moves the entire mentor exchange off the human conversation topic. Unset → unchanged behavior.
 
 ## Summary
 

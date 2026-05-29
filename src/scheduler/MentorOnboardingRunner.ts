@@ -48,6 +48,29 @@ export interface MentorConfig {
   menteeChatId?: string;
   /** Topic id within menteeChatId that Echo writes mentor prompts to. */
   menteeTopicId?: number;
+  /** Dedicated topic id (within menteeChatId) for mentor a2a traffic, so the
+   *  mentor's check-ins do NOT interleave with the human↔mentee conversation
+   *  topic (`menteeTopicId`). When unset, falls back to `menteeTopicId`
+   *  (backward-compatible). Surfaced live: the mentor cycle was polluting the
+   *  topic Justin chats with Codey in (topic 13435, 2026-05-28). The whole
+   *  mentor exchange — prompt delivery AND the mentee's session/reply binding —
+   *  keys off this one topic id (it's the `telegramTopicId` passed to
+   *  deliverA2aMessage, used both in the /a2a/inbox body and the Telegram
+   *  fallback), so routing it here moves the entire exchange off the human topic. */
+  mentorTopicId?: number;
+}
+
+/**
+ * The Telegram topic the mentor exchange flows through. Prefers a dedicated
+ * `mentorTopicId` (so mentor a2a stays OFF the human↔mentee conversation
+ * topic), falling back to `menteeTopicId` for backward compatibility. This one
+ * id drives both the /a2a/inbox body (mentee session/reply binding) and the
+ * Telegram fallback, so the whole exchange moves together.
+ */
+export function resolveMentorDeliveryTopic(
+  cfg: Pick<MentorConfig, 'mentorTopicId' | 'menteeTopicId'>,
+): number | undefined {
+  return cfg.mentorTopicId ?? cfg.menteeTopicId;
 }
 
 export const DEFAULT_MENTOR_CONFIG: MentorConfig = {

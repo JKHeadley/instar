@@ -63,7 +63,7 @@ import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
-import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
+import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { STAGE_A_ALLOWED_TOOLS } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
 import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
@@ -1642,7 +1642,13 @@ export class AgentServer {
             corr,
             body: message,
             allowedRoles: new Set(['mentor']),
-            telegramTopicId: cfg.menteeTopicId,
+            // Route the mentor exchange to a DEDICATED mentor topic when one is
+            // configured, so the mentor's a2a check-ins don't interleave with
+            // the human↔mentee conversation topic (menteeTopicId). This one id
+            // drives both the /a2a/inbox body (where the mentee binds its
+            // session) and the Telegram fallback, so the whole exchange moves
+            // together. Falls back to menteeTopicId (backward-compatible).
+            telegramTopicId: resolveMentorDeliveryTopic(cfg),
             // fromBotId = echo's mentor-bot id, so the mentee's allowlist
             // (knownMentors[echo].botId === senderBotId) passes.
             fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,

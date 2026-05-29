@@ -7,9 +7,27 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   MentorOnboardingRunner,
   DEFAULT_MENTOR_CONFIG,
+  resolveMentorDeliveryTopic,
   type MentorConfig,
   type MentorRunnerServices,
 } from '../../src/scheduler/MentorOnboardingRunner.js';
+
+describe('resolveMentorDeliveryTopic — mentor a2a topic routing (Codey-dogfooding P3)', () => {
+  it('prefers the dedicated mentorTopicId when set (keeps mentor a2a off the human topic)', () => {
+    expect(resolveMentorDeliveryTopic({ mentorTopicId: 77, menteeTopicId: 458 })).toBe(77);
+  });
+  it('falls back to menteeTopicId when mentorTopicId is unset (backward-compatible)', () => {
+    expect(resolveMentorDeliveryTopic({ menteeTopicId: 458 })).toBe(458);
+    expect(resolveMentorDeliveryTopic({ mentorTopicId: undefined, menteeTopicId: 458 })).toBe(458);
+  });
+  it('returns undefined when neither is configured (mentor wiring stays dark)', () => {
+    expect(resolveMentorDeliveryTopic({})).toBeUndefined();
+  });
+  it('treats mentorTopicId 0 as a real topic (nullish, not falsy)', () => {
+    // Topic 0 ("General") is a valid forum topic — must not fall through to menteeTopicId.
+    expect(resolveMentorDeliveryTopic({ mentorTopicId: 0, menteeTopicId: 458 })).toBe(0);
+  });
+});
 
 function fakeServices(over: Partial<MentorRunnerServices> = {}): MentorRunnerServices {
   return {
