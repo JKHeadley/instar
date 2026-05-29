@@ -24,7 +24,8 @@ export interface ReapLogEntry {
   tmuxSession: string;
   /** The reason the killer requested (e.g. 'idle-zombie', 'age-limit'). */
   reason: string;
-  disposition?: 'terminal' | 'recovery-bounce';
+  /** What actually happened: terminal/recovery-bounce, or skipped:<authority-reason>. */
+  disposition: 'terminal' | 'recovery-bounce' | `skipped:${string}`;
   origin?: 'operator' | 'autonomous';
   /** For 'skipped': why the authority refused (protected / not-lease-holder / a KEEP / in-flight). */
   skipped?: string;
@@ -53,7 +54,7 @@ export class ReapLog {
       session: e.session,
       tmuxSession: e.tmuxSession,
       reason: e.reason,
-      disposition: e.disposition,
+      disposition: e.disposition ?? 'terminal',
       origin: e.origin,
       machine: this.machineId?.(),
     });
@@ -72,6 +73,7 @@ export class ReapLog {
       session: e.session,
       tmuxSession: e.tmuxSession,
       reason: e.reason,
+      disposition: `skipped:${e.skipped}`,
       skipped: e.skipped,
       origin: e.origin,
       machine: this.machineId?.(),
@@ -102,11 +104,34 @@ export class ReapLog {
     const out: ReapLogEntry[] = [];
     for (const line of tail) {
       try {
-        out.push(JSON.parse(line) as ReapLogEntry);
+        out.push(this.normalizeEntry(JSON.parse(line) as Partial<ReapLogEntry>));
       } catch {
         // skip a corrupt/partial line rather than failing the whole read
       }
     }
     return out;
+  }
+
+  private normalizeEntry(entry: Partial<ReapLogEntry>): ReapLogEntry {
+    const type = entry.type === 'skipped' ? 'skipped' : 'reaped';
+    const skipped = typeof entry.skipped === 'string' ? entry.skipped : undefined;
+    let disposition = entry.disposition;
+    if (!disposition) {
+      disposition = type === 'skipped'
+        ? `skipped:${skipped ?? 'unknown'}`
+        : 'terminal';
+    }
+
+    return {
+      ts: typeof entry.ts === 'string' ? entry.ts : new Date(0).toISOString(),
+      type,
+      session: typeof entry.session === 'string' ? entry.session : 'unknown',
+      tmuxSession: typeof entry.tmuxSession === 'string' ? entry.tmuxSession : 'unknown',
+      reason: typeof entry.reason === 'string' ? entry.reason : 'unknown',
+      disposition,
+      origin: entry.origin,
+      skipped,
+      machine: entry.machine,
+    };
   }
 }

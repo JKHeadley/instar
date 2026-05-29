@@ -72,7 +72,11 @@ describe('Reap-log E2E lifecycle (feature is alive)', () => {
     expect(Array.isArray(res.body.entries)).toBe(true);
     expect(res.body.entries).toHaveLength(2);
     expect(res.body.entries[0]).toMatchObject({ type: 'reaped', session: 'sess-x', reason: 'idle-zombie', machine: 'e2e-machine' });
-    expect(res.body.entries[1]).toMatchObject({ type: 'skipped', skipped: 'not-lease-holder' });
+    expect(res.body.entries[1]).toMatchObject({
+      type: 'skipped',
+      skipped: 'not-lease-holder',
+      disposition: 'skipped:not-lease-holder',
+    });
   });
 
   it('requires Bearer auth', async () => {

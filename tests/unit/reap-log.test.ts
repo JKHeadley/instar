@@ -40,7 +40,31 @@ describe('ReapLog (§P4)', () => {
     const log = new ReapLog(stateDir);
     log.recordSkipped({ session: 's2', tmuxSession: 't2', reason: 'boot-purge-dead', skipped: 'not-lease-holder', origin: 'autonomous' });
     const entries = log.read();
-    expect(entries[0]).toMatchObject({ type: 'skipped', skipped: 'not-lease-holder', reason: 'boot-purge-dead' });
+    expect(entries[0]).toMatchObject({
+      type: 'skipped',
+      skipped: 'not-lease-holder',
+      reason: 'boot-purge-dead',
+      disposition: 'skipped:not-lease-holder',
+    });
+  });
+
+  it('normalizes legacy skipped entries so every read entry has a disposition', () => {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, JSON.stringify({
+      ts: '2026-05-29T00:00:00.000Z',
+      type: 'skipped',
+      session: 'legacy',
+      tmuxSession: 'legacy-tmux',
+      reason: 'session-recovery',
+      skipped: 'pending-injection',
+    }) + '\n');
+
+    const entries = new ReapLog(stateDir).read();
+    expect(entries[0]).toMatchObject({
+      type: 'skipped',
+      skipped: 'pending-injection',
+      disposition: 'skipped:pending-injection',
+    });
   });
 
   it('encodes a newline-laden reason as valid JSON (no injection)', () => {
