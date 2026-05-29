@@ -103,3 +103,33 @@ A5. All pre-existing healer tests keep passing.
 ### Rollback (amendment)
 
 Revert the two `if (this.healAttempted)` blocks in `src/memory/NativeModuleHealer.ts` to the unconditional-throw form. One file, one revert, no state/migration/contract change. The reverted-to state is the pre-amendment behavior (TokenLedger dark after another subsystem heals first) — strictly the bug we are fixing, never worse.
+
+## Amendment 2 (2026-05-29): schema-migration ordering — a SECOND cause of `/tokens/*` 503
+
+**Also in-scope for the original approval** (same goal: AC#7, "/tokens/* returns live data"). Surfaced while verifying the heal fix during the Codey dogfooding run: Echo's `/tokens/summary` returned 503 too, but for a DIFFERENT reason than the ABI lockout above — `SqliteError: no such column: attribution_key` at TokenLedger init. Echo's `token_events` table was created by an instar version that pre-dates the `attribution_key` column (verified on-disk).
+
+### Residual defect
+
+The `SCHEMA` DDL array in `src/monitoring/TokenLedger.ts` ran the `attribution_key`-dependent index **before** the migration that adds the column:
+
+1. `CREATE TABLE IF NOT EXISTS token_events (… attribution_key …)` — a no-op on a pre-attribution DB (table already exists *without* the column), so the column is NOT added here.
+2. `CREATE INDEX IF NOT EXISTS idx_token_events_key_ts ON token_events(attribution_key, ts)` — references `attribution_key`, which does not exist yet → throws `no such column: attribution_key`.
+3. The init loop's catch swallows **only** `/duplicate column name/i`, so this error is **rethrown** → TokenLedger init fails → `/tokens/*` 503.
+4. The `ALTER TABLE token_events ADD COLUMN attribution_key …` migration that would have fixed it sat *after* the failing index in the array, so it never ran.
+
+Fleet-wide: every agent whose `token_events` table predates `attribution_key` gets a permanent TokenLedger 503 (independent of, and unfixed by, Amendment 1's ABI heal).
+
+### Fix
+
+Reorder `SCHEMA` so the `ALTER TABLE token_events ADD COLUMN attribution_key` migration runs **immediately after** the `CREATE TABLE token_events` and **before** any index/query that references the column. On a fresh DB the column already exists → the ALTER throws `duplicate column name` → swallowed (existing behavior); on a pre-attribution DB the ALTER adds the column → the index and the `attribution_key`-referencing prepared statements then succeed. Establishes the invariant (in a code comment): **a column-adding migration MUST precede any index or query that references the new column.** Pure reorder of `SCHEMA` entries; no logic change.
+
+### Acceptance Criteria (amendment 2)
+
+B1. Constructing `TokenLedger` against a DB whose `token_events` predates `attribution_key` does NOT throw and migrates the column in (PRAGMA table_info shows it).
+B2. After migration, `summary()` and `byAttributionKey()` work and the pre-existing row is backfilled with the `'unknown::pre-attribution'` DEFAULT (not dropped).
+B3. Re-initialising an already-migrated DB is idempotent (the duplicate-column ALTER is swallowed).
+B4. Fresh-DB construction (the common case) is unchanged — all pre-existing TokenLedger tests keep passing.
+
+### Rollback (amendment 2)
+
+Revert the `SCHEMA` reorder in `src/monitoring/TokenLedger.ts`. One file, no state/migration/contract change. The reverted-to state is the pre-amendment behavior (pre-attribution DBs stay 503) — strictly the bug being fixed, never worse.

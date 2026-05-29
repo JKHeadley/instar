@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { TokenLedger } from '../../src/monitoring/TokenLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -405,5 +406,83 @@ describe('TokenLedger.sessionActivitySince (SessionReaper gate F)', () => {
     ledger.ingestLine(assistantLine({ requestId: 'r3', sessionId: 'sy', ts: '2026-04-29T20:00:00.000Z' }));
     const res = ledger.sessionActivitySince('sy', Date.parse('2026-04-29T23:00:00.000Z'));
     expect(res.eventCount).toBe(0);
+  });
+});
+
+// Regression: TokenLedger init must migrate a pre-attribution DB instead of 503ing.
+// Before the schema-order fix, `CREATE INDEX ... ON token_events(attribution_key, ts)`
+// ran BEFORE the `ALTER TABLE token_events ADD COLUMN attribution_key` migration. On a
+// DB whose token_events table predates the column, `CREATE TABLE IF NOT EXISTS` no-ops,
+// then the index threw `no such column: attribution_key` — NOT swallowed (only
+// duplicate-column is) — so the whole init failed and /tokens/* returned 503 forever.
+describe('TokenLedger pre-attribution DB migration (schema-order regression)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-ledger-preattr-'));
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'test cleanup' });
+  });
+
+  /** Build a token_events table with the OLD schema (no attribution_key column). */
+  function seedPreAttributionDb(dbPath: string): void {
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE token_events (
+       request_id            TEXT PRIMARY KEY,
+       uuid                  TEXT,
+       session_id            TEXT NOT NULL,
+       project_path          TEXT,
+       ts                    INTEGER NOT NULL,
+       model                 TEXT,
+       input_tokens          INTEGER NOT NULL DEFAULT 0,
+       output_tokens         INTEGER NOT NULL DEFAULT 0,
+       cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+       cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+       service_tier          TEXT
+     )`);
+    // A pre-existing row, so we also prove the migration's DEFAULT backfills it.
+    db.prepare(
+      `INSERT INTO token_events (request_id, session_id, ts, input_tokens, output_tokens)
+       VALUES ('old-1', 'sess-old', ?, 5, 50)`,
+    ).run(1_700_000_000_000);
+    db.close();
+  }
+
+  it('migrates a pre-attribution token_events table on init (no 503) and adds the column', () => {
+    const dbPath = path.join(tmpDir, 'token-ledger.db');
+    seedPreAttributionDb(dbPath);
+
+    // Pre-fix this constructor threw `no such column: attribution_key`.
+    let ledger: TokenLedger;
+    expect(() => {
+      ledger = new TokenLedger({ dbPath, claudeProjectsDir: '/tmp/nonexistent-claude-projects' });
+    }).not.toThrow();
+
+    // The column now exists on the migrated table.
+    const probe = new Database(dbPath, { readonly: true });
+    const cols = (probe.prepare(`PRAGMA table_info(token_events)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    probe.close();
+    expect(cols).toContain('attribution_key');
+
+    // The attribution_key-referencing queries (which back /tokens/*) work, and the
+    // pre-existing row was backfilled with the migration DEFAULT rather than dropped.
+    const summary = ledger!.summary();
+    expect(summary.eventCount).toBe(1);
+    const byKey = ledger!.byAttributionKey();
+    expect(byKey.length).toBeGreaterThanOrEqual(1);
+    expect(byKey.some((r) => r.attributionKey === 'unknown::pre-attribution')).toBe(true);
+  });
+
+  it('re-initialising a migrated DB is idempotent (duplicate-column ALTER swallowed)', () => {
+    const dbPath = path.join(tmpDir, 'token-ledger.db');
+    seedPreAttributionDb(dbPath);
+    // First init migrates; second init must not throw on the now-present column.
+    new TokenLedger({ dbPath, claudeProjectsDir: '/tmp/nonexistent-claude-projects' });
+    expect(() => {
+      new TokenLedger({ dbPath, claudeProjectsDir: '/tmp/nonexistent-claude-projects' });
+    }).not.toThrow();
   });
 });

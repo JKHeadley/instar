@@ -58,6 +58,15 @@ const SCHEMA = [
      service_tier          TEXT,
      attribution_key       TEXT NOT NULL DEFAULT 'unknown::pre-attribution'
    )`,
+  // Migration for installs that pre-date attribution_key. This MUST run BEFORE any
+  // index or query that references the column: `CREATE TABLE IF NOT EXISTS` no-ops
+  // on an existing pre-attribution table, so on those installs the column only
+  // appears via this ALTER. Ordering it AFTER idx_token_events_key_ts (which
+  // references attribution_key) threw `no such column: attribution_key` on every
+  // pre-attribution DB — and that error is NOT swallowed below — so TokenLedger
+  // init failed and `/tokens/*` returned 503 permanently (token-ledger-native-heal
+  // amendment, 2026-05-29). Idempotent: duplicate-column errors are swallowed in init.
+  `ALTER TABLE token_events ADD COLUMN attribution_key TEXT NOT NULL DEFAULT 'unknown::pre-attribution'`,
   `CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_token_events_ts ON token_events(ts)`,
   `CREATE INDEX IF NOT EXISTS idx_token_events_project ON token_events(project_path)`,
@@ -73,11 +82,10 @@ const SCHEMA = [
      head_hash TEXT,
      last_read INTEGER NOT NULL
    )`,
-  // Migration for installs that pre-date head_hash (idempotent).
+  // Migration for installs that pre-date head_hash (idempotent). No index
+  // references head_hash, so this can safely follow the file_offsets table.
   `ALTER TABLE file_offsets ADD COLUMN head_hash TEXT`,
-  // Migration for installs that pre-date attribution_key (idempotent — duplicate-column
-  // errors are swallowed in init below).
-  `ALTER TABLE token_events ADD COLUMN attribution_key TEXT NOT NULL DEFAULT 'unknown::pre-attribution'`,
+  // (attribution_key migration moved above, before idx_token_events_key_ts.)
   // Codex (OpenAI) sessions live in a SEPARATE table — deliberately NOT
   // token_events. Codex's persisted rollouts report a CUMULATIVE per-session
   // total (one growing number), not Claude's per-request events, so they don't
