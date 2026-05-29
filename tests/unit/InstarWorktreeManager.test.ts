@@ -190,7 +190,7 @@ describe('resolveInstarRepo', () => {
   beforeEach(() => { tmp = makeTmpDir('iwm-repo'); });
   afterEach(() => cleanup(tmp));
 
-  function makeRepo(opts: { remote?: string; hooksOutside?: boolean } = {}): string {
+  function makeRepo(opts: { remote?: string; hooksOutside?: boolean; sourceSignature?: boolean } = {}): string {
     const repo = fs.mkdtempSync(path.join(tmp, 'repo-'));
     execFileSync('git', ['init', '--initial-branch=main'], { cwd: repo, stdio: 'pipe' });
     if (opts.remote) {
@@ -199,14 +199,22 @@ describe('resolveInstarRepo', () => {
     if (opts.hooksOutside) {
       execFileSync('git', ['config', 'core.hooksPath', '/tmp/hostile-hooks'], { cwd: repo, stdio: 'pipe' });
     }
+    if (opts.sourceSignature) {
+      fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'instar' }));
+      fs.mkdirSync(path.join(repo, 'src', 'core'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'src', 'core', 'GitSync.ts'), '');
+      fs.writeFileSync(path.join(repo, 'tsconfig.json'), '{}');
+    }
     return repo;
   }
 
   it('rejects a candidate that is not a git repo', () => {
     const notRepo = fs.mkdtempSync(path.join(tmp, 'notrepo-'));
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
     expect(() =>
       resolveInstarRepo({
         env: { INSTAR_REPO: notRepo },
+        cwd: elsewhere,
         fallbackChain: [],
         urlAllowlist: ['git@github.com:instar-ai/instar.git'],
       }),
@@ -215,9 +223,11 @@ describe('resolveInstarRepo', () => {
 
   it('rejects when remote.origin.url is unset', () => {
     const repo = makeRepo();
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
     expect(() =>
       resolveInstarRepo({
         env: { INSTAR_REPO: repo },
+        cwd: elsewhere,
         fallbackChain: [],
         urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
       }),
@@ -226,9 +236,11 @@ describe('resolveInstarRepo', () => {
 
   it('rejects when remote.origin.url is not in the allowlist', () => {
     const repo = makeRepo({ remote: 'git@github.com:attacker/evil.git' });
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
     expect(() =>
       resolveInstarRepo({
         env: { INSTAR_REPO: repo },
+        cwd: elsewhere,
         fallbackChain: [],
         urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
       }),
@@ -240,9 +252,11 @@ describe('resolveInstarRepo', () => {
       remote: 'git@github.com:instar-ai/instar.git',
       hooksOutside: true,
     });
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
     expect(() =>
       resolveInstarRepo({
         env: { INSTAR_REPO: repo },
+        cwd: elsewhere,
         fallbackChain: [],
         urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
       }),
@@ -268,6 +282,41 @@ describe('resolveInstarRepo', () => {
       urlAllowlist: ['git@example.com:fork/instar.git'],
     });
     expect(result.remoteUrl).toBe('git@example.com:fork/instar.git');
+  });
+
+  it('discovers a valid instar repo from cwd before hardcoded fallbacks', () => {
+    const repo = makeRepo({
+      remote: 'git@github.com:instar-ai/instar.git',
+      sourceSignature: true,
+    });
+    const subdir = path.join(repo, 'src', 'core');
+
+    const result = resolveInstarRepo({
+      env: {},
+      cwd: subdir,
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+
+    expect(result.repoPath).toBe(fs.realpathSync(repo));
+    expect(result.remoteUrl).toBe('git@github.com:instar-ai/instar.git');
+  });
+
+  it('discovers a valid instar repo from INSTAR_AGENT_HOME when cwd is elsewhere', () => {
+    const repo = makeRepo({
+      remote: 'git@github.com:instar-ai/instar.git',
+      sourceSignature: true,
+    });
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
+
+    const result = resolveInstarRepo({
+      env: { INSTAR_AGENT_HOME: repo },
+      cwd: elsewhere,
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+
+    expect(result.repoPath).toBe(fs.realpathSync(repo));
   });
 });
 

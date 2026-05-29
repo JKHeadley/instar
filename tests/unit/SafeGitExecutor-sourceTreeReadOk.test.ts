@@ -151,4 +151,21 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
       { cwd: srcTree, operation: 't:revparse-default' },
     )).toThrow(SourceTreeGuardError);
   });
+
+  it('sourceTreeWorktreeManagerOk allows only the worktree manager source-tree shapes', () => {
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'prune'],
+      { cwd: srcTree, operation: 't:worktree-prune', sourceTreeWorktreeManagerOk: true },
+    )).not.toThrow();
+
+    expect(() => SafeGitExecutor.run(
+      ['config', 'user.name', 'Instar Agent (test)'],
+      { cwd: srcTree, operation: 't:identity-name', sourceTreeWorktreeManagerOk: true },
+    )).not.toThrow();
+
+    expect(() => SafeGitExecutor.run(
+      ['add', '-A'],
+      { cwd: srcTree, operation: 't:add-still-blocked', sourceTreeWorktreeManagerOk: true },
+    )).toThrow(SourceTreeGuardError);
+  });
 });

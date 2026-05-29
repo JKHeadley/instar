@@ -53,7 +53,12 @@ function makeFixture(): Fixture {
   execFileSync('git', ['-C', bareRepo, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'config', 'commit.gpgsign', 'false'], { stdio: 'pipe' });
   fs.writeFileSync(path.join(bareRepo, 'README.md'), '# Test\n');
+  fs.writeFileSync(path.join(bareRepo, 'package.json'), JSON.stringify({ name: 'instar' }));
+  fs.mkdirSync(path.join(bareRepo, 'src', 'core'), { recursive: true });
+  fs.writeFileSync(path.join(bareRepo, 'src', 'core', 'GitSync.ts'), '');
+  fs.writeFileSync(path.join(bareRepo, 'tsconfig.json'), '{}');
   execFileSync('git', ['-C', bareRepo, 'add', 'README.md'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', bareRepo, 'add', 'package.json', 'src/core/GitSync.ts', 'tsconfig.json'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'commit', '-m', 'init'], { stdio: 'pipe' });
   // Allowlisted remote URL.
   const fakeRemote = 'git@github.com:instar-ai/instar.git';
@@ -263,6 +268,7 @@ describe('createWorktree (integration)', () => {
         },
         resolveInstarRepoOpts: {
           env: { INSTAR_REPO: fix.bareRepo },
+          cwd: path.dirname(fix.instarHome),
           fallbackChain: [],
           urlAllowlist: fix.repoAllowlist,
         },

@@ -56,6 +56,8 @@ export interface ResolvedAgentHome {
 
 export interface ResolveInstarRepoOptions {
   env?: NodeJS.ProcessEnv;
+  /** Override `process.cwd()` for current-checkout discovery. */
+  cwd?: string;
   /** Path to user config (defaults to `~/.instar/config.json`). */
   configPath?: string;
   /** Override the URL allowlist entirely (skipping the default + config merge). */
@@ -122,6 +124,7 @@ function git(args: string[], cwd: string, operation: string, kind: 'read' | 'wri
     cwd,
     operation,
     stdio: ['ignore', 'pipe', 'pipe'],
+    sourceTreeWorktreeManagerOk: true,
   }).trim();
 }
 
@@ -249,6 +252,7 @@ function walkUpForAgentMd(start: string): string | null {
 
 export function resolveInstarRepo(opts: ResolveInstarRepoOptions = {}): ResolvedInstarRepo {
   const env = opts.env ?? process.env;
+  const cwd = opts.cwd ?? process.cwd();
   const home = opts.homeDir ?? os.homedir();
   const fallbacks = opts.fallbackChain ?? [
     path.join(home, 'Documents', 'Projects', 'instar'),
@@ -257,12 +261,20 @@ export function resolveInstarRepo(opts: ResolveInstarRepoOptions = {}): Resolved
 
   const candidates: string[] = [];
   if (env.INSTAR_REPO && env.INSTAR_REPO.trim()) candidates.push(env.INSTAR_REPO.trim());
+  candidates.push(cwd);
+  if (env.INSTAR_AGENT_HOME && env.INSTAR_AGENT_HOME.trim()) {
+    candidates.push(env.INSTAR_AGENT_HOME.trim());
+  }
   candidates.push(...fallbacks);
 
   const allowlist = new Set<string>(opts.urlAllowlist ?? mergedRepoUrlAllowlist(opts.configPath));
 
+  const seen = new Set<string>();
   const failures: string[] = [];
   for (const candidate of candidates) {
+    const normalized = path.resolve(candidate);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
     const result = validateInstarRepoCandidate(candidate, allowlist);
     if (result.ok) {
       return { repoPath: result.repoPath, remoteUrl: result.remoteUrl };
@@ -308,12 +320,14 @@ function validateInstarRepoCandidate(
   if (!real) return { ok: false, error: 'realpath failed' };
 
   const op = 'src/core/InstarWorktreeManager.ts:resolveInstarRepo';
-  const gitCommon = tryGit(['-C', real, 'rev-parse', '--git-common-dir'], real, op, 'read');
-  if (!gitCommon.ok) {
-    return { ok: false, error: `not a git repo (${gitCommon.error.split('\n')[0]})` };
+  const topLevel = tryGit(['-C', real, 'rev-parse', '--show-toplevel'], real, op, 'read');
+  if (!topLevel.ok || !topLevel.stdout) {
+    return { ok: false, error: `not a git repo (${topLevel.ok ? 'no worktree root' : topLevel.error.split('\n')[0]})` };
   }
+  const repoPath = realpathOrNull(topLevel.stdout);
+  if (!repoPath) return { ok: false, error: 'repo root realpath failed' };
 
-  const remote = tryGit(['-C', real, 'config', '--get', 'remote.origin.url'], real, op, 'read');
+  const remote = tryGit(['-C', repoPath, 'config', '--get', 'remote.origin.url'], repoPath, op, 'read');
   if (!remote.ok || !remote.stdout) {
     return { ok: false, error: 'remote.origin.url unset' };
   }
@@ -325,13 +339,13 @@ function validateInstarRepoCandidate(
   }
 
   // core.hooksPath, if set, must resolve inside the repo.
-  const hooksPath = tryGit(['-C', real, 'config', '--get', 'core.hooksPath'], real, op, 'read');
+  const hooksPath = tryGit(['-C', repoPath, 'config', '--get', 'core.hooksPath'], repoPath, op, 'read');
   if (hooksPath.ok && hooksPath.stdout) {
     const resolvedHooks = path.isAbsolute(hooksPath.stdout)
       ? hooksPath.stdout
-      : path.resolve(real, hooksPath.stdout);
+      : path.resolve(repoPath, hooksPath.stdout);
     const resolvedHooksReal = realpathOrNull(resolvedHooks);
-    if (!resolvedHooksReal || !resolvedHooksReal.startsWith(real + path.sep)) {
+    if (!resolvedHooksReal || !resolvedHooksReal.startsWith(repoPath + path.sep)) {
       return {
         ok: false,
         error: `core.hooksPath ${hooksPath.stdout} resolves outside the repo`,
@@ -339,7 +353,7 @@ function validateInstarRepoCandidate(
     }
   }
 
-  return { ok: true, repoPath: real, remoteUrl: remote.stdout };
+  return { ok: true, repoPath, remoteUrl: remote.stdout };
 }
 
 // ── Slug / branch validation ─────────────────────────────────────────────

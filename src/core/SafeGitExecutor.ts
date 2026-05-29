@@ -118,6 +118,7 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
   'interpret-trailers',
   'check-ref-format',
   'symbolic-ref',
+  'show-ref',
   'for-each-ref',
   'merge-base',
   'reflog', // read-only by default; reflog expire/delete is destructive (caller must use execSync)
@@ -627,6 +628,17 @@ export interface SafeGitOptions {
    * audited escape hatch the spec referenced.
    */
   sourceTreeReadOk?: boolean;
+  /**
+   * Opt-in: allow the InstarWorktreeManager's narrow source-tree operations.
+   *
+   * `instar worktree create` must run against a validated instar source
+   * checkout to create a sibling worktree. That requires a tiny set of git
+   * reads, `git worktree add/prune`, and per-worktree `user.name` /
+   * `user.email` config writes. This flag does not allow general source-tree
+   * mutation; every permitted shape is enumerated by
+   * `isSourceTreeWorktreeManagerInvocation`.
+   */
+  sourceTreeWorktreeManagerOk?: boolean;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -657,19 +669,19 @@ export class SafeGitExecutor {
    */
   static execSync(args: readonly string[], opts: SafeGitOptions): string {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const verbArgs = sliceAfterVerb(args, verb);
 
     // Run source-tree assertion against every target — unless the caller
     // explicitly opted into the narrow data-pull allowlist (fetch / etc.)
     // for the documented LAYER B + LAYER C canonical-ref read path. See
     // SafeGitOptions.sourceTreeReadOk for the rationale.
-    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
     // Verb classification.
-    const verbArgs = sliceAfterVerb(args, verb);
     const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
     if (ambiguousReadOnly === true) {
       // The verb is ambiguous and the shape is read-only — caller used the
@@ -713,13 +725,13 @@ export class SafeGitExecutor {
    */
   static spawn(args: readonly string[], opts: SafeGitOptions): ChildProcess {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
-    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+    const verbArgs = sliceAfterVerb(args, verb);
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const verbArgs = sliceAfterVerb(args, verb);
     const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
     if (ambiguousReadOnly === true) {
       audit('git', opts.operation, verb, targets[0], 'denied', 'read-only-shape-via-spawn');
@@ -775,10 +787,10 @@ export class SafeGitExecutor {
     // caller opted into the narrow read-tier allowlist (the LAYER B/C
     // canonical-ref read path that legitimately operates against the agent's
     // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
-    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
     const env = sanitizeEnv(opts.env);
@@ -823,6 +835,44 @@ export class SafeGitExecutor {
     }
     return SafeGitExecutor.execSync(args, opts);
   }
+}
+
+function isSourceTreeCheckBypassed(
+  verb: string,
+  verbArgs: readonly string[],
+  opts: SafeGitOptions,
+): boolean {
+  if (opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb)) return true;
+  if (opts.sourceTreeWorktreeManagerOk && isSourceTreeWorktreeManagerInvocation(verb, verbArgs)) {
+    return true;
+  }
+  return false;
+}
+
+function isSourceTreeWorktreeManagerInvocation(verb: string, verbArgs: readonly string[]): boolean {
+  switch (verb) {
+    case 'rev-parse':
+    case 'check-ref-format':
+    case 'symbolic-ref':
+    case 'show-ref':
+      return true;
+    case 'config':
+      return isReadOnlyConfigInvocation(verbArgs) || isWorktreeIdentityConfigWrite(verbArgs);
+    case 'worktree':
+      return isWorktreeManagerMutation(verbArgs);
+    default:
+      return false;
+  }
+}
+
+function isWorktreeIdentityConfigWrite(verbArgs: readonly string[]): boolean {
+  if (verbArgs.length !== 2) return false;
+  return verbArgs[0] === 'user.name' || verbArgs[0] === 'user.email';
+}
+
+function isWorktreeManagerMutation(verbArgs: readonly string[]): boolean {
+  const subcommand = verbArgs.find((arg) => !arg.startsWith('-'));
+  return subcommand === 'add' || subcommand === 'prune';
 }
 
 function runSourceTreeChecks(
