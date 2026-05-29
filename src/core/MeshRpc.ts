@@ -30,6 +30,7 @@ export type MeshCommand =
   | { type: 'claim'; session: string; epoch: number; failover?: boolean }
   | { type: 'release'; session: string; epoch: number; failover?: boolean }
   | { type: 'transfer'; session: string; target: MachineId }
+  | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string };
@@ -127,7 +128,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
   switch (command.type) {
     case 'place':
     case 'transfer':
-      // Router-only.
+    case 'deliverMessage':
+      // Router-only (the router forwards inbound messages to the session owner — §L4).
       return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'not-router' };
     case 'claim': {
       // The router's assigned target for this session, OR the router on a failover re-place.
