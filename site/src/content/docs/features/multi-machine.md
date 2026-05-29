@@ -115,3 +115,17 @@ sent by both machines.
 Each component above ships flag-gated until live two-machine verification
 passes; see the cross-machine seamlessness spec for the full §-by-§ wiring
 plan.
+
+### Joining the pool — code-authenticated, non-interactive
+
+An active-active pool forms its mesh automatically, so machines join without a
+human confirming visual symbols. `instar pair` (run on an awake machine) mints a
+short-lived, single-use pairing code and persists it via **`PairingSessionStore`**
+(`.instar/machine/pairing-session.json`, 0600). `instar join <url> --code <code>`
+(run on the new machine) presents that code to the awake machine's `/api/pair`
+endpoint, which validates it against the stored session and — on success —
+registers the joiner as **standby**, stores its public keys, and records its
+reachable URL. The pairing code (carried over the TLS tunnel) is the shared
+secret; it is single-use, attempt-capped, and time-limited, and a joiner can only
+ever register as standby. The persisted session that `PairingSessionStore` holds
+is what lets the *running server* validate a join without an interactive step.

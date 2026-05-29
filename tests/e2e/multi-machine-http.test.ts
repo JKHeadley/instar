@@ -267,7 +267,17 @@ describe('Multi-Machine HTTP E2E', () => {
 
   // ── Pairing ─────────────────────────────────────────────────────
 
-  it('pairing endpoint works without machine auth', async () => {
+  it('pairing endpoint works without machine auth (code-authenticated, non-interactive)', async () => {
+    // Seed an active pairing session on A, as `instar pair` would. /api/pair is
+    // still reachable without machine auth (it is the bootstrap), but it now
+    // validates the code against this session and auto-registers the joiner
+    // instead of being signal-only.
+    const { PairingSessionStore } = await import('../../src/core/PairingSessionStore.js');
+    const { createPairingSession } = await import('../../src/core/PairingProtocol.js');
+    new PairingSessionStore(envA.stateDir).save(
+      createPairingSession({ code: 'TEST-CODE-1234', expiryMs: 600_000 }),
+    );
+
     const resp = await fetch(`http://127.0.0.1:${PORT_A}/api/pair`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -275,13 +285,16 @@ describe('Multi-Machine HTTP E2E', () => {
         pairingCode: 'TEST-CODE-1234',
         machineIdentity: envB.identity,
         ephemeralPublicKey: 'test-ephemeral-key',
+        advertisedUrl: 'https://machine-b.example.dev',
       }),
     });
 
     expect(resp.ok).toBe(true);
     const body = await resp.json() as { status: string; machineIdentity: any };
-    expect(body.status).toBe('pending');
+    expect(body.status).toBe('paired');
     expect(body.machineIdentity.machineId).toBe(envA.machineId);
+    // A now knows B's reachable URL (closes the one-directional gap).
+    expect(envA.mgr.getMachineUrl(envB.machineId)).toBe('https://machine-b.example.dev');
   });
 
   // ── Full Handoff Flow ──────────────────────────────────────────

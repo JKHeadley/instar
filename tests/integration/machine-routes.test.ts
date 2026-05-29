@@ -247,19 +247,26 @@ describe('Machine Routes Integration', () => {
   // ── Pairing ────────────────────────────────────────────────────
 
   describe('POST /api/pair', () => {
-    it('accepts pairing request (no auth required)', async () => {
+    it('reaches the handler without auth but rejects when there is no active pairing session (403)', async () => {
+      // /api/pair is intentionally unauthenticated (it is the bootstrap), but it
+      // is now code-authenticated: without an active pairing session written by
+      // `instar pair`, a well-formed join request is rejected (not silently
+      // accepted as the old signal-only handler did).
       const res = await request(env.app)
         .post('/api/pair')
         .set('Connection', 'close')
         .send({
           pairingCode: 'test-code',
-          machineIdentity: { machineId: 'm_new', name: 'new-machine' },
+          machineIdentity: {
+            machineId: 'm_new',
+            name: 'new-machine',
+            signingPublicKey: 'c2lnbg==',
+            encryptionPublicKey: 'ZW5j',
+          },
           ephemeralPublicKey: 'base64-key-data',
         });
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('pending');
-      expect(res.body.machineIdentity).toBeTruthy();
+      expect(res.status).toBe(403);
     });
 
     it('rejects incomplete pairing request', async () => {

@@ -24,6 +24,9 @@ import type { SecurityLog } from '../core/SecurityLog.js';
 import type { MachineAuthContext, MachineAuthDeps } from './machineAuth.js';
 import { machineAuthMiddleware, ChallengeStore } from './machineAuth.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
+import { PairingSessionStore } from '../core/PairingSessionStore.js';
+import { validatePairingCode } from '../core/PairingProtocol.js';
+import type { PairingSession } from '../core/PairingProtocol.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -99,6 +102,9 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const authMiddleware = machineAuthMiddleware(ctx.authDeps);
   const handoffChallenges = new ChallengeStore();
   const secretChallenges = new ChallengeStore();
+  // Code-authenticated pool join: the active pairing session (written by
+  // `instar pair`) is the shared secret that authorizes a non-interactive join.
+  const pairingStore = new PairingSessionStore(ctx.identityManager.baseDir);
 
   // ── POST /api/lease — Receive a peer's fenced lease over the wire (spec §6) ──
   // The low-latency authoritative copy. Auth-verified; the lease holder must
@@ -214,31 +220,83 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Instead, it relies on the pairing code exchange for authentication.
 
   router.post('/api/pair', (req, res) => {
-    const { pairingCode, machineIdentity, ephemeralPublicKey } = req.body;
+    const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl } = req.body ?? {};
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!pairingCode || !machineIdentity || !ephemeralPublicKey) {
       res.status(400).json({ error: 'Missing required pairing fields' });
       return;
     }
+    // Validate the joiner's identity shape before we'd ever persist it.
+    if (
+      typeof machineIdentity.machineId !== 'string' ||
+      typeof machineIdentity.signingPublicKey !== 'string' ||
+      typeof machineIdentity.encryptionPublicKey !== 'string'
+    ) {
+      res.status(400).json({ error: 'Malformed machineIdentity' });
+      return;
+    }
 
-    // Pairing validation is handled by the caller (CLI command).
-    // This endpoint just receives the request and signals the pairing flow.
-    // The actual pairing code comparison and SAS verification happen interactively.
+    // ── Code-authenticated, non-interactive pool join ────────────────
+    // The pairing code (a short-lived, single-use, attempt-capped shared secret
+    // written by `instar pair` and carried over the TLS tunnel) IS the auth — no
+    // human SAS step (operator's "Proceed with A" trust-model decision). A joiner
+    // can only ever register as STANDBY; it can never claim the awake role here.
+    const stored = pairingStore.load();
+    if (!stored) {
+      ctx.securityLog.append({
+        event: 'pairing_rejected',
+        machineId: machineIdentity.machineId,
+        machineName: machineIdentity.name,
+        reason: 'no-active-session',
+        ip,
+      });
+      res.status(403).json({ error: 'No active pairing session. Run `instar pair` on the awake machine.' });
+      return;
+    }
+
+    const result = validatePairingCode(stored as unknown as PairingSession, String(pairingCode));
+    // Persist the mutated session (failedAttempts increments accumulate across
+    // requests so the attempt cap actually throttles brute force).
+    pairingStore.save(stored);
+    if (!result.valid) {
+      ctx.securityLog.append({
+        event: 'pairing_rejected',
+        machineId: machineIdentity.machineId,
+        machineName: machineIdentity.name,
+        reason: result.reason ?? 'invalid-code',
+        ip,
+      });
+      res.status(403).json({ error: result.reason ?? 'Invalid pairing code' });
+      return;
+    }
+
+    // Code valid → register the joiner as standby, persist its public keys (so
+    // MeshRpc can verify its signatures), record its advertised URL if it sent
+    // one, and burn the code (single-use).
+    ctx.identityManager.registerMachine(machineIdentity, 'standby');
+    ctx.identityManager.storeRemoteIdentity(machineIdentity);
+    if (typeof advertisedUrl === 'string' && /^https?:\/\/\S+$/.test(advertisedUrl)) {
+      try {
+        ctx.identityManager.updateMachineUrl(machineIdentity.machineId, advertisedUrl.trim().replace(/\/+$/, ''));
+      } catch { /* entry was just registered; best-effort */ }
+    }
+    stored.consumed = true;
+    pairingStore.save(stored);
 
     ctx.securityLog.append({
-      event: 'pairing_request',
+      event: 'pairing_completed',
       machineId: machineIdentity.machineId,
       machineName: machineIdentity.name,
-      ip: req.ip || req.socket.remoteAddress || 'unknown',
+      ip,
     });
 
-    // Return this machine's identity and an ephemeral key for the ECDH exchange
+    // Return this machine's identity so the joiner can register us as awake.
     const localIdentity = ctx.identityManager.loadIdentity();
-
     res.json({
-      status: 'pending',
+      status: 'paired',
       machineIdentity: localIdentity,
-      message: 'Pairing request received. Verify the SAS on both machines.',
+      message: 'Paired.',
     });
   });
 
