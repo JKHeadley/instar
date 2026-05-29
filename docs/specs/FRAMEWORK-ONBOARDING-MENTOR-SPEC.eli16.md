@@ -96,3 +96,11 @@ We found two reasons the automated mentor would have behaved that way. First, th
 This change fixes both. The mentor now gets a real picture: the new agent's recent replies, plus an optional onboarding to-do list (the operator's plan — "check the Secret Drop flow", "exercise the Playbook", etc.). When the new agent is idle and there are items left on the list, the mentor now hands over the next concrete task instead of a hollow check-in. If the agent is mid-task, blocked, or asked a question, it still does the sensible thing (wait, unblock, or answer).
 
 Two safety notes. The to-do list is the mentor's own plan, not anything private about the agent it's mentoring, so handing over a task from it is allowed and doesn't trip the "did the mentor peek at internals?" detector. And the whole thing is off unless someone turns it on: the mentor is disabled by default, and even when enabled it stays in today's passive mode until an operator actually fills in a to-do list. So nothing changes for anyone automatically — it's there to be switched on deliberately, once the operator decides they want the mentor proactively assigning onboarding tasks.
+
+## Amendment (2026-05-29): changing the mentor plan without restarting
+
+The to-do-list amendment only works well if the operator can tune the list while the mentor is running. Before this update, the server read the mentor settings once when it started. If someone edited the mentor's agenda or related settings after that, the running mentor kept using the old copy until the server restarted.
+
+This update makes the mentor check the current mentor settings each time it needs them. If the config edit is valid, the new agenda or settings take effect on the next status check or mentor tick. If the config file is temporarily broken, missing, or has a bad mentor section, the mentor falls back to the safe settings it started with instead of crashing the tick.
+
+This does not make the mentor more autonomous. It does not send anything new by itself, create new topics, or bypass the existing off-by-default gates. It only makes the already-approved mentor plan easier to adjust while dogfooding the curriculum live.

@@ -550,10 +550,10 @@ Ships staged (off → dry-run on Echo↔Codey → live) per the graduated-rollou
 
 The mentor is already off by default (`enabled:false`/`mode:'off'`). The agenda is additionally empty by default, so even an enabled mentor keeps today's passive behaviour until an operator sets `mentor.onboardingAgenda`. No fleet behaviour change without explicit opt-in.
 
-### Open decisions to flag (not in this PR)
+### Operator decisions to flag before live rollout
 
 - **Should the automated mentor proactively assign onboarding tasks to mentees fleet-wide?** (a UX/product call for the operator before populating an agenda + enabling.)
-- **Fuller conversation surface.** This PR feeds the mentor the mentee's *replies* but not the mentor's *own* prior prompts (their content isn't logged today — `a2a-sent.jsonl` is metadata-only). So agenda rotation is inferred from the mentee's replies. Logging the mentor's sent-prompt content for a complete two-sided surface is a scoped follow-up; acceptable for a dark feature, and the mentor-outstanding tracker already prevents back-to-back duplicate sends.
+- **Fuller conversation surface.** This PR feeds the mentor the mentee's *replies* but not the mentor's *own* prior prompts (their content isn't logged today — `a2a-sent.jsonl` is metadata-only). So agenda rotation is inferred from the mentee's replies. Logging the mentor's sent-prompt content for a complete two-sided surface can be handled as a separate scoped change; acceptable for a dark feature, and the mentor-outstanding tracker already prevents back-to-back duplicate sends.
 
 ### Acceptance Criteria (amendment)
 
@@ -566,3 +566,25 @@ M5. Empty agenda + no replies → behaviour identical to the prior stub (the pas
 ### Rollback (amendment)
 
 Revert the `onboardingAgenda` field + the `buildStageAContext` agenda block + the `getSurface` builder back to the empty-surface stub. No state/migration/contract change; the reverted-to state is today's passive mentor.
+
+## Amendment (2026-05-29): hot-read mentor config
+
+The active task-driving amendment made `mentor.onboardingAgenda` the operator's opt-in source for the mentor's concrete task list. Dogfooding then surfaced a runtime usability gap: `AgentServer.buildMentorRunner` captured the mentor block from startup config once, so editing the agenda or related mentor settings in the agent config file had no effect until the whole server restarted. That undermines the purpose of an operator-curated onboarding agenda, especially while tuning the curriculum live.
+
+### Change
+
+- **`AgentServer.buildMentorRunner` getConfig hot-reads the mentor block** from the current agent config file each time the runner asks for config.
+- **Startup config remains the safe fallback.** The server keeps the startup mentor config snapshot and returns it if the runtime config file is missing, unreadable, malformed JSON, or has a malformed mentor block.
+- **Good runtime reads merge with defaults.** A valid on-disk mentor object still inherits `DEFAULT_MENTOR_CONFIG`, preserving existing default behavior while reflecting changed agenda and settings immediately.
+- **The runner abstraction stays unchanged.** `MentorOnboardingRunner` still receives a `() => MentorConfig`; the server owns file I/O and defensive fallback.
+
+### Safety and behavior
+
+This does not introduce a new delivery path, topic creation path, or authority surface. It only changes how the already-gated mentor runner reads its existing config. The mentor remains off by default, agenda remains empty by default, and malformed runtime config edits degrade to the startup snapshot instead of throwing into a tick.
+
+### Acceptance Criteria (hot-read amendment)
+
+H1. Changing the on-disk `mentor.onboardingAgenda` is reflected on the next mentor config read without restarting the server.
+H2. A missing, unreadable, malformed, or bad-shape runtime config read returns the startup mentor config snapshot and never throws into a status check or tick.
+H3. Server-backed mentor status reflects a valid runtime config edit without reconstructing `AgentServer`.
+H4. The hot-read logic has unit coverage for agenda updates and fallback-on-bad-read, route coverage for fresh config reads, and server-backed e2e coverage for no-restart behavior.

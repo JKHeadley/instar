@@ -60,6 +60,19 @@ describe('Mentor routes (integration)', () => {
     expect(res.body).toMatchObject({ enabled: false, mode: 'off', menteeFramework: 'codex-cli', inFlight: false });
   });
 
+  it('GET /mentor/status asks the runner for fresh config on each request', async () => {
+    let cfg: MentorConfig = { ...DEFAULT_MENTOR_CONFIG };
+    const runner = new MentorOnboardingRunner(fakeServices(), () => cfg);
+    const app = appWith(runner);
+
+    expect((await request(app).get('/mentor/status')).body).toMatchObject({ enabled: false, mode: 'off' });
+
+    cfg = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'dry-run', menteeFramework: 'cursor' };
+    const res = await request(app).get('/mentor/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ enabled: true, mode: 'dry-run', menteeFramework: 'cursor' });
+  });
+
   it('POST /mentor/tick returns {ran:false, reason:"disabled"} by default (dormant)', async () => {
     const runner = new MentorOnboardingRunner(fakeServices(), () => ({ ...DEFAULT_MENTOR_CONFIG }));
     const res = await request(appWith(runner)).post('/mentor/tick');

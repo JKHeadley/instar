@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "sessionId": "telegram-458-mentor-config-hot-read",
+  "timestamp": "2026-05-29T12:50:23.122Z",
+  "artifactPath": "upgrades/side-effects/mentor-config-hot-read.md",
+  "artifactSha256": "93b22e339c3a6bc43257b840f24ed88a00ea0785d499cf6db4ae65c3827b9007",
+  "specPath": "docs/specs/FRAMEWORK-ONBOARDING-MENTOR-SPEC.md",
+  "coveredFiles": [
+    "docs/specs/FRAMEWORK-ONBOARDING-MENTOR-SPEC.md",
+    "docs/specs/FRAMEWORK-ONBOARDING-MENTOR-SPEC.eli16.md",
+    "src/data/builtin-manifest.json",
+    "src/server/AgentServer.ts",
+    "tests/e2e/mentor-onboarding-lifecycle.test.ts",
+    "tests/integration/mentor-routes.test.ts",
+    "tests/unit/AgentServer-mentor-config-hot-read.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/mentor-config-hot-read.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
