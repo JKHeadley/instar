@@ -1916,7 +1916,7 @@ If no findings exist, report "No pending findings" and stop.
    curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/attention \\\\
      -H "Authorization: Bearer $AUTH" \\\\
      -H 'Content-Type: application/json' \\\\
-     -d '{"title":"Serendipity finding needs review: TITLE","body":"DESCRIPTION","priority":"low","source":"serendipity"}'
+     -d '{"id":"serendipity:FINDING_ID","title":"Serendipity finding needs review: TITLE","body":"DESCRIPTION","priority":"low","source":"serendipity"}'
    \\\`\\\`\\\`
 
 5. **Move processed finding** to \\\`.instar/state/serendipity/processed/\\\`:

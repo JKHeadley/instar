@@ -3068,7 +3068,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
     if (!content.includes('**Attention Queue**')) {
       const section = `
 **Attention Queue** — Signal important items to the user. When something needs their attention — a decision, a review, an anomaly — queue it here instead of hoping they see a chat message.
-- Queue: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention -H 'Content-Type: application/json' -d '{"title":"...","body":"...","priority":"medium","source":"agent"}'\`
+- Queue: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention -H 'Content-Type: application/json' -d '{"id":"agent:unique-item-id","title":"...","body":"...","priority":"medium","source":"agent"}'\`
 - View / resolve: \`GET /attention\` · \`PATCH /attention/ATT-ID\` with \`{"status":"resolved"}\`
 - **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.
 `;
