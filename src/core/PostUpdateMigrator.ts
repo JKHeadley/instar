@@ -2765,6 +2765,26 @@ If a user asks "are my sentinels alerting?" or "why isn't the watchdog notifying
       result.skipped.push('CLAUDE.md: Sentinel Notifications section already present');
     }
 
+    // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that
+    // caps how many forum topics a single attention source may spawn. Without
+    // this section an agent asked "why are my notices grouped / where did topic
+    // X go?" has no grounded answer. Idempotent via the unique marker phrase.
+    if (!content.includes('Topic-Flood Guard') && !content.includes('attention-suppressed.jsonl')) {
+      const section = `
+## Topic-Flood Guard (attention queue circuit breaker)
+
+The attention queue spawns ONE Telegram forum topic per item — right for a genuine /ack-able to-do, catastrophic when a HOUSEKEEPING feature raises items at volume (this is exactly the 2026-05-22 sentinel flood and the 2026-05-28 collaboration-redrive flood). A per-source circuit breaker now sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. HIGH/URGENT items are NEVER coalesced (critical messages always get their own topic). No item is dropped — only its per-item topic is withheld; every item is still in the attention store.
+
+- Default-ON, no config required (it ships in code). Tune via \`messaging[].config.attentionTopicGuard\` = \`{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }\`.
+- If a user asks "why are my notices grouped together / where did topic X go / what is this 'notices coalesced' topic?" — read \`state/attention-suppressed.jsonl\` for the per-source suppressed items and explain the breaker above. The real fix for a recurring flood is to make the offending feature route housekeeping to the logs (like the sentinels and collaboration-redrive now do); the guard is the backstop that protects you regardless.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Topic-Flood Guard section');
+    } else {
+      result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
+    }
+
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
     // about the thinking-block-400 wedge + that auto-recovery is opt-in. Without
     // it, an agent asked "why did my session keep failing instantly / what is

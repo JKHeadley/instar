@@ -220,6 +220,7 @@ describe('Feature Delivery Completeness', () => {
       '/release-readiness',                                // alternate endpoint check for the templated Release Readiness section
       'Agent Updates topic (self-broadcasts about ships, restarts, updates)', // self-broadcast routing operational knowledge, migrator-only
       '/sessions/reap-log',                               // UNIFIED-SESSION-LIFECYCLE §P4 reap-log: operational observability the agent READS to answer "where did my session go?" — like Sentinel Notifications, not a user-invokable capability requiring framework-shadow parity
+      'Topic-Flood Guard',                                // 2026-05-28 attention-queue circuit breaker: operational housekeeping the agent READS (state/attention-suppressed.jsonl) to answer "why are my notices grouped?" — like Sentinel Notifications, migrator-only (no template/shadow parity)
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {
