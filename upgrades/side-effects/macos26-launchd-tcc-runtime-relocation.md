@@ -170,6 +170,21 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > via the watchdog's direct send, unarmed b2lead-before-fix agents via the next
 > consented Claude session's drain.**
 
+> **Increment 12 (watchdog runtime-root resolution — Scope B complete):** the
+> three watchdog functions that read agent state (`try_self_heal`,
+> `probe_server_identity`, `check_stale_lifeline_signal`) now resolve their state
+> dir via a new `resolve_state_dir_for_plist` helper that reads the absolute
+> `--runtime-root` arg from the plist's `ProgramArguments` — NOT by traversing
+> `$project_dir/.instar` (a Documents-resident symlink readlink EPERMs under
+> launchd-spawned context on macOS 26, which is the watchdog's case). Falls
+> back to `$project_dir/.instar` ONLY when the plist has no `--runtime-root`
+> (unrelocated agents). 3 new tests (1 content asserts all three consumers wire
+> through the helper; 2 darwin behavioral confirm both layers — relocated reads
+> absolute Library, unrelocated falls back to project). 17 watchdog tests green.
+> **Scope B is now COMPLETE.** The launchd-spawned watchdog can correctly
+> probe/heal/signal a relocated agent on macOS 26 without ever traversing the
+> TCC-locked Documents path.
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.

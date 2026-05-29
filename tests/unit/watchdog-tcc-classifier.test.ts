@@ -75,6 +75,19 @@ describe('watchdog template — TCC classifier + spool (content checks)', () => 
     expect(body).toMatch(/INSTAR_WATCHDOG_LIB_ONLY/);
   });
 
+  it('defines resolve_state_dir_for_plist + the three runtime-root consumers use it (NEW-H1 fix)', () => {
+    expect(body).toContain('resolve_state_dir_for_plist()');
+    // try_self_heal: takes optional plist + resolves through the helper.
+    expect(body).toMatch(/try_self_heal\(\)[\s\S]+?resolve_state_dir_for_plist/);
+    // probe_server_identity: same.
+    expect(body).toMatch(/probe_server_identity\(\)[\s\S]+?resolve_state_dir_for_plist/);
+    // check_stale_lifeline_signal: same.
+    expect(body).toMatch(/check_stale_lifeline_signal\(\)[\s\S]+?resolve_state_dir_for_plist/);
+    // The three call sites in the main loop pass the plist through.
+    expect(body).toMatch(/try_self_heal "\$project_dir" "\$label" "\$plist"/);
+    expect(body).toMatch(/probe_server_identity "\$project_dir" "\$label" "\$plist"/);
+  });
+
   it('defines try_direct_telegram_send + the classifier wires it after spool_append', () => {
     expect(body).toContain('try_direct_telegram_send()');
     // Must use `curl -K -` so the URL (containing the token) is piped via stdin
@@ -254,6 +267,65 @@ echo "RC=$?"
 `;
     const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
     expect(r.stdout).toMatch(/RC=1/);
+  });
+
+  itDarwin('resolve_state_dir_for_plist returns the absolute --runtime-root from the plist (no Documents traversal)', () => {
+    const label = 'ai.instar.relocated';
+    const runtimeRoot = `${fakeHome}/Library/Application Support/instar/relocated-abc12345`;
+    const plistPath = path.join(launchAgentsDir, `${label}.plist`);
+    fs.writeFileSync(
+      plistPath,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>
+    <string>${runtimeRoot}/bin/node</string>
+    <string>${runtimeRoot}/instar-boot.cjs</string>
+    <string>lifeline</string><string>start</string>
+    <string>--dir</string><string>${fakeHome}/Documents/Projects/relocated</string>
+    <string>--runtime-root</string><string>${runtimeRoot}</string>
+  </array>
+</dict></plist>`,
+    );
+    const script = `
+export HOME='${fakeHome}'
+export INSTAR_WATCHDOG_LIB_ONLY=1
+source '${WATCHDOG_PATH}'
+set +eu
+resolve_state_dir_for_plist '${plistPath}' '${fakeHome}/Documents/Projects/relocated'
+`;
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+    expect(r.stdout.trim()).toBe(runtimeRoot);
+    // CRITICAL: returns the Library path, never the Documents `.instar` path.
+    expect(r.stdout).not.toContain('/Documents/');
+  });
+
+  itDarwin('resolve_state_dir_for_plist falls back to $project_dir/.instar for unrelocated agents (no --runtime-root arg)', () => {
+    const label = 'ai.instar.unrelocated';
+    const plistPath = path.join(launchAgentsDir, `${label}.plist`);
+    fs.writeFileSync(
+      plistPath,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/node</string>
+    <string>${fakeHome}/Documents/Projects/unrelocated/.instar/instar-boot.cjs</string>
+    <string>lifeline</string><string>start</string>
+  </array>
+</dict></plist>`,
+    );
+    const script = `
+export HOME='${fakeHome}'
+export INSTAR_WATCHDOG_LIB_ONLY=1
+source '${WATCHDOG_PATH}'
+set +eu
+resolve_state_dir_for_plist '${plistPath}' '${fakeHome}/Documents/Projects/unrelocated'
+`;
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+    expect(r.stdout.trim()).toBe(`${fakeHome}/Documents/Projects/unrelocated/.instar`);
   });
 
   itDarwin('dedups one-shot per episode (same label + firstDetectedDown → no second entry)', () => {

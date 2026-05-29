@@ -135,6 +135,7 @@ PYEOF
 try_self_heal() {
   local project_dir="$1"
   local label="$2"
+  local plist="${3:-}"
   local healed=1
 
   if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
@@ -142,7 +143,16 @@ try_self_heal() {
     return 1
   fi
 
-  local state_dir="$project_dir/.instar"
+  # macOS 26 TCC: derive the state dir from the plist's --runtime-root arg when
+  # available, so a launchd-spawned watchdog never tries to readlink a Documents-
+  # resident `.instar` symlink (EPERM). Falls back to $project_dir/.instar only
+  # for unrelocated agents (no --runtime-root in the plist).
+  local state_dir
+  if [ -n "$plist" ]; then
+    state_dir=$(resolve_state_dir_for_plist "$plist" "$project_dir")
+  else
+    state_dir="$project_dir/.instar"
+  fi
 
   # Heal 1: Missing shadow install
   local shadow_dir="$state_dir/shadow-install"
@@ -425,9 +435,18 @@ JSONEOF
 probe_server_identity() {
   local project_dir="$1"
   local label="$2"
+  local plist="${3:-}"
 
   [ -z "$project_dir" ] || [ ! -d "$project_dir" ] && return 0
-  local config_file="$project_dir/.instar/config.json"
+  # macOS 26 TCC: resolve state dir from the plist's --runtime-root, never
+  # via $project_dir/.instar (the symlink readlink EPERMs under launchd).
+  local state_dir
+  if [ -n "$plist" ]; then
+    state_dir=$(resolve_state_dir_for_plist "$plist" "$project_dir")
+  else
+    state_dir="$project_dir/.instar"
+  fi
+  local config_file="$state_dir/config.json"
   [ ! -r "$config_file" ] && return 0
 
   local node_bin port auth_token
@@ -507,7 +526,7 @@ handle_bind_fail() {
     return 0
   fi
 
-  if try_self_heal "$project_dir" "$label"; then
+  if try_self_heal "$project_dir" "$label" "$plist"; then
     log "RECOVERING: $label — self-heal applied for bind-fail, reloading"
     if ! $DRY_RUN; then
       mark_heal_attempt "$label"
@@ -556,7 +575,11 @@ check_stale_lifeline_signal() {
   local plist="$3"
 
   [ -z "$project_dir" ] || [ ! -d "$project_dir" ] && return 1
-  local signal_file="$project_dir/.instar/state/lifeline-restart-requested.json"
+  # macOS 26 TCC: resolve state dir from the plist's --runtime-root, never via
+  # $project_dir/.instar (a Documents readlink EPERMs under launchd).
+  local state_dir
+  state_dir=$(resolve_state_dir_for_plist "$plist" "$project_dir")
+  local signal_file="$state_dir/state/lifeline-restart-requested.json"
   [ ! -r "$signal_file" ] && return 1
 
   local node_bin
@@ -615,6 +638,65 @@ check_stale_lifeline_signal() {
 INSTAR_MACHINE_DIR="$HOME/.instar"
 ESCALATION_SPOOL="$INSTAR_MACHINE_DIR/watchdog-escalations.jsonl"
 EPISODE_DIR="$INSTAR_MACHINE_DIR/escalation-episodes"
+
+# Resolve the state-dir (== runtime root) the watchdog should read from for an
+# agent's state, derived FROM THE PLIST, never via $project_dir/.instar.
+#
+# On macOS 26 a launchd-spawned process (this watchdog) CANNOT readlink a
+# Documents-resident symlink — so for a relocated agent we must read the
+# absolute runtime root from the plist (the `--runtime-root <root>` arg the
+# plist passes), not by traversing the symlink. For an unrelocated agent (no
+# --runtime-root in ProgramArguments) we fall back to $project_dir/.instar.
+#
+# Echoes the resolved state dir. Returns empty only if the plist can't be read
+# AND no project_dir was passed (caller handles that).
+resolve_state_dir_for_plist() {
+  local plist="$1"
+  local project_dir="$2"
+
+  local rt=""
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    # Scan ProgramArguments for the `--runtime-root` flag and return the next
+    # element's value. PlistBuddy doesn't index by value, so iterate.
+    local i=0 v=""
+    while v=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:$i" "$plist" 2>/dev/null); do
+      if [ "$v" = "--runtime-root" ]; then
+        rt=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:$((i + 1))" "$plist" 2>/dev/null || true)
+        break
+      fi
+      i=$((i + 1))
+      [ $i -gt 50 ] && break
+    done
+  elif command -v python3 &>/dev/null; then
+    rt=$(python3 - "$plist" 2>/dev/null <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+try:
+    d = ET.parse(sys.argv[1]).getroot().find('dict')
+    els = list(d)
+    for i, el in enumerate(els):
+        if el.tag == 'key' and el.text == 'ProgramArguments' and i + 1 < len(els):
+            args = [c.text or '' for c in els[i + 1] if c.tag == 'string']
+            for j, a in enumerate(args):
+                if a == '--runtime-root' and j + 1 < len(args):
+                    print(args[j + 1])
+                    break
+            break
+except Exception:
+    pass
+PYEOF
+)
+  fi
+
+  if [ -n "$rt" ]; then
+    echo "$rt"
+    return
+  fi
+  if [ -n "$project_dir" ]; then
+    echo "$project_dir/.instar"
+    return
+  fi
+  return
+}
 
 # Read the launchd plist's ProgramArguments[0] (the executable launchd would
 # spawn). Returns empty on read failure.
@@ -860,7 +942,7 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
       fi
 
       # Second: bind-probe (port collision / server-locked-out case).
-      probe_out=$(probe_server_identity "$project_dir" "$label")
+      probe_out=$(probe_server_identity "$project_dir" "$label" "$plist")
       probe_rc=$?
       if [ "$probe_rc" -eq 0 ]; then
         # Truly healthy — clear heal state
@@ -884,7 +966,7 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
 
       if should_attempt_heal "$label"; then
         project_dir=$(get_project_dir "$plist")
-        if try_self_heal "$project_dir" "$label"; then
+        if try_self_heal "$project_dir" "$label" "$plist"; then
           log "RECOVERING: $label — self-heal applied, reloading"
           if ! $DRY_RUN; then
             mark_heal_attempt "$label"
@@ -918,7 +1000,7 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
     if ! $DRY_RUN; then
       project_dir=$(get_project_dir "$plist")
       if [ -n "$project_dir" ]; then
-        try_self_heal "$project_dir" "$label" || true
+        try_self_heal "$project_dir" "$label" "$plist" || true
       fi
       launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
       recovered=$((recovered + 1))
