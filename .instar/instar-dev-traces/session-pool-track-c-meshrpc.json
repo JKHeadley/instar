@@ -1,0 +1,9 @@
+{
+  "phase": "complete",
+  "slug": "session-pool-track-c-meshrpc",
+  "coveredFiles": ["src/core/MeshRpc.ts"],
+  "artifactPath": "upgrades/side-effects/session-pool-track-c-meshrpc.md",
+  "artifactSha256": "0f5c9e2f527233ea0cf5174e801f092a10f571bd3a9da400e4289f9129e05254",
+  "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+  "createdAt": "2026-05-29T11:05:57Z"
+}
