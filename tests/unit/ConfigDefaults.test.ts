@@ -34,6 +34,21 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
+    it('ships CrossSessionCoordination ON by default with the sensitive-key list (migration parity)', () => {
+      // Default-ON housekeeping; applyDefaults (add-missing) propagates it to
+      // existing agents on update. See docs/specs/cross-session-coordination.md.
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const x = (getInitDefaults(t).monitoring as any).crossSessionCoordination;
+        expect(x).toBeDefined();
+        expect(x.enabled).toBe(true);
+        expect(x.windowMs).toBe(600000);
+        expect(Array.isArray(x.sensitiveConfigKeys)).toBe(true);
+        expect(x.sensitiveConfigKeys).toContain('monitoring');
+      }
+      const mig = getMigrationDefaults('managed-project');
+      expect((mig.monitoring as any).crossSessionCoordination?.enabled).toBe(true);
+    });
+
     it('ships SessionReaper OFF + dry-run by default (the only kill-on-heuristic monitor)', () => {
       for (const t of ['managed-project', 'standalone'] as const) {
         const sr = (getInitDefaults(t).monitoring as any).sessionReaper;

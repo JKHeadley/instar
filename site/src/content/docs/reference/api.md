@@ -123,6 +123,17 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/messages/outbox` | Inter-agent outbox |
 | GET | `/messages/dead-letter` | Dead letter queue |
 
+## Cross-Session Coordination
+
+Backed by the `CrossSessionCoordinator` — a light, advisory signal so concurrent sessions on one agent home see each other's recent high-impact actions before acting. Never blocks; surfaces a `coordinationWarning`. Pass `X-Instar-Session: <topic-or-label>` so the signal can tell sessions apart.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/coordination/intent` | Announce "I'm about to do X" so other sessions see it before acting |
+| GET | `/coordination/recent` | Recent structural actions + intents (newest first) |
+
+Sensitive `PATCH /config` flips and `POST /commitments/:id/withdraw` calls auto-record and attach a `coordinationWarning` to their own response when another session was recently active. Config: `monitoring.crossSessionCoordination`. Audit: `logs/cross-session-events.jsonl`.
+
 ## Threadline (MCP Tools)
 
 These tools are registered as an MCP server and called by Claude Code (or any MCP client) via stdio transport. They are registered automatically on server boot.
