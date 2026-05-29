@@ -166,3 +166,76 @@ export function acceptEnvelope(
   if (!v.ok) return v;
   return checkCommandRBAC(env.command, env.sender, rbacDeps);
 }
+
+// ── Dispatcher (transport-agnostic: the receive side of MeshRpc) ──────
+
+/** A handler for one command type. Receives the (already-authorized) command + verified sender. */
+export type MeshCommandHandler = (command: MeshCommand, sender: MachineId) => Promise<unknown> | unknown;
+
+export interface MeshRpcDispatcherDeps {
+  verify: VerifyEnvelopeDeps;
+  rbac: RbacDeps;
+  /** Record a nonce as seen (NonceStore-backed) — called ONLY on full accept. */
+  recordNonce: (sender: MachineId, nonce: string) => void;
+  /** Per-command handlers. A missing handler → `no-handler` (the command is verified+authorized but unimplemented on this layer). */
+  handlers: Partial<Record<MeshCommand['type'], MeshCommandHandler>>;
+  /** Audit sink for rejections (SecurityLog). Optional. */
+  onReject?: (env: MeshEnvelope, reason: string) => void;
+  logger?: (msg: string) => void;
+}
+
+export type DispatchResult =
+  | { ok: true; result: unknown }
+  | { ok: false; reason: VerifyReason | RbacReason | 'no-handler'; status: number };
+
+/** HTTP status for each rejection reason — auth failures 401/403, freshness 409, unimplemented 501. */
+function statusForReason(reason: string): number {
+  switch (reason) {
+    case 'wrong-recipient':
+    case 'signature-invalid':
+    case 'unknown-sender':
+      return 401;
+    case 'not-router':
+    case 'claim-unauthorized':
+    case 'release-unauthorized':
+      return 403;
+    case 'replayed-nonce':
+    case 'stale-timestamp':
+      return 409;
+    case 'no-handler':
+      return 501;
+    default:
+      return 400;
+  }
+}
+
+/**
+ * The receive side of MeshRpc — transport-agnostic (the HTTP route, or a tunnel
+ * carrier, calls `dispatch(envelope)`). Runs the two gates (verify THEN rbac),
+ * records the nonce ONLY on full accept (a rejected command never burns a nonce),
+ * audits rejections, then routes to the registered handler. Returns a result +
+ * an HTTP status so any transport can map it.
+ */
+export class MeshRpcDispatcher {
+  private readonly d: MeshRpcDispatcherDeps;
+  constructor(deps: MeshRpcDispatcherDeps) {
+    this.d = deps;
+  }
+
+  async dispatch(env: MeshEnvelope): Promise<DispatchResult> {
+    const accept = acceptEnvelope(env, this.d.verify, this.d.rbac);
+    if (!accept.ok) {
+      this.d.onReject?.(env, accept.reason);
+      this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${accept.reason}`);
+      return { ok: false, reason: accept.reason, status: statusForReason(accept.reason) };
+    }
+    // Accepted — burn the nonce so an immediate replay is caught.
+    this.d.recordNonce(env.sender, env.nonce);
+    const handler = this.d.handlers[env.command.type];
+    if (!handler) {
+      return { ok: false, reason: 'no-handler', status: statusForReason('no-handler') };
+    }
+    const result = await handler(env.command, env.sender);
+    return { ok: true, result };
+  }
+}

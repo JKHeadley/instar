@@ -10,10 +10,12 @@ import {
   checkCommandRBAC,
   acceptEnvelope,
   canonicalizeEnvelope,
+  MeshRpcDispatcher,
   type MeshCommand,
   type MeshEnvelope,
   type VerifyEnvelopeDeps,
   type RbacDeps,
+  type MeshRpcDispatcherDeps,
 } from '../../src/core/MeshRpc.js';
 
 // Fake crypto: a signature is `SIG(<sender>):<canonical>` — so a sig is valid
@@ -147,5 +149,76 @@ describe('MeshRpc — acceptEnvelope (verify THEN rbac)', () => {
   it('a router placing on a correctly-addressed envelope is accepted', () => {
     const env = envFrom({ sender: 'ROUTER', recipient: 'B', command: { type: 'place', session: 's', machine: 'm' } });
     expect(acceptEnvelope(env, vd('B'), rd)).toEqual({ ok: true, reason: 'ok' });
+  });
+});
+
+describe('MeshRpc — dispatcher (receive side)', () => {
+  const rd: RbacDeps = { routerHolder: () => 'ROUTER', ownerOf: () => null, placementTargetOf: () => null };
+
+  function makeDispatcher(over: Partial<MeshRpcDispatcherDeps> = {}) {
+    const recorded: string[] = [];
+    const rejected: Array<{ type: string; reason: string }> = [];
+    const handled: Array<{ type: string; sender: string }> = [];
+    const d = new MeshRpcDispatcher({
+      verify: verifyDeps('B'),
+      rbac: rd,
+      recordNonce: (s: string, n: string) => recorded.push(`${s}:${n}`),
+      onReject: (e: MeshEnvelope, reason: string) => rejected.push({ type: e.command.type, reason }),
+      handlers: {
+        'capacity-report': (_c: MeshCommand, sender: string) => { handled.push({ type: 'capacity-report', sender }); return { load: 1 }; },
+        place: (_c: MeshCommand, sender: string) => { handled.push({ type: 'place', sender }); return { placed: true }; },
+      },
+      ...over,
+    });
+    return { d, recorded, rejected, handled };
+  }
+
+  it('accepts → records nonce → dispatches to the handler → returns result', async () => {
+    const { d, recorded, handled } = makeDispatcher();
+    const env = envFrom({ sender: 'ROUTER', recipient: 'B', command: { type: 'place', session: 's', machine: 'm' } });
+    const r = await d.dispatch(env);
+    expect(r).toEqual({ ok: true, result: { placed: true } });
+    expect(recorded).toEqual(['ROUTER:n1']); // nonce burned on accept
+    expect(handled).toEqual([{ type: 'place', sender: 'ROUTER' }]);
+  });
+
+  it('rejects an unauthorized command, audits it, and does NOT burn the nonce (403)', async () => {
+    const { d, recorded, rejected, handled } = makeDispatcher();
+    const env = envFrom({ sender: 'PEER', recipient: 'B', command: { type: 'place', session: 's', machine: 'm' } });
+    const r = await d.dispatch(env);
+    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ reason: 'not-router', status: 403 });
+    expect(rejected).toEqual([{ type: 'place', reason: 'not-router' }]);
+    expect(recorded).toEqual([]); // rejected → nonce NOT consumed
+    expect(handled).toEqual([]);
+  });
+
+  it('rejects a wrong-recipient replay with 401 (verify gate)', async () => {
+    const { d } = makeDispatcher();
+    const envForC = envFrom({ sender: 'ROUTER', recipient: 'C', command: { type: 'capacity-report' } });
+    const r = await d.dispatch(envForC);
+    expect(r).toMatchObject({ ok: false, reason: 'wrong-recipient', status: 401 });
+  });
+
+  it('accepts + burns nonce but returns no-handler (501) for a verified command with no registered handler', async () => {
+    const { d, recorded } = makeDispatcher();
+    const env = envFrom({ sender: 'ROUTER', recipient: 'B', command: { type: 'transfer', session: 's', target: 'm' } });
+    const r = await d.dispatch(env);
+    expect(r).toMatchObject({ ok: false, reason: 'no-handler', status: 501 });
+    expect(recorded).toEqual(['ROUTER:n1']); // it WAS authorized — nonce burned
+  });
+
+  it('routes a read-class command from any peer to its handler', async () => {
+    const { d, handled } = makeDispatcher();
+    const env = envFrom({ sender: 'ANY_PEER', recipient: 'B', command: { type: 'capacity-report' } });
+    const r = await d.dispatch(env);
+    expect(r).toEqual({ ok: true, result: { load: 1 } });
+    expect(handled).toEqual([{ type: 'capacity-report', sender: 'ANY_PEER' }]);
+  });
+
+  it('maps a replayed nonce to 409', async () => {
+    const { d } = makeDispatcher({ verify: verifyDeps('B', { seenNonce: () => true }) });
+    const env = envFrom({ sender: 'ANY_PEER', recipient: 'B', command: { type: 'capacity-report' } });
+    expect((await d.dispatch(env)).status).toBe(409);
   });
 });
