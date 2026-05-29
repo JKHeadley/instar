@@ -801,6 +801,18 @@
     /* Page intro — one-sentence grounding right under the title so terms like
        "it" / "the system" later in the page have a clear referent. */
     .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
+    /* ── Machines tab (Multi-Machine Session Pool §L2) — reuses .ph-root calm type ── */
+    .machine-card { border: 1px solid var(--border, #2a2a2a); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; max-width: 720px; background: var(--panel-bg, transparent); }
+    .machine-head { display: flex; align-items: center; gap: 10px; }
+    .machine-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+    .machine-dot.ok { background: var(--accent); }       /* online */
+    .machine-dot.warn { background: #f59e0b; }            /* clock out of sync — paused */
+    .machine-dot.off { background: var(--text-dim); }     /* offline */
+    .machine-nick { font-size: 19px; font-weight: 600; color: var(--text-bright); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 6px; min-width: 120px; }
+    .machine-nick:hover { border-color: var(--border, #2a2a2a); }
+    .machine-nick:focus { border-color: var(--accent); outline: none; background: rgba(255,255,255,0.03); }
+    .machine-badge { font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 2px 9px; }
+    .machine-meta { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin-top: 6px; }
     /* Status color tokens — calm, never alarming. The dot is a scan-aid:
        glance the collapsed list, see which problems are still being worked
        on (amber), cause known (blue), or worked out (green). */
@@ -2624,6 +2636,7 @@
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+          <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -3134,6 +3147,21 @@
         <summary class="ph-detail-summary">More detail</summary>
         <div id="phDetail" class="ph-detail-body"></div>
       </details>
+    </div>
+
+    <!-- machines tab (Multi-Machine Session Pool §L2) -->
+    <div id="machinesPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Machines</h2>
+        <div id="machinesStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">Every computer this agent is set up on. Each one gets a friendly name you can change — and once it has a name, you can tell the agent "move this conversation to the mini" and it knows which machine you mean. The agent shares its conversations across these machines so it can handle more at once.</p>
+      <div id="machinesHeadline" class="ph-headline-wrap" aria-live="polite"></div>
+      <section class="ph-section">
+        <h3 class="ph-h">The machines</h3>
+        <p class="ph-h-sub">Click a name to rename it. The "dispatcher" is the one machine currently handing out new conversations.</p>
+        <div id="machinesList"></div>
+      </section>
     </div>
 
     <div id="evidenceTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
@@ -4376,6 +4404,13 @@
         onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
       },
       {
+        id: 'machines',
+        panels: ['machinesPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startMachines === 'function') startMachines(); },
+        onDeactivate: () => { if (typeof stopMachines === 'function') stopMachines(); },
+      },
+      {
         id: 'secrets',
         panels: ['secretsPanel'],
         display: ['flex'],
@@ -4528,6 +4563,79 @@
         throw new Error(data.error || `HTTP ${resp.status}`);
       }
       return resp.json();
+    }
+
+    // ── Machines Tab (Multi-Machine Session Pool §L2) ─────────────────
+    let __machinesTimer = null;
+    function startMachines() { loadMachines(); if (!__machinesTimer) __machinesTimer = setInterval(loadMachines, 15000); }
+    function stopMachines() { if (__machinesTimer) { clearInterval(__machinesTimer); __machinesTimer = null; } }
+    function machineSpecLine(hw) {
+      if (!hw) return 'specs not reported yet';
+      const chip = (hw.cpuModel && hw.cpuModel !== 'unknown') ? hw.cpuModel : ((hw.platform || '') + (hw.arch ? ' ' + hw.arch : '')).trim();
+      const cores = hw.cpuCores ? hw.cpuCores + ' cores' : '';
+      const ram = hw.totalMemBytes ? Math.round(hw.totalMemBytes / 1073741824) + ' GB' : '';
+      return [chip, cores, ram].filter(Boolean).join(' · ') || 'specs not reported yet';
+    }
+    function machineBusyWord(m) {
+      if (m.loadAvg == null) return '';
+      if (m.loadAvg < 1) return 'idle';
+      if (m.loadAvg < 4) return 'working';
+      return 'busy';
+    }
+    function renderMachineCard(m, routerHolder) {
+      const online = !!m.online;
+      const dot = !online ? 'off' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'warn' : 'ok');
+      const statusWord = !online ? 'offline' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'clock out of sync — paused for new conversations' : 'online');
+      const isRouter = !!(routerHolder && m.machineId === routerHolder);
+      const nick = m.nickname || m.machineId;
+      const busy = machineBusyWord(m);
+      const sessions = (m.activeSessionCount != null) ? (m.activeSessionCount + (m.maxSessions ? '/' + m.maxSessions : '') + ' conversation' + (m.activeSessionCount === 1 ? '' : 's')) : '';
+      const tail = [statusWord, busy, sessions].filter(Boolean).map(s => escapeHtml(s)).join(' · ');
+      return '<div class="machine-card">' +
+        '<div class="machine-head">' +
+          '<span class="machine-dot ' + dot + '" title="' + escapeHtml(statusWord) + '"></span>' +
+          '<input class="machine-nick" value="' + escapeHtml(nick) + '" data-mid="' + escapeHtml(m.machineId) + '" ' +
+            'onkeydown="if(event.key===\'Enter\'){this.blur();}" onblur="saveMachineNickname(this)" aria-label="machine nickname" />' +
+          (isRouter ? '<span class="machine-badge">dispatcher</span>' : '') +
+        '</div>' +
+        '<div class="machine-meta">' + escapeHtml(machineSpecLine(m.hardware)) + '</div>' +
+        '<div class="machine-meta">' + tail + '</div>' +
+      '</div>';
+    }
+    async function saveMachineNickname(input) {
+      const mid = input.getAttribute('data-mid');
+      const nickname = input.value.trim();
+      try {
+        await apiFetch('/pool/machines/' + encodeURIComponent(mid), {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nickname }),
+        });
+        loadMachines();
+      } catch (e) {
+        const hl = document.getElementById('machinesHeadline');
+        if (hl) hl.innerHTML = '<div class="ph-headline">Couldn\'t rename that machine: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+    async function loadMachines() {
+      const stamp = document.getElementById('machinesStamp');
+      const list = document.getElementById('machinesList');
+      const headline = document.getElementById('machinesHeadline');
+      if (!list) return;
+      try {
+        const data = await apiFetch('/pool');
+        if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+        if (!data.enabled) {
+          if (headline) headline.innerHTML = '<div class="ph-headline">Running on a single machine right now — nothing to spread across yet.</div>';
+          list.innerHTML = '';
+          return;
+        }
+        const machines = data.machines || [];
+        const onlineCount = machines.filter(m => m.online).length;
+        if (headline) headline.innerHTML = '<div class="ph-headline">' + onlineCount + ' of ' + machines.length + ' machine' + (machines.length === 1 ? '' : 's') + ' online</div>';
+        const routerHolder = data.router && data.router.holder;
+        list.innerHTML = machines.length ? machines.map(m => renderMachineCard(m, routerHolder)).join('') : '<div class="machine-meta">No machines paired yet.</div>';
+      } catch (e) {
+        if (headline) headline.innerHTML = '<div class="ph-headline">Couldn\'t load machines: ' + escapeHtml(e.message) + '</div>';
+      }
     }
 
     // ── Tokens Tab ──────────────────────────────────────────────────
