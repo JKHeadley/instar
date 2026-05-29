@@ -3,10 +3,10 @@ slug: topic-intent-briefing-injection
 title: Topic-intent briefing — wire the migrator hook to actually inject it (drift fix + anti-drift guard)
 author: echo
 project: continuous-working-awareness
-review-convergence: ""
-review-iterations: 0
-review-completed-at: ""
-review-report: ""
+review-convergence: "2026-05-29T00:29:34.270Z"
+review-iterations: 2
+review-completed-at: "2026-05-29T00:29:34.270Z"
+review-report: "standards-conformance gate, 2 iters: (1) Testing Integrity → added Tier-4 Test-as-Self; (2) Bug-Fix Evidence Bar → reframed Tier-4 as pre-merge blocking with negative control. Retry confirmations degraded due to LLM-pool recovery; clean iters used."
 approved: false
 approved-by: ""
 approved-at: ""
@@ -176,7 +176,14 @@ briefing.
   catches drift at draft time. The briefing keeps the agent on-frame in
   the first place. Both layers belong; neither substitutes for the other.
 
-## Testing (all three tiers + drift guard)
+## Testing (all four tiers + drift guard)
+
+The bottom three tiers prove the bytes reach stdout; **Tier 4
+(Test-as-Self) proves the AGENT actually stays on-frame** — which is the
+whole point. Because this is an agent-facing behavioral fix (the value
+is *the agent reads the briefing and doesn't drift*, not "the briefing
+appears in a buffer somewhere"), Test-as-Self is required, not optional.
+The standards-conformance gate flagged exactly this gap in iter 1.
 
 - **Tier 1 (unit):**
   - Drift guard: `getTelegramTopicContextHook()` output equals (trim-equal)
@@ -196,8 +203,48 @@ briefing.
   - Assert the hook's stdout contains the rendered briefing block (the
     `=== TOPIC N INTENT BRIEFING ===` header) PLUS the recent-messages
     block. Both surfaces preserved.
+- **Tier 4 (Test-as-Self — required, post-merge gate):**
+  - **Setup.** Deploy the merged dist into a throwaway agent home via the
+    `test-as-self` recipe (`instar init --dir $TEST_DIR`, foreground
+    server, scoped Telegram bot). Seed the throwaway agent's topic with a
+    SETTLED ref (e.g. *"The X service is already deployed to host A"*) via
+    the `appendEvidence` HTTP path.
+  - **Drive.** Send a user message that creates the on-frame drift
+    opportunity (e.g. *"What do you need to deploy X?"*). The agent
+    processes the prompt; the new hook fires; the briefing is in context.
+  - **Assert (behavioral).** The agent's reply either references the
+    SETTLED fact directly or asks for confirmation before contradicting it
+    — i.e. it stays on-frame. Verified by reading the agent's outbound
+    reply through the Telegram-driver, not by inspecting buffers. Mirror
+    the same scenario without the fix as a negative-control to confirm
+    the agent would have drifted (it would draft a "we need to deploy X"
+    reply that contradicts the SETTLED ref).
+  - **Assert (telemetry).** `GET /topic-intent/:topicId/capture-metrics`
+    shows `briefing_served` incrementing in step with user prompts, not
+    stuck on its session-start value.
+  - **Restore.** Tear down the throwaway agent home and any bot used; do
+    not leave deploy state lying around.
+  - **When this runs — pre-merge, blocking.** The bug under fix is *the
+    agent drifting because it never saw the briefing*. Tier 1–3 prove the
+    bytes reach stdout; only Tier 4 reproduces the original failure and
+    verifies it stops. Per the Bug-Fix Evidence Bar, a fix that ships
+    before the original failure is verified stopped has not been verified
+    fixed. So Tier 4 is a blocking pre-merge gate for this spec, alongside
+    Tier 1–3 — not deferred to post-merge. The merge gate is "Tier 4
+    behavioral assertions green AND telemetry assertions green AND
+    negative-control reproduces the drift on the unfixed build," not just
+    bytes-in-buffer tests.
+  - **Honest scope.** Test-as-Self verifies the user-prompt-driven
+    refresh path (the only one in scope). It does NOT verify within-prompt
+    drift — that case is tracked separately as
+    `topic-intent-briefing-within-prompt-refresh`.
 
 ## Acceptance criteria
+
+**All criteria are merge-blocking.** Per the Bug-Fix Evidence Bar, the
+behavioral criterion (#7) — the agent's drift actually stopping — is the
+load-bearing one; #1–6 alone do not constitute a verified fix because
+none of them observe the agent's behavior.
 
 1. After this ships, `PostUpdateMigrator.getTelegramTopicContextHook()`'s
    output contains the briefing-fetch curl line (both auth branches),
@@ -212,6 +259,14 @@ briefing.
    breakage).
 6. The migrator's log line for this hook mentions "briefing" so the impact
    is visible in upgrade output.
+7. **Tier-4 behavioral assertion (the bug-fix evidence bar):** on a
+   throwaway agent fed a SETTLED ref and the drift-bait user prompt, the
+   agent's outbound reply stays on-frame (cites the SETTLED fact OR asks
+   for confirmation), AND the negative-control build (the unfixed migrator
+   hook) drafts the contradictory reply. `briefing_served` increments per
+   user prompt on the fixed build and stays flat on the negative control.
+   This is the only criterion that observes the actual failure mode under
+   fix; #1–6 are necessary but not sufficient without it.
 
 ## Risk and rollback
 
