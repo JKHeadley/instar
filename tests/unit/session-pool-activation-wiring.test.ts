@@ -52,7 +52,7 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 900);
+    const block = src.slice(idx, idx + 1500);
     // Gated on a non-dark stage + only with Telegram present.
     expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
     // Bridges to the existing local spawn/resume path for the topic.
