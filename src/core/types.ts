@@ -1781,6 +1781,26 @@ export interface SessionPoolConfig {
    * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.
    */
   meshRpcClockToleranceMs?: number;
+  /**
+   * §L4 deliverMessage per-attempt timeout (ms) — the router treats a forward that
+   * does not ACK within this as failed and retries. Default 5000.
+   */
+  deliverMessageTimeoutMs?: number;
+  /**
+   * §L4 max deliverMessage retries before the router falls back to owner-dead
+   * re-placement. Default 3.
+   */
+  deliverMessageMaxRetries?: number;
+  /**
+   * §L4 placement stickiness margin — the current owner is kept unless another
+   * machine is better by more than this score delta (prevents flapping). Default 0.15.
+   */
+  placementHysteresisDelta?: number;
+  /**
+   * §L3 max per-session ownership CAS retries on non-fast-forward contention before
+   * the router queues the message. Default 5.
+   */
+  ownershipCasMaxRetries?: number;
 }
 
 // ── Agent Autonomy ──────────────────────────────────────────────────

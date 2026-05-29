@@ -279,6 +279,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,
       meshRpcClockToleranceMs: 30000,
+      // §L4 router/dispatch tunables (spec §Config). The SessionRouter ships with
+      // matching hardcoded DEFAULT_ROUTER_CONFIG; these expose them for operators.
+      deliverMessageTimeoutMs: 5000,
+      deliverMessageMaxRetries: 3,
+      placementHysteresisDelta: 0.15,
+      ownershipCasMaxRetries: 5,
     },
   },
 };

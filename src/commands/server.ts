@@ -8851,6 +8851,23 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (cmd.type === 'release') return ownReg.cas({ type: 'release', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce });
           return { ok: false, reason: 'unsupported' };
         };
+        // The §L4 owner-side deliverMessage receive handler (shared factory — same
+        // code path the tests exercise). Durable-receipt-before-processing with
+        // idempotent dedupe on messageId + the stale-ownership fence. Returns the
+        // deliverMessageAck the router waits on before advancing the platform offset.
+        // (Local processing hand-off to SessionManager is the Track-H staged
+        // activation; the durable receipt + ACK is the complete dark-phase contract.)
+        const deliverMod = await import('../core/DeliverMessageHandler.js');
+        const deliverSeenFallback = new Set<string>(); // used only if the SQLite ledger is unavailable
+        const deliverMessageHandler = deliverMod.createDeliverMessageHandler({
+          ownerEpochOf: (s) => ownReg.read(s)?.ownershipEpoch ?? null,
+          recordReceipt: (messageId, session) => {
+            if (messageLedger) return messageLedger.record(messageId, { platform: 'mesh', topic: session }).firstSeen;
+            if (deliverSeenFallback.has(messageId)) return false;
+            deliverSeenFallback.add(messageId);
+            return true;
+          },
+        });
         meshRpcDispatcher = new meshMod.MeshRpcDispatcher({
           verify: {
             selfMachineId: meshSelfId,
@@ -8883,6 +8900,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             claim: ownAction,
             transfer: ownAction,
             release: ownAction,
+            deliverMessage: deliverMessageHandler,
           },
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
