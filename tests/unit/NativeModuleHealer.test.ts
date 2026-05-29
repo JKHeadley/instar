@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import child_process from 'node:child_process';
 
 import { NativeModuleHealer } from '../../src/memory/NativeModuleHealer.js';
 
@@ -382,6 +383,40 @@ describe('NativeModuleHealer', () => {
         /NODE_MODULE_VERSION mismatch — persistent/,
       );
       expect(opener).toHaveBeenCalledTimes(2); // initial + one retry, then surfaced
+    });
+  });
+
+  // Fleet fix (2026-05-29): the rebuild must target the running Node's ABI and
+  // prefer the prebuilt — `npm rebuild` alone compiles and can't heal a box
+  // without a C++ toolchain (instar-codey sqlite offline 16h).
+  describe('healBetterSqlite3Sync — ABI-correct, prebuilt-first rebuild', () => {
+    it('prefers `npm install` (prebuilt) first and pins PATH to the running Node', () => {
+      NativeModuleHealer.resetForTesting();
+      NativeModuleHealer.configure({ stateDir: tmpDir });
+      const prefix = tmpDir;
+      fs.mkdirSync(path.join(prefix, 'node_modules', 'better-sqlite3'), { recursive: true });
+      fs.writeFileSync(
+        path.join(prefix, 'node_modules', 'better-sqlite3', 'package.json'),
+        JSON.stringify({ name: 'better-sqlite3', version: '12.10.0' }),
+      );
+      vi.spyOn(NativeModuleHealer as any, 'findBetterSqlite3InstallPrefix').mockReturnValue(prefix);
+      vi.spyOn(NativeModuleHealer as any, 'findNpmPath').mockReturnValue('/usr/bin/npm');
+      const spawnSpy = vi
+        .spyOn(child_process, 'spawnSync')
+        .mockReturnValue({ status: 0, stdout: '', stderr: '', signal: null, pid: 0, output: [] } as any);
+
+      const ok = NativeModuleHealer.healBetterSqlite3Sync('Test');
+      expect(ok).toBe(true);
+
+      const firstArgs = spawnSpy.mock.calls[0][1] as string[];
+      expect(firstArgs).toContain('install');                                   // prebuilt path
+      expect(firstArgs.some((a) => String(a).startsWith('better-sqlite3'))).toBe(true);
+      expect(firstArgs).not.toContain('--build-from-source');                   // not a compile
+      const env = (spawnSpy.mock.calls[0][2] as any).env as Record<string, string>;
+      expect(env.PATH.split(path.delimiter)[0]).toBe(path.dirname(process.execPath));
+      expect(env.npm_node_execpath).toBe(process.execPath);
+
+      spawnSpy.mockRestore();
     });
   });
 });
