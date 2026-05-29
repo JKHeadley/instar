@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "c001de80-4f1a-4717-aafe-a4362d76b0ef",
+  "timestamp": "2026-05-29T11:21:47.072Z",
+  "artifactPath": "upgrades/side-effects/project-map-related-worktrees.md",
+  "artifactSha256": "49c6dbcc8a05f0edcd6bde85b15ee15d8bf52e2e5fad5b4edd3187d1614c18e6",
+  "specPath": "docs/specs/project-map-related-worktrees.md",
+  "coveredFiles": [
+    "docs/specs/project-map-related-worktrees.eli16.md",
+    "docs/specs/project-map-related-worktrees.md",
+    "src/core/ProjectMapper.ts",
+    "src/data/builtin-manifest.json",
+    "src/index.ts",
+    "tests/unit/ProjectMapper.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/project-map-related-worktrees.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

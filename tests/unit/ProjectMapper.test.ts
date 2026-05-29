@@ -19,6 +19,7 @@ import os from 'node:os';
 import { ProjectMapper } from '../../src/core/ProjectMapper.js';
 import type { ProjectMapConfig } from '../../src/core/ProjectMapper.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -31,6 +32,21 @@ function createTmpProject(): { projectDir: string; stateDir: string } {
 
 function makeConfig(projectDir: string, stateDir: string): ProjectMapConfig {
   return { projectDir, stateDir };
+}
+
+function createRelatedWorktree(root: string, name: string, branch = 'feature/test'): string {
+  const worktreeDir = path.join(root, name);
+  fs.mkdirSync(path.join(worktreeDir, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(worktreeDir, 'tests'), { recursive: true });
+  fs.writeFileSync(path.join(worktreeDir, 'src', 'index.ts'), '');
+  SafeGitExecutor.execSync(['init'], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-init' });
+  SafeGitExecutor.execSync(['config', 'user.name', 'ProjectMapper Test'], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-config-name' });
+  SafeGitExecutor.execSync(['config', 'user.email', 'projectmapper@example.test'], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-config-email' });
+  SafeGitExecutor.execSync(['add', '.'], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-add' });
+  SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-commit' });
+  SafeGitExecutor.execSync(['checkout', '-b', branch], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-checkout' });
+  SafeGitExecutor.execSync(['remote', 'add', 'JKHeadley', 'https://github.com/JKHeadley/instar.git'], { cwd: worktreeDir, stdio: 'ignore', operation: 'tests/unit/ProjectMapper.test.ts:git-remote' });
+  return worktreeDir;
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -92,17 +108,21 @@ describe('ProjectMapper', () => {
       expect(map.totalFiles).toBeGreaterThanOrEqual(3);
     });
 
-    it('skips node_modules and .git directories', () => {
+    it('skips node_modules and hidden directories from total file counts', () => {
       fs.mkdirSync(path.join(projectDir, 'node_modules', 'some-pkg'), { recursive: true });
       fs.writeFileSync(path.join(projectDir, 'node_modules', 'some-pkg', 'index.js'), '');
       fs.mkdirSync(path.join(projectDir, '.git', 'objects'), { recursive: true });
       fs.writeFileSync(path.join(projectDir, '.git', 'objects', 'abc'), '');
+      fs.mkdirSync(path.join(projectDir, '.worktrees', 'feature', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(projectDir, '.worktrees', 'feature', 'src', 'ignored.ts'), '');
+      fs.mkdirSync(path.join(projectDir, '.hidden-state'), { recursive: true });
+      fs.writeFileSync(path.join(projectDir, '.hidden-state', 'ignored.jsonl'), '');
       fs.writeFileSync(path.join(projectDir, 'real-file.ts'), '');
 
       const mapper = new ProjectMapper(makeConfig(projectDir, stateDir));
       const map = mapper.generate();
 
-      // Should not count node_modules or .git files
+      // Should not count dependency, git, or hidden state/worktree directories.
       expect(map.totalFiles).toBe(1); // Only real-file.ts
     });
 
@@ -219,6 +239,61 @@ describe('ProjectMapper', () => {
 
       expect(map.keyFiles).toContain('CLAUDE.md');
       expect(map.keyFiles).toContain('README.md');
+    });
+  });
+
+  describe('related worktree discovery', () => {
+    it('summarizes configured related worktree roots', () => {
+      const worktreesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'projmap-worktrees-'));
+      try {
+        const worktreeDir = createRelatedWorktree(worktreesRoot, 'project-map-workspace-awareness');
+
+        const mapper = new ProjectMapper({
+          ...makeConfig(projectDir, stateDir),
+          relatedWorktreeRoots: [worktreesRoot],
+        });
+        const map = mapper.generate();
+
+        const related = map.relatedWorktrees ?? [];
+        expect(related).toHaveLength(1);
+        expect(related[0]).toMatchObject({
+          name: 'project-map-workspace-awareness',
+          path: fs.realpathSync(worktreeDir),
+          gitBranch: 'feature/test',
+          gitRemote: 'https://github.com/JKHeadley/instar.git',
+        });
+        expect(related[0].keyDirectories).toEqual(['src', 'tests']);
+      } finally {
+        SafeFsExecutor.safeRmSync(worktreesRoot, {
+          recursive: true,
+          force: true,
+          operation: 'tests/unit/ProjectMapper.test.ts:related-worktrees-cleanup',
+        });
+      }
+    });
+
+    it('includes related worktrees in markdown and compact summaries', () => {
+      const worktreesRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'projmap-worktrees-'));
+      try {
+        createRelatedWorktree(worktreesRoot, 'tokenledger-scanall-flake', 'codey/tokenledger-scanall-flake');
+
+        const mapper = new ProjectMapper({
+          ...makeConfig(projectDir, stateDir),
+          relatedWorktreeRoots: [worktreesRoot],
+        });
+        const map = mapper.generate();
+
+        expect(mapper.toMarkdown(map)).toContain('## Related Worktrees');
+        expect(mapper.toMarkdown(map)).toContain('tokenledger-scanall-flake/');
+        expect(mapper.getCompactSummary(map)).toContain('Related worktrees: 1');
+        expect(mapper.getCompactSummary(map)).toContain('worktree: tokenledger-scanall-flake');
+      } finally {
+        SafeFsExecutor.safeRmSync(worktreesRoot, {
+          recursive: true,
+          force: true,
+          operation: 'tests/unit/ProjectMapper.test.ts:summary-worktrees-cleanup',
+        });
+      }
     });
   });
 

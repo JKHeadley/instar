@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-05-29T10:58:17.221Z",
-  "instarVersion": "1.3.81",
+  "generatedAt": "2026-05-29T11:20:51.549Z",
+  "instarVersion": "1.3.82",
   "entryCount": 193,
   "entries": {
     "hook:session-start": {
@@ -1505,7 +1505,7 @@
       "type": "subsystem",
       "domain": "mapping",
       "sourcePath": "src/core/ProjectMapper.ts",
-      "contentHash": "383837d846ca206eb2c5baa1aeb4d19dd2edc15f11d502c8bc20fb99efb5898a",
+      "contentHash": "cb424f18c539d99522e9489059bab40b2f5118fb27885bffd8994b60b8e98b3b",
       "since": "2025-01-01"
     },
     "subsystem:degradation-reporter": {
