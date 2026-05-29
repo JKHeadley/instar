@@ -378,6 +378,45 @@ describe('TokenLedger.scanAll bounded behavior', () => {
     expect(yieldCount).toBeGreaterThan(0);
     ledger.close();
   });
+
+  it('scanAllAsync bails cleanly if close() races a yielded scan (no use-after-close)', async () => {
+    // Regression: scanLoopAsync yields between files (await yieldFn()). If
+    // close() runs during that yield, the resumed loop must NOT call
+    // ingestFile() on the now-closed DB — better-sqlite3 would throw
+    // "The database connection is not open". The closed-guard makes the loop
+    // return early instead. (Observed as a benign stderr during E2E teardown.)
+    const projDir = path.join(projectsDir, '-close-race');
+    fs.mkdirSync(projDir, { recursive: true });
+    for (let i = 0; i < 4; i++) {
+      fs.writeFileSync(
+        path.join(projDir, `s${i}.jsonl`),
+        assistantLine({ requestId: `r${i}`, sessionId: `s${i}` }) + '\n',
+      );
+    }
+    let ledger: TokenLedger;
+    let closedMidScan = false;
+    ledger = new TokenLedger({
+      dbPath: ':memory:',
+      claudeProjectsDir: projectsDir,
+      yieldEveryNFiles: 1, // yield after every file
+      attributionBackfill: 'off',
+      asyncYieldFn: async () => {
+        // Close on the first yield, simulating a shutdown racing the scan.
+        if (!closedMidScan) {
+          closedMidScan = true;
+          ledger.close();
+        }
+      },
+    });
+
+    // Must resolve without throwing — the guard returns before the next
+    // ingestFile() touches the closed DB.
+    const r = await ledger.scanAllAsync();
+    expect(closedMidScan).toBe(true);
+    // It processed the first file, then bailed on the post-yield resume rather
+    // than scanning the remaining files against a closed connection.
+    expect(r.filesScanned).toBeLessThan(4);
+  });
 });
 
 describe('TokenLedger.sessionActivitySince (SessionReaper gate F)', () => {

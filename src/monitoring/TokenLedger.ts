@@ -969,9 +969,14 @@ export class TokenLedger {
     let filesScanned = 0;
     let inserted = 0;
     while (this.scanCursor.dirIdx < projectDirs.length && filesScanned < this.maxFilesPerScan) {
+      // close() may have run while we were suspended at an `await yieldFn()`
+      // below. Bail before any further DB/fs work so a resumed scan never
+      // touches a closed connection ("database connection is not open").
+      if (this.closed) return { filesScanned, inserted };
       const dir = projectDirs[this.scanCursor.dirIdx];
       const files = this.listJsonlFiles(dir);
       while (this.scanCursor.fileIdx < files.length && filesScanned < this.maxFilesPerScan) {
+        if (this.closed) return { filesScanned, inserted };
         const fp = files[this.scanCursor.fileIdx];
         this.scanCursor.fileIdx++;
         if (!this.shouldScanFile(fp, ageCutoff)) continue;
