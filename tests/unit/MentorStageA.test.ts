@@ -10,6 +10,8 @@ import { describe, it, expect } from 'vitest';
 import {
   STAGE_A_ALLOWED_TOOLS,
   buildStageAContext,
+  buildConversationSurface,
+  parseMenteeReplies,
   detectStageALeak,
   runLeakCanary,
   leakToFinding,
@@ -111,5 +113,110 @@ describe('leakToFinding — dog-fooding a leak into the ledger (§4.3)', () => {
     expect(finding.evidence).toContain('tick=tick-7');
     // Evidence carries reference SHAPES, not log/code content.
     expect(finding.evidence).not.toMatch(/backoff|content of/i);
+  });
+});
+
+// Active task-driving: the onboarding agenda lets an idle mentee get a concrete
+// next task instead of a low-signal observe-only. The agenda is the mentor's own
+// plan (surface-legitimate), and an empty agenda must leave behaviour unchanged.
+describe('onboardingAgenda — active task-driving in the Stage-A prompt', () => {
+  it('omits the agenda block entirely when no agenda is configured (unchanged passive behaviour)', () => {
+    const ctx = buildStageAContext(baseSurface);
+    expect(ctx).not.toMatch(/onboarding agenda/i);
+    expect(ctx).not.toMatch(/assign-next and give them the NEXT agenda item/i);
+  });
+
+  it('includes the agenda + assign-next steering when an agenda is present', () => {
+    const ctx = buildStageAContext({
+      ...baseSurface,
+      onboardingAgenda: ['Verify the Secret Drop flow end to end', 'Exercise the Playbook add/search'],
+    });
+    expect(ctx).toMatch(/onboarding agenda/i);
+    expect(ctx).toContain('Verify the Secret Drop flow end to end');
+    expect(ctx).toContain('Exercise the Playbook add/search');
+    expect(ctx).toMatch(/assign-next/);
+    expect(ctx).toMatch(/Only choose observe-only if they are mid-task or the/);
+  });
+
+  it('counts agenda items as surface-legitimate (assigning one is NOT a leak)', () => {
+    const surface: ConversationSurface = {
+      framework: 'codex-cli',
+      threadlineHistory: 'Mentee: done with the last one.',
+      onboardingAgenda: ['Check the Attention queue at /attention'],
+    };
+    // The mentor assigns the agenda item verbatim — must not trip the leak detector.
+    const transcript = 'Next up: please check the Attention queue at /attention and tell me what you see.';
+    expect(detectStageALeak(transcript, surface).leaked).toBe(false);
+    // surfaceText carries the agenda text.
+    expect(surfaceText(surface)).toContain('Check the Attention queue at /attention');
+  });
+});
+
+describe('buildConversationSurface — real surface from agenda + mentee replies', () => {
+  const NOW = 1_780_000_600_000;
+
+  it('formats mentee replies into threadlineHistory and computes time-since-last-contact', () => {
+    const s = buildConversationSurface({
+      framework: 'codex-cli',
+      menteeReplies: [
+        { ts: NOW - 600_000, message: 'Started on the parser task.' },
+        { ts: NOW - 120_000, message: 'Opened PR, it is green.' },
+      ],
+      nowMs: NOW,
+    });
+    expect(s.threadlineHistory).toBe('Mentee: Started on the parser task.\nMentee: Opened PR, it is green.');
+    expect(s.timeSinceLastContactMs).toBe(120_000); // newest reply
+    expect(s.onboardingAgenda).toBeUndefined();
+  });
+
+  it('sets onboardingAgenda when provided and caps history to maxReplies (most recent)', () => {
+    const replies = Array.from({ length: 12 }, (_, i) => ({ ts: NOW - (12 - i) * 1000, message: `r${i}` }));
+    const s = buildConversationSurface({
+      framework: 'codex-cli',
+      onboardingAgenda: ['task A', 'task B'],
+      menteeReplies: replies,
+      nowMs: NOW,
+      maxReplies: 3,
+    });
+    expect(s.onboardingAgenda).toEqual(['task A', 'task B']);
+    expect(s.threadlineHistory).toBe('Mentee: r9\nMentee: r10\nMentee: r11'); // last 3, sorted by ts
+  });
+
+  it('empty replies → empty history, no timeSinceLastContact (degrades to "no prior conversation")', () => {
+    const s = buildConversationSurface({ framework: 'codex-cli', menteeReplies: [], nowMs: NOW });
+    expect(s.threadlineHistory).toBe('');
+    expect(s.timeSinceLastContactMs).toBeUndefined();
+    // buildStageAContext renders the empty history as the no-conversation sentinel.
+    expect(buildStageAContext(s)).toContain('(no prior conversation)');
+  });
+});
+
+describe('parseMenteeReplies — defensive JSONL parsing for the surface', () => {
+  it('parses well-formed lines, coerces string ts, and drops blanks/garbage/empty-message', () => {
+    const raw = [
+      JSON.stringify({ ts: '1780000000000', fromAgent: 'instar-codey', message: 'hello' }),
+      '   ',
+      'not json at all',
+      JSON.stringify({ ts: 1780000005000, fromAgent: 'instar-codey', message: '   ' }), // empty msg → dropped
+      JSON.stringify({ fromAgent: 'instar-codey', message: 'no ts' }), // no ts → dropped
+      JSON.stringify({ ts: 1780000010000, fromAgent: 'instar-codey', message: 'world' }),
+    ].join('\n');
+    const out = parseMenteeReplies(raw, 'instar-codey');
+    expect(out).toEqual([
+      { ts: 1780000000000, message: 'hello' },
+      { ts: 1780000010000, message: 'world' },
+    ]);
+  });
+
+  it('filters to the named mentee when fromAgent is present', () => {
+    const raw = [
+      JSON.stringify({ ts: 1, fromAgent: 'instar-codey', message: 'mine' }),
+      JSON.stringify({ ts: 2, fromAgent: 'instar-other', message: 'theirs' }),
+    ].join('\n');
+    expect(parseMenteeReplies(raw, 'instar-codey')).toEqual([{ ts: 1, message: 'mine' }]);
+  });
+
+  it('never throws on empty input', () => {
+    expect(parseMenteeReplies('')).toEqual([]);
   });
 });

@@ -531,3 +531,38 @@ set from evidence, not guesswork.
    tab may ship as a fast-follow). <!-- tracked: topic-13435 -->
 
 Ships staged (off → dry-run on Echo↔Codey → live) per the graduated-rollout standard.
+
+## Amendment (2026-05-29): active task-driving via an onboarding agenda
+
+**In-scope for the original approval** (it makes the existing `assign-next` action usable instead of dormant). Surfaced directly by the live Codey dogfooding run (topic 13435): the highest-signal interactions were the ones where the human DROVE Codey through concrete tasks (capability checks + real dev work); passive "how's it going?" check-ins on an idle mentee were low-signal ("nothing to do"). Two concrete gaps were found:
+
+1. **`getSurface` was a stub** (`(framework) => ({ framework, threadlineHistory: '' })`), so Stage A was BLIND — an empty surface can only ever yield `observe-only` or a generic check-in. The action set already included `assign-next`, but the mentor had nothing to assign and no conversation to reason over.
+2. **No backlog.** Even with a real surface, the mentor had no list of concrete onboarding tasks to assign.
+
+### Change
+
+- **`ConversationSurface.onboardingAgenda?: string[]`** — the mentor's own ordered backlog (capability checks + starter dev tasks). It is the mentor's *plan*, not a mentee internal, so it is surface-legitimate: `surfaceText` includes it, and assigning an agenda item is therefore NOT a leak.
+- **`buildStageAContext`** gains an agenda block ONLY when an agenda is present: it instructs the mentor, when the mentee is idle (no task in flight / said done / nothing actionable), to `assign-next` the next agenda item not already covered in the conversation — else `observe-only` (mid-task / agenda exhausted) or `unblock`/`answer` (blocked / asked). An empty agenda omits the block entirely → **unchanged passive-observe behaviour**.
+- **`getSurface` now builds a real surface**: `onboardingAgenda` from `mentor.onboardingAgenda` config + `threadlineHistory` from the mentee's recent replies (`mentor-replies.jsonl`, parsed defensively) + `timeSinceLastContactMs` from the latest reply. Pure logic (`buildConversationSurface`, `parseMenteeReplies`) is unit-tested; the server is thin glue (read file → parse → build).
+- **`MentorConfig.onboardingAgenda?: string[]`** — the opt-in source.
+
+### Ships dark (double-gated)
+
+The mentor is already off by default (`enabled:false`/`mode:'off'`). The agenda is additionally empty by default, so even an enabled mentor keeps today's passive behaviour until an operator sets `mentor.onboardingAgenda`. No fleet behaviour change without explicit opt-in.
+
+### Open decisions to flag (not in this PR)
+
+- **Should the automated mentor proactively assign onboarding tasks to mentees fleet-wide?** (a UX/product call for the operator before populating an agenda + enabling.)
+- **Fuller conversation surface.** This PR feeds the mentor the mentee's *replies* but not the mentor's *own* prior prompts (their content isn't logged today — `a2a-sent.jsonl` is metadata-only). So agenda rotation is inferred from the mentee's replies. Logging the mentor's sent-prompt content for a complete two-sided surface is a scoped follow-up; acceptable for a dark feature, and the mentor-outstanding tracker already prevents back-to-back duplicate sends.
+
+### Acceptance Criteria (amendment)
+
+M1. With an agenda configured, `buildStageAContext` includes the agenda + assign-next steering; with none, the block is omitted (unchanged prompt).
+M2. `surfaceText` includes agenda items so assigning one does not trip `detectStageALeak`.
+M3. `buildConversationSurface` renders mentee replies into `threadlineHistory`, caps to the most recent N, computes `timeSinceLastContactMs`, and sets `onboardingAgenda` only when non-empty.
+M4. `parseMenteeReplies` is defensive (skips blank/garbage/empty-message lines, coerces `ts`, filters to the named mentee) and never throws.
+M5. Empty agenda + no replies → behaviour identical to the prior stub (the passive default).
+
+### Rollback (amendment)
+
+Revert the `onboardingAgenda` field + the `buildStageAContext` agenda block + the `getSurface` builder back to the empty-surface stub. No state/migration/contract change; the reverted-to state is today's passive mentor.

@@ -64,7 +64,7 @@ import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
-import { STAGE_A_ALLOWED_TOOLS } from '../monitoring/MentorStageA.js';
+import { STAGE_A_ALLOWED_TOOLS, buildConversationSurface, parseMenteeReplies, type MenteeReplyLine } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
 import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { sendAgentMessage, A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
@@ -1457,6 +1457,23 @@ export class AgentServer {
     };
   }
 
+  /**
+   * Read the mentee's recent replies from `<stateDir>/mentor-replies.jsonl` for
+   * the Stage-A conversation surface. Best-effort: a missing/garbled file yields
+   * an empty list (the surface degrades to "(no prior conversation)" — never
+   * throws into the tick). Only the mentee's own replies are user-visible
+   * conversation, so this is two-hats-safe. `ts` is coerced from string|number.
+   */
+  private readRecentMenteeReplies(stateDir: string | undefined, menteeAgent: string): MenteeReplyLine[] {
+    if (!stateDir) return [];
+    try {
+      const raw = fs.readFileSync(path.join(stateDir, 'mentor-replies.jsonl'), 'utf-8');
+      return parseMenteeReplies(raw, menteeAgent);
+    } catch {
+      return []; // no replies yet (or unreadable) — surface shows no prior conversation
+    }
+  }
+
   private buildMentorRunner(
     ledger: FrameworkIssueLedger,
     options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
@@ -1586,7 +1603,19 @@ export class AgentServer {
           }
           return self.mentorRunsToday < cfg.maxRoundsPerDay;
         },
-        getSurface: (framework: string) => ({ framework, threadlineHistory: '' }),
+        getSurface: (framework: string) => {
+          const cfg = getConfig();
+          const menteeAgent = cfg.menteeAgentName || `instar-${framework}`;
+          // Real surface: the mentor's own agenda (its plan) + the mentee's recent
+          // replies (what a user would see). Replaces the old empty-surface stub
+          // that left Stage A blind → always observe-only / generic check-ins.
+          return buildConversationSurface({
+            framework,
+            onboardingAgenda: cfg.onboardingAgenda,
+            menteeReplies: self.readRecentMenteeReplies(options.config.stateDir, menteeAgent),
+            nowMs: Date.now(),
+          });
+        },
         // Live delivery via the agent-to-agent Telegram comms primitive (spec
         // MENTOR-LIVE-READINESS §Fix 2b — Justin's substrate correction replaced the
         // earlier file-outbox design). Echo's mentor-bot (a second TelegramAdapter, gated

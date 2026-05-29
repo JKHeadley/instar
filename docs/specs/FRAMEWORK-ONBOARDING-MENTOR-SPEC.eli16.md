@@ -86,3 +86,13 @@ system together: how problems get recorded so we never accidentally merge two di
 causes into one, how we track which version a problem appeared in and got fixed in (and handle it
 coming back), and how the notebook gets ranked by "how badly it hurts × how often it happens."
 That co-design is now baked into the full spec. This document is the plain-terms companion to it.
+
+## Amendment (2026-05-29): giving the mentor an actual to-do list
+
+When we ran the real version of this — a human driving the Codey agent through tasks over chat — the useful moments were when the human handed over a concrete task ("go verify this feature", "fix this test"). The vague "how's it going?" check-ins on an agent that had nothing in front of it were near-useless: the mentor would just say "looks idle, nothing to do."
+
+We found two reasons the automated mentor would have behaved that way. First, the function that builds "what the mentor can see" was a stub that handed it a blank page — so of course it could only say something generic. Second, the mentor had no list of things to walk the new agent through.
+
+This change fixes both. The mentor now gets a real picture: the new agent's recent replies, plus an optional onboarding to-do list (the operator's plan — "check the Secret Drop flow", "exercise the Playbook", etc.). When the new agent is idle and there are items left on the list, the mentor now hands over the next concrete task instead of a hollow check-in. If the agent is mid-task, blocked, or asked a question, it still does the sensible thing (wait, unblock, or answer).
+
+Two safety notes. The to-do list is the mentor's own plan, not anything private about the agent it's mentoring, so handing over a task from it is allowed and doesn't trip the "did the mentor peek at internals?" detector. And the whole thing is off unless someone turns it on: the mentor is disabled by default, and even when enabled it stays in today's passive mode until an operator actually fills in a to-do list. So nothing changes for anyone automatically — it's there to be switched on deliberately, once the operator decides they want the mentor proactively assigning onboarding tasks.

@@ -58,6 +58,15 @@ export interface MentorConfig {
    *  deliverA2aMessage, used both in the /a2a/inbox body and the Telegram
    *  fallback), so routing it here moves the entire exchange off the human topic. */
   mentorTopicId?: number;
+  /**
+   * Ordered onboarding backlog the mentor walks the mentee through (capability
+   * checks, starter dev tasks). When set, an idle mentee gets the next concrete
+   * task via `assign-next` instead of a low-signal `observe-only` — the active
+   * task-driving pattern that proved high-signal while dogfooding Codey over
+   * Telegram. Empty/unset → unchanged passive behaviour (ships dark: the agenda is
+   * opt-in, and the mentor itself is already gated behind `enabled`/`mode`). Flows
+   * into the Stage-A surface's `onboardingAgenda`. */
+  onboardingAgenda?: string[];
 }
 
 /**
