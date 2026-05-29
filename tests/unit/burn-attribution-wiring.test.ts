@@ -269,7 +269,7 @@ describe('TokenLedger.backfillAttributionOnce — converts legacy sentinel rows,
     // 'off' → no auto-run; we drive chunks explicitly and assert bounding.
     const led = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'off' });
     const c1 = led.backfillAttributionChunk(2);
-    expect(c1.backfilled).toBe(2); // 2 distinct triples × 1 row each
+    expect(c1.backfilled).toBe(2); // 2 rows (here: 1 per distinct session)
     expect(c1.done).toBe(false);
     led.backfillAttributionChunk(2); // 2 more
     led.backfillAttributionChunk(2); // last 2
@@ -281,6 +281,42 @@ describe('TokenLedger.backfillAttributionOnce — converts legacy sentinel rows,
     ).toBeUndefined();
     // Marker is set → a further explicit full drain is a no-op.
     expect(led.backfillAttributionOnce().alreadyDone).toBe(true);
+    led.close();
+  });
+
+  it('bounds by ROWS not distinct triples (rowid-addressed; multi-row triple)', () => {
+    // One session (one (session,project,model) triple) with 5 sentinel rows.
+    // The rowid-based chunk bounds by ROWS: chunk(2) converts 2 of the 5 — NOT
+    // "the whole triple at once" (the old DISTINCT-triple design would convert
+    // all 5 for limit=2, since it counted triples). All 5 still resolve to the
+    // SAME key (same triple), so the end state is identical to the old design.
+    const seed = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'sync' });
+    for (let i = 0; i < 5; i++) {
+      seed.recordEvent({
+        requestId: `multi-${i}`, sessionId: 'sessMULTI0000', ts: 2000 + i,
+        inputTokens: 1, outputTokens: 1, attributionKey: PRE_ATTRIBUTION_KEY,
+      });
+    }
+    seed.close();
+    const raw = new Database(dbPath);
+    raw.prepare(`DELETE FROM ledger_meta WHERE key = 'attribution-backfill-v1'`).run();
+    raw.close();
+
+    const led = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'off' });
+    const c1 = led.backfillAttributionChunk(2);
+    expect(c1.backfilled).toBe(2); // 2 ROWS of the single triple — not all 5
+    expect(c1.done).toBe(false);
+
+    // Drain the remaining rows.
+    let guard = 0;
+    while (!led.backfillAttributionChunk(2).done && ++guard < 20) { /* keep draining */ }
+
+    const rows = led.byAttributionKey({ sinceMs: 0 });
+    expect(rows.find((r) => r.attributionKey === PRE_ATTRIBUTION_KEY)).toBeUndefined();
+    // All 5 rows collapsed to ONE resolved key with eventCount 5 (same triple).
+    const resolved = rows.filter((r) => r.attributionKey !== PRE_ATTRIBUTION_KEY);
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].eventCount).toBe(5);
     led.close();
   });
 });
