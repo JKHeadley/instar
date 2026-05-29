@@ -161,7 +161,12 @@ describe('PresenceProxy brief-ack handling', () => {
     vi.useRealTimers();
   });
 
-  it('keeps tier timers running when agent sends a brief ack', async () => {
+  it('an ack suppresses the Tier-1 standby but keeps the chain alive (Tier 2 still fires)', async () => {
+    // Post-ack suppression (2026-05-28): a brief ack still must NOT cancel the
+    // tier timers (the silently-stopped guard), but the Tier-1 STANDBY message
+    // is now suppressed — the ack already gave the user a signal of life, so a
+    // Tier-1 "still working" on top is redundant noise. The chain stays alive,
+    // so Tier 2 fires on continued silence (ack-then-stall is still caught).
     const { proxy, sentMessages } = createTestProxy();
 
     proxy.onMessageLogged({
@@ -181,13 +186,14 @@ describe('PresenceProxy brief-ack handling', () => {
       timestamp: new Date().toISOString(),
     });
 
-    // Advance past tier 1 — it MUST still fire because the ack didn't cancel
+    // Past Tier 1: suppressed because the agent acked — no standby noise.
     await vi.advanceTimersByTimeAsync(60);
-    expect(sentMessages.length).toBe(1);
+    expect(sentMessages.length).toBe(0);
 
-    // And tier 2 should also fire
+    // Past Tier 2: the agent stayed silent after the ack, so the chain (kept
+    // alive by the suppression) breaks the silence here. Stall detection intact.
     await vi.advanceTimersByTimeAsync(250);
-    expect(sentMessages.length).toBe(2);
+    expect(sentMessages.length).toBe(1);
   });
 
   it('cancels tier timers on a substantive (non-ack) agent reply', async () => {
@@ -219,7 +225,7 @@ describe('PresenceProxy brief-ack handling', () => {
     expect(sentMessages.length).toBe(0);
   });
 
-  it('multiple brief acks still do not cancel; substantive reply finally does', async () => {
+  it('multiple brief acks still do not cancel; suppressed Tier 1, then a substantive reply cancels the rest', async () => {
     const { proxy, sentMessages } = createTestProxy();
 
     proxy.onMessageLogged({
@@ -242,11 +248,12 @@ describe('PresenceProxy brief-ack handling', () => {
       timestamp: new Date().toISOString(),
     });
 
-    // Tier 1 fires
+    // Tier 1 suppressed (the agent acked) — no standby noise, but the chain
+    // is still armed (Tier 2 would fire on continued silence).
     await vi.advanceTimersByTimeAsync(60);
-    expect(sentMessages.length).toBe(1);
+    expect(sentMessages.length).toBe(0);
 
-    // Substantive reply now arrives — this should cancel
+    // Substantive reply now arrives — this cancels the still-armed chain.
     proxy.onMessageLogged({
       messageId: 4, channelId: '902',
       text:
@@ -258,9 +265,9 @@ describe('PresenceProxy brief-ack handling', () => {
       timestamp: new Date().toISOString(),
     });
 
-    // Tier 2 should NOT fire
+    // Tier 2 should NOT fire (cancelled by the substantive reply) — stays at 0.
     await vi.advanceTimersByTimeAsync(250);
-    expect(sentMessages.length).toBe(1);
+    expect(sentMessages.length).toBe(0);
   });
 });
 

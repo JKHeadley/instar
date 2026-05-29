@@ -1037,20 +1037,39 @@ export class PresenceProxy {
       }
     }
 
-    if (!snapshot || snapshot.trim().length < 10) {
-      message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
-    } else if (
-      !isConversation
-      && state.lastAckText
+    // ── Post-ack suppression (Codey-dogfooding finding, 2026-05-28) ──
+    // If the agent has ALREADY acknowledged the user since their message
+    // arrived, the user already has a signal of life — a Tier-1 standby on top
+    // of that ack is redundant noise. Observed live: Codey replied "Got it,
+    // pulling the live values now." and the proxy then ALSO posted "instar-codey
+    // is currently just starting to respond to <restated question>" a beat
+    // before the real answer. Suppress the Tier-1 MESSAGE, but keep the tier
+    // chain alive (mark fired + schedule Tier 2) so a genuine ack-then-stall is
+    // still caught at the 2-minute mark and by Tier 3.
+    //
+    // This is BROADER than the prior ack-only-delta placeholder branch (now
+    // removed): it does NOT require isPostMessageDeltaAckOnly, which returns
+    // false for codex sessions whose tmux pane carries stream noise beyond the
+    // ack text — exactly why Codey fell through to the verbose LLM summary.
+    // The ack itself (length/opening-gated by isAck) is the signal we trust.
+    if (
+      state.lastAckText
       && state.lastAckAt !== null
       && state.lastAckAt >= state.userMessageAt
-      && isPostMessageDeltaAckOnly(snapshot, state.userMessageBaselineSnapshot, state.lastAckText)
     ) {
-      // Agent has only acked since the user's message arrived. Asking the LLM
-      // to summarize would just paraphrase the ack ("Echo acknowledged..."),
-      // which reads as generic and adds no information. Emit a fixed
-      // placeholder; Tier 2 will pick up substantive activity at 2 minutes.
-      message = `${this.prefix} ${this.config.agentName} is on this — I'll check back at the 2-minute mark with a progress update.`;
+      if (state.cancelled) return;
+      state.tier1FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier2 = this.tier2DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier2 > 0) this.scheduleTier(topicId, 2, remainingToTier2);
+      console.log(
+        `[PresenceProxy] Tier 1 suppressed for topic ${topicId} — agent acked since user message (post-ack); Tier 2 still scheduled for stall detection.`,
+      );
+      return;
+    }
+
+    if (!snapshot || snapshot.trim().length < 10) {
+      message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
     } else {
       try {
         const prompt = isConversation
