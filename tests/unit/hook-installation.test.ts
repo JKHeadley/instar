@@ -7,7 +7,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -46,6 +47,79 @@ describe('Hook installation for external operation safety', () => {
     expect(content).toContain('/operations/evaluate');
     expect(content).toContain('mutability');
     expect(content).toContain('BLOCKED');
+  });
+
+  it('explicitly permits canonical proceed and legacy allow actions, but blocks unknown actions', async () => {
+    async function withGateResponse(action: string): Promise<{ status: number | null; stderr: string }> {
+      let server: Server | null = null;
+      const port = await new Promise<number>((resolve) => {
+        server = createServer((req, res) => {
+          if (req.method === 'POST' && req.url === '/operations/evaluate') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              action,
+              reason: 'test gate response',
+              riskLevel: 'low',
+            }));
+            return;
+          }
+          res.writeHead(404);
+          res.end();
+        });
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server!.address();
+          if (!addr || typeof addr === 'string') throw new Error('expected tcp address');
+          resolve(addr.port);
+        });
+      });
+
+      try {
+        const configPath = path.join(projectDir, '.instar', 'config.json');
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        fs.writeFileSync(configPath, JSON.stringify({ ...config, port, authToken: 'test-token' }));
+
+        const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'external-operation-gate.js');
+        const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+          const child = spawn(process.execPath, [hookPath], {
+            cwd: projectDir,
+            env: {
+              ...process.env,
+              CLAUDE_PROJECT_DIR: projectDir,
+            },
+            stdio: ['pipe', 'ignore', 'pipe'],
+          });
+          let stderr = '';
+          const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            reject(new Error('external operation hook timed out'));
+          }, 5000);
+          child.stderr.setEncoding('utf-8');
+          child.stderr.on('data', chunk => { stderr += chunk; });
+          child.on('error', err => {
+            clearTimeout(timer);
+            reject(err);
+          });
+          child.on('exit', status => {
+            clearTimeout(timer);
+            resolve({ status, stderr });
+          });
+          child.stdin.end(JSON.stringify({
+            tool_name: 'mcp__gmail__send_email',
+            tool_input: { messageId: 'm1' },
+          }));
+        });
+        return result;
+      } finally {
+        await new Promise<void>((resolve) => server!.close(() => resolve()));
+      }
+    }
+
+    expect((await withGateResponse('proceed')).status).toBe(0);
+    expect((await withGateResponse('allow')).status).toBe(0);
+
+    const unknown = await withGateResponse('continue');
+    expect(unknown.status).toBe(2);
+    expect(unknown.stderr).toContain('unknown action');
   });
 
   it('hook is executable', () => {

@@ -154,7 +154,8 @@ User (Telegram/CLI)
 │  │ 1. Classify operation           │    │
 │  │ 2. Check autonomy gradient      │    │
 │  │ 3. Check adaptive trust level   │    │
-│  │ 4. Decide: proceed/plan/block   │    │
+│  │ 4. Decide: proceed/show-plan/   │    │
+│  │    suggest-alternative/block    │    │
 │  └────────┬────────────────────────┘    │
 │           │                             │
 │     ┌─────┼──────────────┐              │

@@ -277,7 +277,7 @@ How it works:
 1. The `external-operation-gate.js` hook intercepts all `mcp__*` tool calls
 2. It classifies the operation by mutability (read/write/modify/delete) and reversibility
 3. For non-read operations, it calls the gate API: `POST http://localhost:4040/operations/evaluate`
-4. The gate returns: `allow`, `block`, `show-plan` (requires user approval), or `suggest-alternative`
+4. The gate returns: `proceed`, `block`, `show-plan` (requires user approval), or `suggest-alternative`
 
 **If an operation is blocked**, you'll see an error message with the reason. Do NOT try to bypass it.
 **If an operation requires a plan**, show the plan to the user and get explicit approval before proceeding.
@@ -341,5 +341,4 @@ Just tell me: "connect to the agent network" or "enable Threadline relay." I'll 
 
 MCP tools: `threadline_discover`, `threadline_send`, `threadline_trust`, `threadline_relay`
 Use `threadline_relay explain` for full details.
-
 
