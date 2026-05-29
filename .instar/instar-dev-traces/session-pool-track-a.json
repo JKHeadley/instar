@@ -1,0 +1,14 @@
+{
+  "phase": "complete",
+  "slug": "session-pool-track-a-router-lease",
+  "coveredFiles": [
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/core/types.ts",
+    "src/config/ConfigDefaults.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/session-pool-track-a-router-lease.md",
+  "artifactSha256": "897962619ffa39441e3e0ff42e1001544453099c69ca0dcfb1472ebfdcfa2c03",
+  "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+  "createdAt": "2026-05-29T06:47:54Z"
+}

@@ -262,6 +262,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxDeferMs: 60 * 60_000,
     },
   },
+  // Multi-Machine Session Pool (spec docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md).
+  // Ships DARK. Adding ONLY the sessionPool sub-block here (never multiMachine.enabled)
+  // means applyDefaults() merges it under an existing multiMachine block without
+  // clobbering, and adds an inert multiMachine:{sessionPool} to agents that have no
+  // multiMachine block — neither path enables multi-machine. The entire session-pool
+  // layer is a no-op unless enabled:true AND stage advanced past 'dark' (StageAdvancer,
+  // Track H). This is the migration-parity path: every existing agent gets the dark
+  // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
+  multiMachine: {
+    sessionPool: {
+      enabled: false,
+      stage: 'dark',
+      dryRun: true,
+    },
+  },
 };
 
 /**

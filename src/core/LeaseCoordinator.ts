@@ -62,8 +62,26 @@ export interface LeaseCoordinatorDeps {
   tunnel?: LeaseTransport;
   /** Machines presumed dead (lastSeen older than failoverThresholdMs). */
   presumedDeadHolders: () => ReadonlySet<string>;
-  /** Wall clock (injectable for tests). */
+  /**
+   * Wall clock (injectable for tests). Used ONLY to stamp human-readable
+   * `acquiredAt`/`expiresAt` ISO fields on lease records (display + the
+   * liveness heuristic). It is NEVER the authority for whether THIS machine
+   * still holds the lease — see `monotonicNow` (spec §L−1: a holder's own
+   * expiry is judged on its monotonic-local clock, never wall-clock).
+   */
   now?: () => number;
+  /**
+   * Monotonic clock (injectable for tests) — the AUTHORITY for the holder's
+   * self-expiry / self-fence. Returns a strictly non-decreasing millisecond
+   * reading (default `performance.now()`) that an NTP step, a VM pause/resume,
+   * a sleep/wake, or a CPU-starvation clock jump CANNOT move backward. The
+   * router-lease self-fence (spec §L−1 "TTL self-fence" + §L1) measures
+   * "elapsed since my last confirmed renewal" on THIS clock, so a partitioned
+   * or clock-chaotic holder goes quiet on its own reading before the TTL
+   * elapses — independent of wall-clock. This is the LEASE-SUBSTRATE-ROBUSTNESS
+   * fold-in and directly answers the SleepWakeDetector CPU-starvation lesson.
+   */
+  monotonicNow?: () => number;
   /** Escalate an unresolvable split-brain (deduped per partitionEpisodeId by the caller's sink). */
   onEscalate?: (info: { partitionEpisodeId: string; holder: string; reason: string }) => void;
   /** Fired when the holder must self-suspend ingress (tunnel-renewal lapse). */
@@ -77,7 +95,14 @@ export class LeaseCoordinator {
   private readonly d: LeaseCoordinatorDeps;
   private readonly fl: FencedLease;
   private nonceCounter = 0;
-  private lastRenewOkAt: number;
+  /**
+   * Monotonic-clock reading at the last CONFIRMED renewal/acquisition — the
+   * authority for the holder's self-fence (spec §L−1): an NTP step / VM pause /
+   * sleep / CPU-starvation jump cannot move it backward, so a partitioned or
+   * clock-chaotic holder still goes quiet on its own monotonic reading before
+   * the TTL elapses. (Wall-clock is used only for the display `expiresAt`.)
+   */
+  private lastRenewOkMonoMs = 0;
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
@@ -92,11 +117,28 @@ export class LeaseCoordinator {
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
     this.fl = deps.lease;
-    this.lastRenewOkAt = this.now();
+    this.markRenewOk();
   }
 
   private now(): number {
     return (this.d.now ?? Date.now)();
+  }
+  /**
+   * Monotonic clock — strictly non-decreasing, immune to wall-clock jumps (NTP
+   * step, VM pause/resume, sleep/wake, CPU-starvation timer slip). Default uses
+   * `process.hrtime`. The authority for the holder's self-expiry/self-fence
+   * (spec §L−1); injectable for tests.
+   */
+  private monotonicNow(): number {
+    if (this.d.monotonicNow) return this.d.monotonicNow();
+    return Number(process.hrtime.bigint() / 1_000_000n);
+  }
+  /**
+   * Record a CONFIRMED renewal/acquisition on the monotonic self-fence clock.
+   * Called wherever a renewal/acquisition/broadcast is confirmed over a medium.
+   */
+  private markRenewOk(): void {
+    this.lastRenewOkMonoMs = this.monotonicNow();
   }
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);
@@ -144,7 +186,16 @@ export class LeaseCoordinator {
   holdsLease(): boolean {
     if (this.suspended) return false;
     const view = this.effectiveView();
-    return this.fl.holdsValidLease(view.lease, view.epoch, this.now());
+    if (!this.fl.holdsValidLease(view.lease, view.epoch, this.now())) return false;
+    // Monotonic self-fence (spec §L−1): even if the wall-clock `expiresAt` has
+    // not passed, a holder that has not CONFIRMED a renewal within ttlMs on its
+    // MONOTONIC clock must NOT act — this is immune to NTP steps / VM-pause /
+    // sleep / CPU-starvation clock jumps that could otherwise fool the
+    // wall-clock check into believing a lapsed lease is still live. The
+    // wall-clock `isExpired` check above is retained as a conservative second
+    // gate (either gate may fence; both must pass to hold).
+    if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return false;
+    return true;
   }
 
   /** The current effective epoch (for stamping writes/sends). */
@@ -185,7 +236,7 @@ export class LeaseCoordinator {
       if (res.ok) {
         this.selfIssued = candidate;
         await this.broadcast(candidate);
-        this.lastRenewOkAt = this.now();
+        this.markRenewOk();
         this.emitEpoch(candidate.epoch);
         this.log(`acquired lease at epoch ${candidate.epoch}`);
         return true;
@@ -234,7 +285,7 @@ export class LeaseCoordinator {
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);
-      this.lastRenewOkAt = this.now();
+      this.markRenewOk();
       this.emitEpoch(candidate.epoch);
       this.log(`acquired lease on consent at epoch ${candidate.epoch} (yield from ${yieldFromMachineId})`);
       return true;
@@ -277,14 +328,14 @@ export class LeaseCoordinator {
 
     if (confirmed) {
       this.selfIssued = renewed;
-      this.lastRenewOkAt = this.now();
+      this.markRenewOk();
       return true;
     }
 
-    if (this.now() - this.lastRenewOkAt > this.fl.ttlMs) {
+    if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
       this.suspended = true;
       this.d.onSelfSuspend?.(
-        `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms) — lease lapsed`,
+        `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms, monotonic) — lease lapsed`,
       );
       this.log('self-suspended: renewal-confirmation lapse');
       return false;
@@ -298,7 +349,7 @@ export class LeaseCoordinator {
     if (!this.d.tunnel) return;
     try {
       const ok = await this.d.tunnel.broadcast(lease);
-      if (ok) this.lastRenewOkAt = this.now();
+      if (ok) this.markRenewOk();
     } catch (err) {
       this.log(`broadcast failed: ${err instanceof Error ? err.message : String(err)}`);
     }

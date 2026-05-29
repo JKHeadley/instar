@@ -121,10 +121,11 @@ describe('LeaseCoordinator', () => {
     };
     const lc = new LeaseCoordinator({
       lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(),
-      now: () => now, onSelfSuspend,
+      now: () => now, monotonicNow: () => now, onSelfSuspend,
     });
     expect(await lc.acquireIfEligible()).toBe(true);
-    // Tunnel goes dark; advance time past TTL and renew.
+    // Tunnel goes dark; advance time past TTL and renew. The self-fence is judged
+    // on the monotonic clock (here tied to `now`), per spec §L−1.
     reachable = false;
     now = 1_000 + TTL + 1;
     expect(await lc.renew()).toBe(false);
@@ -137,7 +138,8 @@ describe('LeaseCoordinator', () => {
     let now = 1_000;
     const onSelfSuspend = vi.fn();
     const lc = new LeaseCoordinator({
-      lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => now, onSelfSuspend,
+      lease: makeFlA(), store, presumedDeadHolders: () => new Set(),
+      now: () => now, monotonicNow: () => now, onSelfSuspend,
     });
     expect(await lc.acquireIfEligible()).toBe(true);
     // Git push (refresh) starts failing — partitioned holder.
@@ -192,6 +194,85 @@ describe('LeaseCoordinator', () => {
     });
     await lc.acquireIfEligible();
     expect(onEpochAdvance).toHaveBeenCalledWith(1);
+  });
+
+  // ── Monotonic self-fence (Session Pool §L−1 — the router-lease robustness fold-in) ──
+  describe('monotonic self-fence (spec §L−1)', () => {
+    it('self-suspends on a backward WALL-clock jump (NTP step) once the MONOTONIC TTL elapses', async () => {
+      // The exact bug class the spec §L−1 + SleepWakeDetector lesson guard against:
+      // the wall clock jumps BACKWARD (e.g. NTP corrects a fast clock), so a
+      // wall-clock self-suspend (`now - lastRenewOkAt > ttl`) would compute a
+      // NEGATIVE elapsed and NEVER fire — a partitioned holder keeps acting.
+      // The monotonic clock cannot jump backward, so the self-fence still fires.
+      const store = new FakeStore();
+      let wall = 100_000; // wall clock
+      let mono = 100_000; // monotonic clock (separate, controllable)
+      const onSelfSuspend = vi.fn();
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(),
+        now: () => wall, monotonicNow: () => mono, onSelfSuspend,
+      });
+      expect(await lc.acquireIfEligible()).toBe(true);
+      // Partition: git refresh now fails.
+      store.refreshOk = false;
+      // Real time elapses past the TTL (monotonic advances)...
+      mono = 100_000 + TTL + 1;
+      // ...but the WALL clock jumps BACKWARD (NTP correction). A wall-clock
+      // self-suspend would see elapsed = (50_000 - 100_000) = -50_000 < TTL and
+      // WRONGLY keep the lease. The monotonic fence ignores the wall jump.
+      wall = 50_000;
+      expect(await lc.renew()).toBe(false);
+      expect(onSelfSuspend).toHaveBeenCalledTimes(1);
+      expect(lc.holdsLease()).toBe(false);
+    });
+
+    it('holdsLease() fences a holder past the monotonic TTL even before renew() runs', async () => {
+      // The hot-path authority check must not grant authority to a holder that
+      // has not confirmed a renewal within the monotonic TTL — independent of
+      // the wall-clock expiry (which here is frozen, so isExpired would pass).
+      const store = new FakeStore();
+      const wall = 100_000; // frozen wall clock → wall-clock expiry never passes
+      let mono = 100_000;
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(),
+        now: () => wall, monotonicNow: () => mono,
+      });
+      expect(await lc.acquireIfEligible()).toBe(true);
+      expect(lc.holdsLease()).toBe(true); // just acquired → monotonic elapsed ~0
+      // No renew happens; monotonic time passes the TTL.
+      mono = 100_000 + TTL + 1;
+      expect(lc.holdsLease()).toBe(false); // monotonic self-fence, despite frozen wall clock
+    });
+
+    it('uses the REAL monotonic clock by default (no injection) — production wiring integrity', async () => {
+      // Proves the default `process.hrtime` path (not just the injected fake) is
+      // wired: a freshly-acquired holder holds, because real monotonic elapsed is
+      // ~0 ≪ TTL. This is what the server constructs (no monotonicNow injection).
+      const store = new FakeStore();
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => Date.now(),
+        // no monotonicNow → exercises the default process.hrtime monotonic clock
+      });
+      expect(await lc.acquireIfEligible()).toBe(true);
+      expect(lc.holdsLease()).toBe(true);
+    });
+
+    it('a confirmed renewal resets the monotonic self-fence clock', async () => {
+      const store = new FakeStore();
+      const wall = 100_000;
+      let mono = 100_000;
+      const lc = new LeaseCoordinator({
+        lease: makeFlA(), store, presumedDeadHolders: () => new Set(),
+        now: () => wall, monotonicNow: () => mono,
+      });
+      expect(await lc.acquireIfEligible()).toBe(true);
+      // Advance most of the TTL, then renew successfully (git refresh ok).
+      mono = 100_000 + TTL - 10;
+      expect(await lc.renew()).toBe(true);
+      // The renewal reset the monotonic mark; advancing another (TTL - 10) keeps it live.
+      mono = 100_000 + (TTL - 10) + (TTL - 10);
+      expect(lc.holdsLease()).toBe(true);
+    });
   });
 
   describe('acquireOnConsent (planned-handoff yield, §8 G3e)', () => {

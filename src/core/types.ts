@@ -1640,6 +1640,39 @@ export interface MultiMachineConfig {
    * SEAMLESSNESS_PROTOCOL_VERSION applies); present so migrations/tests can pin it.
    */
   protocolVersion?: number;
+  /**
+   * Multi-Machine Session Pool (spec docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md).
+   * Active-active per-session placement + transfer on top of the router lease.
+   * Ships DARK: the entire layer is inert unless `enabled` is true AND the
+   * graduated `stage` has been advanced past 'dark' (the stage is written ONLY
+   * by StageAdvancer — Track H — gated on a green E2E result). Independent of
+   * the single-awake seamlessness model above; a 1-machine agent is a no-op.
+   */
+  sessionPool?: SessionPoolConfig;
+}
+
+/**
+ * Multi-Machine Session Pool config block. All optional with safe dark defaults
+ * (see ConfigDefaults `SHARED_DEFAULTS.multiMachine.sessionPool`). Tunables for
+ * later layers (placement, transfer, registry, clock-skew) are added to this
+ * interface by their tracks as they land.
+ */
+export interface SessionPoolConfig {
+  /** Master switch. Default false — the entire session-pool layer is inert when false. */
+  enabled?: boolean;
+  /**
+   * Graduated rollout stage (spec §Rollout). 'dark' (code shipped, placement
+   * dry-run, always local) → 'shadow' (real placement + ownership, no transfer)
+   * → 'live-transfer' (failover + pin transfers) → 'rebalance' (load-driven).
+   * Written ONLY by StageAdvancer via a Config.ts write-guard (Track H);
+   * a direct write is rejected. Default 'dark'.
+   */
+  stage?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /**
+   * When true, the placement engine LOGS the decision it would make but always
+   * places locally (Stage-0 behavior). Default true.
+   */
+  dryRun?: boolean;
 }
 
 // ── Agent Autonomy ──────────────────────────────────────────────────

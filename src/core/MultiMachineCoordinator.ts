@@ -390,6 +390,20 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * Whether this machine currently holds the ROUTER role (Multi-Machine Session
+   * Pool, spec §L1). In v0.1 the router lease IS the fenced leader lease — the
+   * single machine holding it owns channel ingress and runs the placement
+   * engine. This is a semantic alias of `holdsLease()` so session-pool code can
+   * ask the question in router terms ("am I the router?") without coupling to
+   * the leader/awake vocabulary; it inherits the same monotonic self-fence (a
+   * holder that cannot confirm a renewal within TTL on its monotonic clock stops
+   * being the router — see LeaseCoordinator §L−1).
+   */
+  isRouter(): boolean {
+    return this.holdsLease();
+  }
+
+  /**
    * The current lease fencing epoch (0 if no lease is attached). Used as the
    * fencing token for message-ledger transitions (spec §8 G3a) so a stale-epoch
    * holder's writes are distinguishable from the current holder's.

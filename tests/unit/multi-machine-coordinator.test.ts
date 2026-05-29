@@ -90,6 +90,18 @@ describe('MultiMachineCoordinator', () => {
       coord.stop();
     });
 
+    it('isRouter() mirrors holdsLease() — a single-machine agent is its own router (§L1)', () => {
+      const state = new StateManager(tmpDir);
+      const coord = new MultiMachineCoordinator(state, { stateDir: tmpDir });
+      coord.start();
+      // No lease attached → falls back to role==='awake'. A lone machine holds
+      // the router stick trivially (the active-active no-op for one machine).
+      expect(coord.holdsLease()).toBe(true);
+      expect(coord.isRouter()).toBe(true);
+      expect(coord.isRouter()).toBe(coord.holdsLease());
+      coord.stop();
+    });
+
     it('shouldSkipProcessing returns false', () => {
       const state = new StateManager(tmpDir);
       const coord = new MultiMachineCoordinator(state, { stateDir: tmpDir });
