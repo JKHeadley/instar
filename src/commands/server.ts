@@ -9051,6 +9051,40 @@ export async function startServer(options: StartOptions): Promise<void> {
             sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
             log: (line) => console.log(pc.dim(`  [session-router] ${line}`)),
           });
+
+          // ── B (HTTP presence transport): pull each peer's self-capacity over
+          // the signed /mesh/rpc channel and record it into the pool registry.
+          // This is the credential-less presence path — a standby that cannot
+          // push a git-synced MachineHeartbeat (no write access to the shared
+          // agent repo) still appears ONLINE to the router purely over its
+          // tunnel. Symmetric: every mesh machine runs one, so each maintains its
+          // own HTTP-sourced view of peer liveness, parallel to (and idempotent
+          // with) the git-synced refreshPool path for credentialed peers.
+          // 'session-status' is a read-class command (RBAC: any registered peer),
+          // so it authenticates off the mutual identity established at pairing —
+          // no router role, no epoch fence required.
+          const presenceMod = await import('../core/PeerPresencePuller.js');
+          const peerPresencePuller = new presenceMod.PeerPresencePuller({
+            selfMachineId: meshSelfId,
+            listPeers: () =>
+              meshIdMgr
+                .getActiveMachines()
+                .filter((m) => !m.entry.revokedAt)
+                .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
+            fetchPeerCapacity: async (machineId, url) => {
+              const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
+              if (res.ok && res.result && typeof res.result === 'object') {
+                return res.result as { selfReportedLastSeen?: string; loadAvg?: number };
+              }
+              return null;
+            },
+            recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
+            log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
+          });
+          void peerPresencePuller.pullOnce();
+          const peerPresenceTimer = setInterval(() => { void peerPresencePuller.pullOnce(); }, 30_000);
+          if (typeof peerPresenceTimer.unref === 'function') peerPresenceTimer.unref();
+
           _sessionPoolStage = () => {
             try {
               const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
