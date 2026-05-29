@@ -285,6 +285,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       deliverMessageMaxRetries: 3,
       placementHysteresisDelta: 0.15,
       ownershipCasMaxRetries: 5,
+      // §L5 transfer / handoff tunables (spec §Config).
+      transferDrainTimeoutMs: 30000,
+      transferOutputCutoffMs: 1000,
+      placementCooldownMs: 300000,
+      topicPlacementUpdateMinIntervalMs: 10000,
     },
   },
 };

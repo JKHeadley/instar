@@ -129,6 +129,11 @@ describe('ConfigDefaults', () => {
       expect(config.multiMachine.sessionPool.deliverMessageMaxRetries).toBe(3);
       expect(config.multiMachine.sessionPool.placementHysteresisDelta).toBe(0.15);
       expect(config.multiMachine.sessionPool.ownershipCasMaxRetries).toBe(5);
+      // §L5 transfer tunables also backfill.
+      expect(config.multiMachine.sessionPool.transferDrainTimeoutMs).toBe(30000);
+      expect(config.multiMachine.sessionPool.transferOutputCutoffMs).toBe(1000);
+      expect(config.multiMachine.sessionPool.placementCooldownMs).toBe(300000);
+      expect(config.multiMachine.sessionPool.topicPlacementUpdateMinIntervalMs).toBe(10000);
     });
 
     it('includes externalOperations', () => {

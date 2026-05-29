@@ -1801,6 +1801,27 @@ export interface SessionPoolConfig {
    * the router queues the message. Default 5.
    */
   ownershipCasMaxRetries?: number;
+  /**
+   * §L5 max time (ms) the source drains an in-flight reply before cancelling and
+   * proceeding with the transfer — a long reply/tool-call must not block. Default 30000.
+   */
+  transferDrainTimeoutMs?: number;
+  /**
+   * §L5 output-exclusion window (ms): the source emits no NEW output after entering
+   * `transferring` and the target holds its CONTINUATION until this elapses, so the
+   * two emission windows are disjoint (no double-send). Default 1000.
+   */
+  transferOutputCutoffMs?: number;
+  /**
+   * §L4 cool-down (ms) after a transfer before a session is eligible for re-placement
+   * (a hard user-pin bypasses it). Default 300000.
+   */
+  placementCooldownMs?: number;
+  /**
+   * §L4 minimum interval (ms) between placement updates per topic — defeats rapid-fire
+   * transfers. Default 10000.
+   */
+  topicPlacementUpdateMinIntervalMs?: number;
 }
 
 // ── Agent Autonomy ──────────────────────────────────────────────────
