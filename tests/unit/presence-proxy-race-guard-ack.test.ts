@@ -170,12 +170,12 @@ describe('checkLogForAgentResponse (race-guard log filter)', () => {
   });
 });
 
-describe('Tier 1 fires with placeholder message when only an ack is observed', () => {
+describe('Tier 1 post-ack suppression (Codey-dogfooding finding, 2026-05-28)', () => {
   let tmpDir: string;
   let sentMessages: Array<{ topicId: number; text: string }>;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-tier1-ack-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-postack-'));
     sentMessages = [];
     vi.useFakeTimers();
   });
@@ -185,13 +185,9 @@ describe('Tier 1 fires with placeholder message when only an ack is observed', (
     try { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/presence-proxy-race-guard-ack' }); } catch { /* ok */ }
   });
 
-  function makeProxy(captures: { baseline: string; tier1: string }) {
-    let call = 0;
-    const captureSpy = vi.fn(() => {
-      call += 1;
-      return call === 1 ? captures.baseline : captures.tier1;
-    });
-    const llmSpy = vi.fn(async () => 'this LLM call should NOT have been made');
+  function makeProxy(tier1Snapshot: string, opts: { tier2DelayMs?: number } = {}) {
+    const captureSpy = vi.fn(() => tier1Snapshot);
+    const llmSpy = vi.fn(async () => 'LLM summary that should NOT be posted at Tier 1');
 
     const config = {
       stateDir: tmpDir,
@@ -205,48 +201,74 @@ describe('Tier 1 fires with placeholder message when only an ack is observed', (
       },
       getAuthorizedUserIds: () => [],
       getProcessTree: () => [{ pid: 1234, command: 'claude' }], // not idle
-      hasAgentRespondedSince: () => false,
+      hasAgentRespondedSince: () => false, // ack is not a "substantive response"
       tier1DelayMs: 50,
-      tier2DelayMs: 100000,
-      tier3DelayMs: 200000,
+      tier2DelayMs: opts.tier2DelayMs ?? 100000,
+      tier3DelayMs: 300000,
     };
     const proxy = new PresenceProxy(config as any);
     proxy.start();
-    return { proxy, captureSpy, llmSpy };
+    return { proxy, llmSpy };
   }
 
-  it('emits the fixed "checking back at 2 minutes" placeholder, not an LLM summary', async () => {
-    const baseline = 'pane A\npane B\npane C\nprompt> _';
-    // tier1 snapshot has baseline anchor + just the typed ack — short delta
-    const tier1 = `${baseline}\n> Got it — looking into this now.`;
-    const { proxy, llmSpy } = makeProxy({ baseline, tier1 });
-
-    // Simulate user message
+  function userThenMaybeAck(proxy: PresenceProxy, ackText: string | null) {
     proxy.onMessageLogged({
-      channelId: '777',
-      text: 'standby seems downgraded',
-      fromUser: true,
-      timestamp: new Date().toISOString(),
+      channelId: '777', text: 'do the thing', fromUser: true, timestamp: new Date().toISOString(),
     } as any);
+    if (ackText) {
+      proxy.onMessageLogged({
+        channelId: '777', text: ackText, fromUser: false, timestamp: new Date().toISOString(),
+      } as any);
+    }
+  }
 
-    // Simulate agent ack arriving before Tier 1 fires
-    proxy.onMessageLogged({
-      channelId: '777',
-      text: 'Got it — looking into this now.',
-      fromUser: false,
-      timestamp: new Date().toISOString(),
-    } as any);
+  it('CODEX CASE: suppresses Tier 1 entirely when the agent acked, even though the pane delta is NOT ack-only', async () => {
+    // The exact Codey scenario: agent acked ("Got it, pulling the live values
+    // now."), but its codex pane shows stream noise beyond the ack — so the old
+    // isPostMessageDeltaAckOnly short-circuit returned false and the proxy fell
+    // through to a verbose LLM summary ("instar-codey is currently just starting
+    // to respond to <restated question>"). Post-ack suppression kills that noise.
+    const codexPane = [
+      'prompt> _',
+      '> Got it, pulling the live values now.',
+      ...Array.from({ length: 14 }, (_, i) => `  [codex] tool_call ${i}: read state-${i}.json`),
+    ].join('\n');
+    const { proxy, llmSpy } = makeProxy(codexPane);
+    userThenMaybeAck(proxy, 'Got it, pulling the live values now.');
 
-    // Run timers up to Tier 1
+    await vi.advanceTimersByTimeAsync(80); // past Tier 1 (50ms), well short of Tier 2 (100000ms)
+
+    expect(sentMessages.length).toBe(0); // NO Tier-1 standby noise on top of the ack
+    expect(llmSpy).not.toHaveBeenCalled(); // did not fall through to the verbose LLM summary
+  });
+
+  it('ACK-GATED: still fires a Tier-1 standby when the agent has NOT acked (genuine silence)', async () => {
+    const silentPane = [
+      'prompt> _',
+      ...Array.from({ length: 14 }, (_, i) => `  [codex] tool_call ${i}: read state-${i}.json`),
+    ].join('\n');
+    const { proxy } = makeProxy(silentPane);
+    userThenMaybeAck(proxy, null); // no ack from the agent
+
     await vi.advanceTimersByTimeAsync(80);
-    // Flush any microtasks Tier 1 scheduled
-    await vi.runOnlyPendingTimersAsync();
 
-    expect(llmSpy).not.toHaveBeenCalled();
-    // Placeholder must appear exactly once (Tier 1). Tier 2 may also fire
-    // under fake-timer interleavings with its own different message — we
-    // pin only the short-circuit's exact-once semantic here.
-    const placeholderHits = sentMessages.filter(m => /on this — I'll check back at the 2-minute mark/.test(m.text));
-    expect(placeholderHits.length).toBe(1);
+    // First signal of life still fires when there's no ack to cover presence.
+    expect(sentMessages.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('STALL DETECTION PRESERVED: after a suppressed Tier 1, Tier 2 still fires (ack-then-stall is caught)', async () => {
+    const codexPane = [
+      'prompt> _',
+      '> On it.',
+      ...Array.from({ length: 14 }, (_, i) => `  [codex] tool_call ${i}: thinking…`),
+    ].join('\n');
+    const { proxy } = makeProxy(codexPane, { tier2DelayMs: 120 });
+    userThenMaybeAck(proxy, 'On it, give me a moment.');
+
+    // Advance past Tier 1 (suppressed) AND Tier 2 (120ms) — the agent stayed
+    // silent after the ack, so Tier 2 MUST still reach the user.
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(sentMessages.length).toBeGreaterThanOrEqual(1); // Tier 2 broke the silence
   });
 });

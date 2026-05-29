@@ -9,6 +9,12 @@ approved: true
 approved-by: "justin"
 approved-at: "2026-05-05T03:52:00Z"
 incident-origin: "topic 8882 (justin), 2026-05-05 03:52 UTC"
+eli16-overview: "presence-proxy-ack-and-baseline.eli16.md"
+amendments:
+  - date: "2026-05-28"
+    by: "echo"
+    approved-by: "justin (topic 13435 — Codey-dogfooding 'P1 - yes')"
+    summary: "Layer C — post-ack Tier-1 suppression: an ack now SUPPRESSES the redundant Tier-1 standby message (not just keeps timers alive); chain stays armed so stall detection is preserved."
 ---
 
 # PresenceProxy — brief-ack tolerance + post-message baseline
@@ -98,6 +104,36 @@ Baseline is intentionally NOT persisted to disk (consistent with the
 existing tier1Snapshot / tier2Snapshot policy — too large, potentially
 sensitive). After a session restart, recoverFromRestart sets baseline to
 null and prompts use the full-pane fallback path.
+
+### Layer C — post-ack Tier-1 suppression (amendment, 2026-05-28)
+
+Layer A keeps the tier timers running through an ack (so stall detection
+survives). But it left a UX wart that surfaced during the Codey-dogfooding
+run (topic 13435): when the agent had already acked ("Got it, pulling the
+live values now."), the proxy STILL posted a Tier-1 standby a beat before the
+real answer — "instar-codey is currently just starting to respond to <restates
+the user's question>". For a normal 30–60s task the user thus saw: ack →
+verbose standby echo → answer. Double-acknowledgement noise on every turn.
+
+The prior mitigation (the `isPostMessageDeltaAckOnly` short-circuit to a fixed
+"check back at the 2-minute mark" placeholder) only fired when the post-message
+pane delta was *itself* ack-only. That returns false for **codex** sessions,
+whose tmux pane carries stream noise (tool-call lines, thinking markers) beyond
+the ack text — so codex agents fell through to the verbose LLM summary. That
+placeholder branch is removed in favor of:
+
+**If the agent has acked since the user's message arrived
+(`state.lastAckText && state.lastAckAt >= state.userMessageAt`), suppress the
+Tier-1 standby MESSAGE entirely.** The ack already gave the user a signal of
+life; a Tier-1 "still working" on top is redundant. Crucially, the tier CHAIN
+is kept alive — Tier 1 is marked fired (`tier1FiredAt`) and Tier 2 is scheduled
+— so a genuine *ack-then-stall* is still caught at the 2-minute mark (Tier 2)
+and by Tier 3. This is strictly broader than the old short-circuit (it does not
+depend on the pane delta being ack-only) and framework-agnostic (the trusted
+signal is the ack itself, length/opener-gated by `isBriefAck`, not the pane).
+
+Net per-turn UX: **ack → [Tier 2 only if still silent at 2 min] → answer.** No
+redundant Tier-1 noise; stall detection unchanged.
 
 ## Decision-point inventory
 
