@@ -203,6 +203,7 @@ export class PostUpdateMigrator {
     this.migrateClaudeMd(result);
     this.migrateFrameworkShadowCapabilities(result);
     this.migrateScripts(result);
+    this.migrateSecretExternalizationSurvivability(result);
     this.migrateSettings(result);
     this.migrateConfig(result);
     this.migrateLegacyMaxSessions(result);
@@ -3835,6 +3836,95 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
   }
 
   /**
+   * Secret-externalization survivability migration.
+   *
+   * On first multi-machine pairing, `SecretMigrator` moves authToken out of
+   * plaintext config.json into the encrypted secret store and replaces the
+   * on-disk field with the literal `{ "secret": true }` placeholder. Any
+   * shipped script that reads authToken directly from config.json then sends
+   * the placeholder as a Bearer token and the server returns 403 silently —
+   * the script just emits nothing. This caused the 2026-05-29 incident where
+   * the telegram topic-history injection hook stopped firing and the agent
+   * came back from compaction with no idea what the user had been saying.
+   *
+   * The canonical hook scripts (session-start.sh, compaction-recovery.sh,
+   * telegram-topic-context.sh) are always-overwritten by the existing
+   * `migrateHooks()` path, so this method only addresses the auxiliary
+   * shipped scripts that aren't on the always-overwrite track: the messaging
+   * channel-context hook (slack-channel-context.sh), the iMessage reply
+   * script, and the serendipity-capture helper. Telegram/Slack/WhatsApp
+   * reply scripts have their own SHA-based migrators that already detect
+   * stale auth-handling via the extended-marker check in
+   * `migrateReplyScriptTo408()`.
+   *
+   * The detection is structural: the file is upgraded iff
+   *   1. it exists at the expected path,
+   *   2. it contains the shipped header marker (so we don't touch custom
+   *      forks),
+   *   3. AND it does NOT contain `INSTAR_AUTH_TOKEN` (the env-first canary
+   *      that proves the new resolver pattern is in place).
+   *
+   * Idempotent: re-running after the upgrade finds (3) violated, so it
+   * skips silently.
+   */
+  private migrateSecretExternalizationSurvivability(result: MigrationResult): void {
+    type Target = {
+      relPath: string;
+      templateDir: 'scripts' | 'hooks';
+      templateFilename: string;
+      shippedMarker: string;
+      label: string;
+    };
+    const targets: Target[] = [
+      {
+        relPath: path.join(this.config.stateDir, 'scripts', 'imessage-reply.sh'),
+        templateDir: 'scripts',
+        templateFilename: 'imessage-reply.sh',
+        // First-line shipped marker — present in every shipped version, so it
+        // identifies our copies without touching custom forks.
+        shippedMarker: '# imessage-reply.sh',
+        label: 'scripts/imessage-reply.sh',
+      },
+      {
+        relPath: path.join(this.config.stateDir, 'scripts', 'serendipity-capture.sh'),
+        templateDir: 'scripts',
+        templateFilename: 'serendipity-capture.sh',
+        shippedMarker: 'serendipity-capture.sh',
+        label: 'scripts/serendipity-capture.sh',
+      },
+      {
+        relPath: path.join(this.config.projectDir, '.claude', 'hooks', 'instar', 'slack-channel-context.sh'),
+        templateDir: 'hooks',
+        templateFilename: 'slack-channel-context.sh',
+        shippedMarker: 'slack-channel-context.sh',
+        label: '.claude/hooks/instar/slack-channel-context.sh',
+      },
+    ];
+
+    for (const target of targets) {
+      if (!fs.existsSync(target.relPath)) continue;
+      try {
+        const existing = fs.readFileSync(target.relPath, 'utf-8');
+        const looksShipped = existing.includes(target.shippedMarker);
+        const hasAuthEnvHandling = existing.includes('INSTAR_AUTH_TOKEN');
+        if (!looksShipped || hasAuthEnvHandling) {
+          // Skip custom forks and already-current installs.
+          continue;
+        }
+        const template = this.loadTemplate(target.templateDir, target.templateFilename);
+        if (!template) {
+          result.errors.push(`${target.label}: template file not found`);
+          continue;
+        }
+        fs.writeFileSync(target.relPath, template, { mode: 0o755 });
+        result.upgraded.push(`${target.label} (auth-env-first; secret-externalization survivability)`);
+      } catch (err) {
+        result.errors.push(`${target.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /**
    * Ensure .claude/settings.json has required MCP servers and correct hook wiring.
    * Migrates legacy PostToolUse/Notification hooks to proper SessionStart type.
    */
@@ -4974,7 +5064,7 @@ if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
   TOPIC_ID="\$INSTAR_TELEGRAM_TOPIC"
   CONFIG_FILE="$INSTAR_DIR/config.json"
   if [ -f "\$CONFIG_FILE" ]; then
-    PORT=\$(grep -o '"port":[0-9]*' "\$CONFIG_FILE" | head -1 | cut -d':' -f2)
+    PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
     if [ -n "\$PORT" ]; then
       TOPIC_CTX=\$(curl -s "http://localhost:\${PORT}/topic/context/\${TOPIC_ID}?recent=30" 2>/dev/null)
       if [ -n "\$TOPIC_CTX" ] && echo "\$TOPIC_CTX" | grep -q '"totalMessages"'; then
@@ -5015,8 +5105,12 @@ fi
 # auth failure — endpoint returns 503 when disabled, empty body when enabled
 # but has no entries. Either way we only echo when content is present.
 if [ -f "$INSTAR_DIR/config.json" ]; then
-  PORT=\${PORT:-\$(grep -o '"port":[0-9]*' "$INSTAR_DIR/config.json" | head -1 | cut -d':' -f2)}
-  TOKEN=\$(grep -o '"authToken":"[^"]*"' "$INSTAR_DIR/config.json" | head -1 | sed 's/"authToken":"//;s/"$//')
+  PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  # Env first (set by SessionManager per-session) — survives secret-externalization.
+  # Fallback grep: matches only a plaintext-string authToken. After externalization,
+  # the value is the literal { "secret": true } placeholder which has no "..." form,
+  # so the grep yields empty — we never send a bogus Bearer token.
+  TOKEN="\${INSTAR_AUTH_TOKEN:-\$(grep -o '"authToken":"[^"]*"' "$INSTAR_DIR/config.json" | head -1 | sed 's/"authToken":"//;s/"$//')}"
   if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
     SHARED_STATE=\$(curl -sf -H "Authorization: Bearer \$TOKEN" "http://localhost:\${PORT}/shared-state/render?limit=50" 2>/dev/null)
     if [ -n "\$SHARED_STATE" ]; then
@@ -5227,9 +5321,16 @@ echo "IMPORTANT: To report bugs or request features, use POST /feedback on your 
 # Working Memory — surface relevant knowledge from SemanticMemory + EpisodicMemory
 # Right context at the right moment: query-driven, not a full dump.
 if [ -f "$INSTAR_DIR/config.json" ]; then
-  PORT=\$(grep -o '"port":[0-9]*' "$INSTAR_DIR/config.json" | head -1 | cut -d':' -f2)
+  PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)
   if [ -n "\$PORT" ]; then
-    AUTH_TOKEN=\$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('authToken',''))" 2>/dev/null)
+    # Resolve auth token: env first (set by SessionManager for every spawned
+    # session), legacy plaintext-config fallback with string-type guard so the
+    # { "secret": true } placeholder produced by SecretMigrator never leaks
+    # through as a bogus Bearer token.
+    AUTH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "\$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
     HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
     if [ "\$HEALTH" = "200" ]; then
       # Build query from available context signals
@@ -5670,7 +5771,7 @@ if [ ! -f "\$CONFIG_FILE" ]; then
   exit 0
 fi
 
-PORT=\$(grep -o '"port":[0-9]*' "\$CONFIG_FILE" | head -1 | cut -d':' -f2)
+PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
 if [ -z "\$PORT" ]; then
   exit 0
 fi
@@ -5681,8 +5782,20 @@ if [ "\$HEALTH" != "200" ]; then
   exit 0
 fi
 
+# Resolve the auth token. INSTAR_AUTH_TOKEN env first (set by SessionManager and
+# JobScheduler for every spawned session) — survives the secret-externalization
+# refactor that moved authToken out of config.json into the encrypted store.
+# Legacy fallback: read from config.json with a string-type guard. When authToken
+# has been externalized, the value is the literal placeholder { "secret": true } —
+# the guard rejects it and yields empty, so we never send the placeholder as a
+# Bearer token (which the server rejects with 403, silently breaking history
+# injection — the 2026-05-29 incident this fix is for).
+AUTH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+if [ -z "\$AUTH_TOKEN" ] && [ -f "\$CONFIG_FILE" ]; then
+  AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('\$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+fi
+
 # Fetch recent messages for this topic
-AUTH_TOKEN=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
     -H "Authorization: Bearer \${AUTH_TOKEN}" \\
@@ -5771,7 +5884,7 @@ if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
   TOPIC_ID="\$INSTAR_TELEGRAM_TOPIC"
   CONFIG_FILE="\$INSTAR_DIR/config.json"
   if [ -f "\$CONFIG_FILE" ]; then
-    PORT=\$(grep -o '"port":[0-9]*' "\$CONFIG_FILE" | head -1 | cut -d':' -f2)
+    PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
     if [ -n "\$PORT" ]; then
       TOPIC_CTX=\$(curl -s "http://localhost:\${PORT}/topic/context/\${TOPIC_ID}?recent=20" 2>/dev/null)
       if [ -n "\$TOPIC_CTX" ] && echo "\$TOPIC_CTX" | grep -q '"totalMessages"'; then
@@ -5951,9 +6064,16 @@ echo ""
 # Working Memory — surface relevant knowledge after compaction
 # This restores what you knew before compaction that's relevant now.
 if [ -f "$INSTAR_DIR/config.json" ]; then
-  PORT=\$(grep -o '"port":[0-9]*' "$INSTAR_DIR/config.json" | head -1 | cut -d':' -f2)
+  PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)
   if [ -n "\$PORT" ]; then
-    AUTH_TOKEN=\$(python3 -c "import json; print(json.load(open('$INSTAR_DIR/config.json')).get('authToken',''))" 2>/dev/null)
+    # Resolve auth token: env first (set by SessionManager for every spawned
+    # session), legacy plaintext-config fallback with string-type guard so the
+    # { "secret": true } placeholder produced by SecretMigrator never leaks
+    # through as a bogus Bearer token.
+    AUTH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "\$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
     HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
     if [ "\$HEALTH" = "200" ]; then
       WM_QUERY=\$(python3 -c "import urllib.parse; print(urllib.parse.quote('compaction-recovery context-restoration'))" 2>/dev/null)
@@ -6512,16 +6632,20 @@ process.stdin.on('end', async () => {
     // Build description
     const description = action.replace(/_/g, ' ') + ' on ' + service;
 
-    // Read config (port + auth token) via dynamic import to stay ESM-compatible
+    // Read config (port + auth token) via dynamic import to stay ESM-compatible.
+    // Auth-token resolution: INSTAR_AUTH_TOKEN env first (SessionManager injects
+    // it into every spawned session, survives secret-externalization), legacy
+    // plaintext-config fallback with a string-type guard so the { secret: true }
+    // placeholder produced by SecretMigrator can never leak through as a Bearer.
     let port = 4321;
-    let authToken = '';
+    let authToken = process.env.INSTAR_AUTH_TOKEN || '';
     try {
       const nodeFs = await import('node:fs');
       const configPath = (process.env.CLAUDE_PROJECT_DIR || '.') + '/.instar/config.json';
       const raw = nodeFs.readFileSync(configPath, 'utf-8');
       const cfg = JSON.parse(raw);
       port = cfg.port || 4321;
-      authToken = cfg.authToken || '';
+      if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
     } catch { /* use defaults */ }
 
     // Call the gate API using global fetch (Node 18+)
@@ -6831,7 +6955,16 @@ process.stdin.on('end', async () => {
       const existing = fs.readFileSync(opts.scriptPath, 'utf-8');
       const looksShipped = existing.includes(opts.shippedMarker);
       const hasNewHandling = existing.includes('HTTP_CODE" = "408"');
-      if (!looksShipped || hasNewHandling) {
+      // Secret-externalization survivability marker: the canonical auth
+      // resolver pattern uses INSTAR_AUTH_TOKEN env first. Existing scripts
+      // that have the 408 marker but still read authToken straight from
+      // config.json silently 403 after secret-externalization (the
+      // 2026-05-29 telegram-topic-context incident). Treat the env-first
+      // pattern as a separate upgrade marker so a deployed-but-stale script
+      // gets refreshed rather than skipped as "already up to date".
+      const hasAuthEnvHandling = existing.includes('INSTAR_AUTH_TOKEN');
+      const fullyCurrent = hasNewHandling && hasAuthEnvHandling;
+      if (!looksShipped || fullyCurrent) {
         opts.result.skipped.push(`${opts.label} (already up to date or customized)`);
         return;
       }
@@ -6841,7 +6974,10 @@ process.stdin.on('end', async () => {
         return;
       }
       fs.writeFileSync(opts.scriptPath, template, { mode: 0o755 });
-      opts.result.upgraded.push(`${opts.label} (upgraded to HTTP 408 ambiguous-outcome handling)`);
+      const reason = hasNewHandling
+        ? 'auth-env-first (secret-externalization survivability)'
+        : 'HTTP 408 ambiguous-outcome handling';
+      opts.result.upgraded.push(`${opts.label} (upgraded to ${reason})`);
     } catch (err) {
       opts.result.errors.push(`${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -7490,15 +7626,18 @@ function findContradictions(text, state) {
   const path = await import('node:path');
   const http = await import('node:http');
 
-// Read config for port and auth token
+// Read config for port and auth token. Token: env first (SessionManager injects
+// INSTAR_AUTH_TOKEN per spawned session — survives secret-externalization), legacy
+// plaintext-config fallback with a string-type guard so the { secret: true }
+// placeholder produced by SecretMigrator can never leak as a Bearer.
 let serverPort = ${port};
-let authToken = '';
+let authToken = process.env.INSTAR_AUTH_TOKEN || '';
 try {
   const configPath = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'config.json');
   const raw = fs.readFileSync(configPath, 'utf-8');
   const cfg = JSON.parse(raw);
   serverPort = cfg.port || ${port};
-  authToken = cfg.authToken || '';
+  if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
 } catch {}
 
 // Check if response review is enabled in config
@@ -7625,11 +7764,14 @@ if (!reviewEnabled) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const configPath = path.join(projectDir, '.instar', 'config.json');
   let serverPort = ${port};
-  let authToken = '';
+  // INSTAR_AUTH_TOKEN env first — SessionManager injects it per spawned session
+  // and it survives secret-externalization. Legacy plaintext-config fallback
+  // with string-type guard so the { secret: true } placeholder cannot leak.
+  let authToken = process.env.INSTAR_AUTH_TOKEN || '';
   try {
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     serverPort = cfg.port || ${port};
-    authToken = cfg.authToken || '';
+    if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
   } catch {}
 
   function postJson(urlPath, payload, timeoutMs) {

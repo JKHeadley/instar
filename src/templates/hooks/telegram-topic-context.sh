@@ -43,7 +43,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 0
 fi
 
-PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
 if [ -z "$PORT" ]; then
   exit 0
 fi
@@ -54,8 +54,20 @@ if [ "$HEALTH" != "200" ]; then
   exit 0
 fi
 
+# Resolve the auth token. INSTAR_AUTH_TOKEN env first — SessionManager injects
+# this into every spawned Claude Code session, so hooks running inside a session
+# always have it; survives the secret-externalization refactor that moved authToken
+# out of config.json into the encrypted store. Legacy fallback reads config.json
+# with a string-type guard: after externalization the value is the literal
+# placeholder { "secret": true } — the guard rejects it and yields empty so we
+# never send the placeholder as a Bearer token (which the server rejects with 403,
+# silently breaking history injection — the 2026-05-29 incident this fix is for).
+AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+if [ -z "$AUTH_TOKEN" ] && [ -f "$CONFIG_FILE" ]; then
+  AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+fi
+
 # Fetch recent messages for this topic
-AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
 if [ -n "$AUTH_TOKEN" ]; then
   RECENT_MSGS=$(curl -s \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \

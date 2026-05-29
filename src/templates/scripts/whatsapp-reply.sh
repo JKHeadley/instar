@@ -33,10 +33,13 @@ fi
 
 PORT="${INSTAR_PORT:-4040}"
 
-# Read auth token from config (if present)
-AUTH_TOKEN=""
-if [ -f ".instar/config.json" ]; then
-  AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+# Read auth token: env first (SessionManager injects it per spawned session and
+# it survives secret-externalization), legacy plaintext-config fallback with
+# string-type guard so the { "secret": true } placeholder produced by
+# SecretMigrator cannot leak through as a bogus Bearer.
+AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+if [ -z "$AUTH_TOKEN" ] && [ -f ".instar/config.json" ]; then
+  AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
 
 # Escape for JSON

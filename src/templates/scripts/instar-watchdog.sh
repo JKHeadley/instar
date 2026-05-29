@@ -324,7 +324,11 @@ escalate_via_peer() {
     node_bin=$(resolve_node || true)
     [ -z "$node_bin" ] && continue
     local peer_meta
-    peer_meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write((c.port||'')+'\t'+(c.authToken||''))" "$peer_dir/.instar/config.json" 2>/dev/null || true)
+    # The string-type guard on authToken protects against the { secret: true }
+    # placeholder that SecretMigrator writes after externalizing the auth token:
+    # `c.authToken || ''` would otherwise return the object itself (truthy)
+    # which serializes to "[object Object]" — never a valid Bearer.
+    peer_meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const t=typeof c.authToken==='string'?c.authToken:'';process.stdout.write((c.port||'')+'\t'+t)" "$peer_dir/.instar/config.json" 2>/dev/null || true)
     peer_port="${peer_meta%%	*}"
     peer_auth="${peer_meta##*	}"
     [ -z "$peer_port" ] && continue
@@ -434,11 +438,16 @@ probe_server_identity() {
   node_bin=$(resolve_node || true)
   [ -z "$node_bin" ] && return 0
 
-  # Read port + authToken in one node invocation. The authToken is required
-  # because /health gates the `project` field behind authentication — without
-  # it the probe can't verify identity and would silently fail-open.
+  # Read port + authToken in one node invocation. The authToken is needed
+  # because /health gates the `project` field behind authentication; without
+  # it the probe can still hit /health for a basic alive check but loses the
+  # identity disambiguation. INSTAR_AUTH_TOKEN env is preferred when set
+  # (preserves cross-version compatibility). The string-type guard rejects the
+  # { secret: true } placeholder SecretMigrator writes after externalizing the
+  # auth token — `String(c.authToken || '')` would otherwise yield
+  # "[object Object]" and the Bearer would be invalid.
   local meta
-  meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(c.port||'')+'\t'+String(c.authToken||''))" "$config_file" 2>/dev/null || true)
+  meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const t=process.env.INSTAR_AUTH_TOKEN||(typeof c.authToken==='string'?c.authToken:'');process.stdout.write(String(c.port||'')+'\t'+t)" "$config_file" 2>/dev/null || true)
   port="${meta%%	*}"
   auth_token="${meta##*	}"
   # Lifeline-only agents have no port; treat as healthy from probe POV.
