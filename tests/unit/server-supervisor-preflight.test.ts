@@ -255,7 +255,7 @@ describe('ServerSupervisor preflight self-heal', () => {
     // from-source attempt DELETES the binary (the real footgun) to prove the
     // restore brings it back.
     mockAbiMismatch(/*failVerify*/ true, (a) => {
-      if (a.includes('--build-from-source')) { try { fs.unlinkSync(binaryPath); } catch { /* ignore */ } }
+      if (a.includes('--build-from-source')) { try { SafeFsExecutor.safeUnlinkSync(binaryPath, { operation: 'test:simulate-bsq-delete' }); } catch { /* ignore */ } }
     });
 
     (supervisor as any).preflightSelfHeal();

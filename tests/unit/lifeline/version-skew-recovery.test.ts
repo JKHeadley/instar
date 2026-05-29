@@ -61,38 +61,33 @@ describe('Version-skew recovery — CLI service label', () => {
   });
 });
 
-describe('Version-skew recovery — native rebuild uses --build-from-source', () => {
-  it('ServerSupervisor preflight rebuild passes --build-from-source', () => {
+describe('Version-skew recovery — native rebuild is ABI-pinned + prebuilt-first', () => {
+  // Updated 2026-05-29 (PR #539): the rebuild no longer uses --build-from-source
+  // as the ONLY strategy. `npm rebuild` always node-gyp-compiles and can't fetch
+  // a prebuilt, so on a box without a C++ toolchain it can never heal (it left
+  // instar-codey's sqlite offline 16h). Both paths now PIN the toolchain to the
+  // server/running Node (correct ABI regardless of PATH) and PREFER the prebuilt
+  // (`npm install` → prebuild-install) with --build-from-source as the fallback.
+  it('ServerSupervisor preflight rebuild pins the server Node and prefers the prebuilt', () => {
     const src = fs.readFileSync(
       path.join(repoRoot, 'src', 'lifeline', 'ServerSupervisor.ts'),
       'utf-8',
     );
-    // Find the rebuildArgs assignment used for the better-sqlite3 rebuild.
-    const rebuildArgsLine = src.match(/const\s+rebuildArgs\s*=\s*\[([\s\S]*?)\]/);
-    expect(rebuildArgsLine).toBeTruthy();
-    const body = rebuildArgsLine?.[1] ?? '';
-    expect(body).toMatch(/'--build-from-source'/);
-    expect(body).toMatch(/'--ignore-scripts'/);
-    expect(body).toMatch(/'better-sqlite3'/);
+    expect(src).toMatch(/npm_node_execpath/);            // toolchain pinned to the server Node
+    expect(src).toMatch(/'install'/);                    // prebuilt-first (prebuild-install)
+    expect(src).toMatch(/'--build-from-source'/);        // compile fallback retained
+    expect(src).toMatch(/'--ignore-scripts'/);
+    expect(src).toMatch(/'better-sqlite3'/);
   });
 
-  it('NativeModuleHealer in-line rebuild passes --build-from-source', () => {
+  it('NativeModuleHealer in-line rebuild pins the running Node and prefers the prebuilt', () => {
     const src = fs.readFileSync(
       path.join(repoRoot, 'src', 'memory', 'NativeModuleHealer.ts'),
       'utf-8',
     );
-    // The in-line healBetterSqlite3Sync path used to be the one that
-    // missed the flag (the Remediator-orchestrated path already had it).
-    // Make sure BOTH paths now use --build-from-source. We assert that
-    // every spawnSync that targets `npm rebuild ... better-sqlite3` in
-    // this file includes the flag.
-    const rebuildSpawns = [...src.matchAll(/spawnSync\(\s*[^,]+,\s*\[\s*([^\]]+)\]/g)]
-      .map(m => m[1])
-      .filter(args => args.includes("'rebuild'") && args.includes("'better-sqlite3'"));
-    expect(rebuildSpawns.length).toBeGreaterThan(0);
-    for (const args of rebuildSpawns) {
-      expect(args).toMatch(/'--build-from-source'/);
-    }
+    expect(src).toMatch(/npm_node_execpath/);            // toolchain pinned to the running Node
+    expect(src).toMatch(/'install'/);                    // prebuilt-first
+    expect(src).toMatch(/'--build-from-source'/);        // compile fallback retained
   });
 });
 
