@@ -17,3 +17,6 @@ Wires the SessionRouter into the live boot + the inbound message-dispatch path, 
 
 ## Remaining (the hardware operation — B/C/D)
 Deploy to laptop + bring up the mini as machine #2; advance dark→shadow→live-transfer (each E2E-gated); test-as-self nickname-swap proof. The owner-side deliverMessage→local-spawn bridge (so a forwarded message actually spawns on the owner) is the final piece, validated on the 2-machine setup.
+
+## Addendum — owner-side bridge (task A.2)
+`createDeliverMessageHandler` now takes an `onAccepted` hook wired (in the mesh block) to `spawnSessionForTopic`: a FIRST-seen forwarded `deliverMessage` spawns/resumes the local session for the topic so the conversation continues on the OWNER machine — the receive-side of the §L4 handoff. Gated on `_sessionPoolStage() !== 'dark'` + `telegram` present; fire-and-forget (the durable receipt is ACKed before this runs); fails safe (logs, never throws into the dispatcher). Inert until live-transfer (a deliverMessage only arrives from a router peer). This makes the activation code-complete: outbound forward (router) + receive+ACK (handler) + owner-side resume (bridge). Remaining is purely the 2-machine hardware proof.

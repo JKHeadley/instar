@@ -8909,6 +8909,30 @@ export async function startServer(options: StartOptions): Promise<void> {
             deliverSeenFallback.add(messageId);
             return true;
           },
+          // Owner-side bridge (§L4 handoff): a forwarded message landed → spawn/resume
+          // the local session for the topic so the conversation continues on THIS machine.
+          // Only fires for a FIRST-seen forwarded deliverMessage (the ledger dedupes
+          // redeliveries), and a deliverMessage only arrives from a router peer — but we
+          // double-gate on stage!=='dark' to be safe. Fire-and-forget: the durable receipt
+          // is already recorded + ACKed before this runs.
+          onAccepted: (cmd) => {
+            if (_sessionPoolStage() === 'dark' || !telegram) return;
+            const tg = telegram;
+            const topicId = Number(cmd.session);
+            if (!Number.isFinite(topicId)) return;
+            const text = typeof cmd.payload === 'string'
+              ? cmd.payload
+              : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
+                ? String((cmd.payload as { text: unknown }).text)
+                : undefined;
+            const sessionName = tg.getSessionForTopic(topicId) ?? `topic-${topicId}`;
+            void spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text, undefined, undefined)
+              .then((name) => {
+                tg.registerTopicSession(topicId, name, sessionName);
+                console.log(pc.green(`  [session-pool] owner-side resume for forwarded topic ${topicId} → ${name}`));
+              })
+              .catch((err) => console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`));
+          },
         });
         meshRpcDispatcher = new meshMod.MeshRpcDispatcher({
           verify: {
