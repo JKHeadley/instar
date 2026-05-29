@@ -161,7 +161,7 @@ describe('TokenLedger.backfillAttributionOnce — converts legacy sentinel rows,
   });
 
   it('is idempotent: a second call on a fresh ledger reports alreadyDone', () => {
-    const ledger = new TokenLedger({ dbPath, claudeProjectsDir: tmp });
+    const ledger = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'sync' });
     // The constructor already ran the one-shot backfill (0 rows → marker set).
     const second = ledger.backfillAttributionOnce();
     expect(second.alreadyDone).toBe(true);
@@ -173,7 +173,7 @@ describe('TokenLedger.backfillAttributionOnce — converts legacy sentinel rows,
     // Phase 1: open a ledger and seed rows that still carry the sentinel,
     // simulating an agent whose DB pre-dates Phase 2 wiring. recordEvent lets
     // us force the sentinel key explicitly.
-    const seed = new TokenLedger({ dbPath, claudeProjectsDir: tmp });
+    const seed = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'sync' });
     seed.recordEvent({
       requestId: 'legacy-1', sessionId: 'sessA1234567', ts: 1000,
       inputTokens: 100, outputTokens: 50, attributionKey: PRE_ATTRIBUTION_KEY,
@@ -203,7 +203,7 @@ describe('TokenLedger.backfillAttributionOnce — converts legacy sentinel rows,
 
     // Phase 2: re-open. The constructor runs backfillAttributionOnce(), which
     // finds the sentinel rows + no marker → converts them.
-    const reopened = new TokenLedger({ dbPath, claudeProjectsDir: tmp });
+    const reopened = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'sync' });
     const rows = reopened.byAttributionKey({ sinceMs: 0 });
     // No row should remain on the sentinel.
     expect(rows.find((r) => r.attributionKey === PRE_ATTRIBUTION_KEY)).toBeUndefined();
@@ -216,6 +216,72 @@ describe('TokenLedger.backfillAttributionOnce — converts legacy sentinel rows,
     expect(again.alreadyDone).toBe(true);
     expect(again.backfilled).toBe(0);
     reopened.close();
+  });
+
+  it('async (default) does NOT convert rows during construction — boot never blocks on the scan', () => {
+    // Seed sentinel rows + clear the marker so a real backfill is pending.
+    const seed = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'sync' });
+    for (let i = 0; i < 5; i++) {
+      seed.recordEvent({
+        requestId: `leg-${i}`, sessionId: `sessX${i}0000000`, ts: 1000 + i,
+        inputTokens: 10, outputTokens: 5, attributionKey: PRE_ATTRIBUTION_KEY,
+      });
+    }
+    seed.close();
+    const raw = new Database(dbPath);
+    raw.prepare(`DELETE FROM ledger_meta WHERE key = 'attribution-backfill-v1'`).run();
+    raw.close();
+
+    // Default strategy is 'async': construction returns WITHOUT having run the
+    // scan (the fix — a large ledger can't stall boot). The background timer is
+    // scheduled but has not fired in this synchronous test, so rows are still on
+    // the sentinel immediately after construction.
+    const led = new TokenLedger({ dbPath, claudeProjectsDir: tmp });
+    const stillSentinel = led
+      .byAttributionKey({ sinceMs: 0 })
+      .filter((r) => r.attributionKey === PRE_ATTRIBUTION_KEY);
+    expect(stillSentinel.length).toBeGreaterThan(0);
+
+    // Driving chunks (what the background timer does) completes the backfill.
+    let guard = 0;
+    for (;;) {
+      const { done } = led.backfillAttributionChunk(2);
+      if (done || ++guard > 50) break;
+    }
+    const after = led.byAttributionKey({ sinceMs: 0 });
+    expect(after.find((r) => r.attributionKey === PRE_ATTRIBUTION_KEY)).toBeUndefined();
+    led.close();
+  });
+
+  it('backfillAttributionChunk is bounded by limit, resumable, and terminates', () => {
+    const seed = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'sync' });
+    for (let i = 0; i < 6; i++) {
+      seed.recordEvent({
+        requestId: `r-${i}`, sessionId: `sessQ${i}0000000`, ts: 1000 + i,
+        inputTokens: 1, outputTokens: 1, attributionKey: PRE_ATTRIBUTION_KEY,
+      });
+    }
+    seed.close();
+    const raw = new Database(dbPath);
+    raw.prepare(`DELETE FROM ledger_meta WHERE key = 'attribution-backfill-v1'`).run();
+    raw.close();
+
+    // 'off' → no auto-run; we drive chunks explicitly and assert bounding.
+    const led = new TokenLedger({ dbPath, claudeProjectsDir: tmp, attributionBackfill: 'off' });
+    const c1 = led.backfillAttributionChunk(2);
+    expect(c1.backfilled).toBe(2); // 2 distinct triples × 1 row each
+    expect(c1.done).toBe(false);
+    led.backfillAttributionChunk(2); // 2 more
+    led.backfillAttributionChunk(2); // last 2
+    // All 6 converted; next chunk finds no sentinel rows → done + marker set.
+    const cFinal = led.backfillAttributionChunk(2);
+    expect(cFinal.done).toBe(true);
+    expect(
+      led.byAttributionKey({ sinceMs: 0 }).find((r) => r.attributionKey === PRE_ATTRIBUTION_KEY)
+    ).toBeUndefined();
+    // Marker is set → a further explicit full drain is a no-op.
+    expect(led.backfillAttributionOnce().alreadyDone).toBe(true);
+    led.close();
   });
 });
 

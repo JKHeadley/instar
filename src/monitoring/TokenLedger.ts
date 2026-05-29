@@ -21,6 +21,15 @@ import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { parseCodexRollout, type ParsedCodexSession } from './CodexRolloutParser.js';
 import { resolveAttribution, PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
 
+/** ledger_meta marker key — set exactly once when the attribution backfill is complete. */
+const ATTRIBUTION_BACKFILL_MARKER = 'attribution-backfill-v1';
+/** Distinct (session, project, model) triples processed per backfill chunk. Bounds each write transaction. */
+const ATTRIBUTION_BACKFILL_CHUNK = 100;
+/** Delay between background backfill chunks — yields the event loop so /health + requests aren't blocked. */
+const ATTRIBUTION_BACKFILL_TICK_MS = 200;
+/** Give up the background backfill after this many consecutive chunk failures (rows stay on the sentinel). */
+const ATTRIBUTION_BACKFILL_MAX_FAILURES = 20;
+
 /**
  * Compute a small content fingerprint for a JSONL file. Used to detect
  * file rotation/replacement even when the OS reuses the same inode number
@@ -260,6 +269,20 @@ export interface TokenLedgerOptions {
    * better-sqlite3's Database constructor directly.
    */
   databaseFactory?: (dbPath: string) => BetterSqliteDatabase;
+  /**
+   * How the one-time attribution backfill (legacy PRE_ATTRIBUTION_KEY sentinel
+   * rows → resolved keys) runs at construction:
+   *  - 'async' (default): scheduled off the boot path in bounded chunks that
+   *    yield the event loop between batches, so construction NEVER blocks. This
+   *    is the fix for large ledgers bricking server boot — the old synchronous
+   *    full-scan-in-one-transaction could exceed the supervisor health-check
+   *    timeout, getting the boot killed mid-scan so the completion marker was
+   *    never written and the backfill re-ran forever (permanent crash-loop).
+   *  - 'sync': drain fully during construction (deterministic; for tests).
+   *  - 'off': don't auto-run; the caller drives backfillAttributionOnce()/Chunk().
+   * Default: 'async'.
+   */
+  attributionBackfill?: 'async' | 'sync' | 'off';
 }
 
 interface AssistantLine {
@@ -291,6 +314,12 @@ export class TokenLedger {
   private maxFilesPerScan: number;
   private yieldEveryNFiles: number;
   private asyncYieldFn: () => Promise<void>;
+  /** Background attribution-backfill timer (async strategy); cleared on close(). */
+  private attributionBackfillTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Consecutive failed backfill chunks; bounded by ATTRIBUTION_BACKFILL_MAX_FAILURES. */
+  private attributionBackfillFailures = 0;
+  /** Set in close() so a pending background chunk doesn't touch a closed DB. */
+  private closed = false;
   // Cursor between scan calls — when a tick stops at the per-scan cap,
   // the next tick resumes from here instead of restarting the whole tree.
   private scanCursor: { dirIdx: number; fileIdx: number } = { dirIdx: 0, fileIdx: 0 };
@@ -337,18 +366,31 @@ export class TokenLedger {
       }
     }
     this.prepareStatements();
-    // One-shot: convert legacy rows written before Phase 2 attribution was
+    // One-time: convert legacy rows written before Phase 2 attribution was
     // wired (all under the PRE_ATTRIBUTION_KEY sentinel) into resolved keys.
     // Marker-guarded so it runs exactly once per DB, even across restarts.
     // Self-healing on boot — existing agents get this on their next server
     // start with no PostUpdateMigrator change required.
-    try {
-      this.backfillAttributionOnce();
-    } catch (err) {
-      // Never let a backfill failure take down ledger init — the worst case
-      // is the sentinel rows stay unattributed (and exempt from burn alerts).
-      console.warn(`[token-ledger] attribution backfill skipped (non-fatal): ${(err as Error).message}`);
+    //
+    // Runs ASYNC + chunked by default so a large ledger NEVER blocks
+    // construction (and therefore never blocks server boot). The old
+    // synchronous full-scan-in-one-transaction bricked agents with big
+    // ledgers: the scan outran the supervisor health-check timeout, the boot
+    // was killed mid-scan, the completion marker was never written, and the
+    // backfill re-ran on every restart — a permanent crash-loop.
+    const backfillStrategy = opts.attributionBackfill ?? 'async';
+    if (backfillStrategy === 'sync') {
+      try {
+        this.backfillAttributionOnce();
+      } catch (err) {
+        // Never let a backfill failure take down ledger init — the worst case
+        // is the sentinel rows stay unattributed (and exempt from burn alerts).
+        console.warn(`[token-ledger] attribution backfill skipped (non-fatal): ${(err as Error).message}`);
+      }
+    } else if (backfillStrategy === 'async') {
+      this.scheduleAttributionBackfill();
     }
+    // 'off' → caller drives backfillAttributionOnce()/backfillAttributionChunk().
   }
 
   /** Read a value from the ledger_meta key/value table (null if absent). */
@@ -374,39 +416,72 @@ export class TokenLedger {
   }
 
   /**
-   * One-shot, idempotent backfill of the attribution_key column for legacy
-   * rows that still carry the PRE_ATTRIBUTION_KEY sentinel (i.e. were ingested
-   * before Phase 2 attribution was wired into ingestLine).
+   * Idempotent backfill of the attribution_key column for legacy rows that
+   * still carry the PRE_ATTRIBUTION_KEY sentinel (ingested before Phase 2
+   * attribution was wired into ingestLine).
    *
    * Why it's needed: before this fix, every JSONL-sourced event was hardcoded
    * to `unknown::pre-attribution`, so 100% of spend sat in one bucket and the
-   * BurnDetector's absolute-share trigger fired forever (the false-positive
-   * this whole change closes). Backfilling re-resolves those rows from the
-   * signals we DO have on each row (session_id, project_path, model) — the
-   * same read-only signals the live ingest path now uses (prompt is
-   * unavailable, so this is cwd/job/hook/session-level attribution).
+   * BurnDetector's absolute-share trigger fired forever. Backfilling re-resolves
+   * those rows from the signals we DO have on each row (session_id, project_path,
+   * model).
    *
-   * Performance: resolution depends only on (session_id, project_path, model),
-   * so we resolve ONCE per distinct triple and bulk-update by triple inside a
-   * single transaction. On Echo's real DB that's ~hundreds of sessions vs
-   * ~384k rows — cheap. Marker-guarded via ledger_meta so it never re-runs.
+   * This is the FULL-DRAIN form (loops bounded chunks until done) — used by the
+   * 'sync' boot strategy, explicit callers, and tests. Production boot uses the
+   * async scheduler (scheduleAttributionBackfill) so a large ledger can't block
+   * construction. Marker-guarded via ledger_meta so it runs at most once per DB.
+   *
+   * Termination: each chunk either makes progress (rows leave the sentinel) or
+   * sets the completion marker (no further progress possible), so this always
+   * terminates even if some triples resolve back to the sentinel.
    */
   backfillAttributionOnce(): { backfilled: number; alreadyDone: boolean } {
-    const MARKER = 'attribution-backfill-v1';
-    if (this.getMeta(MARKER)) return { backfilled: 0, alreadyDone: true };
+    if (this.getMeta(ATTRIBUTION_BACKFILL_MARKER)) {
+      return { backfilled: 0, alreadyDone: true };
+    }
+    let backfilled = 0;
+    for (;;) {
+      const { backfilled: n, done } = this.backfillAttributionChunk(ATTRIBUTION_BACKFILL_CHUNK);
+      backfilled += n;
+      if (done) break;
+    }
+    return { backfilled, alreadyDone: false };
+  }
+
+  /**
+   * Process up to `limit` distinct still-sentinel (session, project, model)
+   * triples, committing per chunk so progress survives a restart. Returns
+   * done=true once the completion marker is set — either no sentinel rows remain
+   * or this batch could move none off the sentinel (the remaining rows stay
+   * unattributed, the documented acceptable worst case, and are exempt from burn
+   * alerts). Bounded + committable so it can be driven incrementally off the
+   * event loop without a multi-minute write transaction blocking the process.
+   */
+  backfillAttributionChunk(
+    limit: number = ATTRIBUTION_BACKFILL_CHUNK
+  ): { backfilled: number; done: boolean } {
+    if (this.getMeta(ATTRIBUTION_BACKFILL_MARKER)) {
+      return { backfilled: 0, done: true };
+    }
 
     // Distinct (session_id, project_path, model) triples still on the sentinel.
     const triples = this.db
       .prepare(
         `SELECT DISTINCT session_id AS sessionId, project_path AS projectPath, model AS model
            FROM token_events
-          WHERE attribution_key = ?`
+          WHERE attribution_key = ?
+          LIMIT ?`
       )
-      .all(PRE_ATTRIBUTION_KEY) as Array<{
+      .all(PRE_ATTRIBUTION_KEY, limit) as Array<{
         sessionId: string;
         projectPath: string | null;
         model: string | null;
       }>;
+
+    if (triples.length === 0) {
+      this.setMeta(ATTRIBUTION_BACKFILL_MARKER, new Date().toISOString());
+      return { backfilled: 0, done: true };
+    }
 
     const update = this.db.prepare(
       `UPDATE token_events
@@ -426,8 +501,7 @@ export class TokenLedger {
           prompt: null,
           model: t.model,
         });
-        // resolveAttribution never returns the sentinel, but guard anyway so a
-        // future change can't silently no-op the marker.
+        // resolveAttribution never returns the sentinel, but guard anyway.
         if (newKey === PRE_ATTRIBUTION_KEY) continue;
         const res = update.run({
           newKey,
@@ -438,10 +512,51 @@ export class TokenLedger {
         });
         backfilled += res.changes;
       }
-      this.setMeta(MARKER, new Date().toISOString());
     });
     run();
-    return { backfilled, alreadyDone: false };
+
+    // No row could be moved off the sentinel this batch (every triple resolved
+    // back to the sentinel). Re-selecting them would loop forever, so finalize.
+    if (backfilled === 0) {
+      this.setMeta(ATTRIBUTION_BACKFILL_MARKER, new Date().toISOString());
+      return { backfilled: 0, done: true };
+    }
+    return { backfilled, done: false };
+  }
+
+  /**
+   * Drive the attribution backfill in bounded chunks off the event loop so a
+   * large ledger never blocks construction or server boot. Each tick processes
+   * one chunk then yields (setTimeout); reschedules until the marker is set.
+   * Unref'd so it never keeps the process alive on its own. Cancelled by close().
+   */
+  private scheduleAttributionBackfill(delayMs = 0): void {
+    if (this.closed) return;
+    if (this.getMeta(ATTRIBUTION_BACKFILL_MARKER)) return;
+    const timer = setTimeout(() => {
+      this.attributionBackfillTimer = null;
+      if (this.closed) return;
+      let more = false;
+      try {
+        const { done } = this.backfillAttributionChunk(ATTRIBUTION_BACKFILL_CHUNK);
+        this.attributionBackfillFailures = 0;
+        more = !done;
+      } catch (err) {
+        this.attributionBackfillFailures += 1;
+        if (this.attributionBackfillFailures >= ATTRIBUTION_BACKFILL_MAX_FAILURES) {
+          console.warn(
+            `[token-ledger] attribution backfill giving up after ${this.attributionBackfillFailures} failures (rows stay unattributed): ${(err as Error).message}`
+          );
+          more = false;
+        } else {
+          // Non-fatal: leave the rows on the sentinel and retry on the next tick.
+          more = true;
+        }
+      }
+      if (more) this.scheduleAttributionBackfill(ATTRIBUTION_BACKFILL_TICK_MS);
+    }, delayMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.attributionBackfillTimer = timer;
   }
 
   private prepareStatements(): void {
@@ -1212,6 +1327,11 @@ export class TokenLedger {
   }
 
   close(): void {
+    this.closed = true;
+    if (this.attributionBackfillTimer) {
+      clearTimeout(this.attributionBackfillTimer);
+      this.attributionBackfillTimer = null;
+    }
     try {
       this.db.close();
     } catch {

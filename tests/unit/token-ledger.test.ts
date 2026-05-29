@@ -454,9 +454,17 @@ describe('TokenLedger pre-attribution DB migration (schema-order regression)', (
     seedPreAttributionDb(dbPath);
 
     // Pre-fix this constructor threw `no such column: attribution_key`.
+    // attributionBackfill: 'sync' keeps the backfill on the constructor path so
+    // this test can assert the post-construction conversion synchronously. The
+    // production default is now 'async' (boot must not block on the full scan —
+    // see the boot-non-blocking test in burn-attribution-wiring.test.ts).
     let ledger: TokenLedger;
     expect(() => {
-      ledger = new TokenLedger({ dbPath, claudeProjectsDir: '/tmp/nonexistent-claude-projects' });
+      ledger = new TokenLedger({
+        dbPath,
+        claudeProjectsDir: '/tmp/nonexistent-claude-projects',
+        attributionBackfill: 'sync',
+      });
     }).not.toThrow();
 
     // The column now exists on the migrated table.
