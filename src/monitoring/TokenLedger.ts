@@ -23,8 +23,8 @@ import { resolveAttribution, PRE_ATTRIBUTION_KEY } from './AttributionResolver.j
 
 /** ledger_meta marker key — set exactly once when the attribution backfill is complete. */
 const ATTRIBUTION_BACKFILL_MARKER = 'attribution-backfill-v1';
-/** Distinct (session, project, model) triples processed per backfill chunk. Bounds each write transaction. */
-const ATTRIBUTION_BACKFILL_CHUNK = 100;
+/** Rows processed per backfill chunk (rowid-addressed UPDATEs). Bounds each write transaction; ~5ms/1000 rows even on a 202MB ledger. */
+const ATTRIBUTION_BACKFILL_CHUNK = 2000;
 /** Delay between background backfill chunks — yields the event loop so /health + requests aren't blocked. */
 const ATTRIBUTION_BACKFILL_TICK_MS = 200;
 /** Give up the background backfill after this many consecutive chunk failures (rows stay on the sentinel). */
@@ -449,13 +449,23 @@ export class TokenLedger {
   }
 
   /**
-   * Process up to `limit` distinct still-sentinel (session, project, model)
-   * triples, committing per chunk so progress survives a restart. Returns
-   * done=true once the completion marker is set — either no sentinel rows remain
-   * or this batch could move none off the sentinel (the remaining rows stay
-   * unattributed, the documented acceptable worst case, and are exempt from burn
-   * alerts). Bounded + committable so it can be driven incrementally off the
-   * event loop without a multi-minute write transaction blocking the process.
+   * Process up to `limit` still-sentinel ROWS, resolving each to its attribution
+   * key and updating it by rowid (an O(1) integer-primary-key update). Committed
+   * per chunk so progress survives a restart. Returns done=true once the
+   * completion marker is set — either no sentinel rows remain, or this batch
+   * could move none off the sentinel (the documented acceptable worst case;
+   * remaining rows stay unattributed and are exempt from burn alerts).
+   *
+   * Row-scoped (not distinct-triple-scoped) on purpose. The prior design ran one
+   * `UPDATE ... WHERE attribution_key = sentinel AND session/project/model = ...`
+   * per distinct triple, and EACH such UPDATE re-scanned the whole sentinel
+   * partition — O(triples × sentinel_size). On a 202MB / ~390k-sentinel-row
+   * ledger that was ~23s of synchronous work per 100-triple chunk, blocking the
+   * event loop in bursts even though it ran off the boot path. Selecting N rows
+   * and updating each by rowid is O(N) per chunk regardless of ledger size
+   * (~5ms for 1000 rows on that same DB), so no chunk blocks the event loop.
+   * Two rows of the same (session, project, model) triple resolve to the same
+   * key, so the end state is identical to the old triple-batched approach.
    */
   backfillAttributionChunk(
     limit: number = ATTRIBUTION_BACKFILL_CHUNK
@@ -464,59 +474,51 @@ export class TokenLedger {
       return { backfilled: 0, done: true };
     }
 
-    // Distinct (session_id, project_path, model) triples still on the sentinel.
-    const triples = this.db
+    // Up to `limit` individual rows still on the sentinel, addressed by rowid.
+    const rows = this.db
       .prepare(
-        `SELECT DISTINCT session_id AS sessionId, project_path AS projectPath, model AS model
+        `SELECT rowid AS rid, session_id AS sessionId, project_path AS projectPath, model AS model
            FROM token_events
           WHERE attribution_key = ?
           LIMIT ?`
       )
       .all(PRE_ATTRIBUTION_KEY, limit) as Array<{
+        rid: number | bigint;
         sessionId: string;
         projectPath: string | null;
         model: string | null;
       }>;
 
-    if (triples.length === 0) {
+    if (rows.length === 0) {
       this.setMeta(ATTRIBUTION_BACKFILL_MARKER, new Date().toISOString());
       return { backfilled: 0, done: true };
     }
 
     const update = this.db.prepare(
-      `UPDATE token_events
-          SET attribution_key = @newKey
-        WHERE attribution_key = @sentinel
-          AND session_id = @sessionId
-          AND (project_path IS @projectPath OR project_path = @projectPath)
-          AND (model IS @model OR model = @model)`
+      `UPDATE token_events SET attribution_key = @newKey WHERE rowid = @rid`
     );
 
     let backfilled = 0;
     const run = this.db.transaction(() => {
-      for (const t of triples) {
+      for (const r of rows) {
         const newKey = resolveAttribution({
-          sessionId: t.sessionId,
-          projectPath: t.projectPath,
+          sessionId: r.sessionId,
+          projectPath: r.projectPath,
           prompt: null,
-          model: t.model,
+          model: r.model,
         });
-        // resolveAttribution never returns the sentinel, but guard anyway.
+        // resolveAttribution never returns the sentinel, but guard anyway so an
+        // unconvertible row can't be rewritten to the same sentinel (which would
+        // let it be re-selected forever).
         if (newKey === PRE_ATTRIBUTION_KEY) continue;
-        const res = update.run({
-          newKey,
-          sentinel: PRE_ATTRIBUTION_KEY,
-          sessionId: t.sessionId,
-          projectPath: t.projectPath,
-          model: t.model,
-        });
+        const res = update.run({ newKey, rid: r.rid });
         backfilled += res.changes;
       }
     });
     run();
 
-    // No row could be moved off the sentinel this batch (every triple resolved
-    // back to the sentinel). Re-selecting them would loop forever, so finalize.
+    // No row could be moved off the sentinel this batch (every row resolved back
+    // to the sentinel). Re-selecting them would loop forever, so finalize.
     if (backfilled === 0) {
       this.setMeta(ATTRIBUTION_BACKFILL_MARKER, new Date().toISOString());
       return { backfilled: 0, done: true };
