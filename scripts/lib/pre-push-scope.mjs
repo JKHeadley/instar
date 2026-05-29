@@ -130,3 +130,32 @@ export function summarizeVitestList(stdout) {
   const files = new Set(tests.map(line => line.split(' > ')[0]).filter(Boolean));
   return { testCaseCount: tests.length, testFileCount: files.size };
 }
+
+function normalizeTestFileName(name, cwd) {
+  if (typeof name !== 'string' || name.length === 0) return '';
+  if (!cwd || !name.startsWith(`${cwd}/`)) return name;
+  return name.slice(cwd.length + 1);
+}
+
+function resultHasFailure(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (result.status === 'failed') return true;
+  if (Array.isArray(result.assertionResults)) {
+    return result.assertionResults.some(assertion => assertion?.status === 'failed');
+  }
+  return false;
+}
+
+export function failedTestFilesFromVitestJson(jsonText, opts = {}) {
+  const cwd = opts.cwd ?? process.cwd();
+  const parsed = JSON.parse(String(jsonText));
+  const files = new Set();
+
+  for (const result of parsed?.testResults ?? []) {
+    if (!resultHasFailure(result)) continue;
+    const file = normalizeTestFileName(result.name, cwd);
+    if (file) files.add(file);
+  }
+
+  return [...files].sort();
+}

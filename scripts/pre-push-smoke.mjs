@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 // safe-git-allow: pre-push smoke runner — read-only git, then Vitest.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   changedFilesSince,
   evaluateSmokeBreadth,
+  failedTestFilesFromVitestJson,
   readSmokeLimits,
   resolvePrePushBase,
   summarizeVitestList,
@@ -22,6 +26,55 @@ function run(command, args, opts = {}) {
 function printSkip(reason) {
   console.log(`⏭️  Local smoke too broad; CI is the authority. ${reason}.`);
   console.log('   The PR test matrix still runs the full suite before merge.');
+}
+
+function readFailedFiles(reportFile) {
+  try {
+    return failedTestFilesFromVitestJson(fs.readFileSync(reportFile, 'utf-8'), { cwd: process.cwd() });
+  } catch (err) {
+    console.warn(`pre-push smoke: could not read failed test files from Vitest JSON (${err instanceof Error ? err.message : err}).`);
+    return [];
+  }
+}
+
+function runAffectedSmoke(baseRef) {
+  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pre-push-smoke-'));
+  const reportFile = path.join(reportDir, 'vitest-results.json');
+  try {
+    const result = run('npx', [
+      'vitest',
+      'run',
+      '--config',
+      'vitest.push.config.ts',
+      '--changed',
+      baseRef,
+      '--reporter=default',
+      '--reporter=json',
+      `--outputFile.json=${reportFile}`,
+    ], {
+      stdio: 'inherit',
+    });
+
+    if ((result.status ?? 1) === 0) return 0;
+
+    const failedFiles = readFailedFiles(reportFile);
+    if (failedFiles.length === 0) {
+      console.warn('pre-push smoke: no failed test files were found for focused retry; preserving original failure.');
+      return result.status ?? 1;
+    }
+
+    console.log('');
+    console.log(`⚠️  Attempt 1 failed — retrying ${failedFiles.length} failed test file${failedFiles.length === 1 ? '' : 's'} once.`);
+    for (const file of failedFiles) console.log(`   - ${file}`);
+    console.log('');
+
+    const retry = run('npx', ['vitest', 'run', '--config', 'vitest.push.config.ts', ...failedFiles], {
+      stdio: 'inherit',
+    });
+    return retry.status ?? 1;
+  } finally {
+    fs.rmSync(reportDir, { recursive: true, force: true });
+  }
 }
 
 const base = resolvePrePushBase();
@@ -79,7 +132,4 @@ if (selected.testCaseCount === 0) {
   process.exit(0);
 }
 
-const result = run('npx', ['vitest', 'run', '--config', 'vitest.push.config.ts', '--changed', base.ref], {
-  stdio: 'inherit',
-});
-process.exit(result.status ?? 1);
+process.exit(runAffectedSmoke(base.ref));

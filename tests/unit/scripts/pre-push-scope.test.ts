@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   evaluateSmokeBreadth,
+  failedTestFilesFromVitestJson,
   resolvePrePushBase,
   summarizeVitestList,
 } from '../../../scripts/lib/pre-push-scope.mjs';
@@ -85,5 +86,48 @@ describe('pre-push smoke scope helpers', () => {
     ].join('\n'));
 
     expect(summary).toEqual({ testCaseCount: 3, testFileCount: 2 });
+  });
+
+  it('extracts unique failed files from Vitest JSON output', () => {
+    const failed = failedTestFilesFromVitestJson(JSON.stringify({
+      testResults: [
+        {
+          name: '/repo/tests/unit/a.test.ts',
+          status: 'passed',
+          assertionResults: [{ status: 'passed' }],
+        },
+        {
+          name: '/repo/tests/unit/b.test.ts',
+          status: 'failed',
+          assertionResults: [{ status: 'failed' }],
+        },
+        {
+          name: '/repo/tests/unit/c.test.ts',
+          status: 'passed',
+          assertionResults: [{ status: 'failed' }],
+        },
+        {
+          name: '/repo/tests/unit/b.test.ts',
+          status: 'failed',
+          assertionResults: [{ status: 'failed' }],
+        },
+      ],
+    }), { cwd: '/repo' });
+
+    expect(failed).toEqual(['tests/unit/b.test.ts', 'tests/unit/c.test.ts']);
+  });
+
+  it('returns an empty list when Vitest JSON has no failed files', () => {
+    const failed = failedTestFilesFromVitestJson(JSON.stringify({
+      testResults: [
+        {
+          name: '/repo/tests/unit/a.test.ts',
+          status: 'passed',
+          assertionResults: [{ status: 'passed' }],
+        },
+      ],
+    }), { cwd: '/repo' });
+
+    expect(failed).toEqual([]);
   });
 });

@@ -34,17 +34,25 @@ git fetch --quiet origin main 2>/dev/null || true
 if [ "${INSTAR_PRE_PUSH_FULL:-}" = "1" ]; then
   echo "🧪 INSTAR_PRE_PUSH_FULL=1 — running full push suite (slow, ~10 min)..."
   TEST_CMD="npm run test:push"
+  TEST_RETRY_MODE="whole-command"
 else
   echo "🧪 Running smoke tier (tests affected by changes vs resolved base)..."
   echo "   Full suite runs in CI | Force full locally: INSTAR_PRE_PUSH_FULL=1 git push"
   TEST_CMD="npm run test:smoke"
+  TEST_RETRY_MODE="handled-by-smoke-runner"
 fi
 
-# Try up to 2 times — flaky tests may fail intermittently
-SMOKE_OK=0
-for attempt in 1 2; do
+# Try up to 2 times — flaky tests may fail intermittently.
+# The smoke runner owns its own retry so it can rerun only failed test files.
+MAX_ATTEMPTS=2
+if [ "$TEST_RETRY_MODE" = "handled-by-smoke-runner" ]; then
+  MAX_ATTEMPTS=1
+fi
+
+TESTS_OK=0
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   if $TEST_CMD; then
-    SMOKE_OK=1
+    TESTS_OK=1
     break
   fi
   if [ "$attempt" -eq 1 ]; then
@@ -54,8 +62,12 @@ for attempt in 1 2; do
   fi
 done
 
-if [ "$SMOKE_OK" != "1" ]; then
-  echo "❌ Tests failed on both attempts. Debug with: $TEST_CMD"
+if [ "$TESTS_OK" != "1" ]; then
+  if [ "$TEST_RETRY_MODE" = "handled-by-smoke-runner" ]; then
+    echo "❌ Tests failed after smoke runner retry. Debug with: $TEST_CMD"
+  else
+    echo "❌ Tests failed on both attempts. Debug with: $TEST_CMD"
+  fi
   exit 1
 fi
 
