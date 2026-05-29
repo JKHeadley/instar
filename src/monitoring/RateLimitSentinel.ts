@@ -42,6 +42,20 @@ import path from 'node:path';
 
 export type RateLimitTrigger = 'watchdog-poll' | 'idle-error' | string;
 
+/**
+ * The CLASS of transient API error this recovery is riding out. The lifecycle
+ * (backoff → re-engage → verify → escalate) is identical across classes — only the
+ * backoff SCHEDULE and the user-facing wording differ:
+ *  - 'throttle'      — Anthropic capacity throttle / 529 Overloaded / rate limit.
+ *                      Re-hitting it immediately burns quota, so the backoff is LONG.
+ *  - 'transient-api' — a generic transient API error (500/502/503, timeout, connection
+ *                      drop). These usually clear in seconds, so the first retry is
+ *                      FAST and the schedule escalates more gently. Generalizing the
+ *                      proven throttle-recovery lifecycle to this whole class is the
+ *                      2026-05-29 future-proofing ask (topic 13481).
+ */
+export type ApiErrorClass = 'throttle' | 'transient-api';
+
 export type RateLimitStatus =
   | 'detected'      // reported; first user notice sent; first backoff scheduled
   | 'backing-off'   // waiting out the current backoff interval
@@ -52,6 +66,8 @@ export type RateLimitStatus =
 export interface RateLimitRecoveryState {
   sessionName: string;
   trigger: RateLimitTrigger;
+  /** Which transient-error class this recovery rides out (picks backoff + wording). */
+  errorClass: ApiErrorClass;
   detectedAt: number;
   attempts: number;
   lastInjectAt: number;
@@ -96,8 +112,13 @@ export interface RateLimitSentinelDeps {
 export interface RateLimitSentinelConfig {
   /** Master kill switch. When false, report() is a no-op. */
   enabled?: boolean;
-  /** Escalating wait (ms) before each re-engagement attempt. Last value repeats. */
+  /** Escalating wait (ms) before each re-engagement attempt for a THROTTLE/rate-limit
+   *  recovery. Last value repeats. */
   backoffScheduleMs?: number[];
+  /** Escalating wait (ms) for a generic 'transient-api' recovery (500/502/503/timeout/
+   *  connection). Shorter than the throttle schedule — these usually clear in seconds,
+   *  so the first retry is fast. Last value repeats. */
+  transientApiBackoffScheduleMs?: number[];
   /** Max re-engagement attempts before escalating. */
   maxAttempts?: number;
   /** Max wall-clock window (ms) a recovery may run before escalating. */
@@ -113,6 +134,7 @@ export interface RateLimitSentinelConfig {
 const DEFAULTS: Required<RateLimitSentinelConfig> = {
   enabled: true,
   backoffScheduleMs: [30_000, 60_000, 120_000, 300_000, 300_000, 300_000],
+  transientApiBackoffScheduleMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000],
   maxAttempts: 6,
   maxWindowMs: 30 * 60_000,
   verifyWindowMs: 25_000,
@@ -148,6 +170,7 @@ export class RateLimitSentinel extends EventEmitter {
     this.cfg = {
       enabled: config.enabled ?? DEFAULTS.enabled,
       backoffScheduleMs: config.backoffScheduleMs ?? DEFAULTS.backoffScheduleMs,
+      transientApiBackoffScheduleMs: config.transientApiBackoffScheduleMs ?? DEFAULTS.transientApiBackoffScheduleMs,
       maxAttempts: config.maxAttempts ?? DEFAULTS.maxAttempts,
       maxWindowMs: config.maxWindowMs ?? DEFAULTS.maxWindowMs,
       verifyWindowMs: config.verifyWindowMs ?? DEFAULTS.verifyWindowMs,
@@ -179,9 +202,10 @@ export class RateLimitSentinel extends EventEmitter {
    * recovery is already active, or one was reported within the dedupe window,
    * or deferIf says another recovery owns this session, this is a no-op.
    */
-  report(sessionName: string, trigger: RateLimitTrigger): void {
+  report(sessionName: string, trigger: RateLimitTrigger, opts?: { errorClass?: ApiErrorClass }): void {
     if (!this.cfg.enabled) return;
     const now = this.now();
+    const errorClass: ApiErrorClass = opts?.errorClass ?? 'throttle';
 
     if (this.active.has(sessionName)) return;            // recovery in flight
     if (this.deferIf?.(sessionName)) return;             // another recovery owns it (S6)
@@ -193,6 +217,7 @@ export class RateLimitSentinel extends EventEmitter {
     const state: RateLimitRecoveryState = {
       sessionName,
       trigger,
+      errorClass,
       detectedAt: now,
       attempts: 0,
       lastInjectAt: 0,
@@ -205,18 +230,21 @@ export class RateLimitSentinel extends EventEmitter {
     this.active.set(sessionName, state);
 
     console.log(
-      `[RateLimitSentinel] detected throttle on "${sessionName}" via ${trigger}; ` +
+      `[RateLimitSentinel] detected ${errorClass} error on "${sessionName}" via ${trigger}; ` +
       `baseline jsonl=${state.baselineJsonlPath ? path.basename(state.baselineJsonlPath) : 'none'} ` +
       `size=${state.baselineJsonlSize ?? 'n/a'}`,
     );
     this.emit('rate-limit:detected', state);
 
-    // Immediate user notice (fixed template, no LLM).
+    // Immediate user notice (fixed template, no LLM), worded per error class.
     void this.notify(
       sessionName,
-      "Heads up — Claude hit a temporary server-side throttle on Anthropic's side " +
-      '(not your usage limit). I\'m backing off and will keep retrying. ' +
-      "You haven't been dropped — I'll check back in.",
+      errorClass === 'transient-api'
+        ? "Heads up — Claude hit a transient API error (likely a brief server-side blip). " +
+          "I'm waiting a moment and will retry. You haven't been dropped — I'll pick up where I left off."
+        : "Heads up — Claude hit a temporary server-side throttle on Anthropic's side " +
+          '(not your usage limit). I\'m backing off and will keep retrying. ' +
+          "You haven't been dropped — I'll check back in.",
     );
     state.lastCheckInAt = now;
 
@@ -254,18 +282,18 @@ export class RateLimitSentinel extends EventEmitter {
   listActive(): Array<RateLimitRecoveryState & { nextBackoffMs: number }> {
     return [...this.active.values()].map(s => ({
       ...s,
-      nextBackoffMs: this.backoffFor(s.attempts),
+      nextBackoffMs: this.backoffFor(s.attempts, s.errorClass),
     }));
   }
 
-  private backoffFor(attempts: number): number {
-    const sched = this.cfg.backoffScheduleMs;
+  private backoffFor(attempts: number, errorClass: ApiErrorClass = 'throttle'): number {
+    const sched = errorClass === 'transient-api' ? this.cfg.transientApiBackoffScheduleMs : this.cfg.backoffScheduleMs;
     if (sched.length === 0) return 0;
     return sched[Math.min(attempts, sched.length - 1)];
   }
 
   private scheduleBackoff(state: RateLimitRecoveryState): void {
-    const backoffMs = this.backoffFor(state.attempts);
+    const backoffMs = this.backoffFor(state.attempts, state.errorClass);
     state.status = 'backing-off';
     const handle = this.setTimer(() => {
       this.attemptResume(state).catch(err => {
@@ -293,7 +321,7 @@ export class RateLimitSentinel extends EventEmitter {
       `[RateLimitSentinel] resume-attempted on "${state.sessionName}" ` +
       `(attempt ${state.attempts}/${this.cfg.maxAttempts}, accepted=${accepted})`,
     );
-    this.emit('rate-limit:resuming', { ...state, backoffMs: this.backoffFor(state.attempts - 1) });
+    this.emit('rate-limit:resuming', { ...state, backoffMs: this.backoffFor(state.attempts - 1, state.errorClass) });
 
     if (!accepted) {
       // No pending work / session gone / injection blocked — nothing to recover.
@@ -328,7 +356,9 @@ export class RateLimitSentinel extends EventEmitter {
       this.emit('rate-limit:recovered', { ...state, jsonlDelta: delta });
       void this.notify(
         state.sessionName,
-        "Back online — Anthropic's throttle cleared. Continuing where I left off.",
+        state.errorClass === 'transient-api'
+          ? 'Back online — the API error cleared. Continuing where I left off.'
+          : "Back online — Anthropic's throttle cleared. Continuing where I left off.",
       );
       this.finalize(state, 'recovered');
       return;
@@ -363,8 +393,10 @@ export class RateLimitSentinel extends EventEmitter {
       state.lastCheckInAt = now;
       void this.notify(
         state.sessionName,
-        `Still throttled on Anthropic's side — next retry in ${humanizeMs(this.backoffFor(state.attempts))}. ` +
-        "Still here, haven't dropped you.",
+        state.errorClass === 'transient-api'
+          ? `Still hitting an API error — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. Still here, haven't dropped you.`
+          : `Still throttled on Anthropic's side — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. ` +
+            "Still here, haven't dropped you.",
       );
     }
 

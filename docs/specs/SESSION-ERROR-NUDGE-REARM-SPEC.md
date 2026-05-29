@@ -1,13 +1,13 @@
 ---
-title: "Session Error-Nudge Re-Arm — survive repeated transient API errors in a long-running session"
+title: "Transient-API-Error Recovery — re-arm the nudge + generalize backoff recovery to the whole 5xx/timeout class"
 status: approved
 approved: true
 approved-by: Justin
-approved-via: Telegram topic 13481 (2026-05-29 — "Looks like you got stopped again please fix this as well and deploy the fix for all agents", in direct response to the screenshot showing an autonomous session stranded idle after an 'API Error: 500'. Explicit go to fix + deploy fleet-wide.)
-review-convergence: "tactical-hotfix-2026-05-29 (single-author, code-grounded — root-cause traced in SessionManager.ts; same urgency class as the silently-stopped-trio tactical hotfix)"
+approved-via: Telegram topic 13481 (2026-05-29 — two messages: (1) "Looks like you got stopped again please fix this as well and deploy the fix for all agents" re: the screenshot of an autonomous session stranded after an 'API Error: 500'; (2) "I thought we already had a sentinel… for the rate limit error, it attempted exponential back off… Does that sentinel not exist? we need something… intelligent enough and general enough that it's future-proof for at least API errors of this type." Explicit go to fix + generalize + deploy fleet-wide.)
+review-convergence: "tactical-hotfix-2026-05-29 (single-author, code-grounded — root-cause traced in SessionManager.ts + RateLimitSentinel.ts; same urgency class as the silently-stopped-trio tactical hotfix)"
 ---
 
-# Session Error-Nudge Re-Arm
+# Transient-API-Error Recovery (Error-Nudge Re-Arm + Backoff Generalization)
 
 ## Problem (observed, 2026-05-29, topic 13481)
 
@@ -70,8 +70,52 @@ config change, hence no PostUpdateMigrator entry needed.
   (terminate, zombie-kill, reap-detect, injection, multishot-recovery) remain green — no
   regression to the idle/kill path.
 
+## Part 2 — Generalize the intelligent backoff recovery to the whole transient-API class
+
+The re-arm above fixes the *immediate* nudge, but the immediate nudge is the "dumb"
+path: it retries instantly, with no backoff, verify, or escalation. instar already has
+the *intelligent* recovery lifecycle — `RateLimitSentinel` — which on a detected error
+sends a "backing off, you're not dropped" notice, waits an **exponential backoff**
+before re-engaging (so it doesn't re-hit a still-down API or burn quota), **verifies**
+the nudge took (JSONL growth), **escalates** after a bounded attempts/window envelope,
+and vetoes the zombie-killer while recovery is in flight. But it was scoped ONLY to
+**throttle / rate-limit / 529-Overloaded** errors. A generic `API Error: 500` never
+reached it.
+
+**Fix:** generalize that lifecycle to the whole transient-API-error class.
+
+- **`RateLimitSentinel` gains an `ApiErrorClass`** (`'throttle' | 'transient-api'`) on
+  `report(sessionName, trigger, { errorClass })` (default `'throttle'` — fully
+  back-compatible). The lifecycle is identical across classes; only two things differ:
+  - **Backoff schedule.** Throttle keeps the long schedule (`[30s,60s,2m,5m,…]` — re-hitting
+    a throttle burns quota). `'transient-api'` uses a **fast** schedule
+    (`transientApiBackoffScheduleMs` = `[5s,15s,30s,60s,2m,5m]`) because a 500/timeout
+    usually clears in seconds — first retry is quick, then escalates gently.
+  - **User wording.** "transient API error … retrying" vs "server-side throttle … backing off".
+- **`SessionManager`** routes the generic `TERMINAL_ERROR_PATTERNS` idle case to the
+  sentinel: when an `apiErrorAtIdle` listener is wired (production), it emits that signal
+  and hands off (no immediate retry that could re-hit a down API), exactly mirroring the
+  existing `rateLimitedAtIdle` handoff. The re-armable immediate nudge (Part 1) remains
+  the **fallback** when no sentinel is wired (bare/test).
+- **`server.ts`** wires `sessionManager.on('apiErrorAtIdle', name => rateLimitSentinel.report(name, 'idle-error', { errorClass: 'transient-api' }))`.
+
+**Future-proof:** the error class is driven by the existing `TERMINAL_ERROR_PATTERNS`
+list (`API Error:`, `Internal server error`, `502`/`503`/`ServiceUnavailable`,
+`ETIMEDOUT`, `ECONNREFUSED`, `fetch failed`, …). Adding a new transient pattern there
+automatically routes it through the intelligent backoff recovery — no new wiring.
+
+### Part 2 tests
+- `tests/unit/RateLimitSentinel.test.ts` — the throttle suite is unchanged (back-compat),
+  plus a `errorClass: 'transient-api'` block: fast first backoff (5s, not 30s),
+  transient-API-worded notice, full backoff→resume→verify→recovered lifecycle, and the
+  recovery state/`listActive` reflecting the class + short schedule.
+- `tests/unit/session-error-nudge.test.ts` — the generic-error idle path defers to the
+  sentinel via `apiErrorAtIdle` when wired, with the re-armable nudge as the fallback.
+
 ## Non-goals
 
-- No new sentinel/watchdog. A parallel autonomous-resumption watchdog was considered and
-  rejected: it would double-nudge the same idle pane against this existing mechanism.
-  The single source of truth is `SessionManager`'s error-nudge; it just needed re-arming.
+- No new parallel sentinel/watchdog. A standalone autonomous-resumption watchdog was
+  considered and rejected: it would double-nudge the same idle pane against the existing
+  mechanisms. The single source of truth is `SessionManager`'s idle path → (re-armable
+  immediate nudge as fallback) / (the generalized `RateLimitSentinel` lifecycle in
+  production). One owner per session, never two.

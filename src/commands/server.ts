@@ -5705,6 +5705,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('rateLimitedAtIdle', (sessionName: string) => {
       rateLimitSentinel.report(sessionName, 'idle-error');
     });
+    // Generic transient API errors (500/502/503, timeout, connection drop) ride the
+    // SAME backoff→verify→escalate lifecycle as throttles, with a faster backoff
+    // schedule (they usually clear in seconds). Generalizing the proven recovery to
+    // the whole transient-API class is the 2026-05-29 future-proofing ask (topic 13481).
+    sessionManager.on('apiErrorAtIdle', (sessionName: string) => {
+      rateLimitSentinel.report(sessionName, 'idle-error', { errorClass: 'transient-api' });
+    });
     if (rlsCfg.enabled !== false) {
       console.log(pc.green('  RateLimitSentinel enabled (server-throttle backoff + check-ins)'));
     }

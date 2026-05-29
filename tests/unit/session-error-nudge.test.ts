@@ -105,6 +105,24 @@ describe('Session error nudge', () => {
       expect(shouldErrorNudge(true, 1)).toBe(false);
       expect(shouldErrorNudge(false, 1)).toBe(true);
     });
+  });
+
+  describe('transient-API-error handoff to the recovery sentinel', () => {
+    const SM_PATH = path.join(process.cwd(), 'src/core/SessionManager.ts');
+    it('defers to the recovery sentinel (apiErrorAtIdle) when one is wired, instead of an immediate retry', () => {
+      const source = fs.readFileSync(SM_PATH, 'utf-8');
+      // When a listener owns recovery, hand off (backoff→verify→escalate) rather than nudge.
+      expect(source).toContain("this.listenerCount('apiErrorAtIdle') > 0");
+      expect(source).toContain("this.emit('apiErrorAtIdle', session.tmuxSession)");
+    });
+    it('keeps the re-armable immediate nudge as the fallback when no sentinel is wired', () => {
+      const source = fs.readFileSync(SM_PATH, 'utf-8');
+      // The fallback path still nudges + counts against the lifetime cap.
+      const handoff = source.indexOf("this.emit('apiErrorAtIdle'");
+      const fallbackNudge = source.indexOf('You hit an API error. Please continue your work');
+      expect(handoff).toBeGreaterThan(0);
+      expect(fallbackNudge).toBeGreaterThan(handoff); // fallback nudge follows the handoff guard
+    });
 
     it('nudges on first idle detection when error is present', () => {
       source = fs.readFileSync(SM_PATH, 'utf-8');

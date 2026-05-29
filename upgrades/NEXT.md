@@ -21,6 +21,15 @@ This closes a gap the in-session autonomous Stop hook structurally cannot cover 
 Stop hook only fires on a clean turn end, never on an errored turn, so the recovery
 has to come from the out-of-process session monitor where this nudge already lived.
 
+Beyond the re-arm, the **intelligent backoff recovery** that already existed for
+rate-limit/throttle errors (RateLimitSentinel: back off before retrying, tell you
+you're not dropped, verify the retry took, escalate if it never does) now covers the
+**whole class of transient API errors** — 500/502/503, overloaded, timeouts, connection
+drops — not just rate limits. A generic API error gets the same intelligent treatment,
+with a fast first retry (≈5s, since these usually clear quickly) escalating gently if it
+persists. Future-proof: the error set is driven by one pattern list, so adding a new
+transient pattern automatically routes it through the backoff recovery.
+
 ## What to Tell Your User
 
 - **Long autonomous runs now survive repeated transient API hiccups on their own**:

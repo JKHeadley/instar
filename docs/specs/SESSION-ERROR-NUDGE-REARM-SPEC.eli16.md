@@ -37,8 +37,28 @@ Long autonomous runs survive transient service hiccups on their own — the agen
 itself back to work each time, instead of silently freezing after the first one. No
 config to set; it ships to every agent with the next update.
 
+## The bigger half: make the smart recovery cover ALL these errors
+
+We already had a *smart* recovery helper for one specific case — when the AI service says
+"slow down, you're sending too much" (a rate limit). For that, it doesn't just retry
+instantly; it waits a bit, then a bit longer, then longer (so it doesn't make things
+worse), tells you "I'm backing off, you're not dropped," checks whether the retry worked,
+and gives up gracefully if it never does. That's exactly the behavior we want.
+
+The problem: that smart helper ONLY knew about the "slow down" error. A regular hiccup
+like "Error 500" didn't get the smart treatment — just the dumb instant tap.
+
+The fix: teach the smart helper about the **whole family** of temporary hiccups (500,
+502, 503, timeouts, dropped connections), not just rate limits. A 500 now gets the same
+"wait, retry, check, escalate if needed" treatment — except the waits start short (5
+seconds), because a 500 usually clears in seconds, whereas a rate limit needs minutes.
+
+**Future-proof:** there's one list of "what counts as a temporary hiccup." Add a new kind
+of hiccup to that list and it automatically gets the smart recovery — no extra wiring.
+
 ## What it does NOT do
 
-It does not handle a genuinely-broken agent forever (that's the limit), and it does not
-add a second separate watchdog (that would double-tap and fight itself). It's one small
-fix to the helper that already existed.
+It does not handle a genuinely-broken agent forever (there's a limit), and it does not add
+a second separate watchdog (that would double-tap and fight itself). It reuses the smart
+helper we already had and the simple tap we already had — just makes them cover the whole
+family of temporary API errors instead of one case each.

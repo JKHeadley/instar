@@ -211,4 +211,46 @@ describe('RateLimitSentinel', () => {
     expect(sentinel.isRecoveryActive('b')).toBe(true);
     expect(events.filter(e => e.type === 'rate-limit:detected')).toHaveLength(2);
   });
+
+  // ─── Generic transient-API-error class (the 2026-05-29 generalization) ───
+  describe("errorClass: 'transient-api'", () => {
+    const TRANSIENT_FIRST_BACKOFF = 5_000;
+
+    it('uses the FAST first backoff (5s, not the 30s throttle schedule)', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(TRANSIENT_FIRST_BACKOFF - 500);
+      expect(resumeFn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000); // crosses 5s → re-engages (throttle would wait 30s)
+      expect(resumeFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a transient-API-worded notice (not the throttle wording)', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(notifyFn.mock.calls[0][1]).toMatch(/transient API error/i);
+      expect(notifyFn.mock.calls[0][1]).not.toMatch(/throttle/i);
+    });
+
+    it('rides the full lifecycle: backoff → resume → verify(jsonl growth) → recovered', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(TRANSIENT_FIRST_BACKOFF + 100); // resume fires
+      jsonl.write('foo.jsonl', 5000);                                  // session produced output
+      await vi.advanceTimersByTimeAsync(VERIFY + 100);                 // verify window
+      expect(events.some(e => e.type === 'rate-limit:recovered')).toBe(true);
+      const recoveredNotice = notifyFn.mock.calls.map(c => c[1]).find((t: string) => /back online/i.test(t));
+      expect(recoveredNotice).toMatch(/API error cleared/i);
+    });
+
+    it('records its errorClass + listActive reflects the short schedule', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(0);
+      const active = sentinel.listActive();
+      expect(active[0].errorClass).toBe('transient-api');
+      expect(active[0].nextBackoffMs).toBe(TRANSIENT_FIRST_BACKOFF);
+    });
+  });
 });

@@ -919,7 +919,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   }
                   const hasError = TERMINAL_ERROR_PATTERNS.some(p => recentOutput.includes(p));
                   if (hasError) {
+                    // Arm the per-episode guard (re-armed on recovery — see the
+                    // "Session is active" branch). Prevents per-tick re-emit/re-nudge.
                     this.errorNudgedSessions.add(session.id);
+                    // If a recovery sentinel owns the generic transient-API-error class
+                    // (production wiring), hand off to its backoff→verify→escalate
+                    // lifecycle rather than an immediate retry that could re-hit a
+                    // still-down API. The sentinel owns the retry budget + is re-armable
+                    // across episodes by design. (Mirrors the rate-limit handoff above;
+                    // generalizes that proven recovery to the whole transient-API class.)
+                    if (this.listenerCount('apiErrorAtIdle') > 0) {
+                      this.emit('apiErrorAtIdle', session.tmuxSession);
+                      this.idlePromptSince.delete(session.id);
+                      continue; // Skip to next session — sentinel owns recovery.
+                    }
+                    // Fallback (no sentinel wired, e.g. bare/test): the re-armable
+                    // immediate nudge, bounded by the lifetime cap.
                     this.errorNudgeTotal.set(session.id, nudgeTotal + 1);
                     console.log(`[SessionManager] Session "${session.name}" idle after API error — nudging to continue (nudge #${nudgeTotal + 1} this session).`);
                     this.sendInput(session.tmuxSession, 'You hit an API error. Please continue your work — skip or work around the action that failed.');
