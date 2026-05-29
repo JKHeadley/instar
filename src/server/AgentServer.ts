@@ -92,6 +92,32 @@ import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubs
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
 
+export function readMentorConfigFromDisk(
+  stateDir: string | undefined,
+  fallback: MentorConfig,
+): MentorConfig {
+  if (!stateDir) return fallback;
+  try {
+    const raw = fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8');
+    const parsed = JSON.parse(raw) as { mentor?: unknown };
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return fallback;
+    }
+    if (parsed.mentor === undefined) {
+      return { ...DEFAULT_MENTOR_CONFIG };
+    }
+    if (!parsed.mentor || typeof parsed.mentor !== 'object' || Array.isArray(parsed.mentor)) {
+      return fallback;
+    }
+    return {
+      ...DEFAULT_MENTOR_CONFIG,
+      ...(parsed.mentor as Partial<MentorConfig>),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export class AgentServer {
   private app: Express;
   private server: Server | null = null;
@@ -1522,10 +1548,11 @@ export class AgentServer {
     options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
     serverDataDir: string,
   ): MentorOnboardingRunner {
-    const getConfig = (): MentorConfig => ({
+    const startupMentorConfig: MentorConfig = {
       ...DEFAULT_MENTOR_CONFIG,
       ...((options.config as unknown as { mentor?: Partial<MentorConfig> }).mentor ?? {}),
-    });
+    };
+    const getConfig = (): MentorConfig => readMentorConfigFromDisk(options.config.stateDir, startupMentorConfig);
     const intelligence = options.intelligence ?? null;
     const self = this;
     return new MentorOnboardingRunner(

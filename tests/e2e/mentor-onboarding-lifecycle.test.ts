@@ -76,6 +76,27 @@ describe('Mentor-onboarding E2E lifecycle (alive + dormant)', () => {
     expect(JSON.stringify(res.body)).toMatch(/\/mentor/);
   });
 
+  it('hot-reads mentor config changes from config.json without a restart', async () => {
+    const configPath = path.join(stateDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      port: 0,
+      projectName: 'e2e',
+      agentName: 'E2E',
+      mentor: { enabled: true, mode: 'dry-run', menteeFramework: 'cursor' },
+    }));
+
+    const updated = await request(app).get('/mentor/status').set(auth());
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({ enabled: true, mode: 'dry-run', menteeFramework: 'cursor' });
+
+    fs.writeFileSync(configPath, '{not valid json');
+    const fallback = await request(app).get('/mentor/status').set(auth());
+    expect(fallback.status).toBe(200);
+    expect(fallback.body).toMatchObject({ enabled: false, mode: 'off', menteeFramework: 'codex-cli' });
+
+    fs.writeFileSync(configPath, JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+  });
+
   it('mentor routes require auth like every non-/health route', async () => {
     expect((await request(app).get('/mentor/status')).status).toBe(401);
   });
