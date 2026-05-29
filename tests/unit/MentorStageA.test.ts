@@ -12,6 +12,7 @@ import {
   buildStageAContext,
   buildConversationSurface,
   parseMenteeReplies,
+  parseMentorSent,
   detectStageALeak,
   runLeakCanary,
   leakToFinding,
@@ -169,6 +170,29 @@ describe('buildConversationSurface — real surface from agenda + mentee replies
     expect(s.onboardingAgenda).toBeUndefined();
   });
 
+  it('interleaves mentor prompts and mentee replies by timestamp into full threadline history', () => {
+    const s = buildConversationSurface({
+      framework: 'codex-cli',
+      mentorSent: [
+        { ts: NOW - 500_000, message: 'Please verify your local update status.' },
+        { ts: NOW - 100_000, message: 'Next, make a tiny source PR.' },
+      ],
+      menteeReplies: [
+        { ts: NOW - 300_000, message: 'Update status verified.' },
+        { ts: NOW - 50_000, message: 'PR is open.' },
+      ],
+      nowMs: NOW,
+    });
+
+    expect(s.threadlineHistory).toBe([
+      'Mentor: Please verify your local update status.',
+      'Mentee: Update status verified.',
+      'Mentor: Next, make a tiny source PR.',
+      'Mentee: PR is open.',
+    ].join('\n'));
+    expect(s.timeSinceLastContactMs).toBe(50_000);
+  });
+
   it('sets onboardingAgenda when provided and caps history to maxReplies (most recent)', () => {
     const replies = Array.from({ length: 12 }, (_, i) => ({ ts: NOW - (12 - i) * 1000, message: `r${i}` }));
     const s = buildConversationSurface({
@@ -188,6 +212,37 @@ describe('buildConversationSurface — real surface from agenda + mentee replies
     expect(s.timeSinceLastContactMs).toBeUndefined();
     // buildStageAContext renders the empty history as the no-conversation sentinel.
     expect(buildStageAContext(s)).toContain('(no prior conversation)');
+  });
+});
+
+describe('parseMentorSent — defensive JSONL parsing for the surface', () => {
+  it('parses well-formed lines, coerces string ts, and drops blanks/garbage/empty-message', () => {
+    const raw = [
+      JSON.stringify({ ts: '1780000000000', toAgent: 'instar-codey', corr: 'c1', message: 'first prompt' }),
+      '',
+      '{',
+      JSON.stringify({ ts: 1780000005000, toAgent: 'instar-codey', message: '   ' }),
+      JSON.stringify({ toAgent: 'instar-codey', message: 'no ts' }),
+      JSON.stringify({ ts: 1780000010000, toAgent: 'instar-codey', corr: 'c2', message: 'second prompt' }),
+    ].join('\n');
+
+    expect(parseMentorSent(raw, 'instar-codey')).toEqual([
+      { ts: 1780000000000, message: 'first prompt' },
+      { ts: 1780000010000, message: 'second prompt' },
+    ]);
+  });
+
+  it('filters to the named mentee when toAgent is present', () => {
+    const raw = [
+      JSON.stringify({ ts: 1, toAgent: 'instar-codey', message: 'mine' }),
+      JSON.stringify({ ts: 2, toAgent: 'instar-other', message: 'theirs' }),
+    ].join('\n');
+
+    expect(parseMentorSent(raw, 'instar-codey')).toEqual([{ ts: 1, message: 'mine' }]);
+  });
+
+  it('never throws on empty input', () => {
+    expect(parseMentorSent('')).toEqual([]);
   });
 });
 

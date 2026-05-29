@@ -64,7 +64,14 @@ import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
-import { STAGE_A_ALLOWED_TOOLS, buildConversationSurface, parseMenteeReplies, type MenteeReplyLine } from '../monitoring/MentorStageA.js';
+import {
+  STAGE_A_ALLOWED_TOOLS,
+  buildConversationSurface,
+  parseMenteeReplies,
+  parseMentorSent,
+  type MenteeReplyLine,
+  type MentorSentLine,
+} from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
 import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { sendAgentMessage, A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
@@ -120,6 +127,8 @@ export class AgentServer {
   private mentorOutstanding: OutstandingPromptTracker | null = null;
   /** Reply-jsonl path (Codey's reply persisted here for Stage-B forensics). */
   private mentorReplyJsonlPath: string | null = null;
+  /** Sent-jsonl path (mentor prompts persisted here for Stage-A surface). */
+  private mentorSentJsonlPath: string | null = null;
   private failureLedger: FailureLedger | null = null;
   private failureAttributionEngine: FailureAttributionEngine | null = null;
   private ciFailurePoller: CiFailurePoller | null = null;
@@ -1474,6 +1483,40 @@ export class AgentServer {
     }
   }
 
+  /**
+   * Read the mentor's own sent prompts from `<stateDir>/mentor-sent.jsonl` for
+   * the Stage-A conversation surface. Best-effort like replies: missing or
+   * garbled logs degrade to no mentor-side history rather than breaking ticks.
+   */
+  private readRecentMentorSent(stateDir: string | undefined, menteeAgent: string): MentorSentLine[] {
+    if (!stateDir) return [];
+    try {
+      const raw = fs.readFileSync(path.join(stateDir, 'mentor-sent.jsonl'), 'utf-8');
+      return parseMentorSent(raw, menteeAgent);
+    } catch {
+      return [];
+    }
+  }
+
+  private appendMentorSent(stateDir: string | undefined, row: {
+    ts: number;
+    fromAgent: string;
+    toAgent: string;
+    corr: string;
+    topicId?: number;
+    message: string;
+  }): void {
+    if (!stateDir) return;
+    const sentJsonl = path.join(stateDir, 'mentor-sent.jsonl');
+    this.mentorSentJsonlPath = sentJsonl;
+    try {
+      fs.mkdirSync(path.dirname(sentJsonl), { recursive: true });
+      fs.appendFileSync(sentJsonl, JSON.stringify(row) + '\n', 'utf-8');
+    } catch (err) {
+      console.warn('[mentor] mentor-sent persist failed (non-fatal):', err instanceof Error ? err.message : String(err));
+    }
+  }
+
   private buildMentorRunner(
     ledger: FrameworkIssueLedger,
     options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
@@ -1612,6 +1655,7 @@ export class AgentServer {
           return buildConversationSurface({
             framework,
             onboardingAgenda: cfg.onboardingAgenda,
+            mentorSent: self.readRecentMentorSent(options.config.stateDir, menteeAgent),
             menteeReplies: self.readRecentMenteeReplies(options.config.stateDir, menteeAgent),
             nowMs: Date.now(),
           });
@@ -1688,6 +1732,14 @@ export class AgentServer {
             botToken: cfg.botToken,
           });
           if (delivered) {
+            self.appendMentorSent(options.config.stateDir, {
+              ts: Date.now(),
+              fromAgent: self.config.projectName,
+              toAgent: menteeAgent,
+              corr,
+              topicId: resolveMentorDeliveryTopic(cfg),
+              message,
+            });
             outstanding.markSent(corr, menteeAgent);
           } else {
             console.warn(`[mentor] deliverToMentee did not deliver (corr=${corr}, mentee=${menteeAgent}) — no local peer + telegram fallback unavailable/blocked`);

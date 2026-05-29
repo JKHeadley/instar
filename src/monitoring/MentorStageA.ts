@@ -209,33 +209,51 @@ export interface MenteeReplyLine {
   message: string;
 }
 
+/** A mentor prompt as recorded in `mentor-sent.jsonl` (content + timestamp). */
+export interface MentorSentLine {
+  /** Epoch ms of the prompt. */
+  ts: number;
+  /** The prompt text (what the mentor sent to the mentee). */
+  message: string;
+}
+
+type ConversationTurn = { ts: number; speaker: 'Mentor' | 'Mentee'; message: string };
+
 /**
  * Build the conversation surface from the mentor's own plan (agenda) + the
- * user-visible conversation (the mentee's recent replies). This is the
+ * user-visible conversation (the mentor's prompts + mentee's recent replies). This is the
  * replacement for the old empty-surface stub: a blind mentor (empty surface)
  * could only ever observe-only or produce a generic check-in. Two-hats is
- * preserved — every field here is user-visible (the mentee's own replies and
- * the mentor's own agenda), never a mentee internal; surfaceText covers them so
- * the leak detector treats agenda-derived tasks as legitimate.
+ * preserved — every field here is user-visible (the mentor's own prompts, the
+ * mentee's own replies, and the mentor's own agenda), never a mentee internal;
+ * surfaceText covers them so the leak detector treats agenda-derived tasks as legitimate.
  *
  * Pure + deterministic (caller injects `nowMs`) so it is unit-testable without
- * file IO; the server reads `mentor-replies.jsonl` and passes the parsed lines.
+ * file IO; the server reads `mentor-sent.jsonl` / `mentor-replies.jsonl` and
+ * passes the parsed lines.
  */
 export function buildConversationSurface(input: {
   framework: string;
   onboardingAgenda?: string[];
+  mentorSent?: MentorSentLine[];
   menteeReplies?: MenteeReplyLine[];
   nowMs: number;
   /** Cap the history fed to Stage A (most-recent wins). Default 8. */
+  maxTurns?: number;
+  /** Back-compat alias for maxTurns. */
   maxReplies?: number;
 }): ConversationSurface {
   const replies = (input.menteeReplies ?? [])
     .filter((r) => r && typeof r.ts === 'number' && Number.isFinite(r.ts) && typeof r.message === 'string' && r.message.trim())
-    .sort((a, b) => a.ts - b.ts);
-  const recent = replies.slice(-(input.maxReplies ?? 8));
+    .map((r): ConversationTurn => ({ ts: r.ts, speaker: 'Mentee', message: r.message.trim() }));
+  const sent = (input.mentorSent ?? [])
+    .filter((r) => r && typeof r.ts === 'number' && Number.isFinite(r.ts) && typeof r.message === 'string' && r.message.trim())
+    .map((r): ConversationTurn => ({ ts: r.ts, speaker: 'Mentor', message: r.message.trim() }));
+  const turns = [...sent, ...replies].sort((a, b) => a.ts - b.ts);
+  const recent = turns.slice(-(input.maxTurns ?? input.maxReplies ?? 8));
   const surface: ConversationSurface = {
     framework: input.framework,
-    threadlineHistory: recent.map((r) => `Mentee: ${r.message.trim()}`).join('\n'),
+    threadlineHistory: recent.map((r) => `${r.speaker}: ${r.message}`).join('\n'),
   };
   if (input.onboardingAgenda && input.onboardingAgenda.length) {
     surface.onboardingAgenda = input.onboardingAgenda;
@@ -245,6 +263,32 @@ export function buildConversationSurface(input: {
     surface.timeSinceLastContactMs = Math.max(0, input.nowMs - lastTs);
   }
   return surface;
+}
+
+/**
+ * Parse `mentor-sent.jsonl` content into MentorSentLines for the surface.
+ * Pure + defensive: skips blank/malformed lines, coerces `ts` (string|number),
+ * drops entries without text, and — when `menteeAgent` is given — keeps only
+ * prompts addressed to that mentee when `toAgent` is present. Never throws.
+ */
+export function parseMentorSent(raw: string, menteeAgent?: string): MentorSentLine[] {
+  const out: MentorSentLine[] = [];
+  for (const line of String(raw).split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    let obj: { ts?: unknown; toAgent?: unknown; message?: unknown };
+    try {
+      obj = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (menteeAgent && typeof obj.toAgent === 'string' && obj.toAgent !== menteeAgent) continue;
+    const ts = typeof obj.ts === 'number' ? obj.ts : Number(obj.ts);
+    if (!Number.isFinite(ts)) continue;
+    if (typeof obj.message !== 'string' || !obj.message.trim()) continue;
+    out.push({ ts, message: obj.message });
+  }
+  return out;
 }
 
 /**
