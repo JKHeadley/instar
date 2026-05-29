@@ -30,6 +30,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertStageWriteAuthorized } from './stageWriteGuard.js';
 
 export interface ConfigChange {
   /** Dot-separated path to the changed value (e.g., 'updates.autoApply') */
@@ -133,7 +134,10 @@ export class LiveConfig extends EventEmitter {
    * Write a value back to the config file.
    * Handles atomic write and immediately refreshes the cache.
    */
-  set(dotPath: string, value: unknown): void {
+  set(dotPath: string, value: unknown, opts?: { stageWriteToken?: symbol }): void {
+    // Structural gate: the rollout stage is StageAdvancer-write-only (§Rollout).
+    assertStageWriteAuthorized(dotPath, opts?.stageWriteToken);
+
     this.refreshIfStale(); // Get latest before modifying
 
     this.setNestedValue(this.cache, dotPath, value);
