@@ -250,7 +250,11 @@ describe('Package completeness', () => {
       expect.fail('upgrades/ directory does not exist');
     }
 
-    const guides = fs.readdirSync(upgradesDir).filter(f => f.endsWith('.md') && f !== 'NEXT.md');
+    // Exclude NEXT.md (validated separately) and *.eli16.md companion files
+    // (plain-English overviews shipped alongside the technical guide; they
+    // have their own shape and are checked by the instar-dev pre-commit gate).
+    const guides = fs.readdirSync(upgradesDir).filter(f =>
+      f.endsWith('.md') && f !== 'NEXT.md' && !f.endsWith('.eli16.md'));
     expect(guides.length).toBeGreaterThan(0);
 
     const requiredSections = [
