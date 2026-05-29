@@ -20,6 +20,25 @@
 import { buildAttributionKey } from './attributionKey.js';
 import { ATTRIBUTION_MANIFEST, type AttributionPattern } from './attribution-manifest.js';
 
+/**
+ * Sentinel attribution key meaning "the resolver has NEVER run on this event."
+ *
+ * This is the column DEFAULT and the historical hardcoded value the ingest
+ * path wrote before Phase 2 was wired. It is NOT a resolution outcome —
+ * `resolveAttribution()` never returns it (it always resolves to a manifest,
+ * job, hook, sessionId-prefix, or `unknown::no-session` key).
+ *
+ * The distinction matters for burn detection: a bucket sitting at 100% of
+ * spend under THIS key means "we don't attribute anything yet" (a coverage
+ * gap), not "one component is burning." Per the umbrella spec
+ * (docs/specs/token-burn-detection-and-self-heal.md §"Threshold logic"), the
+ * BurnDetector must treat this sentinel as a coverage signal and never let it
+ * trip the absolute-share trigger. The genuinely-residual `unknown::<sid>`
+ * key (resolver ran, found no match) is a real signal and still triggers
+ * normally.
+ */
+export const PRE_ATTRIBUTION_KEY = 'unknown::pre-attribution';
+
 export interface AttributionEvent {
   sessionId: string;
   /** cwd / projectPath field from the JSONL line. */
