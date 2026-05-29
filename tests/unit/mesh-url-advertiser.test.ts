@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../../src/core/MeshUrlAdvertiser.js';
 
 describe('resolveAdvertisedMeshUrl', () => {
@@ -60,7 +61,7 @@ describe('advertiseSelfMeshUrl (against a real MachineIdentityManager)', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/mesh-url-advertiser.test.ts:afterEach' });
   });
 
   it('writes lastKnownUrl onto the self registry entry (the bug: this never happened)', () => {
