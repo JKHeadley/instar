@@ -7420,6 +7420,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     try {
       const { WakeSocketServer } = await import('../threadline/WakeSocketServer.js');
       wakeSocketServer = new WakeSocketServer(config.stateDir);
+      // CRITICAL (fleet crash-loop fix): WakeSocketServer emits 'error'
+      // ASYNCHRONOUSLY (e.g. EADDRINUSE when a live peer — a duplicate instance
+      // or a transient rapid-respawn race — already holds listener.sock). The
+      // try/catch around .start() only catches synchronous errors, so without a
+      // listener this async 'error' is an unhandled EventEmitter 'error' and
+      // CRASHES THE WHOLE SERVER PROCESS. Combined with the supervisor respawn,
+      // that produced an unrecoverable crash loop (observed: inspec, 1830
+      // restarts). The wake socket is an optimization (fast wake/failover from
+      // the listener daemon) — degrade gracefully without it rather than take
+      // the entire agent down.
+      wakeSocketServer.on('error', (err: Error) => {
+        console.log(pc.dim(`  Wake socket: degraded — continuing without it (${err instanceof Error ? err.message : err})`));
+      });
       wakeSocketServer.on('wake', () => {
         // Daemon wrote a new inbox entry — read and process it
         const inboxPath = path.join(config.stateDir, 'threadline', 'inbox.jsonl.active');

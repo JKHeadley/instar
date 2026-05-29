@@ -115,6 +115,67 @@ describe('ServerSupervisor preflight self-heal', () => {
     );
     expect(abortCalls.length).toBe(0);
   });
+
+  // ── Fleet fix: bind failures must NOT trigger a native-module rebuild ──
+  // when better-sqlite3 actually loads fine. A held/duplicate listener.sock or
+  // HTTP port (EADDRINUSE) is a bind failure, NOT a native ABI problem — the old
+  // code force-rebuilt on >=2 bind failures regardless, producing hundreds of
+  // futile CPU-heavy rebuilds across the fleet.
+  function seedSqliteCopy(): void {
+    const rel = path.join(tmpDir, '.instar', 'shadow-install', 'node_modules', 'better-sqlite3', 'build', 'Release');
+    fs.mkdirSync(rel, { recursive: true });
+    fs.writeFileSync(path.join(rel, 'better_sqlite3.node'), 'binary');
+    fs.writeFileSync(path.join(tmpDir, '.instar', 'shadow-install', 'node_modules', 'better-sqlite3', 'package.json'), '{"name":"better-sqlite3"}');
+  }
+  function isRebuildCall(call: any): boolean {
+    const args = call[1] as string[] | undefined;
+    return Array.isArray(args) && args.includes('rebuild') && args.includes('better-sqlite3');
+  }
+  function isLoadCheck(call: any): boolean {
+    const args = call[1] as string[] | undefined;
+    return Array.isArray(args) && args[0] === '-e' && String(args[1] ?? '').includes('require');
+  }
+
+  it('does NOT force-rebuild better-sqlite3 on bind failures when the module loads fine', () => {
+    seedSqliteCopy();
+    (supervisor as any).consecutiveBindFailures = 5; // well past the escalation threshold
+    const mockSpawnSync = vi.mocked(spawnSync);
+    mockSpawnSync.mockImplementation((_cmd: string, args?: readonly string[]) => {
+      const a = args as string[] | undefined;
+      // The require-load check succeeds → better-sqlite3 is fine.
+      if (a?.[0] === '-e') return { stdout: '', stderr: '', status: 0, signal: null, pid: 0, output: [] } as unknown as SpawnSyncReturns<string>;
+      // git status clean, everything else status 0.
+      return { stdout: '', stderr: '', status: 0, signal: null, pid: 0, output: [] } as unknown as SpawnSyncReturns<string>;
+    });
+
+    (supervisor as any).preflightSelfHeal();
+
+    const rebuildCalls = mockSpawnSync.mock.calls.filter(isRebuildCall);
+    expect(rebuildCalls.length).toBe(0); // the misattribution is gone
+    // It still verified the module loads (the load check ran).
+    expect(mockSpawnSync.mock.calls.some(isLoadCheck)).toBe(true);
+  });
+
+  it('DOES rebuild better-sqlite3 when it actually fails to load (NODE_MODULE_VERSION)', () => {
+    seedSqliteCopy();
+    (supervisor as any).consecutiveBindFailures = 0; // not a bind-failure scenario at all
+    (supervisor as any).findNpmPath = () => '/usr/bin/npm';
+    const mockSpawnSync = vi.mocked(spawnSync);
+    mockSpawnSync.mockImplementation((_cmd: string, args?: readonly string[]) => {
+      const a = args as string[] | undefined;
+      // The require-load check FAILS with an ABI mismatch.
+      if (a?.[0] === '-e') {
+        return { stdout: '', stderr: 'Error: ... NODE_MODULE_VERSION 115 ... requires 127', status: 1, signal: null, pid: 0, output: [] } as unknown as SpawnSyncReturns<string>;
+      }
+      // npm rebuild + the post-rebuild verify succeed.
+      return { stdout: '', stderr: '', status: 0, signal: null, pid: 0, output: [] } as unknown as SpawnSyncReturns<string>;
+    });
+
+    (supervisor as any).preflightSelfHeal();
+
+    const rebuildCalls = mockSpawnSync.mock.calls.filter(isRebuildCall);
+    expect(rebuildCalls.length).toBeGreaterThanOrEqual(1); // genuine ABI failure still self-heals
+  });
 });
 
 describe('shellExec shell detection', () => {
