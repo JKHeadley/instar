@@ -61,7 +61,11 @@ describe('GET /sessions/reap-log (integration §P4)', () => {
     expect(res.status).toBe(200);
     expect(res.body.entries).toHaveLength(2);
     expect(res.body.entries[0]).toMatchObject({ type: 'reaped', session: 'sess-a', reason: 'idle-zombie' });
-    expect(res.body.entries[1]).toMatchObject({ type: 'skipped', skipped: 'protected' });
+    expect(res.body.entries[1]).toMatchObject({
+      type: 'skipped',
+      skipped: 'protected',
+      disposition: 'skipped:protected',
+    });
   });
 
   it('honours ?limit by returning only the most-recent N', async () => {
