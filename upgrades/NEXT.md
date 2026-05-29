@@ -25,9 +25,9 @@ becomes a real, transfer-eligible member of the pool purely over its tunnel.
 
 If you only run on one machine, nothing changes. If you run across two machines
 and the second one is signed into a different GitHub account (or otherwise can't
-push to the shared repo), it will now correctly appear **online** on your
-Machines tab / `GET /pool` and become eligible to receive conversations — no
-extra setup, no git credentials needed on the second machine.
+push to the shared repo), it will now correctly show as online in your Machines
+list and become eligible to receive conversations — no extra setup, and no git
+credentials needed on the second machine.
 
 ## Summary of New Capabilities
 
