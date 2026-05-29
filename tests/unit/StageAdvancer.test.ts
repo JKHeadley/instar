@@ -85,6 +85,13 @@ describe('StageAdvancer (§Rollout)', () => {
     expect(writes).toEqual(['dark']);
   });
 
+  it('reconcile() does NOT revert on a red recorded for a STALE commit (2026-05-29 review)', () => {
+    stage = 'shadow';
+    store.recordResult(1, 'red', 'old-commit', 'e'); // red, but from a prior commit — not the running build
+    expect(advancer.reconcile()).toBe('shadow');
+    expect(writes).toEqual([]);
+  });
+
   it('reconcile() stays put when the live stage is green', () => {
     stage = 'shadow';
     store.recordResult(1, 'green', SHA, 'e');

@@ -74,6 +74,15 @@ describe('TransferOrchestrator (§L3/§L5)', () => {
     expect(d.sendTransferRpc).not.toHaveBeenCalled();
   });
 
+  it('treats a transport-failed sendTransferRpc (ok:false) as sync-corrupted — does NOT claim (2026-05-29 review #9)', async () => {
+    const { d, calls } = deps({ sendTransferRpc: vi.fn(async () => ({ ok: false, verified: false, reason: 'mesh-rpc-503' })) });
+    const out = await new TransferOrchestrator(d).transfer(req);
+    expect(out).toMatchObject({ ok: false, status: 'sync-corrupted', detail: 'mesh-rpc-503' });
+    expect(d.raiseAttention).toHaveBeenCalled();
+    expect(calls).not.toContain('claim');
+    expect(calls).not.toContain('release');
+  });
+
   it('escalates (sync-corrupted) and does NOT claim when the target verify fails', async () => {
     const { d, calls } = deps({ sendTransferRpc: vi.fn(async () => ({ ok: true, verified: false, reason: 'in-flight-entry' })) });
     const out = await new TransferOrchestrator(d).transfer(req);

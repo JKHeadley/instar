@@ -117,3 +117,33 @@ describe('SessionOwnership — per-session nonce scoping (§L3)', () => {
     expect(ownershipNonceKey('A', 'm', 1, 'N1')).not.toBe(ownershipNonceKey('A', 'm', 2, 'N1')); // epoch scopes it too
   });
 });
+
+describe('SessionOwnership — release requires active (2026-05-29 review crit)', () => {
+  it('REJECTS release while transferring (would orphan the session) and lets T still claim', () => {
+    // active(S) → transferring(S→T)
+    const placed = place('S');
+    const claimed = applyOwnershipAction(placed, { type: 'claim', machineId: 'S' }, ctx({ nonce: 'n2' }));
+    if (!claimed.ok) throw new Error(claimed.reason);
+    const transferring = applyOwnershipAction(claimed.next, { type: 'transfer', to: 'T' }, ctx({ nonce: 'n3' }));
+    if (!transferring.ok) throw new Error(transferring.reason);
+    expect(transferring.next.status).toBe('transferring');
+
+    // S attempts to release MID-TRANSFER → rejected (the bug fix).
+    const badRelease = applyOwnershipAction(transferring.next, { type: 'release', machineId: 'S' }, ctx({ nonce: 'n4' }));
+    expect(badRelease.ok).toBe(false);
+    if (!badRelease.ok) expect(badRelease.reason).toBe('release-requires-active');
+
+    // T can still claim from the (intact) transferring record → active(T).
+    const tClaim = applyOwnershipAction(transferring.next, { type: 'claim', machineId: 'T' }, ctx({ nonce: 'n5' }));
+    expect(tClaim.ok).toBe(true);
+    if (tClaim.ok) { expect(tClaim.next.status).toBe('active'); expect(tClaim.next.ownerMachineId).toBe('T'); }
+  });
+
+  it('ALLOWS release from active (the normal owner-ends-session path)', () => {
+    const claimed = applyOwnershipAction(place('S'), { type: 'claim', machineId: 'S' }, ctx({ nonce: 'n2' }));
+    if (!claimed.ok) throw new Error(claimed.reason);
+    const rel = applyOwnershipAction(claimed.next, { type: 'release', machineId: 'S' }, ctx({ nonce: 'n3' }));
+    expect(rel.ok).toBe(true);
+    if (rel.ok) expect(rel.next.status).toBe('released');
+  });
+});

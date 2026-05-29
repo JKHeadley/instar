@@ -89,6 +89,12 @@ export function validateTopicPlacement(tp: unknown, capabilityWhitelist: string[
     return { ok: false, reason: 'preferredMachine-invalid' };
   }
   if ('pinned' in t && t.pinned != null && typeof t.pinned !== 'boolean') return { ok: false, reason: 'pinned-not-boolean' };
+  // A hard pin (pinned:true) is meaningless without a target machine — reject it rather
+  // than silently treating it as unpinned (which would let placement drift off the
+  // machine the user explicitly pinned to). (2026-05-29 pre-merge review.)
+  if (t.pinned === true && (t.preferredMachine == null || t.preferredMachine === '')) {
+    return { ok: false, reason: 'pinned-without-target' };
+  }
   if ('requiredCapabilities' in t && t.requiredCapabilities != null) {
     if (!Array.isArray(t.requiredCapabilities)) return { ok: false, reason: 'requiredCapabilities-not-array' };
     for (const c of t.requiredCapabilities) {

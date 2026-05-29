@@ -157,10 +157,16 @@ export class SessionRouter {
           await this.deps.handleLocally(msg);
           return { action: 'handled-locally', owner: own2.owner, detail: 'after-stale', acked: true };
         }
-        if (own2.status === 'active' && own2.owner && own2.owner !== owner && this.deps.isMachineAlive(own2.owner)) {
+        // Re-forward to the current owner when ownership is still active+alive AND
+        // something actually changed — a DIFFERENT owner, or the SAME owner whose
+        // epoch advanced (the stale-ownership ACK meant our epoch view was behind;
+        // re-deliver at the corrected epoch rather than needlessly re-placing). A
+        // same-owner/same-epoch stale ACK is spurious → fall through to re-place.
+        // Bounded by maxReResolveDepth. (2026-05-29 pre-merge review #7.)
+        if (own2.status === 'active' && own2.owner && this.deps.isMachineAlive(own2.owner) && (own2.owner !== owner || own2.epoch !== epoch)) {
           return this.forwardToOwner(msg, own2.owner, own2.epoch, reResolveDepth + 1);
         }
-        // Ownership moved to a transient/dead state → re-place.
+        // Ownership moved to a transient/dead state (or a spurious same-epoch stale) → re-place.
         return this.placeAndClaim(msg, 'failover', true);
       } catch (err) {
         this.deps.log?.(`deliverMessage attempt ${attempt} to ${owner} failed: ${String((err as Error)?.message ?? err)}`);

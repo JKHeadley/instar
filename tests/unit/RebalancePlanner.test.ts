@@ -69,16 +69,17 @@ describe('planRebalance (§L4 Stage-3)', () => {
     expect(moves).toHaveLength(1); // one source → one move, even with 3 candidates
   });
 
-  it('does not pile every move onto one target across multiple sources', () => {
+  it('spreads moves across free targets (the working-copy update prevents pile-on; 2026-05-29 review #10)', () => {
     const moves = planRebalance(input({
-      machines: [cap('busy1', { activeSessionCount: 10 }), cap('busy2', { activeSessionCount: 10 }), cap('free', { activeSessionCount: 0, maxSessions: 10 })],
+      // Two saturated sources + TWO equally-free targets. The working-copy +1 after the
+      // first move must make the second move pick the OTHER free machine, not pile on.
+      machines: [cap('busy1', { activeSessionCount: 10 }), cap('busy2', { activeSessionCount: 10 }), cap('freeA', { activeSessionCount: 0 }), cap('freeB', { activeSessionCount: 0 })],
       sessions: [sess('s1', 'busy1'), sess('s2', 'busy2')],
     }), exec);
-    // Two saturated sources → up to two moves; both go to the only free machine, but the
-    // working-copy update means the second still chooses the (now slightly loaded) free
-    // machine since it's still the least-loaded. Assert the moves are distinct sessions.
-    expect(moves.length).toBeGreaterThanOrEqual(1);
-    expect(new Set(moves.map(m => m.sessionKey)).size).toBe(moves.length);
+    expect(moves).toHaveLength(2);
+    expect(new Set(moves.map(m => m.sessionKey)).size).toBe(2); // distinct sessions
+    // The pile-on guard: the two moves land on DIFFERENT free machines.
+    expect(new Set(moves.map(m => m.toMachine)).size).toBe(2);
   });
 
   it('is pure — same inputs → same output', () => {

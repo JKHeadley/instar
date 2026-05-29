@@ -47,6 +47,7 @@ export type OwnershipReason =
   | 'claim-wrong-machine'
   | 'transfer-not-active'
   | 'release-not-owner'
+  | 'release-requires-active'
   | 'no-record';
 
 /**
@@ -98,7 +99,14 @@ export function applyOwnershipAction(
     }
     case 'release': {
       if (!current) return { ok: false, reason: 'no-record' };
-      // The current (draining) owner ends the session.
+      // Release is the LAST step of the lifecycle — only an ACTIVE owner may release.
+      // Releasing while `transferring` is forbidden: it would advance the record to
+      // `released` before the target T claims, and T's subsequent claim is then
+      // rejected (claim-out-of-sequence on a released record), orphaning the session.
+      // The §L3 handoff order is active(S)→transferring→active(T)→S-release, so S never
+      // releases the registry record during transfer (after T claims, the record is
+      // owned by T; S's teardown is local). (Fixes the 2026-05-29 pre-merge review crit.)
+      if (current.status !== 'active') return { ok: false, reason: 'release-requires-active' };
       if (current.ownerMachineId !== action.machineId) return { ok: false, reason: 'release-not-owner' };
       return { ok: true, next: { ...base, ownerMachineId: current.ownerMachineId, ownershipEpoch: epoch + 1, status: 'released' } };
     }

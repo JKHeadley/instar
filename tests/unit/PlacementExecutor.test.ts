@@ -92,6 +92,13 @@ describe('PlacementExecutor.decide (§L4)', () => {
     expect(exec.decide(req({ topicMetadata: badCap, machineRegistry: [machine('x')] })).outcome).toBe('placement-blocked');
   });
 
+  it('a hard pin without a target machine is placement-blocked (pinned-without-target; 2026-05-29 review)', () => {
+    const d = exec.decide(req({ topicMetadata: { pinned: true } as TopicPlacement, machineRegistry: [machine('x')] }));
+    expect(d).toMatchObject({ outcome: 'placement-blocked', escalationReason: 'pinned-without-target' });
+    // pinned:true WITH a target is fine (the normal hard pin).
+    expect(exec.decide(req({ topicMetadata: { pinned: true, preferredMachine: 'x' }, machineRegistry: [machine('x')] })).outcome).toBe('placed');
+  });
+
   it('no online machine → queued', () => {
     expect(exec.decide(req({ machineRegistry: [machine('off', { online: false })] }))).toMatchObject({ chosenMachine: null, outcome: 'queued' });
   });

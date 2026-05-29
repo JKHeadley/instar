@@ -73,7 +73,10 @@ export class StageAdvancer {
     const idx = stageIndex(current);
     if (idx <= 0) return current; // 'dark' is the floor — nothing to revert to
     const latest = this.d.resultStore.getLatestForStage(idx);
-    const regressed = !!latest && latest.result === 'red' && this.d.resultStore.verify(latest);
+    // Only revert on a red for the CURRENT commit — a stale red from a prior commit
+    // is not a regression of the running build and must not trigger a revert.
+    // (2026-05-29 pre-merge review.)
+    const regressed = !!latest && latest.result === 'red' && latest.commitSha === this.d.currentCommitSha() && this.d.resultStore.verify(latest);
     if (regressed) {
       const reverted = STAGES[idx - 1];
       this.d.writeStageConfig(reverted);

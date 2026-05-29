@@ -88,6 +88,30 @@ describe('SessionRouter.dispatch (§L4)', () => {
     expect(out.acked).toBe(true); // re-placed onto a live machine
   });
 
+  it('stale-ownership for the SAME owner with an advanced epoch re-forwards at the new epoch (#7)', async () => {
+    let call = 0;
+    const owners: OwnershipView[] = [
+      { owner: 'm_remote', epoch: 1, status: 'active' },
+      { owner: 'm_remote', epoch: 5, status: 'active' }, // same owner, epoch advanced
+    ];
+    const epochs: number[] = [];
+    const deliver = vi.fn(async (_t: string, env: { ownershipEpoch: number }) => {
+      epochs.push(env.ownershipEpoch);
+      return { messageId: 'evt-1', accepted: env.ownershipEpoch < 5 ? 'stale-ownership' : 'queued' } as DeliverAck;
+    });
+    const { router } = makeRouter({ resolveOwnership: () => owners[Math.min(call++, 1)], deliverMessage: deliver });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded', owner: 'm_remote', acked: true });
+    expect(epochs).toEqual([1, 5]); // re-delivered to the same owner at the corrected epoch
+  });
+
+  it('a spurious same-owner same-epoch stale ACK falls through to re-place (no infinite loop)', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: () => ({ owner: 'm_remote', epoch: 1, status: 'active' }), deliverMessage: deliver });
+    const out = await router.route(msg());
+    expect(['spawned', 'handled-locally', 'owner-dead-replaced', 'queued']).toContain(out.action);
+  });
+
   it('owner not alive → owner-dead re-placement (marks suspect, re-places, claims)', async () => {
     const spawn = vi.fn(async () => {});
     const { router, deps } = makeRouter({
