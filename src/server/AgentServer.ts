@@ -189,6 +189,8 @@ export class AgentServer {
     coordinator?: MultiMachineCoordinator;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
+    /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
+    meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     localSigningKeyPem?: string;
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
@@ -765,6 +767,7 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
       replyMarkerTransport: options.replyMarkerTransport ?? null,

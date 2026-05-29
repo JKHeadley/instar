@@ -1776,6 +1776,11 @@ export interface SessionPoolConfig {
    * nickname/hardware/history for fast re-placement.
    */
   machineRecordEvictionMs?: number;
+  /**
+   * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
+   * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.
+   */
+  meshRpcClockToleranceMs?: number;
 }
 
 // ── Agent Autonomy ──────────────────────────────────────────────────

@@ -278,6 +278,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       clockSkewToleranceMs: 300000,
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,
+      meshRpcClockToleranceMs: 30000,
     },
   },
 };

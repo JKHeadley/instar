@@ -717,6 +717,9 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
+   *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
+  meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
   /**
    * Exactly-once ingress ledger (spec §8 G3a) — non-null ONLY when
    * multiMachine.exactlyOnceIngress is enabled. When present, the inbound
@@ -7019,6 +7022,33 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(/not found/i.test(msg) ? 404 : 400).json({ error: msg });
+    }
+  });
+
+  // POST /mesh/rpc — the MeshRpc receive endpoint (§L0). Body = a signed,
+  // recipient-bound MeshEnvelope. The dispatcher runs verify→RBAC→nonce-burn→
+  // handler and returns a typed reason + HTTP status (401/403 auth, 409 freshness,
+  // 501 unimplemented). NOTE: m2m authenticity is the ENVELOPE's own Ed25519
+  // signature (verified by the dispatcher), independent of the Bearer middleware.
+  router.post('/mesh/rpc', async (req, res) => {
+    if (!ctx.meshRpcDispatcher) {
+      res.status(503).json({ error: 'mesh-rpc not configured (single-machine install)' });
+      return;
+    }
+    const env = req.body;
+    if (!env || typeof env !== 'object' || typeof (env as { sender?: unknown }).sender !== 'string') {
+      res.status(400).json({ error: 'a signed MeshEnvelope is required' });
+      return;
+    }
+    try {
+      const r = await ctx.meshRpcDispatcher.dispatch(env as import('../core/MeshRpc.js').MeshEnvelope);
+      if (r.ok) {
+        res.json({ ok: true, result: r.result });
+      } else {
+        res.status(r.status).json({ ok: false, reason: r.reason });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
