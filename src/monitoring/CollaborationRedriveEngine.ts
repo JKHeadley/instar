@@ -195,18 +195,17 @@ export class CollaborationRedriveEngine {
         const strikes = (this.unresolvedNameStrikes.get(peer) ?? 0) + 1;
         this.unresolvedNameStrikes.set(peer, strikes);
         result.skipped[c.id] = `unresolved-name (strike ${strikes})`;
-        if (strikes >= 3 && this.deps.raiseAttention) {
-          try {
-            await this.deps.raiseAttention({
-              title: `can't reach ${peer} — unknown routing`,
-              body: `Tried to nudge ${peer} on commitment ${c.id} ("${c.userRequest.slice(0, 120)}") but no fingerprint resolved from known-agents.json after ${strikes} attempts. Add ${peer} to known-agents.json or close the commitment.`,
-              priority: 'medium',
-              source: 'collaboration-redrive',
-            });
-            this.unresolvedNameStrikes.set(peer, 0);
-          } catch {
-            // non-fatal
-          }
+        // HOUSEKEEPING — an unresolvable peer means known-agents.json has no
+        // routing entry for it (a config/address-book gap), NOT a collaboration
+        // outcome the operator must act on from Telegram. Log it ONCE per peer
+        // and move on: never escalate to the attention queue, never spawn a
+        // topic. This path was the 2026-05-28 flood — it raised one
+        // "can't reach <peer> — unknown routing" attention item (= one new forum
+        // topic) every few sweeps, forever, because it reset the strike counter
+        // to 0 after each escalation. We neither escalate nor reset now, so it
+        // is silent after a single log line.
+        if (strikes === 3) {
+          this.log.warn(`unresolvable peer "${peer}" on commitment ${c.id}: no fingerprint in known-agents.json after ${strikes} sweeps — skipping redrive (add ${peer} to known-agents.json or close the commitment). Housekeeping: logged once, no Telegram, no topic.`);
         }
         continue;
       }
@@ -312,11 +311,27 @@ export class CollaborationRedriveEngine {
   }
 
   private resolveFingerprint(peerName: string): string | null {
+    const isHex = /^[0-9a-f]{32,64}$/i.test(peerName);
     try {
       const raw = fs.readFileSync(this.deps.knownAgentsPath, 'utf-8');
       const data = JSON.parse(raw);
       const agents = (data.agents ?? data) as Array<{ publicKey?: string; name?: string }>;
       if (!Array.isArray(agents)) return null;
+
+      // A relatedAgent that is ALREADY a raw routing fingerprint (hex, 32–64
+      // chars) is treated as the address — but ONLY if it matches a KNOWN agent's
+      // publicKey. We never plaintext-send a nudge (which contains the operator's
+      // commitment text) to an unverified address. Commitments are sometimes
+      // registered with the peer's fingerprint as `relatedAgent` instead of a
+      // human name; the name lookup could never match those, which is what
+      // produced the "can't reach 8c7928aa…" entries in the 2026-05-28 flood
+      // (CMT-663) — but the fix must stay trust-gated, like the name path.
+      if (isHex) {
+        const lower = peerName.toLowerCase();
+        const known = agents.some((a) => typeof a.publicKey === 'string' && a.publicKey.toLowerCase() === lower);
+        return known ? lower : null;
+      }
+
       const matches = agents.filter((a) => a.name === peerName && typeof a.publicKey === 'string');
       if (matches.length !== 1) return null;
       return matches[0].publicKey ?? null;

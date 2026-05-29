@@ -311,6 +311,96 @@ describe('CollaborationRedriveEngine — disabled mode', () => {
   });
 });
 
+describe('CollaborationRedriveEngine — topic-flood lockdown (2026-05-28)', () => {
+  let dir: string;
+  beforeEach(() => { dir = makeTmpDir(); });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
+  });
+
+  it('an unresolvable peer NEVER raises an attention item, no matter how many sweeps (housekeeping → logs)', async () => {
+    const tracker = setupTracker(dir);
+    const relay = makeRelayStub();
+    const raiseAttention = vi.fn(async () => undefined);
+    const engine = new CollaborationRedriveEngine(
+      {
+        commitmentTracker: tracker,
+        completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+        relayClient: relay.client as never,
+        raiseAttention,
+        // No matching name → resolveFingerprint returns null every sweep.
+        knownAgentsPath: makeKnownAgents(dir, [{ name: 'someone-else', publicKey: 'fp-other' }]),
+        now: () => Date.parse('2026-05-28T20:00:00Z'),
+        log: { log: () => undefined, warn: () => undefined },
+      },
+      { ...DEFAULT_REDRIVE_CONFIG, enabled: true },
+    );
+    const c = recordThreadlineReplyCommitment(tracker, { relatedAgent: 'dawn', lastReplyAt: '2026-05-28T18:00:00Z' });
+
+    // Sweep well past the old strike threshold (was 3) — the pre-fix code raised
+    // one "can't reach" attention item (= one new forum topic) per cycle, forever.
+    for (let i = 0; i < 8; i++) {
+      const r = await engine.tick();
+      expect(r.sent).toBe(0);
+      expect(r.skipped[c.id]).toContain('unresolved-name');
+    }
+
+    expect(raiseAttention).not.toHaveBeenCalled();   // the flood source is gone
+    expect(relay.sent.length).toBe(0);
+    expect((tracker.get(c.id)!.redriveCount ?? 0)).toBe(0);
+  });
+
+  it('a 32-char hex relatedAgent resolves directly as the fingerprint when it is a KNOWN publicKey, and sends (CMT-663)', async () => {
+    const tracker = setupTracker(dir);
+    const relay = makeRelayStub();
+    const fp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    const engine = new CollaborationRedriveEngine(
+      {
+        commitmentTracker: tracker,
+        completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+        relayClient: relay.client as never,
+        // The hex IS a known agent's publicKey → trusted address → routable.
+        knownAgentsPath: makeKnownAgents(dir, [{ name: 'dawn', publicKey: fp }]),
+        now: () => Date.parse('2026-05-28T20:00:00Z'),
+        log: { log: () => undefined, warn: () => undefined },
+      },
+      { ...DEFAULT_REDRIVE_CONFIG, enabled: true },
+    );
+    const c = recordThreadlineReplyCommitment(tracker, { relatedAgent: fp, lastReplyAt: '2026-05-28T18:00:00Z' });
+
+    const r = await engine.tick();
+    expect(r.sent).toBe(1);
+    expect(relay.sent.length).toBe(1);
+    expect(relay.sent[0].fingerprint).toBe(fp.toLowerCase());
+    expect(tracker.get(c.id)!.redriveCount).toBe(1);
+  });
+
+  it('an UNKNOWN hex relatedAgent is NOT routed (trust-gated) — never plaintext-sends to an unverified address, and never escalates', async () => {
+    const tracker = setupTracker(dir);
+    const relay = makeRelayStub();
+    const raiseAttention = vi.fn(async () => undefined);
+    const engine = new CollaborationRedriveEngine(
+      {
+        commitmentTracker: tracker,
+        completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+        relayClient: relay.client as never,
+        raiseAttention,
+        // Address book does NOT contain this hex → untrusted → must not route.
+        knownAgentsPath: makeKnownAgents(dir, [{ name: 'dawn', publicKey: 'fp-dawn-1' }]),
+        now: () => Date.parse('2026-05-28T20:00:00Z'),
+        log: { log: () => undefined, warn: () => undefined },
+      },
+      { ...DEFAULT_REDRIVE_CONFIG, enabled: true },
+    );
+    const c = recordThreadlineReplyCommitment(tracker, { relatedAgent: 'deadbeefdeadbeefdeadbeefdeadbeef', lastReplyAt: '2026-05-28T18:00:00Z' });
+
+    for (let i = 0; i < 5; i++) await engine.tick();
+    expect(relay.sent.length).toBe(0);                 // no plaintext to an unverified address
+    expect(raiseAttention).not.toHaveBeenCalled();     // and no topic-spawning escalation
+    expect((tracker.get(c.id)!.redriveCount ?? 0)).toBe(0);
+  });
+});
+
 describe('jaccard3gram', () => {
   it('returns 0 for non-overlapping phrases', () => {
     expect(jaccard3gram('one two three', 'four five six')).toBe(0);

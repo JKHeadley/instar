@@ -34,6 +34,7 @@ import {
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
+import { AttentionTopicGuard, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -93,6 +94,14 @@ export interface TelegramConfig {
   getFormatMode?: () => FormatMode | undefined;
   /** Hot-reloadable accessor for lint-strict mode. */
   getLintStrict?: () => boolean | undefined;
+  /**
+   * Per-source forum-topic circuit breaker. Caps how many NEW topics a single
+   * attention `sourceContext` may spawn in a rolling window; past the budget,
+   * items coalesce into one running notice topic instead of a wall of topics.
+   * Defaults to DEFAULT_ATTENTION_TOPIC_GUARD (enabled) — the 2026-05-28
+   * topic-flood lockdown. See AttentionTopicGuard.
+   */
+  attentionTopicGuard?: Partial<AttentionTopicGuardConfig>;
 }
 
 /** Tracks a pending text reply for a Prompt Gate relay (no-button prompts) */
@@ -212,6 +221,13 @@ export interface AttentionItem {
   createdAt: string;
   updatedAt: string;
   topicId?: number;
+  /**
+   * True when the topic-flood guard coalesced this item into a shared "notices
+   * coalesced" topic instead of giving it its own. Such items are NOT registered
+   * in the per-item topic maps and are managed via /attention (PATCH / dashboard),
+   * not per-topic /ack — so resolving one never closes the shared notice topic.
+   */
+  coalesced?: boolean;
 }
 
 /**
@@ -377,6 +393,14 @@ export class TelegramAdapter implements MessagingAdapter {
   private attentionTopicToItem: Map<number, string> = new Map();
   private attentionItems: Map<string, AttentionItem> = new Map();
   private attentionFilePath: string;
+  // Per-source forum-topic circuit breaker (2026-05-28 topic-flood lockdown).
+  private attentionTopicGuard!: AttentionTopicGuard;
+  // bucket -> the single reused "notices coalesced" topic for that bucket.
+  private floodNoticeTopicByBucket: Map<string, number> = new Map();
+  // bucket -> in-flight createForumTopic promise, so concurrent coalesced items
+  // for one bucket share ONE topic creation (no double-create race).
+  private floodNoticePending: Map<string, Promise<number | null>> = new Map();
+  private attentionSuppressedLogPath!: string;
 
   // Stall detection
   private pendingMessages: Map<string, PendingMessage> = new Map(); // key = topicId-timestamp
@@ -597,6 +621,8 @@ export class TelegramAdapter implements MessagingAdapter {
     this.messageLogPath = path.join(this.botStateDir, 'telegram-messages.jsonl');
     this.offsetPath = path.join(this.botStateDir, 'telegram-poll-offset.json');
     this.attentionFilePath = path.join(this.botStateDir, 'state', 'attention-items.json');
+    this.attentionSuppressedLogPath = path.join(this.botStateDir, 'state', 'attention-suppressed.jsonl');
+    this.attentionTopicGuard = new AttentionTopicGuard(config.attentionTopicGuard ?? {});
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
@@ -3311,6 +3337,30 @@ export class TelegramAdapter implements MessagingAdapter {
       updatedAt: now,
     };
 
+    // ── Topic-flood circuit breaker (2026-05-28 lockdown) ──────────────
+    // Before spawning a per-item forum topic, consult the per-source guard.
+    // HIGH/URGENT always pass (critical items must always be visible). A
+    // non-critical source that exceeds its topic budget within the window has
+    // its items COALESCED into one running notice topic + logged — never a
+    // wall of new topics. No item is dropped; only the per-item topic is held.
+    const guardSource = item.sourceContext || item.category || 'unknown';
+    const decision = this.attentionTopicGuard.decide(guardSource, item.priority);
+    if (decision.action === 'coalesce') {
+      this.writeSuppressedAttentionLog(attention, decision.bucket, decision.suppressedCount);
+      const noticeTopicId = await this.routeToFloodNotice(decision.bucket, attention, decision);
+      // Mark coalesced and record the (shared) notice topic for reference ONLY.
+      // Deliberately do NOT register the per-item topic maps: many items share one
+      // notice topic, so registering them would (a) make `loadAttentionItems`
+      // last-writer-win-corrupt the reverse map on restart and (b) make
+      // `updateAttentionStatus` close the shared topic when ONE sibling resolves.
+      // Coalesced items are managed via /attention (PATCH / dashboard), not /ack.
+      attention.coalesced = true;
+      if (noticeTopicId !== null) attention.topicId = noticeTopicId;
+      this.attentionItems.set(item.id, attention);
+      this.saveAttentionItems();
+      return attention;
+    }
+
     // Create Telegram topic (uses the centralized method for forum detection)
     try {
       const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
@@ -3364,6 +3414,110 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionItems.set(item.id, attention);
     this.saveAttentionItems();
     return attention;
+  }
+
+  /**
+   * Append a suppressed attention item to the audit trail. This is the
+   * "housekeeping goes to the logs" path for the topic-flood guard — the item
+   * is preserved, just not given its own forum topic. Size-capped with a single
+   * rotation (the flood is exactly the failure mode that grows this fastest).
+   */
+  private writeSuppressedAttentionLog(item: AttentionItem, bucket: string, episodeCount: number): void {
+    const entry = {
+      ts: new Date().toISOString(),
+      bucket,
+      episodeCount,
+      id: item.id,
+      priority: item.priority,
+      category: item.category,
+      title: item.title,
+      summary: item.summary,
+    };
+    try {
+      fs.mkdirSync(path.dirname(this.attentionSuppressedLogPath), { recursive: true });
+      // Rotate at ~2MB so a sustained flood can't grow the audit log unbounded.
+      try {
+        const st = fs.statSync(this.attentionSuppressedLogPath);
+        if (st.size > 2 * 1024 * 1024) {
+          fs.renameSync(this.attentionSuppressedLogPath, `${this.attentionSuppressedLogPath}.1`);
+        }
+      } catch { /* no existing file — nothing to rotate */ }
+      fs.appendFileSync(this.attentionSuppressedLogPath, JSON.stringify(entry) + '\n');
+    } catch {
+      // @silent-fallback-ok — an audit-log write failure must never crash the
+      // attention path; the item is still recorded in the in-memory store.
+    }
+    console.log(`[telegram] attention topic-flood guard: coalesced "${item.title}" (bucket=${bucket}, #${episodeCount}) — logged, no new topic`);
+  }
+
+  /**
+   * Route a coalesced attention item into ONE reused notice topic for its bucket
+   * (the source key, or the shared global bucket when the global cap tripped).
+   * The topic is created lazily once per bucket and reused thereafter (so a
+   * flapping source does not churn a new topic per episode). Concurrent coalesced
+   * items for one bucket share a single in-flight creation (no double-create
+   * race). Returns the notice topicId, or null if Telegram is unavailable (the
+   * item is still recorded + logged).
+   */
+  private async routeToFloodNotice(
+    bucket: string,
+    item: AttentionItem,
+    decision: { suppressedCount: number },
+  ): Promise<number | null> {
+    let topicId: number | null;
+    try {
+      topicId = await this.ensureFloodNoticeTopic(bucket);
+    } catch (err) {
+      console.error(`[telegram] flood-notice topic creation failed for bucket "${bucket}": ${err}`);
+      topicId = this.floodNoticeTopicByBucket.get(bucket) ?? null;
+    }
+    if (topicId === null) return null;
+    const line = `• [#${decision.suppressedCount}] ${this.escapeHtml(item.title)} — ${this.escapeHtml(String(item.summary ?? '').slice(0, 200))}`;
+    // @silent-fallback-ok — best-effort coalesce line; the item is already
+    // recorded + audit-logged, so a transient send failure is non-fatal. If the
+    // topic was deleted out from under us, drop the mapping so it's recreated.
+    await this.sendToTopic(topicId, line).catch(() => {
+      this.floodNoticeTopicByBucket.delete(bucket);
+    });
+    return topicId;
+  }
+
+  /** Lazily create (once) and return the reused notice topic id for a bucket. */
+  private async ensureFloodNoticeTopic(bucket: string): Promise<number | null> {
+    const existing = this.floodNoticeTopicByBucket.get(bucket);
+    if (existing !== undefined) return existing;
+    const inFlight = this.floodNoticePending.get(bucket);
+    if (inFlight) return inFlight;
+
+    const creation = (async (): Promise<number | null> => {
+      const label = bucket === '*' ? 'multiple sources' : bucket;
+      const title = `🔁 ${label}: notices coalesced (flood guard)`.slice(0, 128);
+      const topic = await this.createForumTopic(title, PRIORITY_COLOR.LOW ?? PRIORITY_COLOR.NORMAL);
+      const topicId = topic.topicId;
+      this.floodNoticeTopicByBucket.set(bucket, topicId);
+      this.topicToName.set(topicId, title);
+      const intro = [
+        `<b>${this.escapeHtml(label)}</b> raised more than its topic budget in a short window, so I'm collecting these notices HERE instead of spawning a new topic per item (housekeeping flood guard, 2026-05-28).`,
+        ``,
+        `Each item is also recorded in <code>state/attention-suppressed.jsonl</code> and in the attention list — manage them via the dashboard / <code>/attention</code>, not per-item /ack here. Critical (HIGH/URGENT) items are never coalesced — they still get their own topic.`,
+      ].join('\n');
+      const introParams: Record<string, unknown> = {
+        chat_id: this.config.chatId,
+        text: intro,
+        parse_mode: 'HTML',
+        _formatMode: 'html',
+      };
+      if (!isGeneralTopic(topicId)) introParams.message_thread_id = topicId;
+      await this.apiCall('sendMessage', introParams);
+      return topicId;
+    })();
+
+    this.floodNoticePending.set(bucket, creation);
+    try {
+      return await creation;
+    } finally {
+      this.floodNoticePending.delete(bucket);
+    }
   }
 
   /**
@@ -3463,7 +3617,10 @@ export class TelegramAdapter implements MessagingAdapter {
       if (data.items) {
         for (const item of data.items) {
           this.attentionItems.set(item.id, item);
-          if (item.topicId) {
+          // Coalesced items share ONE notice topic; registering them in the
+          // per-item maps would last-writer-win-corrupt the reverse map and make
+          // resolving one close the shared topic. They are managed via /attention.
+          if (item.topicId && !item.coalesced) {
             this.attentionItemToTopic.set(item.id, item.topicId);
             this.attentionTopicToItem.set(item.topicId, item.id);
           }
