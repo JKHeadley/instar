@@ -57,12 +57,53 @@ describe('Session error nudge', () => {
       expect(source).toContain('errorNudgedSessions');
     });
 
-    it('only nudges once per session (prevents infinite loops)', () => {
+    it('arms the per-episode nudge guard before nudging and sets it after', () => {
       source = fs.readFileSync(SM_PATH, 'utf-8');
-      // Should check errorNudgedSessions before nudging
+      // Should check the per-episode guard before nudging
       expect(source).toContain('errorNudgedSessions.has(session.id)');
-      // Should add to set after nudging
+      // Should arm it after nudging
       expect(source).toContain('errorNudgedSessions.add(session.id)');
+    });
+
+    it('re-arms the nudge on recovery (NOT once-per-session-forever) so a long run survives repeated transient errors', () => {
+      source = fs.readFileSync(SM_PATH, 'utf-8');
+      // The per-episode guard must be CLEARED when the session goes active again,
+      // in the same "Session is active" branch that clears the idle tracker.
+      const activeBranch = source.slice(source.indexOf('Session is active'));
+      expect(activeBranch).toContain('errorNudgedSessions.delete(session.id)');
+    });
+
+    it('bounds runaway with a lifetime nudge cap (errorNudgeTotal + MAX_ERROR_NUDGES_PER_SESSION)', () => {
+      source = fs.readFileSync(SM_PATH, 'utf-8');
+      expect(source).toContain('errorNudgeTotal');
+      expect(source).toContain('MAX_ERROR_NUDGES_PER_SESSION');
+      // The production gate routes through the pure shouldErrorNudge() helper.
+      expect(source).toContain('shouldErrorNudge(this.errorNudgedSessions.has(session.id), nudgeTotal)');
+    });
+  });
+
+  // Behavioral coverage of the actual decision boundary (the production gate),
+  // not just source-grep — both sides of every branch.
+  describe('shouldErrorNudge (the production nudge gate)', () => {
+    it('nudges when not yet armed this episode and under the cap', async () => {
+      const { shouldErrorNudge } = await import('../../src/core/SessionManager.js');
+      expect(shouldErrorNudge(false, 0)).toBe(true);
+      expect(shouldErrorNudge(false, 49, 50)).toBe(true);
+    });
+    it('does NOT nudge while already armed this episode (prevents per-tick spam)', async () => {
+      const { shouldErrorNudge } = await import('../../src/core/SessionManager.js');
+      expect(shouldErrorNudge(true, 0)).toBe(false);
+    });
+    it('does NOT nudge once the lifetime cap is reached (runaway bound)', async () => {
+      const { shouldErrorNudge } = await import('../../src/core/SessionManager.js');
+      expect(shouldErrorNudge(false, 50, 50)).toBe(false);
+      expect(shouldErrorNudge(false, 51, 50)).toBe(false);
+    });
+    it('re-arms across episodes: clearing the episode flag (false) allows the next nudge under the cap', async () => {
+      const { shouldErrorNudge } = await import('../../src/core/SessionManager.js');
+      // Episode 1: armed → no nudge. Recovery clears the flag → episode 2: nudge again.
+      expect(shouldErrorNudge(true, 1)).toBe(false);
+      expect(shouldErrorNudge(false, 1)).toBe(true);
     });
 
     it('nudges on first idle detection when error is present', () => {

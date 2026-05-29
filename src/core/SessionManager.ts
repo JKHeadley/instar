@@ -110,6 +110,25 @@ const TERMINAL_ERROR_PATTERNS = [
   'fetch failed',
 ];
 
+/** Runaway cap: max error-nudges per session across its whole lifetime, regardless of
+ *  per-episode re-arming. A session that flaps error→nudge→error this many times has a
+ *  persistent problem (not a transient API blip) and should fall through to zombie-kill
+ *  rather than be nudged forever. Generous enough that a long autonomous run with
+ *  genuinely-transient errors never hits it. */
+const MAX_ERROR_NUDGES_PER_SESSION = 50;
+
+/**
+ * Pure gate for the post-API-error nudge (the 2026-05-29 re-arm fix). A session is
+ * nudged only when it has NOT already been nudged in the CURRENT idle episode
+ * (`armedThisEpisode` false) AND it is under the lifetime runaway cap. The episode
+ * flag is cleared on recovery, so a long-running session that hits a SECOND transient
+ * API error is nudged again — fixing the prior once-per-session-forever strand.
+ * Exported so the decision boundary is unit-testable without driving the tmux loop.
+ */
+export function shouldErrorNudge(armedThisEpisode: boolean, totalNudges: number, max: number = MAX_ERROR_NUDGES_PER_SESSION): boolean {
+  return !armedThisEpisode && totalNudges < max;
+}
+
 /**
  * Process names that are always running in a Claude Code session (MCP servers, etc.)
  * These do NOT indicate activity — they're background infrastructure.
@@ -192,10 +211,19 @@ export class SessionManager extends EventEmitter {
    *  Key = tmuxSession name. Cleared when agent replies via /telegram/reply/:topicId. */
   private pendingInjections = new Map<string, { topicId: number; injectedAt: number; text: string }>();
 
-  /** Track sessions that have been nudged after an API error.
-   *  Key = session ID. Prevents infinite nudge loops — each session gets ONE nudge.
-   *  If it goes idle again after the nudge, the zombie detector kills it normally. */
+  /** Track sessions nudged after an API error in the CURRENT idle episode.
+   *  Key = session ID. Set when we nudge; CLEARED when the session recovers (produces
+   *  output / leaves idle), so the NEXT API-error episode in a long-running session
+   *  gets its own nudge. (Before 2026-05-29 this was once-per-session-FOREVER — a long
+   *  autonomous run that hit a SECOND transient API error was never re-nudged and
+   *  silently stranded at the prompt. The runaway cap lives in errorNudgeTotal.) */
   private errorNudgedSessions = new Set<string>();
+
+  /** Total error-nudges issued per session (never cleared until sessionComplete).
+   *  Bounds runaway: even with per-episode re-arming, a session stuck in a tight
+   *  error→nudge→error loop that never truly recovers stops being nudged after
+   *  MAX_ERROR_NUDGES_PER_SESSION and falls through to the normal zombie-kill path. */
+  private errorNudgeTotal = new Map<string, number>();
 
   /** Sessions where we've already retried Enter for stuck pasted text.
    *  Key = session ID. Prevents infinite retry loops — one retry per session. */
@@ -459,6 +487,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       detector.cleanup(session.tmuxSession);
       this.relayLeases.delete(session.id);
       this.errorNudgedSessions.delete(session.id);
+      this.errorNudgeTotal.delete(session.id);
       this.pasteRetried.delete(session.id);
     });
   }
@@ -872,7 +901,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // ── Error nudge: on first idle detection, check terminal for API errors ──
               // If the session went idle because of an API error (not a natural stop),
               // inject a nudge to get it working again instead of waiting 15m to kill.
-              if (!this.errorNudgedSessions.has(session.id)) {
+              const nudgeTotal = this.errorNudgeTotal.get(session.id) ?? 0;
+              if (shouldErrorNudge(this.errorNudgedSessions.has(session.id), nudgeTotal)) {
                 const recentOutput = this.captureOutput(session.tmuxSession, 30);
                 if (recentOutput) {
                   // Server-side throttle ("Server is temporarily limiting
@@ -890,7 +920,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   const hasError = TERMINAL_ERROR_PATTERNS.some(p => recentOutput.includes(p));
                   if (hasError) {
                     this.errorNudgedSessions.add(session.id);
-                    console.log(`[SessionManager] Session "${session.name}" idle after API error — nudging to continue.`);
+                    this.errorNudgeTotal.set(session.id, nudgeTotal + 1);
+                    console.log(`[SessionManager] Session "${session.name}" idle after API error — nudging to continue (nudge #${nudgeTotal + 1} this session).`);
                     this.sendInput(session.tmuxSession, 'You hit an API error. Please continue your work — skip or work around the action that failed.');
                     this.idlePromptSince.delete(session.id); // Reset idle timer
                     continue; // Skip to next session
@@ -940,8 +971,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
             }
           } else {
-            // Session is active — clear idle tracker
+            // Session is active — clear idle tracker AND re-arm the error nudge.
+            // The session producing output means the prior idle episode is over (the
+            // nudge worked, or the error cleared), so a FUTURE API-error episode in
+            // this same long-running session deserves its own nudge. (errorNudgeTotal
+            // is NOT cleared here — it's the lifetime runaway cap.)
             this.idlePromptSince.delete(session.id);
+            this.errorNudgedSessions.delete(session.id);
           }
         }
       }
