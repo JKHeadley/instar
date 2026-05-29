@@ -17,6 +17,107 @@ CONFIG_FILE="$INSTAR_DIR/config.json"
 # Extract prompt from environment or first argument for query building
 PROMPT="${CLAUDE_USER_PROMPT:-$1}"
 
+# ── macOS 26 TCC escalation-spool drain (runs FIRST, independent of agent config)
+#
+# Spec: docs/specs/macos26-launchd-tcc-runtime-relocation.md (Scope C — drain).
+# A Claude session is a CONSENTED context with TCC keys: it can read the dead
+# agent's Documents-resident config.json (which a launchd-spawned watchdog
+# cannot on macOS 26) and use its Telegram credential to deliver outage pages
+# the watchdog couldn't autonomously send (the b2lead-before-fix case: no
+# credential armed yet, so the watchdog spooled instead of sending).
+#
+# This runs FIRST so it's not gated on the host agent's config — the
+# escalations may be for OTHER agents on the machine. Fast-path: skip the
+# Python invocation entirely when there's no spool file or it's empty
+# (the steady-state for healthy machines).
+SPOOL="$HOME/.instar/watchdog-escalations.jsonl"
+if [ -s "$SPOOL" ]; then
+  python3 - "$SPOOL" 2>/dev/null <<'PYEOF' || true
+import json, os, sys, urllib.parse, urllib.request, tempfile
+
+spool_path = sys.argv[1]
+try:
+    with open(spool_path, 'r', encoding='utf-8') as f:
+        raw = f.read()
+except Exception:
+    sys.exit(0)
+
+entries = []
+for line in raw.split('\n'):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    entries.append(e)
+
+if not entries:
+    sys.exit(0)
+
+# Group undelivered entries by projectDir so we open each config.json once.
+changed = False
+by_project = {}
+for e in entries:
+    if e.get('delivered'):
+        continue
+    pd = e.get('projectDir')
+    if not pd:
+        continue
+    by_project.setdefault(pd, []).append(e)
+
+api_base = os.environ.get('INSTAR_TELEGRAM_API_BASE', 'https://api.telegram.org').rstrip('/')
+
+for project_dir, project_entries in by_project.items():
+    cfg_path = os.path.join(project_dir, '.instar', 'config.json')
+    try:
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except Exception:
+        continue
+    tg = next(
+        (m for m in (cfg.get('messaging') or []) if isinstance(m, dict) and m.get('type') == 'telegram'),
+        None,
+    )
+    if not tg:
+        continue
+    token = tg.get('token') or ''
+    chat_id = tg.get('chatId') or ''
+    if not token or not chat_id:
+        continue
+    for e in project_entries:
+        label = e.get('label') or 'agent'
+        text = f"{label.replace('ai.instar.', '')}: {e.get('remediation', 'agent down')}"
+        try:
+            data = urllib.parse.urlencode({'chat_id': str(chat_id), 'text': text}).encode('utf-8')
+            req = urllib.request.Request(
+                f'{api_base}/bot{token}/sendMessage',
+                data=data,
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    e['delivered'] = True
+                    changed = True
+        except Exception:
+            pass  # leave undelivered; next consented run retries
+
+if changed:
+    spool_dir = os.path.dirname(spool_path)
+    fd, tmp = tempfile.mkstemp(prefix='.spool-', dir=spool_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            for e in entries:
+                out.write(json.dumps(e) + '\n')
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, spool_path)
+    except Exception:
+        try: os.unlink(tmp)
+        except Exception: pass
+PYEOF
+fi
+
 if [ ! -f "$CONFIG_FILE" ]; then
   exit 0
 fi

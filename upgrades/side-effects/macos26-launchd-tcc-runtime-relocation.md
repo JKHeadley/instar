@@ -153,6 +153,23 @@ Adds `src/core/InstarRuntimeRoot.ts` — a pure module that computes where an ag
 > relocated agents) + Scope E FDA bootstrap + e2e tier + migration parity + CI
 > grep-gate + live verification + merge.
 
+> **Increment 11 (SessionStart spool drain — closes the b2lead-before-fix path):**
+> The SessionStart hook now drains `~/.instar/watchdog-escalations.jsonl` in
+> Python (urllib.request — no curl subprocess, no token-in-argv risk). The drain
+> runs FIRST in the hook (before the agent-config check exits), so it works
+> regardless of the host agent's state. A Claude session is a CONSENTED context
+> with TCC keys → it can read the dead agent's Documents-resident config.json
+> that the launchd-spawned watchdog cannot on macOS 26, and uses the agent's own
+> Telegram credential to deliver the page. Atomic rewrite (temp+rename, 0600)
+> on success. Idempotent (delivered:true entries skipped). Fast-path (`[ -s "$SPOOL" ]`)
+> skips the Python invocation entirely when no spool exists — the steady-state
+> for healthy machines. Honors `INSTAR_TELEGRAM_API_BASE` for test mocking.
+> 11 tests (8 content + 3 darwin behavioral with a real local HTTP mock server:
+> delivers+marks-delivered+atomic-rewrite; idempotent skip; no-telegram-config
+> no-op). **Both directions of the paging chain now reach the user: armed agents
+> via the watchdog's direct send, unarmed b2lead-before-fix agents via the next
+> consented Claude session's drain.**
+
 ## Decision-point inventory
 
 - `loadConfig stateDir computation` (`src/core/Config.ts:603-617`) — **modify** — was `path.join(resolvedProjectDir, '.instar')`, now `resolveStateDir(resolvedProjectDir)`. Behavior is **identical** for every caller unless `INSTAR_RUNTIME_ROOT` is set (only the launchd boot path sets it, in a later increment). No gate/block surface.
