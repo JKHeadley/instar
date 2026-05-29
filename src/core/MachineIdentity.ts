@@ -138,6 +138,11 @@ export class MachineIdentityManager {
     this.instarDir = instarDir;
   }
 
+  /** The state dir this manager is rooted at (for co-located stores, e.g. pairing sessions). */
+  get baseDir(): string {
+    return this.instarDir;
+  }
+
   // ── Paths ────────────────────────────────────────────────────────
 
   private get machineDir(): string {

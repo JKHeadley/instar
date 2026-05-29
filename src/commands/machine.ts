@@ -201,6 +201,7 @@ export async function startPairing(options: PairOptions): Promise<void> {
 
   const { generatePairingCode, createPairingSession } = await import('../core/PairingProtocol.js');
   const { migrateSecrets } = await import('../core/SecretMigrator.js');
+  const { PairingSessionStore } = await import('../core/PairingSessionStore.js');
 
   // Migrate secrets from config.json before pairing (ensures they're in the encrypted store)
   const configPath = path.join(config.stateDir, 'config.json');
@@ -210,7 +211,13 @@ export async function startPairing(options: PairOptions): Promise<void> {
   }
 
   const pairingCode = generatePairingCode();
-  const _pairingSession = createPairingSession({ code: pairingCode });
+  // Give the operator a usable window to run `instar join` on the other machine.
+  const pairingSession = createPairingSession({ code: pairingCode, expiryMs: 10 * 60 * 1000 });
+  // Persist the session so the RUNNING server's /api/pair can validate the code
+  // non-interactively (code-authenticated pool join — no human SAS step). Without
+  // this the session was created into an unused variable and discarded, leaving
+  // /api/pair unable to validate anything (the interactive-SAS-only gap).
+  new PairingSessionStore(config.stateDir).save(pairingSession);
 
   console.log(pc.bold(`\n  Pairing Code for ${pc.cyan(config.projectName)}\n`));
   console.log(`  ${pc.bold(pc.yellow(pairingCode))}`);
@@ -343,6 +350,12 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     console.log(`  Contacting ${redactUrl(repoUrl)}...`);
     try {
       const identity = mgr.loadIdentity();
+      // Advertise our own reachable URL (if we already have one — a named tunnel
+      // is known at config time; a quick tunnel is only known after our server
+      // starts, so this may be null and the awake machine learns it later via the
+      // heartbeat URL field instead).
+      const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
+      const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
       const resp = await fetch(`${repoUrl}/api/pair`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -350,6 +363,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
           pairingCode: options.code,
           machineIdentity: identity,
           ephemeralPublicKey: identity.encryptionPublicKey,
+          ...(advertisedUrl ? { advertisedUrl } : {}),
         }),
         signal: AbortSignal.timeout(10_000),
       });
