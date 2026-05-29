@@ -7,10 +7,15 @@ review-convergence: "2026-05-29T00:29:34.270Z"
 review-iterations: 2
 review-completed-at: "2026-05-29T00:29:34.270Z"
 review-report: "standards-conformance gate, 2 iters: (1) Testing Integrity → added Tier-4 Test-as-Self; (2) Bug-Fix Evidence Bar → reframed Tier-4 as pre-merge blocking with negative control. Retry confirmations degraded due to LLM-pool recovery; clean iters used."
-approved: false
-approved-by: ""
-approved-at: ""
+approved: true
+approved-by: justin
+approved-at: "2026-05-29T02:51:00Z"
 eli16-overview: topic-intent-briefing-injection.eli16.md
+# Linkage back to the prior spec that shipped with the gap this spec fixes.
+# No reconciler reads this yet — see the failure-learning-loop note in the
+# Lessons-carried section below. Captured here so a future audit can.
+amends-spec: docs/specs/topic-intent-capture-loop.md
+amends-failure-ledger: FAIL-mac-lan-001
 ---
 
 # Topic-intent briefing — actually inject it
