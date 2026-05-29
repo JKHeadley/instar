@@ -731,24 +731,31 @@ export class ServerSupervisor extends EventEmitter {
       const checkNode = (fs.existsSync(serverNode)) ? serverNode : process.execPath;
       const shadowNodeModules = path.join(this.stateDir, 'shadow-install', 'node_modules');
       const sqliteCopies = findBetterSqlite3Copies(shadowNodeModules);
-      const force = this.consecutiveBindFailures >= 2;
-      if (force) {
-        console.log(`[Supervisor] Preflight: ${this.consecutiveBindFailures} consecutive bind failures — forcing aggressive better-sqlite3 rebuild`);
-      }
+      // FLEET FIX (native-module rebuild-loop, 2026-05-29): a BIND failure (e.g.
+      // EADDRINUSE from a held/duplicate listener.sock or HTTP port) is NOT
+      // evidence of a native-module ABI problem. Previously we force-rebuilt
+      // better-sqlite3 on any >=2 consecutive bind failures EVEN when the module
+      // loaded fine — turning a held-socket situation into hundreds of futile,
+      // CPU-heavy node-gyp rebuilds (observed fleet-wide: sagemind 202,
+      // deep-signal 144, inspec 112, ai-guy 104). We now rebuild ONLY a copy that
+      // actually fails to load with a NODE_MODULE_VERSION ABI mismatch. Genuine
+      // native-module crash-loops still self-heal (the load check below catches a
+      // server that crashed before binding because the module failed to load); a
+      // held-socket bind failure no longer burns the machine on a futile rebuild.
+      let anyAbiMismatch = false;
       for (const copy of sqliteCopies) {
         try {
-          // Try loading the native module with the SERVER's Node — if it fails, rebuild.
-          // When we're escalating after consecutive bind failures, force the rebuild
-          // even if the require-load succeeds (the load may pass for one copy while
-          // a different cached copy is what actually got resolved at runtime).
+          // Try loading the native module with the SERVER's Node — rebuild only
+          // if it ACTUALLY fails to load with an ABI mismatch.
           const result = spawnSync(checkNode, ['-e', `require('${copy.binaryPath.replace(/'/g, "\\'")}')`], {
             encoding: 'utf-8',
             timeout: 10_000,
             cwd: this.projectDir,
           });
-          const needsRebuild = force || (result.status !== 0 && result.stderr?.includes('NODE_MODULE_VERSION'));
+          const needsRebuild = result.status !== 0 && (result.stderr?.includes('NODE_MODULE_VERSION') ?? false);
           if (!needsRebuild) continue;
-          console.log(`[Supervisor] Preflight: better-sqlite3 ${force ? 'force-rebuild' : 'version mismatch'} at ${copy.packageDir} — rebuilding (server node: ${checkNode})`);
+          anyAbiMismatch = true;
+          console.log(`[Supervisor] Preflight: better-sqlite3 version mismatch at ${copy.packageDir} — rebuilding (server node: ${checkNode})`);
           const npmPath = this.findNpmPath();
           if (!npmPath) {
             console.error('[Supervisor] Preflight: no npm binary found — cannot rebuild better-sqlite3');
@@ -775,7 +782,6 @@ export class ServerSupervisor extends EventEmitter {
             'better-sqlite3',
             '--prefix', copy.prefixDir,
           ];
-          if (force) rebuildArgs.push('--force');
           const rebuildResult = spawnSync(checkNode, [npmPath, ...rebuildArgs], {
             encoding: 'utf-8',
             timeout: 120_000,
@@ -798,6 +804,14 @@ export class ServerSupervisor extends EventEmitter {
         } catch (err) {
           console.error(`[Supervisor] Preflight: native module check failed at ${copy.packageDir}: ${err}`);
         }
+      }
+      // Diagnostic: repeated bind failures while better-sqlite3 loads fine means
+      // the failure is NOT a native-module problem (almost always a held/stale
+      // listener.sock or HTTP port from a duplicate/stuck instance). Say so loudly
+      // instead of silently rebuilding — the real remedy is freeing the socket
+      // (WakeSocketServer now degrades gracefully instead of crash-looping).
+      if (this.consecutiveBindFailures >= this.bindFailureEscalationThreshold && !anyAbiMismatch && sqliteCopies.length > 0) {
+        console.log(`[Supervisor] Preflight: ${this.consecutiveBindFailures} consecutive bind failures but better-sqlite3 loads fine — NOT a native-module problem (likely a held socket/port from a duplicate or stuck instance). Skipping native rebuild.`);
       }
     }
 
