@@ -362,23 +362,19 @@ describe('TokenLedger.scanAll bounded behavior', () => {
         assistantLine({ requestId: `r${i}`, sessionId: `s${i}` }) + '\n',
       );
     }
+    let yieldCount = 0;
     const ledger = new TokenLedger({
       dbPath: ':memory:',
       claudeProjectsDir: projectsDir,
       yieldEveryNFiles: 2,
+      asyncYieldFn: async () => { yieldCount++; },
     });
 
-    let interleavedTicks = 0;
-    const interleaver = setInterval(() => { interleavedTicks++; }, 1);
-
     const r = await ledger.scanAllAsync();
-    clearInterval(interleaver);
 
     expect(r.filesScanned).toBe(8);
     expect(r.inserted).toBe(8);
-    // The async path must have yielded to the event loop at least once
-    // (otherwise the setInterval callback could not fire).
-    expect(interleavedTicks).toBeGreaterThan(0);
+    expect(yieldCount).toBeGreaterThan(0);
     ledger.close();
   });
 });

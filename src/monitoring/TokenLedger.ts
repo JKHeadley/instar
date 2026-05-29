@@ -230,6 +230,10 @@ export interface TokenLedgerOptions {
    * seconds without yielding.
    */
   yieldEveryNFiles?: number;
+  /**
+   * Test seam for scanAllAsync's event-loop yield. Production uses setImmediate.
+   */
+  asyncYieldFn?: () => Promise<void>;
 }
 
 interface AssistantLine {
@@ -260,6 +264,7 @@ export class TokenLedger {
   private maxFileAgeMs: number;
   private maxFilesPerScan: number;
   private yieldEveryNFiles: number;
+  private asyncYieldFn: () => Promise<void>;
   // Cursor between scan calls — when a tick stops at the per-scan cap,
   // the next tick resumes from here instead of restarting the whole tree.
   private scanCursor: { dirIdx: number; fileIdx: number } = { dirIdx: 0, fileIdx: 0 };
@@ -275,6 +280,7 @@ export class TokenLedger {
     this.maxFileAgeMs = opts.maxFileAgeMs && opts.maxFileAgeMs > 0 ? opts.maxFileAgeMs : 0;
     this.maxFilesPerScan = opts.maxFilesPerScan && opts.maxFilesPerScan > 0 ? opts.maxFilesPerScan : 500;
     this.yieldEveryNFiles = opts.yieldEveryNFiles && opts.yieldEveryNFiles > 0 ? opts.yieldEveryNFiles : 25;
+    this.asyncYieldFn = opts.asyncYieldFn ?? (() => new Promise<void>(resolve => setImmediate(resolve)));
     if (opts.dbPath !== ':memory:') {
       fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
     }
@@ -586,7 +592,7 @@ export class TokenLedger {
    */
   async scanAllAsync(): Promise<ScanAllResult> {
     return this.scanInternal({
-      yieldFn: () => new Promise<void>(resolve => setImmediate(resolve)),
+      yieldFn: this.asyncYieldFn,
     });
   }
 
