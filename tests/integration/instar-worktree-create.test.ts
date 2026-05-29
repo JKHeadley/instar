@@ -53,12 +53,36 @@ function makeFixture(): Fixture {
   execFileSync('git', ['-C', bareRepo, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'config', 'commit.gpgsign', 'false'], { stdio: 'pipe' });
   fs.writeFileSync(path.join(bareRepo, 'README.md'), '# Test\n');
-  fs.writeFileSync(path.join(bareRepo, 'package.json'), JSON.stringify({ name: 'instar' }));
+  fs.writeFileSync(path.join(bareRepo, 'package.json'), JSON.stringify({
+    name: 'instar',
+    scripts: { prepare: 'node scripts/fake-husky.mjs' },
+  }));
   fs.mkdirSync(path.join(bareRepo, 'src', 'core'), { recursive: true });
   fs.writeFileSync(path.join(bareRepo, 'src', 'core', 'GitSync.ts'), '');
   fs.writeFileSync(path.join(bareRepo, 'tsconfig.json'), '{}');
+  fs.mkdirSync(path.join(bareRepo, '.husky'), { recursive: true });
+  fs.writeFileSync(path.join(bareRepo, '.husky', 'pre-commit'), 'npm run lint\nnode scripts/instar-dev-precommit.js\n');
+  fs.mkdirSync(path.join(bareRepo, '.husky', '_'), { recursive: true });
+  fs.writeFileSync(path.join(bareRepo, '.husky', '_', 'pre-commit'), '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n');
+  fs.writeFileSync(path.join(bareRepo, '.husky', '_', 'h'), '#!/usr/bin/env sh\nexit 0\n');
+  fs.chmodSync(path.join(bareRepo, '.husky', '_', 'pre-commit'), 0o755);
+  fs.chmodSync(path.join(bareRepo, '.husky', '_', 'h'), 0o755);
+  execFileSync('git', ['-C', bareRepo, 'config', 'core.hooksPath', '.husky/_'], { stdio: 'pipe' });
+  fs.mkdirSync(path.join(bareRepo, 'scripts'), { recursive: true });
+  fs.writeFileSync(
+    path.join(bareRepo, 'scripts', 'fake-husky.mjs'),
+    [
+      "import fs from 'node:fs';",
+      "fs.mkdirSync('.husky/_', { recursive: true });",
+      "fs.writeFileSync('.husky/_/pre-commit', '#!/usr/bin/env sh\\n. \"$(dirname \"$0\")/h\"\\n');",
+      "fs.writeFileSync('.husky/_/h', '#!/usr/bin/env sh\\nsh -e \"$(dirname \"$(dirname \"$0\")\")/$(basename \"$0\")\" \"$@\"\\n');",
+      "fs.chmodSync('.husky/_/pre-commit', 0o755);",
+      "fs.chmodSync('.husky/_/h', 0o755);",
+      '',
+    ].join('\n'),
+  );
   execFileSync('git', ['-C', bareRepo, 'add', 'README.md'], { stdio: 'pipe' });
-  execFileSync('git', ['-C', bareRepo, 'add', 'package.json', 'src/core/GitSync.ts', 'tsconfig.json'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', bareRepo, 'add', 'package.json', 'src/core/GitSync.ts', 'tsconfig.json', '.husky/pre-commit', 'scripts/fake-husky.mjs'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'commit', '-m', 'init'], { stdio: 'pipe' });
   // Allowlisted remote URL.
   const fakeRemote = 'git@github.com:instar-ai/instar.git';
@@ -143,6 +167,28 @@ describe('createWorktree (integration)', () => {
       'utf-8',
     );
     expect(JSON.parse(mirror.trim())).toMatchObject({ agent: fix.agentName, slug: 'spec-integ-foo' });
+  });
+
+  it('activates the Husky pre-commit shim in a newly created worktree', async () => {
+    const result = await createWorktree({
+      branch: 'spec/husky-shim',
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    });
+
+    const hookPath = path.join(result.worktreePath, '.husky', '_', 'pre-commit');
+    expect(fs.existsSync(hookPath)).toBe(true);
+    expect(fs.statSync(hookPath).mode & 0o111).not.toBe(0);
+    expect(git(['config', '--get', 'core.hooksPath'], result.worktreePath)).toBe('.husky/_');
   });
 
   it('symlinks node_modules by default when the source exists; --no-share-node-modules opts out', async () => {

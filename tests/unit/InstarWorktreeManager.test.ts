@@ -21,6 +21,7 @@ import {
   DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
   appendLedgerEntry,
   defaultSlugFor,
+  hasRunnableHookShim,
   resolveAgentHome,
   resolveInstarRepo,
   validateBranchName,
@@ -459,5 +460,24 @@ describe('worktreeDedupeKey', () => {
 
   it('uses the documented prefix so the Layer 4 detector can produce it', () => {
     expect(worktreeDedupeKey('/x').startsWith('worktree-misplaced:')).toBe(true);
+  });
+});
+
+describe('hasRunnableHookShim', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = makeTmpDir('iwm-husky'); });
+  afterEach(() => cleanup(tmp));
+
+  it('requires the generated hook shim to exist and be executable', () => {
+    const hook = path.join(tmp, '.husky', '_', 'pre-commit');
+    expect(hasRunnableHookShim(hook)).toBe(false);
+
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '#!/usr/bin/env sh\nexit 0\n');
+    fs.chmodSync(hook, 0o644);
+    expect(hasRunnableHookShim(hook)).toBe(false);
+
+    fs.chmodSync(hook, 0o755);
+    expect(hasRunnableHookShim(hook)).toBe(true);
   });
 });

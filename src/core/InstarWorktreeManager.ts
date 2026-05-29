@@ -13,6 +13,7 @@
  */
 
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -456,6 +457,7 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // configuration (user.signingkey, commit.gpgsign, gpg.format,
   // gpg.ssh.allowedSignersFile) is deliberately untouched.
   setLocalGitIdentity(worktreePath, agentName);
+  ensureHuskyHooksActive(worktreePath);
 
   const shareNodeModules = opts.shareNodeModules ?? true;
   if (shareNodeModules) {
@@ -535,6 +537,55 @@ function maybeSymlinkNodeModules(instarRepo: string, worktreePath: string): void
   if (!lst.isDirectory()) return;
   if (fs.existsSync(target)) return;
   fs.symlinkSync(source, target);
+}
+
+function ensureHuskyHooksActive(worktreePath: string): void {
+  const packageJsonPath = path.join(worktreePath, 'package.json');
+  const trackedHookPath = path.join(worktreePath, '.husky', 'pre-commit');
+  const shimHookPath = path.join(worktreePath, '.husky', '_', 'pre-commit');
+  if (!fs.existsSync(packageJsonPath) || !fs.existsSync(trackedHookPath)) return;
+
+  let prepareScript: unknown;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+      scripts?: { prepare?: unknown };
+    };
+    prepareScript = pkg.scripts?.prepare;
+  } catch {
+    throw new Error('husky: package.json is unreadable; cannot verify pre-commit hook activation');
+  }
+  if (typeof prepareScript !== 'string' || !prepareScript.trim()) {
+    throw new Error('husky: package.json has no prepare script; cannot activate pre-commit hook in new worktree');
+  }
+
+  if (!hasRunnableHookShim(shimHookPath)) {
+    try {
+      execFileSync('npm', ['run', 'prepare'], {
+        cwd: worktreePath,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException & { stderr?: Buffer | string };
+      const stderr = e.stderr ? String(e.stderr).trim() : '';
+      throw new Error(
+        `husky: prepare failed; pre-commit hook is not active in ${worktreePath}` +
+        (stderr ? ` — ${stderr.split('\n').slice(-1)[0]}` : ''),
+      );
+    }
+  }
+
+  if (!hasRunnableHookShim(shimHookPath)) {
+    throw new Error('husky: prepare completed but the generated pre-commit shim is still missing or not executable');
+  }
+}
+
+export function hasRunnableHookShim(shimHookPath: string): boolean {
+  try {
+    const st = fs.statSync(shimHookPath);
+    return st.isFile() && (st.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
 }
 
 function ensureWorktreesDir(worktreesDir: string): void {

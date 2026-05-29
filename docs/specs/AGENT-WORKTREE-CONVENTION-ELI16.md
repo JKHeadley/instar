@@ -175,3 +175,19 @@ ask for your approval. Otherwise I'll iterate again.
 Full spec at `docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md` covers the
 side-effects review framework, tests, sequencing, and five deferred
 residuals (operational follow-ups, not spec gaps).
+
+## Amendment (2026-05-29): make the pre-commit gate real in every worktree
+
+We found a subtle hole while using the worktree convention. A new worktree can
+have the tracked pre-commit script and can have Git configured to use Husky, but
+still not actually run the gate. The missing piece is Husky's generated shim,
+which is local ignored state. It appears after the package prepare step runs,
+but a fresh worktree does not automatically contain it.
+
+That meant a developer could commit in a fresh worktree and skip the quality
+gate without intending to. The fix is to make worktree creation activate and
+verify the Husky shim before returning. If the shim cannot be created, the
+worktree command fails instead of handing back an unsafe checkout.
+
+This turns the rule from memory into structure: every worktree created by the
+official command starts with the pre-commit gate physically present and runnable.

@@ -196,7 +196,7 @@ in the calling environment override local config. The CLI documents
 this in its help output; agents that need attribution must avoid
 exporting those vars.
 
-(R-7 tracks signed-attribution as a follow-up — requires per-agent
+(R-7 tracks signed-attribution as a follow-up <!-- tracked: R-7 --> — requires per-agent
 signing keys, out of scope for v1.)
 
 #### Permissions
@@ -575,13 +575,13 @@ Total rollback: under 10 minutes. No data loss.
 - ELI16 companion is published.
 - Self-Knowledge Tree entry exists.
 
-## Residuals (conscious deferrals)
+## Residuals (conscious deferrals) <!-- tracked: residuals -->
 
 - **R-1**: Cleanup migration of pre-existing worktrees in unsafe
   locations (~30 today). Manual `git worktree move` per case. Detector
   emits, operator decides.
 - **R-2**: Hardlink-farm node_modules to eliminate sandbox-revoke risk
-  with sharing. Deferred to v2.
+  with sharing. Deferred to v2. <!-- tracked: R-2 -->
 - **R-3**: Disk-usage telemetry in `instar doctor`.
 - **R-4**: Capacity tests (50 worktrees × 10 agents).
 - **R-5**: `instar worktree list` / `instar worktree prune`
@@ -594,7 +594,7 @@ Total rollback: under 10 minutes. No data loss.
   non-claim documented.
 - **R-8**: System-owned `~/.instar/system.json` for `repoAllowlist`
   (defends against agent-writable config). Out of scope per Non-goals
-  threat-model boundary.
+  threat-model boundary. <!-- tracked: R-8 -->
 - **R-9**: Throttle the PostUpdateMigrator's audit emission to once
   per N hours via a state-file timestamp. v1 emits at most one item
   per misplaced INSTAR_REPO per migrator run, naturally bounded.
@@ -634,3 +634,38 @@ Two material behavior changes worth highlighting:
 Both are documented; neither breaks workflow.
 
 Rollback under 10 minutes if convention proves wrong.
+
+## Amendment (2026-05-29): per-worktree Husky hook activation
+
+The convention originally guaranteed that a new agent worktree lands in the
+safe agent-home location, gets the correct local git identity, and writes an
+audit ledger. Dogfooding #525 exposed a separate structural gap: Git config can
+point at Husky's generated hook directory while that generated directory is
+absent in a fresh worktree. The tracked pre-commit script exists, and
+`core.hooksPath` is set, but commits still go ungated because the generated
+shim is local ignored state created by Husky's prepare step.
+
+### Change
+
+- After `instar worktree create` adds the new worktree and sets local identity,
+  it verifies the generated Husky pre-commit shim exists and is executable when
+  the checkout has a tracked Husky pre-commit script and a package prepare
+  script.
+- If the generated shim is missing, the manager runs the package prepare script
+  in the new worktree, then verifies the shim again.
+- If prepare fails, or the shim is still missing/non-executable afterward,
+  worktree creation fails loudly. An ungated developer worktree is not a valid
+  output of the command.
+- Repositories without Husky do not opt into this behavior; the check is gated
+  by the presence of a tracked Husky pre-commit script.
+
+### Acceptance Criteria (hook activation amendment)
+
+H1. A newly-created Instar worktree with Husky configured has a generated,
+executable pre-commit shim before `instar worktree create` returns.
+H2. The generated shim is produced even when it was absent from the source
+checkout because it is ignored local state.
+H3. If the prepare step cannot activate the shim, worktree creation fails with a
+clear error rather than silently creating an ungated worktree.
+H4. Tests cover both the low-level executable-shim predicate and real worktree
+creation producing the shim.
