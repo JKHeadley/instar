@@ -31,7 +31,7 @@ describe('SleepWakeDetector', () => {
 
   describe('wake detection', () => {
     it('fires wake event when timer drift exceeds threshold', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       const events: Array<{ sleepDurationSeconds: number }> = [];
       detector.on('wake', (e) => events.push(e));
       detector.start();
@@ -47,7 +47,7 @@ describe('SleepWakeDetector', () => {
     });
 
     it('does not fire wake event for normal ticks', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       const events: unknown[] = [];
       detector.on('wake', (e) => events.push(e));
       detector.start();
@@ -60,7 +60,7 @@ describe('SleepWakeDetector', () => {
     });
 
     it('detects multiple sleep/wake cycles', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       const events: unknown[] = [];
       detector.on('wake', (e) => events.push(e));
       detector.start();
@@ -81,14 +81,14 @@ describe('SleepWakeDetector', () => {
 
   describe('start/stop lifecycle', () => {
     it('start is idempotent', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       detector.start();
       detector.start(); // no-op
       detector.stop();
     });
 
     it('stop clears the interval', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       const events: unknown[] = [];
       detector.on('wake', (e) => events.push(e));
 
@@ -101,14 +101,14 @@ describe('SleepWakeDetector', () => {
     });
 
     it('stop is safe to call without start', () => {
-      detector = new SleepWakeDetector();
+      detector = new SleepWakeDetector({ loadAvgProvider: () => [0, 0, 0] });
       detector.stop(); // should not throw
     });
   });
 
   describe('config defaults', () => {
     it('uses 2s check interval and 10s threshold by default', () => {
-      detector = new SleepWakeDetector();
+      detector = new SleepWakeDetector({ loadAvgProvider: () => [0, 0, 0] });
       const events: unknown[] = [];
       detector.on('wake', (e) => events.push(e));
       detector.start();
@@ -125,7 +125,7 @@ describe('SleepWakeDetector', () => {
 
   describe('getStats', () => {
     it('returns zeros with no wake events', () => {
-      detector = new SleepWakeDetector();
+      detector = new SleepWakeDetector({ loadAvgProvider: () => [0, 0, 0] });
       const stats = detector.getStats();
       expect(stats.wakeCount).toBe(0);
       expect(stats.totalSleepSeconds).toBe(0);
@@ -133,7 +133,7 @@ describe('SleepWakeDetector', () => {
     });
 
     it('aggregates wake events', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       detector.start();
 
       simulateSleep(10000, 1000); // ~9s sleep
@@ -147,7 +147,7 @@ describe('SleepWakeDetector', () => {
     });
 
     it('filters by sinceMs', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000 });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       detector.start();
 
       simulateSleep(10000, 1000); // first wake

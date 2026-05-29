@@ -322,6 +322,9 @@ export class AgentServer {
     /** ReapLog — durable audit of every reap + skipped-reap (UNIFIED-SESSION-LIFECYCLE
      *  §P4). Powers GET /sessions/reap-log. */
     reapLog?: import('../monitoring/ReapLog.js').ReapLog;
+    /** SleepWakeDetector — timer-drift sleep detection with CPU-starvation guard.
+     *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). */
+    sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
     /** Threadline → Telegram bridge config — toggles + allow/deny list. */
     telegramBridgeConfig?: import('../threadline/TelegramBridgeConfig.js').TelegramBridgeConfig;
     /** Threadline → Telegram bridge — relay-only mirror of threadline messages. */
@@ -751,6 +754,7 @@ export class AgentServer {
       failureAttributionEngine: this.failureAttributionEngine,
       sessionReaper: options.sessionReaper ?? null,
       reapLog: options.reapLog ?? null,
+      sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
       threadlineObservability: options.threadlineObservability ?? null,

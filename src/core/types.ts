@@ -2801,6 +2801,23 @@ export interface MonitoringConfig {
     };
   };
   /**
+   * SleepWakeDetector CPU-starvation guard tuning. All optional — the class ships
+   * sane defaults, so absence of this block (every existing agent) still gets the
+   * fix on update with no config migration. Read at runtime as a fallback against
+   * the shipped defaults.
+   */
+  sleepWake?: {
+    /** loadavg[0]/cpuCount above which a SHORT drift is treated as CPU starvation
+     *  (suppressed, not a wake). Default: 1.5. Set high to disable the guard. */
+    maxLoadRatio?: number;
+    /** A drift at least this long (seconds) is always treated as real sleep,
+     *  regardless of load. Default: 300. */
+    longSleepFloorSeconds?: number;
+    /** Minimum gap (ms) between EMITTED wakes; short drifts within it are
+     *  rate-limited. Long sleeps bypass it. Default: 60000. */
+    minWakeIntervalMs?: number;
+  };
+  /**
    * SessionReaper — pressure-aware reaper of idle-but-alive sessions. The only
    * monitor that *kills* on a heuristic, so it ships OFF + dry-run by default.
    * See docs/specs/SESSION-REAPER-SPEC.md and DEFAULT_SESSION_REAPER_CONFIG.

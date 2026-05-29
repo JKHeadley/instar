@@ -700,6 +700,10 @@ export interface RouteContext {
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
   reapLog?: import('../monitoring/ReapLog.js').ReapLog | null;
+  /** SleepWakeDetector — timer-drift sleep detection with a CPU-starvation guard.
+   *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). Null when
+   *  not wired (older boot paths / standby) → the route 503s. */
+  sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector | null;
   /** TaskFlow registry — durable multi-step job records (OpenClaw import).
    *  Null when not enabled. Phase 1: no business consumers; admin endpoints
    *  only. */
@@ -3851,6 +3855,21 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // Sleep/wake telemetry. The pull-surface answer to "why does my agent keep
+  // 'restarting'?" — wakeCount is genuine sleep/wake recovery; suppressedCount
+  // (with the cpu-starvation/cooldown breakdown) is the false-wake storm the
+  // CPU-starvation guard absorbed instead of triggering recovery. Read-only,
+  // Bearer-auth (router-level middleware). `?sinceMs=<epoch>` filters the window.
+  router.get('/monitoring/sleep-wake', (req, res) => {
+    if (!ctx.sleepWakeDetector) {
+      res.status(503).json({ error: 'sleep-wake detector unavailable' });
+      return;
+    }
+    const rawSince = Number(req.query.sinceMs);
+    const sinceMs = Number.isFinite(rawSince) && rawSince > 0 ? rawSince : undefined;
+    res.json(ctx.sleepWakeDetector.getStats(sinceMs));
   });
 
   router.get('/sessions', (req, res) => {
