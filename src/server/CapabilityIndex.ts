@@ -658,7 +658,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: ctx.operationGate
         ? [
             'POST /operations/classify — classify an operation (risk level)',
-            'POST /operations/evaluate — full gate evaluation (proceed/plan/block)',
+            'POST /operations/evaluate — full gate evaluation (proceed/show-plan/suggest-alternative/block)',
             'GET /operations/log — recent operation history',
             'GET /operations/permissions/:service — service permissions',
             'POST /sentinel/classify — test message classification',
@@ -750,7 +750,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
   { context: 'About to deploy, push, or modify files outside project', action: 'Run coherence check FIRST (POST /coherence/check). Verify you are in the right project for the current topic.' },
   { context: 'Working on a topic tied to a specific project', action: 'Check topic-project binding (GET /topic-bindings). If unbound, bind it (POST /topic-bindings) to prevent cross-project confusion.' },
   { context: 'Unsure what project this is or what files exist', action: 'Check project map (GET /project-map?format=compact) for spatial awareness — project type, key files, deployment targets.' },
-  { context: 'About to call an external service API (email, calendar, messaging)', action: 'Evaluate through operation gate FIRST (POST /operations/evaluate). The gate classifies risk and decides proceed/plan/block.' },
+  { context: 'About to call an external service API (email, calendar, messaging)', action: 'Evaluate through operation gate FIRST (POST /operations/evaluate). The gate classifies risk and decides proceed/show-plan/suggest-alternative/block.' },
   { context: 'User says to stop, cancel, or abort', action: 'MessageSentinel intercepts these automatically. For manual classification: POST /sentinel/classify.' },
   { context: 'User says "you don\'t need to ask me about X"', action: 'Grant trust explicitly (POST /trust/grant). Trust persists across sessions.' },
   { context: 'User asks about autonomy, trust level, approval settings, or how much freedom the agent has', action: 'Show autonomy summary (GET /autonomy/summary). Present in natural language — never show CLI commands.' },

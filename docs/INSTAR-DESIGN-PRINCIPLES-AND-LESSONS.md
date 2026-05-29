@@ -499,7 +499,7 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 **Source:** `docs/specs/EXTERNAL-OPERATION-SAFETY-SPEC.md`.
 
 **Infrastructure built (four components):**
-- `ExternalOperationGate` — `POST /operations/evaluate` returns allow / block / show-plan / suggest-alternative
+- `ExternalOperationGate` — `POST /operations/evaluate` returns proceed / block / show-plan / suggest-alternative
 - `AutonomyGradient` — per-service trust floors graduate over success history
 - `MessageSentinel` — intercepts emergency-stop signals from operator messaging
 - `AdaptiveTrust` — adjusts trust based on observed outcomes

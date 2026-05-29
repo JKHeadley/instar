@@ -10,6 +10,7 @@ import {
 } from '../../src/core/ExternalOperationGate.js';
 import type {
   ExternalOperationGateConfig,
+  GateAction,
   OperationMutability,
   OperationReversibility,
   OperationScope,
@@ -141,6 +142,24 @@ describe('ExternalOperationGate', () => {
       ...overrides,
     });
   }
+
+  it('uses proceed as the canonical allow action vocabulary', async () => {
+    const gate = createGate({
+      autonomyDefaults: AUTONOMY_PROFILES.collaborative,
+      blockedServices: ['banking'],
+    });
+    const canonicalActions: GateAction[] = ['proceed', 'show-plan', 'suggest-alternative', 'block'];
+    expect(canonicalActions).not.toContain('allow' as GateAction);
+
+    const read = await gate.evaluate({
+      service: 'gmail',
+      mutability: 'read',
+      reversibility: 'reversible',
+      description: 'Fetch inbox',
+    });
+    expect(read.action).toBe('proceed');
+    expect(canonicalActions).toContain(read.action);
+  });
 
   describe('classify', () => {
     it('classifies a read operation as low risk', () => {
