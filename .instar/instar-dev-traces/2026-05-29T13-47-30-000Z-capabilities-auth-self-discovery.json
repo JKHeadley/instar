@@ -1,0 +1,21 @@
+{
+  "id": "capabilities-auth-self-discovery",
+  "timestamp": "2026-05-29T13:47:30.000Z",
+  "task": "Align self-discovery capability-check docs with authenticated /capabilities contract",
+  "changedFiles": [
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/PostUpdateMigrator-secretDropHardenedRetrieve.test.ts",
+    "src/data/builtin-manifest.json",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/capabilities-auth-self-discovery.md"
+  ],
+  "riskReview": [
+    "Does not exempt /capabilities from auth.",
+    "Migrator rewrites only legacy unauthenticated localhost capabilities curl commands.",
+    "Fresh and migrated instructions now agree with the runtime server contract."
+  ],
+  "validation": [
+    "npx vitest run tests/unit/PostUpdateMigrator-secretDropHardenedRetrieve.test.ts — 13 tests passed"
+  ]
+}

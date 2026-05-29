@@ -2853,6 +2853,8 @@ If the user reports they were "unresponsive for a while during updates," check \
       result.skipped.push('CLAUDE.md: Self-Heal section already present');
     }
 
+    const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;
+
     // Self-Discovery section
     if (!content.includes('Self-Discovery') && !content.includes('/capabilities')) {
       const section = `
@@ -2861,7 +2863,7 @@ If the user reports they were "unresponsive for a while during updates," check \
 Before EVER saying "I don't have", "I can't", or "this isn't available" — check what actually exists:
 
 \`\`\`bash
-curl http://localhost:${port}/capabilities
+${authenticatedCapabilitiesCurl}
 \`\`\`
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
@@ -2880,6 +2882,14 @@ This returns your full capability matrix: scripts, hooks, Telegram status, jobs,
       result.upgraded.push('CLAUDE.md: added Self-Discovery section');
     } else {
       result.skipped.push('CLAUDE.md: Self-Discovery section already present');
+    }
+
+    const legacyCapabilitiesCurl =
+      /curl(?: -s)? http:\/\/localhost:(?:\$\{INSTAR_PORT:-)?\d+\}?\/capabilities/g;
+    if (legacyCapabilitiesCurl.test(content)) {
+      content = content.replace(legacyCapabilitiesCurl, () => authenticatedCapabilitiesCurl);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: authenticated Self-Discovery capabilities curl');
     }
 
     // Telegram Relay section — add if Telegram is configured but section is missing

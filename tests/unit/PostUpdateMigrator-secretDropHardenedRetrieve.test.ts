@@ -268,4 +268,41 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(after).not.toMatch(/\/secrets\/retrieve\/TOKEN`/);
     expect(result.upgraded.some(u => u.includes('hardened helper'))).toBe(true);
   });
+
+  it('rewrites legacy unauthenticated Self-Discovery capabilities curl', () => {
+    const legacy = [
+      '# CLAUDE.md — test',
+      '',
+      '### Self-Discovery (Know Before You Claim)',
+      '',
+      'Before EVER saying "I don\'t have", check what actually exists:',
+      '',
+      '```bash',
+      'curl http://localhost:4040/capabilities',
+      '```',
+      '',
+    ].join('\n');
+    fs.writeFileSync(claudeMdPath, legacy);
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('curl -H "Authorization: Bearer $AUTH" http://localhost:4042/capabilities');
+    expect(after).not.toContain('curl http://localhost:4040/capabilities');
+    expect(result.upgraded.some(u => u.includes('authenticated Self-Discovery capabilities curl'))).toBe(true);
+  });
+
+  it('adds Self-Discovery with the authenticated capabilities curl when missing', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md — test\n\n### How to Build New Capabilities\n\nBuild it.\n');
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('### Self-Discovery (Know Before You Claim)');
+    expect(after).toContain('curl -H "Authorization: Bearer $AUTH" http://localhost:4042/capabilities');
+    expect(after).not.toContain('curl http://localhost:4042/capabilities');
+    expect(result.upgraded.some(u => u.includes('added Self-Discovery section'))).toBe(true);
+  });
 });

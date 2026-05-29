@@ -1441,7 +1441,7 @@ Skills compound over time. Each one makes future sessions more capable. You are 
 Before EVER saying "I don't have", "I can't", or "this isn't available" — check what actually exists:
 
 \`\`\`bash
-curl http://localhost:\${INSTAR_PORT:-${port}}/capabilities
+curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/capabilities
 \`\`\`
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
