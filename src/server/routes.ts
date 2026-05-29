@@ -714,6 +714,9 @@ export interface RouteContext {
   threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | null;
   /** Multi-machine coordinator (cross-machine seamlessness) — null on single-machine installs. */
   coordinator: import('../core/MultiMachineCoordinator.js').MultiMachineCoordinator | null;
+  /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
+   *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
+  machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
   /**
    * Exactly-once ingress ledger (spec §8 G3a) — non-null ONLY when
    * multiMachine.exactlyOnceIngress is enabled. When present, the inbound
@@ -6968,6 +6971,54 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Multi-Machine Session Pool (§L2): the live machine-pool view ──────
+  //
+  // GET /pool — router holder + every machine's capacity (nickname, hardware,
+  // liveness, load, clock-skew status). Backs the Machines dashboard tab. Always
+  // 200 (Bearer-auth via the global middleware); `enabled:false` + an empty/
+  // single-machine view on installs where the pool registry isn't wired (dark).
+  router.get('/pool', (_req, res) => {
+    const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
+    const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    res.json({
+      enabled: !!ctx.machinePoolRegistry,
+      router: sync
+        ? {
+            holder: sync.leaseHolder,
+            epoch: sync.leaseEpoch,
+            holdsLease: sync.holdsLease,
+            awakeMachineCount: sync.awakeMachineCount,
+            splitBrainState: sync.splitBrainState,
+          }
+        : null,
+      machines,
+    });
+  });
+
+  // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).
+  // Body: { nickname: string }. Validates format + pool-uniqueness; a collision
+  // is rejected (400), an unknown machine is 404, a malformed nickname is 400.
+  // Metadata-only — renaming NEVER moves a session or touches lease/ownership.
+  router.patch('/pool/machines/:id', (req, res) => {
+    const idMgr = ctx.coordinator?.managers?.identityManager ?? null;
+    if (!idMgr) {
+      res.status(503).json({ error: 'machine registry not available (single-machine install)' });
+      return;
+    }
+    const nickname = (req.body ?? {}).nickname;
+    if (typeof nickname !== 'string') {
+      res.status(400).json({ error: 'nickname (string) is required' });
+      return;
+    }
+    try {
+      idMgr.updateNickname(req.params.id, nickname);
+      res.json({ ok: true, machineId: req.params.id, nickname: nickname.trim() });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(/not found/i.test(msg) ? 404 : 400).json({ error: msg });
     }
   });
 

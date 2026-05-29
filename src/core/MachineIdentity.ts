@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability } from './types.js';
+import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability, MachineHardware } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { assignNickname, isValidNickname } from './NicknameAssigner.js';
 
@@ -376,6 +376,25 @@ export class MachineIdentityManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Record this machine's self-attested hardware properties into its OWN registry
+   * entry (Session Pool §L2). The CALLER captures the hardware (e.g. via
+   * MachinePoolRegistry.captureHardware()) and passes it, so this manager stays
+   * free of `os`/registry-assembly concerns. Idempotent: only writes when the
+   * hardware actually changed (avoids a registry churn/sync on every boot). The
+   * entry must exist (the machine self-registers first). No-op for an unknown id.
+   */
+  recordSelfHardware(machineId: string, hardware: MachineHardware): boolean {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) return false;
+    if (JSON.stringify(entry.hardware ?? null) === JSON.stringify(hardware)) return false; // unchanged
+    entry.hardware = hardware;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+    return true;
   }
 
   /**

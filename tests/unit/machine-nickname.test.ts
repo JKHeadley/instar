@@ -97,4 +97,13 @@ describe('MachineIdentityManager nicknames (§L2)', () => {
     mgr.revokeMachine('m_a', 'm_b', 'test');
     expect(mgr.resolveNickname('Mac Mini')).toBeNull();
   });
+
+  it('recordSelfHardware stores hardware on the entry; idempotent when unchanged; no-op for unknown id', () => {
+    mgr.registerMachine(identity('m_a', 'mac-mini'), 'awake');
+    const hw = { platform: 'darwin', arch: 'arm64', cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184, hostname: 'mini', instarVersion: '1.3.75' };
+    expect(mgr.recordSelfHardware('m_a', hw)).toBe(true); // wrote
+    expect(mgr.loadRegistry().machines['m_a'].hardware).toEqual(hw);
+    expect(mgr.recordSelfHardware('m_a', hw)).toBe(false); // unchanged → no write (no churn/sync)
+    expect(mgr.recordSelfHardware('m_unknown', hw)).toBe(false); // unknown id → no-op
+  });
 });

@@ -1505,6 +1505,13 @@ export interface MachineRegistryEntry {
    * Optional for backward-compat with registries written before §L2.
    */
   nickname?: string;
+  /**
+   * Self-attested static hardware properties (Session Pool §L2) — captured by
+   * the machine from `os` and recorded into ITS OWN registry entry, then synced
+   * to peers via the registry. Surfaced on the Machines dashboard tab + GET /pool.
+   * Optional (absent until the machine records it).
+   */
+  hardware?: MachineHardware;
   /** Current trust status */
   status: MachineStatus;
   /** Current operational role */
