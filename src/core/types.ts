@@ -1758,6 +1758,24 @@ export interface SessionPoolConfig {
    * places locally (Stage-0 behavior). Default true.
    */
   dryRun?: boolean;
+  /**
+   * Clock-skew divergence tolerance (ms) — a machine whose self-reported vs
+   * router-observed timestamps diverge beyond this on 2 consecutive heartbeats
+   * is quarantined from placement (§L2). Default 300000 (5 min). Must be
+   * ≥ 2× maxExpectedNtpDriftMs (validated at startup).
+   */
+  clockSkewToleranceMs?: number;
+  /**
+   * Max expected NTP drift (ms) on a healthy host. `clockSkewToleranceMs` must
+   * be ≥ 2× this. Default 250.
+   */
+  maxExpectedNtpDriftMs?: number;
+  /**
+   * How long an offline machine's capacity record is retained before eviction
+   * (ms). Default 86400000 (24h) — a briefly-offline machine keeps its
+   * nickname/hardware/history for fast re-placement.
+   */
+  machineRecordEvictionMs?: number;
 }
 
 // ── Agent Autonomy ──────────────────────────────────────────────────

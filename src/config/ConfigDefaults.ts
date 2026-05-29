@@ -275,6 +275,9 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: false,
       stage: 'dark',
       dryRun: true,
+      clockSkewToleranceMs: 300000,
+      maxExpectedNtpDriftMs: 250,
+      machineRecordEvictionMs: 86400000,
     },
   },
 };

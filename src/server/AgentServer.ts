@@ -187,6 +187,8 @@ export class AgentServer {
     trustElevationTracker?: import('../core/TrustElevationTracker.js').TrustElevationTracker;
     autonomousEvolution?: import('../core/AutonomousEvolution.js').AutonomousEvolution;
     coordinator?: MultiMachineCoordinator;
+    /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
+    machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
     localSigningKeyPem?: string;
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
@@ -762,6 +764,7 @@ export class AgentServer {
       taskFlowRegistry: options.taskFlowRegistry ?? null,
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
+      machinePoolRegistry: options.machinePoolRegistry ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
       replyMarkerTransport: options.replyMarkerTransport ?? null,

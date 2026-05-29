@@ -71,6 +71,10 @@ describe('ConfigDefaults', () => {
         expect(sp.enabled).toBe(false);
         expect(sp.stage).toBe('dark');
         expect(sp.dryRun).toBe(true);
+        // Clock-skew knobs present + honor the §L2 startup invariant.
+        expect(sp.clockSkewToleranceMs).toBe(300000);
+        expect(sp.maxExpectedNtpDriftMs).toBe(250);
+        expect(sp.clockSkewToleranceMs).toBeGreaterThanOrEqual(sp.maxExpectedNtpDriftMs * 2);
       }
       const mig = (getMigrationDefaults('managed-project').multiMachine as any).sessionPool;
       expect(mig.enabled).toBe(false);
