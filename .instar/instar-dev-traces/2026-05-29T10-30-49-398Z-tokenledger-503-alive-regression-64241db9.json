@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "sessionId": "c001de80-4f1a-4717-aafe-a4362d76b0ef",
+  "timestamp": "2026-05-29T10:30:49.398Z",
+  "artifactPath": "upgrades/side-effects/tokenledger-503-alive-regression.md",
+  "artifactSha256": "eb89988f3595635bd19657e2d9648e01522ba4aecfc6716063b5f301de5f04c6",
+  "specPath": "docs/specs/tokenledger-503-alive-regression.md",
+  "coveredFiles": [
+    "docs/specs/tokenledger-503-alive-regression.eli16.md",
+    "docs/specs/tokenledger-503-alive-regression.md",
+    "src/data/builtin-manifest.json",
+    "src/monitoring/TokenLedger.ts",
+    "tests/integration/tokens-503-regression.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/tokenledger-503-alive-regression.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

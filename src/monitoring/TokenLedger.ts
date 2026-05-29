@@ -242,6 +242,11 @@ export interface TokenLedgerOptions {
    * Test seam for scanAllAsync's event-loop yield. Production uses setImmediate.
    */
   asyncYieldFn?: () => Promise<void>;
+  /**
+   * Test seam for constructor-time native open recovery. Production uses
+   * better-sqlite3's Database constructor directly.
+   */
+  databaseFactory?: (dbPath: string) => BetterSqliteDatabase;
 }
 
 interface AssistantLine {
@@ -303,7 +308,7 @@ export class TokenLedger {
     // <stateDir>/native-module-heals.jsonl for observability.
     this.db = NativeModuleHealer.openWithHealSync(
       'TokenLedger',
-      () => new Database(opts.dbPath),
+      () => opts.databaseFactory?.(opts.dbPath) ?? new Database(opts.dbPath),
     );
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
