@@ -36,15 +36,18 @@ interface MockServer {
   close: () => Promise<void>;
   setResponse: (status: number, body: unknown) => void;
   requestCount: () => number;
+  lastAuthHeader: () => string | undefined;
 }
 
 async function startMockServer(): Promise<MockServer> {
   let currentStatus = 200;
   let currentBody: unknown = { ok: true };
   let requests = 0;
+  let lastAuth: string | undefined;
 
   const server = createServer((req, res) => {
     requests += 1;
+    lastAuth = req.headers['authorization'];
     const chunks: Buffer[] = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
@@ -74,6 +77,9 @@ async function startMockServer(): Promise<MockServer> {
     },
     requestCount() {
       return requests;
+    },
+    lastAuthHeader() {
+      return lastAuth;
     },
   };
 }
