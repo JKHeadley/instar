@@ -55,6 +55,18 @@ export interface CapabilityEntry {
 // ── Top-level capability entries ─────────────────────────────────────────
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
+  // E2E-PAIRING: EXEMPT — capability classification metadata only (no new endpoint
+  // behavior); /pool + /mesh + /session-pool already have integration tests, and the
+  // capabilities-discoverability unit lint is the coverage for this classification.
+  {
+    key: 'multiMachinePool',
+    prefixes: ['/pool'],
+    description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.machinePoolRegistry,
+      endpoints: ['GET /pool', 'PATCH /pool/machines/:id'],
+    }),
+  },
   {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
@@ -832,6 +844,8 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'identity', reason: 'identity files surfaced via the top-level `identity` field of the response' },
   { prefix: 'hooks', reason: 'hook listing surfaced via the top-level `hooks` field of the response' },
   { prefix: 'threadline', reason: 'surfaced via discovery (threadline-relay feature)' },
+  { prefix: 'mesh', reason: 'machine-to-machine MeshRpc transport (§L0 Session Pool) — Ed25519-signed, recipient-bound peer commands; never an agent/user capability' },
+  { prefix: 'session-pool', reason: 'session-pool rollout-gate E2E results (§Rollout) — operator observability for a dark feature, not a conversational capability' },
 ];
 
 // ── Public helpers ───────────────────────────────────────────────────────
