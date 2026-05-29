@@ -222,6 +222,9 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(after).toContain('**Commitments & Follow-Through**');
     expect(after).toContain('/commitments');
+    expect(after).toContain('"agentResponse":"<what you said you would do>"');
+    expect(after).toContain('"type":"one-time-action"');
+    expect(after).not.toContain('"type":"follow-up"');
     // The proactive trigger that prevents codey's exact failure mode:
     expect(after).toContain('NEVER improvise the follow-through with a raw');
     // Inserted before Cloudflare Tunnel (document order), neighbors not duplicated.

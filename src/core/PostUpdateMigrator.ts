@@ -3019,7 +3019,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
     if (!content.includes('**Commitments & Follow-Through**')) {
       const section = `
 **Commitments & Follow-Through** — Durable tracking for any promise you make to the user. When you say "I'll report back when X", "I'll check in after N minutes", or otherwise commit to a future action, register it so the follow-through survives session turnover, restarts, and compaction.
-- Open a commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what you promised>","type":"follow-up","topicId":TOPIC_ID}'\`
+- Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'\`
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
 - Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
 - The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through, and the commitment-check job surfaces overdue ones.
