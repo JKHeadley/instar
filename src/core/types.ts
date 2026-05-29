@@ -1587,6 +1587,76 @@ export interface MachineRegistry {
   lease?: LeaseRecord;
 }
 
+// ── Machine-Pool Registry (Multi-Machine Session Pool §L2) ───────────
+
+/**
+ * Static hardware properties of a machine, captured once at registration (cheap,
+ * stable `os` reads) and surfaced on the Machines dashboard tab + as placement
+ * signal (§L2). Self-reported → advisory for display, never authority.
+ */
+export interface MachineHardware {
+  /** os.platform() — e.g. "darwin", "linux", "win32". */
+  platform: string;
+  /** os.arch() — e.g. "arm64", "x64". */
+  arch: string;
+  /** os.cpus()[0].model — e.g. "Apple M2". */
+  cpuModel: string;
+  /** os.cpus().length. */
+  cpuCores: number;
+  /** os.totalmem() in bytes. */
+  totalMemBytes: number;
+  /** os.hostname(). */
+  hostname: string;
+  /** The instar version this machine reported. */
+  instarVersion?: string;
+}
+
+/**
+ * Clock-skew quarantine state (§L2). An explicit three-value FSM so every
+ * implementation + recovery path is identical. A SINGLE divergent heartbeat
+ * never removes a machine; removal requires 2 consecutive divergent beats;
+ * re-admission requires 2 consecutive in-tolerance beats.
+ */
+export type ClockSkewStatus = 'ok' | 'divergence-detected-once' | 'suspect-clock-removed';
+
+/**
+ * Live per-machine capacity record (§L2) — the input to placement and the
+ * Machines dashboard tab. Assembled by MachinePoolRegistry from the machine
+ * registry (nickname), MachineHeartbeat (liveness), `os` (hardware/load), and
+ * SessionManager diagnostics (sessions/memPressure). Liveness + freshness key
+ * on `routerReceivedAt` (the router's own clock), NEVER the machine's
+ * self-reported timestamp (clock-skew safety).
+ */
+export interface MachineCapacity {
+  machineId: string;
+  /** User-facing nickname (§L2), mirrored from the registry entry. */
+  nickname?: string;
+  /** Liveness, computed as (now(router) − routerReceivedAt) < failoverThreshold. */
+  online: boolean;
+  /** The machine's own last-heartbeat timestamp (ISO) — debugging only. */
+  selfReportedLastSeen?: string;
+  /** When the router last observed this machine, on the ROUTER's clock (ISO). */
+  routerReceivedAt?: string;
+  /** 1-minute OS load average from the machine (os.loadavg()[0]). */
+  loadAvg?: number;
+  /** Memory pressure bucket from SessionManager diagnostics. */
+  memPressure?: 'low' | 'moderate' | 'high' | 'critical';
+  /** Active session count on the machine. */
+  activeSessionCount?: number;
+  /** Configured max sessions. */
+  maxSessions?: number;
+  /** Capabilities (e.g. "gpu", "local-model:llama3", "fast-cpu"). */
+  capabilities?: string[];
+  /** Local models available. */
+  modelsAvailable?: string[];
+  /** Agents resident on the machine (multi-agent-per-machine, §L6). */
+  agentsResident?: string[];
+  /** Static hardware properties (§L2). */
+  hardware?: MachineHardware;
+  /** Clock-skew quarantine state (§L2 FSM). */
+  clockSkewStatus: ClockSkewStatus;
+}
+
 export interface MultiMachineConfig {
   /** Whether multi-machine is enabled */
   enabled: boolean;
