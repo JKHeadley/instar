@@ -468,12 +468,18 @@ describe('TokenLedger pre-attribution DB migration (schema-order regression)', (
     expect(cols).toContain('attribution_key');
 
     // The attribution_key-referencing queries (which back /tokens/*) work, and the
-    // pre-existing row was backfilled with the migration DEFAULT rather than dropped.
+    // pre-existing row survives the migration. Phase 2 wiring: the one-shot
+    // backfillAttributionOnce() in the constructor re-resolves the legacy
+    // unknown::pre-attribution DEFAULT into a real key. The seeded row has
+    // session_id 'sess-old' and no cwd/model, so it resolves to the stable
+    // per-session fallback 'unknown::sess-old' (sessionId.slice(0, 8)). The
+    // row is backfilled, not dropped — and the sentinel is gone.
     const summary = ledger!.summary();
     expect(summary.eventCount).toBe(1);
     const byKey = ledger!.byAttributionKey();
     expect(byKey.length).toBeGreaterThanOrEqual(1);
-    expect(byKey.some((r) => r.attributionKey === 'unknown::pre-attribution')).toBe(true);
+    expect(byKey.some((r) => r.attributionKey === 'unknown::pre-attribution')).toBe(false);
+    expect(byKey.some((r) => r.attributionKey === 'unknown::sess-old')).toBe(true);
   });
 
   it('re-initialising a migrated DB is idempotent (duplicate-column ALTER swallowed)', () => {

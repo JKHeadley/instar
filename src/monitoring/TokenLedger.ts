@@ -19,6 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { parseCodexRollout, type ParsedCodexSession } from './CodexRolloutParser.js';
+import { resolveAttribution, PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
 
 /**
  * Compute a small content fingerprint for a JSONL file. Used to detect
@@ -56,6 +57,10 @@ const SCHEMA = [
      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
      cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
      service_tier          TEXT,
+     -- Default is the PRE_ATTRIBUTION_KEY sentinel ("resolver never ran").
+     -- The ingest path now resolves a real key at write time; this default
+     -- only applies to rows inserted before Phase 2 was wired, which the
+     -- one-shot backfill (backfillAttributionOnce) converts to resolved keys.
      attribution_key       TEXT NOT NULL DEFAULT 'unknown::pre-attribution'
    )`,
   // Migration for installs that pre-date attribution_key. This MUST run BEFORE any
@@ -113,6 +118,14 @@ const SCHEMA = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_codex_sessions_last_ts ON codex_token_sessions(last_ts)`,
   `CREATE INDEX IF NOT EXISTS idx_codex_sessions_project ON codex_token_sessions(project_path)`,
+  // Small key/value table for one-shot maintenance markers (e.g. the
+  // attribution backfill). Keeps idempotent migrations from re-running on
+  // every boot without needing an external migration framework.
+  `CREATE TABLE IF NOT EXISTS ledger_meta (
+     key        TEXT PRIMARY KEY,
+     value      TEXT,
+     updated_at INTEGER NOT NULL DEFAULT 0
+   )`,
 ];
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -324,6 +337,111 @@ export class TokenLedger {
       }
     }
     this.prepareStatements();
+    // One-shot: convert legacy rows written before Phase 2 attribution was
+    // wired (all under the PRE_ATTRIBUTION_KEY sentinel) into resolved keys.
+    // Marker-guarded so it runs exactly once per DB, even across restarts.
+    // Self-healing on boot — existing agents get this on their next server
+    // start with no PostUpdateMigrator change required.
+    try {
+      this.backfillAttributionOnce();
+    } catch (err) {
+      // Never let a backfill failure take down ledger init — the worst case
+      // is the sentinel rows stay unattributed (and exempt from burn alerts).
+      console.warn(`[token-ledger] attribution backfill skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
+  /** Read a value from the ledger_meta key/value table (null if absent). */
+  private getMeta(key: string): string | null {
+    try {
+      const row = this.db
+        .prepare(`SELECT value FROM ledger_meta WHERE key = ?`)
+        .get(key) as { value: string | null } | undefined;
+      return row ? row.value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Upsert a value into the ledger_meta key/value table. */
+  private setMeta(key: string, value: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO ledger_meta (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      )
+      .run(key, value, Date.now());
+  }
+
+  /**
+   * One-shot, idempotent backfill of the attribution_key column for legacy
+   * rows that still carry the PRE_ATTRIBUTION_KEY sentinel (i.e. were ingested
+   * before Phase 2 attribution was wired into ingestLine).
+   *
+   * Why it's needed: before this fix, every JSONL-sourced event was hardcoded
+   * to `unknown::pre-attribution`, so 100% of spend sat in one bucket and the
+   * BurnDetector's absolute-share trigger fired forever (the false-positive
+   * this whole change closes). Backfilling re-resolves those rows from the
+   * signals we DO have on each row (session_id, project_path, model) — the
+   * same read-only signals the live ingest path now uses (prompt is
+   * unavailable, so this is cwd/job/hook/session-level attribution).
+   *
+   * Performance: resolution depends only on (session_id, project_path, model),
+   * so we resolve ONCE per distinct triple and bulk-update by triple inside a
+   * single transaction. On Echo's real DB that's ~hundreds of sessions vs
+   * ~384k rows — cheap. Marker-guarded via ledger_meta so it never re-runs.
+   */
+  backfillAttributionOnce(): { backfilled: number; alreadyDone: boolean } {
+    const MARKER = 'attribution-backfill-v1';
+    if (this.getMeta(MARKER)) return { backfilled: 0, alreadyDone: true };
+
+    // Distinct (session_id, project_path, model) triples still on the sentinel.
+    const triples = this.db
+      .prepare(
+        `SELECT DISTINCT session_id AS sessionId, project_path AS projectPath, model AS model
+           FROM token_events
+          WHERE attribution_key = ?`
+      )
+      .all(PRE_ATTRIBUTION_KEY) as Array<{
+        sessionId: string;
+        projectPath: string | null;
+        model: string | null;
+      }>;
+
+    const update = this.db.prepare(
+      `UPDATE token_events
+          SET attribution_key = @newKey
+        WHERE attribution_key = @sentinel
+          AND session_id = @sessionId
+          AND (project_path IS @projectPath OR project_path = @projectPath)
+          AND (model IS @model OR model = @model)`
+    );
+
+    let backfilled = 0;
+    const run = this.db.transaction(() => {
+      for (const t of triples) {
+        const newKey = resolveAttribution({
+          sessionId: t.sessionId,
+          projectPath: t.projectPath,
+          prompt: null,
+          model: t.model,
+        });
+        // resolveAttribution never returns the sentinel, but guard anyway so a
+        // future change can't silently no-op the marker.
+        if (newKey === PRE_ATTRIBUTION_KEY) continue;
+        const res = update.run({
+          newKey,
+          sentinel: PRE_ATTRIBUTION_KEY,
+          sessionId: t.sessionId,
+          projectPath: t.projectPath,
+          model: t.model,
+        });
+        backfilled += res.changes;
+      }
+      this.setMeta(MARKER, new Date().toISOString());
+    });
+    run();
+    return { backfilled, alreadyDone: false };
   }
 
   private prepareStatements(): void {
@@ -420,10 +538,21 @@ export class TokenLedger {
         cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
         cacheReadTokens: usage.cache_read_input_tokens ?? 0,
         serviceTier: usage.service_tier ?? null,
-        // JSONL-source events do not carry attribution; Phase 2 will run an
-        // AttributionResolver on the read side that maps these to a known
-        // component when possible. Until then they sit under the default key.
-        attributionKey: 'unknown::pre-attribution',
+        // Phase 2 (now wired): resolve the attribution key at ingest from the
+        // signals the JSONL line carries — sessionId, cwd, and model. The
+        // Claude-CLI JSONL trail has no user prompt on the assistant line, so
+        // prompt-shape matching is unavailable here; the resolver falls through
+        // to cwd-based job/hook inference or a stable per-session key. This is
+        // what splits the old single `unknown::pre-attribution` bucket (which
+        // was always 100% of spend → a permanent false BurnDetector alarm)
+        // into per-origin keys. Prompt-shape attribution is a separate
+        // follow-up that needs user+assistant line correlation at ingest.
+        attributionKey: resolveAttribution({
+          sessionId: obj.sessionId,
+          projectPath: obj.cwd ?? null,
+          prompt: null,
+          model: obj.message?.model ?? null,
+        }),
       });
       return { inserted: result.changes > 0, reason: result.changes > 0 ? undefined : 'duplicate' };
     } catch {

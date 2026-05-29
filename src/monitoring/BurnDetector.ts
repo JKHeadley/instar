@@ -27,6 +27,7 @@
 
 import type { TokenLedger, AttributionKeyRow } from './TokenLedger.js';
 import type { DegradationReporter } from './DegradationReporter.js';
+import { PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
 
 export interface BurnDetectionConfig {
   enabled: boolean;
@@ -162,7 +163,22 @@ export class BurnDetector {
       let baselineMedian7d: number | undefined;
 
       // Trigger 1 — absolute share.
-      if (share > this.config.absoluteShareThreshold) {
+      //
+      // The PRE_ATTRIBUTION_KEY sentinel ("resolver never ran") is EXEMPT from
+      // this trigger. A bucket at 100% share under the sentinel means "we
+      // don't attribute these events yet" — a coverage gap — not "one
+      // component is burning." Before attribution was wired, every event sat
+      // under this sentinel, so absolute-share fired forever (the false
+      // positive this change closes). Per the umbrella spec §"Threshold
+      // logic", the sentinel is a coverage signal, never an absolute-share
+      // burn trigger. The genuinely-residual `unknown::<sessionId>` key
+      // (resolver ran, found no match) is NOT exempt and still alerts —
+      // that's the spec's "alert on unattributable spend." Baseline-divergence
+      // (trigger 2) is intentionally still allowed on the sentinel: a sudden
+      // spike of NEW unattributed spend vs its own 7-day history is worth
+      // surfacing even though its absolute share is not.
+      const isPreAttributionSentinel = key24h.attributionKey === PRE_ATTRIBUTION_KEY;
+      if (!isPreAttributionSentinel && share > this.config.absoluteShareThreshold) {
         trigger = 'absolute-share';
       }
 
