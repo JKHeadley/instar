@@ -62,6 +62,7 @@ import { SessionMonitor } from '../monitoring/SessionMonitor.js';
 import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
@@ -6821,6 +6822,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               const tunnelUrl = await tunnel.start();
               console.log(`[SleepWake] Tunnel restarted: ${tunnelUrl}`);
 
+              // Re-advertise the mesh URL — a quick tunnel gets a NEW URL after a
+              // sleep/wake restart, so the previously-advertised lastKnownUrl is
+              // now stale; peers must learn the new one or cross-machine routing
+              // silently breaks post-wake.
+              if (coordinator.enabled && coordinator.identity) {
+                advertiseSelfMeshUrl(
+                  coordinator.managers.identityManager,
+                  coordinator.identity.machineId,
+                  resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl),
+                  (m) => console.log(pc.dim(m)),
+                );
+              }
+
               // Re-broadcast dashboard URL after tunnel restart (quick tunnels get new URL)
               if (tunnelUrl) {
                 const tunnelType = config.tunnel?.type || 'quick';
@@ -9226,6 +9240,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       try {
         const tunnelUrl = await tunnel.start();
         console.log(pc.green(`  Tunnel active: ${pc.bold(tunnelUrl)}`));
+        // Mesh URL advertisement: record THIS machine's reachable URL into its
+        // registry entry so cross-machine routing (deliver/transfer/lease) can
+        // reach it. Without this, lastKnownUrl is null and every peer is filtered
+        // out (the session pool is inert across machines). The existing
+        // RegistrySyncDebouncer propagates the populated entry to peers.
+        if (coordinator.enabled && coordinator.identity) {
+          advertiseSelfMeshUrl(
+            coordinator.managers.identityManager,
+            coordinator.identity.machineId,
+            resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl),
+            (m) => console.log(pc.dim(m)),
+          );
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(pc.red(`  Tunnel start failed (manager will keep retrying in background): ${msg}`));

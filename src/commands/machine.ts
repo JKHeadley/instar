@@ -365,6 +365,13 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         // Store the remote machine's identity
         mgr.storeRemoteIdentity(result.machineIdentity);
         mgr.registerMachine(result.machineIdentity, 'awake');
+        // Record the URL we connected THROUGH as the awake machine's reachable
+        // URL, so this (standby) machine can route mesh RPCs back to it without
+        // waiting for a registry sync. Cross-machine routing reads lastKnownUrl;
+        // the joiner is the one place that authoritatively knows this URL.
+        try {
+          mgr.updateMachineUrl(result.machineIdentity.machineId, repoUrl.replace(/\/+$/, ''));
+        } catch { /* best-effort — entry was just registered above */ }
         console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
       }
     } catch (err) {
