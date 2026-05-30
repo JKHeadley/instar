@@ -5785,6 +5785,28 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('apiErrorAtIdle', (sessionName: string) => {
       rateLimitSentinel.report(sessionName, 'idle-error', { errorClass: 'transient-api' });
     });
+    // Observability: every RateLimitSentinel lifecycle transition → the shared
+    // sentinel-events.jsonl audit trail, so a throttle recovery is never
+    // invisible (the 2026-05-30 ask: "instrument so we can SEE it working").
+    // Complements the recovery-reached/unreachable notify-outcome events above;
+    // together they trace detect → backoff/resume(attempt N) → recovered/escalated.
+    {
+      const rlMaxAttempts = rlsCfg.maxAttempts ?? 6;
+      const rlEvent = (kind: string, sessionName: string, detail: string): void => {
+        const entry = { timestamp: new Date().toISOString(), kind, sentinel: 'rate-limit', sessionName, detail };
+        console.log(`[sentinel:${kind}] rate-limit/${sessionName} — ${detail}`);
+        try { fs.appendFileSync(rlReachLogPath, JSON.stringify(entry) + '\n'); }
+        catch { /* @silent-fallback-ok best-effort audit; never crash the monitor path */ }
+      };
+      rateLimitSentinel.on('rate-limit:detected', (s: { sessionName: string; trigger: string }) =>
+        rlEvent('throttle-detected', s.sessionName, `trigger=${s.trigger}`));
+      rateLimitSentinel.on('rate-limit:resuming', (s: { sessionName: string; attempts: number; backoffMs?: number }) =>
+        rlEvent('throttle-resuming', s.sessionName, `attempt ${s.attempts}/${rlMaxAttempts} after ${Math.round((s.backoffMs ?? 0) / 1000)}s backoff`));
+      rateLimitSentinel.on('rate-limit:recovered', (s: { sessionName: string; attempts: number; jsonlDelta?: number }) =>
+        rlEvent('throttle-recovered', s.sessionName, `jsonl grew ${s.jsonlDelta ?? 0}b after ${s.attempts} attempt(s)`));
+      rateLimitSentinel.on('rate-limit:escalated', (s: { sessionName: string; reason?: string }) =>
+        rlEvent('throttle-escalated', s.sessionName, s.reason ?? 'unknown'));
+    }
     if (rlsCfg.enabled !== false) {
       console.log(pc.green('  RateLimitSentinel enabled (server-throttle backoff + check-ins)'));
     }
