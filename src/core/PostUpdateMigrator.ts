@@ -2641,6 +2641,23 @@ A repo-gated watchdog that makes a stalled instar release impossible to miss: it
       result.upgraded.push('CLAUDE.md: added Release Readiness watchdog awareness (release-readiness-visibility)');
     }
 
+    // codex-usage-visibility (Agent Awareness + Migration Parity): existing
+    // agents must learn they can check codex `/status` usage over HTTP without
+    // the interactive TUI. Content-sniff on the route marker.
+    if (!content.includes('/codex/usage')) {
+      const codexUsageSection = `
+### Codex Usage (the codex \`/status\` rate-limit windows)
+
+Check where codex account usage sits without the interactive TUI. The codex CLI persists the authoritative primary (5h) + secondary (weekly) rate-limit windows into its session rollout files; this surfaces the freshest snapshot.
+- Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/codex/usage\`
+- Returns \`{ available, usage: { primary, secondary, model, planType, rateLimitReachedType } }\`; each window has \`usedPercent\`, \`remainingPercent\`, \`windowMinutes\`, \`resetsAt\`/\`resetsAtIso\`, \`resetsInSeconds\`. \`available:false\` means no codex session data on disk yet (e.g. a pure-Claude agent).
+- **When to use**: "how much codex usage is left?" / "am I near the limit?", before scheduling heavy codex work, or to drive a model-swap when a window is exhausted (\`rateLimitReachedType\` non-null, or \`secondary.remainingPercent\` low).
+`;
+      content += '\n' + codexUsageSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
+    }
+
     // update-message-topic-routing §Fix 3 — existing agents need to learn that
     // self-broadcast about ships/restarts/updates must route through the
     // post-update channel (lands in the Agent Updates topic), not the active
