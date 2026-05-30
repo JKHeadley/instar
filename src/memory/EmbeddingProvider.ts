@@ -22,6 +22,23 @@ export interface EmbeddingProviderConfig {
   dimensions?: number;
   /** Maximum text length to embed in characters (default: 8192) */
   maxTextLength?: number;
+  /**
+   * Idle-unload window in ms. After this long with no embed() call, the loaded
+   * ONNX pipeline is disposed to free its thread pool, which busy-spins even
+   * when idle (measured: ~3.6% of a core on a quiet box, up to ~44% on a
+   * contended one — pure waste while an agent isn't doing memory work). The
+   * next embed() lazily reloads (~1-3s, verified-identical output). Default
+   * 300000 (5 min). Set 0 to disable (keep the model resident forever — the
+   * prior behavior).
+   */
+  idleUnloadMs?: number;
+  /**
+   * Test/advanced seam: factory that produces the feature-extraction pipeline.
+   * Defaults to the real `@huggingface/transformers` import. Tests inject a mock
+   * (a callable with a `dispose()`) to exercise the idle-unload lifecycle
+   * without loading the 80MB model.
+   */
+  pipelineFactory?: (modelName: string) => Promise<any>;
 }
 
 export class EmbeddingProvider {
@@ -30,12 +47,21 @@ export class EmbeddingProvider {
   private readonly modelName: string;
   readonly dimensions: number;
   private readonly maxTextLength: number;
+  private readonly idleUnloadMs: number;
+  private readonly pipelineFactory?: (modelName: string) => Promise<any>;
   private vecExtensionLoaded = new WeakSet<object>();
+
+  /** In-flight embed() calls — the idle-unload timer never disposes while > 0. */
+  private inFlight = 0;
+  /** Rolling idle-unload timer (reset on every embed); unref'd so it can't keep the process alive. */
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config?: EmbeddingProviderConfig) {
     this.modelName = config?.modelName ?? 'Xenova/all-MiniLM-L6-v2';
     this.dimensions = config?.dimensions ?? 384;
     this.maxTextLength = config?.maxTextLength ?? 8192;
+    this.idleUnloadMs = config?.idleUnloadMs ?? 300_000;
+    this.pipelineFactory = config?.pipelineFactory;
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────
@@ -55,6 +81,10 @@ export class EmbeddingProvider {
   }
 
   private async loadModel(): Promise<void> {
+    if (this.pipelineFactory) {
+      this.pipeline = await this.pipelineFactory(this.modelName);
+      return;
+    }
     const { pipeline: createPipeline } = await import('@huggingface/transformers');
     this.pipeline = await createPipeline('feature-extraction', this.modelName, {
       dtype: 'fp32',
@@ -68,6 +98,60 @@ export class EmbeddingProvider {
     return this.pipeline !== null;
   }
 
+  /**
+   * Arm (or re-arm) the rolling idle-unload timer. Called after every embed so
+   * the window restarts on each use — an actively-embedding agent keeps the
+   * model resident; one that goes quiet for `idleUnloadMs` unloads it.
+   */
+  private scheduleIdleUnload(): void {
+    if (this.idleUnloadMs <= 0) return; // disabled — keep resident
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      void this.maybeUnload();
+    }, this.idleUnloadMs);
+    // Never let the idle timer hold the process open on its own.
+    this.idleTimer.unref?.();
+  }
+
+  /**
+   * Dispose the loaded pipeline if it's idle — frees the ONNX thread pool that
+   * busy-spins even when no embedding is happening. Guarded on inFlight so a
+   * long-running batch that outlasts the window is never disposed mid-flight;
+   * its completion re-arms the timer.
+   */
+  private async maybeUnload(): Promise<void> {
+    if (this.inFlight > 0 || !this.pipeline) return;
+    const p = this.pipeline;
+    this.pipeline = null;
+    this.loading = null;
+    try {
+      await p?.dispose?.();
+    } catch {
+      // @silent-fallback-ok — dispose is best-effort cleanup; failing to free
+      // the session is not fatal (the next embed reloads a fresh pipeline).
+    }
+  }
+
+  /**
+   * Explicitly release the model + cancel the idle timer (shutdown / tests).
+   * Idempotent.
+   */
+  async dispose(): Promise<void> {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    if (this.pipeline) {
+      const p = this.pipeline;
+      this.pipeline = null;
+      this.loading = null;
+      try {
+        await p?.dispose?.();
+      } catch { /* @silent-fallback-ok — best-effort cleanup */ }
+    }
+  }
+
   // ─── Embedding ──────────────────────────────────────────────────
 
   /**
@@ -75,16 +159,22 @@ export class EmbeddingProvider {
    * Lazy-initializes the model on first call.
    */
   async embed(text: string): Promise<Float32Array> {
-    await this.initialize();
+    this.inFlight++;
+    try {
+      await this.initialize();
 
-    const truncated = text.slice(0, this.maxTextLength);
-    const output = await this.pipeline(truncated, {
-      pooling: 'mean',
-      normalize: true,
-    });
+      const truncated = text.slice(0, this.maxTextLength);
+      const output = await this.pipeline(truncated, {
+        pooling: 'mean',
+        normalize: true,
+      });
 
-    // output.data is a Float32Array from the ONNX model
-    return new Float32Array(output.data);
+      // output.data is a Float32Array from the ONNX model
+      return new Float32Array(output.data);
+    } finally {
+      this.inFlight--;
+      this.scheduleIdleUnload();
+    }
   }
 
   /**
@@ -93,27 +183,35 @@ export class EmbeddingProvider {
    */
   async embedBatch(texts: string[]): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
+    // Single-text delegates to embed(), which owns its own inFlight + idle-timer
+    // bookkeeping — don't double-count here.
     if (texts.length === 1) return [await this.embed(texts[0])];
 
-    await this.initialize();
+    this.inFlight++;
+    try {
+      await this.initialize();
 
-    const truncated = texts.map(t => t.slice(0, this.maxTextLength));
-    const results: Float32Array[] = [];
+      const truncated = texts.map(t => t.slice(0, this.maxTextLength));
+      const results: Float32Array[] = [];
 
-    // Process in batches of 32 to avoid memory pressure
-    const batchSize = 32;
-    for (let i = 0; i < truncated.length; i += batchSize) {
-      const batch = truncated.slice(i, i + batchSize);
-      for (const text of batch) {
-        const output = await this.pipeline(text, {
-          pooling: 'mean',
-          normalize: true,
-        });
-        results.push(new Float32Array(output.data));
+      // Process in batches of 32 to avoid memory pressure
+      const batchSize = 32;
+      for (let i = 0; i < truncated.length; i += batchSize) {
+        const batch = truncated.slice(i, i + batchSize);
+        for (const text of batch) {
+          const output = await this.pipeline(text, {
+            pooling: 'mean',
+            normalize: true,
+          });
+          results.push(new Float32Array(output.data));
+        }
       }
-    }
 
-    return results;
+      return results;
+    } finally {
+      this.inFlight--;
+      this.scheduleIdleUnload();
+    }
   }
 
   // ─── sqlite-vec Extension ───────────────────────────────────────
