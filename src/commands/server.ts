@@ -2467,9 +2467,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     let localSigningKeyPem = '';
     if (coordinator.enabled && coordinator.identity) {
       try {
-        const keyPath = path.join(config.stateDir, 'machine', 'signing-private.pem');
-        if (fs.existsSync(keyPath)) {
-          localSigningKeyPem = fs.readFileSync(keyPath, 'utf-8');
+        // The canonical signing-key filename is `signing-key.pem` (MachineIdentity.SIGNING_KEY_FILE,
+        // what every normally-created install has + what idMgr.loadSigningKey reads). This loader
+        // historically hard-coded `signing-private.pem`, which only EXISTS on installs that were
+        // propagated with that (non-canonical) name — so a normally-created machine got an EMPTY
+        // localSigningKeyPem, its MeshRpcClient then signed every cross-machine command with no key,
+        // the send threw, and it could not PULL/transfer to any peer (while still RECEIVING fine,
+        // since receive verifies the OTHER machine's key). Try the canonical name first, then fall
+        // back to the legacy/propagated name so both layouts work.
+        for (const name of ['signing-key.pem', 'signing-private.pem']) {
+          const keyPath = path.join(config.stateDir, 'machine', name);
+          if (fs.existsSync(keyPath)) {
+            localSigningKeyPem = fs.readFileSync(keyPath, 'utf-8');
+            break;
+          }
         }
       } catch { /* @silent-fallback-ok — signing key optional */ }
     }
