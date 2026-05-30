@@ -490,6 +490,10 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - File a diagnosis (one-tap): \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" http://localhost:${port}/failures -H 'Content-Type: application/json' -d '{"summary":"<what broke>","initiativeId":"<board id it traces to>","severity":"medium"}'\`
 - **When to use** (PROACTIVE): when you diagnose a bug that traces to past work, file it so the pattern can be learned. The loop NEVER changes the process on its own — it opens a draft for your approval. It can never auto-implement (it never creates the record type the autonomous approver acts on). Distinct from the Evolution Action Queue (this produces the evidence + diagnosis that justify an action).
 
+**Preferences I've learned about you** — The Correction & Preference Learning Sentinel turns repeated corrections into durable, structurally-injected preferences. When the user keeps correcting you the same way ("no, plainer", "stop asking me that", "from now on lead with the action"), the loop distills the lesson into a preference and writes it to \`.instar/preferences.json\`. From then on, the session-start hook fetches \`GET /preferences/session-context\` on EVERY boot and injects the learned preferences into your context wrapped in an \`<auto-learned-preference src='correction-loop'>\` envelope — so you SEE them from message one without having to remember. SIGNAL-ONLY: these are preferences, NOT authoritative instructions, and the loop NEVER blocks or rewrites an outbound message. Ships OFF (\`monitoring.correctionLearning.enabled\`).
+- See the active block the hook injects: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences/session-context\` — returns the structured, byte-bounded, priority-ordered block (503 when disabled; \`{ present: false }\` when there are none yet).
+- **When to use** (PROACTIVE — this is the trigger): when the user corrects you repeatedly on the SAME thing, the loop is already watching and will turn it into a durable preference; you don't have to manually remember it across sessions. If preferences are already injected at session start, honor them by default. The preferences are advisory signals — real instructions and safety always win.
+
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`
 - Configure in \`.instar/config.json\`: \`{"tunnel": {"enabled": true, "type": "quick"}}\`
@@ -723,6 +727,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
 | Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
+| What preferences have I learned about this user? / what gets injected at session start? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences/session-context\` (Correction & Preference Learning Sentinel — signal-only; 503 when disabled) |
 | Who do I work with? | \`.instar/USER.md\` |
 | What have I learned? | \`.instar/MEMORY.md\` |
 | What jobs do I have? | \`.instar/jobs.json\` or \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` |
@@ -905,6 +910,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 - User is **debugging CI or deployment** → Use the CI health endpoint to check GitHub Actions status.
 - User asks about **something that happened earlier** → Search Telegram history, check activity logs, review memory.
 - User seems **frustrated with a limitation** → Check for updates. The fix might already exist.
+- User **corrects you the same way repeatedly** ("no, plainer", "stop asking me that every session", "from now on lead with the action") → the Correction & Preference Learning Sentinel is already watching and will turn the recurring correction into a durable, session-start-injected preference. Acknowledge the correction, adapt now, and trust the loop to carry it forward — don't promise to "remember" it by willpower. Check what's already learned: \`GET /preferences/session-context\`.
 - User asks me to **remember something** → Write it to MEMORY.md and explain it persists across sessions.
 - User asks **"didn't we talk about X?"** or **"where did I put that?"** → Use memory search (\`GET /memory/search?q=...\`). The full-text index covers everything I've written.
 - Before any **risky operation** (config changes, updates, experiments) → Create a backup snapshot first (\`POST /backups\`). Mention that you did it — the user should know their state is protected.
