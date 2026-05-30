@@ -161,6 +161,71 @@ Subject: {latest_subject}
 
 Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}" and include the threadId "{thread_id}" to send your reply.`;
 
+/**
+ * Byte budget for the thread-history block injected into a spawn prompt.
+ *
+ * The spawn prompt is passed as a `tmux new-session ... <command>` ARGUMENT
+ * (SessionManager.spawnSession → execFileSync). tmux's command-line limit is
+ * ~16 KB (empirically: a 15 KB arg succeeds, 16 KB fails with the literal
+ * "command too long"). An UNBOUNDED, ever-growing thread history made the spawn
+ * command exceed that ceiling, so multi-agent reply-spawns failed OUTRIGHT once
+ * a thread accumulated enough messages — silently breaking agent-to-agent
+ * communication on exactly the long-running threads that need it most.
+ *
+ * Same failure class + fix as Mentor Stage-A (see MentorStageA.ts, which caps
+ * its own growing compose context). We bound the history (newest-first) plus the
+ * latest body so the whole assembled command stays comfortably under the cliff
+ * (worst case ≈ 6 KB history + 3.5 KB latest + ~2.5 KB env/flags/grounding ≈
+ * 12 KB, a ~4 KB margin). The existing message-COUNT cap (maxHistoryMessages)
+ * is kept; this byte cap is the belt-and-suspenders that actually bounds size.
+ */
+const MAX_HISTORY_BYTES = 6000;
+/** Per-message cap inside the history block, so one huge message can't dominate the budget. */
+const MAX_HISTORY_MESSAGE_BYTES = 1500;
+/** Cap on the latest (triggering) message body embedded in the spawn prompt. */
+const MAX_LATEST_BODY_BYTES = 3500;
+
+/**
+ * Truncate a message body to a byte budget with an explicit marker. Pure +
+ * exported for unit testing. No-op when already under budget.
+ */
+export function capMessageBody(body: string, maxBytes: number): string {
+  if (body.length <= maxBytes) return body;
+  return `${body.slice(0, maxBytes)}\n…[truncated ${body.length - maxBytes} chars]`;
+}
+
+/**
+ * Build the bounded "Recent thread history" block. Walks newest→oldest so the
+ * most recent context always survives, truncates any single oversized message,
+ * and stops adding older messages once the byte budget is hit (always keeping at
+ * least the newest one). Pure + exported for unit testing.
+ */
+export function buildBoundedHistorySection(
+  messages: Array<{ agent: string; createdAt: string; body: string }>,
+  totalCount: number,
+  opts: { maxBytes: number; perMessageBytes: number },
+): string {
+  if (messages.length === 0) return '';
+  const entries: string[] = [];
+  let usedBytes = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const body = capMessageBody(m.body, opts.perMessageBytes);
+    const entry = `${m.agent} (${m.createdAt}):\n${body}`;
+    // Always include at least the newest message; stop adding older ones once
+    // the budget would be exceeded.
+    if (entries.length > 0 && usedBytes + entry.length > opts.maxBytes) break;
+    entries.unshift(entry);
+    usedBytes += entry.length;
+  }
+  const numbered = entries.map((e, i) => `[${i + 1}] ${e}`).join('\n\n');
+  const omitted = totalCount - entries.length;
+  const header = omitted > 0
+    ? `Recent thread history (${entries.length} of ${totalCount} messages, older omitted to fit):`
+    : `Recent thread history (${entries.length} of ${totalCount} messages):`;
+  return `${header}\n${numbered}`;
+}
+
 // ── Implementation ──────────────────────────────────────────────
 
 export class ThreadlineRouter {
@@ -778,16 +843,22 @@ export class ThreadlineRouter {
         return '';
       }
 
-      // Take the last N messages for context
-      const recentMessages = threadData.messages
-        .slice(-limit)
-        .map((env, i) => {
-          const msg = env.message;
-          return `[${i + 1}] ${msg.from.agent} (${msg.createdAt}):\n${msg.body}`;
-        })
-        .join('\n\n');
+      // Take the last N messages, then enforce a total BYTE budget. The block
+      // this produces is embedded in a spawn prompt passed as a `tmux
+      // new-session` command argument (~16 KB ceiling), so an unbounded history
+      // would fail the spawn outright on long threads ("command too long").
+      // buildBoundedHistorySection walks newest-first and drops/truncates older
+      // content to fit — see MAX_HISTORY_BYTES.
+      const recent = threadData.messages.slice(-limit).map((env) => ({
+        agent: env.message.from.agent,
+        createdAt: env.message.createdAt,
+        body: env.message.body,
+      }));
 
-      return `Recent thread history (${Math.min(threadData.messages.length, limit)} of ${threadData.messages.length} messages):\n${recentMessages}`;
+      return buildBoundedHistorySection(recent, threadData.messages.length, {
+        maxBytes: MAX_HISTORY_BYTES,
+        perMessageBytes: MAX_HISTORY_MESSAGE_BYTES,
+      });
     } catch {
       // @silent-fallback-ok — thread history is supplementary context; missing it degrades but doesn't break
       return '';
@@ -809,6 +880,12 @@ export class ThreadlineRouter {
       ? `${historyContext}\n`
       : 'No previous history available.\n';
 
+    // Cap the latest body too: it's the other unbounded input to the spawn
+    // command argument (a peer can send an arbitrarily large message). Together
+    // with the bounded history this keeps the whole `tmux new-session` command
+    // under tmux's ~16 KB "command too long" ceiling.
+    const latestBody = capMessageBody(latestMessage.body, MAX_LATEST_BODY_BYTES);
+
     const basePrompt = THREAD_SPAWN_PROMPT_TEMPLATE
       .replaceAll('{remote_agent}', remoteAgent)
       .replaceAll('{thread_id}', threadId)
@@ -816,7 +893,7 @@ export class ThreadlineRouter {
       .replaceAll('{message_count}', String(messageCount))
       .replaceAll('{history_section}', historySection)
       .replaceAll('{latest_subject}', latestMessage.subject)
-      .replaceAll('{latest_body}', latestMessage.body);
+      .replaceAll('{latest_body}', latestBody);
 
     // If relay context is present, wrap with grounding preamble
     if (relayContext) {
