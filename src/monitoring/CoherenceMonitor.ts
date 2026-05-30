@@ -22,6 +22,7 @@ import type { LiveConfig } from '../config/LiveConfig.js';
 import type { ComponentHealth } from '../core/types.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { isSecretPlaceholder } from '../core/SecretMigrator.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -599,7 +600,14 @@ export class CoherenceMonitor extends EventEmitter {
       const telegramConfig = messaging.find(m => m.type === 'telegram');
 
       if (telegramConfig) {
-        const hasToken = typeof telegramConfig.config?.token === 'string' && telegramConfig.config.token.length > 0;
+        // A token can be a plaintext string OR — after secret-externalization —
+        // the { secret: true } placeholder (the real value lives in the encrypted
+        // store). Both mean "configured." A bare string-type guard reads the
+        // placeholder as missing and false-alarms every cycle (the 2026-05-29
+        // 20×/run readiness-telegram-token noise).
+        const tokenVal = telegramConfig.config?.token as unknown;
+        const hasToken =
+          (typeof tokenVal === 'string' && tokenVal.length > 0) || isSecretPlaceholder(tokenVal);
         results.push({
           name: 'readiness-telegram-token',
           passed: hasToken,
