@@ -344,6 +344,24 @@ export class UnjustifiedStopGate {
       // A timeout or unavailable provider counts toward the breaker — if it
       // trips, subsequent stops short-circuit (no spawn) until the cooldown.
       this.onProviderFailure();
+      // If this failure (re)opened the breaker, report it AS breakerOpen rather
+      // than timeout/llmUnavailable. The fail-open decision is identical, but
+      // breakerOpen is suppressed from /health degradation reporting — so the
+      // periodic half-open retry probe (which calls the still-unavailable
+      // provider once per cooldown and re-opens the breaker) stops emitting a
+      // fresh degradation every cycle. That residual was slowly growing the
+      // degradation count and keeping /health "degraded" long after the breaker
+      // had already stopped the actual flood + subprocess churn.
+      if (this.config.now() < this.breakerOpenUntil) {
+        return {
+          ok: false,
+          failure: {
+            kind: 'breakerOpen',
+            detail: `provider failure (re)opened breaker after ${this.consecutiveProviderFailures} consecutive failures; retrying after cooldown`,
+            latencyMs,
+          },
+        };
+      }
       if (msg === 'timeout') {
         return { ok: false, failure: { kind: 'timeout', detail: `>${this.config.clientTimeoutMs}ms`, latencyMs } };
       }
