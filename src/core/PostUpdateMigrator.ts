@@ -5180,6 +5180,35 @@ except Exception:
   fi
 fi
 
+# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
+# (Slice 1a). Fetches /preferences/session-context and injects the structured
+# block of preferences the correction loop has learned about this user, so the
+# agent reasons with them from message one. SIGNAL-ONLY — these are preferences,
+# not authoritative instructions; the server wraps them in an
+# <auto-learned-preference src='correction-loop'> envelope so they cannot be
+# mistaken for commands. Fail-open: route 503 (feature off) / unreachable /
+# empty block → silent skip, session continues normally.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  PREFS_RESPONSE=\$(curl -sf --max-time 4 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/preferences/session-context" 2>/dev/null)
+  if [ -n "\$PREFS_RESPONSE" ]; then
+    PREFS_BLOCK=\$(echo "\$PREFS_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$PREFS_BLOCK" ]; then
+      echo ""
+      echo "\$PREFS_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
 # BEGIN integrated-being-v2
 # INTEGRATED-BEING V2 — session-write binding (see docs/specs/integrated-being-ledger-v2.md §3)
 # Generates a session UUID, registers with /shared-state/session-bind, writes the
