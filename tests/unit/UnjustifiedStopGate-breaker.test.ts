@@ -44,13 +44,21 @@ describe('UnjustifiedStopGate circuit breaker', () => {
       now: c.now,
     });
 
-    // First 3 calls hit the provider (and fail-open with llmUnavailable).
-    for (let i = 0; i < 3; i++) {
+    // The first threshold-1 failures hit the provider and fail-open with
+    // llmUnavailable (these DO emit a /health degradation — informative that the
+    // provider is failing).
+    for (let i = 0; i < 2; i++) {
       const r = await gate.evaluate(INPUT);
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.failure.kind).toBe('llmUnavailable');
     }
-    expect(calls()).toBe(3);
+    // The threshold-th failure ALSO hits the provider, but because it OPENS the
+    // breaker it is reported as breakerOpen (suppressed from degradation) — so
+    // the count caps at threshold-1 instead of climbing forever.
+    const opening = await gate.evaluate(INPUT);
+    expect(opening.ok).toBe(false);
+    if (!opening.ok) expect(opening.failure.kind).toBe('breakerOpen');
+    expect(calls()).toBe(3); // the opening failure still called the provider
     expect(gate.breakerState().open).toBe(true);
 
     // Breaker now open: the next calls short-circuit to breakerOpen and DON'T
@@ -80,10 +88,15 @@ describe('UnjustifiedStopGate circuit breaker', () => {
     expect((await gate.evaluate(INPUT) as { failure: { kind: string } }).failure.kind).toBe('breakerOpen');
     expect(calls()).toBe(2);
 
-    // Cooldown elapsed → the gate retries the provider (half-open).
+    // Cooldown elapsed → the gate retries the provider (half-open). The provider
+    // is still down, so the retry re-opens the breaker and is reported as
+    // breakerOpen (NOT a fresh llmUnavailable) — this is what stops the
+    // per-cooldown /health degradation creep.
     c.advance(2);
-    await gate.evaluate(INPUT);
+    const halfOpen = await gate.evaluate(INPUT);
     expect(calls()).toBe(3); // provider called again after cooldown
+    expect(halfOpen.ok).toBe(false);
+    if (!halfOpen.ok) expect(halfOpen.failure.kind).toBe('breakerOpen');
   });
 
   it('a reachable provider resets the breaker (consecutive failures cleared)', async () => {
@@ -142,5 +155,34 @@ describe('UnjustifiedStopGate circuit breaker', () => {
     const r3 = await gate.evaluate(INPUT);
     if (!r3.ok) expect(r3.failure.kind).toBe('breakerOpen');
     expect(calls).toBe(2); // 3rd call short-circuited (no provider call)
+  });
+
+  it('suppresses per-cooldown degradation: every half-open retry re-opens as breakerOpen, never re-emitting timeout/llmUnavailable', async () => {
+    // Regression for the breaker residual (#18): once open, the periodic
+    // half-open retry probe calls the still-down provider once per cooldown.
+    // Each such failure must report breakerOpen (suppressed from /health
+    // degradation) — NOT a fresh timeout/llmUnavailable — so the degradation
+    // count stops climbing and /health doesn't stay "degraded" indefinitely
+    // after the breaker has already stopped the actual flood + subprocess churn.
+    const { provider } = throwingProvider();
+    const c = clock();
+    const gate = new UnjustifiedStopGate({
+      intelligence: provider, breakerThreshold: 1, breakerCooldownMs: 5_000, now: c.now,
+    });
+
+    // threshold 1 → the very first failure opens the breaker → breakerOpen.
+    const first = await gate.evaluate(INPUT);
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.failure.kind).toBe('breakerOpen');
+
+    // Walk several cooldowns; each half-open retry of the still-down provider
+    // re-opens the breaker and reports breakerOpen — never a degradation-emitting
+    // kind. This is the cap that prevents the slow per-cooldown creep.
+    for (let i = 0; i < 4; i++) {
+      c.advance(5_001); // cooldown elapsed → half-open retry calls the provider
+      const r = await gate.evaluate(INPUT);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.failure.kind).toBe('breakerOpen');
+    }
   });
 });
