@@ -167,6 +167,20 @@ export function buildStageAContext(surface: ConversationSurface): string {
   const agendaLines = hasAgenda
     ? surface.onboardingAgenda!.map((t) => `  - ${t}`).join('\n')
     : '';
+  // Bound the conversation history so the assembled Stage-A prompt can never
+  // exceed tmux's `new-session` command-line limit (~12-16KB). The prompt is
+  // passed as a command-line ARGUMENT to the spawned compose session, so an
+  // unbounded, ever-growing history eventually makes `tmux new-session` fail
+  // ("command too long") — the spawn throws and the whole tick reports
+  // stage-a-failed. (Root-caused live: the mentor worked early on, then broke as
+  // the mentor↔mentee history accumulated past the limit.) Keep the MOST-RECENT
+  // exchanges (what actually matters for deciding the next action) + a marker.
+  const MAX_HISTORY_CHARS = 6000;
+  const rawHistory = surface.threadlineHistory.trim() || '(no prior conversation)';
+  const boundedHistory =
+    rawHistory.length > MAX_HISTORY_CHARS
+      ? `[… ${rawHistory.length - MAX_HISTORY_CHARS} chars of older conversation elided to fit the spawn command-line limit; most-recent exchanges kept below …]\n${rawHistory.slice(-MAX_HISTORY_CHARS)}`
+      : rawHistory;
   return [
     `You are acting as the USER checking in on an AI developer ("${surface.framework}").`,
     `You can ONLY see what a real user would see — the conversation below and the visible task`,
@@ -187,7 +201,7 @@ export function buildStageAContext(surface: ConversationSurface): string {
       : []),
     ``,
     `--- Conversation so far ---`,
-    surface.threadlineHistory.trim() || '(no prior conversation)',
+    boundedHistory,
     ``,
     `--- Visible task status ---`,
     surface.assignedTaskStatus?.trim() || '(no task assigned yet)',

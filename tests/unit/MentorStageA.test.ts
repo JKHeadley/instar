@@ -58,6 +58,25 @@ describe('buildStageAContext — only the conversation surface', () => {
     expect(ctx).toContain('no prior conversation');
     expect(ctx).toContain('no task assigned yet');
   });
+
+  it('bounds a huge history so the prompt stays under tmux\'s command-line limit (keeps recent + marks elision)', () => {
+    // The Stage-A prompt is passed as a tmux new-session command-line argument
+    // (limit ~12-16KB). An unbounded growing history made `tmux new-session`
+    // fail ("command too long") → stage-a-failed. The bound keeps the recent
+    // tail and elides the older middle.
+    const RECENT_MARKER = 'Echo: MOST-RECENT-EXCHANGE-SENTINEL';
+    const huge = 'OLD '.repeat(20000) + `\n${RECENT_MARKER}\nCodey: ack`; // ~80KB history
+    const ctx = buildStageAContext({ framework: 'codex-cli', threadlineHistory: huge });
+    // Total prompt comfortably under the tmux limit (history capped at 6KB + small fixed parts).
+    expect(ctx.length).toBeLessThan(12_000);
+    // The most-recent exchange is preserved...
+    expect(ctx).toContain(RECENT_MARKER);
+    // ...older history is elided with an explicit marker (not silently dropped).
+    expect(ctx).toContain('older conversation elided');
+    // The prompt structure is intact.
+    expect(ctx).toContain('--- Conversation so far ---');
+    expect(ctx).toContain('--- Visible task status ---');
+  });
 });
 
 describe('detectStageALeak — the mandatory leakage detector (§4.3)', () => {
