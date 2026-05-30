@@ -38,6 +38,7 @@
 
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 import path from 'node:path';
 
 export type RateLimitTrigger = 'watchdog-poll' | 'idle-error' | string;
@@ -94,6 +95,21 @@ export interface RateLimitSentinelDeps {
 
   /** Resolve a session's Claude Code session UUID for exact-file jsonl lookup. */
   getClaudeSessionId?: (sessionName: string) => string | undefined;
+
+  /**
+   * Resolve a session's framework ('openai-codex' | 'anthropic-*' | undefined). When it
+   * returns 'openai-codex', recovery-verification reads the codex rollout JSONL instead
+   * of the Claude transcript. Absent/non-codex → the existing Claude path is used
+   * unchanged (so Claude behavior is byte-for-byte preserved).
+   */
+  getSessionFramework?: (sessionName: string) => string | undefined;
+
+  /** Resolve a codex session's rollout thread UUID (used with codexHome for the codex
+   *  rollout-JSONL growth check). Only consulted when getSessionFramework → codex. */
+  getCodexThreadId?: (sessionName: string) => string | undefined;
+
+  /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
+  codexHome?: string;
 
   /** Defer (skip starting) recovery when this returns true — e.g. compaction recovery in flight. */
   deferIf?: (sessionName: string) => boolean;
@@ -429,6 +445,27 @@ export class RateLimitSentinel extends EventEmitter {
   }
 
   private readJsonlBaseline(sessionName: string): { path: string; size: number; mtime: number } | null {
+    // Codex sessions keep their transcript as a date-partitioned rollout JSONL under
+    // $CODEX_HOME/sessions, NOT the Claude projects tree. Resolve THAT file so the
+    // growth-based recovery check works for codex exactly as it does for Claude. Only
+    // taken when the session is codex AND a thread id resolves — otherwise fall through
+    // to the unchanged Claude path below (Claude behavior is byte-for-byte preserved).
+    if (this.deps.getSessionFramework?.(sessionName) === 'openai-codex') {
+      try {
+        const threadId = this.deps.getCodexThreadId?.(sessionName);
+        if (threadId) {
+          const rollout = findRolloutFileSync(threadId, this.deps.codexHome);
+          if (rollout && fs.existsSync(rollout)) {
+            const st = fs.statSync(rollout);
+            return { path: rollout, size: st.size, mtime: st.mtimeMs };
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — codex baseline is best-effort; a miss just means this
+        // attempt can't confirm growth (the recovery loop retries / escalates safely).
+      }
+      return null;
+    }
     try {
       const root = this.deps.jsonlRoot
         || path.join(process.env.HOME || '/tmp', '.claude', 'projects',
