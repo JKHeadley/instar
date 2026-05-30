@@ -1,9 +1,12 @@
+// safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
+
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findRolloutFileSync } from '../../src/providers/adapters/openai-codex/observability/sessionPaths.js';
 import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * Unit coverage for findRolloutFileSync — the sync codex rollout lookup behind
@@ -19,7 +22,7 @@ describe('findRolloutFileSync', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(home, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/codexRolloutFileSync.test.ts:cleanup' });
   });
 
   function writeRollout(uuid: string, ymd = ['2026', '05', '30']): string {
@@ -89,7 +92,7 @@ describe('TopicResumeMap.jsonlExists — codex rollout branch', () => {
   afterEach(() => {
     if (priorHome === undefined) delete process.env.HOME;
     else process.env.HOME = priorHome;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/codexRolloutFileSync.test.ts:cleanup' });
   });
 
   it('returns true when only a codex rollout exists (no claude jsonl)', () => {
