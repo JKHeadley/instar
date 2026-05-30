@@ -96,16 +96,111 @@ async function walkForUuid(root: string, uuid: string): Promise<string | null> {
   return null;
 }
 
-/** List all rollout files under $CODEX_HOME/sessions, newest first. */
+// Always cover at least this many newest non-empty day-partitions before an
+// early break, so the cross-midnight boundary (and a session that started
+// "yesterday" but is still the most recently active) is not missed.
+const MIN_PARTITIONS_SCANNED = 2;
+
+/**
+ * List rollout files under $CODEX_HOME/sessions, newest first (by mtime).
+ *
+ * Codex partitions rollouts by date: `sessions/YYYY/MM/DD/rollout-*.jsonl`. A
+ * busy account accumulates tens of thousands of these over time (one real
+ * machine: 14k files / 1.4 GB). The previous implementation walked AND
+ * `stat`ed EVERY file on every call before slicing to `limit`, which made
+ * callers like `GET /codex/usage` and the TokenLedger scan take tens of
+ * seconds (the route timed out) on a large history.
+ *
+ * This walks the date-partition directories in DESCENDING date order and
+ * `stat`s only the rollout files in the newest partitions, stopping once it has
+ * `limit` candidates (after covering >= MIN_PARTITIONS_SCANNED non-empty
+ * partitions, so a day is never cut mid-way and the cross-midnight boundary is
+ * covered). Work is bounded to the most-recent partitions instead of the entire
+ * history. Trade-off: "newest by mtime" becomes "newest among the most-recent
+ * date partitions, then by mtime" — for the rate-limit reader this is exact
+ * (the account-wide windows are identical across any recently-active session),
+ * and for the resume/token-ledger callers a session older than the scanned
+ * partitions yet still the single most-recently-touched file is the only miss,
+ * which is vanishingly rare in practice. A non-date-partitioned layout falls
+ * back to the original full walk (correctness over speed).
+ */
 export async function listAllRollouts(
   codexHome?: string,
   limit = 100,
 ): Promise<ReadonlyArray<{ path: string; mtime: number }>> {
   const root = path.join(codexHomeFromConfig(codexHome), 'sessions');
-  const all: Array<{ path: string; mtime: number }> = [];
-  await walkCollect(root, all);
-  all.sort((a, b) => b.mtime - a.mtime);
-  return all.slice(0, limit);
+  const dayDirs = await listDayPartitionsDescending(root);
+
+  if (dayDirs === null) {
+    // Unexpected/flat layout — fall back to the full walk so we never silently
+    // miss files just because the date partitions weren't where we expected.
+    const all: Array<{ path: string; mtime: number }> = [];
+    await walkCollect(root, all);
+    all.sort((a, b) => b.mtime - a.mtime);
+    return all.slice(0, limit);
+  }
+
+  const out: Array<{ path: string; mtime: number }> = [];
+  let partitionsWithFiles = 0;
+  for (const dir of dayDirs) {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      continue;
+    }
+    let had = false;
+    for (const entry of entries) {
+      if (!entry.startsWith('rollout-') || !entry.endsWith('.jsonl')) continue;
+      const full = path.join(dir, entry);
+      let stat;
+      try {
+        stat = await fs.stat(full);
+      } catch {
+        continue;
+      }
+      if (stat.isFile()) {
+        out.push({ path: full, mtime: stat.mtimeMs });
+        had = true;
+      }
+    }
+    if (had) partitionsWithFiles++;
+    if (out.length >= limit && partitionsWithFiles >= MIN_PARTITIONS_SCANNED) break;
+  }
+  out.sort((a, b) => b.mtime - a.mtime);
+  return out.slice(0, limit);
+}
+
+/**
+ * Enumerate the `sessions/YYYY/MM/DD` day-partition directories in descending
+ * date order WITHOUT statting their contents. Returns null when no
+ * date-partitioned structure is present (so the caller can fall back to a full
+ * walk). Numeric-name sort (zero-padded YYYY/MM/DD) is lexicographic-correct.
+ */
+async function listDayPartitionsDescending(root: string): Promise<string[] | null> {
+  const dirs: string[] = [];
+  const years = await readNamesDesc(root, /^\d{4}$/);
+  for (const y of years) {
+    const yPath = path.join(root, y);
+    const months = await readNamesDesc(yPath, /^\d{2}$/);
+    for (const m of months) {
+      const mPath = path.join(yPath, m);
+      const days = await readNamesDesc(mPath, /^\d{2}$/);
+      for (const d of days) dirs.push(path.join(mPath, d));
+    }
+  }
+  return dirs.length > 0 ? dirs : null;
+}
+
+/** readdir + filter by name pattern + descending sort. [] on any read error. */
+async function readNamesDesc(dir: string, pattern: RegExp): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  return entries.filter((e) => pattern.test(e)).sort().reverse();
 }
 
 async function walkCollect(dir: string, out: Array<{ path: string; mtime: number }>): Promise<void> {
