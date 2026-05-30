@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { ConversationStore, type Conversation } from './ConversationStore.js';
+import { ConversationStore, type Conversation, type ConversationState } from './ConversationStore.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -44,6 +44,12 @@ export interface ThreadResumeEntry {
   spawnMode?: 'interactive' | 'pipe';
   originTopicId?: number;
   originSessionName?: string;
+}
+
+export interface ThreadResumeSessionMatch {
+  threadId: string;
+  entry: ThreadResumeEntry;
+  conversationState: ConversationState;
 }
 
 // ── Field bridge ────────────────────────────────────────────────
@@ -202,6 +208,17 @@ export class ThreadResumeMap {
     return this.store.listActive()
       .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }))
       .filter(({ entry }) => entry.state === 'active' || entry.state === 'idle');
+  }
+
+  /** Reverse lookup live conversation entries by their bound tmux session name. */
+  getBySessionName(sessionName: string): ThreadResumeSessionMatch[] {
+    return this.store.listActive()
+      .filter(c => c.boundSessionName === sessionName)
+      .map(c => ({
+        threadId: c.threadId,
+        entry: conversationToEntry(c),
+        conversationState: c.state,
+      }));
   }
 
   /** Archive stale non-pinned active/idle/open conversations. */
