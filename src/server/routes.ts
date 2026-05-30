@@ -29,6 +29,7 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
+import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
   GATE_ROUTE_VERSION,
   GATE_ROUTE_MINIMUM_VERSION,
@@ -4435,6 +4436,37 @@ export function createRoutes(ctx: RouteContext): Router {
       if (n > 0) idleMs = n;
     }
     res.json({ idleMs, orphans: ctx.tokenLedger.orphans({ idleMs }) });
+  });
+
+  // ── Codex usage (the codex `/status` equivalent, read from disk) ─────
+  // Codex has no usage API, but the codex CLI persists the authoritative
+  // account rate-limit windows (primary=5h, secondary=weekly) into each
+  // session rollout's `token_count` events. This route surfaces the freshest
+  // snapshot so an agent can answer "where does codex usage sit?" and so the
+  // model-swap policy can react to an exhausted window — without the
+  // interactive TUI. Read-only; never mutates session state. Always 200 when
+  // wired ("alive"): `available:false` (not 503) means simply no codex data
+  // on disk yet (e.g. a pure-Claude agent).
+  router.get('/codex/usage', async (req, res) => {
+    const codexHome =
+      typeof req.query.codexHome === 'string' && req.query.codexHome
+        ? req.query.codexHome
+        : undefined;
+    let usage = null;
+    try {
+      usage = await readLatestCodexUsage({ codexHome });
+    } catch {
+      usage = null;
+    }
+    if (!usage) {
+      res.json({
+        available: false,
+        usage: null,
+        reason: 'no codex rollout with rate-limit data found',
+      });
+      return;
+    }
+    res.json({ available: true, usage });
   });
 
   // ── Framework-Onboarding Mentor System: issue ledger (read-only) ──

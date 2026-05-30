@@ -500,6 +500,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'codexUsage',
+    prefixes: ['/codex'],
+    description: 'Codex usage — the codex `/status` rate-limit windows (5h + weekly) read from the on-disk rollout stream; no interactive TUI. Read-only.',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /codex/usage — freshest codex account rate-limit snapshot (primary 5h + secondary weekly windows; used/remaining percent, resets, plan, reached-type)',
+      ],
+    }),
+  },
+  {
     key: 'frameworkIssues',
     prefixes: ['/framework-issues'],
     description: 'Framework-Onboarding Mentor System — read-only issue-ledger observability (never gates)',
