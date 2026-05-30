@@ -2882,6 +2882,28 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
     }
 
+    // SessionReaper CPU-aware pressure + decision audit (RESPONSIBLE-RESOURCE-USAGE).
+    // Tells the agent (a) the reaper now reaps under CPU strain, not only memory,
+    // and (b) a silent, reviewable decision trail + endpoint exists. Without this an
+    // agent asked "what is the reaper considering / why isn't it acting under load?"
+    // has no grounded answer. Idempotent via content-sniffing on the new route path.
+    if (!content.includes('/sessions/reaper/audit')) {
+      const section = `
+## SessionReaper — CPU-aware pressure + decision audit
+
+The idle-session reaper's pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`. \`GET /sessions/reaper\`'s \`pressure.inputs\` shows freePct, loadPerCore, and the memTier/cpuTier breakdown.
+
+A silent **decision audit** records every keep/kill decision *change* (logged on transition, not every tick) plus the reap-path events, each stamped with the pressure tier that drove it, to \`logs/reaper-audit.jsonl\`.
+- Read the tail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/reaper/audit?limit=50"\` → \`{ entries: [...] }\`. Read-only, no notifications — purely for inspection.
+- Proactive: user asks "what is the reaper considering?" / "why did/didn't it reap X?" / "is it acting under load?" → GET /sessions/reaper (live pressure + verdicts) and GET /sessions/reaper/audit (decision history).
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added SessionReaper CPU-aware + decision-audit section');
+    } else {
+      result.skipped.push('CLAUDE.md: SessionReaper CPU-aware + decision-audit section already present');
+    }
+
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
     // and lifeline drift auto-promote. Complementary to Version-Skew Self-
     // Recovery above (that one handles major.minor crossings; this one handles

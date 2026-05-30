@@ -114,6 +114,23 @@ describe('SessionReaper E2E lifecycle', () => {
       expect(res.body.pressure).toBeDefined();
       expect(Array.isArray(res.body.sessions)).toBe(true);
     });
+
+    it('GET /sessions/reaper/audit returns 200 (not 503) and reads the trail through real plumbing', async () => {
+      // Empty trail is still a live 200 (read-only file surface, never 503).
+      const empty = await request(app).get('/sessions/reaper/audit').set(auth());
+      expect(empty.status).toBe(200);
+      expect(empty.body.entries).toEqual([]);
+
+      // A row written to the dedicated trail is read back via ctx.config.stateDir.
+      // The trail lives at <stateDir>/../logs (sibling of .instar — production layout).
+      const logPath = path.join(stateDir, '..', 'logs', 'reaper-audit.jsonl');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(logPath, JSON.stringify({ kind: 'session-reaper', event: 'decision', verdict: 'keep', keptBy: 'active-process', tier: 'normal' }) + '\n');
+      const res = await request(app).get('/sessions/reaper/audit?limit=10').set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.entries).toHaveLength(1);
+      expect(res.body.entries[0]).toMatchObject({ event: 'decision', keptBy: 'active-process' });
+    });
   });
 
   describe('Phase 2: never reap a working session (end-to-end)', () => {

@@ -44,6 +44,12 @@ export interface SessionReaperConfig {
   maxReapsPerHour: number;
   finalGraceSec: number;
   protectOpenCommitments: boolean;
+  /** CPU pressure: 1-min load ÷ cores at/above which pressure is `moderate`.
+   *  The overall tier is the WORST of the memory tier and this CPU tier, so a
+   *  CPU-bound box raises pressure even when free memory is fine. */
+  cpuModerateLoadPerCore: number;
+  /** CPU pressure: load-per-core at/above which pressure is `critical`. */
+  cpuCriticalLoadPerCore: number;
 }
 
 export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
@@ -62,7 +68,50 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   maxReapsPerHour: 12,
   finalGraceSec: 60,
   protectOpenCommitments: true,
+  cpuModerateLoadPerCore: 1.0,
+  cpuCriticalLoadPerCore: 1.5,
 };
+
+/** Memory-pressure thresholds (freePct). Kept as constants — the existing
+ *  behavior surface; CPU thresholds are the configurable addition. */
+const MEM_MODERATE_FREE_PCT = 12;
+const MEM_CRITICAL_FREE_PCT = 5;
+
+const TIER_ORDER: Record<PressureTier, number> = { normal: 0, moderate: 1, critical: 2 };
+
+/**
+ * Pure pressure classifier — the single source of truth for the reaper's tier.
+ * tier = WORST of the memory tier (free %) and the CPU tier (1-min load ÷ cores).
+ * `loadPerCore: null` (cores unknown) drops CPU out of the calc (memory-only),
+ * preserving the pre-CPU behavior. Fully unit-testable (no `os` dependency).
+ */
+export function computePressure(
+  inputs: { freePct: number; loadPerCore: number | null },
+  thresholds: { cpuModerateLoadPerCore: number; cpuCriticalLoadPerCore: number },
+): PressureReading {
+  const memTier: PressureTier =
+    inputs.freePct < MEM_CRITICAL_FREE_PCT ? 'critical'
+      : inputs.freePct < MEM_MODERATE_FREE_PCT ? 'moderate'
+        : 'normal';
+  let cpuTier: PressureTier = 'normal';
+  if (inputs.loadPerCore != null && Number.isFinite(inputs.loadPerCore)) {
+    cpuTier =
+      inputs.loadPerCore >= thresholds.cpuCriticalLoadPerCore ? 'critical'
+        : inputs.loadPerCore >= thresholds.cpuModerateLoadPerCore ? 'moderate'
+          : 'normal';
+  }
+  const tier = TIER_ORDER[cpuTier] >= TIER_ORDER[memTier] ? cpuTier : memTier;
+  const round = (n: number): number => Math.round(n * 100) / 100;
+  return {
+    tier,
+    inputs: {
+      freePct: Math.round(inputs.freePct * 10) / 10,
+      loadPerCore: inputs.loadPerCore == null ? null : round(inputs.loadPerCore),
+      memTier,
+      cpuTier,
+    },
+  };
+}
 
 /** A single signal's outcome. `keep:true` short-circuits the classifier. */
 interface SignalResult {
@@ -145,6 +194,9 @@ export class SessionReaper extends EventEmitter {
   private timer?: NodeJS.Timeout;
   private running = false;
   private obs = new Map<string, Obs>();
+  /** Last audited `verdict:keptBy` per session — so the decision audit logs only
+   *  on a CHANGE, not every tick (auditability without per-tick log spam). */
+  private lastAuditedDecision = new Map<string, string>();
   private reapTimestamps: number[] = []; // for per-hour budget
   /** Flips to true (forcing dry-run) after any ambiguous/failed reap. */
   private autoDisabled = false;
@@ -279,6 +331,7 @@ export class SessionReaper extends EventEmitter {
       const live = new Set(sessions.map(s => s.id));
       // GC obs for vanished sessions.
       for (const id of [...this.obs.keys()]) if (!live.has(id)) { this.obs.delete(id); this.deps.clearReaping(id); }
+      for (const id of [...this.lastAuditedDecision.keys()]) if (!live.has(id)) this.lastAuditedDecision.delete(id);
 
       let reapedThisTick = 0;
       for (const session of sessions) {
@@ -293,6 +346,9 @@ export class SessionReaper extends EventEmitter {
           this.obs.set(session.id, { candidateSince: 0, consecutive: 0, lastFrame: '', lastTranscript: { resolved: false, path: '', size: 0, mtime: 0 } });
           continue;
         }
+        // Decision audit (transition-only): record what we decided + WHY, stamped
+        // with the pressure context, the first time we see it and on every change.
+        this.auditDecisionIfChanged(session, evaln, pressure);
         const prior = this.obs.get(session.id);
         const now = this.now();
 
@@ -393,6 +449,22 @@ export class SessionReaper extends EventEmitter {
     }
   }
 
+  /** Emit a `decision` audit row only when a session's (verdict, keptBy) differs
+   *  from the last audited value — so a multi-day kept session logs once, not
+   *  every tick. Each row carries the pressure context that drove the call. */
+  private auditDecisionIfChanged(session: Session, evaln: SessionEvaluation, pressure: PressureReading): void {
+    const key = `${evaln.verdict}:${evaln.keptBy}`;
+    if (this.lastAuditedDecision.get(session.id) === key) return;
+    this.lastAuditedDecision.set(session.id, key);
+    this.audit('decision', session, {
+      verdict: evaln.verdict,
+      keptBy: evaln.keptBy,
+      confidence: evaln.confidence,
+      tier: pressure.tier,
+      inputs: pressure.inputs,
+    });
+  }
+
   private audit(event: string, session: Session, detail: Record<string, unknown>): void {
     const entry = { ts: new Date(this.now()).toISOString(), kind: 'session-reaper', event, session: session.name, sessionId: session.id, ...detail };
     if (this.deps.audit) this.deps.audit(entry);
@@ -446,4 +518,45 @@ export function fileAuditSink(stateDir: string): (event: Record<string, unknown>
       fs.appendFileSync(logPath, JSON.stringify(event) + '\n');
     } catch { /* never throw from the audit sink */ }
   };
+}
+
+/** Path of the dedicated, reviewable reaper-decision audit trail. */
+export function reaperAuditPath(stateDir: string): string {
+  return path.join(stateDir, '..', 'logs', 'reaper-audit.jsonl');
+}
+
+/**
+ * Dedicated reaper audit sink → logs/reaper-audit.jsonl (separate from the
+ * shared sentinel log so the reaper's decisions are reviewable on their own).
+ * Silent: never throws, never notifies — purely an inspectable record.
+ */
+export function reaperAuditSink(stateDir: string): (event: Record<string, unknown>) => void {
+  const logPath = reaperAuditPath(stateDir);
+  return (event: Record<string, unknown>) => {
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(logPath, JSON.stringify(event) + '\n');
+    } catch { /* never throw from the audit sink */ }
+  };
+}
+
+/**
+ * Read the tail of the reaper audit trail (newest last), bounded to `limit`
+ * rows. Returns [] when the file is absent or unreadable — never throws.
+ */
+export function readReaperAudit(stateDir: string, limit: number): Array<Record<string, unknown>> {
+  const logPath = reaperAuditPath(stateDir);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(logPath, 'utf-8');
+  } catch {
+    return []; // @silent-fallback-ok — absent audit file ⇒ no rows yet.
+  }
+  const lines = raw.split('\n').filter(l => l.trim().length > 0);
+  const tail = lines.slice(Math.max(0, lines.length - limit));
+  const out: Array<Record<string, unknown>> = [];
+  for (const line of tail) {
+    try { out.push(JSON.parse(line)); } catch { /* skip a torn line */ }
+  }
+  return out;
 }

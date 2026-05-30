@@ -8602,7 +8602,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // for v1 (advisory; spawn-denial-primary is a tracked follow-up) — and note
     // an over-eager tier can only reap a GENUINELY-idle session sooner, never a
     // working one (the classifier protects working sessions regardless of tier).
-    const { SessionReaper, fileAuditSink } = await import('../monitoring/SessionReaper.js');
+    const { SessionReaper, computePressure, reaperAuditSink } = await import('../monitoring/SessionReaper.js');
     const _os = await import('node:os');
     const _resolveTopic = (tmuxSession: string): number | null => {
       const t = telegram?.getTopicForSession(tmuxSession);
@@ -8665,13 +8665,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         pressure: () => {
           const total = _os.totalmem();
           const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;
-          const tier = freePct < 5 ? 'critical' : freePct < 12 ? 'moderate' : 'normal';
-          return { tier, inputs: { freePct: Math.round(freePct * 10) / 10 } };
+          // CPU pressure: 1-min load average ÷ core count. The overall tier is the
+          // WORST of memory and CPU, so a CPU-bound box (the common case) raises
+          // pressure even when free memory is fine. cores unknown ⇒ memory-only.
+          const cores = _os.cpus()?.length ?? 0;
+          const loadPerCore = cores > 0 ? _os.loadavg()[0] / cores : null;
+          const rcfg = config.monitoring?.sessionReaper;
+          return computePressure(
+            { freePct, loadPerCore },
+            {
+              cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
+              cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
+            },
+          );
         },
         terminate: (id, reason) => sessionManager.terminateSession(id, reason),
         markReaping: (id) => sessionManager.markReaping(id),
         clearReaping: (id) => sessionManager.clearReaping(id),
-        audit: fileAuditSink(config.stateDir),
+        audit: reaperAuditSink(config.stateDir),
       },
       config.monitoring?.sessionReaper,
     );

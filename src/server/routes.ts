@@ -127,6 +127,7 @@ async function postVerifyEvidence(
 }
 import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
+import { readReaperAudit } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
@@ -3907,6 +3908,18 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // Reaper decision audit (RESPONSIBLE-RESOURCE-USAGE). The pull-surface answer to
+  // "what is the reaper considering, and why is it keeping/killing each session?":
+  // every keep/kill DECISION transition (logged on change, not every tick) plus the
+  // reap-path events, each stamped with the pressure tier (memory + CPU) that drove
+  // it. Read-only, Bearer-auth (router-level middleware), silent (no notifications).
+  // `?limit=N` bounds the tail (default 200, max 1000).
+  router.get('/sessions/reaper/audit', (req, res) => {
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
+    res.json({ entries: readReaperAudit(ctx.config.stateDir, limit) });
   });
 
   // Sleep/wake telemetry. The pull-surface answer to "why does my agent keep

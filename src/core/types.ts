@@ -3055,6 +3055,12 @@ export interface MonitoringConfig {
     maxReapsPerHour?: number;
     finalGraceSec?: number;
     protectOpenCommitments?: boolean;
+    /** CPU pressure: 1-min load ÷ cores at/above which pressure is `moderate`
+     *  (overall tier = worst of memory and CPU). Default 1.0. */
+    cpuModerateLoadPerCore?: number;
+    /** CPU pressure: load-per-core at/above which pressure is `critical`.
+     *  Default 1.5. */
+    cpuCriticalLoadPerCore?: number;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing
