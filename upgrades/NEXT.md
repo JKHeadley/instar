@@ -49,3 +49,46 @@ turn finishes instead of trampling your message with recovery prompts.
   lifecycle (recovers with zero injects while working) + WIRED-into-server.ts guard.
 - Spec: `docs/specs/compaction-busy-session-defer.md` (+ `.eli16.md`).
 - Side-effects: `upgrades/side-effects/compaction-busy-session-defer.md`.
+
+---
+
+## What Changed — the supervisor no longer restart-loops a server that's just overloaded
+
+**If your machine is running a lot of agents at once, your messages won't get
+dropped by a pointless server restart loop anymore.** Each agent's supervisor
+pings its server every 10s; when the box is CPU-starved (load well above the core
+count), the live server can't answer in time, so after ~60s the supervisor used
+to declare it "unresponsive" and restart it. But restarting a starved server
+doesn't cure the starvation — the new one is starved too — so it looped, and
+every message you sent during a restart got dropped/misrouted (the "Session
+restarting, message never lands" symptom). On Echo this was 6 restarts in ~35min
+during a load spike.
+
+Now the supervisor checks system load first: while the box is CPU-starved it
+**defers** the restart (up to a 5-minute hard cap) instead of bouncing a server
+that would recover on its own once load eases. A genuinely-dead server still
+restarts instantly; a normal hiccup still restarts after ~60s.
+
+## What to Tell Your User
+
+Automatic, no config. If you run several agents on one machine and have seen
+"Session restarting" with messages vanishing during busy periods, that's the
+fix. The durable cure for an over-capacity machine is still moving to dedicated
+hosting — this just stops the laptop from making overload worse.
+
+## Summary of New Capabilities
+
+- `src/core/cpuStarvation.ts` — shared `cpuLoadRatio` / `isCpuStarved`
+  (`loadavg[0]/cpuCount > 1.5`), the canonical "machine oversubscribed" signal.
+- `ServerSupervisor` now defers restarting an alive-but-unresponsive server while
+  CPU-starved (hard cap `starvationRestartThreshold` ≈ 5min). The two duplicated
+  health-failure branches are unified into `evaluateUnhealthyServer()`.
+
+## Evidence
+
+- Unit: `tests/unit/cpu-starvation.test.ts`,
+  `tests/unit/supervisor-cpu-starvation-defer.test.ts` (drives the REAL
+  `evaluateUnhealthyServer()` with injected load + a wiring guard) — 19 pass with
+  the existing `supervisor-health-check` suite.
+- Spec: `docs/specs/supervisor-cpu-starvation-restart-guard.md` (+ `.eli16.md`).
+- Side-effects: `upgrades/side-effects/supervisor-cpu-starvation-restart-guard.md`.
