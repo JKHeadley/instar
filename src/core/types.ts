@@ -2884,6 +2884,13 @@ export interface MonitoringConfig {
     stuckCommandSec?: number;
     /** Poll interval in ms (default: 30000) */
     pollIntervalMs?: number;
+    /**
+     * How long a throttled pane must stay byte-identical across polls before the
+     * settled-throttle backstop hands it to the RateLimitSentinel (default:
+     * 20000). With the default 30s poll, recovery engages on the 2nd consecutive
+     * throttled poll (~30-60s). Lower only for tests.
+     */
+    rateLimitSettleMs?: number;
   };
   /**
    * RateLimitSentinel — rides out Anthropic's server-side capacity throttle

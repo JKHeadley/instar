@@ -1,10 +1,10 @@
 ---
 review-convergence: "internal-adversarial-1"
-approved: false
-approved-by: null
+approved: true
+approved-by: "justin (topic 16566, 2026-05-30 — directed the settled-throttle detection fix: 'make sure a session can't hang forever due to these API errors ... maybe we should consider sending a message to the user in the meantime'; base sentinel already shipped in production at v1.3.108)"
 slug: rate-limit-sentinel
 companion-eli16: rate-limit-sentinel.eli16.md
-note: "External cross-model (/crossreview) not available on this host; one internal adversarial side-effects review run, all BLOCKER + SHOULD-FIX findings folded in (see Review log)."
+note: "External cross-model (/crossreview) not available on this host; one internal adversarial side-effects review run, all BLOCKER + SHOULD-FIX findings folded in (see Review log). 2026-05-30: approved tag applied from Justin's conversational authorization for the settled-throttle detection amendment (the original idle-precondition gates never fired in the field) — flagged to him in topic 16566."
 ---
 
 # RateLimitSentinel — Surviving Anthropic's Server-Side Throttle
@@ -97,6 +97,13 @@ the sentinel is the **single high-context owner** that decides what to do.
 
 ### Detection predicate
 
+> **Amendment (2026-05-30 — "sessions hang forever on a 429" incident).** The
+> original idle-precondition gates below made this sentinel fire **zero** times
+> in the field. The watchdog path now uses a **settled-output signal** instead;
+> see *§Settled-throttle detection (the live fix)* immediately after this
+> section. The pure predicate (`detectRateLimited`) is unchanged except for an
+> optional widened-window parameter.
+
 Detection captures the **last 20 pane lines** (`captureOutput(tmuxSession, 20)`) — enough to hold the
 throttle line, any trailing prompt, and a still-present retry spinner, without the 10-line recency
 gate `detectCompactionIdle` uses (recency here is enforced by the idle precondition, not line count).
@@ -124,6 +131,39 @@ tolerate ANSI/encoding drift, so spinner match keys on `retrying in … attempt`
 4. Session is idle at prompt with no active processes (reuses existing idle detection).
 
 The `(not your usage limit)` anchor is the clean discriminator between this and the usage cap.
+
+### Settled-throttle detection (the live fix)
+
+**Why the original gates failed.** Predicate gate #4 ("idle at prompt with no active processes")
+plus the 20-line window were never satisfied by a real busy session:
+
+- **Active-process gate** — these are working dev sessions; they almost always have a background
+  shell or MCP process alive when the throttle lands, so the watchdog classified them "active, not
+  stalled" and returned early.
+- **20-line / at-prompt window** — Claude Code's input box + footer + task list + tips render 15–25
+  rows *below* the `API Error:` line, pushing the throttle string out of the last-20-line window and
+  the bottom-3-line at-prompt check.
+
+So the fast recovery never engaged; sessions sat dead until the 15-minute `ActiveWorkSilenceSentinel`
+fallback. **Fix: replace both gates with a settled-output signal** (`evaluateThrottleSettle`,
+`rateLimitDetection.ts`):
+
+1. Match the throttle in a **widened window** — `RATE_LIMIT_SETTLED_CAPTURE_LINES = 45` — so the
+   input box can't hide it. The same usage-limit / retry-spinner exclusions still apply.
+2. Require the pane to be **byte-identical across two consecutive watchdog polls**
+   (`throttleSignature`, trailing-whitespace-normalized). An actively-working session animates its
+   spinner + elapsed timer every tick, so a frozen pane is a rock-solid "turn ended, session stuck"
+   signal — **no process-tree inspection, no at-prompt heuristic**.
+
+The settle threshold is `monitoring.watchdog.rateLimitSettleMs` (default 20000ms). With the default
+30s poll, recovery engages on the 2nd consecutive throttled poll (≈30–60s). The decision is a pure,
+clock-injected function (`evaluateThrottleSettle → 'no-throttle' | 'waiting' | 'settled'`) so all
+timing is unit-tested without real timers.
+
+**Unbounded retry (the "never hang forever" guarantee).** After a recovery cycle escalates and the
+sentinel clears its state (~30s), a still-stuck pane re-emits past the watchdog's 60s cooldown,
+starting a fresh cycle. Recovery therefore retries until the throttle actually clears — eventual
+recovery is guaranteed even if a single cycle gives up.
 
 ### Lifecycle & state machine
 
