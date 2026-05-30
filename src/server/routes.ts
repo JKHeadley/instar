@@ -176,6 +176,7 @@ import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
+import { RelayContentDedup } from '../messaging/relayContentDedup.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { getOutboundQueueStatus, cleanupDeliveredOutbound, buildAgentList } from '../messaging/GitSyncTransport.js';
 import type { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -939,6 +940,12 @@ export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  // Content-hash dedup for the agent-to-agent relay-agent ingress path. Guards
+  // the duplicate-reply bug where a sender that times out on the receiver's
+  // session spawn retries with a FRESH message.id, slipping past the id-based
+  // relay dedup. One instance per server (process-wide across relay-agent calls).
+  const relayContentDedup = new RelayContentDedup();
 
   // ── PR-REVIEW-HARDENING kill-switch (Phase A) ─────────────────────
   //
@@ -12698,6 +12705,29 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: 'Invalid envelope' });
         return;
       }
+
+      // Content-hash dedup (duplicate-reply fix): a sender that timed out on the
+      // receiver's session spawn and retried with a FRESH message.id would
+      // otherwise slip past the id-based relay dedup and cause a duplicate
+      // spawn/reply. Recognize the retry by the stable (sender, thread, content)
+      // triple within a short window and short-circuit idempotently (200, no
+      // spawn) so the sender's retry still sees success.
+      {
+        const dSender = envelope.message?.from?.agent ?? 'unknown';
+        const dThread = envelope.message?.threadId;
+        const dBody = envelope.message?.body;
+        const dText = typeof dBody === 'string'
+          ? dBody
+          : (typeof dBody === 'object' && dBody !== null
+              ? String((dBody as Record<string, unknown>).content ?? (dBody as Record<string, unknown>).text ?? '')
+              : '');
+        if (dThread && dText && !relayContentDedup.shouldProcess(dSender, dThread, dText)) {
+          console.log(`[relay-agent] Deduped retried message from ${dSender} (thread: ${dThread.slice(0, 8)}, id: ${envelope.message?.id ?? 'none'}) — identical content within window`);
+          res.json({ ok: true, deduped: true });
+          return;
+        }
+      }
+
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
       if (accepted) {
         const senderAgent = envelope.message?.from?.agent;
