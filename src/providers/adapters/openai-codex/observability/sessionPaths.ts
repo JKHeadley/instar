@@ -101,28 +101,42 @@ async function walkForUuid(root: string, uuid: string): Promise<string | null> {
 // "yesterday" but is still the most recently active) is not missed.
 const MIN_PARTITIONS_SCANNED = 2;
 
+// `stat` only this multiple of `limit` candidate files — the newest by the
+// timestamp embedded in their filename — to resolve the authoritative
+// newest-by-mtime. A long-running session (older filename, newer mtime) is still
+// caught as long as it is among the newest `limit * STAT_OVERSCAN` created.
+const STAT_OVERSCAN = 4;
+
 /**
  * List rollout files under $CODEX_HOME/sessions, newest first (by mtime).
  *
- * Codex partitions rollouts by date: `sessions/YYYY/MM/DD/rollout-*.jsonl`. A
- * busy account accumulates tens of thousands of these over time (one real
- * machine: 14k files / 1.4 GB). The previous implementation walked AND
- * `stat`ed EVERY file on every call before slicing to `limit`, which made
- * callers like `GET /codex/usage` and the TokenLedger scan take tens of
- * seconds (the route timed out) on a large history.
+ * Codex partitions rollouts by date: `sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
+ * A busy account accumulates tens of thousands of these (one real machine: 14k
+ * files / 1.4 GB). The original implementation `stat`ed EVERY file before
+ * slicing to `limit`; an interim fix narrowed that to the newest partitions but
+ * still `stat`ed every file in them (~3.6k on the same machine) — fast in a
+ * healthy process, but catastrophic when the server's event loop is CPU-starved
+ * (each `await fs.stat` needs a loop turn), which is exactly when `GET
+ * /codex/usage` timed out.
  *
- * This walks the date-partition directories in DESCENDING date order and
- * `stat`s only the rollout files in the newest partitions, stopping once it has
- * `limit` candidates (after covering >= MIN_PARTITIONS_SCANNED non-empty
- * partitions, so a day is never cut mid-way and the cross-midnight boundary is
- * covered). Work is bounded to the most-recent partitions instead of the entire
- * history. Trade-off: "newest by mtime" becomes "newest among the most-recent
- * date partitions, then by mtime" — for the rate-limit reader this is exact
- * (the account-wide windows are identical across any recently-active session),
- * and for the resume/token-ledger callers a session older than the scanned
- * partitions yet still the single most-recently-touched file is the only miss,
- * which is vanishingly rare in practice. A non-date-partitioned layout falls
- * back to the original full walk (correctness over speed).
+ * This avoids the per-file `stat` storm entirely:
+ *   1. Enumerate date-partition dirs newest-first; `readdir` (one syscall each,
+ *      NO per-file stat) the newest partitions to collect candidate PATHS until
+ *      we have >= `limit * STAT_OVERSCAN` of them AND have covered >=
+ *      MIN_PARTITIONS_SCANNED non-empty partitions.
+ *   2. Sort candidates DESCENDING by path — the zero-padded `YYYY/MM/DD` dir +
+ *      `rollout-<ISO-ish-ts>` filename make a lexicographic sort chronological
+ *      by CREATION time, no `stat` needed.
+ *   3. `stat` ONLY the top `limit * STAT_OVERSCAN` candidates for the
+ *      authoritative mtime, sort by mtime, return the newest `limit`.
+ *
+ * So a `limit`-8 call does ~32 `stat`s instead of ~3.6k. Trade-off: "newest by
+ * mtime" becomes "newest by mtime among the newest-created candidates" — exact
+ * for the rate-limit reader (account-wide windows are identical across any
+ * recently-active session); the only miss for the resume/token-ledger callers is
+ * a session whose creation is older than the newest `limit * STAT_OVERSCAN` yet
+ * is still the single most-recently-touched file — vanishingly rare. A
+ * non-date-partitioned layout falls back to the original full walk.
  */
 export async function listAllRollouts(
   codexHome?: string,
@@ -140,7 +154,10 @@ export async function listAllRollouts(
     return all.slice(0, limit);
   }
 
-  const out: Array<{ path: string; mtime: number }> = [];
+  const statTarget = Math.max(limit, 1) * STAT_OVERSCAN;
+
+  // Phase 1: collect candidate PATHS (readdir only — no per-file stat).
+  const candidates: string[] = [];
   let partitionsWithFiles = 0;
   for (const dir of dayDirs) {
     let entries: string[];
@@ -152,20 +169,27 @@ export async function listAllRollouts(
     let had = false;
     for (const entry of entries) {
       if (!entry.startsWith('rollout-') || !entry.endsWith('.jsonl')) continue;
-      const full = path.join(dir, entry);
-      let stat;
-      try {
-        stat = await fs.stat(full);
-      } catch {
-        continue;
-      }
-      if (stat.isFile()) {
-        out.push({ path: full, mtime: stat.mtimeMs });
-        had = true;
-      }
+      candidates.push(path.join(dir, entry));
+      had = true;
     }
     if (had) partitionsWithFiles++;
-    if (out.length >= limit && partitionsWithFiles >= MIN_PARTITIONS_SCANNED) break;
+    if (candidates.length >= statTarget && partitionsWithFiles >= MIN_PARTITIONS_SCANNED) break;
+  }
+
+  // Phase 2: sort by path descending (chronological by creation), keep the top.
+  candidates.sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+  const top = candidates.slice(0, statTarget);
+
+  // Phase 3: stat ONLY the top candidates for authoritative mtime.
+  const out: Array<{ path: string; mtime: number }> = [];
+  for (const full of top) {
+    let stat;
+    try {
+      stat = await fs.stat(full);
+    } catch {
+      continue;
+    }
+    if (stat.isFile()) out.push({ path: full, mtime: stat.mtimeMs });
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return out.slice(0, limit);
