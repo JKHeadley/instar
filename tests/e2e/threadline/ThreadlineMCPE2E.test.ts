@@ -206,7 +206,7 @@ describe('ThreadlineMCP E2E', () => {
       // Message 1: Start conversation
       const r1 = await e2e.client.callTool({
         name: 'threadline_send',
-        arguments: { agentId: 'research-bot', message: 'What is quantum computing?' },
+        arguments: { agentId: 'research-bot', message: 'What is quantum computing?', waitForReply: true },
       });
       const d1 = JSON.parse((r1.content as any)[0].text);
       const threadId = d1.threadId;
@@ -220,6 +220,7 @@ describe('ThreadlineMCP E2E', () => {
             agentId: 'research-bot',
             threadId,
             message: `Follow-up question ${i}`,
+            waitForReply: true,
           },
         });
         const d = JSON.parse((r.content as any)[0].text);
@@ -248,7 +249,7 @@ describe('ThreadlineMCP E2E', () => {
       for (const agent of agents) {
         const r = await e2e.client.callTool({
           name: 'threadline_send',
-          arguments: { agentId: agent, message: `Hello ${agent}!` },
+          arguments: { agentId: agent, message: `Hello ${agent}!`, waitForReply: true },
         });
         threads.push(JSON.parse((r.content as any)[0].text).threadId);
       }
@@ -264,6 +265,7 @@ describe('ThreadlineMCP E2E', () => {
               agentId: agents[i],
               threadId: threads[i],
               message: `Round ${round} to ${agents[i]}`,
+              waitForReply: true,
             },
           });
         }
@@ -537,14 +539,14 @@ describe('ThreadlineMCP E2E', () => {
       // Create
       const r1 = await e2e.client.callTool({
         name: 'threadline_send',
-        arguments: { agentId: 'lifecycle-agent', message: 'Birth' },
+        arguments: { agentId: 'lifecycle-agent', message: 'Birth', waitForReply: true },
       });
       const { threadId } = JSON.parse((r1.content as any)[0].text);
 
       // Interact
       await e2e.client.callTool({
         name: 'threadline_send',
-        arguments: { agentId: 'lifecycle-agent', threadId, message: 'Growth' },
+        arguments: { agentId: 'lifecycle-agent', threadId, message: 'Growth', waitForReply: true },
       });
 
       // Verify history
