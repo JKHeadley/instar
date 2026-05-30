@@ -1872,11 +1872,17 @@ export class AgentServer {
           // ship fixes. Opus by config (Justin's constraint: all fixing on Opus).
           // spawnSession resolves once the session has STARTED (not completed),
           // so the guardian returns 'spawned' immediately while the cycle runs.
+          // disableProjectMcp: a headless one-shot session that inherits the
+          // project .mcp.json HANGS on boot (the auth-required remote MCP servers
+          // can't OAuth headless). The loop uses built-in tools + bash + curl, not
+          // MCP — so spawn with NO project MCP servers (verified: 4.5-min stall →
+          // ~9s boot). Found by the live dogfood of the autonomous-fix loop.
           await self.sessionManager.spawnSession({
             name,
             prompt: goal,
             model: model || 'opus',
             maxDurationMinutes: Math.max(5, maxCycleMinutes),
+            disableProjectMcp: true,
           });
           return { sessionName: name };
         },
