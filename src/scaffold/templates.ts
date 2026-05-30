@@ -609,6 +609,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - **Auto-sync**: Search automatically syncs before querying, so results are always current.
 - **When to use**: When looking for something you know you wrote but can't remember where. When a user asks "didn't we discuss X?" When building context for a task from past learnings.
 
+**Codex Usage** — Check where codex account usage sits (the codex \`/status\` rate-limit windows) without the interactive TUI. Reads the authoritative primary (5h) + secondary (weekly) windows the codex CLI persists into its session rollout files.
+- Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/codex/usage\`
+- Returns \`{ available, usage: { primary, secondary, model, planType, rateLimitReachedType } }\` where each window has \`usedPercent\`, \`remainingPercent\`, \`windowMinutes\`, \`resetsAt\`/\`resetsAtIso\`, \`resetsInSeconds\`. \`available:false\` means no codex session data on disk yet (e.g. a pure-Claude agent).
+- **When to use**: when asked "how much codex usage is left?" / "am I near the limit?", before scheduling heavy codex work, or to drive a model-swap when a window is exhausted (\`rateLimitReachedType\` is non-null, or \`secondary.remainingPercent\` is low).
+
 **Git Sync** — Automatic version-control and multi-machine synchronization of your state.
 - **How it works**: The \`git-sync\` job runs hourly, commits local changes, pulls remote changes, and pushes — all automatically. It uses a gate script to skip when nothing has changed (zero-token cost).
 - **Project-bound agents**: Your state (\`.instar/\`) lives inside the parent project's git repo. The git-sync job uses this repo directly — no separate repo needed. Just make sure the parent repo has a remote configured (\`git remote -v\`).

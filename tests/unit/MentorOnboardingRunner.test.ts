@@ -132,3 +132,103 @@ describe('MentorOnboardingRunner', () => {
     expect(lr?.error).toContain('spawn refused: session cap reached');
   });
 });
+
+describe('MentorOnboardingRunner — autonomous-fix guardian branch ("just be Echo")', () => {
+  function autoCfg(over: Partial<MentorConfig> = {}): MentorConfig {
+    return {
+      ...DEFAULT_MENTOR_CONFIG,
+      enabled: true,
+      mode: 'off', // the guardian must run REGARDLESS of mode
+      autonomousFix: { enabled: true, model: 'opus', sessionNamePrefix: 'mentor-autoloop' },
+      ...over,
+    };
+  }
+
+  it('routes to the guardian (NOT the observe-pipeline) when autonomousFix.enabled, even with mode:off', async () => {
+    const spawnStageA = vi.fn(async () => 'should-not-be-called');
+    const spawnLoopSession = vi.fn(async () => ({ sessionName: 'mentor-autoloop-1' }));
+    const svc = fakeServices({
+      spawnStageA,
+      loopSessionAlive: () => false,
+      spawnLoopSession,
+      buildAutoloopGoal: () => 'GOAL',
+    });
+    const runner = new MentorOnboardingRunner(svc, () => autoCfg());
+    const r = await runner.tick();
+    expect(r.reason).toBe('spawned');
+    expect(r.ran).toBe(true);
+    expect(r.sessionName).toBe('mentor-autoloop-1');
+    // The observe-pipeline's Stage-A compose must NEVER run on the guardian path.
+    expect(spawnStageA).not.toHaveBeenCalled();
+    expect(spawnLoopSession).toHaveBeenCalledOnce();
+  });
+
+  it('single-instance: a live loop session short-circuits to loop-active (no second spawn)', async () => {
+    const spawnLoopSession = vi.fn(async () => ({ sessionName: 'x' }));
+    const svc = fakeServices({
+      loopSessionAlive: () => true,
+      spawnLoopSession,
+      buildAutoloopGoal: () => 'GOAL',
+    });
+    const runner = new MentorOnboardingRunner(svc, () => autoCfg());
+    const r = await runner.tick();
+    expect(r.reason).toBe('loop-active');
+    expect(spawnLoopSession).not.toHaveBeenCalled();
+  });
+
+  it('a spawned cycle advances the run counters (onTickRan) once', async () => {
+    const onTickRan = vi.fn();
+    const svc = fakeServices({
+      loopSessionAlive: () => false,
+      spawnLoopSession: async () => ({ sessionName: 'mentor-autoloop-2' }),
+      buildAutoloopGoal: () => 'GOAL',
+      onTickRan,
+    });
+    const runner = new MentorOnboardingRunner(svc, () => autoCfg());
+    await runner.tick();
+    expect(onTickRan).toHaveBeenCalledOnce();
+  });
+
+  it('a skipped cycle (loop-active) does NOT advance the run counters', async () => {
+    const onTickRan = vi.fn();
+    const svc = fakeServices({
+      loopSessionAlive: () => true,
+      spawnLoopSession: async () => ({ sessionName: 'x' }),
+      buildAutoloopGoal: () => 'GOAL',
+      onTickRan,
+    });
+    const runner = new MentorOnboardingRunner(svc, () => autoCfg());
+    await runner.tick();
+    expect(onTickRan).not.toHaveBeenCalled();
+  });
+
+  it('autonomousFix.enabled but spawnLoopSession not wired → clear spawn-failed (not a silent no-op)', async () => {
+    // Host enabled the feature but forgot to inject the spawner: must surface.
+    const svc = fakeServices({ loopSessionAlive: () => false, buildAutoloopGoal: () => 'GOAL' });
+    const runner = new MentorOnboardingRunner(svc, () => autoCfg());
+    const r = await runner.tick();
+    expect(r.reason).toBe('spawn-failed');
+    expect(r.error).toMatch(/spawnLoopSession not wired/);
+  });
+
+  it('still ships dark: autonomousFix present but enabled:false runs the observe-pipeline, not the guardian', async () => {
+    const spawnLoopSession = vi.fn(async () => ({ sessionName: 'x' }));
+    const svc = fakeServices({ spawnLoopSession, loopSessionAlive: () => false });
+    const cfg = autoCfg({ mode: 'dry-run', autonomousFix: { enabled: false, model: 'opus' } });
+    const runner = new MentorOnboardingRunner(svc, () => cfg);
+    const r = await runner.tick();
+    expect(r.reason).not.toBe('spawned');
+    expect(spawnLoopSession).not.toHaveBeenCalled();
+    expect(svc.spawnStageA).toHaveBeenCalled(); // observe-pipeline ran instead
+  });
+
+  it('mentor.enabled:false keeps the guardian dark even with autonomousFix.enabled', async () => {
+    const spawnLoopSession = vi.fn(async () => ({ sessionName: 'x' }));
+    const svc = fakeServices({ spawnLoopSession, loopSessionAlive: () => false });
+    const cfg = autoCfg({ enabled: false });
+    const runner = new MentorOnboardingRunner(svc, () => cfg);
+    const r = await runner.tick();
+    expect(r.reason).toBe('disabled');
+    expect(spawnLoopSession).not.toHaveBeenCalled();
+  });
+});

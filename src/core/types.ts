@@ -1734,6 +1734,21 @@ export interface MultiMachineConfig {
    * the single-awake seamlessness model above; a 1-machine agent is a no-op.
    */
   sessionPool?: SessionPoolConfig;
+  /**
+   * Whether THIS machine's lifeline owns the Telegram long-poll. Telegram allows
+   * exactly one getUpdates poller per bot token, so a second machine that also
+   * polls causes a permanent 409-conflict war and nondeterministic message
+   * delivery (the 2026-05-29 duplicate-poller incident). A standby machine MUST
+   * set this false so it runs the full server + joins the session pool WITHOUT
+   * polling Telegram — only the awake/primary machine polls.
+   *
+   * DEFAULT (undefined) = poll, so every existing single-machine agent is
+   * unchanged. Only a machine that explicitly sets `false` suppresses its poll.
+   * This is a per-machine LOCAL flag (read from this machine's own config); it
+   * does not require any shared/git-synced coordination, so a credential-less
+   * standby can honor it. Consumed by TelegramLifeline.start().
+   */
+  telegramPolling?: boolean;
 }
 
 /**
@@ -2884,6 +2899,13 @@ export interface MonitoringConfig {
     stuckCommandSec?: number;
     /** Poll interval in ms (default: 30000) */
     pollIntervalMs?: number;
+    /**
+     * How long a throttled pane must stay byte-identical across polls before the
+     * settled-throttle backstop hands it to the RateLimitSentinel (default:
+     * 20000). With the default 30s poll, recovery engages on the 2nd consecutive
+     * throttled poll (~30-60s). Lower only for tests.
+     */
+    rateLimitSettleMs?: number;
   };
   /**
    * RateLimitSentinel — rides out Anthropic's server-side capacity throttle

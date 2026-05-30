@@ -193,6 +193,25 @@ describe('ConversationStore', () => {
     expect(store.listActive().map(c => c.threadId).sort()).toEqual(['a']);
   });
 
+  it('retires stale non-pinned active and idle conversations without deleting them', async () => {
+    const store = new ConversationStore(stateDir);
+    const now = new Date('2026-05-30T09:00:00.000Z');
+    const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
+    const fresh = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+
+    await store.mutate('stale-active', d => { d.state = 'active'; d.lastActivityAt = stale; return d; });
+    await store.mutate('stale-idle', d => { d.state = 'idle'; d.lastActivityAt = stale; return d; });
+    await store.mutate('fresh-active', d => { d.state = 'active'; d.lastActivityAt = fresh; return d; });
+    await store.mutate('pinned-stale', d => { d.state = 'active'; d.lastActivityAt = stale; d.pinned = true; return d; });
+
+    expect(store.retireInactive(24 * 60 * 60 * 1000, now)).toBe(2);
+    expect(store.get('stale-active')?.state).toBe('archived');
+    expect(store.get('stale-idle')?.state).toBe('archived');
+    expect(store.get('fresh-active')?.state).toBe('active');
+    expect(store.get('pinned-stale')?.state).toBe('active');
+    expect(store.listActive().map(c => c.threadId).sort()).toEqual(['fresh-active', 'pinned-stale']);
+  });
+
   it('CROSS-PROCESS: two store instances on one file lose no same-thread update', async () => {
     // Phase 2a: disk-backed per-record version-CAS — two instances (simulating
     // the server + the MCP child) mutating the SAME thread must not clobber.

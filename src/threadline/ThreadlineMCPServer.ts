@@ -513,8 +513,8 @@ export class ThreadlineMCPServer {
           'Thread ID to resume (omit for new conversation)'
         ),
         message: z.string().describe('Message content'),
-        waitForReply: z.boolean().default(true).describe(
-          'Wait for the agent\'s response'
+        waitForReply: z.boolean().default(false).describe(
+          'Wait for the agent\'s response. Defaults to false so delivery acknowledgement returns promptly; set true only when the caller needs a synchronous reply.'
         ),
         timeoutSeconds: z.number().default(120).describe(
           'Max seconds to wait for reply (only with waitForReply)'
@@ -725,7 +725,7 @@ export class ThreadlineMCPServer {
             // Active threads with this agent
             const threads = this.deps.threadResumeMap.getByRemoteAgent(a.name);
             entry.activeThreads = threads.filter(
-              t => t.entry.state === 'active' || t.entry.state === 'idle'
+              t => t.entry.state === 'active'
             ).length;
 
             return entry;

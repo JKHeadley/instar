@@ -29,6 +29,7 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
+import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
   GATE_ROUTE_VERSION,
   GATE_ROUTE_MINIMUM_VERSION,
@@ -176,6 +177,7 @@ import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
+import { RelayContentDedup } from '../messaging/relayContentDedup.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { getOutboundQueueStatus, cleanupDeliveredOutbound, buildAgentList } from '../messaging/GitSyncTransport.js';
 import type { CapabilityMapper } from '../core/CapabilityMapper.js';
@@ -939,6 +941,12 @@ export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  // Content-hash dedup for the agent-to-agent relay-agent ingress path. Guards
+  // the duplicate-reply bug where a sender that times out on the receiver's
+  // session spawn retries with a FRESH message.id, slipping past the id-based
+  // relay dedup. One instance per server (process-wide across relay-agent calls).
+  const relayContentDedup = new RelayContentDedup();
 
   // ── PR-REVIEW-HARDENING kill-switch (Phase A) ─────────────────────
   //
@@ -1939,8 +1947,12 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } else {
       // Fail-open: allow. Log with the failure kind so guardian-pulse
-      // can surface patterns.
-      if (db) {
+      // can surface patterns. A `breakerOpen` short-circuit is NOT a real
+      // evaluation failure (the breaker deliberately skipped the LLM after
+      // repeated provider failures), so it's excluded from the failure rollup
+      // and the degradation report — recording it would skew the gate's
+      // failure-rate analytics with the very churn the breaker exists to stop.
+      if (db && outcome.failure.kind !== 'breakerOpen') {
         db.recordEvent({
           eventId,
           sessionId,
@@ -1962,13 +1974,24 @@ export function createRoutes(ctx: RouteContext): Router {
           failureDelta: 1,
         });
       }
-      DegradationReporter.getInstance().report({
-        feature: `unjustifiedStopGate.${outcome.failure.kind}`,
-        primary: 'Authority evaluation',
-        fallback: 'fail-open → allow',
-        reason: outcome.failure.detail,
-        impact: 'Stop event allowed without authority ruling (drift correction not applied)',
-      });
+      // E2E-PAIRING: EXEMPT — a one-line conditional on an existing internal
+      // route (/internal/stop-gate/evaluate); no new API surface. Covered by
+      // tests/unit/UnjustifiedStopGate-breaker.test.ts + tests/unit/routes-stopGate.test.ts.
+      // Suppress the per-event degradation when the gate's circuit breaker is
+      // open: the breaker only opens after repeated provider failures already
+      // reported the condition, and re-emitting on every short-circuited stop is
+      // exactly the /health flood this breaker exists to stop (a 2s budget vs the
+      // ~5-6s `claude -p` path makes subscription agents time out on every stop).
+      // The fail-open still happens; only the redundant degradation is withheld.
+      if (outcome.failure.kind !== 'breakerOpen') {
+        DegradationReporter.getInstance().report({
+          feature: `unjustifiedStopGate.${outcome.failure.kind}`,
+          primary: 'Authority evaluation',
+          fallback: 'fail-open → allow',
+          reason: outcome.failure.detail,
+          impact: 'Stop event allowed without authority ruling (drift correction not applied)',
+        });
+      }
       res.json({
         eventId,
         decision: 'allow',
@@ -4413,6 +4436,37 @@ export function createRoutes(ctx: RouteContext): Router {
       if (n > 0) idleMs = n;
     }
     res.json({ idleMs, orphans: ctx.tokenLedger.orphans({ idleMs }) });
+  });
+
+  // ── Codex usage (the codex `/status` equivalent, read from disk) ─────
+  // Codex has no usage API, but the codex CLI persists the authoritative
+  // account rate-limit windows (primary=5h, secondary=weekly) into each
+  // session rollout's `token_count` events. This route surfaces the freshest
+  // snapshot so an agent can answer "where does codex usage sit?" and so the
+  // model-swap policy can react to an exhausted window — without the
+  // interactive TUI. Read-only; never mutates session state. Always 200 when
+  // wired ("alive"): `available:false` (not 503) means simply no codex data
+  // on disk yet (e.g. a pure-Claude agent).
+  router.get('/codex/usage', async (req, res) => {
+    const codexHome =
+      typeof req.query.codexHome === 'string' && req.query.codexHome
+        ? req.query.codexHome
+        : undefined;
+    let usage = null;
+    try {
+      usage = await readLatestCodexUsage({ codexHome });
+    } catch {
+      usage = null;
+    }
+    if (!usage) {
+      res.json({
+        available: false,
+        usage: null,
+        reason: 'no codex rollout with rate-limit data found',
+      });
+      return;
+    }
+    res.json({ available: true, usage });
   });
 
   // ── Framework-Onboarding Mentor System: issue ledger (read-only) ──
@@ -12683,6 +12737,29 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: 'Invalid envelope' });
         return;
       }
+
+      // Content-hash dedup (duplicate-reply fix): a sender that timed out on the
+      // receiver's session spawn and retried with a FRESH message.id would
+      // otherwise slip past the id-based relay dedup and cause a duplicate
+      // spawn/reply. Recognize the retry by the stable (sender, thread, content)
+      // triple within a short window and short-circuit idempotently (200, no
+      // spawn) so the sender's retry still sees success.
+      {
+        const dSender = envelope.message?.from?.agent ?? 'unknown';
+        const dThread = envelope.message?.threadId;
+        const dBody = envelope.message?.body;
+        const dText = typeof dBody === 'string'
+          ? dBody
+          : (typeof dBody === 'object' && dBody !== null
+              ? String((dBody as Record<string, unknown>).content ?? (dBody as Record<string, unknown>).text ?? '')
+              : '');
+        if (dThread && dText && !relayContentDedup.shouldProcess(dSender, dThread, dText)) {
+          console.log(`[relay-agent] Deduped retried message from ${dSender} (thread: ${dThread.slice(0, 8)}, id: ${envelope.message?.id ?? 'none'}) — identical content within window`);
+          res.json({ ok: true, deduped: true });
+          return;
+        }
+      }
+
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
       if (accepted) {
         const senderAgent = envelope.message?.from?.agent;
@@ -12781,27 +12858,35 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
 
-        // If we have a ThreadlineRouter, route the message through it for
-        // session resume/spawn. We AWAIT the result so callers learn the real
-        // outcome (spawned / resumed / injected / handled:false). The message
-        // has already been accepted into the inbox, so we don't alter the HTTP
-        // status unless the router throws.
+        // ACCEPT-BOUNDARY (duplicate-reply ROOT fix). The message is already
+        // accepted into the inbox AND past the warrants-reply gate above, so we
+        // respond NOW — an honest "accepted, processing async" — instead of
+        // AWAITING handleInboundMessage. That await is a session spawn/resume
+        // that routinely takes 9-30s, far longer than the sender's relay-fetch
+        // timeout: MessageRouter.relay uses AbortSignal.timeout(5000) and only
+        // reads response.ok (never the spawned/resumed fields). Past 5s the
+        // sender treats delivery as failed and retries with a FRESH message.id
+        // → a duplicate spawn/reply. The content-hash dedup (#573) is the
+        // symptom backstop; responding at the accept boundary removes the ROOT.
+        // The actual reply still flows back via the reply-waiter mechanism
+        // (resolved above), decoupled from this HTTP response.
         if (ctx.threadlineRouter) {
-          try {
-            const threadlineResult = await ctx.threadlineRouter.handleInboundMessage(envelope);
-            res.json({ ok: true, threadline: threadlineResult });
-            return;
-          } catch (err) {
-            console.error('[routes] ThreadlineRouter handling error:', err);
-            res.json({
-              ok: true,
-              threadline: {
-                handled: false,
-                error: err instanceof Error ? err.message : 'Unknown error',
-              },
+          res.json({ ok: true, accepted: true, threadline: { accepted: true, async: true } });
+          // Process asynchronously — the response is already sent.
+          // handleInboundMessage is NOT dropped: it runs to completion in the
+          // background; its outcome is logged (never surfaced to the closed
+          // response), and a failure can't 500 a request that already returned.
+          void ctx.threadlineRouter
+            .handleInboundMessage(envelope)
+            .then((threadlineResult) => {
+              console.log(
+                `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,
+              );
+            })
+            .catch((err) => {
+              console.error('[routes] ThreadlineRouter async handling error:', err);
             });
-            return;
-          }
+          return;
         }
         res.json({ ok: true });
       } else {

@@ -56,10 +56,15 @@ import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
+  claudeHeadlessExtraFlags,
   resolveInteractiveFramework,
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import {
+  resolveCodexLaunchModelWithUsage,
+  type CodexModelSwapConfig,
+} from '../providers/adapters/openai-codex/observability/codexModelSwapPolicy.js';
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
@@ -1064,6 +1069,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  Jobs leave this false and keep the workspace-write sandbox. No effect
      *  on non-codex frameworks. */
     codexAllowMcpTools?: boolean;
+    /** When true, a claude-code spawn launches with NO project MCP servers
+     *  (`--strict-mcp-config` + an empty `--mcp-config`), ignoring the project's
+     *  `.mcp.json`. This is required for headless one-shot spawns that don't need
+     *  MCP: the project's MCP set includes interactively-authenticated remote
+     *  servers (e.g. Fathom's `mcp-remote`, the claude.ai connectors) that can't
+     *  complete their OAuth handshake in a headless `claude -p` run, so the
+     *  session HANGS on boot and never processes its prompt. Verified live: the
+     *  mentor autonomous-fix loop session stalled ~4.5 min at 0.1% CPU on MCP
+     *  init; with this flag a headless spawn boots in ~9s. No effect on Codex
+     *  spawns (Codex MCP wiring is separate). */
+    disableProjectMcp?: boolean;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -1136,10 +1152,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const headlessBinaryPath =
       this.config.frameworkBinaryPaths?.[headlessFramework]
       ?? this.config.claudePath;
+
+    // Codex rate-limit model-swap (dark by default): when the agent's main
+    // codex model has exhausted its weekly window, launch on a configured
+    // fallback model (separate quota bucket) instead of stalling. No-op +
+    // zero disk I/O unless codex.rateLimitModelSwap is enabled. Best-effort.
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
     const headlessSpec = buildHeadlessLaunch(headlessFramework, {
       binaryPath: headlessBinaryPath,
       prompt: options.prompt,
-      model: options.model,
+      model: launchModel,
       ...(options.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       // Ensures a headless codex worker — notably a Threadline inbound-reply
@@ -1151,24 +1173,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
     });
 
-    // Per-job tool allowlist (INSTAR-JOBS-AS-AGENTMD spec §5): when the
-    // caller provides a non-empty `allowedTools` array, scope the spawned
-    // session. Currently Claude-only — `--allowedTools` is a Claude CLI
-    // flag with no Codex equivalent (Codex uses sandbox modes via the
-    // headless builder). For Codex spawns the allowlist is silently
-    // ignored; the spec's enforcement is via Codex sandbox flags upstream.
-    if (
-      headlessFramework === 'claude-code'
-      && options.allowedTools
-      && options.allowedTools.length > 0
-    ) {
-      // Insert --allowedTools <list> before the -p prompt positional so
-      // Claude CLI parses it correctly. The helper builds argv with
-      // structure [binary, --dangerously-skip-permissions, (--model X)?, -p, prompt]
-      // — splice right before -p.
+    // Extra claude-code headless flags, spliced before the `-p` prompt positional
+    // (argv structure: [binary, --dangerously-skip-permissions, (--model X)?, -p,
+    // prompt]). Currently Claude-only — Codex has no `--allowedTools`/MCP-config
+    // CLI equivalent (it uses sandbox modes via the headless builder), so the
+    // helper returns [] for Codex and the splice is skipped:
+    //  - `--allowedTools <list>` — per-job tool-scope allowlist (INSTAR-JOBS-AS-
+    //    AGENTMD §5).
+    //  - `--strict-mcp-config --mcp-config {}` — no-project-MCP spawn for headless
+    //    one-shot sessions that would otherwise hang on auth-required remote MCP
+    //    boot (the mentor autonomous-fix loop). See claudeHeadlessExtraFlags.
+    const extraClaudeFlags = claudeHeadlessExtraFlags({
+      framework: headlessFramework,
+      allowedTools: options.allowedTools,
+      disableProjectMcp: options.disableProjectMcp,
+    });
+    if (extraClaudeFlags.length > 0) {
       const dashPIndex = headlessSpec.argv.indexOf('-p');
       if (dashPIndex > 0) {
-        headlessSpec.argv.splice(dashPIndex, 0, '--allowedTools', options.allowedTools.join(','));
+        headlessSpec.argv.splice(dashPIndex, 0, ...extraClaudeFlags);
       }
     }
 
@@ -1895,6 +1918,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Resolve the codex launch model, applying the rate-limit model-swap when
+   * configured. For non-codex frameworks, or when codex.rateLimitModelSwap is
+   * disabled / has no fallbackModel, returns the requested model unchanged with
+   * ZERO disk I/O (the fast-path guard lives in resolveCodexLaunchModelWithUsage).
+   * Best-effort: a usage-read failure resolves to the requested model — it never
+   * blocks a spawn. Used by both the headless (spawnSession) and interactive
+   * (spawnInteractiveSession) codex launch paths.
+   */
+  private async resolveCodexLaunchModel(
+    framework: IntelligenceFramework,
+    requestedModel: string | undefined,
+  ): Promise<string | undefined> {
+    const swapCfg = (this.config as { codex?: { rateLimitModelSwap?: CodexModelSwapConfig } })
+      .codex?.rateLimitModelSwap;
+    const decision = await resolveCodexLaunchModelWithUsage({
+      framework,
+      requestedModel,
+      config: swapCfg,
+    });
+    if (decision.swapped) {
+      console.log(`[SessionManager] ${decision.reason}`);
+      return decision.model;
+    }
+    return requestedModel;
+  }
+
+  /**
    * Spawn an interactive Claude Code session (no -p prompt — opens at the REPL).
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
@@ -1968,10 +2018,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // local model id) wins over config defaults. Config defaults survive
     // for cloud-Codex topics that haven't been customized.
     const defaultModel = options?.defaultModel ?? this.config.frameworkDefaultModels?.[framework];
+    // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
+    // interactive (user-facing) codex session too, not just headless spawns.
+    const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel);
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
-      ...(defaultModel ? { defaultModel } : {}),
+      ...(launchDefaultModel ? { defaultModel: launchDefaultModel } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),

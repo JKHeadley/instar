@@ -18,7 +18,12 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
-import { detectRateLimited } from './rateLimitDetection.js';
+import {
+  evaluateThrottleSettle,
+  RATE_LIMIT_SETTLED_CAPTURE_LINES,
+  RATE_LIMIT_DEFAULT_SETTLE_MS,
+  type ThrottleSettleState,
+} from './rateLimitDetection.js';
 
 /** Drop-in replacement for execSync that avoids its security concerns. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -188,6 +193,16 @@ export class SessionWatchdog extends EventEmitter {
   private rateLimitedCooldowns = new Map<string, number>(); // sessionName → timestamp
   private static readonly RATE_LIMITED_COOLDOWN_MS = 60_000; // 1 minute (sentinel dedupes too)
 
+  /**
+   * Settle tracking for the throttle backstop — per session, the fingerprint of
+   * the last poll's pane and when it first appeared unchanged. A throttled pane
+   * that stays byte-identical across polls means the turn ended (no spinner
+   * animating), i.e. the session is genuinely stuck and safe to recover.
+   */
+  private throttleSettle = new Map<string, ThrottleSettleState>();
+  /** How long a throttled pane must be byte-identical before recovery (configurable for tests/tuning). */
+  private readonly rateLimitSettleMs: number;
+
   constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager) {
     super();
     this.config = config;
@@ -197,6 +212,7 @@ export class SessionWatchdog extends EventEmitter {
     const wdConfig = config.monitoring.watchdog;
     this.stuckThresholdMs = (wdConfig?.stuckCommandSec ?? 180) * 1000;
     this.pollIntervalMs = wdConfig?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.rateLimitSettleMs = wdConfig?.rateLimitSettleMs ?? RATE_LIMIT_DEFAULT_SETTLE_MS;
 
     // Persistent log path
     this.logPath = path.join(config.stateDir, 'watchdog-interventions.jsonl');
@@ -384,43 +400,63 @@ export class SessionWatchdog extends EventEmitter {
   }
 
   /**
-   * Detects sessions idle at a prompt because of a server-side capacity
-   * throttle (NOT the user's usage quota, NOT mid-retry). Emits 'rate-limited'
-   * (with a cooldown) so the RateLimitSentinel owns recovery. Detection logic
-   * (throttle-vs-usage-vs-spinner discrimination) lives in detectRateLimited.
+   * Detects sessions stuck on a server-side capacity throttle (NOT the user's
+   * usage quota, NOT mid-retry) and hands recovery to the RateLimitSentinel via
+   * the 'rate-limited' event.
+   *
+   * Detection uses the SETTLED-OUTPUT signal: the throttle string is present in
+   * the (widened) recent pane AND that pane has not changed since the previous
+   * poll. An actively-working Claude session animates its spinner + elapsed
+   * timer every tick, so byte-identical output across polls proves no work is
+   * being produced — the turn ended on the throttle.
+   *
+   * This deliberately REPLACES the old gates that made this sentinel never fire
+   * in the wild (2026-05-30 incident):
+   *   - the active-child-process check (a lingering background shell masked the
+   *     throttle on busy dev sessions), and
+   *   - the at-prompt / 20-line-window check (Claude's input box + footer push
+   *     the "API Error" line out of view).
+   * The settle guard + the wider window (RATE_LIMIT_SETTLED_CAPTURE_LINES)
+   * cover both failure modes while staying false-positive-safe.
    */
   checkRateLimited(tmuxSession: string): void {
-    const lastEmitted = this.rateLimitedCooldowns.get(tmuxSession);
-    if (lastEmitted && (Date.now() - lastEmitted) < SessionWatchdog.RATE_LIMITED_COOLDOWN_MS) {
+    const output = this.sessionManager.captureOutput(tmuxSession, RATE_LIMIT_SETTLED_CAPTURE_LINES);
+    const now = Date.now();
+    const { decision, next } = evaluateThrottleSettle(
+      output,
+      this.throttleSettle.get(tmuxSession),
+      now,
+      { settleMs: this.rateLimitSettleMs },
+    );
+
+    if (decision === 'no-throttle') {
+      // Throttle absent / mid-retry / usage-limit, or session moved on → reset.
+      this.throttleSettle.delete(tmuxSession);
       return;
     }
 
-    // If Claude has active child processes it's executing tools, not stalled.
-    const claudePid = this.getClaudePid(tmuxSession);
-    if (claudePid) {
-      const children = this.getChildProcesses(claudePid);
-      const activeChildren = children.filter(c => !this.isExcluded(c.command));
-      if (activeChildren.length > 0) return;
+    // Throttle present — record/refresh the settle clock either way.
+    if (next) this.throttleSettle.set(tmuxSession, next);
+
+    if (decision === 'waiting') {
+      // Pane still changing, or not settled long enough — recheck next poll.
+      return;
     }
 
-    const output = this.sessionManager.captureOutput(tmuxSession, 20);
-    if (!output) return;
+    // decision === 'settled' — genuinely stuck on the throttle. Respect the
+    // emit cooldown so we don't restart recovery every poll (the sentinel also
+    // dedupes). After the sentinel escalates and clears (~30s), a still-stuck
+    // pane re-emits past this cooldown — that unbounded retry is exactly the
+    // "a session can never hang forever on a 429" guarantee.
+    const lastEmitted = this.rateLimitedCooldowns.get(tmuxSession);
+    if (lastEmitted && (now - lastEmitted) < SessionWatchdog.RATE_LIMITED_COOLDOWN_MS) return;
 
-    // Throttle present, not a usage limit, not mid-retry.
-    if (!detectRateLimited(output)) return;
-
-    // Must be idle at a prompt (tail check, same shape as compaction-idle).
-    const lines = output.split('\n').filter(l => l.trim());
-    const tail = lines.slice(-3).join('\n');
-    const atPrompt =
-      tail.includes('❯') ||
-      tail.includes('bypass permissions') ||
-      /^>\s*$/m.test(tail) ||
-      tail.trim() === '>';
-    if (!atPrompt) return;
-
-    console.log(`[Watchdog] "${tmuxSession}": rate-limited detected — server throttle, idle at prompt`);
-    this.rateLimitedCooldowns.set(tmuxSession, Date.now());
+    const settledMs = now - (next?.since ?? now);
+    console.log(
+      `[Watchdog] "${tmuxSession}": rate-limited detected — server throttle, ` +
+      `pane settled ${Math.round(settledMs / 1000)}s (handing to RateLimitSentinel)`,
+    );
+    this.rateLimitedCooldowns.set(tmuxSession, now);
     this.emit('rate-limited', tmuxSession);
   }
 

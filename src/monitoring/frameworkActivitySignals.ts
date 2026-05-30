@@ -75,7 +75,18 @@ const CODEX_CLI_SIGNAL: FrameworkActivitySignal = {
   // proxy default to "still working" forever (the 2026-05-23 stuck-session
   // incident). The placeholder prompt "Find and fix a bug in @filename" is
   // likewise an IDLE indicator, not work.
-  toolCallOrSpinner: /Working\s*\(\d+\s*s|•\s*Ran\b|exec\(|shell\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b/i,
+  //
+  // codex EXEC --json mode (jobs, autonomous spawns) emits a JSON EVENT STREAM,
+  // not the TUI status line: {"type":"thread.started"}, {"type":"turn.started"},
+  // {"type":"item.started"|"item.completed"|"item.updated"}, etc. None of the
+  // TUI patterns above match that, so a working `codex exec --json` session read
+  // as NOT active → marked paused → skipped by ActiveWorkSilenceSentinel. That
+  // hid a genuinely-wedged exec-json job (frozen mid-turn ~8.5h) from the
+  // silence watchdog. Match the event-stream namespaces so an exec-json session
+  // that streamed events THEN froze is silence-eligible (the OutputActivity-
+  // Tracker's observed-change requirement still gates "frozen before we watched").
+  // These are structured JSON markers, not idle status text.
+  toolCallOrSpinner: /Working\s*\(\d+\s*s|•\s*Ran\b|exec\(|shell\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b|"type":\s*"(thread|turn|item)\./i,
   // Codex shows a BARE "esc to interrupt" (no "press"/"hit" prefix) inside
   // its working status line, so the Claude-style prefixed pattern never
   // matched a real Codex pane. Match the bare form.

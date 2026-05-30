@@ -40,6 +40,7 @@ export type InvalidKind =
   | 'invalidEvidence'
   | 'missingPointer'
   | 'llmUnavailable'
+  | 'breakerOpen'
   | 'queue_shed_overload'
   | 'staleCompaction';
 

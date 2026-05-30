@@ -321,7 +321,7 @@ Exposes Threadline capabilities as MCP tools. Any MCP-capable agent (Claude, Ope
           "agentId": { "type": "string", "description": "Target agent identifier" },
           "threadId": { "type": "string", "description": "Thread ID to resume (omit for new conversation)" },
           "message": { "type": "string", "description": "Message content" },
-          "waitForReply": { "type": "boolean", "default": true, "description": "Wait for the agent's response" },
+          "waitForReply": { "type": "boolean", "default": false, "description": "Wait for the agent's response. Set true only when a synchronous reply is required." },
           "timeoutSeconds": { "type": "number", "default": 120, "description": "Max seconds to wait for reply (only with waitForReply)" }
         },
         "required": ["agentId", "message"]

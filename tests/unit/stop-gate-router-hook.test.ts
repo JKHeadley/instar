@@ -83,9 +83,17 @@ function runHook(hookPath: string, cwd: string, payload: unknown): Promise<{
   stderr: string;
 }> {
   return new Promise((resolve, reject) => {
+    // Test isolation: the stop-gate-router hook resolves the auth token
+    // env-first (INSTAR_AUTH_TOKEN) then config (the secret-externalization
+    // resolver). A real agent's env carries INSTAR_AUTH_TOKEN, which would
+    // override the fixture's config `authToken: 'test-token'` and make this test
+    // fail outside CI. Strip it so the hook deterministically falls back to the
+    // configured token regardless of the host environment.
+    const { INSTAR_AUTH_TOKEN: _stripped, ...childEnv } = process.env;
     const child = spawn(process.execPath, [hookPath], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: childEnv,
     });
     let stdout = '';
     let stderr = '';

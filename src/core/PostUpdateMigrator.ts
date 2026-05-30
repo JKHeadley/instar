@@ -2641,6 +2641,23 @@ A repo-gated watchdog that makes a stalled instar release impossible to miss: it
       result.upgraded.push('CLAUDE.md: added Release Readiness watchdog awareness (release-readiness-visibility)');
     }
 
+    // codex-usage-visibility (Agent Awareness + Migration Parity): existing
+    // agents must learn they can check codex `/status` usage over HTTP without
+    // the interactive TUI. Content-sniff on the route marker.
+    if (!content.includes('/codex/usage')) {
+      const codexUsageSection = `
+### Codex Usage (the codex \`/status\` rate-limit windows)
+
+Check where codex account usage sits without the interactive TUI. The codex CLI persists the authoritative primary (5h) + secondary (weekly) rate-limit windows into its session rollout files; this surfaces the freshest snapshot.
+- Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/codex/usage\`
+- Returns \`{ available, usage: { primary, secondary, model, planType, rateLimitReachedType } }\`; each window has \`usedPercent\`, \`remainingPercent\`, \`windowMinutes\`, \`resetsAt\`/\`resetsAtIso\`, \`resetsInSeconds\`. \`available:false\` means no codex session data on disk yet (e.g. a pure-Claude agent).
+- **When to use**: "how much codex usage is left?" / "am I near the limit?", before scheduling heavy codex work, or to drive a model-swap when a window is exhausted (\`rateLimitReachedType\` non-null, or \`secondary.remainingPercent\` low).
+`;
+      content += '\n' + codexUsageSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
+    }
+
     // update-message-topic-routing §Fix 3 — existing agents need to learn that
     // self-broadcast about ships/restarts/updates must route through the
     // post-update channel (lands in the Agent Updates topic), not the active
@@ -2708,10 +2725,21 @@ A durable, bucket-tagged record of behavioral issues observed while onboarding a
 - Issues logged for a framework: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues\` (optional \`?framework=X&bucket=...&status=...&limit=N\`)
 - The onboarding playbook (generalizable lessons from PRIOR frameworks, impact-ranked): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/framework-issues/playbook?targetFramework=X"\`
 - Both routes are read-only and return references, not log contents.
+
+**Autonomous-fix loop ("just be Echo")** — when \`mentor.autonomousFix.enabled\` is true, the mentor heartbeat stops running the observe-and-log pipeline and instead keeps ONE full-tool **Opus** session alive on the manual dogfooding loop: assign the mentee a real task over Telegram, observe the UX + the mentee's internals, FIX whatever is broken as a proper fleet PR (full ship gate), and report. Ships **dark** (off by default). The expensive Opus session only spawns when no loop session is already running (single-instance), budget is OK, and the min-interval has elapsed — so it never idle-burns or spawn-storms. Enable per agent in \`.instar/config.json\` → \`mentor.autonomousFix\`. Status lands in \`GET /mentor/status .lastResult\` (\`reason: 'spawned' | 'loop-active' | 'budget' | …\`).
 `;
       content += '\n' + fwLedgerSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Framework-Onboarding Mentor System issue-ledger awareness section');
+    } else if (!content.includes('Autonomous-fix loop ("just be Echo")')) {
+      // Migration parity: agents that already have the mentor section (shipped
+      // before the autonomous-fix loop) must still learn about the new dark
+      // capability. Append just the autonomousFix paragraph, content-sniffed so
+      // it is idempotent.
+      content +=
+        '\n**Autonomous-fix loop ("just be Echo")** — when `mentor.autonomousFix.enabled` is true, the mentor heartbeat keeps ONE full-tool **Opus** session alive on the manual dogfooding loop (assign the mentee a real task → observe the UX + internals → FIX as a proper fleet PR → report) instead of the observe-and-log pipeline. Ships **dark** (off by default); single-instance + budget + min-interval gated so it never idle-burns. Enable in `.instar/config.json` → `mentor.autonomousFix`; status in `GET /mentor/status .lastResult`.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added autonomous-fix loop ("just be Echo") awareness paragraph');
     }
 
     // Version-Skew Self-Recovery section

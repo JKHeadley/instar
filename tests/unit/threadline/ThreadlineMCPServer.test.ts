@@ -506,8 +506,41 @@ describe('ThreadlineMCPServer', () => {
             targetAgent: 'remote-agent',
             threadId: 'existing-thread-42',
             message: 'Continuing our conversation',
+            waitForReply: false,
           }),
         );
+      } finally {
+        await close();
+      }
+    });
+
+    it('defaults to fire-and-forget so delivery ack does not wait for a reply', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true,
+        threadId: 'thread-default-no-wait',
+        messageId: 'msg-default-no-wait',
+      });
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'Default send should return after delivery',
+          },
+        });
+
+        expect(deps.sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            waitForReply: false,
+            timeoutSeconds: 120,
+          }),
+        );
+        const data = JSON.parse((result.content as any)[0].text);
+        expect(data.delivered).toBe(true);
+        expect(data.reply).toBeUndefined();
+        expect(data.note).toBeUndefined();
       } finally {
         await close();
       }
@@ -764,6 +797,27 @@ describe('ThreadlineMCPServer', () => {
         const data = JSON.parse((result.content as any)[0].text);
         expect(data.count).toBe(1);
         expect(data.agents[0].name).toBe('test-agent');
+        expect(data.agents[0].activeThreads).toBe(0);
+      } finally {
+        await close();
+      }
+    });
+
+    it('does not count idle threads as active', async () => {
+      (deps.threadResumeMap.getByRemoteAgent as any).mockReturnValue([
+        { threadId: 'active-thread', entry: makeThreadEntry({ state: 'active' }) },
+        { threadId: 'idle-thread', entry: makeThreadEntry({ state: 'idle' }) },
+        { threadId: 'resolved-thread', entry: makeThreadEntry({ state: 'resolved' }) },
+      ]);
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_agents',
+          arguments: {},
+        });
+
+        const data = JSON.parse((result.content as any)[0].text);
         expect(data.agents[0].activeThreads).toBe(1);
       } finally {
         await close();

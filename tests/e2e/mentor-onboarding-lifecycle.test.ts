@@ -7,7 +7,7 @@
  * reason:'disabled'} — the loop never spawns or spends until a human promotes
  * it. Also asserts the built-in job template ships off by default.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -176,5 +176,107 @@ describe('Mentor ledger survives a broken TokenLedger (regression: production ca
     const fi = await request(app).get('/framework-issues').set(auth());
     expect(fi.status).toBe(200); // ledger alive despite TokenLedger failure
     expect(Array.isArray(fi.body.issues)).toBe(true);
+  });
+});
+
+/**
+ * Tier-3 E2E "feature is alive" for the autonomous-fix loop ("just be Echo",
+ * MENTOR-AUTONOMOUS-FIX-LOOP-SPEC). Boots the REAL AgentServer with
+ * mentor.autonomousFix.enabled on the production init path, then POSTs a real
+ * tick. A spy sessionManager intercepts the spawn, so we prove the production
+ * wiring end-to-end (buildMentorRunner → guardian → spawnLoopSession → the real
+ * sessionManager.spawnSession with the OPUS model + full tools + the autoloop
+ * name) WITHOUT spawning a real session. This is the single most important test
+ * for the feature: it is genuinely alive in production wiring, not just unit-true.
+ */
+describe('Autonomous-fix loop E2E (alive on the production init path, no real spawn)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+  let server: AgentServer;
+  let app: express.Express;
+  const AUTH = 'test-e2e-autoloop';
+  const spawnSpy = vi.fn(async (opts: { name: string }) => ({
+    id: 'fake-loop',
+    name: opts.name,
+    tmuxSession: 'fake',
+    claudeSessionId: undefined,
+    framework: 'codex-cli',
+  }));
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoloop-e2e-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    // Enable the loop ON DISK — buildMentorRunner reads config.json via
+    // readMentorConfigFromDisk, so this is the real production config path.
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({
+        port: 0,
+        projectName: 'e2e',
+        agentName: 'E2E',
+        mentor: {
+          enabled: true,
+          mode: 'off', // guardian must run regardless of mode
+          menteeFramework: 'codex-cli',
+          menteeAgentName: 'instar-codey',
+          autonomousFix: { enabled: true, model: 'opus', sessionNamePrefix: 'mentor-autoloop', maxCycleMinutes: 90 },
+        },
+      }),
+    );
+
+    const config: InstarConfig = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+
+    const sessionManager = {
+      listRunningSessions: () => [], // no loop alive → the gate lets a spawn through
+      getSession: () => null,
+      spawnSession: spawnSpy,
+    };
+    server = new AgentServer({ config, sessionManager: sessionManager as any, state: new StateManager(stateDir) });
+    await server.start();
+    app = server.getApp();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-onboarding-lifecycle.test.ts:autoloop' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('POST /mentor/tick spawns an Opus full-tool loop session via the production wiring', async () => {
+    const res = await request(app).post('/mentor/tick').set(auth());
+    expect(res.status).toBe(202); // enabled → fire-and-forget
+    expect(res.body.accepted).toBe(true);
+    await new Promise((r) => setTimeout(r, 25)); // let the async guardian settle
+
+    const status = await request(app).get('/mentor/status').set(auth());
+    expect(status.status).toBe(200);
+    expect(status.body.lastResult?.reason).toBe('spawned');
+    expect(status.body.lastResult?.sessionName).toMatch(/^mentor-autoloop-/);
+
+    // Wiring integrity: the real spawn closure ran with Justin's constraints —
+    // the OPUS model, the autoloop name, a bounded cycle, and the FULL tool grant
+    // (allowedTools omitted, not the empty Stage-A grant).
+    expect(spawnSpy).toHaveBeenCalledOnce();
+    const spawnArgs = spawnSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(spawnArgs.model).toBe('opus');
+    expect(String(spawnArgs.name)).toMatch(/^mentor-autoloop-/);
+    expect(spawnArgs.allowedTools).toBeUndefined(); // full tools, not [] (Stage-A)
+    expect(spawnArgs.maxDurationMinutes).toBe(90);
+    // No-project-MCP: the loop session must spawn WITHOUT the project .mcp.json,
+    // or a headless run hangs on auth-required remote MCP boot (the live dogfood
+    // finding). The production wiring passes disableProjectMcp through.
+    expect(spawnArgs.disableProjectMcp).toBe(true);
+    // The goal prompt is the real dogfooding loop (not empty / not a stub).
+    expect(String(spawnArgs.prompt)).toMatch(/instar-codey/);
+    expect(String(spawnArgs.prompt)).toMatch(/HEALTH FIRST/);
   });
 });

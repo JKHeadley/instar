@@ -202,8 +202,17 @@ for (const entry of traceEntries) {
 
   const sha = crypto.createHash('sha256').update(artifactContent).digest('hex');
   if (trace.artifactSha256 && trace.artifactSha256 !== sha) {
+    // Self-service fix: tell the author the EXACT sha to write, plus the
+    // freeze-recipe. Without this, an agent (especially codex, which often
+    // regenerates artifacts) chases the hash forever — regenerate → a volatile
+    // field (e.g. a `Date:` line) changes → new sha → repeat. Printing the
+    // computed sha turns a ~2h grind into a copy-paste fix.
     attempts.push(
-      `${path.basename(entry.file)}: artifact content has changed since the trace was written (sha mismatch)`,
+      `${path.basename(entry.file)}: artifact ${trace.artifactPath} sha mismatch — ` +
+        `trace records ${String(trace.artifactSha256).slice(0, 12)}… but the staged bytes hash to ${sha.slice(0, 12)}…. ` +
+        `If the current artifact is correct, set "artifactSha256": "${sha}" in the trace, ` +
+        `re-stage BOTH the artifact and the trace, and commit fresh (do NOT amend). ` +
+        `Common cause: a volatile field (e.g. a Date line) was regenerated — freeze the bytes, hash once, do not regenerate the artifact again.`,
     );
     continue;
   }
