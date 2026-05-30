@@ -24,8 +24,13 @@ describe('Upgrade Guide Infrastructure', () => {
     const allGuideFiles = fs.existsSync(upgradesDir)
       ? fs.readdirSync(upgradesDir).filter(f => f.endsWith('.md'))
       : [];
-    // NEXT.md is the pending guide for the next release — validated separately
-    const versionedGuides = allGuideFiles.filter(f => f !== 'NEXT.md');
+    // NEXT.md is the pending guide for the next release — validated separately.
+    // *.eli16.md files are plain-English companion overviews (per the
+    // instar-dev pre-commit gate's ELI16 requirement); they have their own
+    // shape (no "What Changed" / "What to Tell Your User" headers, sibling
+    // filename rather than semver). Excluded from the technical-guide shape
+    // checks.
+    const versionedGuides = allGuideFiles.filter(f => f !== 'NEXT.md' && !f.endsWith('.eli16.md'));
 
     it('has at least one upgrade guide', () => {
       expect(allGuideFiles.length).toBeGreaterThan(0);

@@ -47,15 +47,23 @@ if (!token || !mode || mode === '--consume') {
   process.exit(2);
 }
 
-let authToken;
+// Auth-token resolution: INSTAR_AUTH_TOKEN env first (SessionManager and
+// JobScheduler inject it for every spawned context; survives the
+// secret-externalization refactor that moved authToken out of config.json into
+// the encrypted store), legacy plaintext-config fallback with a string-type
+// guard so the { "secret": true } placeholder produced by SecretMigrator
+// cannot leak through as a bogus Bearer.
+let authToken = process.env.INSTAR_AUTH_TOKEN || '';
 let port;
 try {
   const config = JSON.parse(fs.readFileSync('.instar/config.json', 'utf-8'));
-  authToken = config.authToken;
+  if (!authToken && typeof config.authToken === 'string') authToken = config.authToken;
   port = config.port;
 } catch (e) {
-  process.stderr.write('cannot read .instar/config.json: ' + e.message + '\n');
-  process.exit(2);
+  if (!authToken) {
+    process.stderr.write('cannot read .instar/config.json: ' + e.message + '\n');
+    process.exit(2);
+  }
 }
 
 // Port resolution: env > config. Mirrors the telegram-reply.sh precedence

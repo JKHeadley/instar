@@ -294,15 +294,21 @@ if patch_file or artifact_type:
 # Key derivation: HMAC-SHA256(authToken, "serendipity-v1:" + sessionId)
 signing_key = os.environ.get("SERENDIPITY_SIGNING_KEY", "")
 if not signing_key:
-    # Derive from auth token + session
-    config_path = os.environ.get("CONFIG_FILE", "")
-    auth_token = ""
-    if config_path and os.path.exists(config_path):
-        try:
-            cfg = json.load(open(config_path))
-            auth_token = cfg.get("authToken", "")
-        except:
-            pass
+    # Derive from auth token + session. Token: INSTAR_AUTH_TOKEN env first
+    # (SessionManager injects it; survives secret-externalization), legacy
+    # plaintext-config fallback with a string-type guard so the
+    # { "secret": true } placeholder produced by SecretMigrator cannot leak.
+    auth_token = os.environ.get("INSTAR_AUTH_TOKEN", "")
+    if not auth_token:
+        config_path = os.environ.get("CONFIG_FILE", "")
+        if config_path and os.path.exists(config_path):
+            try:
+                cfg = json.load(open(config_path))
+                v = cfg.get("authToken", "")
+                if isinstance(v, str):
+                    auth_token = v
+            except:
+                pass
     session_id = finding["source"]["sessionId"]
     key_material = f"serendipity-v1:{session_id}"
     signing_key = hmac.new(

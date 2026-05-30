@@ -23,9 +23,16 @@ type GateMode = 'off' | 'shadow' | 'enforce';
 
 function readConfig(stateDir: string): { port: number; authToken: string } {
   const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
+  // INSTAR_AUTH_TOKEN env first — survives the secret-externalization refactor
+  // that moves authToken out of config.json into the encrypted store. Falls
+  // back to the plaintext config field only when it's still a string (the
+  // { secret: true } placeholder is rejected so the bogus value never reaches
+  // a Bearer header). Note: this CLI command runs out-of-process from the
+  // server so it can't use loadConfig() — it needs explicit handling here.
+  const tokenFromConfig = typeof cfg.authToken === 'string' ? cfg.authToken : '';
   return {
     port: cfg.port ?? 4042,
-    authToken: cfg.authToken ?? '',
+    authToken: process.env.INSTAR_AUTH_TOKEN || tokenFromConfig,
   };
 }
 

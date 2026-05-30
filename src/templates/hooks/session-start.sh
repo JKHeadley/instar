@@ -21,12 +21,19 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 0
 fi
 
-PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
 if [ -z "$PORT" ]; then
   exit 0
 fi
 
-AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+# Resolve auth token: INSTAR_AUTH_TOKEN env first (SessionManager injects it per
+# spawned session — survives secret-externalization), legacy plaintext-config
+# fallback with string-type guard so the { "secret": true } placeholder produced
+# by SecretMigrator cannot leak through as a bogus Bearer.
+AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+if [ -z "$AUTH_TOKEN" ]; then
+  AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+fi
 
 # Check if server is alive
 HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \

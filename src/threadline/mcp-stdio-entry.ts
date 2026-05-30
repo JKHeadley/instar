@@ -168,15 +168,19 @@ async function main(): Promise<void> {
     fs.mkdirSync(threadlineDir, { recursive: true });
   }
 
-  // Read server port and auth token from config
+  // Read server port and auth token. Token: INSTAR_AUTH_TOKEN env first
+  // (survives the secret-externalization refactor that moved authToken out of
+  // config.json into the encrypted store), legacy plaintext-config fallback with
+  // a string-type guard so the { "secret": true } placeholder produced by
+  // SecretMigrator cannot leak through as a bogus Bearer.
   const configPath = path.join(stateDir, 'config.json');
   let serverPort = 4040;
-  let agentToken = '';
+  let agentToken = process.env.INSTAR_AUTH_TOKEN || '';
   if (fs.existsSync(configPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       serverPort = config.port ?? 4040;
-      agentToken = config.authToken ?? '';
+      if (!agentToken && typeof config.authToken === 'string') agentToken = config.authToken;
     } catch {
       // Use defaults
     }

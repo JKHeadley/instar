@@ -75,9 +75,13 @@ if [ -z "$MSG" ]; then
 fi
 
 # Resolve config-derived values from .instar/config.json (single python3
-# invocation). Env > config > 4040-warn for port; config-only for authToken
-# and agentId.
-AUTH_TOKEN=""
+# invocation). Env > config > 4040-warn for port. Auth: INSTAR_AUTH_TOKEN env
+# first (SessionManager injects it per spawned session; survives the
+# secret-externalization refactor that moved authToken out of config.json into
+# the encrypted store), legacy plaintext-config fallback with a string-type
+# guard so the { "secret": true } placeholder produced by SecretMigrator
+# cannot leak through as a bogus Bearer.
+AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
 AGENT_ID=""
 CONFIG_PORT=""
 if [ -f ".instar/config.json" ]; then
@@ -87,11 +91,13 @@ try:
     c = json.load(open('.instar/config.json'))
 except Exception:
     sys.exit(0)
-print(c.get('authToken', ''))
+v = c.get('authToken', '')
+print(v if isinstance(v, str) else '')
 print(c.get('projectName', ''))
 print(c.get('port', ''))
 " 2>/dev/null)
-  AUTH_TOKEN=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
+  CONFIG_AUTH=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
+  [ -z "$AUTH_TOKEN" ] && AUTH_TOKEN="$CONFIG_AUTH"
   AGENT_ID=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '2p')
   CONFIG_PORT=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '3p')
 fi
