@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import type { ReapGuard } from './ReapGuard.js';
+import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1470,6 +1471,42 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Pure check: does this already-captured pane show Claude Code actively
+   * working? Footer-hint based (see CLAUDE_WORKING_INDICATORS). Exposed so
+   * callers that already hold a pane capture (e.g. verifyInjection) can reuse
+   * the canonical signal without a second tmux capture. Public for unit tests.
+   */
+  paneShowsActiveWork(pane: string | null | undefined): boolean {
+    return paneShowsClaudeWorking(pane);
+  }
+
+  /**
+   * Is this session actively working right now? True when the captured pane
+   * shows Claude Code's mid-turn footer ("esc to interrupt" / "tokens · esc" /
+   * "ctrl+t to hide tasks") OR the session has a live, non-baseline child
+   * process (a tool is running).
+   *
+   * The footer half is the discriminator that matters most for recovery: a
+   * long extended-think on a large context shows the footer but spawns no
+   * child process and writes nothing to the JSONL until the turn lands — which
+   * is exactly the state the compaction-recovery loop used to misread as
+   * "stuck" and re-inject into, burying the user's real message. A session
+   * that is genuinely idle at its prompt, or one that has wedged and fast-fails
+   * every turn, shows neither tell and returns false (recovery proceeds
+   * unchanged). Never throws — a capture/ps failure resolves to false.
+   */
+  isSessionActivelyWorking(tmuxSession: string): boolean {
+    try {
+      if (!this.tmuxSessionExists(tmuxSession)) return false;
+      const pane = this.captureOutput(tmuxSession, 30);
+      if (this.paneShowsActiveWork(pane)) return true;
+      return this.hasActiveProcesses(tmuxSession);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Capture the current output of a tmux session.
    */
   captureOutput(tmuxSession: string, lines: number = 100): string | null {
@@ -2754,6 +2791,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const pane = this.captureOutput(tmuxSession, 30) || '';
         if (!this.isMarkerStuckAtPrompt(pane, marker)) {
           // Submitted (or marker no longer at the input prompt) — stop polling.
+          return;
+        }
+
+        // The marker is at the prompt — but if the session is actively working,
+        // that's NOT a stuck Enter: the injected text is correctly queued and
+        // Claude submits it when the current turn ends. Firing Enter now is a
+        // no-op at best and a premature/duplicate submit at worst — and it's
+        // the noisy "Injection stuck — Auto-recovering" spam that fires on
+        // every inbound to a busy session. Skip recovery this tick; keep
+        // polling in case it's still stuck once the turn completes.
+        if (this.paneShowsActiveWork(pane)) {
+          const nextIdx = attempt + 1;
+          if (nextIdx < markerCheckSchedule.length) {
+            const delay = markerCheckSchedule[nextIdx] - markerCheckSchedule[attempt];
+            setTimeout(() => runCheck(nextIdx), delay);
+          }
           return;
         }
 
