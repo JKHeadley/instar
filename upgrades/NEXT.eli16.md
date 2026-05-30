@@ -2,81 +2,72 @@
 
 ## What this change is
 
-Your agent has a feature called the "Failure-Learning Loop" — it watches for
-things that go wrong (a CI run fails, a recent commit gets reverted, an
-internal health-check trips) and writes a little record so you can later ask
-"why do my agents keep breaking?" and get a real answer instead of vibes.
+There's a safety guard called SourceTreeGuard. Its job is to refuse any
+operation that would touch the instar source code from inside an agent
+that's running against that source code. The 2026-04-22 incident — an agent
+accidentally clobbering its own source tree — was the reason the guard
+shipped. It's saved us from a repeat several times.
 
-The loop has a config switch for each kind of failure it watches. Some of
-those switches were checked in months ago but never connected to anything —
-flipping them on did literally nothing, the loop just pretended the source
-was active. That's exactly the failure mode the post-mortem yesterday named
-as "specced but not wired" — a real, repeat offender.
+But the guard treats READ and WRITE the same: it refuses BOTH. That's
+overcautious — reading the git log of a repo is harmless. And the
+Failure-Learning Loop we just turned on yesterday needs to read git log
+to find reverts, and to read `git remote get-url` to know which GitHub
+repo to poll for CI failures. So on Echo (the canonical dogfooding agent,
+whose checkout IS the instar source), the loop has been silently failing
+once per detector tick for the past ~5 hours: a warning in stderr, no
+event in the ledger, no surfacing in the API.
 
-This change does two things:
-
-1. **Loud warning when you flip on a switch that isn't wired up.** If you set
-   `monitoring.failureLearning.sources.regression: true` or
-   `monitoring.failureLearning.sources.degradation: [...]`, the agent now
-   says, at startup: "you turned this on but nothing implements it yet —
-   set it back off until the impl ships." Before, those switches were silent
-   no-ops.
-
-2. **A new automated check that catches a different bug class.** When you do
-   a fresh `instar init`, certain hooks get installed. When the agent
-   auto-updates, a different bit of code re-installs hooks. We had at least
-   one case in the last release where the two lists disagreed — a fresh
-   agent was missing a hook that existing agents had, because nobody had
-   noticed the divergence. The new check reads both lists and refuses
-   to commit any change that creates a new divergence (with a small
-   allowlist for documented technical debt).
+There's already an escape hatch — `sourceTreeReadOk: true` — that other
+read-only callers (the worktree-manager, the canonical-ref reconciler)
+use. This PR plugs the Failure-Learning Loop's three read callsites into
+the same hatch. No changes to the guard itself.
 
 ## What already exists
 
-- The Failure-Learning Loop itself, with ledger + analyzer + API at `/failures/*`.
-- The `ci` and `revert` ingestion sources, which actually work and capture events.
-- The `regression` and `degradation` source flags in config defaults
-  (just no implementation behind them).
-- `PostUpdateMigrator` (the auto-update path) and `installHooks()`
-  (the fresh-init path), both of which write hooks to disk independently.
+- `SourceTreeGuard` (`src/core/SourceTreeGuard.ts`) — refuses operations
+  against the instar source tree.
+- `SafeGitExecutor` with `readSync` and `execSync` methods, plus
+  `sourceTreeReadOk` opt-in.
+- `SOURCE_TREE_READ_TIER_VERBS` — an allowlist of read-only verbs
+  (`log`, `show`, `remote`, `rev-parse`, …) that the opt-in legitimizes.
+- `RevertDetector`, `CiFailurePoller`, `FailureAttributionEngine` — the
+  three failure-learning components that read git.
 
 ## What's new
 
-- Boot-time warning if `regression` or `degradation` source flag is on but
-  unimplemented.
-- Unit test that pins the source-flag-to-poller wiring so future regressions
-  fail the test suite instead of silently disabling the loop.
-- Unit test that diffs the fresh-init hook list against the auto-update hook
-  list and fails on any new divergence.
-- A small allowlist of currently-accepted divergences (six entries, with
-  rationale per entry; soft cap of ten so the list can't quietly grow).
+- Three call sites updated to pass `sourceTreeReadOk: true`:
+  - RevertDetector's default git function
+  - AgentServer's `commitTouchedFiles` for the attribution engine
+  - AgentServer's `resolveRepo` for the CI poller
+- A unit test that scans the failure-learning code for any
+  `SafeGitExecutor.readSync` call missing the flag. Catches any future
+  new callsite that ships without the opt-in.
+- An integration test that runs the DEFAULT RevertDetector against the
+  real instar source tree (the existing tests entirely mocked git, which
+  is how this gap shipped silently).
 
 ## What you need to decide
 
-Nothing. This is structural backstop, no configuration involved. Existing
-agents pick up the warning on next process restart (auto-update will trigger
-that). Future PRs that try to introduce a new fresh-init-vs-auto-update gap
-will fail their tests.
+Nothing. Surgical fix, no config, no fleet migration. Existing agents
+pick it up on the next process restart from auto-update.
 
 ## How to verify it worked after deploy
 
-If you haven't touched `monitoring.failureLearning.sources` in your config,
-you should see exactly the same behavior. If you flipped one of the
-unimplemented sources on, you'll see a one-line warning at startup.
-
-To start actually USING the Failure-Learning Loop on your agent, set
-`monitoring.failureLearning.sources.ci: true` and `sources.revert: true`
-in `.instar/config.json`. The substrate has been ready since late April;
-this PR just adds the tests around it. Echo's local config is being flipped
-out-of-band as a dogfooding step.
+If you have `monitoring.failureLearning.sources.revert: true` (or
+`sources.ci: true`) set on an agent whose project directory is the
+instar source tree, check `logs/server-stderr.log` after the next
+restart. The recurring `[revert-detector] SourceTreeGuardError`
+warnings should stop. After a couple of detector ticks (the default is
+6 hours but you can lower it), `/failures/analysis` should start
+showing captured events with attribution.
 
 ## Why this matters more than it might look
 
-The 14-day fix-shape rate to main is around 19% — we've been shipping a lot
-of bugs and finding out from users instead of from instrumentation. The
-Failure-Learning Loop is the meta-trace that turns "we keep shipping bugs"
-into "here are the three patterns most of them share." But it was sitting
-unused because the ingestion sources were silent. This PR closes one half
-of that gap (the wiring-test + the unimplemented-source warning); flipping
-the working sources on for each agent closes the other half. Several more
-PRs from the same post-mortem will follow.
+The Failure-Learning Loop is the meta-trace we just deliberately enabled
+because we've been shipping bugs faster than we can learn from them. If
+that loop itself is silently broken on the canonical dogfooding agent,
+the whole "we'll start learning from our bugs" plan is theater. This is
+the post-mortem's lesson reflected back on itself: shipping ≠ working.
+And the catch — that the existing unit tests masked the bug because
+they entirely mocked the git layer — is precisely the
+"tested-on-mocks-not-real-state" pattern the post-mortem named.

@@ -641,8 +641,14 @@ export class AgentServer {
           commitTouchedFiles: (oid) => {
             try {
               // Read-only git via the SafeGitExecutor funnel (lint-no-direct-destructive).
+              // sourceTreeReadOk: this attribution read legitimately runs against
+              // the instar source tree on dogfooding agents (Echo). `show` is in
+              // SOURCE_TREE_READ_TIER_VERBS — without the flag, SourceTreeGuard
+              // silently blocked every attribution lookup on Echo.
               const out = SafeGitExecutor.readSync(['show', '--name-only', '--pretty=format:', oid], {
-                cwd: projectDir, operation: 'failure-learning:commit-touched-files',
+                cwd: projectDir,
+                operation: 'failure-learning:commit-touched-files',
+                sourceTreeReadOk: true,
               });
               return out.split('\n').map((s) => s.trim()).filter(Boolean);
             } catch { return []; }
@@ -664,8 +670,16 @@ export class AgentServer {
             },
             resolveRepo: () => {
               try {
+                // sourceTreeReadOk: this resolver legitimately reads the agent's
+                // own remote URL on dogfooding agents whose checkout IS the
+                // instar source. `remote` is in SOURCE_TREE_READ_TIER_VERBS;
+                // without the flag, SourceTreeGuard silently blocked the
+                // resolver on Echo and the CI poller never knew which repo to
+                // poll.
                 const url = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], {
-                  cwd: projectDir, operation: 'failure-learning:ci-resolve-repo',
+                  cwd: projectDir,
+                  operation: 'failure-learning:ci-resolve-repo',
+                  sourceTreeReadOk: true,
                 }).trim();
                 const m = url.match(/github\.com[:/](.+?)(?:\.git)?$/);
                 return m ? m[1] : null; // validated by REPO_RE inside the poller

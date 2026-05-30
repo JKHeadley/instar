@@ -71,7 +71,18 @@ export class RevertDetector {
     this.ledger = opts.ledger;
     this.resolveByCommit = opts.resolveByCommit;
     this.cwd = opts.cwd;
-    this.git = opts.git ?? ((args) => SafeGitExecutor.readSync(args, { cwd: this.cwd, operation: 'failure-learning:revert-detect' }));
+    // sourceTreeReadOk: this detector legitimately reads git history from the
+    // instar source tree (the failure-learning loop's whole point is to find
+    // reverts in the agent's OWN repo). All verbs used here (`log`, `show`,
+    // `cat-file`) are in SOURCE_TREE_READ_TIER_VERBS. Without this opt-in,
+    // SourceTreeGuard blocks every tick on agents whose projectDir IS the
+    // instar checkout (notably Echo — surfaced 2026-05-29 by the silent-fail
+    // warnings in server-stderr.log).
+    this.git = opts.git ?? ((args) => SafeGitExecutor.readSync(args, {
+      cwd: this.cwd,
+      operation: 'failure-learning:revert-detect',
+      sourceTreeReadOk: true,
+          }));
     this.isLeaseHolder = opts.isLeaseHolder ?? (() => true);
     this.intervalMs = opts.intervalMs && opts.intervalMs > 0 ? opts.intervalMs : 6 * 60 * 60 * 1000;
     this.scanWindow = opts.scanWindow && opts.scanWindow > 0 ? opts.scanWindow : 100;
