@@ -5,7 +5,10 @@ initiative: correction-preference-learning-sentinel
 author: echo
 created: 2026-05-28
 topic: 13201
-approved: false
+approved: true
+approved-by: justin
+approved-at: 2026-05-30
+approval-note: "Approved by Justin (topic 16847, 2026-05-30) with explicit signal-only constraint — the outbound-blocking EnforcementGate idea is REJECTED (breaks signal-vs-authority P2; 'bitten before by guards that block messages having too much power'). The 'stored-but-violated' gap is to be closed later via self-violation-as-learning-signal, never a block."
 ships-staged: true
 rollout-flag-path: monitoring.correctionLearning.enabled
 rollout-criteria: "≥3 distinct-day recurring learnings correctly routed (≥2 infra-gap → /feedback proposal, ≥1 explicit-preference → preferences-endpoint write that the session-start hook actually reads and injects) over a 4-week observation window with zero raw-text persistence and zero by-construction guard violations"
