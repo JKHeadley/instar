@@ -1939,8 +1939,12 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } else {
       // Fail-open: allow. Log with the failure kind so guardian-pulse
-      // can surface patterns.
-      if (db) {
+      // can surface patterns. A `breakerOpen` short-circuit is NOT a real
+      // evaluation failure (the breaker deliberately skipped the LLM after
+      // repeated provider failures), so it's excluded from the failure rollup
+      // and the degradation report — recording it would skew the gate's
+      // failure-rate analytics with the very churn the breaker exists to stop.
+      if (db && outcome.failure.kind !== 'breakerOpen') {
         db.recordEvent({
           eventId,
           sessionId,
@@ -1962,13 +1966,24 @@ export function createRoutes(ctx: RouteContext): Router {
           failureDelta: 1,
         });
       }
-      DegradationReporter.getInstance().report({
-        feature: `unjustifiedStopGate.${outcome.failure.kind}`,
-        primary: 'Authority evaluation',
-        fallback: 'fail-open → allow',
-        reason: outcome.failure.detail,
-        impact: 'Stop event allowed without authority ruling (drift correction not applied)',
-      });
+      // E2E-PAIRING: EXEMPT — a one-line conditional on an existing internal
+      // route (/internal/stop-gate/evaluate); no new API surface. Covered by
+      // tests/unit/UnjustifiedStopGate-breaker.test.ts + tests/unit/routes-stopGate.test.ts.
+      // Suppress the per-event degradation when the gate's circuit breaker is
+      // open: the breaker only opens after repeated provider failures already
+      // reported the condition, and re-emitting on every short-circuited stop is
+      // exactly the /health flood this breaker exists to stop (a 2s budget vs the
+      // ~5-6s `claude -p` path makes subscription agents time out on every stop).
+      // The fail-open still happens; only the redundant degradation is withheld.
+      if (outcome.failure.kind !== 'breakerOpen') {
+        DegradationReporter.getInstance().report({
+          feature: `unjustifiedStopGate.${outcome.failure.kind}`,
+          primary: 'Authority evaluation',
+          fallback: 'fail-open → allow',
+          reason: outcome.failure.detail,
+          impact: 'Stop event allowed without authority ruling (drift correction not applied)',
+        });
+      }
       res.json({
         eventId,
         decision: 'allow',

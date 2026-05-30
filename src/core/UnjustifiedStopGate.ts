@@ -160,7 +160,16 @@ export interface GateFailure {
     | 'invalidRule'
     | 'invalidEvidence'
     | 'missingPointer'
-    | 'llmUnavailable';
+    | 'llmUnavailable'
+    // The gate's own circuit breaker is open: after `breakerThreshold` consecutive
+    // provider failures (timeout/unavailable), evaluate() fails open IMMEDIATELY
+    // without spawning an LLM subprocess, for `breakerCooldownMs`. This is the
+    // CLI-provider reality fix: a `claude -p` judgment call takes ~5-6s but the
+    // client budget is ~2s, so subscription agents time out on every stop — the
+    // breaker stops the doomed spawn-then-kill churn and the per-event /health
+    // degradation flood, and self-heals after the cooldown. Callers MUST fail open
+    // on this kind (same as `timeout`) and SHOULD NOT emit a per-event degradation.
+    | 'breakerOpen';
   detail: string;
   latencyMs: number;
 }
@@ -223,10 +232,21 @@ export interface UnjustifiedStopGateConfig {
   llmTimeoutMs?: number;
   /** Max tokens for the response. */
   maxTokens?: number;
+  /** Circuit breaker: number of consecutive provider failures (timeout /
+   *  llmUnavailable) before the gate stops spawning LLM subprocesses and
+   *  fail-opens immediately for a cooldown. Default 3. Set 0 to disable. */
+  breakerThreshold?: number;
+  /** Circuit breaker cooldown: how long the breaker stays open before the gate
+   *  retries the LLM path once (half-open). Default 5 min. */
+  breakerCooldownMs?: number;
+  /** Injectable clock (for tests). Defaults to Date.now. */
+  now?: () => number;
 }
 
 const DEFAULT_CLIENT_TIMEOUT_MS = 2_000;
 const DEFAULT_LLM_TIMEOUT_MS = 1_400;
+const DEFAULT_BREAKER_THRESHOLD = 3;
+const DEFAULT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 
 /**
  * Evaluate a Stop event. Returns an authority result OR a structured
@@ -242,6 +262,9 @@ const DEFAULT_LLM_TIMEOUT_MS = 1_400;
  */
 export class UnjustifiedStopGate {
   private config: Required<UnjustifiedStopGateConfig>;
+  /** Circuit-breaker state: consecutive provider failures + open-until clock. */
+  private consecutiveProviderFailures = 0;
+  private breakerOpenUntil = 0;
 
   constructor(config: UnjustifiedStopGateConfig) {
     this.config = {
@@ -249,11 +272,54 @@ export class UnjustifiedStopGate {
       clientTimeoutMs: config.clientTimeoutMs ?? DEFAULT_CLIENT_TIMEOUT_MS,
       llmTimeoutMs: config.llmTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
       maxTokens: config.maxTokens ?? 400,
+      breakerThreshold: config.breakerThreshold ?? DEFAULT_BREAKER_THRESHOLD,
+      breakerCooldownMs: config.breakerCooldownMs ?? DEFAULT_BREAKER_COOLDOWN_MS,
+      now: config.now ?? Date.now,
     };
   }
 
+  /** Breaker telemetry (for /health + tests). open=true ⇒ short-circuiting. */
+  breakerState(): { open: boolean; consecutiveFailures: number; openUntil: number } {
+    return {
+      open: this.config.now() < this.breakerOpenUntil,
+      consecutiveFailures: this.consecutiveProviderFailures,
+      openUntil: this.breakerOpenUntil,
+    };
+  }
+
+  /** Record a completed LLM response (provider reachable): reset the breaker. */
+  private onProviderReachable(): void {
+    this.consecutiveProviderFailures = 0;
+  }
+
+  /** Record a provider failure (timeout/unavailable); open the breaker at threshold. */
+  private onProviderFailure(): void {
+    if (this.config.breakerThreshold <= 0) return; // disabled
+    this.consecutiveProviderFailures += 1;
+    if (this.consecutiveProviderFailures >= this.config.breakerThreshold) {
+      this.breakerOpenUntil = this.config.now() + this.config.breakerCooldownMs;
+    }
+  }
+
   async evaluate(input: EvaluateInput): Promise<AuthorityOutcome> {
-    const start = Date.now();
+    const start = this.config.now();
+
+    // Circuit breaker: if open (after repeated provider failures), fail open
+    // IMMEDIATELY without spawning an LLM subprocess. The caller fail-opens on
+    // this exactly like a timeout, but it's instant and emits no per-event
+    // degradation — so a chronically-slow/unavailable provider (the ~5-6s
+    // `claude -p` judgment path against a ~2s budget on subscription agents)
+    // can't churn doomed spawn-then-kill subprocesses or flood /health.
+    if (start < this.breakerOpenUntil) {
+      return {
+        ok: false,
+        failure: {
+          kind: 'breakerOpen',
+          detail: `gate paused after ${this.consecutiveProviderFailures} consecutive provider failures; retrying after cooldown`,
+          latencyMs: 0,
+        },
+      };
+    }
 
     // Pack the prompt. The system instruction is concatenated with the
     // JSON payload. We do NOT trust the LLM to separately respect a
@@ -274,7 +340,10 @@ export class UnjustifiedStopGate {
       responseText = await this.callWithTimeout(prompt);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const latencyMs = Date.now() - start;
+      const latencyMs = this.config.now() - start;
+      // A timeout or unavailable provider counts toward the breaker — if it
+      // trips, subsequent stops short-circuit (no spawn) until the cooldown.
+      this.onProviderFailure();
       if (msg === 'timeout') {
         return { ok: false, failure: { kind: 'timeout', detail: `>${this.config.clientTimeoutMs}ms`, latencyMs } };
       }
@@ -284,7 +353,10 @@ export class UnjustifiedStopGate {
       };
     }
 
-    const latencyMs = Date.now() - start;
+    // The provider responded (reachable) — reset the breaker even if the response
+    // is later found malformed (a bad response still proves the provider is up).
+    this.onProviderReachable();
+    const latencyMs = this.config.now() - start;
 
     // Parse + validate the response.
     let parsed: unknown;
