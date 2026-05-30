@@ -13,8 +13,42 @@
  * Ships dormant: `mentor.enabled=false` / `mentor.mode='off'` by default (§16).
  */
 import { runMentorTick, type MentorTickResult, type MentorMode } from './MentorOnboardingTick.js';
+import {
+  runAutonomousGuardian,
+  type AutonomousGuardianReason,
+} from './MentorAutonomousGuardian.js';
 import type { ConversationSurface } from '../monitoring/MentorStageA.js';
 import type { CaptureRunInput, CaptureRunResult, ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
+
+/**
+ * The "just be Echo" autonomous-fix loop (MENTOR-AUTONOMOUS-FIX-LOOP-SPEC).
+ * When enabled, the mentor heartbeat stops running the haiku observe-pipeline
+ * and instead acts as a GUARDIAN: it keeps ONE full-tool Opus session (an Echo
+ * clone) alive on the manual dogfooding loop — assign the mentee a real task,
+ * observe the UX + internals, FIX issues as proper fleet PRs, report. Ships
+ * dark (`enabled:false`). The expensive Opus session only spawns when no loop
+ * session is already running (single-instance), budget is OK, and the
+ * min-interval has elapsed — so it never idle-burns or spawn-storms.
+ */
+export interface MentorAutonomousFixConfig {
+  /** Master switch. Default false → the heartbeat runs the observe-pipeline. */
+  enabled: boolean;
+  /** Model the spawned loop session runs on. Justin's constraint: all fixing by
+   *  an Opus model, exactly like the manual loop. Default 'opus'. */
+  model: string;
+  /** Session-name prefix for the spawned loop session; the single-instance gate
+   *  matches live sessions by this prefix. Default 'mentor-autoloop'. */
+  sessionNamePrefix?: string;
+  /** Telegram topic the spawned Echo reports progress to (the human's topic).
+   *  When unset, falls back to the mentor/mentee topic resolution. */
+  reportTopicId?: number;
+  /** Optional override for the loop goal-prompt. When unset, the built-in
+   *  buildAutoloopGoal template is used (parameterized by mentee + topics). */
+  goalTemplate?: string;
+  /** Max wall-clock minutes for one loop-cycle session before it is force-killed
+   *  (a runaway guard). Default 120. */
+  maxCycleMinutes?: number;
+}
 
 export interface MentorConfig {
   enabled: boolean;
@@ -67,6 +101,13 @@ export interface MentorConfig {
    * opt-in, and the mentor itself is already gated behind `enabled`/`mode`). Flows
    * into the Stage-A surface's `onboardingAgenda`. */
   onboardingAgenda?: string[];
+  /**
+   * The "just be Echo" autonomous-fix loop. When `autonomousFix.enabled` is
+   * true, the heartbeat runs the GUARDIAN path (keep one full-tool Opus loop
+   * session alive) instead of the haiku observe-pipeline — regardless of `mode`.
+   * Absent/`enabled:false` ⇒ unchanged observe behaviour (ships dark).
+   */
+  autonomousFix?: MentorAutonomousFixConfig;
 }
 
 /**
@@ -113,12 +154,27 @@ export interface MentorRunnerServices {
    *  min-interval clock and the per-day run counter. */
   onTickRan?: () => void;
   now?: () => number;
+  // --- Autonomous-fix loop ("just be Echo") services. Only consulted when
+  //     mentor.autonomousFix.enabled is true; absent ⇒ the guardian path is
+  //     unreachable (a missing spawn surfaces as a clear spawn-failed result). ---
+  /** True when a loop session (name-prefix match) is already running — the
+   *  single-instance gate. */
+  loopSessionAlive?: () => boolean;
+  /** Spawn the full-tool Opus loop session; resolve with its session name. */
+  spawnLoopSession?: (goal: string, model: string) => Promise<{ sessionName: string }>;
+  /** Build the dogfooding-loop goal prompt for the framework. */
+  buildAutoloopGoal?: (framework: string) => string;
 }
 
-export type MentorRunReason = MentorTickResult['reason'] | 'disabled';
+export type MentorRunReason =
+  | MentorTickResult['reason']
+  | 'disabled'
+  | AutonomousGuardianReason;
 
 export interface MentorRunResult extends Omit<MentorTickResult, 'reason'> {
   reason: MentorRunReason;
+  /** The spawned loop session's name (autonomous-fix guardian path only). */
+  sessionName?: string;
 }
 
 export class MentorOnboardingRunner {
@@ -156,7 +212,11 @@ export class MentorOnboardingRunner {
    */
   startTick(): { accepted: boolean; reason?: string } {
     const cfg = this.getConfig();
-    if (!cfg.enabled || cfg.mode === 'off') {
+    // The autonomous-fix guardian is a distinct execution path: it runs whenever
+    // `enabled && autonomousFix.enabled`, regardless of `mode` (mode gates only
+    // the haiku observe-pipeline). So `mode:'off'` does NOT disable it.
+    const autonomous = cfg.autonomousFix?.enabled === true;
+    if (!cfg.enabled || (cfg.mode === 'off' && !autonomous)) {
       this.lastResult = { ran: false, reason: 'disabled', at: (this.services.now ?? Date.now)() };
       return { accepted: false, reason: 'disabled' };
     }
@@ -186,12 +246,15 @@ export class MentorOnboardingRunner {
     return { accepted: true };
   }
 
-  /** Run one tick. Short-circuits to `disabled` when the feature is off (§16). */
+  /** Run one tick. Short-circuits to `disabled` when the feature is off (§16).
+   *  Branches to the autonomous-fix guardian when `autonomousFix.enabled`. */
   async tick(): Promise<MentorRunResult> {
     const cfg = this.getConfig();
-    if (!cfg.enabled || cfg.mode === 'off') {
+    const autonomous = cfg.autonomousFix?.enabled === true;
+    if (!cfg.enabled || (cfg.mode === 'off' && !autonomous)) {
       return { ran: false, reason: 'disabled' };
     }
+    if (autonomous) return this.autonomousTick(cfg);
     const framework = cfg.menteeFramework;
     const mode: MentorMode = cfg.mode === 'live' ? 'live' : 'dry-run';
     const result = await runMentorTick({
@@ -209,5 +272,45 @@ export class MentorOnboardingRunner {
     });
     if (result.ran) this.services.onTickRan?.();
     return result;
+  }
+
+  /**
+   * The "just be Echo" autonomous-fix path. Delegates to the pure
+   * {@link runAutonomousGuardian}: keep ONE full-tool Opus loop session alive on
+   * the manual dogfooding loop. The runner wires the injected guardian services
+   * (alive-check, spawn, goal builder) and advances the run counters when a
+   * cycle actually spawns. A host that enabled `autonomousFix` but failed to
+   * wire `spawnLoopSession` surfaces a clear `spawn-failed` result rather than a
+   * silent no-op.
+   */
+  private async autonomousTick(cfg: MentorConfig): Promise<MentorRunResult> {
+    const af = cfg.autonomousFix!;
+    const framework = cfg.menteeFramework;
+    const result = await runAutonomousGuardian({
+      framework,
+      enabled: af.enabled,
+      budgetOk: this.services.budgetOk(),
+      loopSessionAlive: this.services.loopSessionAlive?.() ?? false,
+      minIntervalElapsed: this.services.minIntervalElapsed(),
+      model: af.model || 'opus',
+      buildGoal: () =>
+        af.goalTemplate ?? this.services.buildAutoloopGoal?.(framework) ?? '',
+      spawnLoopSession:
+        this.services.spawnLoopSession ??
+        (async () => {
+          throw new Error(
+            'spawnLoopSession not wired — autonomousFix.enabled but the host injected no loop-session spawner',
+          );
+        }),
+      now: this.services.now,
+    });
+    // A spawned cycle counts as a run (advances the per-day cap + interval clock).
+    if (result.reason === 'spawned') this.services.onTickRan?.();
+    return {
+      ran: result.ran,
+      reason: result.reason,
+      sessionName: result.sessionName,
+      error: result.error,
+    };
   }
 }
