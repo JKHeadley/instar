@@ -50,6 +50,39 @@ Detection is tuned by `monitoring.watchdog.rateLimitSettleMs` (default 20000ms;
 with the default 30s poll, recovery engages on the 2nd consecutive throttled poll
 ≈ 30–60s after the turn freezes).
 
+## Evidence
+
+**Reproduction (root cause, unit-level).** `tests/unit/rate-limit-detection.test.ts`
+builds the exact stuck-pane shape from the live incident — the `API Error:`
+throttle line followed by Claude Code's input box + footer + ~14 trailing blank
+rows. `detectRateLimited(paneWithInputBox())` returns **false** with the default
+20-line window (the live bug — the error is pushed out of view) and **true** with
+the widened 45-line window. `evaluateThrottleSettle` is exercised on both sides
+of every branch (no-throttle / waiting / settled), and the watchdog wiring test
+confirms emission only after the pane is settled across two polls, with no
+process-tree inspection.
+
+**Observed before (production, this box, 2026-05-30).** Across every server
+instance overnight the RateLimitSentinel fired **zero** times — `grep` of
+`logs/server*.log` found no `rateLimitedAtIdle` emit, no `[RateLimitSentinel]
+detected`, and no `[Watchdog] rate-limited detected` lines — while three live
+sessions sat visibly stuck on the throttle (panes showed `API Error: Server is
+temporarily limiting requests` then a frozen `Churned for 7m 43s` /
+`Sautéed for 9m 28s` / `Baked for 5m 58s`). The only sentinel that engaged was
+the `ActiveWorkSilenceSentinel` at its 15-minute mark
+(`logs/sentinel-events.jsonl`), i.e. recovery was 15 min late and generic, never
+the throttle-aware path. That is the user-reported "sessions keep dying on API
+errors and the sentinels aren't recovering them."
+
+**Observed after.** With detection no longer gated on idle/at-prompt/no-active-
+processes, a settled throttled pane now emits `rate-limited` → the existing
+backoff→resume→verify lifecycle runs and writes `throttle-detected` /
+`throttle-resuming` / `throttle-recovered` to `logs/sentinel-events.jsonl`. Live
+end-to-end verification (watching a real throttle recover in the audit trail) is
+performed on this box post-deploy — it throttles frequently enough under current
+load to exercise the path within minutes; the deploying engineer confirms a
+`throttle-recovered` entry before closing the incident.
+
 ## What to Tell Your User
 
 Mostly invisible, and strictly an improvement. If one of your sessions hits
