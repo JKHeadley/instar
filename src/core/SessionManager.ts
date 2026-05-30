@@ -56,6 +56,7 @@ import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
+  claudeHeadlessExtraFlags,
   resolveInteractiveFramework,
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
@@ -1064,6 +1065,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  Jobs leave this false and keep the workspace-write sandbox. No effect
      *  on non-codex frameworks. */
     codexAllowMcpTools?: boolean;
+    /** When true, a claude-code spawn launches with NO project MCP servers
+     *  (`--strict-mcp-config` + an empty `--mcp-config`), ignoring the project's
+     *  `.mcp.json`. This is required for headless one-shot spawns that don't need
+     *  MCP: the project's MCP set includes interactively-authenticated remote
+     *  servers (e.g. Fathom's `mcp-remote`, the claude.ai connectors) that can't
+     *  complete their OAuth handshake in a headless `claude -p` run, so the
+     *  session HANGS on boot and never processes its prompt. Verified live: the
+     *  mentor autonomous-fix loop session stalled ~4.5 min at 0.1% CPU on MCP
+     *  init; with this flag a headless spawn boots in ~9s. No effect on Codex
+     *  spawns (Codex MCP wiring is separate). */
+    disableProjectMcp?: boolean;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -1151,24 +1163,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
     });
 
-    // Per-job tool allowlist (INSTAR-JOBS-AS-AGENTMD spec §5): when the
-    // caller provides a non-empty `allowedTools` array, scope the spawned
-    // session. Currently Claude-only — `--allowedTools` is a Claude CLI
-    // flag with no Codex equivalent (Codex uses sandbox modes via the
-    // headless builder). For Codex spawns the allowlist is silently
-    // ignored; the spec's enforcement is via Codex sandbox flags upstream.
-    if (
-      headlessFramework === 'claude-code'
-      && options.allowedTools
-      && options.allowedTools.length > 0
-    ) {
-      // Insert --allowedTools <list> before the -p prompt positional so
-      // Claude CLI parses it correctly. The helper builds argv with
-      // structure [binary, --dangerously-skip-permissions, (--model X)?, -p, prompt]
-      // — splice right before -p.
+    // Extra claude-code headless flags, spliced before the `-p` prompt positional
+    // (argv structure: [binary, --dangerously-skip-permissions, (--model X)?, -p,
+    // prompt]). Currently Claude-only — Codex has no `--allowedTools`/MCP-config
+    // CLI equivalent (it uses sandbox modes via the headless builder), so the
+    // helper returns [] for Codex and the splice is skipped:
+    //  - `--allowedTools <list>` — per-job tool-scope allowlist (INSTAR-JOBS-AS-
+    //    AGENTMD §5).
+    //  - `--strict-mcp-config --mcp-config {}` — no-project-MCP spawn for headless
+    //    one-shot sessions that would otherwise hang on auth-required remote MCP
+    //    boot (the mentor autonomous-fix loop). See claudeHeadlessExtraFlags.
+    const extraClaudeFlags = claudeHeadlessExtraFlags({
+      framework: headlessFramework,
+      allowedTools: options.allowedTools,
+      disableProjectMcp: options.disableProjectMcp,
+    });
+    if (extraClaudeFlags.length > 0) {
       const dashPIndex = headlessSpec.argv.indexOf('-p');
       if (dashPIndex > 0) {
-        headlessSpec.argv.splice(dashPIndex, 0, '--allowedTools', options.allowedTools.join(','));
+        headlessSpec.argv.splice(dashPIndex, 0, ...extraClaudeFlags);
       }
     }
 

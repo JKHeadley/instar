@@ -458,3 +458,34 @@ export function buildHeadlessLaunch(
   }
   return builder(options);
 }
+
+/**
+ * Extra claude-code headless flags spliced before the `-p` prompt positional:
+ *  - `--allowedTools <list>` — the per-session tool-scope allowlist.
+ *  - `--strict-mcp-config --mcp-config {"mcpServers":{}}` — the no-project-MCP
+ *    spawn: a headless one-shot `claude -p` session that inherits the project
+ *    `.mcp.json` HANGS on boot when that set includes interactively-authenticated
+ *    remote MCP servers (they can't complete OAuth headless), so it never
+ *    processes its prompt. An empty strict MCP config makes claude ignore the
+ *    project config and start with zero MCP servers (verified live: a mentor
+ *    autonomous-fix loop session stalled ~4.5 min at 0.1% CPU on MCP init; with
+ *    this flag a headless spawn boots in ~9s).
+ *
+ * Returns `[]` for non-claude frameworks or when neither option is requested, so
+ * the caller can splice unconditionally. Pure + order-stable for testing.
+ */
+export function claudeHeadlessExtraFlags(opts: {
+  framework: IntelligenceFramework | string;
+  allowedTools?: string[];
+  disableProjectMcp?: boolean;
+}): string[] {
+  if (opts.framework !== 'claude-code') return [];
+  const flags: string[] = [];
+  if (opts.allowedTools && opts.allowedTools.length > 0) {
+    flags.push('--allowedTools', opts.allowedTools.join(','));
+  }
+  if (opts.disableProjectMcp) {
+    flags.push('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}');
+  }
+  return flags;
+}

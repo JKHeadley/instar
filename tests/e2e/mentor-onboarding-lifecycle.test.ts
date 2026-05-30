@@ -271,6 +271,10 @@ describe('Autonomous-fix loop E2E (alive on the production init path, no real sp
     expect(String(spawnArgs.name)).toMatch(/^mentor-autoloop-/);
     expect(spawnArgs.allowedTools).toBeUndefined(); // full tools, not [] (Stage-A)
     expect(spawnArgs.maxDurationMinutes).toBe(90);
+    // No-project-MCP: the loop session must spawn WITHOUT the project .mcp.json,
+    // or a headless run hangs on auth-required remote MCP boot (the live dogfood
+    // finding). The production wiring passes disableProjectMcp through.
+    expect(spawnArgs.disableProjectMcp).toBe(true);
     // The goal prompt is the real dogfooding loop (not empty / not a stub).
     expect(String(spawnArgs.prompt)).toMatch(/instar-codey/);
     expect(String(spawnArgs.prompt)).toMatch(/HEALTH FIRST/);
