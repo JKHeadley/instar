@@ -447,14 +447,12 @@ describe('Remediator', () => {
   });
 
   it('forged audit-token entries route to audit-rejected.jsonl', async () => {
-    // Strict token verifier: only accept tokens whose first byte is 0x42.
+    // Strict token verifier: reject every generated token. This must be
+    // deterministic; a prefix-based check made the test fail 1/256 CI runs.
     const strictFx = makeFixture({
-      tokenVerifier: (e) =>
-        e.auditToken.length > 0 && e.auditToken[0] === 0x42,
+      tokenVerifier: () => false,
     });
     try {
-      // FakeKeyVault produces random HKDF output; the leaf almost certainly
-      // does not start with 0x42, so every dispatch will be rejected.
       strictFx.remediator.registerRunbook(makeRunbook());
       await strictFx.remediator.dispatch(makeEvent());
 
