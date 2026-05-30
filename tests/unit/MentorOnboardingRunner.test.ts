@@ -113,4 +113,22 @@ describe('MentorOnboardingRunner', () => {
     expect(svc.spawnStageA).not.toHaveBeenCalled();
     expect(runner.status().lastResult?.reason).toBe('disabled');
   });
+
+  it('surfaces the real Stage-A error into lastResult.error (not just an opaque stage-a-failed)', async () => {
+    const svc = fakeServices({
+      spawnStageA: vi.fn(async () => {
+        throw new Error('spawn refused: session cap reached');
+      }),
+    });
+    const cfg: MentorConfig = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'dry-run' };
+    const runner = new MentorOnboardingRunner(svc, () => cfg);
+    runner.startTick();
+    await new Promise((res) => setTimeout(res, 10));
+    const lr = runner.status().lastResult;
+    expect(lr?.ran).toBe(false);
+    expect(lr?.reason).toBe('stage-a-failed');
+    // The real cause is now visible via GET /mentor/status.lastResult.error,
+    // instead of being swallowed by the bare catch in runMentorTick.
+    expect(lr?.error).toContain('spawn refused: session cap reached');
+  });
 });

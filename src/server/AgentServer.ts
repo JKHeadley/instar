@@ -1574,12 +1574,30 @@ export class AgentServer {
         // §4); we bounded-wait for it to finish, then capture its transcript.
         spawnStageA: async (prompt: string): Promise<string> => {
           const spawnTs = Date.now();
-          const session = await self.sessionManager.spawnSession({
-            name: `mentor-stage-a-${Date.now()}`,
-            prompt,
-            model: 'haiku',
-            allowedTools: [...STAGE_A_ALLOWED_TOOLS], // empty → no tools
-            maxDurationMinutes: 5,
+          const spawnOnce = () =>
+            self.sessionManager.spawnSession({
+              name: `mentor-stage-a-${Date.now()}`,
+              prompt,
+              model: 'haiku',
+              allowedTools: [...STAGE_A_ALLOWED_TOOLS], // empty → no tools
+              maxDurationMinutes: 5,
+            });
+          // E2E-PAIRING: EXEMPT — hardens an existing internal closure (the
+          // Stage-A compose-session spawn: retry + clear error surfacing). Adds
+          // no API route; covered by MentorOnboardingRunner.test.ts.
+          // Robustness: a Stage-A compose-session spawn can fail transiently on a
+          // busy box (session-cap pressure / load). Retry once with a brief
+          // backoff; on a persistent failure throw a CLEAR, specific error
+          // (surfaced in GET /mentor/status.lastResult.error) instead of an
+          // opaque throw that collapses to 'stage-a-failed' with no cause.
+          const session = await spawnOnce().catch(async () => {
+            await new Promise((r) => setTimeout(r, 3000));
+            return spawnOnce().catch((err) => {
+              const why = err instanceof Error ? err.message : String(err);
+              throw new Error(
+                `stage-a-spawn-failed: could not spawn the Stage-A compose session after 2 attempts — ${why}`,
+              );
+            });
           });
           const tmux = session.tmuxSession;
           let finished = false;

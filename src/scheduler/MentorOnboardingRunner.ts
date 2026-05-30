@@ -167,13 +167,18 @@ export class MentorOnboardingRunner {
         this.lastResult = { ...r, at: (this.services.now ?? Date.now)() };
       })
       .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
         this.lastResult = {
           ran: false,
           reason: 'stage-a-failed',
+          // Surface the real failure so GET /mentor/status.lastResult.error is
+          // diagnosable, instead of an opaque 'stage-a-failed' with the cause
+          // only in a console.warn that may never reach the readable logs.
+          error: message,
           at: (this.services.now ?? Date.now)(),
         } as MentorRunResult & { at: number };
         // eslint-disable-next-line no-console
-        console.warn('[mentor] tick failed:', err instanceof Error ? err.message : String(err));
+        console.warn('[mentor] tick failed:', message);
       })
       .finally(() => {
         this.inFlight = false;

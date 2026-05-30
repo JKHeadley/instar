@@ -83,6 +83,13 @@ export interface MentorTickResult {
   findingsCount?: number;
   /** The Stage-A message the mentor produced (delivered only in `live` mode by the runner). */
   stageAMessage?: string;
+  /**
+   * When a tick throws (e.g. the Stage-A compose-session spawn/capture fails),
+   * the underlying error message — surfaced in GET /mentor/status.lastResult so
+   * the real cause is visible instead of being swallowed into the opaque
+   * `reason: 'stage-a-failed'`. Diagnosability for the mentor failure class.
+   */
+  error?: string;
 }
 
 /**
@@ -124,14 +131,19 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
   let transcript: string;
   try {
     transcript = await deps.spawnStageA(buildStageAContext(deps.surface));
-  } catch {
+  } catch (err) {
+    // Surface the real cause instead of swallowing it. The Stage-A
+    // compose-session can fail to spawn/produce/capture (e.g. session-cap
+    // refusal or reaping under load), and an opaque 'stage-a-failed' with the
+    // error discarded made this undebuggable from GET /mentor/status.
+    const message = err instanceof Error ? err.message : String(err);
     deps.capture({
       framework: deps.framework,
       tickId,
       findings: [
         {
           bucket: 'instar-integration-gap',
-          title: 'Stage-A spawn failed during a mentor tick',
+          title: `Stage-A spawn failed during a mentor tick: ${message}`,
           dedupKey: `${deps.framework}::stage-a-spawn-failed`,
           signature: 'stage-a-spawn-failed',
           severity: 'medium',
@@ -139,7 +151,7 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
         },
       ],
     });
-    return { ran: false, reason: 'stage-a-failed' };
+    return { ran: false, reason: 'stage-a-failed', error: message };
   }
 
   // 5. Leakage detection on the Stage-A transcript (§4.3).
