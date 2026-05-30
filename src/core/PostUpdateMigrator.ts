@@ -5500,6 +5500,61 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
     fi
   fi
 done
+
+# 'gh pr merge' watch-exit-merge gate — closes the PR #539 class.
+# Justin merged #539 on 'gh run watch' exit code (= success), but 'watch'
+# returns 0 on workflow COMPLETION regardless of conclusion; meanwhile the
+# PR's branch-protection checks were RED. Cost a fix-forward (#540) + a
+# fleet outage. The rule: 'gh pr merge' must NEVER fire if any PR-event
+# check is non-pass. This guard runs 'gh pr checks <num>' and refuses on
+# any failure / pending / queued check.
+#
+# 'gh pr merge --auto' is the documented safe path (only fires when
+# checks pass) — let it through. Other flags (--admin, no flag) get
+# verified against the live check state.
+if echo "$INPUT" | grep -qiE '(^|[;&|(\\s])gh +pr +merge( |\$|--)'; then
+  if echo "$INPUT" | grep -qE '(^| )--auto( |$)'; then
+    : # --auto is the safe async gate; allow.
+  else
+    PR_NUM=$(echo "$INPUT" | grep -oE 'gh +pr +merge[ +-]+[0-9]+' | grep -oE '[0-9]+' | head -1)
+    if [ -z "$PR_NUM" ]; then
+      PR_NUM=$(gh pr view --json number -q .number 2>/dev/null)
+    fi
+    if [ -n "$PR_NUM" ]; then
+      CHECKS_JSON=$(gh pr checks "$PR_NUM" --json name,state 2>/dev/null)
+      if [ -n "$CHECKS_JSON" ]; then
+        NON_OK=$(echo "$CHECKS_JSON" | python3 -c "
+import sys, json
+try:
+    rows = json.loads(sys.stdin.read())
+    if isinstance(rows, list):
+        bad = [r.get('name','?') + '=' + str(r.get('state','?')) for r in rows
+               if str(r.get('state','')).upper() not in ('SUCCESS','SKIPPED','SKIPPING','NEUTRAL','')]
+        print(','.join(bad))
+except Exception:
+    pass
+" 2>/dev/null)
+        if [ -n "$NON_OK" ]; then
+          echo "BLOCKED: PR #$PR_NUM has non-passing checks: $NON_OK" >&2
+          echo "" >&2
+          echo "'gh pr merge' must not run while any check is failing, pending, or queued." >&2
+          echo "Closes the 2026-05-27 #539 watch-exit-merge class — 'gh run watch' returns 0" >&2
+          echo "on workflow completion regardless of conclusion, which caused a fix-forward" >&2
+          echo "(#540) + a fleet outage when #539 was merged on a red unit-test shard." >&2
+          echo "" >&2
+          echo "Options:" >&2
+          echo "  1) Wait. Re-check with: gh pr checks $PR_NUM" >&2
+          echo "  2) Use 'gh pr merge --auto' — async gate that ONLY fires when all" >&2
+          echo "     checks pass. Documented safe path." >&2
+          echo "  3) If a non-passing check is an intentional skip (e.g. Contract Tests" >&2
+          echo "     on non-tagged PRs), it appears as SKIPPED / SKIPPING in" >&2
+          echo "     'gh pr checks --json state' output and the gate already allows it." >&2
+          exit 2
+        fi
+      fi
+    fi
+  fi
+fi
 `;
   }
 

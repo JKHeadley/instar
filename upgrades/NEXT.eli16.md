@@ -2,72 +2,67 @@
 
 ## What this change is
 
-There's a safety guard called SourceTreeGuard. Its job is to refuse any
-operation that would touch the instar source code from inside an agent
-that's running against that source code. The 2026-04-22 incident — an agent
-accidentally clobbering its own source tree — was the reason the guard
-shipped. It's saved us from a repeat several times.
+Yesterday Justin merged a pull request (PR #539) on the back of a
+GitHub CLI command exit code that looked successful. The catch: that
+command (`gh run watch`) returns "success" when the workflow is FINISHED,
+regardless of whether the tests passed or failed. The workflow had
+finished with red unit-test shards. The merge went through anyway. We
+spent the next 16 hours dealing with the resulting fleet outage and
+shipped a follow-up PR (#540) to fix the damage.
 
-But the guard treats READ and WRITE the same: it refuses BOTH. That's
-overcautious — reading the git log of a repo is harmless. And the
-Failure-Learning Loop we just turned on yesterday needs to read git log
-to find reverts, and to read `git remote get-url` to know which GitHub
-repo to poll for CI failures. So on Echo (the canonical dogfooding agent,
-whose checkout IS the instar source), the loop has been silently failing
-once per detector tick for the past ~5 hours: a warning in stderr, no
-event in the ledger, no surfacing in the API.
+We wrote a memory note afterward saying "don't merge on watch exit;
+verify with `gh pr checks` first." That's a willpower fix — it works
+until the next time someone forgets, which will happen.
 
-There's already an escape hatch — `sourceTreeReadOk: true` — that other
-read-only callers (the worktree-manager, the canonical-ref reconciler)
-use. This PR plugs the Failure-Learning Loop's three read callsites into
-the same hatch. No changes to the guard itself.
+This PR replaces the willpower fix with a structural one: the agent's
+dangerous-command-guard hook now intercepts any `gh pr merge` command,
+queries the PR's check status via `gh pr checks`, and refuses to run
+the merge if anything is failing or pending. The agent literally
+cannot run a bad merge command from the Bash tool — the hook blocks
+it.
 
 ## What already exists
 
-- `SourceTreeGuard` (`src/core/SourceTreeGuard.ts`) — refuses operations
-  against the instar source tree.
-- `SafeGitExecutor` with `readSync` and `execSync` methods, plus
-  `sourceTreeReadOk` opt-in.
-- `SOURCE_TREE_READ_TIER_VERBS` — an allowlist of read-only verbs
-  (`log`, `show`, `remote`, `rev-parse`, …) that the opt-in legitimizes.
-- `RevertDetector`, `CiFailurePoller`, `FailureAttributionEngine` — the
-  three failure-learning components that read git.
+- `dangerous-command-guard.sh` — a PreToolUse hook on Bash that already
+  refuses catastrophic commands (`rm -rf /`, `mkfs.`, etc.) and risky
+  commands (`git push --force`, etc.) under safety.level 1.
+- `gh pr checks` — the CLI command that returns the live state of all
+  branch-protection checks on a PR.
 
 ## What's new
 
-- Three call sites updated to pass `sourceTreeReadOk: true`:
-  - RevertDetector's default git function
-  - AgentServer's `commitTouchedFiles` for the attribution engine
-  - AgentServer's `resolveRepo` for the CI poller
-- A unit test that scans the failure-learning code for any
-  `SafeGitExecutor.readSync` call missing the flag. Catches any future
-  new callsite that ships without the opt-in.
-- An integration test that runs the DEFAULT RevertDetector against the
-  real instar source tree (the existing tests entirely mocked git, which
-  is how this gap shipped silently).
+- A new block in `dangerous-command-guard.sh` that fires when
+  `gh pr merge` is detected at a command boundary.
+- The block calls `gh pr checks <num> --json name,state` and refuses
+  the merge if any state is `FAILURE`, `PENDING`, `QUEUED`, or similar.
+- `SUCCESS`, `SKIPPED`, and `SKIPPING` are explicitly OK — those are
+  the intentional pass / intentional-skip states.
+- `gh pr merge --auto` (the documented async safe path) is allowed
+  through unchanged. That command only fires when checks pass; it's
+  the right way to do an "I'm done, merge when ready" workflow.
+- 10 unit tests, including realistic scenarios — the actual hook is
+  spawned with a mocked `gh` binary on PATH so the behavior is
+  end-to-end tested, not just static-analyzed.
 
 ## What you need to decide
 
-Nothing. Surgical fix, no config, no fleet migration. Existing agents
-pick it up on the next process restart from auto-update.
+Nothing. Pure structural enforcement. Existing agents get the new gate
+on the next auto-update tick (every ~30 min).
 
 ## How to verify it worked after deploy
 
-If you have `monitoring.failureLearning.sources.revert: true` (or
-`sources.ci: true`) set on an agent whose project directory is the
-instar source tree, check `logs/server-stderr.log` after the next
-restart. The recurring `[revert-detector] SourceTreeGuardError`
-warnings should stop. After a couple of detector ticks (the default is
-6 hours but you can lower it), `/failures/analysis` should start
-showing captured events with attribution.
+In Bash, try to invoke `gh pr merge <num>` against a PR that has any
+pending or failing check. The agent will see a BLOCKED message in
+stderr with the list of non-passing checks. Try the same command with
+`--auto` appended — it goes through cleanly (because `--auto` is the
+documented safe path).
 
 ## Why this matters more than it might look
 
-The Failure-Learning Loop is the meta-trace we just deliberately enabled
-because we've been shipping bugs faster than we can learn from them. If
-that loop itself is silently broken on the canonical dogfooding agent,
-the whole "we'll start learning from our bugs" plan is theater. This is
-the post-mortem's lesson reflected back on itself: shipping ≠ working.
-And the catch — that the existing unit tests masked the bug because
-they entirely mocked the git layer — is precisely the
-"tested-on-mocks-not-real-state" pattern the post-mortem named.
+This is the third post-mortem fix landing today (after #545 and #550).
+Each one closes a class — not just one incident. The PR #539 class is
+arguably the most embarrassing of the three, because the human
+component of the loop (the agent or a human picking the merge command)
+had been advised to verify checks first and didn't — willpower failed.
+Structural enforcement closes that loop. The agent will not be ABLE
+to merge a red PR from Bash, even on autopilot, even with `--admin`.

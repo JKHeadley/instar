@@ -1,7 +1,7 @@
 ---
 review-convergence: complete
 approved: true
-approved-by: justin (verbal, topic 2169: "Please proceed as you best to see fit" — my judgment call to fix SourceTreeGuard's read-vs-write distinction first, since it blocks the failure-learning telemetry I just enabled)
+approved-by: justin (verbal, topic 2169: "Please proceed as you best to see fit" — my judgment-call to ship lever E next per the post-mortem ordering I proposed)
 ---
 
 # Upgrade Guide — vNEXT
@@ -10,63 +10,53 @@ approved-by: justin (verbal, topic 2169: "Please proceed as you best to see fit"
 
 ## What Changed
 
-**Failure-Learning Loop's git reads now work on dogfooding agents.**
+**Pipeline post-mortem lever E: `dangerous-command-guard.sh` now refuses
+`gh pr merge` when any PR check is non-passing.**
 
-The 2026-05-29 pipeline post-mortem (PR #545) flipped on the `ci` and
-`revert` ingestion sources for Echo. The next ~hour of `server-stderr.log`
-filled with `[revert-detector] SourceTreeGuardError: Refusing to run
-failure-learning:revert-detect against the instar source tree` warnings,
-once per detector tick, while `/failures/analysis` kept reporting `total: 1`.
-The loop's whole point — capture CI failures + reverts so we can learn from
-them — was silently broken on the canonical dogfooding agent.
+Closes the 2026-05-27 PR #539 watch-exit-merge class — `gh run watch`
+returns exit 0 on workflow completion regardless of conclusion, which
+caused PR #539 to merge with red unit-test shards (cost a fix-forward
+#540 + a ~16h fleet outage on instar-codey when the ABI-heal regression
+hit production). The memory entry afterward
+(`[feedback_never_merge_on_watch_exit_verify_checks]`) tried to prevent
+recurrence via convention; this PR replaces that convention with a
+structural gate.
 
-Cause: `RevertDetector` (and the `CiFailurePoller`'s `resolveRepo`, and the
-`FailureAttributionEngine`'s `commitTouchedFiles`) call
-`SafeGitExecutor.readSync` to read `git log` / `git show` / `git remote
-get-url`. SourceTreeGuard refuses any operation against the agent's own
-checkout when that checkout IS the instar source tree — which is exactly the
-case for Echo. The guard exists for write protection (the 2026-04-22
-destructive-tool-target class), but it gates reads by default too. There's
-an existing, audited escape hatch — `SafeGitOptions.sourceTreeReadOk:
-true` — already used by the worktree-manager and the canonical-ref
-reconciler, scoped to the explicit `SOURCE_TREE_READ_TIER_VERBS` set
-(`log`, `show`, `cat-file`, `remote`, `rev-parse`, `ls-tree`, …).
+The gate runs `gh pr checks <PR> --json name,state` before allowing the
+merge and refuses if any check is in `FAILURE`, `PENDING`, `QUEUED`, or
+similar non-passing state. `SKIPPED` / `SKIPPING` (e.g. Contract Tests
+on non-tagged PRs) are explicitly OK. `gh pr merge --auto` — the
+documented async safe path — is allowed through unchanged.
 
-Fix: opt every failure-learning git read at every callsite into that
-escape hatch. No guard weakening; only the three loop callsites change.
-
-The existing RevertDetector + CiFailurePoller unit tests entirely mocked
-the `git` / `runGh` injection points, which is how the gap shipped silently
-in the first place. This PR adds a static-introspection unit test that
-pins the call shape, plus an integration test that exercises the DEFAULT
-git invocation against the actual instar source tree (the path the
-existing tests never touched).
+Pattern matching is bounded to command-start boundaries so commands that
+merely mention `gh pr merge` in a string literal (`echo "fix gh pr merge
+bug"`) do not trigger.
 
 ## What to Tell Your User
 
-Nothing visible unless you've also flipped on `monitoring.failureLearning.
-sources.ci: true` / `sources.revert: true` on an agent whose project
-directory IS the instar source tree. If you have, the
-`[revert-detector] SourceTreeGuardError` warnings in `server-stderr.log`
-will stop on the next process restart, and the failure-learning loop's
-revert + CI sources will start actually capturing events.
+Nothing visible in normal operation. The agent now refuses to merge a PR
+while any CI check is failing or pending — even with `--admin`. If you
+want async-merge behavior (auto-fire when all checks pass), use
+`gh pr merge --auto` and the gate will allow it through.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| Failure-learning revert detection works on dogfooding agents | Automatic. RevertDetector's default git invocation now passes `sourceTreeReadOk: true`. |
-| Failure-learning CI poller resolves repo on dogfooding agents | Automatic. `resolveRepo` no longer trips SourceTreeGuard. |
-| Failure-learning attribution engine reads touched files on dogfooding agents | Automatic. `commitTouchedFiles` no longer trips SourceTreeGuard. |
-| Static-introspection guard against future failure-learning git reads missing the flag | Automatic (CI). A new unit test scans every `SafeGitExecutor.readSync` tagged `failure-learning:*` and fails if `sourceTreeReadOk: true` is missing. |
+| `gh pr merge` refused when any check is non-passing | Automatic. The Bash PreToolUse hook intercepts the command, runs `gh pr checks`, and blocks if anything is FAILURE / PENDING / QUEUED. |
+| `gh pr merge --auto` allowed through | Use it as the safe async gate. Only fires when checks pass. Documented behavior of `gh` itself. |
+| `--admin` does not bypass | The #539 incident shape itself: `gh pr merge --admin <num>` with red checks now blocks. |
 
 ## Evidence
 
-- 5 new tests (4 unit + 1 integration). Both new tests verified by
-  destructive-negative test (removing the flag from `RevertDetector` →
-  both tests fail as expected, with `SourceTreeGuardError` surfacing).
+- 10 new unit tests covering both writers (init.ts + PostUpdateMigrator)
+  for content, plus eight runtime-behavior tests that spawn the rendered
+  hook with a mocked `gh` binary on PATH (BLOCK on FAILURE, BLOCK on
+  PENDING, ALLOW on SUCCESS, ALLOW on SKIPPED, ALLOW on `--auto`, IGNORE
+  non-`gh pr merge` commands, BLOCK on `--admin` with red checks, BLOCK
+  on no-PR-number with red current-branch PR).
+- Migration-parity test from PR #545 still green — the new gate landed in
+  BOTH writers in lockstep.
 - `tsc --noEmit` clean.
 - Side-effects review:
-  `upgrades/side-effects/failure-learning-source-tree-readok.md`.
-- Existing `RevertDetector.test.ts` (9 tests) and `CiFailurePoller.test.ts`
-  (12 tests) remain green.
+  `upgrades/side-effects/dangerous-command-guard-gh-pr-merge-gate.md`.
