@@ -689,6 +689,24 @@ export class AgentServer {
             },
           });
         }
+
+        // Sources whose CONFIG FLAGS exist but whose IMPLEMENTATIONS have not
+        // shipped yet are silent no-ops — turning them on creates a false sense
+        // of coverage. Surface that boundary loudly at boot so the operator
+        // (and any tier-1 supervisor) sees the gap instead of trusting an
+        // invisible-and-broken pipeline. Per the 2026-05-29 pipeline post-mortem:
+        // "specced but not wired" was a recurring class behind shipped bugs.
+        const unimplementedActive: string[] = [];
+        if (sources?.regression === true) unimplementedActive.push('regression');
+        if (Array.isArray(sources?.degradation) && sources.degradation.length > 0) unimplementedActive.push('degradation');
+        if (unimplementedActive.length > 0) {
+          console.warn(
+            `[instar] failure-learning: source(s) [${unimplementedActive.join(', ')}] are configured ON ` +
+            `but have no implementation yet — they are silent no-ops. ` +
+            `Set them back to off (regression: false, degradation: []) until the source impl ships, ` +
+            `or you'll have a flag that lies about coverage.`,
+          );
+        }
       }
     } catch (err) {
       console.warn('[instar] failure-learning init failed (non-fatal):', err);
