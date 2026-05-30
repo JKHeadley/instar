@@ -120,6 +120,35 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         ciMaxRunsPerTick: 50,
       },
     },
+    // Correction & Preference Learning Sentinel
+    // (docs/specs/CORRECTION-PREFERENCE-LEARNING-SENTINEL-SPEC.md §9). Ships OFF.
+    // SIGNAL-ONLY — never blocks/rewrites an outbound message. Slice 1a wires the
+    // preferences read-surface (GET /preferences/session-context → 503 when off);
+    // Slice 1b adds the capture→distill→ledger→recurrence loop. applyDefaults
+    // deep-merges this into existing agents without surprise activation (no
+    // separate migrateConfig block needed — verified deep-merge at
+    // ConfigDefaults.deepMerge + applyDefaults add-missing recursion).
+    correctionLearning: {
+      enabled: false,
+      minSupport: 4,
+      minDistinctDaysInfraGap: 3,
+      minDistinctDaysPreference: 2,
+      minDistinctTopicsPreference: 2,
+      autoFeedback: false,
+      telegramDigest: false,
+      driftCanary: false,
+      llmDailyCents: 25,
+      llmMaxConcurrent: 1,
+      captureContextTurns: 6,
+      captureTopicMapMax: 64,
+      captureTopicTtlMinutes: 60,
+      distillPerTopicRatePerMinute: 8,
+      verifyWindowDaysInfraGap: 14,
+      verifyWindowDaysPreference: 7,
+      maxInjectedPreferencesBytes: 4000,
+      preferencesInjectionPriority: 'recency*confidence*dedupeCount',
+      maxReopens: 2,
+    },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
     // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the
     // install has an analyzable instar git repo. Thresholds default to

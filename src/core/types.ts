@@ -3108,6 +3108,55 @@ export interface MonitoringConfig {
     };
   };
   /**
+   * Correction & Preference Learning Sentinel
+   * (docs/specs/CORRECTION-PREFERENCE-LEARNING-SENTINEL-SPEC.md). Ships OFF.
+   * Slice 1a wires only the preferences read-surface: when `enabled`, the
+   * `GET /preferences/session-context` route serves the learned-preference
+   * block (else 503) and the session-start hook injects it. SIGNAL-ONLY — it
+   * never blocks or rewrites an outbound message. Slice 1b adds the capture →
+   * distill → ledger → recurrence-gate loop that writes via `recordPreference()`.
+   */
+  correctionLearning?: {
+    /** Master kill switch (default: false). Gates the loop AND the read route. */
+    enabled: boolean;
+    /** Min total occurrences before a learning crosses the recurrence gate (Slice 1b). */
+    minSupport?: number;
+    /** Distinct calendar days required for an infra-gap learning (Slice 1b, restart-proof). */
+    minDistinctDaysInfraGap?: number;
+    /** Distinct calendar days required for an explicit-preference learning (Slice 1b). */
+    minDistinctDaysPreference?: number;
+    /** Distinct topics required for the preference path's second prong (Slice 1b). */
+    minDistinctTopicsPreference?: number;
+    /** Auto-submit infra-gap learnings to /feedback (Slice 1b/3). Default false. */
+    autoFeedback?: boolean;
+    /** Post a periodic Telegram digest of learned preferences (Slice 2). Default false. */
+    telegramDigest?: boolean;
+    /** Drift canary that samples un-classified messages through the LLM (Slice 1b). Default false. */
+    driftCanary?: boolean;
+    /** Per-sentinel LLM daily spend cap in cents (own LlmQueue instance, Slice 1b). */
+    llmDailyCents?: number;
+    /** Max concurrent LLM distillation calls (Slice 1b). */
+    llmMaxConcurrent?: number;
+    /** Per-topic look-back ring depth captured for distillation (Slice 1b). */
+    captureContextTurns?: number;
+    /** Max distinct topics held in the capture map before LRU eviction (Slice 1b). */
+    captureTopicMapMax?: number;
+    /** Idle TTL (minutes) before a topic's capture ring is evicted (Slice 1b). */
+    captureTopicTtlMinutes?: number;
+    /** Per-topic distillation rate ceiling per minute (Slice 1b). */
+    distillPerTopicRatePerMinute?: number;
+    /** Verify-window days for the infra-gap closed loop (Slice 1b/2). */
+    verifyWindowDaysInfraGap?: number;
+    /** Verify-window days for the preference closed loop (Slice 1b). */
+    verifyWindowDaysPreference?: number;
+    /** Byte cap on the injected session-start preferences block (Slice 1a). */
+    maxInjectedPreferencesBytes?: number;
+    /** Priority ordering string for the injected block (Slice 1a). */
+    preferencesInjectionPriority?: string;
+    /** Max times a closed-loop verification may reopen the same dedupeKey (Slice 1b). */
+    maxReopens?: number;
+  };
+  /**
    * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)
    * — Layer B. A repo-gated dev-environment watchdog: evaluates the canonical
    * `main` of the instar checkout and surfaces a stalled/blocked release as a
