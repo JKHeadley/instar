@@ -10838,6 +10838,42 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Preferences (Correction & Preference Learning Sentinel, Slice 1a) ──
+  //
+  // Auto-learned user preferences, served as a session-start block that mirrors
+  // the ORG-INTENT precedent above. The correction loop (Slice 1b) is the writer
+  // via `recordPreference()`; this route is the read surface the session-start
+  // hook fetches on every boot, so the agent always SEES the preferences it has
+  // learned about this user. SIGNAL-ONLY — this never blocks or rewrites an
+  // outbound message.
+  //
+  // Gated on `monitoring.correctionLearning.enabled`:
+  //   - disabled → 503 (the surface still exists for capability probing)
+  //   - enabled  → 200 with the structured block (or { present: false } when
+  //                there are no preferences yet)
+  //
+  // The block is bounded by `maxInjectedPreferencesBytes` (default 4000) and
+  // priority-ordered (recency × confidence × dedupeCount). Serves ONLY the
+  // `learning` text + metadata — never any raw extras.
+  router.get('/preferences/session-context', async (_req, res) => {
+    try {
+      const cfg = ctx.config.monitoring?.correctionLearning;
+      if (cfg?.enabled !== true) {
+        res.status(503).json({ error: 'correction-learning disabled' });
+        return;
+      }
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const maxBytes = typeof cfg.maxInjectedPreferencesBytes === 'number' && cfg.maxInjectedPreferencesBytes > 0
+        ? cfg.maxInjectedPreferencesBytes
+        : 4000;
+      const result = manager.sessionContext(maxBytes);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
+    }
+  });
+
   // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime
   // project). Given two contending values, consults the organization's
   // tradeoff hierarchy and returns which wins, with the basis for the
