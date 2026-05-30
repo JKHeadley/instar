@@ -71,7 +71,7 @@ describe('Threadline keystone — wiring integrity (feature alive)', () => {
     // This was caught in test-as-self; the assertion guards against regression.
     const relayAgentIdx = routesSrc.indexOf("router.post('/messages/relay-agent'");
     expect(relayAgentIdx).toBeGreaterThan(0);
-    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 8000);
+    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 12000);
     const gateIdx = route.indexOf('evaluateAndRecordInbound(ctx.warrantsReplyGate, ctx.conversationStore');
     const routerIdx = route.indexOf('ctx.threadlineRouter.handleInboundMessage(envelope)');
     expect(gateIdx).toBeGreaterThan(0);
