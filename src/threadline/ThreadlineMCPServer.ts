@@ -725,7 +725,7 @@ export class ThreadlineMCPServer {
             // Active threads with this agent
             const threads = this.deps.threadResumeMap.getByRemoteAgent(a.name);
             entry.activeThreads = threads.filter(
-              t => t.entry.state === 'active' || t.entry.state === 'idle'
+              t => t.entry.state === 'active'
             ).length;
 
             return entry;

@@ -110,6 +110,7 @@ function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation)
 
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RESOLVED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_INACTIVE_RETIRE_MS = 24 * 60 * 60 * 1000;
 
 // ── Implementation ──────────────────────────────────────────────
 
@@ -190,15 +191,22 @@ export class ThreadResumeMap {
 
   /** Find all (non-expired) threads with a specific remote agent. */
   getByRemoteAgent(agentName: string): Array<{ threadId: string; entry: ThreadResumeEntry }> {
+    this.retireInactive();
     return this.store.getByParticipant(agentName)
       .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }));
   }
 
   /** List all active or idle threads. */
   listActive(): Array<{ threadId: string; entry: ThreadResumeEntry }> {
+    this.retireInactive();
     return this.store.listActive()
       .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }))
       .filter(({ entry }) => entry.state === 'active' || entry.state === 'idle');
+  }
+
+  /** Archive stale non-pinned active/idle/open conversations. */
+  retireInactive(maxInactiveMs: number = DEFAULT_INACTIVE_RETIRE_MS, now: Date = new Date()): number {
+    return this.store.retireInactive(maxInactiveMs, now);
   }
 
   /** Cross-machine failover: demote a source machine's active threads to idle. */
