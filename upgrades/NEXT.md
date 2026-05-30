@@ -76,9 +76,9 @@ written to `logs/sentinel-events.jsonl`. Tuned by
 
 ## What to Tell Your User
 
-First, nothing visible in normal operation from the test-framework change. If you
-want to run the big fixtures locally before pushing, `INSTAR_REAL_WORLD_BIG=1 npm
-test` will enable the nightly tier. The CI default is the PR tier only.
+First, nothing visible in normal operation from the test-framework change. There's
+an opt-in heavier set of local tests for big real-world fixtures; CI runs the fast
+set by default, so day to day nothing changes for you.
 
 Second, mostly invisible and strictly an improvement: if one of your sessions hits
 Anthropic's temporary server throttle (a "Server is temporarily limiting requests"
