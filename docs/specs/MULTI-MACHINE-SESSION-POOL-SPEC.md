@@ -219,6 +219,8 @@ Everything below depends on two coordination primitives — the **router lease**
 
 **Invariant:** no m2m command is honored without (a) a valid Ed25519 signature from a registered peer machine of the same agent that is cryptographically bound to THIS recipient, AND (b) the per-command role check above; secrets are only ever transported encrypted end-to-end.
 
+**Auth-surface invariant (implementation, 2026-05-29 — the bug that made the whole pool non-functional over the wire):** the `/mesh/rpc` HTTP route MUST be **exempt from the general API bearer-token middleware** — it is authed SOLELY by the signed envelope above (verify → RBAC → nonce, in the dispatcher). A shared bearer token cannot gate it, because each machine install holds its OWN `authToken`; the sending machine has no token the receiver would accept. `MeshRpcClient` therefore sends only the envelope (no `Authorization` header). If `/mesh/rpc` is left behind the bearer gate, EVERY cross-machine call (`capacity-report`/`session-status`, `deliverMessage`, `place`/`claim`/`transfer`) is rejected `401` BEFORE the envelope is ever verified — so the pool passes all in-process dispatcher tests yet is completely dead over a real tunnel. The exemption lives next to the other signature/HMAC-authed m2m endpoints (`/a2a/inbox`, the relay endpoints) in `authMiddleware`.
+
 **Tests:** Tier-1 — a command signed for machine-A, replayed verbatim to machine-C, is rejected `wrong-recipient`; an unauthorized (non-router) peer issuing `place`/`claim` (without the placement assignment) is rejected `not-router`/`claim-unauthorized`; a stale-timestamp and a reused-nonce command are both rejected.
 
 ### L1 — Router-Leader Lease
@@ -459,6 +461,11 @@ Step 3/4's "CAS-claim ownership" is **synchronous and blocking**, never fire-and
 - **Rate-limited:** at most one placement update per topic per `topicPlacementUpdateMinIntervalMs` (default 10000 = 10s); excess updates are rejected with a "give it a moment" reply, defeating accidental rapid-fire transfers.
 - **Audited:** every update is logged to the audit trail with the source message id + timestamp + before/after.
 - **Test:** Tier-1 — a free-form message whose body merely CONTAINS "run this on mini" (not as a command) does NOT mutate `TopicPlacement`; a second `/pin` within the rate-limit window is rejected.
+
+**Activation wiring (implementation, 2026-05-29 — the trigger that was missing).** The recognizer (`recognizeNicknameCommand`) and planner (`planTransferByNickname`) shipped as pure, tested units but had NO caller and nothing persisted the pin — so the headline "move this to <nickname>" never actually relocated anything. The activation closes that:
+- **`TopicPlacementPinStore`** (new, durable) persists `{topicId → {preferredMachine, pinned, updatedAt}}`. `asTopicMetadata(sessionKey)` shapes the pin for `PlacementExecutor.decide({ topicMetadata })`; `lastUpdatedAtMs` feeds the per-topic rate-limit guard.
+- The inbound handler (server boot), gated on stage ≠ `dark` and BEFORE the §L4 route() interception, recognizes the command, runs the planner (state sourced from the pool registry online-set + nickname map + ownership registry + the pin store's `lastUpdatedAtMs`), and applies the plan: on `transfer`/`noop` it **sets the pin AND releases this machine's local ownership** (`OwnershipAction 'release'`) so the topic's NEXT routed message re-places onto the pinned machine via the already-wired `placeAndClaim` → `spawnOnMachine` → owner-side `deliverMessage.onAccepted` resume path; `confirm-required`/`reject` reply to the user; the command message itself is consumed (not dispatched).
+- `SessionRouter.route()` is now called WITH `topicMetadata: pinStore.asTopicMetadata(sessionKey)`, so placement actually honors the pin (it was previously called with no metadata → always least-loaded).
 
 #### Topic Placement Validation (no silent mis-placement)
 

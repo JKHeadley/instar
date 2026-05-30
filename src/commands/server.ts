@@ -354,6 +354,10 @@ let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null =
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+/** Multi-Machine Session Pool §L4: per-topic placement pin store ("move this to <nickname>"). */
+let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
+/** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
+let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
  *  `config.topicFrameworks` at server boot. Boot-immutable; runtime
  *  mutations go through `_topicFrameworksStore` instead so they persist
@@ -1325,12 +1329,27 @@ function wireTelegramRouting(
     // entirely → byte-identical to single-machine dispatch. Any error falls back
     // to the local path below (fail-safe). The live-transfer behavior is gated by
     // the staged rollout (StageAdvancer); shadow records ownership but stays local.
+    //
+    // §L4 transfer-by-nickname: FIRST, intercept an explicit "move/run this on
+    // <nickname>" relocation command. If recognized, it sets the topic's
+    // placement pin (+ releases local ownership) and is fully handled here — the
+    // command message itself is NOT dispatched to a session. Subsequent messages
+    // for the topic then re-place onto the pinned machine via route() below.
+    if (_tryNicknameRelocation && _sessionPoolStage() !== 'dark') {
+      try {
+        const relo = await _tryNicknameRelocation(topicId, text);
+        if (relo.handled) return;
+      } catch (err) {
+        console.warn(`[session-pool] nickname relocation error for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (_sessionRouter && _sessionPoolStage() !== 'dark') {
       try {
         const outcome = await _sessionRouter.route({
           sessionKey: String(topicId),
           messageId: String(msg.id),
           payload: text,
+          topicMetadata: _topicPinStore?.asTopicMetadata(String(topicId)),
         });
         if (outcome.action === 'forwarded' || outcome.action === 'duplicate') {
           console.log(`[session-pool] topic ${topicId} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
@@ -9093,6 +9112,67 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch { return 'dark'; }
           };
           console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
+
+          // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"
+          // trigger. The recognizer + planner are pure units; this wires them to the
+          // pin store + ownership so a recognized command pins the topic to the named
+          // machine and (if we currently own it) releases it, so the topic's next
+          // routed message re-places onto the pinned machine via the already-wired
+          // placeAndClaim → spawnOnMachine → owner-side onAccepted resume path.
+          // Inert unless the rollout stage is past 'dark' (gated at the call site).
+          const nickMod = await import('../core/NicknameCommand.js');
+          const transferMod = await import('../core/TransferByNickname.js');
+          const pinMod = await import('../core/TopicPlacementPinStore.js');
+          _topicPinStore = new pinMod.TopicPlacementPinStore({
+            filePath: path.join(config.stateDir, 'session-pool', 'topic-pins.json'),
+          });
+          _tryNicknameRelocation = async (topicId, text) => {
+            const sessionKey = String(topicId);
+            const caps = machinePoolRegistry?.getCapacities() ?? [];
+            const nickToMachine = new Map<string, string>();
+            for (const c of caps) if (c.nickname) nickToMachine.set(c.nickname.toLowerCase(), c.machineId);
+            const knownNicknames = caps.map((c) => c.nickname).filter((n): n is string => !!n);
+            const cmd = nickMod.recognizeNicknameCommand(text, knownNicknames);
+            if (!cmd) return { handled: false };
+            const plan = transferMod.planTransferByNickname(
+              cmd,
+              {
+                resolveNickname: (n) => nickToMachine.get(n.toLowerCase()) ?? null,
+                validNicknames: () => knownNicknames,
+                isOnline: (m) => machinePoolRegistry?.getCapacity(m)?.online ?? false,
+                currentOwnerOf: (sk) => ownReg.ownerOf(sk),
+                isMidReply: () => false, // best-effort; the pin takes effect on the next routed message
+                lastPlacementUpdateAt: (sk) => _topicPinStore?.lastUpdatedAtMs(sk) ?? null,
+                now: () => Date.now(),
+              },
+              sessionKey,
+            );
+            if (plan.action === 'transfer' || plan.action === 'noop') {
+              const target = plan.targetMachine!;
+              _topicPinStore!.set(sessionKey, target, plan.setPin ?? true);
+              // If THIS machine actively owns the topic, release so the next message re-places to the pin.
+              try {
+                if (ownReg.ownerOf(sessionKey) === meshSelfId) {
+                  ownReg.cas({ type: 'release', machineId: meshSelfId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:rel:${sessionKey}:${Math.round(performance.now())}` });
+                }
+              } catch { /* best-effort; route() re-places regardless once the owner is cleared */ }
+              await telegram?.sendToTopic(topicId, plan.action === 'noop'
+                ? `This conversation is already pinned to ${cmd.nickname} — it'll keep running there.`
+                : `Moving this conversation to ${cmd.nickname} — it'll pick up there on your next message.`).catch(() => {});
+              console.log(pc.green(`  [session-pool] topic ${topicId} pinned to ${target} (${plan.action}) via "${cmd.matchedVerb}"`));
+              return { handled: true };
+            }
+            if (plan.action === 'confirm-required') {
+              await telegram?.sendToTopic(topicId, plan.confirmationPrompt ?? `That machine isn't reachable right now — say "yes, move it" to confirm.`).catch(() => {});
+              return { handled: true };
+            }
+            // reject
+            const validList = (plan.validNicknames ?? []).join(', ');
+            await telegram?.sendToTopic(topicId, plan.rejectReason === 'unknown-machine-nickname'
+              ? `I don't know a machine called "${plan.detail}". I can move this to: ${validList || '(no other machines available)'}.`
+              : `I can't move this right now (${plan.rejectReason}).`).catch(() => {});
+            return { handled: true };
+          };
         } catch (err) {
           console.log(pc.dim(`  [session-router] not wired: ${err instanceof Error ? err.message : String(err)}`));
         }

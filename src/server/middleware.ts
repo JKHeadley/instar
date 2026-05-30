@@ -120,6 +120,20 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       return;
     }
 
+    // /mesh/rpc is the §L0 Multi-Machine Session Pool machine-to-machine command
+    // transport. It is authed by the signed, recipient-bound MeshEnvelope (Ed25519
+    // verify → RBAC → nonce-burn in the dispatcher), NOT the API bearer token — a
+    // shared bearer token cannot work cross-machine, since each install holds its
+    // own authToken. So it is exempt from the bearer gate here; the dispatcher in
+    // the route handler rejects any envelope that fails verification. WITHOUT this
+    // exemption every cross-machine MeshRpc call (capacity/session-status,
+    // deliverMessage, place/claim/transfer) 401s before the envelope is ever
+    // checked — i.e. the entire pool is non-functional over the wire.
+    if (req.path === '/mesh/rpc') {
+      next();
+      return;
+    }
+
     // Threadline protocol endpoints use their own auth (relay tokens + Ed25519 signatures).
     // Handshake and health endpoints are unauthenticated by design.
     // Authenticated threadline endpoints enforce Threadline-Relay auth in route handlers.
