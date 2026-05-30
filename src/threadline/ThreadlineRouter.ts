@@ -592,6 +592,28 @@ export class ThreadlineRouter {
   }
 
   /**
+   * Notify the router that a bound worker session has completed.
+   * Reverse-maps the tmux session to all active thread entries and demotes only
+   * threads that are no longer legitimately waiting on the remote peer.
+   */
+  onSessionComplete(sessionName: string, uuid?: string): { demoted: number; skippedAwaitingReply: number } {
+    const matches = this.threadResumeMap.getBySessionName(sessionName);
+    let demoted = 0;
+    let skippedAwaitingReply = 0;
+
+    for (const match of matches) {
+      if (match.conversationState === 'awaiting-reply') {
+        skippedAwaitingReply += 1;
+        continue;
+      }
+      this.onSessionEnd(match.threadId, uuid || match.entry.uuid, sessionName);
+      demoted += 1;
+    }
+
+    return { demoted, skippedAwaitingReply };
+  }
+
+  /**
    * Notify the router that a thread has been resolved (conversation complete).
    *
    * Emits a `thread-closed` ledger event wrapped in try/finally so the ledger
