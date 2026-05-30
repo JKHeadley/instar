@@ -9434,12 +9434,13 @@ export function createRoutes(ctx: RouteContext): Router {
             // Build Drop Zone URL (tunnel if available, otherwise localhost)
             let dzUrl = `http://localhost:${ctx.config.port}/dashboard?tab=dropzone`;
             if (ctx.tunnel) {
+              // @silent-fallback-ok — tunnel.url access best-effort; fall through to the localhost URL.
               try {
                 const tunnelUrl = ctx.tunnel.url;
                 if (tunnelUrl) {
                   dzUrl = `${tunnelUrl}/dashboard?tab=dropzone`;
                 }
-              } catch {}
+              } catch { /* @silent-fallback-ok */ }
             }
             // Inject a system hint after a short delay so it arrives after the message
             setTimeout(() => {

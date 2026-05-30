@@ -351,12 +351,14 @@ export class PasteManager {
         const meta = this.readPasteMeta(filePath);
         if (!meta) {
           // Corrupt file — remove
-          try { SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/paste/PasteManager.ts:355' }); cleaned++; } catch {}
+          // @silent-fallback-ok — cleanup is best-effort; periodic re-run will retry.
+          try { SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/paste/PasteManager.ts:355' }); cleaned++; } catch { /* @silent-fallback-ok */ }
           continue;
         }
 
         if (new Date(meta.expiresAt) < new Date()) {
-          try { SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/paste/PasteManager.ts:361' }); cleaned++; } catch {}
+          // @silent-fallback-ok — cleanup is best-effort; periodic re-run will retry.
+          try { SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/paste/PasteManager.ts:361' }); cleaned++; } catch { /* @silent-fallback-ok */ }
         }
       }
 
@@ -364,13 +366,14 @@ export class PasteManager {
       const tmpFiles = fs.readdirSync(this.pasteDir).filter(f => f.endsWith('.tmp'));
       for (const tmp of tmpFiles) {
         const tmpPath = path.join(this.pasteDir, tmp);
+        // @silent-fallback-ok — stat/unlink best-effort; missing file is fine.
         try {
           const stat = fs.statSync(tmpPath);
           if (Date.now() - stat.mtimeMs > 60 * 60 * 1000) {
             SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/paste/PasteManager.ts:373' });
             cleaned++;
           }
-        } catch {}
+        } catch { /* @silent-fallback-ok */ }
       }
 
       // Rebuild pending index from directory state
@@ -390,13 +393,15 @@ export class PasteManager {
       const files = fs.readdirSync(this.pasteDir);
       let total = 0;
       for (const file of files) {
+        // @silent-fallback-ok — directory-size accumulator; missing-file race is benign.
         try {
           const stat = fs.statSync(path.join(this.pasteDir, file));
           total += stat.size;
-        } catch {}
+        } catch { /* @silent-fallback-ok */ }
       }
       return total;
     } catch {
+      // @silent-fallback-ok — paste dir missing → size 0 is the natural default.
       return 0;
     }
   }
@@ -543,11 +548,12 @@ export class PasteManager {
 
   private readPendingIndex(): PendingPastesIndex {
     const indexPath = path.join(this.stateDir, 'pending-pastes.json');
+    // @silent-fallback-ok — missing/corrupt index → empty pending list; rebuilt on next write.
     try {
       if (fs.existsSync(indexPath)) {
         return JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
       }
-    } catch {}
+    } catch { /* @silent-fallback-ok */ }
     return { version: 1, pending: [] };
   }
 
@@ -624,9 +630,10 @@ export class PasteManager {
       timestamp: new Date().toISOString(),
       ...data,
     };
+    // @silent-fallback-ok — audit-log append best-effort; losing one line is preferable to throwing inside an audit helper.
     try {
       fs.appendFileSync(auditPath, JSON.stringify(entry) + '\n');
-    } catch {}
+    } catch { /* @silent-fallback-ok */ }
   }
 }
 

@@ -1,7 +1,7 @@
 ---
 review-convergence: complete
 approved: true
-approved-by: justin (verbal, topic 2169: "Please proceed as you best to see fit" — my judgment-call to ship lever E next per the post-mortem ordering I proposed)
+approved-by: justin (verbal, topic 2169: "Please proceed as you best to see fit" — my judgment-call to ship lever D next per the post-mortem ordering I proposed)
 ---
 
 # Upgrade Guide — vNEXT
@@ -10,53 +10,55 @@ approved-by: justin (verbal, topic 2169: "Please proceed as you best to see fit"
 
 ## What Changed
 
-**Pipeline post-mortem lever E: `dangerous-command-guard.sh` now refuses
-`gh pr merge` when any PR check is non-passing.**
+**Pipeline post-mortem lever D: a new unit lint refuses bare `catch {}`
+blocks unless they carry the `@silent-fallback-ok` annotation.**
 
-Closes the 2026-05-27 PR #539 watch-exit-merge class — `gh run watch`
-returns exit 0 on workflow completion regardless of conclusion, which
-caused PR #539 to merge with red unit-test shards (cost a fix-forward
-#540 + a ~16h fleet outage on instar-codey when the ABI-heal regression
-hit production). The memory entry afterward
-(`[feedback_never_merge_on_watch_exit_verify_checks]`) tried to prevent
-recurrence via convention; this PR replaces that convention with a
-structural gate.
+Closes the post-mortem's pattern #4 — "silent failure caught only by
+user." Worst recent instance: the **PromptGate $452 incident**, a bare
+`catch {}` in a 5-second hot-path detection loop that swallowed every
+rate-limit failure for hours, bypassing both QuotaTracker and LlmQueue
+spend guards. By the time it surfaced, $452 was gone.
 
-The gate runs `gh pr checks <PR> --json name,state` before allowing the
-merge and refuses if any check is in `FAILURE`, `PENDING`, `QUEUED`, or
-similar non-passing state. `SKIPPED` / `SKIPPING` (e.g. Contract Tests
-on non-tagged PRs) are explicitly OK. `gh pr merge --auto` — the
-documented async safe path — is allowed through unchanged.
+The seven existing offenders on main are annotated in this same PR
+(five in `src/paste/PasteManager.ts` for unlink/stat cleanup, one each
+for the pending-index reader, the audit-log append, and the tunnel-URL
+fallback in `routes.ts`). Each annotation documents WHY the silent
+swallow is safe. The ratchet baseline starts at zero so every future
+bare catch must be annotated or have a real body before commit.
 
-Pattern matching is bounded to command-start boundaries so commands that
-merely mention `gh pr merge` in a string literal (`echo "fix gh pr merge
-bug"`) do not trigger.
+This lint is COMPLEMENTARY to the existing `no-silent-fallbacks.test.ts`
+(which catches catches that produce a degraded value: `return null`
+etc.). This new lint catches the shape THAT one misses: catches that
+produce no value, no log, no nothing.
+
+This is the last of the small post-mortem PRs (lever B —
+real-world-state fixture tests — is bigger and deserves its own
+conversation).
 
 ## What to Tell Your User
 
-Nothing visible in normal operation. The agent now refuses to merge a PR
-while any CI check is failing or pending — even with `--admin`. If you
-want async-merge behavior (auto-fire when all checks pass), use
-`gh pr merge --auto` and the gate will allow it through.
+Nothing visible. If you write new code that tries to ship a bare
+`catch {}` block, the unit suite will fail with a message naming
+PromptGate and the post-mortem context. Fix: either give the catch a
+real body, or add `@silent-fallback-ok` with a one-line rationale.
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
-| `gh pr merge` refused when any check is non-passing | Automatic. The Bash PreToolUse hook intercepts the command, runs `gh pr checks`, and blocks if anything is FAILURE / PENDING / QUEUED. |
-| `gh pr merge --auto` allowed through | Use it as the safe async gate. Only fires when checks pass. Documented behavior of `gh` itself. |
-| `--admin` does not bypass | The #539 incident shape itself: `gh pr merge --admin <num>` with red checks now blocks. |
+| Bare `catch {}` blocks are refused at commit time | Automatic. Add `// @silent-fallback-ok — <why>` on the line above the catch, or `catch { /* @silent-fallback-ok */ }` inside the braces. |
+| Annotated existing offenders documented | The 7 sites (PasteManager, routes.ts) carry `@silent-fallback-ok` with rationale per site. |
+| Focused PromptGate.ts regression check | Zero-tolerance assertion on the file that gave the post-mortem its poster-child incident — it can never silently regress. |
 
 ## Evidence
 
-- 10 new unit tests covering both writers (init.ts + PostUpdateMigrator)
-  for content, plus eight runtime-behavior tests that spawn the rendered
-  hook with a mocked `gh` binary on PATH (BLOCK on FAILURE, BLOCK on
-  PENDING, ALLOW on SUCCESS, ALLOW on SKIPPED, ALLOW on `--auto`, IGNORE
-  non-`gh pr merge` commands, BLOCK on `--admin` with red checks, BLOCK
-  on no-PR-number with red current-branch PR).
-- Migration-parity test from PR #545 still green — the new gate landed in
-  BOTH writers in lockstep.
+- 4 new unit tests (files-to-analyze sanity, ratchet baseline, PromptGate
+  zero-tolerance, annotation-parser sanity). Verified positive (passes
+  on current code) and destructive-negative (adding an unannotated bare
+  catch fails the ratchet with a message naming the post-mortem).
 - `tsc --noEmit` clean.
+- 7 offenders annotated in-PR — `PasteManager.ts` (×5 cleanup, ×1
+  pending-index read, ×1 audit-log append) and `server/routes.ts` (×1
+  tunnel-url fallback). No functional changes; only annotations.
 - Side-effects review:
-  `upgrades/side-effects/dangerous-command-guard-gh-pr-merge-gate.md`.
+  `upgrades/side-effects/no-empty-catch-blocks-lint.md`.

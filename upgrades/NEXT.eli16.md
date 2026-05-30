@@ -2,67 +2,78 @@
 
 ## What this change is
 
-Yesterday Justin merged a pull request (PR #539) on the back of a
-GitHub CLI command exit code that looked successful. The catch: that
-command (`gh run watch`) returns "success" when the workflow is FINISHED,
-regardless of whether the tests passed or failed. The workflow had
-finished with red unit-test shards. The merge went through anyway. We
-spent the next 16 hours dealing with the resulting fleet outage and
-shipped a follow-up PR (#540) to fix the damage.
+In JavaScript/TypeScript, you can write `try { ... } catch {}` — a block
+that says "do this, and if anything goes wrong, throw the error away
+and continue silently." It's three characters of body and zero
+explanation, and it's a really cheap shortcut that almost always means
+"I don't want to think about this right now."
 
-We wrote a memory note afterward saying "don't merge on watch exit;
-verify with `gh pr checks` first." That's a willpower fix — it works
-until the next time someone forgets, which will happen.
+The problem: when an error gets thrown away silently, you don't find
+out about it from a stack trace or a log line. You find out about it
+when something downstream breaks, often hours later, often from a user.
 
-This PR replaces the willpower fix with a structural one: the agent's
-dangerous-command-guard hook now intercepts any `gh pr merge` command,
-queries the PR's check status via `gh pr checks`, and refuses to run
-the merge if anything is failing or pending. The agent literally
-cannot run a bad merge command from the Bash tool — the hook blocks
-it.
+The worst recent example was the **PromptGate $452 incident**. There
+was a 5-second loop checking whether the LLM had hit its rate limit.
+Inside that loop, a bare `catch {}` was swallowing every actual
+rate-limit error. The loop kept burning credits at full speed —
+hundreds of times per minute, sometimes for hours — because nothing
+ever surfaced the problem. By the time someone noticed, we'd burned
+$452 we shouldn't have.
+
+This PR adds a unit-test lint that refuses any bare `catch {}` in
+production code (`src/**/*.ts`, excluding tests and code-generation
+hosts) unless it carries a comment annotation explaining WHY the
+silent swallow is safe.
 
 ## What already exists
 
-- `dangerous-command-guard.sh` — a PreToolUse hook on Bash that already
-  refuses catastrophic commands (`rm -rf /`, `mkfs.`, etc.) and risky
-  commands (`git push --force`, etc.) under safety.level 1.
-- `gh pr checks` — the CLI command that returns the live state of all
-  branch-protection checks on a PR.
+- An older lint called `no-silent-fallbacks.test.ts` that catches a
+  related pattern: catches that return a degraded value (`return
+  null`, `return []`, etc.).
+- The `@silent-fallback-ok` comment annotation, already used in
+  several places (`TrustRecovery.ts`, `SyncOrchestrator.ts`, etc.).
+- `DegradationReporter` for emitting properly-tracked degradation
+  signals.
 
 ## What's new
 
-- A new block in `dangerous-command-guard.sh` that fires when
-  `gh pr merge` is detected at a command boundary.
-- The block calls `gh pr checks <num> --json name,state` and refuses
-  the merge if any state is `FAILURE`, `PENDING`, `QUEUED`, or similar.
-- `SUCCESS`, `SKIPPED`, and `SKIPPING` are explicitly OK — those are
-  the intentional pass / intentional-skip states.
-- `gh pr merge --auto` (the documented async safe path) is allowed
-  through unchanged. That command only fires when checks pass; it's
-  the right way to do an "I'm done, merge when ready" workflow.
-- 10 unit tests, including realistic scenarios — the actual hook is
-  spawned with a mocked `gh` binary on PATH so the behavior is
-  end-to-end tested, not just static-analyzed.
+- A new lint test `tests/unit/no-empty-catch-blocks.test.ts` that
+  scans for truly empty `catch{}` blocks and fails on any new ones.
+- The seven existing bare `catch{}` sites are annotated in this same
+  PR — five in `src/paste/PasteManager.ts` (file cleanup that's
+  genuinely safe to silently fail) and three elsewhere. Each carries
+  a one-line rationale.
+- A focused regression check on `src/core/PromptGate.ts` — the file
+  that gave the post-mortem its poster-child incident. It can never
+  silently regress.
+- The lint's ratchet baseline starts at zero. New bare `catch{}` in
+  unannotated form fails the unit suite at commit time.
 
 ## What you need to decide
 
-Nothing. Pure structural enforcement. Existing agents get the new gate
-on the next auto-update tick (every ~30 min).
+Nothing. Lint-only. No runtime change, no config, no fleet migration.
 
 ## How to verify it worked after deploy
 
-In Bash, try to invoke `gh pr merge <num>` against a PR that has any
-pending or failing check. The agent will see a BLOCKED message in
-stderr with the list of non-passing checks. Try the same command with
-`--auto` appended — it goes through cleanly (because `--auto` is the
-documented safe path).
+Try writing a function with a bare `catch{}` in `src/`. Stage it. The
+pre-commit gate's test step will fail with a clear message naming
+PromptGate and the post-mortem. Fix: add `// @silent-fallback-ok —
+<why>` above the catch, OR put a real body inside it.
 
 ## Why this matters more than it might look
 
-This is the third post-mortem fix landing today (after #545 and #550).
-Each one closes a class — not just one incident. The PR #539 class is
-arguably the most embarrassing of the three, because the human
-component of the loop (the agent or a human picking the merge command)
-had been advised to verify checks first and didn't — willpower failed.
-Structural enforcement closes that loop. The agent will not be ABLE
-to merge a red PR from Bash, even on autopilot, even with `--admin`.
+This is the fifth post-mortem PR landing in roughly four hours. Each
+one closes a recurring bug class, not just one incident:
+
+- #542 — silent-403 on secret-externalization (config-reader didn't
+  survive the security upgrade).
+- #545 — failure-learning loop wiring + migration-parity tests.
+- #550 — failure-learning git reads opt into the source-tree read
+  escape hatch.
+- #551 — `gh pr merge` refused on red checks (the watch-exit-merge
+  class).
+- THIS — bare `catch {}` refused in production paths.
+
+Each of these patterns has cost real time + real money. Closing them
+at the structural level (a lint, a test, a hook) is much cheaper than
+relying on "we'll be careful next time."
