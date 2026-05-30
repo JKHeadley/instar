@@ -221,6 +221,17 @@ export class ThreadResumeMap {
       }));
   }
 
+  /** Reverse lookup live conversation entries by their bound SessionManager UUID. */
+  getBySessionUuid(uuid: string): ThreadResumeSessionMatch[] {
+    return this.store.listActive()
+      .filter(c => c.sessionUuid === uuid)
+      .map(c => ({
+        threadId: c.threadId,
+        entry: conversationToEntry(c),
+        conversationState: c.state,
+      }));
+  }
+
   /** Archive stale non-pinned active/idle/open conversations. */
   retireInactive(maxInactiveMs: number = DEFAULT_INACTIVE_RETIRE_MS, now: Date = new Date()): number {
     return this.store.retireInactive(maxInactiveMs, now);

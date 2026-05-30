@@ -91,4 +91,5 @@ Initial concern: `getBySessionName()` called `retireInactive()` before filtering
 - `npx vitest run tests/unit/threadline/ThreadlineRouter.test.ts` — 36/36 passed.
 - `npx vitest run tests/unit/threadline/ThreadResumeMap.test.ts` — 41/41 passed.
 - `npm test -- tests/unit/threadline/ThreadlineRouter.test.ts tests/unit/threadline/ThreadResumeMap.test.ts` — 77/77 passed after merging `v1.3.118` main into the PR branch and preparing `v1.3.119` release metadata.
+- `npm test -- tests/unit/threadline/ThreadlineRouter.test.ts tests/unit/threadline/ThreadResumeMap.test.ts` — 78/78 passed after adding SessionManager UUID fallback coverage for the real inbound Threadline binding shape.
 - `npm run build` — passed; local signing key absent, lockfile signing skipped as documented transitional state.

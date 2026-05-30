@@ -708,6 +708,28 @@ describe('ThreadlineRouter', () => {
       expect(data[threadId2].sessionUuid).toBe(newUuid);
     });
 
+    it('demotes an active thread when completion matches the SessionManager UUID but not the bound session name', () => {
+      const threadId = crypto.randomUUID();
+      const sessionManagerUuid = 'sessionmgr-2222-3333-4444-555555555555';
+      createFakeJsonl(sessionManagerUuid);
+
+      threadResumeMap.save(threadId, makeEntry({
+        uuid: sessionManagerUuid,
+        state: 'active',
+        sessionName: 'thread-short-name',
+      }));
+
+      expect(router.onSessionComplete('instar-codey-msg-spawn-1234567890', sessionManagerUuid)).toEqual({
+        demoted: 1,
+        skippedAwaitingReply: 0,
+      });
+
+      const data = JSON.parse(fs.readFileSync(path.join(temp.stateDir, 'threadline', 'conversations.json'), 'utf-8')).conversations;
+      expect(data[threadId].state).toBe('idle');
+      expect(data[threadId].sessionUuid).toBe(sessionManagerUuid);
+      expect(data[threadId].boundSessionName).toBe('instar-codey-msg-spawn-1234567890');
+    });
+
     it('does not demote awaiting-reply threads when their session completes', () => {
       const threadId = crypto.randomUUID();
       const oldUuid = existingUuid;

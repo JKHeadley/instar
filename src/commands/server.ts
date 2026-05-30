@@ -7431,7 +7431,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('sessionComplete', (session: import('../core/types.js').Session) => {
       const sessionName = session.tmuxSession || session.name;
       if (!sessionName) return;
-      const result = threadlineRouter.onSessionComplete(sessionName, session.claudeSessionId);
+      const result = threadlineRouter.onSessionComplete(sessionName, session.id || session.claudeSessionId);
       if (result.demoted > 0 || result.skippedAwaitingReply > 0) {
         console.log(
           `[ThreadlineRouter] sessionComplete ${sessionName}: demoted ${result.demoted} thread(s), skipped ${result.skippedAwaitingReply} awaiting-reply thread(s)`,

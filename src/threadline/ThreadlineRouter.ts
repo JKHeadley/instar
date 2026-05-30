@@ -597,11 +597,19 @@ export class ThreadlineRouter {
    * threads that are no longer legitimately waiting on the remote peer.
    */
   onSessionComplete(sessionName: string, uuid?: string): { demoted: number; skippedAwaitingReply: number } {
-    const matches = this.threadResumeMap.getBySessionName(sessionName);
+    const matchesByThreadId = new Map(
+      this.threadResumeMap.getBySessionName(sessionName)
+        .map(match => [match.threadId, match]),
+    );
+    if (uuid) {
+      for (const match of this.threadResumeMap.getBySessionUuid(uuid)) {
+        matchesByThreadId.set(match.threadId, match);
+      }
+    }
     let demoted = 0;
     let skippedAwaitingReply = 0;
 
-    for (const match of matches) {
+    for (const match of matchesByThreadId.values()) {
       if (match.conversationState === 'awaiting-reply') {
         skippedAwaitingReply += 1;
         continue;
