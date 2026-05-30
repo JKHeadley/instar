@@ -2,78 +2,87 @@
 
 ## What this change is
 
-In JavaScript/TypeScript, you can write `try { ... } catch {}` — a block
-that says "do this, and if anything goes wrong, throw the error away
-and continue silently." It's three characters of body and zero
-explanation, and it's a really cheap shortcut that almost always means
-"I don't want to think about this right now."
+The post-mortem this morning named five recurring bug classes. Four of
+the five PRs landed today (#542, #545, #550, #551, #552) each closed
+one specific incident — silent 403s, missing wiring, watch-exit
+merges, bare catches. This is the fifth and final post-mortem PR, and
+it closes the broader pattern that produced them:
 
-The problem: when an error gets thrown away silently, you don't find
-out about it from a stack trace or a log line. You find out about it
-when something downstream breaks, often hours later, often from a user.
+**Tested on fresh state, not real-world state.**
 
-The worst recent example was the **PromptGate $452 incident**. There
-was a 5-second loop checking whether the LLM had hit its rate limit.
-Inside that loop, a bare `catch {}` was swallowing every actual
-rate-limit error. The loop kept burning credits at full speed —
-hundreds of times per minute, sometimes for hours — because nothing
-ever surfaced the problem. By the time someone noticed, we'd burned
-$452 we shouldn't have.
+That class is the one where the test suite passes because it uses
+small, fresh, just-created fixtures, but the actual deployed agent has
+a 202MB token-ledger.db / an externalized secret config / a
+wrong-ABI binary / 8 concurrent jobs — and the boot path breaks in
+production despite tests being green. Every fix-shape PR I named in
+the post-mortem analysis had at least one test that PASSED on fresh
+state and would have FAILED on real state.
 
-This PR adds a unit-test lint that refuses any bare `catch {}` in
-production code (`src/**/*.ts`, excluding tests and code-generation
-hosts) unless it carries a comment annotation explaining WHY the
-silent swallow is safe.
+This PR adds a new test category called `tests/real-world-state/`
+specifically for that class. It sits alongside `unit/`,
+`integration/`, and `e2e/` as a peer.
 
 ## What already exists
 
-- An older lint called `no-silent-fallbacks.test.ts` that catches a
-  related pattern: catches that return a degraded value (`return
-  null`, `return []`, etc.).
-- The `@silent-fallback-ok` comment annotation, already used in
-  several places (`TrustRecovery.ts`, `SyncOrchestrator.ts`, etc.).
-- `DegradationReporter` for emitting properly-tracked degradation
-  signals.
+- The three existing test categories. None of them load real-shaped
+  state — they all use small fresh fixtures (`tests/fixtures/`).
+- Some adjacent code that COULD be tested at real-world state (the
+  SecretMigrator + SecretStore have unit tests but their merge layer
+  was never exercised end-to-end against the externalized shape until
+  this PR).
 
 ## What's new
 
-- A new lint test `tests/unit/no-empty-catch-blocks.test.ts` that
-  scans for truly empty `catch{}` blocks and fails on any new ones.
-- The seven existing bare `catch{}` sites are annotated in this same
-  PR — five in `src/paste/PasteManager.ts` (file cleanup that's
-  genuinely safe to silently fail) and three elsewhere. Each carries
-  a one-line rationale.
-- A focused regression check on `src/core/PromptGate.ts` — the file
-  that gave the post-mortem its poster-child incident. It can never
-  silently regress.
-- The lint's ratchet baseline starts at zero. New bare `catch{}` in
-  unannotated form fails the unit suite at commit time.
+- A new directory `tests/real-world-state/`.
+- A small framework helper (`_framework.ts`) with two things:
+  - A two-tier system. Small/fast fixtures run on every PR. Big/slow
+    fixtures (multi-100MB DBs, concurrency at scale) are gated on
+    `INSTAR_REAL_WORLD_BIG=1` env, default off, so CI cost stays
+    bounded.
+  - A `makeAgentFixture()` helper that gives each test a real-shape
+    on-disk agent home (`projectDir` + `.instar/`) for setting up the
+    scenario.
+- The first scenario: `externalized-config-boot.test.ts`. Five tests
+  that target the #542 incident class — making sure `loadConfig()`
+  correctly merges the real authToken back from the secret store when
+  the on-disk config holds the placeholder. This is the in-process
+  Node side of the bug; the existing PR #542 tests cover only the
+  shell-script side.
+- Vitest config updated to include the new directory.
 
 ## What you need to decide
 
-Nothing. Lint-only. No runtime change, no config, no fleet migration.
+Nothing. Test-only change. No runtime code modified. CI cost negligible
+(the PR-tier fixture is tiny; nightly tier is opt-in).
 
 ## How to verify it worked after deploy
 
-Try writing a function with a bare `catch{}` in `src/`. Stage it. The
-pre-commit gate's test step will fail with a clear message naming
-PromptGate and the post-mortem. Fix: add `// @silent-fallback-ok —
-<why>` above the catch, OR put a real body inside it.
+In CI, the new tests will appear in the unit-shard results as
+`[real-world-state:pr] externalized-config-boot — ...`. The
+`[real-world-state:nightly]` blocks (when added in future PRs) will
+appear as "skipped (set INSTAR_REAL_WORLD_BIG=1 to run)".
+
+Locally: `npm test` runs the PR tier. `INSTAR_REAL_WORLD_BIG=1 npm test`
+runs everything.
 
 ## Why this matters more than it might look
 
-This is the fifth post-mortem PR landing in roughly four hours. Each
-one closes a recurring bug class, not just one incident:
+This is the framework for catching the broader class. Future PRs will
+add scenarios that target the other patterns I named in the
+post-mortem:
 
-- #542 — silent-403 on secret-externalization (config-reader didn't
-  survive the security upgrade).
-- #545 — failure-learning loop wiring + migration-parity tests.
-- #550 — failure-learning git reads opt into the source-tree read
-  escape hatch.
-- #551 — `gh pr merge` refused on red checks (the watch-exit-merge
-  class).
-- THIS — bare `catch {}` refused in production paths.
+- Multi-100MB token-ledger.db boot (catches the #534 class).
+- Wrong-ABI better-sqlite3 binary swap (catches #539).
+- Concurrent-job restart-during-tick (catches the class behind
+  several silent-stop incidents).
 
-Each of these patterns has cost real time + real money. Closing them
-at the structural level (a lint, a test, a hook) is much cheaper than
-relying on "we'll be careful next time."
+Each future scenario follows the same `describeAtTier(...)` shape as
+the first one. Adding the next one is small (~30 minutes of test
+writing); designing the framework was the hard part and it's done.
+
+This is the LAST recommended fix from the post-mortem. Six PRs in <7
+hours total. The fix-rate of 19% over the last 14 days won't drop
+overnight, but each of these closes a class structurally — which means
+the rate drops the next time someone tries to ship one of those
+patterns again, not because they remember to be careful but because
+the lint or the test or the gate refuses to let them.

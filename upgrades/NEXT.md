@@ -1,27 +1,46 @@
+---
+review-convergence: complete
+approved: true
+approved-by: justin (verbal, topic 2169: "Yes, I agree. Please proceed." for the real-world-state fixture framework; AND topic 16566, 2026-05-30: directed the settled-throttle detection fix — "make sure a session can't hang forever due to these API errors ... maybe we should consider sending a message to the user in the meantime")
+---
+
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
 
 ## What Changed
 
-**1. The mentor autonomous-fix loop now spawns its per-cycle session with NO
-project MCP servers — fixing a headless boot-hang found by dogfooding the loop
-live.**
+**1. Pipeline post-mortem lever B: a new test category for real-world-state
+scenarios.** Closes the broader pattern #1 from the 2026-05-29 post-mortem
+— "Tested on fresh state, not real-world state" — which was the largest
+of the five named bug classes (PRs #534, #512, #509, #501, #503, #542
+all instances).
 
-The loop (shipped dark in v1.3.109) starts a full-tool Opus session each cycle. A
-headless `claude -p` spawn inherits the project `.mcp.json`, which includes
-interactively-authenticated remote MCP servers (Fathom's `mcp-remote`, the
-claude.ai connectors). Those can't complete their OAuth handshake headless, so
-the session hung on MCP boot — observed live at ~4.5 min, 0.1% CPU, no transcript,
-parked event loop — and never ran its cycle. The spawn was otherwise correct
-(opus, full tools, the real goal); only MCP-loading jammed it.
+`tests/real-world-state/` joins `unit/`, `integration/`, and `e2e/` as a
+peer test category. Scenarios in it exercise instar against state that
+LOOKS LIKE a real production agent (externalized secrets, multi-100MB
+DBs, wrong-ABI binaries, concurrent state, etc.) rather than the small
+fresh-fixture state the existing suites use.
 
-The loop session now spawns with `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`
-(zero MCP servers). It needs none — it drives the mentee over Telegram and ships
-fixes with built-in tools. A headless spawn that stalled now boots in ~9s. The
-flag is opt-in (`spawnSession({ disableProjectMcp: true })`); every other spawn
-keeps its MCP. The `--allowedTools` and new MCP-disable splices are unified in one
-tested pure helper (`claudeHeadlessExtraFlags`).
+A two-tier system controls CI cost:
+
+- **'pr' tier** runs every CI shard. Small fixtures, < 30s setup.
+- **'nightly' tier** is gated on `INSTAR_REAL_WORLD_BIG=1` env. Default
+  OFF. For multi-100MB DBs, wrong-ABI binary swaps, concurrency-at-scale
+  scenarios. The skip is loud (`describe.skip` with a clear message) so
+  the coverage gap is visible, not silently absent.
+
+The first scenario — `externalized-config-boot` — targets the #542
+incident class. It asserts that `loadConfig()` (the canonical
+production read path) merges the real `authToken` string back from the
+secret store when the on-disk config holds `{ "secret": true }`, plus
+the same for telegram token/chatId, dashboard PIN, and tunnel token.
+5 tests; verified positive AND destructive-negative (disabling the
+merge call trips 4 of the 5 with the failure modes the bug produced).
+
+This is the LAST recommended post-mortem lever. PR #542 (silent-403)
+through #552 (bare-catch ban) closed individual incident classes; THIS
+one closes the broader pattern that produced them.
 
 **2. Throttled sessions can no longer hang forever on a 429 — the RateLimitSentinel
 now actually fires.** The sentinel that's supposed to ride out Anthropic's
@@ -57,12 +76,9 @@ written to `logs/sentinel-events.jsonl`. Tuned by
 
 ## What to Tell Your User
 
-First, only relevant if you run the (off-by-default) mentor autonomous-fix loop. I
-dogfooded it live and found its background worker session was hanging on startup
-— it was trying to load login-required tools that can't sign in without a human,
-so it froze before doing any work. I fixed it so the loop's worker starts with a
-clean, minimal toolset and boots in seconds instead of hanging. Nothing changes
-for any other session — they keep all their tools.
+First, nothing visible in normal operation from the test-framework change. If you
+want to run the big fixtures locally before pushing, `INSTAR_REAL_WORLD_BIG=1 npm
+test` will enable the nightly tier. The CI default is the PR tier only.
 
 Second, mostly invisible and strictly an improvement: if one of your sessions hits
 Anthropic's temporary server throttle (a "Server is temporarily limiting requests"
@@ -76,25 +92,25 @@ long that takes. Nothing for you to do, no configuration needed.
 
 | Capability | How to Use |
 |-----------|-----------|
-| No-MCP headless spawn option | `spawnSession({ disableProjectMcp: true })` (opt-in; used by the mentor loop) |
-| Mentor loop session boots reliably | Automatic when `mentor.autonomousFix.enabled` — no more MCP boot-hang |
-| Settled-throttle detection | Automatic — the SessionWatchdog recovers a 429-stuck session via a byte-identical-pane signal over a widened scan window, so busy dev sessions are no longer invisible to the RateLimitSentinel |
-| Unbounded throttle retry | Automatic — recovery re-engages after each escalation cycle, guaranteeing a throttled session cannot hang forever |
-| `monitoring.watchdog.rateLimitSettleMs` | Optional tuning for how long a throttled pane must be settled before recovery engages (default 20s) |
+| `tests/real-world-state/` test category | Add a new scenario file there. Use `describeAtTier('pr', …)` or `describeAtTier('nightly', …)`. |
+| Tier-gated execution | 'pr' runs every shard; 'nightly' skips unless `INSTAR_REAL_WORLD_BIG=1`. |
+| `makeAgentFixture()` helper | Per-test scratch dir simulating an agent home (projectDir + .instar/). Returns a cleanup callback. |
+| Externalized-config-boot regression check | `loadConfig()` against the externalized shape is asserted on every PR. #542's class can never regress silently. |
+| Settled-throttle detection | Automatic — the SessionWatchdog recovers a 429-stuck session via a byte-identical-pane signal over a widened scan window, so busy dev sessions are no longer invisible to the RateLimitSentinel. |
+| Unbounded throttle retry | Automatic — recovery re-engages after each escalation cycle, guaranteeing a throttled session cannot hang forever. |
+| `monitoring.watchdog.rateLimitSettleMs` | Optional tuning for how long a throttled pane must be settled before recovery engages (default 20s). |
 
 ## Evidence
 
-**Mentor loop no-MCP (#556):**
-- **Live reproduction (before):** the first real loop session (`mentor-autoloop-…`)
-  spawned as `claude --dangerously-skip-permissions --model opus -p '…'` and sat
-  ~4.5 min at 0.1% CPU, no transcript written, main thread in `_pthread_cond_wait`;
-  child procs `@playwright/mcp` and `mcp-remote …fathom` alive at 0% CPU.
-- **Fix verified (after):** `claude --strict-mcp-config --mcp-config '{"mcpServers":{}}'
-  --model haiku -p '…'` in the same project returned in ~9s with no MCP boot.
-- **Tests:** `tests/unit/claude-headless-extra-flags.test.ts` (6 cases);
-  `tests/e2e/mentor-onboarding-lifecycle.test.ts` (+1).
-- Side-effects: `upgrades/side-effects/loop-session-no-mcp.md`. Spec:
-  `docs/specs/LOOP-SESSION-NO-MCP-SPEC.md`.
+**Real-world-state fixture framework (#555):**
+- 5 new tests in `tests/real-world-state/externalized-config-boot.test.ts`,
+  all green. Tier system verified both directions (sentinel test).
+- Destructive-negative verified: disabling `mergeConfigWithSecrets()` in
+  `Config.ts` trips 4 of the 5 tests with the exact failure modes
+  (`{ secret: true }` returned as authToken, telegram token leaks, etc.).
+- Existing `secret-migrator.test.ts`, `config-secret-merge.test.ts`,
+  `secret-store.test.ts` remain green. `tsc --noEmit` clean.
+- Side-effects: `upgrades/side-effects/real-world-state-fixture-framework.md`.
 
 **Settled-throttle detection:**
 - **Reproduction (unit):** `tests/unit/rate-limit-detection.test.ts` builds the
