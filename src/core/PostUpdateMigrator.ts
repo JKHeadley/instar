@@ -2911,7 +2911,7 @@ If the user reports they were "unresponsive for a while during updates," check \
     // The Failure-Learning Loop only backfilled its sub-tab and left existing
     // agents unaware of the main capability — that gap is not repeated here.
     // Content-sniffed on a distinctive marker for idempotency.
-    if (!content.includes('Preferences I’ve learned about you') && !content.includes("Preferences I've learned about you")) {
+    if (!content.includes('Correction & Preference Learning Sentinel')) {
       const prefsSection = `
 ## Preferences I've learned about you (Correction & Preference Learning Sentinel)
 
@@ -3680,6 +3680,7 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
       '**Process Health (Dashboard Tab)**',
+      "**Preferences I've learned about you**",
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
