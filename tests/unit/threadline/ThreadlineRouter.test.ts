@@ -711,7 +711,6 @@ describe('ThreadlineRouter', () => {
     it('demotes an active thread when completion matches the SessionManager UUID but not the bound session name', () => {
       const threadId = crypto.randomUUID();
       const sessionManagerUuid = 'sessionmgr-2222-3333-4444-555555555555';
-      createFakeJsonl(sessionManagerUuid);
 
       threadResumeMap.save(threadId, makeEntry({
         uuid: sessionManagerUuid,

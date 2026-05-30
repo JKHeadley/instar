@@ -614,7 +614,13 @@ export class ThreadlineRouter {
         skippedAwaitingReply += 1;
         continue;
       }
-      this.onSessionEnd(match.threadId, uuid || match.entry.uuid, sessionName);
+      this.threadResumeMap.save(match.threadId, {
+        ...match.entry,
+        uuid: uuid || match.entry.uuid,
+        sessionName,
+        state: 'idle',
+        lastAccessedAt: new Date().toISOString(),
+      });
       demoted += 1;
     }
 
