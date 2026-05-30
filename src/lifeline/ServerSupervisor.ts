@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { detectTmuxPath } from '../core/Config.js';
 import { SleepWakeDetector } from '../core/SleepWakeDetector.js';
+import { cpuLoadRatio, DEFAULT_MAX_LOAD_RATIO } from '../core/cpuStarvation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 
@@ -223,6 +224,16 @@ export class ServerSupervisor extends EventEmitter {
   private consecutiveBindFailures = 0;
   private readonly bindFailureEscalationThreshold = 2;
   private readonly processAliveThreshold = 6; // When process is alive but unresponsive (e.g., high CPU load), require 6 failures (~60s) before restarting
+  // CPU-starvation restart guard: when the box is so oversubscribed (load >>
+  // cores) that the live server can't answer /health, restarting it does NOT
+  // cure the starvation — the fresh server is starved too, it just drops the
+  // in-flight message and loops (the 2026-05-29 restart-loop incident). So while
+  // CPU-starved we DEFER the restart up to a hard cap, then force it (in case
+  // the server is genuinely hung rather than merely starved). Same load-ratio
+  // signal SleepWakeDetector uses (see core/cpuStarvation).
+  private readonly maxLoadRatio = DEFAULT_MAX_LOAD_RATIO; // loadavg[0]/cpuCount above this = starved
+  private readonly starvationRestartThreshold = 30; // ~5min at 10s checks — force a restart even if starved if unresponsiveness persists this long
+  private readonly loadRatioProvider: () => number; // injectable for tests; default cpuLoadRatio
   private stateDir: string | null;
 
   // Planned restart / maintenance wait — suppress alerts during expected downtime
@@ -268,6 +279,8 @@ export class ServerSupervisor extends EventEmitter {
     maintenanceWaitMinutes?: number;
     /** How long to wait after spawning before starting health checks. Default: 180 seconds (3 minutes). */
     startupGraceSeconds?: number;
+    /** Injectable CPU-load-ratio source (loadavg[0]/cpuCount) for tests. Default: cpuLoadRatio. */
+    loadRatioProvider?: () => number;
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -276,6 +289,7 @@ export class ServerSupervisor extends EventEmitter {
     this.stateDir = options.stateDir ?? null;
     this.tmuxPath = detectTmuxPath();
     this.serverSessionName = `${this.projectName}-server`;
+    this.loadRatioProvider = options.loadRatioProvider ?? (() => cpuLoadRatio());
 
     if (options.maintenanceWaitMinutes !== undefined) {
       this.maintenanceWaitMs = options.maintenanceWaitMinutes * 60_000;
@@ -1145,53 +1159,13 @@ export class ServerSupervisor extends EventEmitter {
         } else {
           this.consecutiveFailures++;
           if (this.consecutiveFailures >= this.unhealthyThreshold) {
-            const processAlive = this.isServerSessionAlive();
-            if (processAlive) {
-              // Server process exists but isn't responding to health checks.
-              // Under high CPU load (or during wake transitions), this is normal —
-              // the event loop is stalled, not the process dead. Use a much higher
-              // threshold to avoid killing a server that would recover on its own.
-              const effectiveThreshold = Date.now() < this.wakeTransitionUntil
-                ? this.unhealthyThreshold  // During wake transition: already lenient via counter reset
-                : this.processAliveThreshold;
-              if (this.consecutiveFailures < effectiveThreshold) {
-                if (this.consecutiveFailures === this.unhealthyThreshold) {
-                  console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
-                }
-              } else {
-                console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
-                this.handleUnhealthy();
-              }
-              if (Date.now() < this.wakeTransitionUntil) {
-                this.consecutiveFailures = 0; // Reset during wake transition as before
-              }
-            } else {
-              this.handleUnhealthy();
-            }
+            this.evaluateUnhealthyServer();
           }
         }
       } catch {
         this.consecutiveFailures++;
         if (this.consecutiveFailures >= this.unhealthyThreshold) {
-          const processAlive = this.isServerSessionAlive();
-          if (processAlive) {
-            const effectiveThreshold = Date.now() < this.wakeTransitionUntil
-              ? this.unhealthyThreshold
-              : this.processAliveThreshold;
-            if (this.consecutiveFailures < effectiveThreshold) {
-              if (this.consecutiveFailures === this.unhealthyThreshold) {
-                console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
-              }
-            } else {
-              console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
-              this.handleUnhealthy();
-            }
-            if (Date.now() < this.wakeTransitionUntil) {
-              this.consecutiveFailures = 0;
-            }
-          } else {
-            this.handleUnhealthy();
-          }
+          this.evaluateUnhealthyServer();
         }
       }
 
@@ -1635,6 +1609,65 @@ export class ServerSupervisor extends EventEmitter {
   }
 
   // ── Unhealthy handling ──────────────────────────────────────────
+
+  /**
+   * Decide what to do about a server that has failed `>= unhealthyThreshold`
+   * consecutive health checks. Shared by the health-check loop's two failure
+   * paths (unhealthy /health response, and a thrown check).
+   *
+   *   - Process dead → restart immediately.
+   *   - Process alive but unresponsive, below the (load-lenient) threshold →
+   *     keep waiting.
+   *   - Process alive, threshold reached, but the box is CPU-starved → DEFER the
+   *     restart (restarting a starved server only drops the in-flight message
+   *     and loops) until starvation eases or the hard cap forces it.
+   *   - Process alive, threshold reached, not starved → restart.
+   */
+  private evaluateUnhealthyServer(): void {
+    if (!this.isServerSessionAlive()) {
+      // Process is genuinely gone — restart immediately.
+      this.handleUnhealthy();
+      return;
+    }
+
+    // Server process exists but isn't responding to health checks. Under high
+    // CPU load (or during wake transitions), this is normal — the event loop is
+    // stalled, not the process dead. Use a much higher threshold to avoid
+    // killing a server that would recover on its own.
+    const inWakeTransition = Date.now() < this.wakeTransitionUntil;
+    const effectiveThreshold = inWakeTransition
+      ? this.unhealthyThreshold  // During wake transition: already lenient via counter reset
+      : this.processAliveThreshold;
+
+    if (this.consecutiveFailures < effectiveThreshold) {
+      if (this.consecutiveFailures === this.unhealthyThreshold) {
+        console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
+      }
+    } else if (this.deferRestartForCpuStarvation()) {
+      // Box is CPU-starved — bouncing the server won't help, it only drops the
+      // in-flight message. Defer; the next healthy tick resets the counter.
+      if (this.consecutiveFailures === effectiveThreshold) {
+        console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND the box is CPU-starved (load ratio ${this.loadRatioProvider().toFixed(2)} > ${this.maxLoadRatio}) — DEFERRING restart; restarting a starved server only drops in-flight messages. Will force-restart at ${this.starvationRestartThreshold} checks (~${this.starvationRestartThreshold * 10}s) if it persists.`);
+      }
+    } else {
+      console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
+      this.handleUnhealthy();
+    }
+
+    if (inWakeTransition) {
+      this.consecutiveFailures = 0; // Reset during wake transition as before
+    }
+  }
+
+  /**
+   * True when we should hold off restarting an alive-but-unresponsive server
+   * because the machine is CPU-starved — but only up to the hard cap. Past the
+   * cap we restart regardless (the server may be genuinely hung, not starved).
+   */
+  private deferRestartForCpuStarvation(): boolean {
+    if (this.consecutiveFailures >= this.starvationRestartThreshold) return false; // hard cap — restart even if starved
+    return this.loadRatioProvider() > this.maxLoadRatio;
+  }
 
   private handleUnhealthy(): void {
     // Circuit breaker — periodic retry instead of permanent death

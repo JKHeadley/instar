@@ -41,6 +41,7 @@ export type CompactionTrigger = 'PreCompact' | 'watchdog-poll' | 'recovery-hook'
 export type CompactionStatus =
   | 'pending-inject'    // state created; first inject dispatched
   | 'verifying'         // inject done, waiting for verify-window to elapse
+  | 'deferring'         // session is actively working; waiting WITHOUT re-injecting
   | 'retrying'          // verification failed, scheduling next attempt
   | 'recovered'         // session produced output → success
   | 'failed';           // max attempts exhausted without recovery
@@ -50,6 +51,8 @@ export interface RecoveryState {
   trigger: CompactionTrigger;
   detectedAt: number;
   attempts: number;
+  /** Times we deferred an inject because the session was actively working. */
+  workingDefers: number;
   lastInjectAt: number;
   baselineJsonlPath: string | null;
   baselineJsonlSize: number | null;
@@ -93,6 +96,19 @@ export interface CompactionSentinelDeps {
    */
   deferIf?: (sessionName: string) => boolean;
 
+  /**
+   * Is the session actively working RIGHT NOW (mid-turn)? When this returns
+   * true the sentinel will NOT inject/re-inject a recovery prompt — it waits
+   * another verify window instead, up to `maxWorkingDefers`. This is the fix
+   * for the false "session is restarting" loop: a long extended-think on a
+   * large context writes nothing to the JSONL until the turn lands, so the
+   * no-growth check used to read it as "stuck" and re-inject, burying the
+   * user's real message under stacked recovery bootstraps. Wired in server.ts
+   * to SessionManager.isSessionActivelyWorking. When undefined, behavior is
+   * unchanged (never defers) — so this is purely additive.
+   */
+  isActivelyWorking?: (sessionName: string) => boolean;
+
   /** Override for Date.now — for tests. */
   now?: () => number;
 
@@ -110,6 +126,14 @@ export interface CompactionSentinelConfig {
   maxInjectAttempts?: number;
   /** Max total time a recovery can block the zombie-killer. */
   recoveryGuardMs?: number;
+  /**
+   * Max consecutive times a recovery may defer an inject because the session
+   * is actively working (mid-turn). Each defer waits one `verifyWindowMs`
+   * WITHOUT re-injecting. Bounds the wait for a session whose "working" footer
+   * is genuinely hung — after the cap, normal inject/retry resumes. Set to 0
+   * to disable deferral entirely (restores pre-fix behavior).
+   */
+  maxWorkingDefers?: number;
 }
 
 const DEFAULTS = {
@@ -117,11 +141,13 @@ const DEFAULTS = {
   verifyWindowMs: 25_000,          // 25s — enough for claude to boot past recovery hook and emit output
   maxInjectAttempts: 3,
   recoveryGuardMs: 10 * 60_000,    // 10 minutes — protection from zombie-killer
+  maxWorkingDefers: 10,            // up to 10×verifyWindowMs (~4min) of "actively working" before forcing an inject
 };
 
 export interface CompactionSentinelEvents {
   'compaction:detected': [RecoveryState];
   'compaction:inject-attempted': [RecoveryState & { accepted: boolean }];
+  'compaction:deferred': [RecoveryState];
   'compaction:recovered': [RecoveryState & { jsonlDelta: number }];
   'compaction:failed': [RecoveryState & { reason: string }];
 }
@@ -143,6 +169,7 @@ export class CompactionSentinel extends EventEmitter {
       verifyWindowMs: config.verifyWindowMs ?? DEFAULTS.verifyWindowMs,
       maxInjectAttempts: config.maxInjectAttempts ?? DEFAULTS.maxInjectAttempts,
       recoveryGuardMs: config.recoveryGuardMs ?? DEFAULTS.recoveryGuardMs,
+      maxWorkingDefers: config.maxWorkingDefers ?? DEFAULTS.maxWorkingDefers,
     };
   }
 
@@ -191,6 +218,7 @@ export class CompactionSentinel extends EventEmitter {
       trigger,
       detectedAt: now,
       attempts: 0,
+      workingDefers: 0,
       lastInjectAt: 0,
       baselineJsonlPath: baseline?.path ?? null,
       baselineJsonlSize: baseline?.size ?? null,
@@ -246,6 +274,12 @@ export class CompactionSentinel extends EventEmitter {
   }
 
   private async attemptInjection(state: RecoveryState): Promise<void> {
+    // Gate: never inject into an actively-working session. Re-injecting a
+    // recovery prompt while Claude is mid-turn buries the user's real message
+    // under stacked recovery bootstraps — the false "session is restarting"
+    // loop. Defer one verify window and re-check, bounded by maxWorkingDefers.
+    if (this.deferForActiveWork(state)) return;
+
     state.attempts += 1;
     state.lastInjectAt = this.now();
     state.status = 'pending-inject';
@@ -271,6 +305,38 @@ export class CompactionSentinel extends EventEmitter {
     }
 
     state.status = 'verifying';
+    this.scheduleVerify(state);
+  }
+
+  /**
+   * If the session is actively working (mid-turn) and we haven't exhausted the
+   * defer budget, record a defer, schedule another verify window WITHOUT
+   * injecting, and return true (the caller must return). Otherwise return false
+   * and let the caller proceed with its normal inject/retry/fail path.
+   *
+   * This is the heart of the busy-session guard: a long extended-think on a
+   * large context emits nothing to the JSONL until the turn lands, so the
+   * no-growth check would otherwise read it as "stuck" and re-inject — burying
+   * the user's real message. Deferring waits it out instead, and the cap means
+   * a genuinely-hung "working" footer still gets a forced inject eventually.
+   */
+  private deferForActiveWork(state: RecoveryState): boolean {
+    if (!this.deps.isActivelyWorking?.(state.sessionName)) return false;
+    if (state.workingDefers >= this.cfg.maxWorkingDefers) return false;
+
+    state.workingDefers += 1;
+    state.status = 'deferring';
+    console.log(
+      `[Sentinel] "${state.sessionName}" actively working — deferring inject ` +
+      `(defer ${state.workingDefers}/${this.cfg.maxWorkingDefers}); NOT re-injecting`,
+    );
+    this.emit('compaction:deferred', { ...state });
+    this.scheduleVerify(state);
+    return true;
+  }
+
+  /** Schedule one verify pass after the verify window. */
+  private scheduleVerify(state: RecoveryState): void {
     const handle = this.setTimer(() => {
       this.verifyRecovery(state).catch(err => {
         console.warn(`[Sentinel] verify threw on "${state.sessionName}":`, err);
@@ -304,7 +370,13 @@ export class CompactionSentinel extends EventEmitter {
       return;
     }
 
-    // No growth — session didn't respond within the window.
+    // No growth — but the session may be mid-turn (a long extended-think that
+    // hasn't emitted to the JSONL yet, or a turn that began right at the verify
+    // boundary). Re-injecting now would trample it. Defer and re-verify instead
+    // of re-injecting OR failing. Bounded by maxWorkingDefers.
+    if (this.deferForActiveWork(state)) return;
+
+    // Genuinely not progressing and not working — session didn't respond.
     if (state.attempts >= this.cfg.maxInjectAttempts) {
       this.finalize(
         state,

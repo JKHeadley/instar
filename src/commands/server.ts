@@ -5664,6 +5664,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             .find(s => s.tmuxSession === sessionName);
           return session?.claudeSessionId;
         },
+        // Don't re-inject a recovery prompt into a session that's actively
+        // working (mid extended-think / tool call). Re-injecting buries the
+        // user's real message under stacked recovery bootstraps — the false
+        // "session is restarting" loop. The sentinel defers instead, bounded
+        // by maxWorkingDefers. See SessionManager.isSessionActivelyWorking.
+        isActivelyWorking: (sessionName: string) =>
+          sessionManager.isSessionActivelyWorking(sessionName),
       },
       // Defaults are production-sensible; override here only if needed.
       {},
