@@ -57,6 +57,7 @@ import {
   type VersionSkewBody,
 } from './forwardErrors.js';
 import { writeStartupMarker } from './startupMarker.js';
+import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
@@ -430,15 +431,34 @@ export class TelegramLifeline {
       console.log(pc.yellow('  Server failed to start — lifeline will keep trying'));
     }
 
-    // Flush stale Telegram connections before starting poll loop.
-    // After hard kills or sleep/wake, a previous long-poll connection may still be
-    // held by Telegram's servers, causing 409 Conflict errors for ~30s.
-    await this.flushStaleConnection();
+    // Telegram poll ownership (standby-no-poll guard). Telegram allows exactly
+    // ONE getUpdates poller per bot token; a second machine that also polls
+    // causes a permanent 409-conflict war and nondeterministic delivery (the
+    // 2026-05-29 duplicate-poller incident). A standby machine sets
+    // multiMachine.telegramPolling:false so it runs the full server + joins the
+    // session pool (supervisor.start() above already ran) WITHOUT polling.
+    // DEFAULT (undefined) = poll, so every existing single-machine agent is
+    // unchanged — only a machine that explicitly opts out is suppressed. This is
+    // a per-machine LOCAL flag, so a credential-less standby can honor it.
+    const telegramPollingEnabled = shouldOwnTelegramPoll(this.projectConfig);
+    if (telegramPollingEnabled) {
+      // Flush stale Telegram connections before starting poll loop.
+      // After hard kills or sleep/wake, a previous long-poll connection may still be
+      // held by Telegram's servers, causing 409 Conflict errors for ~30s.
+      await this.flushStaleConnection();
 
-    // Start Telegram polling
-    this.polling = true;
-    this.poll();
-    console.log(pc.green('  Telegram polling active'));
+      // Start Telegram polling
+      this.polling = true;
+      this.poll();
+      console.log(pc.green('  Telegram polling active'));
+    } else {
+      // Standby: do NOT touch Telegram (no flush, no getUpdates) — the awake
+      // machine owns the single poll slot. Server supervision + queue replay +
+      // restart-signal handling all continue, so this machine is a full,
+      // reachable pool member that simply never polls.
+      this.polling = false;
+      console.log(pc.yellow('  Telegram polling SUPPRESSED (standby: multiMachine.telegramPolling=false) — server runs without owning the poll slot'));
+    }
 
     // Start periodic queue replay (in case server comes back between health checks)
     this.replayInterval = setInterval(() => {
