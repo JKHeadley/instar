@@ -13,7 +13,7 @@
  *   Verdict:     deterministic FS walk + canary (canary at canary/codexSessionLayoutCanary.ts)
  */
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -29,6 +29,46 @@ export async function findRolloutFile(
   if (!threadId) return null;
   const root = path.join(codexHomeFromConfig(codexHome), 'sessions');
   return walkForUuid(root, threadId);
+}
+
+/**
+ * Synchronous variant of {@link findRolloutFile}. Needed by callers that run on
+ * a sync code path and cannot await — notably the resume-map `jsonlExists`
+ * guards (ThreadResumeMap, TopicResumeMap), which previously checked only the
+ * Claude flat layout and so returned false for EVERY codex session (the
+ * codex-compat resume bug: every codex thread looked expired/missing). Returns
+ * the rollout path or null. A missing `$CODEX_HOME/sessions` (e.g. a pure
+ * Claude agent) returns null fast — `readdirSync` throws and is caught.
+ */
+export function findRolloutFileSync(threadId: string, codexHome?: string): string | null {
+  if (!threadId) return null;
+  const root = path.join(codexHomeFromConfig(codexHome), 'sessions');
+  return walkForUuidSync(root, threadId);
+}
+
+function walkForUuidSync(root: string, uuid: string): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const full = path.join(root, entry);
+    let stat;
+    try {
+      stat = statSync(full);
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      const nested = walkForUuidSync(full, uuid);
+      if (nested) return nested;
+    } else if (stat.isFile() && entry.startsWith('rollout-') && entry.includes(uuid) && entry.endsWith('.jsonl')) {
+      return full;
+    }
+  }
+  return null;
 }
 
 async function walkForUuid(root: string, uuid: string): Promise<string | null> {

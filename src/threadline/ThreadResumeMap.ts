@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 import { ConversationStore, type Conversation, type ConversationState } from './ConversationStore.js';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -351,14 +352,24 @@ export class ThreadResumeMap {
    *  tests can bypass the filesystem check via a subclass.) */
   protected jsonlExists(uuid: string): boolean {
     if (!uuid) return false;
+    // Claude: flat ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl.
     const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-    if (!fs.existsSync(claudeProjectsDir)) return false;
-    try {
-      for (const dir of fs.readdirSync(claudeProjectsDir)) {
-        if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+    if (fs.existsSync(claudeProjectsDir)) {
+      try {
+        for (const dir of fs.readdirSync(claudeProjectsDir)) {
+          if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+        }
+      } catch {
+        // Can't check the Claude layout — fall through to the codex layout.
       }
+    }
+    // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
+    // A codex thread has no Claude jsonl, so without this every codex session
+    // looks expired/missing and resume breaks fleet-wide (codex-compat root).
+    try {
+      if (findRolloutFileSync(uuid) !== null) return true;
     } catch {
-      // Can't check — assume not found.
+      // Can't check the codex layout — treat as not found.
     }
     return false;
   }

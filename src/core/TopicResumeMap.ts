@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 
 interface ResumeEntry {
   uuid: string;
@@ -279,11 +280,22 @@ export class TopicResumeMap {
    * Check if a JSONL file exists for the given UUID in this project's directory.
    */
   private jsonlExists(uuid: string): boolean {
+    if (!uuid) return false;
+    // Claude: flat <project-jsonl-dir>/<uuid>.jsonl.
     const jsonlPath = path.join(this.claudeProjectJsonlDir(), `${uuid}.jsonl`);
     try {
-      return fs.existsSync(jsonlPath);
+      if (fs.existsSync(jsonlPath)) return true;
     } catch {
-      return false;
+      // Can't check the Claude layout — fall through to the codex layout.
     }
+    // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
+    // Without this every codex session looks expired/missing and resume breaks
+    // fleet-wide for codex agents (codex-compat root).
+    try {
+      if (findRolloutFileSync(uuid) !== null) return true;
+    } catch {
+      // Can't check the codex layout — treat as not found.
+    }
+    return false;
   }
 }
