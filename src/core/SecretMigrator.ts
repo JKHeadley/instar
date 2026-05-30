@@ -120,8 +120,12 @@ export function mergeConfigWithSecrets(config: Record<string, unknown>, stateDir
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/** Check if a value is the { "secret": true } placeholder. */
-function isSecretPlaceholder(value: unknown): boolean {
+/** Check if a value is the { "secret": true } placeholder left in config.json
+ *  after a field is externalized to the encrypted secret store. Exported so
+ *  readiness/coherence checks can tell "field is externalized (present)" apart
+ *  from "field is genuinely missing" — a plain string-type guard reads the
+ *  placeholder as missing and false-alarms. */
+export function isSecretPlaceholder(value: unknown): boolean {
   return typeof value === 'object' && value !== null && 'secret' in value && (value as any).secret === true;
 }
 
