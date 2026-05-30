@@ -103,6 +103,25 @@ describe('ConfigDefaults', () => {
       expect(changes.some((c: string) => c.includes('sessionPool'))).toBe(true);
     });
 
+    it('migrates mentor.autonomousFix (dark) into an EXISTING mentor block on update (parity)', () => {
+      // An agent that already had the mentor block (pre-autonomous-fix) must
+      // receive the new dark autonomousFix sub-block on update — so the "just be
+      // Echo" loop is discoverable + opt-in, never silently absent.
+      const config: any = { mentor: { enabled: false, mode: 'off', menteeFramework: 'codex-cli' } };
+      const { patched } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(config.mentor.menteeFramework).toBe('codex-cli'); // existing field preserved
+      expect(config.mentor.autonomousFix.enabled).toBe(false); // ships dark
+      expect(config.mentor.autonomousFix.model).toBe('opus'); // Justin's constraint
+    });
+
+    it('does NOT overwrite an operator-enabled mentor.autonomousFix on re-migration (idempotent)', () => {
+      const config: any = { mentor: { enabled: true, autonomousFix: { enabled: true, model: 'opus' } } };
+      const { changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(config.mentor.autonomousFix.enabled).toBe(true); // operator choice kept
+      expect(changes.some((c: string) => c.includes('autonomousFix.enabled'))).toBe(false);
+    });
+
     it('migrates an inert multiMachine:{sessionPool} into a config with NO multiMachine block (does not enable it)', () => {
       const config: any = { monitoring: {} };
       applyDefaults(config, getMigrationDefaults('managed-project'));

@@ -64,6 +64,7 @@ import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
+import { buildAutoloopGoal } from '../scheduler/MentorAutonomousGuardian.js';
 import {
   STAGE_A_ALLOWED_TOOLS,
   buildConversationSurface,
@@ -1837,6 +1838,47 @@ export class AgentServer {
         onTickRan: () => {
           self.mentorLastTickAt = Date.now();
           self.mentorRunsToday += 1;
+        },
+        // --- Autonomous-fix loop ("just be Echo") services (MENTOR-AUTONOMOUS-
+        //     FIX-LOOP-SPEC). Only consulted when mentor.autonomousFix.enabled.
+        //     E2E-PAIRING: EXEMPT — these are internal closures wired into the
+        //     existing /mentor/tick + /mentor/status routes (no new API surface);
+        //     covered by MentorAutonomousGuardian.test.ts (unit) + the mentor
+        //     integration/E2E suites. ---
+        loopSessionAlive: (): boolean => {
+          const cfg = getConfig();
+          const prefix = cfg.autonomousFix?.sessionNamePrefix || 'mentor-autoloop';
+          // Single-instance: a loop session is any running session whose name
+          // carries the prefix. A cycle outlives many heartbeats, so this is the
+          // gate that prevents spawn-storming expensive Opus sessions.
+          return self.sessionManager.listRunningSessions().some((s) => s.name?.startsWith(prefix));
+        },
+        buildAutoloopGoal: (framework: string): string =>
+          buildAutoloopGoal({
+            menteeAgentName: getConfig().menteeAgentName || `instar-${framework}`,
+            menteeFramework: framework,
+            // Report into the human's topic (autonomousFix.reportTopicId), else
+            // the resolved mentor/mentee delivery topic.
+            reportTopicId: getConfig().autonomousFix?.reportTopicId ?? resolveMentorDeliveryTopic(getConfig()),
+            menteeTopicId: getConfig().menteeTopicId,
+          }),
+        spawnLoopSession: async (goal: string, model: string): Promise<{ sessionName: string }> => {
+          const cfg = getConfig();
+          const prefix = cfg.autonomousFix?.sessionNamePrefix || 'mentor-autoloop';
+          const name = `${prefix}-${Date.now()}`;
+          const maxCycleMinutes = cfg.autonomousFix?.maxCycleMinutes ?? 120;
+          // Full-tool grant: omit allowedTools so the loop session gets Echo's
+          // default toolset (bash/edit/git/gh) — it must actually be able to
+          // ship fixes. Opus by config (Justin's constraint: all fixing on Opus).
+          // spawnSession resolves once the session has STARTED (not completed),
+          // so the guardian returns 'spawned' immediately while the cycle runs.
+          await self.sessionManager.spawnSession({
+            name,
+            prompt: goal,
+            model: model || 'opus',
+            maxDurationMinutes: Math.max(5, maxCycleMinutes),
+          });
+          return { sessionName: name };
         },
         now: () => Date.now(),
       },

@@ -190,6 +190,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     minIntervalMs: 600000, // 10-min floor between ticks (anti-forced-cadence)
     maxRoundsPerDay: 24,
     dailySpendCapUsd: 0.5,
+    // The "just be Echo" autonomous-fix loop (MENTOR-AUTONOMOUS-FIX-LOOP-SPEC):
+    // when enabled, the heartbeat keeps ONE full-tool Opus loop session alive on
+    // the manual dogfooding loop (assign → observe → FIX as a fleet PR → report)
+    // instead of the haiku observe-pipeline. Ships dark; opt-in per agent.
+    autonomousFix: {
+      enabled: false,
+      model: 'opus',
+      sessionNamePrefix: 'mentor-autoloop',
+      maxCycleMinutes: 120,
+    },
   },
   // Mentee receiver wiring (MENTOR-LIVE-READINESS-SPEC §Recipient side).
   // The mirror of the mentor block: this agent ACCEPTS inbound mentor prompts
