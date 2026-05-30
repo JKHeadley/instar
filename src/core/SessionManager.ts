@@ -61,6 +61,10 @@ import {
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import {
+  resolveCodexLaunchModelWithUsage,
+  type CodexModelSwapConfig,
+} from '../providers/adapters/openai-codex/observability/codexModelSwapPolicy.js';
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
@@ -1148,10 +1152,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const headlessBinaryPath =
       this.config.frameworkBinaryPaths?.[headlessFramework]
       ?? this.config.claudePath;
+
+    // Codex rate-limit model-swap (dark by default): when the agent's main
+    // codex model has exhausted its weekly window, launch on a configured
+    // fallback model (separate quota bucket) instead of stalling. No-op +
+    // zero disk I/O unless codex.rateLimitModelSwap is enabled. Best-effort.
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
     const headlessSpec = buildHeadlessLaunch(headlessFramework, {
       binaryPath: headlessBinaryPath,
       prompt: options.prompt,
-      model: options.model,
+      model: launchModel,
       ...(options.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       // Ensures a headless codex worker — notably a Threadline inbound-reply
@@ -1908,6 +1918,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Resolve the codex launch model, applying the rate-limit model-swap when
+   * configured. For non-codex frameworks, or when codex.rateLimitModelSwap is
+   * disabled / has no fallbackModel, returns the requested model unchanged with
+   * ZERO disk I/O (the fast-path guard lives in resolveCodexLaunchModelWithUsage).
+   * Best-effort: a usage-read failure resolves to the requested model — it never
+   * blocks a spawn. Used by both the headless (spawnSession) and interactive
+   * (spawnInteractiveSession) codex launch paths.
+   */
+  private async resolveCodexLaunchModel(
+    framework: IntelligenceFramework,
+    requestedModel: string | undefined,
+  ): Promise<string | undefined> {
+    const swapCfg = (this.config as { codex?: { rateLimitModelSwap?: CodexModelSwapConfig } })
+      .codex?.rateLimitModelSwap;
+    const decision = await resolveCodexLaunchModelWithUsage({
+      framework,
+      requestedModel,
+      config: swapCfg,
+    });
+    if (decision.swapped) {
+      console.log(`[SessionManager] ${decision.reason}`);
+      return decision.model;
+    }
+    return requestedModel;
+  }
+
+  /**
    * Spawn an interactive Claude Code session (no -p prompt — opens at the REPL).
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
@@ -1981,10 +2018,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // local model id) wins over config defaults. Config defaults survive
     // for cloud-Codex topics that haven't been customized.
     const defaultModel = options?.defaultModel ?? this.config.frameworkDefaultModels?.[framework];
+    // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
+    // interactive (user-facing) codex session too, not just headless spawns.
+    const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel);
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
-      ...(defaultModel ? { defaultModel } : {}),
+      ...(launchDefaultModel ? { defaultModel: launchDefaultModel } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),

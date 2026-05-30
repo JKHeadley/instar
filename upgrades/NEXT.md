@@ -35,6 +35,18 @@ green by tracking two prior dark/operational migrator sections
 (`Autonomous-fix loop`, `Multi-Machine Session Pool`) that had not been
 registered.
 
+**Codex agents can auto-swap to a fallback model when their weekly window is
+exhausted (ships DARK).** Building on the usage reader above: at codex session
+launch, if the main model's weekly window is spent (or codex flags a limit hit),
+the next session launches on a configured fallback model that draws on a separate
+quota bucket — instead of stalling. The decision is a pure policy
+(`resolveCodexLaunchModel`) wired into both codex launch paths in
+`SessionManager` (headless + interactive). Gated behind
+`codex.rateLimitModelSwap.{enabled,fallbackModel,weeklyRemainingThreshold}`;
+off by default with zero spawn-path overhead. The fallback model id is operator
+config — never hardcoded — because the exact id and its subscription
+availability are the account owner's to confirm.
+
 ## Summary of New Capabilities
 
 - `GET /codex/usage` — the freshest codex account rate-limit snapshot (primary
@@ -45,6 +57,11 @@ registered.
   (defaults to `~/.codex`).
 - Agent-awareness: the capability appears in `GET /capabilities`, the CLAUDE.md
   template, and is migrated into existing agents.
+- Codex rate-limit model-swap (dark): `codex.rateLimitModelSwap` —
+  auto-launch the next codex session on `fallbackModel` when the weekly window's
+  remaining percent is at or below `weeklyRemainingThreshold` (default 10) or
+  codex reports a limit hit. Off by default; best-effort and fail-safe (a usage
+  read never blocks a launch).
 
 ## What to Tell Your User
 
@@ -55,6 +72,13 @@ remaining on each window, when each one resets, which model is in effect, and
 whether either window is currently maxed out. This also gives me the signal I
 need to switch models before the weekly limit runs out. Nothing changes for you
 on update; the capability is simply there when you need it.
+
+And if you want it, I can now do that switch automatically: when a codex agent's
+weekly model quota is nearly spent, the next session it starts can launch on a
+backup model that has its own separate budget, so it keeps working instead of
+stalling. This is off until you turn it on and tell me which backup model to use
+— the exact name and whether it works on your subscription is something only you
+can confirm — so nothing changes by default.
 
 ## Evidence
 
