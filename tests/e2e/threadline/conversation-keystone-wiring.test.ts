@@ -73,7 +73,11 @@ describe('Threadline keystone — wiring integrity (feature alive)', () => {
     expect(relayAgentIdx).toBeGreaterThan(0);
     const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 12000);
     const gateIdx = route.indexOf('evaluateAndRecordInbound(ctx.warrantsReplyGate, ctx.conversationStore');
-    const routerIdx = route.indexOf('ctx.threadlineRouter.handleInboundMessage(envelope)');
+    // Match the call by method+arg so the assertion survives formatting of the
+    // `ctx.threadlineRouter` receiver (the accept-boundary fix runs it async, so
+    // `.handleInboundMessage(envelope)` may sit on its own line). The gate still
+    // runs BEFORE this spawn call — which is what this guards.
+    const routerIdx = route.indexOf('handleInboundMessage(envelope)');
     expect(gateIdx).toBeGreaterThan(0);
     expect(routerIdx).toBeGreaterThan(gateIdx); // gate runs BEFORE the spawn
     expect(route.slice(gateIdx, routerIdx)).toMatch(/if\s*\(\s*decision\.suppress\s*\)/);

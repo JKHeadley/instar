@@ -12858,27 +12858,35 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
 
-        // If we have a ThreadlineRouter, route the message through it for
-        // session resume/spawn. We AWAIT the result so callers learn the real
-        // outcome (spawned / resumed / injected / handled:false). The message
-        // has already been accepted into the inbox, so we don't alter the HTTP
-        // status unless the router throws.
+        // ACCEPT-BOUNDARY (duplicate-reply ROOT fix). The message is already
+        // accepted into the inbox AND past the warrants-reply gate above, so we
+        // respond NOW — an honest "accepted, processing async" — instead of
+        // AWAITING handleInboundMessage. That await is a session spawn/resume
+        // that routinely takes 9-30s, far longer than the sender's relay-fetch
+        // timeout: MessageRouter.relay uses AbortSignal.timeout(5000) and only
+        // reads response.ok (never the spawned/resumed fields). Past 5s the
+        // sender treats delivery as failed and retries with a FRESH message.id
+        // → a duplicate spawn/reply. The content-hash dedup (#573) is the
+        // symptom backstop; responding at the accept boundary removes the ROOT.
+        // The actual reply still flows back via the reply-waiter mechanism
+        // (resolved above), decoupled from this HTTP response.
         if (ctx.threadlineRouter) {
-          try {
-            const threadlineResult = await ctx.threadlineRouter.handleInboundMessage(envelope);
-            res.json({ ok: true, threadline: threadlineResult });
-            return;
-          } catch (err) {
-            console.error('[routes] ThreadlineRouter handling error:', err);
-            res.json({
-              ok: true,
-              threadline: {
-                handled: false,
-                error: err instanceof Error ? err.message : 'Unknown error',
-              },
+          res.json({ ok: true, accepted: true, threadline: { accepted: true, async: true } });
+          // Process asynchronously — the response is already sent.
+          // handleInboundMessage is NOT dropped: it runs to completion in the
+          // background; its outcome is logged (never surfaced to the closed
+          // response), and a failure can't 500 a request that already returned.
+          void ctx.threadlineRouter
+            .handleInboundMessage(envelope)
+            .then((threadlineResult) => {
+              console.log(
+                `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,
+              );
+            })
+            .catch((err) => {
+              console.error('[routes] ThreadlineRouter async handling error:', err);
             });
-            return;
-          }
+          return;
         }
         res.json({ ok: true });
       } else {

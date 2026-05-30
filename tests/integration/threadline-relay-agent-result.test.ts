@@ -1,13 +1,19 @@
 /**
- * Integration test — /messages/relay-agent now returns the ThreadlineRouter
- * result synchronously (PR-1: stop lying about delivery).
+ * Integration test — /messages/relay-agent responds at the ACCEPT BOUNDARY
+ * (duplicate-reply ROOT fix), not after the session spawn.
  *
- * Previously the handler fire-and-forgot ThreadlineRouter.handleInboundMessage
- * and returned `{ok:true}` immediately. This meant callers could never tell
- * whether the message was actually spawned, resumed, or dropped.
- *
- * After PR-1 the handler awaits the router and includes the result in the
- * response body under `threadline`.
+ * History: the original handler fire-and-forgot handleInboundMessage and
+ * returned `{ok:true}`. PR-1 ("stop lying about delivery") made it AWAIT the
+ * router and return the spawn result synchronously. That await is the root of
+ * the duplicate-reply bug: handleInboundMessage is a session spawn/resume that
+ * routinely takes 9-30s, but the co-located sender (MessageRouter.relay) uses
+ * `AbortSignal.timeout(5000)` and only reads `response.ok`. Past 5s the sender
+ * treats delivery as failed and retries with a FRESH message.id → a duplicate
+ * spawn/reply (the content-hash dedup is the symptom backstop; this is the
+ * root). So we now respond `{accepted:true, async:true}` as soon as the message
+ * is accepted + gated, and run handleInboundMessage in the background. The
+ * actual reply still flows back via the reply-waiter mechanism (resolved
+ * BEFORE the response — those tests below are unchanged).
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -28,7 +34,7 @@ import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import type { ThreadlineHandleResult } from '../../src/threadline/ThreadlineRouter.js';
 
-describe('/messages/relay-agent — threadline result propagation (PR-1)', () => {
+describe('/messages/relay-agent — accept-boundary response (duplicate-reply root fix)', () => {
   let project: TempProject;
   let mockSM: MockSessionManager;
   let server: AgentServer;
@@ -38,8 +44,11 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
   let relayAgentToken: string;
   let handleInboundMessage: ReturnType<typeof vi.fn>;
   let handlerOrder: string[];
-  const AUTH_TOKEN = 'test-auth-pr1';
-  const PROJECT = 'test-pr1-project';
+  // A manually-resolved gate so a test can hold handleInboundMessage "spawning"
+  // while it asserts the HTTP response already came back.
+  let releaseHandler: (() => void) | null;
+  const AUTH_TOKEN = 'test-auth-accept-boundary';
+  const PROJECT = 'test-accept-boundary-project';
 
   beforeAll(async () => {
     project = createTempProject();
@@ -91,17 +100,16 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
     };
 
     handlerOrder = [];
+    releaseHandler = null;
     handleInboundMessage = vi.fn(async (): Promise<ThreadlineHandleResult> => {
       handlerOrder.push('router-start');
-      // Simulate async work so we can verify the handler awaited us.
-      await new Promise((r) => setTimeout(r, 25));
+      // Block until the test releases us (simulates a slow 9-30s spawn) — or,
+      // when no gate is armed, resolve on the next tick.
+      if (releaseHandler === null) {
+        await new Promise<void>((r) => { releaseHandler = r; });
+      }
       handlerOrder.push('router-end');
-      return {
-        handled: true,
-        spawned: true,
-        threadId: 'thread-abc',
-        sessionName: 'session-xyz',
-      };
+      return { handled: true, spawned: true, threadId: 'thread-abc', sessionName: 'session-xyz' };
     });
 
     const fakeRouter = { handleInboundMessage } as any;
@@ -141,7 +149,7 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
     return {
       schemaVersion: 1,
       message: {
-        id: `pr1-${Date.now()}-${Math.random()}`,
+        id: `ab-${Date.now()}-${Math.random()}`,
         from: { agent: 'other-agent', session: 's', machine: 'remote' },
         to: { agent: PROJECT, session: 'best', machine: 'local' },
         type: 'request',
@@ -162,7 +170,9 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
     };
   }
 
-  it('returns the threadline router result in the response', async () => {
+  it('responds {accepted:true} at the accept boundary without the spawn result', async () => {
+    handlerOrder.length = 0;
+    releaseHandler = null;
     const res = await request(app)
       .post('/messages/relay-agent')
       .set('Authorization', `Bearer ${relayAgentToken}`)
@@ -170,29 +180,42 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
       .expect(200);
 
     expect(res.body.ok).toBe(true);
-    expect(res.body.threadline).toBeDefined();
-    expect(res.body.threadline.handled).toBe(true);
-    expect(res.body.threadline.spawned).toBe(true);
-    expect(res.body.threadline.threadId).toBe('thread-abc');
-    expect(res.body.threadline.sessionName).toBe('session-xyz');
-    expect(handleInboundMessage).toHaveBeenCalled();
+    expect(res.body.accepted).toBe(true);
+    expect(res.body.threadline).toEqual({ accepted: true, async: true });
+    // The synchronous spawn result is intentionally NOT in the response.
+    expect(res.body.threadline.spawned).toBeUndefined();
+    expect(res.body.threadline.sessionName).toBeUndefined();
+
+    // Release the (still-pending) background handler and let it finish.
+    await vi.waitFor(() => expect(releaseHandler).not.toBeNull());
+    releaseHandler!();
   });
 
-  it('awaits the router before responding (not fire-and-forget)', async () => {
+  it('returns BEFORE the slow handler finishes (the duplicate-reply root fix)', async () => {
     handlerOrder.length = 0;
+    releaseHandler = null;
     await request(app)
       .post('/messages/relay-agent')
       .set('Authorization', `Bearer ${relayAgentToken}`)
       .send(validEnvelope())
       .expect(200);
 
-    // router-start AND router-end must both be in the order array before
-    // we get here — this only holds if the handler awaited.
-    expect(handlerOrder).toEqual(['router-start', 'router-end']);
+    // The response is already back. The background handler has STARTED but not
+    // finished (it's blocked on the release gate) — proving we did not await it.
+    expect(handlerOrder).toContain('router-start');
+    expect(handlerOrder).not.toContain('router-end');
+
+    // Now release it and confirm it runs to completion in the background
+    // (handleInboundMessage is NOT dropped).
+    await vi.waitFor(() => expect(releaseHandler).not.toBeNull());
+    releaseHandler!();
+    await vi.waitFor(() => expect(handlerOrder).toContain('router-end'));
+    expect(handleInboundMessage).toHaveBeenCalled();
   });
 
-  it('returns handled:false threadline result cleanly', async () => {
-    handleInboundMessage.mockResolvedValueOnce({ handled: false });
+  it('still returns 200 accepted when the background handler rejects (error never surfaced to the closed response)', async () => {
+    releaseHandler = null;
+    handleInboundMessage.mockRejectedValueOnce(new Error('boom'));
     const res = await request(app)
       .post('/messages/relay-agent')
       .set('Authorization', `Bearer ${relayAgentToken}`)
@@ -200,12 +223,14 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
       .expect(200);
 
     expect(res.body.ok).toBe(true);
-    expect(res.body.threadline).toEqual({ handled: false });
+    expect(res.body.accepted).toBe(true);
+    // The rejection is logged async; it cannot 500 a response that already returned.
   });
 
-  // ── PR-3: waiters re-keyed by threadId ─────────────────────────
+  // ── PR-3: waiters re-keyed by threadId (resolved BEFORE the response — unchanged) ──
 
   it('resolves reply waiter by threadId, not sender agent name', async () => {
+    releaseHandler = null;
     const routeCtx = (server as any).routeContext as { threadlineReplyWaiters: Map<string, any> };
     expect(routeCtx.threadlineReplyWaiters).toBeDefined();
 
@@ -236,9 +261,11 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
     await Promise.race([waiterPromise, new Promise((_, rej) => setTimeout(() => rej(new Error('waiter never resolved')), 2000))]);
     expect(resolvedReply).toBe('actual reply content');
     expect(routeCtx.threadlineReplyWaiters.has(threadId)).toBe(false);
+    if (releaseHandler) (releaseHandler as () => void)();
   });
 
   it('does not resolve waiter for a different threadId even if sender matches', async () => {
+    releaseHandler = null;
     const routeCtx = (server as any).routeContext as { threadlineReplyWaiters: Map<string, any> };
     const waiterThreadId = crypto.randomUUID();
     let resolved = false;
@@ -249,7 +276,6 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
       timer: setTimeout(() => {}, 10_000) as ReturnType<typeof setTimeout>,
     });
 
-    // Inbound message from same sender, DIFFERENT threadId — must not resolve
     const env = validEnvelope();
     env.message.threadId = crypto.randomUUID();
     await request(app)
@@ -261,18 +287,6 @@ describe('/messages/relay-agent — threadline result propagation (PR-1)', () =>
     await new Promise((r) => setTimeout(r, 50));
     expect(resolved).toBe(false);
     routeCtx.threadlineReplyWaiters.delete(waiterThreadId);
-  });
-
-  it('still returns 200 if the router throws, with error surfaced', async () => {
-    handleInboundMessage.mockRejectedValueOnce(new Error('boom'));
-    const res = await request(app)
-      .post('/messages/relay-agent')
-      .set('Authorization', `Bearer ${relayAgentToken}`)
-      .send(validEnvelope())
-      .expect(200);
-
-    expect(res.body.ok).toBe(true);
-    expect(res.body.threadline.handled).toBe(false);
-    expect(res.body.threadline.error).toBe('boom');
+    if (releaseHandler) (releaseHandler as () => void)();
   });
 });
