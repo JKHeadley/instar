@@ -137,6 +137,8 @@ const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RESOLVED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Cap before LRU eviction of non-pinned entries — matches ThreadResumeMap. */
 const MAX_ENTRIES = 1000;
+/** Inactive non-pinned conversations leave the active set after this window. */
+const DEFAULT_INACTIVE_RETIRE_MS = 24 * 60 * 60 * 1000;
 
 /** Max depth of the per-id mutate queue. Enqueue beyond this rejects. */
 const MUTATE_QUEUE_MAX_DEPTH = 256;
@@ -447,6 +449,40 @@ export class ConversationStore {
       this.writeFileAtomic(file);
       this.invalidateCache();
     }
+  }
+
+  /**
+   * Move stale non-terminal conversations out of the active set without
+   * deleting them. Archived records keep history/resume metadata; a later peer
+   * reply can still reactivate the thread through the normal resume path.
+   */
+  retireInactive(maxInactiveMs: number = DEFAULT_INACTIVE_RETIRE_MS, now: Date = new Date()): number {
+    const cutoff = now.getTime() - maxInactiveMs;
+    const file = this.readFileFresh();
+    const candidates: string[] = [];
+    let retired = 0;
+
+    for (const c of Object.values(file.conversations)) {
+      if (c.pinned) continue;
+      if (c.state !== 'active' && c.state !== 'idle' && c.state !== 'open' && c.state !== 'awaiting-reply') continue;
+      const last = new Date(c.lastActivityAt || c.savedAt).getTime();
+      if (!Number.isFinite(last) || last >= cutoff) continue;
+      candidates.push(c.threadId);
+    }
+
+    for (const threadId of candidates) {
+      const next = this.mutateSync(threadId, d => {
+        if (d.pinned) return d;
+        if (d.state !== 'active' && d.state !== 'idle' && d.state !== 'open' && d.state !== 'awaiting-reply') return d;
+        const last = new Date(d.lastActivityAt || d.savedAt).getTime();
+        if (!Number.isFinite(last) || last >= cutoff) return d;
+        d.state = 'archived';
+        return d;
+      });
+      if (next?.state === 'archived') retired += 1;
+    }
+
+    return retired;
   }
 
   // ── Ephemeral verified-only peer affinity (in-memory, non-durable) ──
