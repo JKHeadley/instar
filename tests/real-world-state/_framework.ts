@@ -1,3 +1,4 @@
+// safe-git-allow: test framework — fs.rmSync is per-test tmpdir cleanup only.
 /**
  * Real-World-State Fixture Framework — post-mortem lever B.
  *
