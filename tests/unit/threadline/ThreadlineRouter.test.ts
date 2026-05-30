@@ -411,6 +411,41 @@ describe('ThreadlineRouter', () => {
       expect(call.context).toContain('remote-agent');
     });
 
+    it('bounds the spawn prompt under tmux command limits even with a long, heavy history', async () => {
+      // Regression: the spawn prompt is passed as a `tmux new-session` command
+      // ARGUMENT (~16 KB ceiling). An unbounded thread history + huge latest body
+      // made long-thread reply-spawns fail with "command too long". The router
+      // must cap both so multi-agent comms survive long threads.
+      const threadId = crypto.randomUUID();
+      // Simulate a long-running thread: 40 messages × ~2.5 KB ≈ 100 KB raw.
+      const heavyMessages = Array.from({ length: 40 }, (_, i) => ({
+        message: {
+          from: { agent: i % 2 === 0 ? 'remote-agent' : 'local-agent' },
+          createdAt: `2026-05-30T10:00:${String(i).padStart(2, '0')}.000Z`,
+          body: `history-msg-${i} ${'h'.repeat(2500)}`,
+        },
+      }));
+      mockRouter.getThread.mockResolvedValue({ messages: heavyMessages } as any);
+
+      const envelope = makeEnvelope({
+        threadId,
+        subject: 'Latest',
+        body: `latest-body ${'L'.repeat(20000)}`, // pathologically large latest message
+      });
+
+      await router.handleInboundMessage(envelope);
+
+      const call = mockSpawnManager.evaluate.mock.calls[0][0];
+      // Whole assembled prompt stays well under tmux's ~16 KB cliff.
+      expect(call.context.length).toBeLessThan(14000);
+      // Newest history message survives; the oldest is dropped to fit.
+      expect(call.context).toContain('history-msg-39');
+      expect(call.context).not.toContain('history-msg-0 ');
+      // The oversized latest body is present but truncated, not verbatim.
+      expect(call.context).toContain('[truncated');
+      expect(call.context).not.toContain('L'.repeat(20000));
+    });
+
     it('sets correct spawn priority for critical messages', async () => {
       const threadId = crypto.randomUUID();
       const envelope = makeEnvelope({ threadId, priority: 'critical' });
