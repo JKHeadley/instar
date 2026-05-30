@@ -295,4 +295,114 @@ describe('CompactionSentinel', () => {
     expect(sentinel.getState('a')).toBeUndefined();
     expect(sentinel.getState('b')).toBeUndefined();
   });
+
+  // ─── Busy-session defer guard (isActivelyWorking) ───
+  //
+  // Root cause of the false "session is restarting" loop: a long extended-think
+  // on a large context writes nothing to the JSONL until the turn lands, so the
+  // no-growth check read it as "stuck" and RE-INJECTED a recovery prompt —
+  // burying the user's real message under stacked bootstraps. With an
+  // isActivelyWorking signal, the sentinel must DEFER (wait without injecting)
+  // while the session is mid-turn, bounded by maxWorkingDefers.
+  describe('busy-session defer guard', () => {
+    let working: boolean;
+    let j: ReturnType<typeof makeTempJsonlRoot>;
+    let rec: ReturnType<typeof vi.fn>;
+    let s: CompactionSentinel;
+    let evs: Array<{ type: string; payload: any }>;
+
+    function build(opts: { maxWorkingDefers?: number; withDep?: boolean } = {}): void {
+      j = makeTempJsonlRoot();
+      rec = vi.fn().mockResolvedValue(true);
+      s = new CompactionSentinel(
+        {
+          recoverFn: rec as any,
+          projectDir: '/fake/project',
+          jsonlRoot: j.root,
+          ...(opts.withDep === false ? {} : { isActivelyWorking: () => working }),
+        },
+        { dedupeWindowMs: 60_000, verifyWindowMs: 25_000, maxInjectAttempts: 3, maxWorkingDefers: opts.maxWorkingDefers ?? 4 },
+      );
+      evs = [];
+      for (const e of ['compaction:detected', 'compaction:inject-attempted', 'compaction:deferred', 'compaction:recovered', 'compaction:failed']) {
+        s.on(e as any, (p: any) => evs.push({ type: e, payload: p }));
+      }
+    }
+
+    beforeEach(() => { working = false; });
+    afterEach(() => { s?.stop(); j?.cleanup(); });
+
+    it('defers the first inject while actively working — never calls recoverFn', async () => {
+      build();
+      j.write('foo.jsonl', 100);
+      working = true;
+      s.report('s1', 'watchdog-poll');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rec).not.toHaveBeenCalled();
+      expect(evs.some(e => e.type === 'compaction:deferred')).toBe(true);
+      expect(evs.some(e => e.type === 'compaction:inject-attempted')).toBe(false);
+      expect(s.getState('s1')?.status).toBe('deferring');
+      expect(s.getState('s1')?.workingDefers).toBe(1);
+      // Still counts as active recovery → zombie-killer stays vetoed.
+      expect(s.isRecoveryActive('s1')).toBe(true);
+    });
+
+    it('injects once the session stops working', async () => {
+      build();
+      j.write('foo.jsonl', 100);
+      working = true;
+      s.report('s1', 'watchdog-poll');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rec).not.toHaveBeenCalled();
+      // Turn finishes — next verify window proceeds to inject.
+      working = false;
+      await vi.advanceTimersByTimeAsync(25_500);
+      expect(rec).toHaveBeenCalledTimes(1);
+    });
+
+    it('recovers WITHOUT injecting if the session emits while we defer (jsonl grows)', async () => {
+      build();
+      j.write('foo.jsonl', 100);
+      working = true;
+      s.report('s1', 'watchdog-poll');
+      await vi.advanceTimersByTimeAsync(0);
+      // The deferred turn landed — claude emitted output, jsonl grows.
+      j.write('foo.jsonl', 500);
+      await vi.advanceTimersByTimeAsync(25_500);
+      expect(rec).not.toHaveBeenCalled();
+      expect(evs.some(e => e.type === 'compaction:recovered')).toBe(true);
+    });
+
+    it('caps consecutive defers at maxWorkingDefers then forces an inject', async () => {
+      build({ maxWorkingDefers: 4 });
+      j.write('foo.jsonl', 100);
+      working = true; // hung "working" footer — never clears
+      s.report('s1', 'watchdog-poll');
+      await vi.advanceTimersByTimeAsync(0);
+      // defer #1 at report; defers #2/#3/#4 at the next three verify windows;
+      // the window after that forces an inject.
+      for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(25_500);
+      expect(evs.filter(e => e.type === 'compaction:deferred')).toHaveLength(4);
+      expect(rec).toHaveBeenCalledTimes(1);
+    });
+
+    it('maxWorkingDefers=0 disables deferral (injects immediately even while working)', async () => {
+      build({ maxWorkingDefers: 0 });
+      j.write('foo.jsonl', 100);
+      working = true;
+      s.report('s1', 'watchdog-poll');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rec).toHaveBeenCalledTimes(1); // old behavior restored
+    });
+
+    it('with no isActivelyWorking dep, never defers (backward compatible)', async () => {
+      build({ withDep: false });
+      j.write('foo.jsonl', 100);
+      working = true; // irrelevant — dep absent
+      s.report('s1', 'watchdog-poll');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rec).toHaveBeenCalledTimes(1);
+      expect(evs.some(e => e.type === 'compaction:deferred')).toBe(false);
+    });
+  });
 });

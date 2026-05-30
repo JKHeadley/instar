@@ -52,6 +52,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionManager } from './SessionManager.js';
+import { CLAUDE_WORKING_INDICATORS } from './claudeActivityIndicators.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 export interface StuckInputSentinelOptions {
@@ -102,12 +103,12 @@ const DEFAULT_MAX_ATTEMPTS = 4;
 
 /** Strings that indicate Claude Code is actively working — the sentinel
  *  refuses to fire Enter against any of these states. Each entry is checked
- *  with `pane.includes(...)` against the captured bottom of the pane. */
-const ACTIVITY_INDICATORS: readonly string[] = [
-  'esc to interrupt',     // Claude Code's "task in progress" hint
-  'ctrl+t to hide tasks', // Multi-task display
-  'tokens · esc',         // Token-counting + interrupt hint
-];
+ *  with `pane.includes(...)` against the captured bottom of the pane.
+ *
+ *  Sourced from the shared CLAUDE_WORKING_INDICATORS so this sentinel,
+ *  SessionManager.verifyInjection, and CompactionSentinel all agree on the
+ *  single canonical "mid-turn footer" tell. */
+const ACTIVITY_INDICATORS: readonly string[] = CLAUDE_WORKING_INDICATORS;
 
 export class StuckInputSentinel {
   private readonly sessionManager: SessionManager;
