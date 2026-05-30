@@ -132,6 +132,7 @@ describe('Feature Delivery Completeness', () => {
       'Worktree Convention',
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
       'Process Health (Dashboard Tab)', // Failure-Learning Loop read surface (templates.ts + migrator + shadow-marker parity)
+      "Preferences I've learned about you", // Correction & Preference Learning Sentinel Slice 1a read surface (templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {
@@ -224,6 +225,7 @@ describe('Feature Delivery Completeness', () => {
       'Topic-Flood Guard',                                // 2026-05-28 attention-queue circuit breaker: operational housekeeping the agent READS (state/attention-suppressed.jsonl) to answer "why are my notices grouped?" — like Sentinel Notifications, migrator-only (no template/shadow parity)
       'Autonomous-fix loop ("just be Echo")',             // mentor.autonomousFix dark dogfooding-loop awareness: developer-layer operational knowledge added via migrator only (like Framework-Onboarding Mentor System), gated off by default — no new-agent template/shadow parity required
       'Multi-Machine Session Pool (active-active',         // multi-machine session-pool awareness: ships DARK (multiMachine.sessionPool.stage default 'dark'), no-op on a single-machine agent; discoverable via GET /pool + GET /capabilities — operational/dark capability, migrator-tracked like ContextWedgeSentinel/Topic-Flood Guard
+      'Correction & Preference Learning Sentinel',         // the content-sniff marker migrateClaudeMd uses for the "Preferences I've learned about you" section (tracked as a featureSection above); this is the alternate-phrase check, like '/release-readiness' for Release Readiness
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {
