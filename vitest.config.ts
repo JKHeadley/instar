@@ -2,7 +2,15 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
+    include: [
+      'tests/unit/**/*.test.ts',
+      'tests/integration/**/*.test.ts',
+      'tests/e2e/**/*.test.ts',
+      // Real-world-state fixture tier (lever B from the 2026-05-29 pipeline
+      // post-mortem). 'pr'-tier scenarios run every CI shard; 'nightly'-tier
+      // is gated on INSTAR_REAL_WORLD_BIG=1 env (see _framework.ts).
+      'tests/real-world-state/**/*.test.ts',
+    ],
     setupFiles: ['./tests/vitest-setup.ts'],
     environment: 'node',
     testTimeout: 10000,
