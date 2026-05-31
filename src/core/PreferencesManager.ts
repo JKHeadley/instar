@@ -49,6 +49,19 @@ export interface PreferenceEntry {
   confidence: number;
   /** How many distinct observations have collapsed into this entry (≥1). */
   dedupeCount: number;
+  /**
+   * OPTIONAL self-violation pattern (Self-Violation Signal extension). When set,
+   * the SelfViolationDetector checks finalized outbound messages against this
+   * pattern; a match records a self-violation in the CorrectionLedger that
+   * reinforces this preference's recurrence/salience. Grammar:
+   *   - `regex:<source>` → a case-insensitive RegExp.
+   *   - `keywords:a,b,c` → fires only when ALL keywords are present (≥2).
+   *   - bare `<source>`  → treated as a regex source.
+   * ABSENT ≡ this preference is NEVER self-violation-checked (fully back-compat
+   * with shipped `.instar/preferences.json` files that have no such field).
+   * SIGNAL-ONLY: a match never blocks/alters the outbound message.
+   */
+  violationPattern?: string;
 }
 
 /** The full on-disk store shape. */
@@ -67,6 +80,12 @@ export interface RecordPreferencePayload {
   provenance?: PreferenceProvenance;
   /** Defaults to now (ISO). Injectable for deterministic tests. */
   recordedAt?: string;
+  /**
+   * OPTIONAL self-violation pattern (Self-Violation Signal extension). Persisted
+   * verbatim onto the entry. Absent ≡ this preference is never self-violation-
+   * checked. See PreferenceEntry.violationPattern for the grammar.
+   */
+  violationPattern?: string;
 }
 
 /** Options for `recordPreference()`. */
@@ -187,14 +206,22 @@ export class PreferencesManager {
     const preferences = store.preferences.filter(
       (p): p is PreferenceEntry =>
         !!p && typeof p.learning === 'string' && typeof p.dedupeKey === 'string',
-    ).map((p) => ({
-      learning: p.learning,
-      provenance: (p.provenance ?? 'correction-loop') as PreferenceProvenance,
-      dedupeKey: p.dedupeKey,
-      recordedAt: typeof p.recordedAt === 'string' ? p.recordedAt : new Date(0).toISOString(),
-      confidence: clampConfidence(p.confidence),
-      dedupeCount: Math.max(1, Math.floor(p.dedupeCount) || 1),
-    }));
+    ).map((p) => {
+      const entry: PreferenceEntry = {
+        learning: p.learning,
+        provenance: (p.provenance ?? 'correction-loop') as PreferenceProvenance,
+        dedupeKey: p.dedupeKey,
+        recordedAt: typeof p.recordedAt === 'string' ? p.recordedAt : new Date(0).toISOString(),
+        confidence: clampConfidence(p.confidence),
+        dedupeCount: Math.max(1, Math.floor(p.dedupeCount) || 1),
+      };
+      // Back-compat: preserve an optional self-violation pattern when present;
+      // a file written before this field existed simply omits it (no check).
+      if (typeof p.violationPattern === 'string' && p.violationPattern.trim().length > 0) {
+        entry.violationPattern = p.violationPattern;
+      }
+      return entry;
+    });
     return {
       schemaVersion: typeof store.schemaVersion === 'number' ? store.schemaVersion : PREFERENCES_SCHEMA_VERSION,
       preferences,
@@ -225,6 +252,14 @@ export class PreferencesManager {
     const confidence = clampConfidence(payload.confidence);
     const provenance: PreferenceProvenance = payload.provenance ?? 'correction-loop';
 
+    // Optional self-violation pattern (Self-Violation Signal extension). Only a
+    // non-empty string is persisted; omitting it on an upsert preserves any
+    // existing pattern (never silently clears one already set).
+    const violationPattern =
+      typeof payload.violationPattern === 'string' && payload.violationPattern.trim().length > 0
+        ? payload.violationPattern.trim()
+        : undefined;
+
     const existing = store.preferences.find((p) => p.dedupeKey === payload.dedupeKey);
     let result: PreferenceEntry;
     if (existing) {
@@ -233,6 +268,7 @@ export class PreferencesManager {
       existing.confidence = Math.max(clampConfidence(existing.confidence), confidence);
       existing.dedupeCount = Math.max(1, existing.dedupeCount || 1) + 1;
       existing.provenance = provenance;
+      if (violationPattern !== undefined) existing.violationPattern = violationPattern;
       result = existing;
     } else {
       result = {
@@ -243,6 +279,7 @@ export class PreferencesManager {
         confidence,
         dedupeCount: 1,
       };
+      if (violationPattern !== undefined) result.violationPattern = violationPattern;
       store.preferences.push(result);
     }
 

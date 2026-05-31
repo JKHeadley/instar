@@ -35,6 +35,16 @@ The recurrence watcher in `CorrectionAnalyzer` then closes the loop: if the same
 
 The same watcher runs on the infra-gap path with a longer window (14 days vs. 7): if the friction recurs after a `/feedback` proposal, it reopens; but because an infra-gap fix is the upstream project's to ship — the agent cannot prove its own proposal caused the fix — silence is marked *inconclusive*, never a "verified" the agent didn't earn.
 
+## Self-Violation Signal
+
+A preference the agent recalls every session can still get *violated* — and until now that slip evaporated with no consequence. The **Self-Violation Signal** closes that gap by turning a self-violation into a learning signal.
+
+A learned preference can carry an optional **violation pattern** (a regular expression or a keyword set). When the agent sends an outbound message that contradicts that pattern — for example it says "I'll pick this up in a fresh session" against a "don't defer work to a fresh session" preference — the contradiction is recorded as a self-violation in the `CorrectionLedger`. Because it is keyed on the violated preference's own lesson, repeated self-violations of the same preference collapse to one record whose recurrence count climbs, so that preference is injected more prominently the next session. A stored-but-violated preference no longer fades; it becomes evidence.
+
+This is strictly **observe-only**. The detector (`SelfViolationDetector`) is a pure, deterministic, precision-biased function — a lone or weak match never fires, an unparseable pattern is a no-check, and it is guaranteed never to throw. It runs *after* the message text is finalized, as a fire-and-forget branch that is structurally independent of the outbound-message authority (`MessagingToneGate`): it cannot block, delay, rewrite, or alter the message, and on any internal error it silently no-ops while the message sends normally. A preference without a violation pattern is never checked, so existing preference files are fully compatible.
+
+It ships dark behind both `monitoring.correctionLearning.enabled` and a separate `monitoring.correctionLearning.selfViolationSignal` sub-flag, so it is inert unless explicitly enabled.
+
 ## The Preferences dashboard tab
 
 The **Preferences tab** in the dashboard is the calm, human read surface for everything above. It shows, in plain language, the preferences the agent has picked up about you (the same block the session-start hook injects) and the recent corrections it has noticed, each with a short scrubbed summary and its status. The exact words you used are never stored or shown — only the neutral summary. When the feature is off, the tab shows a friendly "not turned on yet" state rather than an error. It is read-only and never blocks or changes a message.
