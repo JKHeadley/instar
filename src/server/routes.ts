@@ -29,7 +29,7 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
-import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
+import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -1080,6 +1080,18 @@ export function createRoutes(ctx: RouteContext): Router {
       jargon?: boolean;
     },
   ): Promise<boolean> {
+    // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
+    // Record — but NEVER act on — the case where this finalized outbound
+    // message contradicts a stored preference. This runs as a fire-and-forget
+    // VOID call that is structurally independent of the tone-gate verdict and
+    // of this function's return value: it cannot block, delay, or rewrite the
+    // message. It runs FIRST (before the gate-availability early-return below)
+    // so the observation happens regardless of whether the tone gate exists or
+    // what it decides. Dark by default (gated inside on enabled+selfViolationSignal).
+    void observeSelfViolation(text, options.topicId).catch(() => {
+      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
+    });
+
     if (!ctx.messagingToneGate) return false; // No authority configured — pass through
 
     try {
@@ -1196,6 +1208,88 @@ export function createRoutes(ctx: RouteContext): Router {
       // Fail-open — any error short of a clean block lets the message through.
     }
     return false;
+  }
+
+  /**
+   * Self-Violation Signal — OBSERVE-ONLY (Correction & Preference Learning
+   * Sentinel extension).
+   *
+   * Runs `detectSelfViolation` against the agent's currently-active preferences
+   * and, on a hit, records the violation in the CorrectionLedger (reinforcing the
+   * matched preference's recurrence/salience) and emits a non-blocking audit line.
+   *
+   * HARD GUARANTEES (the user's explicit constraint — "guards that block messages
+   * have too much power"):
+   *   - SIGNAL-ONLY: this function returns void. It is called as a fire-and-forget
+   *     branch in checkOutboundMessage and has NO path to block, delay, rewrite,
+   *     or otherwise influence the outbound message or the gate's verdict.
+   *   - FAIL-OPEN: every operation is guarded; any throw is swallowed. It never
+   *     propagates an error to the delivery seam.
+   *   - DARK BY DEFAULT: inert unless BOTH `monitoring.correctionLearning.enabled`
+   *     AND `monitoring.correctionLearning.selfViolationSignal` are true, AND a
+   *     correction ledger is wired.
+   */
+  async function observeSelfViolation(text: string, topicId?: number): Promise<void> {
+    try {
+      const cl = ctx.config.monitoring?.correctionLearning;
+      // Dark unless explicitly enabled AND the sub-flag is on AND a ledger exists.
+      if (cl?.enabled !== true || cl?.selfViolationSignal !== true) return;
+      if (!ctx.correctionLedger) return;
+      if (typeof text !== 'string' || text.trim().length === 0) return;
+
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const { detectSelfViolation } = await import('../monitoring/SelfViolationDetector.js');
+
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const store = manager.read();
+      const active = store.preferences.filter((p) => typeof p.violationPattern === 'string');
+      if (active.length === 0) return; // no checkable preferences → nothing to do
+
+      const violations = detectSelfViolation(text, active);
+      if (violations.length === 0) return;
+
+      for (const v of violations) {
+        // Record a self-violation occurrence. dedupeKey is the violated
+        // preference's own key so repeated self-violations of the SAME preference
+        // collapse to one record and ESCALATE its recurrence in the analyzer.
+        // deterministicWeight is set at the code-determined threshold so the
+        // occurrence counts toward the recurrence gate (an explicit regex/keyword
+        // hit is a full-confidence, code-determined signal — never LLM-inferred).
+        const learning = scrubCorrectionSecrets(
+          `self-violation: outbound message contradicted preference "${v.preference.learning}"`,
+        );
+        const summary = scrubCorrectionSecrets(
+          `Self-violation of a stored preference (matched ${v.matchKind}).`,
+        );
+        ctx.correctionLedger.record({
+          kind: 'user-preference',
+          learning,
+          scrubbedSummary: summary,
+          deterministicWeight: LEARNING_DETERMINISTIC_THRESHOLD,
+          llmConfidence: 0,
+          topicId: typeof topicId === 'number' ? topicId : null,
+        });
+
+        // Non-blocking audit line — observability only.
+        try {
+          process.stderr.write(
+            `[self-violation] ${JSON.stringify({
+              t: new Date().toISOString(),
+              kind: 'self-violation',
+              topicId: topicId ?? null,
+              dedupeKey: v.preference.dedupeKey,
+              matchKind: v.matchKind,
+              matchedHead: v.matchedText.slice(0, 80),
+            })}\n`,
+          );
+        } catch {
+          /* @silent-fallback-ok — audit must never throw */
+        }
+      }
+    } catch {
+      // @silent-fallback-ok — observe-only; any error silently no-ops and the
+      // outbound message is unaffected.
+    }
   }
 
   /**
