@@ -1,8 +1,8 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-05-31T02:23:37.453Z",
-  "instarVersion": "1.3.132",
+  "generatedAt": "2026-05-31T02:37:47.049Z",
+  "instarVersion": "1.3.134",
   "entryCount": 193,
   "entries": {
     "hook:session-start": {
@@ -1457,7 +1457,7 @@
       "type": "subsystem",
       "domain": "server",
       "sourcePath": "src/server/AgentServer.ts",
-      "contentHash": "7afd4de6f797ddcf378b91eb0b1cf903bed22b2e153709238ce5fd51dee67659",
+      "contentHash": "9a47e31522e076c933c0e5267b7c1373bb3cd45ab5509114e30796857e9b093e",
       "since": "2025-01-01"
     },
     "subsystem:session-manager": {

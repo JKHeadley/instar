@@ -39,6 +39,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 
 export type RateLimitTrigger = 'watchdog-poll' | 'idle-error' | string;
 
@@ -95,6 +96,18 @@ export interface RateLimitSentinelDeps {
   /** Resolve a session's Claude Code session UUID for exact-file jsonl lookup. */
   getClaudeSessionId?: (sessionName: string) => string | undefined;
 
+  /**
+   * Resolve a session's framework ('codex-cli' | 'claude-code' | undefined) — the value
+   * carried on a running session. When it returns 'codex-cli', recovery-verification
+   * reads the newest codex ROLLOUT jsonl (account-wide growth = the account-wide OpenAI
+   * throttle cleared) instead of the Claude transcript. Absent/non-codex → the unchanged
+   * Claude path is used (Claude behavior byte-for-byte preserved). #33.
+   */
+  getSessionFramework?: (sessionName: string) => string | undefined;
+
+  /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
+  codexHome?: string;
+
   /** Defer (skip starting) recovery when this returns true — e.g. compaction recovery in flight. */
   deferIf?: (sessionName: string) => boolean;
 
@@ -112,6 +125,14 @@ export interface RateLimitSentinelDeps {
 export interface RateLimitSentinelConfig {
   /** Master kill switch. When false, report() is a no-op. */
   enabled?: boolean;
+  /**
+   * #33 codex parity: enable the codex account-usage detection poll (server-side), which
+   * reports throttled codex sessions into the sentinel so its (codex-aware) recovery runs
+   * for codex exactly as it does for Claude. Ships DARK (default off / undefined) — the
+   * Claude detection triggers are unaffected; flip on after a live codex-throttle
+   * verification. Rollback = set false.
+   */
+  codexUsageDetection?: boolean;
   /** Escalating wait (ms) before each re-engagement attempt for a THROTTLE/rate-limit
    *  recovery. Last value repeats. */
   backoffScheduleMs?: number[];
@@ -133,6 +154,7 @@ export interface RateLimitSentinelConfig {
 
 const DEFAULTS: Required<RateLimitSentinelConfig> = {
   enabled: true,
+  codexUsageDetection: false, // #33 codex detection ships DARK
   backoffScheduleMs: [30_000, 60_000, 120_000, 300_000, 300_000, 300_000],
   transientApiBackoffScheduleMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000],
   maxAttempts: 6,
@@ -169,6 +191,7 @@ export class RateLimitSentinel extends EventEmitter {
     this.deferIf = deps.deferIf;
     this.cfg = {
       enabled: config.enabled ?? DEFAULTS.enabled,
+      codexUsageDetection: config.codexUsageDetection ?? DEFAULTS.codexUsageDetection,
       backoffScheduleMs: config.backoffScheduleMs ?? DEFAULTS.backoffScheduleMs,
       transientApiBackoffScheduleMs: config.transientApiBackoffScheduleMs ?? DEFAULTS.transientApiBackoffScheduleMs,
       maxAttempts: config.maxAttempts ?? DEFAULTS.maxAttempts,
@@ -236,13 +259,14 @@ export class RateLimitSentinel extends EventEmitter {
     );
     this.emit('rate-limit:detected', state);
 
-    // Immediate user notice (fixed template, no LLM), worded per error class.
+    // Immediate user notice (fixed template, no LLM), worded per error class + vendor.
+    const v = this.vendor(sessionName);
     void this.notify(
       sessionName,
       errorClass === 'transient-api'
-        ? "Heads up — Claude hit a transient API error (likely a brief server-side blip). " +
+        ? `Heads up — ${v.agent} hit a transient API error (likely a brief server-side blip). ` +
           "I'm waiting a moment and will retry. You haven't been dropped — I'll pick up where I left off."
-        : "Heads up — Claude hit a temporary server-side throttle on Anthropic's side " +
+        : `Heads up — ${v.agent} hit a temporary server-side throttle on ${v.provider}'s side ` +
           '(not your usage limit). I\'m backing off and will keep retrying. ' +
           "You haven't been dropped — I'll check back in.",
     );
@@ -340,6 +364,7 @@ export class RateLimitSentinel extends EventEmitter {
 
   private async verify(state: RateLimitRecoveryState): Promise<void> {
     this.timers.delete(state.sessionName);
+    const v = this.vendor(state.sessionName);
 
     const current = this.readJsonlBaseline(state.sessionName);
     const grew =
@@ -358,7 +383,7 @@ export class RateLimitSentinel extends EventEmitter {
         state.sessionName,
         state.errorClass === 'transient-api'
           ? 'Back online — the API error cleared. Continuing where I left off.'
-          : "Back online — Anthropic's throttle cleared. Continuing where I left off.",
+          : `Back online — ${v.provider}'s throttle cleared. Continuing where I left off.`,
       );
       this.finalize(state, 'recovered');
       return;
@@ -376,7 +401,7 @@ export class RateLimitSentinel extends EventEmitter {
       void this.notify(
         state.sessionName,
         `Still can't get through after ${state.attempts} tries over ${humanizeMs(elapsed)}. ` +
-        "This is on Anthropic's side — status.claude.com has live capacity notices. " +
+        `This is on ${v.provider}'s side — ${v.statusUrl} has live capacity notices. ` +
         "I'll keep an eye out; you can also just message me to retry.",
       );
       this.finalize(
@@ -395,7 +420,7 @@ export class RateLimitSentinel extends EventEmitter {
         state.sessionName,
         state.errorClass === 'transient-api'
           ? `Still hitting an API error — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. Still here, haven't dropped you.`
-          : `Still throttled on Anthropic's side — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. ` +
+          : `Still throttled on ${v.provider}'s side — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. ` +
             "Still here, haven't dropped you.",
       );
     }
@@ -428,7 +453,28 @@ export class RateLimitSentinel extends EventEmitter {
     }
   }
 
+  /**
+   * Per-session vendor labels for user-facing throttle messages. A codex session's
+   * throttle is OpenAI's, not Anthropic's — so the wording + status URL follow the
+   * session's framework (#33). Non-codex returns the exact prior Claude strings, so the
+   * Claude-facing messages are byte-for-byte unchanged.
+   */
+  private vendor(sessionName: string): { provider: string; agent: string; statusUrl: string } {
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+      return { provider: 'OpenAI', agent: 'Codex', statusUrl: 'status.openai.com' };
+    }
+    return { provider: 'Anthropic', agent: 'Claude', statusUrl: 'status.claude.com' };
+  }
+
   private readJsonlBaseline(sessionName: string): { path: string; size: number; mtime: number } | null {
+    // #33 codex parity: a codex session's transcript is the newest rollout JSONL under
+    // $CODEX_HOME/sessions (the OpenAI throttle is account-wide, so the newest rollout's
+    // growth is the account-wide "is codex producing output again?" signal). Only taken
+    // for codex sessions; everything else falls through to the unchanged Claude path
+    // below (Claude behavior is byte-for-byte preserved).
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+      return findNewestRolloutSync(this.deps.codexHome);
+    }
     try {
       const root = this.deps.jsonlRoot
         || path.join(process.env.HOME || '/tmp', '.claude', 'projects',
