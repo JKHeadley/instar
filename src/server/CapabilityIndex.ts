@@ -564,6 +564,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /corrections — list distilled, scrubbed correction/preference records (toApiView strips raw text; keyset pagination via ?before/?limit/?kind/?status)',
         'GET /corrections/:id — one record (scrubbed_summary + metadata only)',
         'POST /corrections — agent-diagnosed one-tap (requires X-Instar-Request: 1)',
+        'POST /corrections/analyze — 3-pronged recurrence gate + closed-loop tick (driven by the off-by-default correction-analyzer job)',
       ],
       hint: 'Ships OFF; when disabled these routes 503. The session-start hook fetches /preferences/session-context on every boot and injects the <auto-learned-preference> block. The /corrections API never serves raw learning text.',
     }),

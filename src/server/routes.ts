@@ -10955,6 +10955,112 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(201).json(CorrectionLedger.toApiView(rec));
   });
 
+  // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
+  // Sentinel, spec §3.5/§3.6/§3.7). Invoked by the off-by-default
+  // `correction-analyzer` builtin job (Tier-1 supervised). Runs the 3-pronged
+  // recurrence gate, then ROUTES each crossing record by kind:
+  //   user-preference (policy-clean) → recordPreference()
+  //   user-preference (policy-match) → Attention (human disposes)
+  //   infra-gap (autoFeedback OFF, default) → tracked Action + draft Initiative
+  //   infra-gap (autoFeedback ON) → loopback POST /feedback (real route guards)
+  // …then opens a verify window. BY-CONSTRUCTION authority guard: the loop's
+  // injected deps carry NO proposal-minting and NO direct memory-file write.
+  router.post('/corrections/analyze', async (req, res) => {
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    try {
+      const cl = ctx.config.monitoring?.correctionLearning;
+      const { CorrectionAnalyzer } = await import('../monitoring/CorrectionAnalyzer.js');
+      const { CorrectionLoopDriver } = await import('../monitoring/CorrectionLoopDriver.js');
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+
+      const analyzer = new CorrectionAnalyzer(ctx.correctionLedger, {
+        minSupport: cl?.minSupport ?? 4,
+        minDistinctDaysInfraGap: cl?.minDistinctDaysInfraGap ?? 3,
+        minDistinctDaysPreference: cl?.minDistinctDaysPreference ?? 2,
+        minDistinctTopicsPreference: cl?.minDistinctTopicsPreference ?? 2,
+      });
+
+      const prefs = new PreferencesManager(ctx.config.stateDir);
+      const port = ctx.config.port;
+      const authToken = ctx.config.authToken;
+      const evo = ctx.evolution as { addAction?: (o: never) => { id: string } } | null;
+      const tracker = ctx.initiativeTracker;
+
+      // Loopback POST helpers — bearer-authed to the agent's OWN routes so they
+      // traverse the real middleware (feedback anomaly/quality/length guards;
+      // attention tone gate). Authorization is never logged.
+      const feedbackLoopbackPost = async (payload: { type: string; title: string; description: string }): Promise<boolean> => {
+        try {
+          const resp = await fetch(`http://localhost:${port}/feedback`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+              'X-Instar-Origin': 'correction-loop',
+            },
+            body: JSON.stringify(payload),
+          });
+          return resp.status === 201;
+        } catch { return false; }
+      };
+      const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
+        try {
+          const resp = await fetch(`http://localhost:${port}/attention`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+              'X-Instar-Origin': 'correction-loop',
+            },
+            body: JSON.stringify({ source: 'correction-loop', body: item.summary, ...item }),
+          });
+          return resp.status === 201;
+        } catch { return false; }
+      };
+
+      const driver = new CorrectionLoopDriver(ctx.correctionLedger, analyzer, {
+        addAction: (o) => (evo?.addAction ? evo.addAction(o as never) : { id: 'no-evolution' }),
+        createInitiative: async (i) => {
+          if (tracker?.create) {
+            const created = await tracker.create(i as never);
+            return { id: created.id };
+          }
+          return { id: i.id };
+        },
+        feedbackLoopbackPost,
+        recordPreference: (p) => { prefs.recordPreference(p); },
+        attentionRoute,
+        autoFeedback: cl?.autoFeedback === true,
+        verifyWindowDaysPreference: cl?.verifyWindowDaysPreference ?? 7,
+        verifyWindowDaysInfraGap: cl?.verifyWindowDaysInfraGap ?? 14,
+        maxReopens: cl?.maxReopens ?? 2,
+        preferenceStillPresent: (dedupeKey) =>
+          prefs.read().preferences.some((e) => e.dedupeKey === dedupeKey),
+      });
+
+      const analysis = analyzer.analyze();
+      const routed = await driver.route();
+      const verified = driver.runVerification().evaluated.length;
+      res.json({
+        analysis: {
+          considered: analysis.considered,
+          crossed: analysis.crossed.length,
+          belowThreshold: analysis.belowThreshold,
+        },
+        routed: {
+          total: routed.routed.length,
+          toFeedback: routed.toFeedback,
+          toPreferences: routed.toPreferences,
+          toAttention: routed.toAttention,
+        },
+        verified,
+      });
+    } catch (err) {
+      // Fail-open: the analyzer never crashes the caller (job).
+      res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime
   // project). Given two contending values, consults the organization's
   // tradeoff hierarchy and returns which wins, with the basis for the
