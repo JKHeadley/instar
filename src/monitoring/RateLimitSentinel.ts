@@ -125,6 +125,14 @@ export interface RateLimitSentinelDeps {
 export interface RateLimitSentinelConfig {
   /** Master kill switch. When false, report() is a no-op. */
   enabled?: boolean;
+  /**
+   * #33 codex parity: enable the codex account-usage detection poll (server-side), which
+   * reports throttled codex sessions into the sentinel so its (codex-aware) recovery runs
+   * for codex exactly as it does for Claude. Ships DARK (default off / undefined) — the
+   * Claude detection triggers are unaffected; flip on after a live codex-throttle
+   * verification. Rollback = set false.
+   */
+  codexUsageDetection?: boolean;
   /** Escalating wait (ms) before each re-engagement attempt for a THROTTLE/rate-limit
    *  recovery. Last value repeats. */
   backoffScheduleMs?: number[];
@@ -146,6 +154,7 @@ export interface RateLimitSentinelConfig {
 
 const DEFAULTS: Required<RateLimitSentinelConfig> = {
   enabled: true,
+  codexUsageDetection: false, // #33 codex detection ships DARK
   backoffScheduleMs: [30_000, 60_000, 120_000, 300_000, 300_000, 300_000],
   transientApiBackoffScheduleMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000],
   maxAttempts: 6,
@@ -182,6 +191,7 @@ export class RateLimitSentinel extends EventEmitter {
     this.deferIf = deps.deferIf;
     this.cfg = {
       enabled: config.enabled ?? DEFAULTS.enabled,
+      codexUsageDetection: config.codexUsageDetection ?? DEFAULTS.codexUsageDetection,
       backoffScheduleMs: config.backoffScheduleMs ?? DEFAULTS.backoffScheduleMs,
       transientApiBackoffScheduleMs: config.transientApiBackoffScheduleMs ?? DEFAULTS.transientApiBackoffScheduleMs,
       maxAttempts: config.maxAttempts ?? DEFAULTS.maxAttempts,

@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { RateLimitSentinel } from '../../src/monitoring/RateLimitSentinel.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const FIRST_BACKOFF = 30_000;
 const VERIFY = 25_000;
@@ -19,7 +20,7 @@ function makeCodexHome() {
   const rollout = path.join(dayDir, 'rollout-2026-05-31T09-00-00-aaaa1111-0000-0000-0000-000000000001.jsonl');
   return {
     codexHome: path.join(home, '.codex'),
-    cleanup: () => fs.rmSync(home, { recursive: true, force: true }),
+    cleanup: () => SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/RateLimitSentinel-codex-recovery.test.ts:cleanup' }),
     write: (bytes: number) => fs.writeFileSync(rollout, 'x'.repeat(bytes)),
   };
 }

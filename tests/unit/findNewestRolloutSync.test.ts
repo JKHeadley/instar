@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findNewestRolloutSync } from '../../src/providers/adapters/openai-codex/observability/sessionPaths.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let home: string;
 
@@ -23,7 +24,7 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-newest-'));
 });
 afterEach(() => {
-  fs.rmSync(home, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/findNewestRolloutSync.test.ts:cleanup' });
 });
 
 describe('findNewestRolloutSync (#33)', () => {
