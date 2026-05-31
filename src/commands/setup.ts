@@ -1296,6 +1296,21 @@ function selfHealNodeSymlink() {
       if (p !== currentNode && fs.existsSync(p)) candidates.push(p);
     }
 
+    // FLEET FIX (version-managed node candidates — instar-codey node-25/ABI-141
+    // deadlock): also consider the PATH-resolved node ("which node"). After a
+    // \`brew upgrade\` drifts the well-known node forward (e.g. Node 25 / ABI 141),
+    // a version-managed node (asdf / nvm / volta, which never appears in the
+    // well-known list) is often the ONLY node whose ABI still matches an existing
+    // native module (e.g. an ABI-127 better-sqlite3). Without it as a candidate the
+    // wrapper cannot heal BACK to a loadable node and self-heals FORWARD to the
+    // wrong ABI. "which node" resolves through asdf/nvm shims via PATH, so it picks
+    // up the version-managed node the rest of the system is actually using.
+    try {
+      const cpWhich = require('child_process');
+      const resolved = cpWhich.execFileSync('which', ['node'], { encoding: 'utf-8', timeout: 5000 }).trim();
+      if (resolved && fs.existsSync(resolved) && !candidates.includes(resolved)) candidates.push(resolved);
+    } catch { /* "which" unavailable or no node on PATH — best-effort */ }
+
     // Check if native modules exist — if so, prefer a node with the same major version
     const sqliteNode = path.join(${JSON.stringify(stateDir)}, 'shadow-install', 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
     let best = currentNode;

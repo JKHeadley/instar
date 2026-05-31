@@ -270,14 +270,23 @@ export class PostUpdateMigrator {
       result.errors.push(`boot-wrapper ABI-check read: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    // Marker string emitted by the new selfHealNodeSymlink ABI branch.
-    if (content.includes('cannot load better-sqlite3 (ABI drift)')) {
+    // Marker strings the current boot wrapper must contain to be considered
+    // up-to-date. Both are required:
+    //  - 'cannot load better-sqlite3 (ABI drift)' — the ABI-check self-heal branch.
+    //  - 'version-managed node candidates' — the asdf/nvm `which node` candidate
+    //    discovery (instar-codey node-25/ABI-141 deadlock fix). An install that has
+    //    the ABI check but NOT this marker (e.g. instar-codey) self-heals FORWARD to
+    //    the wrong ABI and cannot recover — it must be regenerated.
+    if (
+      content.includes('cannot load better-sqlite3 (ABI drift)') &&
+      content.includes('version-managed node candidates')
+    ) {
       result.skipped.push('boot-wrapper ABI-check: already current');
       return;
     }
     try {
       installBootWrapper(this.config.projectDir);
-      result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal');
+      result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
     }
