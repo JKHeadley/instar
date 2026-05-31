@@ -202,5 +202,31 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json upgrades/
           git commit -m "chore: release v${{ steps.bump.outputs.version }} [skip ci]"
+          # Push the release commit, rebasing onto any PR MERGE that landed on
+          # main while this publish was running. Publishes are already serialized
+          # against each other by the workflow `concurrency` group, but a
+          # concurrent merge (a different workflow) can still move main between
+          # our fetch and our push, rejecting it. Concurrent merges are NOT
+          # releases — they never bump npm — so the version this run resolved
+          # stays valid: a clean rebase + re-push, no version re-resolution.
+          # The common path (push succeeds first try) is unchanged; the retry
+          # only runs on a rejected push.
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin main; then pushed=true; break; fi
+            echo "push rejected — main moved (likely a concurrent merge); rebasing and retrying (attempt ${attempt})"
+            git fetch origin main
+            if ! git rebase origin/main; then
+              echo "::error::release commit could not be rebased cleanly onto main (conflict) — aborting rather than force-pushing"
+              git rebase --abort || true
+              exit 1
+            fi
+          done
+          if [ "${pushed}" != "true" ]; then
+            echo "::error::could not push the release commit after 5 rebase-retries"
+            exit 1
+          fi
+          # Tag the FINAL (possibly rebased) commit and push the tag separately,
+          # so the tag always points at the commit that actually landed on main.
           git tag "v${{ steps.bump.outputs.version }}"
-          git push origin main --tags
+          git push origin "v${{ steps.bump.outputs.version }}"
