@@ -24,6 +24,9 @@ const MACHINE_DIR = 'machine';
 const MACHINES_DIR = 'machines';
 const IDENTITY_FILE = 'identity.json';
 const SIGNING_KEY_FILE = 'signing-key.pem';
+// Pre-canonical-rename name some machine identities were keyed under; loadSigningKey
+// falls back to it so a legacy-keyed agent's lease coordinator still attaches.
+const LEGACY_SIGNING_KEY_FILE = 'signing-private.pem';
 const ENCRYPTION_KEY_FILE = 'encryption-key.pem';
 const REGISTRY_FILE = 'registry.json';
 const KEY_FILE_MODE = 0o600;
@@ -243,7 +246,21 @@ export class MachineIdentityManager {
    * Load this machine's Ed25519 signing private key (PEM format).
    */
   loadSigningKey(): string {
-    return fs.readFileSync(this.signingKeyPath, 'utf-8');
+    try {
+      return fs.readFileSync(this.signingKeyPath, 'utf-8');
+    } catch (err) {
+      // Legacy fallback: machine identities created before the canonical rename
+      // wrote the signing key as 'signing-private.pem' (not 'signing-key.pem').
+      // Without this, such an agent throws ENOENT here — which aborts the whole
+      // lease-coordinator setup (found live 2026-05-31: the mini, keyed under the
+      // legacy name, never attached its LeaseCoordinator → never resolved the
+      // holder → MeshRpc rejected cross-machine transfer as not-router).
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        const legacy = path.join(this.machineDir, LEGACY_SIGNING_KEY_FILE);
+        if (fs.existsSync(legacy)) return fs.readFileSync(legacy, 'utf-8');
+      }
+      throw err;
+    }
   }
 
   /**
