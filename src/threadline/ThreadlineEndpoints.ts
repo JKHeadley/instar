@@ -410,24 +410,34 @@ export function createThreadlineRoutes(
           createdAt: new Date().toISOString(),
         },
       };
-      const result = await threadlineRouter.handleInboundMessage(envelope);
+      // Accept-boundary (#3 / issue-580): respond the instant the message is
+      // accepted + authenticated, then run the (typically 9-30s) spawn in the
+      // BACKGROUND. The sole senders (MessageRouter cross-machine relay and
+      // AgentBus.httpSend) read only `response.ok` within a ~10s timeout and
+      // fall back to a durable queue on failure — so AWAITING the spawn meant
+      // the sender timed out before we replied, treated delivery as failed, and
+      // retried with a FRESH nonce/id that slipped past the nonce + id dedup,
+      // causing a DUPLICATE spawn/reply. This mirrors the proven co-located fix
+      // (#581, /messages/relay-agent). The reply itself flows back via the
+      // decoupled reply-waiter, not this HTTP response, so no caller's
+      // correctness depends on the synchronous spawn outcome; a genuine
+      // background failure is logged (it cannot 500 a response that already
+      // returned). The former 422-retryable path was already unreachable — the
+      // sender aborts at ~10s, long before the 9-30s spawn produced it.
+      res.json({ accepted: true, async: true, threadId: body.message?.threadId });
 
-      if (result.error) {
-        res.status(422).json(makeError(
-          ERROR_CODES.TL_INTERNAL_ERROR,
-          result.error,
-          true,
-          5,
-        ));
-        return;
-      }
-
-      res.json({
-        accepted: true,
-        threadId: result.threadId,
-        spawned: result.spawned,
-        resumed: result.resumed,
-      });
+      void threadlineRouter.handleInboundMessage(envelope)
+        .then((result) => {
+          if (result?.error) {
+            console.warn(
+              `[ThreadlineEndpoints] Background handleInboundMessage reported: ${result.error}`,
+            );
+          }
+        })
+        .catch((err) => {
+          console.error('[ThreadlineEndpoints] Background handleInboundMessage failed:', err);
+        });
+      return;
     } catch (err) {
       console.error('[ThreadlineEndpoints] Message receive error:', err);
       res.status(500).json(makeError(
