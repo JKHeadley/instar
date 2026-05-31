@@ -336,6 +336,86 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     expect(injectedText).toContain('stripe data');
   });
 
+  // #16 — salience-gated surface for the resume-pending (dormant session) path.
+  // A dormant session can't relay inline, so the reply is durably stored and
+  // picked up on the topic's next interaction. We must NOT fire a noisy Telegram
+  // post for low-salience intermediate a2a chatter — only for salient replies (or
+  // genuine delivery failures, via the separate failure-visible safety valve).
+  const lowSalience = () => new SalienceGate({
+    classify: async () => ({ verdict: 'agent-internal' as const, reason: 'low-salience chatter' }),
+  });
+  const highSalience = () => new SalienceGate({
+    classify: async () => ({ verdict: 'user-visible' as const, reason: 'the awaited answer' }),
+  });
+
+  it('resume-pending + agent-internal (low-salience) → does NOT surface (the #16 fix: quiet, picked up next interaction)', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      // Registered session name exists (→ topic is active) but it isn't actually
+      // alive → resume-pending (deliver on next interaction, not live-inject).
+      getSessionForTopic: vi.fn().mockReturnValue('echo-topic-9210'),
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      salienceGate: lowSalience(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-quiet', remoteAgent: 'ai-guy', originTopicId: 9210 });
+
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-quiet', body: 'just an ack, nothing to see' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' },
+    });
+
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') {
+      expect(out.deliveryMode).toBe('resume-pending');
+      expect(out.verdict).toBe('agent-internal');
+    }
+    expect(sendTg).not.toHaveBeenCalled(); // quiet — no noisy topic post
+  });
+
+  it('resume-pending + user-visible (salient) → DOES surface', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      getSessionForTopic: vi.fn().mockReturnValue('echo-topic-9210'),
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      salienceGate: highSalience(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-salient', remoteAgent: 'ai-guy', originTopicId: 9210 });
+
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-salient', body: 'here is the answer you were waiting for' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' },
+    });
+
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') expect(out.deliveryMode).toBe('resume-pending');
+    expect(sendTg).toHaveBeenCalledTimes(1); // salient → surface
+  });
+
+  it('failure-visible + agent-internal → STILL surfaces (safety valve — a genuine delivery failure is never hidden)', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      isSessionAlive: vi.fn().mockReturnValue(true),
+      injectIntoSession: vi.fn().mockReturnValue(false), // stalled inject → failure-visible
+      salienceGate: lowSalience(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-fail', remoteAgent: 'ai-guy', originTopicId: 9210 });
+
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-fail', body: 'low-salience but delivery failed' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210 },
+    });
+
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') expect(out.deliveryMode).toBe('failure-visible');
+    expect(sendTg).toHaveBeenCalledTimes(1); // failure → always surface despite agent-internal
+  });
+
   it('still surfaces first reply as user-visible when beacon has already heartbeated (slow-reply regression)', async () => {
     // Regression for the reviewer-flagged bug: previously `isFirstReply` was
     // derived from `commitment.heartbeatCount`, which is incremented by

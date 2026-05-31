@@ -417,28 +417,43 @@ export class TopicLinkageHandler {
         );
       }
     } else if (sessionName) {
-      // Session not alive — the message is durably recorded in MessageStore by
-      // the inbound path; the topic's standard wake path (user message arrives
-      // → spawn-or-resume) will surface this on the next interaction. We do
-      // NOT auto-spawn a session here: that's the topic-resume infrastructure's
-      // job, and spawning two sessions on top of one topic is a race we don't
-      // need to fight.
+      // Session registered but not alive. We do NOT auto-spawn a session here
+      // (that's the topic-resume infrastructure's job; spawning a second session
+      // on top of one topic is a race we don't need to fight). The reply is
+      // recorded in the ConversationStore (the browsable Threadline hub) on the
+      // inbound path; whether it ALSO fires a topic notification is decided by
+      // the salience-gated surface below (salient → surface; low-salience →
+      // quiet, hub only). NOTE: there is no automatic topic-resume REPLAY of a
+      // quieted reply — recovery of a low-salience reply is via the hub.
       deliveryMode = 'resume-pending';
     }
 
-    // Telegram surface. User-visible verdicts post a notification. failure-
-    // visible delivery mode forces a notification regardless of verdict so the
-    // user always knows something arrived even if our auto-pickup failed.
-    // Surface to Telegram UNLESS we CONFIRMED the live session consumed the
-    // reply — in that case the agent itself relays it, so a deterministic
-    // surface would double-post. A stalled inject yields 'failure-visible'
-    // here, so the safety-net surface fires exactly when the live hand-off
-    // didn't actually take (the A2 fix).
+    // Salience-gated Telegram surface (#16 — suppress low-salience a2a chatter).
+    //   - live-inject confirmed → NEVER surface (the agent relays the reply
+    //     inline; a deterministic surface would double-post).
+    //   - failure-visible (a stalled inject, or no auto-pickup path) → ALWAYS
+    //     surface regardless of salience, so a real reply is never hidden when
+    //     our hand-off didn't actually take (the A2 safety valve).
+    //   - resume-pending (dormant session) → surface ONLY if the reply is
+    //     user-visible (salient). A low-salience reply stays QUIET in the user's
+    //     topic: it is recorded in the ConversationStore — the browsable
+    //     Threadline hub (the dashboard's Threadline tab) — via
+    //     evaluateAndRecordInbound on the inbound path, so it is not lost; it
+    //     just doesn't fire a noisy topic post for intermediate agent-to-agent
+    //     chatter. This is exactly the "suppress low-salience chatter to the
+    //     silent hub" behavior. (Note: there is no automatic topic-resume replay
+    //     of the suppressed reply — recovery is via the browsable hub.)
+    // Before #16 the verdict was effectively ignored here: deliveryMode is always
+    // one of the three above, so the old OR-clause (`verdict==='user-visible' ||
+    // deliveryMode==='failure-visible' || deliveryMode==='resume-pending'`) passed
+    // for EVERY non-live-inject delivery — so every dormant reply surfaced
+    // regardless of salience. That was the spam. Now the computed salience
+    // actually gates the dormant-session surface (the classifier's first-reply
+    // fallback still surfaces first contact, so a genuine first answer is never
+    // hidden even when the classifier is unavailable).
     const shouldSurface =
-      deliveryMode !== 'live-inject' &&
-      (verdictResult.verdict === 'user-visible' ||
-        deliveryMode === 'failure-visible' ||
-        deliveryMode === 'resume-pending');
+      deliveryMode === 'failure-visible' ||
+      (deliveryMode === 'resume-pending' && verdictResult.verdict === 'user-visible');
 
     // Rate-limit the surface: per-thread (no double-fire within the window) AND
     // per-topic (anti-flood/bypass guard against many threads against one topic).
