@@ -61,12 +61,35 @@ export class LlmCircuitOpenError extends Error {
  * "error"/"failed"/timeout text.
  */
 export function isRateLimitError(message: string | null | undefined): boolean {
-  if (!message) return false;
+  return classifyRateLimit(message).isLimit;
+}
+
+/** Sanity clamp for any parsed retry-after hint (ms). */
+const RETRY_AFTER_MIN_MS = 1_000; // 1s
+const RETRY_AFTER_MAX_MS = 15 * 60_000; // 15min
+
+/**
+ * Classify an error message as a rate-limit/quota condition AND, best-effort,
+ * extract a retry-after hint in milliseconds.
+ *
+ * SUPERSET of isRateLimitError: `isLimit` uses the exact same phrase/429/402
+ * detection. The CLI error text is unstructured (the underlying HTTP
+ * retry-after header is invisible to us — we only see the `claude -p` error
+ * string), so `retryAfterMs` is returned only when a duration phrase parses;
+ * callers fall back to the flat default window otherwise.
+ */
+export function classifyRateLimit(message: string | null | undefined): {
+  isLimit: boolean;
+  retryAfterMs?: number;
+} {
+  if (!message) return { isLimit: false };
   const m = message.toLowerCase();
 
+  let isLimit = false;
+
   // Explicit HTTP status codes for limit / billing rejections.
-  if (/\b429\b/.test(m)) return true; // Too Many Requests
-  if (/\b402\b/.test(m)) return true; // Payment Required
+  if (/\b429\b/.test(m)) isLimit = true; // Too Many Requests
+  if (/\b402\b/.test(m)) isLimit = true; // Payment Required
 
   const phrases = [
     'rate limit',
@@ -92,15 +115,54 @@ export function isRateLimitError(message: string | null | undefined): boolean {
     'spending limit',
     'billing',
   ];
-  if (phrases.some((p) => m.includes(p))) return true;
+  if (phrases.some((p) => m.includes(p))) isLimit = true;
 
   // "exceeded ... (limit|quota|usage)" with words in between.
-  if (/exceed(?:ed|s)?\b[^.\n]{0,40}(?:limit|quota|usage|credit)/.test(m)) return true;
+  if (/exceed(?:ed|s)?\b[^.\n]{0,40}(?:limit|quota|usage|credit)/.test(m)) isLimit = true;
 
   // Bare "quota" is a strong-enough signal on its own (Anthropic/OpenAI both use it).
-  if (/\bquota\b/.test(m)) return true;
+  if (/\bquota\b/.test(m)) isLimit = true;
 
-  return false;
+  const retryAfterMs = parseRetryAfterMs(m);
+  return retryAfterMs !== undefined ? { isLimit, retryAfterMs } : { isLimit };
+}
+
+/**
+ * Best-effort parse of a retry-after hint from an (already lower-cased) error
+ * message. Returns milliseconds clamped to a sane range, or undefined. Matches,
+ * in priority order: explicit retry-after, "resets/try again in Ns", then
+ * "resets/try again in Nm" and a bare "N minutes" fallback.
+ */
+function parseRetryAfterMs(m: string): number | undefined {
+  let seconds: number | undefined;
+
+  // retry-after: <N>  /  retry after <N> seconds|s
+  let match = /retry[\s-]?after:?\s*(\d+(?:\.\d+)?)\s*(?:seconds?|s)?\b/.exec(m);
+  if (match) seconds = Number(match[1]);
+
+  // resets in <N>s / reset in <N> seconds / try again in <N>s
+  if (seconds === undefined) {
+    match = /(?:resets?|try again)\s+in\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/.exec(m);
+    if (match) seconds = Number(match[1]);
+  }
+
+  // resets in <N>m / reset in <N> minutes / try again in <N> minutes
+  if (seconds === undefined) {
+    match = /(?:resets?|try again)\s+in\s+(\d+(?:\.\d+)?)\s*(?:minutes?|m)\b/.exec(m);
+    if (match) seconds = Number(match[1]) * 60;
+  }
+
+  // bare "<N> minutes" fallback.
+  if (seconds === undefined) {
+    match = /(\d+(?:\.\d+)?)\s*minutes?\b/.exec(m);
+    if (match) seconds = Number(match[1]) * 60;
+  }
+
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) {
+    return undefined;
+  }
+  const ms = seconds * 1000;
+  return Math.min(Math.max(ms, RETRY_AFTER_MIN_MS), RETRY_AFTER_MAX_MS);
 }
 
 type CircuitState = 'closed' | 'open' | 'half-open';
@@ -114,6 +176,10 @@ export interface LlmCircuitBreakerOptions {
   now?: () => number;
   /** Injectable logger (defaults to console.warn → server log). */
   log?: (line: string) => void;
+  /** Injectable sleep for tests. Default real setTimeout-backed promise. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Poll interval (ms) used by acquireOrWait while a probe is in flight. Default 250. */
+  probePollMs?: number;
 }
 
 export interface AcquireDecision {
@@ -136,6 +202,7 @@ export interface LlmCircuitBreakerStatus {
 }
 
 const DEFAULT_OPEN_MS = 15 * 60_000; // 15 minutes
+const DEFAULT_PROBE_POLL_MS = 250;
 
 export class LlmCircuitBreaker {
   private state: CircuitState = 'closed';
@@ -150,12 +217,25 @@ export class LlmCircuitBreaker {
   private enabled: boolean;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly probePollMs: number;
+  /**
+   * The window length for the CURRENT trip — may be shortened (toward
+   * min(30s, openMs)) by a parsed retry-after hint so waiters don't sit out the
+   * full flat cooldown when the provider told us when it resets. Reset to openMs
+   * on a clean close. The open window is [firstOpenedAt, openUntil); openUntil
+   * is firstOpenedAt + currentOpenMs.
+   */
+  private currentOpenMs: number;
 
   constructor(opts: LlmCircuitBreakerOptions = {}) {
     this.openMs = opts.openMs && opts.openMs > 0 ? opts.openMs : DEFAULT_OPEN_MS;
     this.enabled = opts.enabled ?? true;
     this.now = opts.now ?? (() => Date.now());
     this.log = opts.log ?? ((line) => console.warn(line));
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.probePollMs = opts.probePollMs && opts.probePollMs > 0 ? opts.probePollMs : DEFAULT_PROBE_POLL_MS;
+    this.currentOpenMs = this.openMs;
   }
 
   /** Runtime reconfiguration (called once at server startup from config). */
@@ -218,29 +298,83 @@ export class LlmCircuitBreaker {
     this.state = 'closed';
     this.probeInFlight = false;
     this.openUntil = 0;
+    // Clean slate — the next trip with no retry-after hint gets the full window.
+    this.currentOpenMs = this.openMs;
   }
 
   /**
    * Record that the underlying call was rejected for a usage/rate limit. Opens
-   * (or re-extends) the breaker for a full window.
+   * (or re-extends) the breaker for a window.
+   *
+   * When `retryAfterMs` is a finite, positive number (parsed best-effort from
+   * the provider error), the open window for THIS trip is shortened to that
+   * value, clamped to [min(30s, openMs), openMs] — so coherence-critical
+   * waiters don't sit out the full flat cooldown when the provider told us when
+   * it resets. Without a hint, the flat default window is used.
    */
-  onRateLimited(reason: string): void {
+  onRateLimited(reason: string, retryAfterMs?: number): void {
     if (!this.enabled) return;
     const now = this.now();
     if (this.state === 'closed') {
       this.firstOpenedAt = now;
     }
+    if (
+      typeof retryAfterMs === 'number' &&
+      Number.isFinite(retryAfterMs) &&
+      retryAfterMs > 0
+    ) {
+      const floor = Math.min(30_000, this.openMs);
+      this.currentOpenMs = Math.min(Math.max(retryAfterMs, floor), this.openMs);
+    } else {
+      this.currentOpenMs = this.openMs;
+    }
     this.tripCount += 1;
     this.lastReason = reason.slice(0, 200);
     this.lastTrippedAt = now;
     this.state = 'open';
-    this.openUntil = now + this.openMs;
+    this.openUntil = now + this.currentOpenMs;
     this.probeInFlight = false;
     this.log(
       `[llm-circuit] OPEN: provider rate-limited — pausing ALL LLM-backed work for ~${Math.round(
-        this.openMs / 1000,
+        this.currentOpenMs / 1000,
       )}s (trip #${this.tripCount}); reason: ${this.lastReason}`,
     );
+  }
+
+  /**
+   * Bounded wait-and-retry acquire — the coherence-critical primitive.
+   *
+   * Loops until either the breaker admits the caller (allow:true) or `maxWaitMs`
+   * elapses (allow:false — bounded fallback so the caller can fail open/closed
+   * on its own terms). When the breaker is open, sleeps until just past the
+   * window edge; when half-open with another caller's probe in flight, polls at
+   * probePollMs. This serializes waiters behind the single half-open probe:
+   * exactly one re-acquires the probe after the window, the rest poll until that
+   * probe's onResolved closes the breaker (then acquire returns closed→allow) or
+   * its onRateLimited reopens it (then they keep waiting until the deadline). No
+   * thundering herd — only one probe hits the provider.
+   *
+   * A passthrough (disabled) breaker allows immediately with no sleep.
+   */
+  async acquireOrWait(maxWaitMs: number): Promise<AcquireDecision> {
+    const deadline = this.now() + maxWaitMs;
+    let gate = this.acquire();
+    while (!gate.allow) {
+      const remaining = deadline - this.now();
+      if (remaining <= 0) break;
+      let waitMs: number;
+      if (this.state === 'open') {
+        // Sleep just past the window edge (gate.retryAfterMs is the remaining
+        // open window) so the next acquire() flips us to half-open.
+        waitMs = Math.min(gate.retryAfterMs + 1, remaining);
+      } else {
+        // half-open: someone else holds the probe — poll.
+        waitMs = Math.min(this.probePollMs, remaining);
+      }
+      await this.sleep(Math.max(0, waitMs));
+      gate = this.acquire();
+    }
+    return gate;
   }
 
   status(): LlmCircuitBreakerStatus {
@@ -262,6 +396,7 @@ export class LlmCircuitBreaker {
     this.openUntil = 0;
     this.firstOpenedAt = 0;
     this.probeInFlight = false;
+    this.currentOpenMs = this.openMs;
   }
 }
 

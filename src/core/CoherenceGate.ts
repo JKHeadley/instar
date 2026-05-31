@@ -131,6 +131,22 @@ const REVIEWER_CATEGORY_MAP: Record<string, string> = {
 /** Violation types for retry exhaustion handling */
 const HIGH_STAKES_CATEGORIES = new Set(['ACCURACY ISSUE', 'ALIGNMENT ISSUE']);
 
+/**
+ * Reviewers whose checks are coherence-critical (high criticality / high-stakes
+ * categories: value-alignment, claim-provenance, capability-accuracy,
+ * information-leakage). When the shared LLM circuit breaker is open, these wait
+ * up to HIGH_STAKES_RATE_LIMIT_WAIT_MS (bounded) for the window to clear rather
+ * than fail open and let a dangerous leak/false-claim through. All other
+ * reviewers omit the wait (instant fail-open, shedding load).
+ */
+const HIGH_STAKES_REVIEWERS = new Set([
+  'value-alignment',
+  'claim-provenance',
+  'capability-accuracy',
+  'information-leakage',
+]);
+const HIGH_STAKES_RATE_LIMIT_WAIT_MS = 60_000;
+
 // ── Value Document Cache ─────────────────────────────────────────────
 
 interface ValueDocCache {
@@ -631,8 +647,13 @@ export class CoherenceGate {
       const model = overrides[name] ?? defaultModel;
       const mode = reviewerConfig?.mode ?? 'block';
       const timeoutMs = config.timeoutMs ?? 8_000;
+      // High-stakes reviewers wait (bounded) for a rate-limit window rather than
+      // fail open; best-effort reviewers omit it.
+      const rateLimitWaitMs = HIGH_STAKES_REVIEWERS.has(name)
+        ? HIGH_STAKES_RATE_LIMIT_WAIT_MS
+        : undefined;
 
-      this.reviewers.set(name, new cls({ model, mode, timeoutMs, intelligence }));
+      this.reviewers.set(name, new cls({ model, mode, timeoutMs, intelligence, rateLimitWaitMs }));
     }
   }
 

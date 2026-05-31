@@ -21,6 +21,13 @@
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
 
+/**
+ * This is the outbound message gate — the highest-value coherence-critical
+ * check. If the LLM circuit breaker is open, wait up to 2min (bounded) for the
+ * window to clear rather than fail open and let an unreviewed message through.
+ */
+const RATE_LIMIT_WAIT_MS = 120_000;
+
 export interface ToneReviewResult {
   pass: boolean;
   /**
@@ -203,6 +210,7 @@ export class MessagingToneGate {
         model: 'fast',
         maxTokens: 200,
         temperature: 0,
+        rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
       });
       const parsed = this.parseResponse(raw);
 
