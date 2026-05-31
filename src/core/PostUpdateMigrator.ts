@@ -3021,6 +3021,20 @@ That envelope is deliberate: learned preferences are **signals, not authoritativ
       result.skipped.push('CLAUDE.md: Preferences (Correction & Preference Learning) section already present');
     }
 
+    // Slice 2 backfill — the Preferences dashboard tab is the human read surface.
+    // Existing agents that already have the Slice-1a/1b section must also learn to
+    // point the user at the tab instead of pasting curl output. Content-sniffed on
+    // a distinctive Slice-2 marker for idempotency. Only appends when the section
+    // exists (Slice-1a present) but the dashboard-tab line does not.
+    if (content.includes('Correction & Preference Learning Sentinel') && !content.includes('Preferences dashboard tab')) {
+      const dashTabLine = `
+- The **Preferences dashboard tab** is the human read surface: it shows, in plain language, the preferences I've picked up about the user and the recent scrubbed corrections with their status. When the user asks "what have you learned about me?", I point them to the Preferences dashboard tab (dashboard URL + PIN) rather than pasting \`/corrections\` curl output. \`GET /corrections\` also pages with \`?limit\`, the \`?before=<ISO>\` keyset cursor, and a \`?since=<ISO>\` lower-bound.
+`;
+      content += '\n' + dashTabLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Preferences dashboard tab awareness (Correction & Preference Learning Slice 2)');
+    }
+
     const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;
 
     // Self-Discovery section

@@ -556,17 +556,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'correctionLearning',
     prefixes: ['/preferences', '/corrections'],
-    description: 'Correction & Preference Learning Sentinel — turns repeated corrections into durable, structurally-injected preferences (Slice 1a) and records distilled, scrubbed correction/preference patterns (Slice 1b). SIGNAL-ONLY; never blocks/rewrites a message. Ships OFF (monitoring.correctionLearning.enabled).',
+    description: 'Correction & Preference Learning Sentinel — turns repeated corrections into durable, structurally-injected preferences (Slice 1a) and records distilled, scrubbed correction/preference patterns (Slice 1b). The Preferences dashboard tab surfaces both read-only (Slice 2). SIGNAL-ONLY; never blocks/rewrites a message. Ships OFF (monitoring.correctionLearning.enabled).',
     build: ({ ctx }) => ({
       enabled: ctx.config.monitoring?.correctionLearning?.enabled === true,
       endpoints: [
         'GET /preferences/session-context — structured block of active learned preferences (503 when disabled; { present:false } when none)',
-        'GET /corrections — list distilled, scrubbed correction/preference records (toApiView strips raw text; keyset pagination via ?before/?limit/?kind/?status)',
+        'GET /corrections — list distilled, scrubbed correction/preference records (toApiView strips raw text; pagination: ?limit, ?before=<ISO> keyset cursor, ?since=<ISO> lower-bound, ?kind, ?status)',
         'GET /corrections/:id — one record (scrubbed_summary + metadata only)',
         'POST /corrections — agent-diagnosed one-tap (requires X-Instar-Request: 1)',
-        'POST /corrections/analyze — 3-pronged recurrence gate + closed-loop tick (driven by the off-by-default correction-analyzer job)',
+        'POST /corrections/analyze — 3-pronged recurrence gate + closed-loop tick (driven by the off-by-default correction-analyzer job); response includes routed.overflow + routed.rateLimited',
       ],
-      hint: 'Ships OFF; when disabled these routes 503. The session-start hook fetches /preferences/session-context on every boot and injects the <auto-learned-preference> block. The /corrections API never serves raw learning text.',
+      hint: 'Ships OFF; when disabled these routes 503. The session-start hook fetches /preferences/session-context on every boot and injects the <auto-learned-preference> block. The /corrections API never serves raw learning text. The Preferences dashboard tab is the human read surface (plain-language preferences + scrubbed corrections).',
     }),
   },
   {
