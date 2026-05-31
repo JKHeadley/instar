@@ -28,6 +28,9 @@ bounded-wait). Phase 1b (after #638) adds the ~3-line funnel tap that feeds it.
 - `src/core/PostUpdateMigrator.ts` — Migration Parity: an idempotent, content-sniffed
   (`/metrics/features`) `migrateClaudeMd` block (existing agents). Marker shared with the
   template → no double-patch.
+- `src/server/CapabilityIndex.ts` — classify the new `/metrics` route prefix as a
+  `featureMetrics` capability (surfaces in `GET /capabilities`), as the
+  capabilities-discoverability lint requires for every registered route prefix.
 
 **Files changed (docs/tests):**
 - `docs/specs/llm-feature-metrics-spec.md` (+ `.eli16.md`).
