@@ -28,6 +28,9 @@ const SIGNING_KEY_FILE = 'signing-key.pem';
 // falls back to it so a legacy-keyed agent's lease coordinator still attaches.
 const LEGACY_SIGNING_KEY_FILE = 'signing-private.pem';
 const ENCRYPTION_KEY_FILE = 'encryption-key.pem';
+// Pre-canonical-rename name; loadEncryptionKey falls back to it for the same reason
+// loadSigningKey does (the mesh transport loads BOTH keys at lease/transport setup).
+const LEGACY_ENCRYPTION_KEY_FILE = 'encryption-private.pem';
 const REGISTRY_FILE = 'registry.json';
 const KEY_FILE_MODE = 0o600;
 const REGISTRY_VERSION = 1;
@@ -267,7 +270,21 @@ export class MachineIdentityManager {
    * Load this machine's X25519 encryption private key (PEM format).
    */
   loadEncryptionKey(): string {
-    return fs.readFileSync(this.encryptionKeyPath, 'utf-8');
+    try {
+      return fs.readFileSync(this.encryptionKeyPath, 'utf-8');
+    } catch (err) {
+      // Same legacy fallback as loadSigningKey: identities created before the
+      // canonical rename wrote the encryption key as 'encryption-private.pem'.
+      // The mesh lease/transport setup loads this key too — found live
+      // 2026-05-31: with the signing key resolved, the mini's transport setup
+      // still threw ENOENT on the canonical 'encryption-key.pem', so the
+      // legacy-keyed machine's transport couldn't fully initialize.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        const legacy = path.join(this.machineDir, LEGACY_ENCRYPTION_KEY_FILE);
+        if (fs.existsSync(legacy)) return fs.readFileSync(legacy, 'utf-8');
+      }
+      throw err;
+    }
   }
 
   // ── Registry Management ──────────────────────────────────────────
