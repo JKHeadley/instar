@@ -112,6 +112,16 @@ export interface SessionRouterDeps {
   handleLocally: (msg: InboundMessage) => Promise<void>;
   /** Instruct the chosen machine to spawn/resume the session. */
   spawnOnMachine: (machineId: string, msg: InboundMessage) => Promise<void>;
+  /**
+   * Confirm a just-placed REMOTE session as the owner (status placing→active) once
+   * the spawn has been dispatched to it. Without this the ownership stays 'placing'
+   * forever and every later message for the session queues (bug #11). Best-effort —
+   * a confirm failure leaves the placement to recover via the normal fences.
+   * (The owner-side resume runs on the target; in the single-router topology the
+   * router holds the authoritative ownReg, so it confirms on the target's behalf —
+   * the FSM only permits a claim whose machineId equals the placed owner.)
+   */
+  confirmClaim?: (sessionKey: string, machineId: string) => void;
   queueMessage: (msg: InboundMessage, reason: string) => void;
   raiseAttention: (title: string, body: string) => void;
   markOwnerSuspect?: (machineId: string) => void;
@@ -250,6 +260,10 @@ export class SessionRouter {
       return { action: fromDead ? 'owner-dead-replaced' : 'handled-locally', owner: decision.chosenMachine, detail: 'placed-self', acked: true };
     }
     await this.deps.spawnOnMachine(decision.chosenMachine, msg);
+    // Confirm the remote owner (placing → active). The 'place' above left the record
+    // transient; without this the session is owned-but-never-active and every later
+    // message routes to the placing/transferring branch → queued forever (bug #11).
+    this.deps.confirmClaim?.(msg.sessionKey, decision.chosenMachine);
     return { action, owner: decision.chosenMachine, acked: true };
   }
 }

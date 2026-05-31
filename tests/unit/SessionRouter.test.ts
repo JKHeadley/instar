@@ -131,19 +131,24 @@ describe('SessionRouter.dispatch (§L4)', () => {
     expect(deps.queueMessage).toHaveBeenCalledWith(expect.anything(), 'ownership-contention');
   });
 
-  it('unowned → place → CAS won → spawn on the chosen remote machine', async () => {
+  it('unowned → place → CAS won → spawn on the chosen remote machine + CONFIRM the owner (placing→active, bug #11)', async () => {
     const spawn = vi.fn(async () => {});
-    const { router } = makeRouter({ spawnOnMachine: spawn }, [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })]);
+    const confirmClaim = vi.fn();
+    const { router } = makeRouter({ spawnOnMachine: spawn, confirmClaim }, [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })]);
     const out = await router.route(msg());
     expect(out).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
     expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }));
+    // bug #11: without this confirm the record stays 'placing' and later messages queue forever.
+    expect(confirmClaim).toHaveBeenCalledWith('s1', 'm_remote');
   });
 
-  it('unowned → place chooses SELF → handled locally', async () => {
-    const { router, deps } = makeRouter({}, [cap(SELF, { loadAvg: 0 }), cap('m_remote', { loadAvg: 9 })]);
+  it('unowned → place chooses SELF → handled locally, NO remote confirm', async () => {
+    const confirmClaim = vi.fn();
+    const { router, deps } = makeRouter({ confirmClaim }, [cap(SELF, { loadAvg: 0 }), cap('m_remote', { loadAvg: 9 })]);
     const out = await router.route(msg());
     expect(out).toMatchObject({ action: 'handled-locally', owner: SELF, acked: true });
     expect(deps.handleLocally).toHaveBeenCalledOnce();
+    expect(confirmClaim).not.toHaveBeenCalled(); // self-placement handles locally; no placing→active confirm
   });
 
   it('unowned → corrupt topic metadata → placement-blocked, attention raised, NOT acked', async () => {

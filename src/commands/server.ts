@@ -9397,6 +9397,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               const r = ownReg.cas({ type: 'place', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:c:${++routerNonce}` });
               return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };
             },
+            // bug #11: confirm the remote owner (placing → active) after the spawn is
+            // dispatched. The router holds the authoritative ownReg (single-router
+            // topology); the FSM permits a claim whose machineId equals the placed
+            // owner, so the router confirms on the target's behalf. Without this the
+            // record stays 'placing' and every later message for the session queues.
+            confirmClaim: (sk, machineId) => {
+              ownReg.cas({ type: 'claim', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:cl:${++routerNonce}` });
+            },
             deliverMessage: async (target, env) => {
               const url = peerUrl(target);
               if (!url) throw new Error(`no peer url for ${target}`);
