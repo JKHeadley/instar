@@ -39,6 +39,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 
 export type RateLimitTrigger = 'watchdog-poll' | 'idle-error' | string;
 
@@ -94,6 +95,18 @@ export interface RateLimitSentinelDeps {
 
   /** Resolve a session's Claude Code session UUID for exact-file jsonl lookup. */
   getClaudeSessionId?: (sessionName: string) => string | undefined;
+
+  /**
+   * Resolve a session's framework ('codex-cli' | 'claude-code' | undefined) — the value
+   * carried on a running session. When it returns 'codex-cli', recovery-verification
+   * reads the newest codex ROLLOUT jsonl (account-wide growth = the account-wide OpenAI
+   * throttle cleared) instead of the Claude transcript. Absent/non-codex → the unchanged
+   * Claude path is used (Claude behavior byte-for-byte preserved). #33.
+   */
+  getSessionFramework?: (sessionName: string) => string | undefined;
+
+  /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
+  codexHome?: string;
 
   /** Defer (skip starting) recovery when this returns true — e.g. compaction recovery in flight. */
   deferIf?: (sessionName: string) => boolean;
@@ -429,6 +442,14 @@ export class RateLimitSentinel extends EventEmitter {
   }
 
   private readJsonlBaseline(sessionName: string): { path: string; size: number; mtime: number } | null {
+    // #33 codex parity: a codex session's transcript is the newest rollout JSONL under
+    // $CODEX_HOME/sessions (the OpenAI throttle is account-wide, so the newest rollout's
+    // growth is the account-wide "is codex producing output again?" signal). Only taken
+    // for codex sessions; everything else falls through to the unchanged Claude path
+    // below (Claude behavior is byte-for-byte preserved).
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+      return findNewestRolloutSync(this.deps.codexHome);
+    }
     try {
       const root = this.deps.jsonlRoot
         || path.join(process.env.HOME || '/tmp', '.claude', 'projects',
