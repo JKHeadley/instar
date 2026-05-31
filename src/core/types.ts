@@ -669,6 +669,12 @@ export interface IntelligenceOptions {
   /** Per-call timeout in milliseconds; provider should honor or surface as throw. */
   timeoutMs?: number;
   /**
+   * If set and the LLM circuit breaker is open, wait up to this many ms
+   * (bounded) for the window to clear before failing. Coherence-critical
+   * callsites set this; best-effort callsites omit it (instant fail-open).
+   */
+  rateLimitWaitMs?: number;
+  /**
    * Attribution context for the burn-detection-and-self-heal system (Phase 1
    * of docs/specs/token-burn-detection-and-self-heal.md). Optional; missing
    * attribution lands under the `unknown::*` fallback keys so existing
