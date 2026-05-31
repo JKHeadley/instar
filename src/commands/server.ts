@@ -5664,6 +5664,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             .find(s => s.tmuxSession === sessionName);
           return session?.claudeSessionId;
         },
+        // Codex parity: for codex sessions, recovery-verification reads the newest codex
+        // rollout's growth (account-wide signal) instead of the Claude transcript (#33 recipe).
+        getSessionFramework: (name) =>
+          sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.framework,
         // Don't re-inject a recovery prompt into a session that's actively
         // working (mid extended-think / tool call). Re-injecting buries the
         // user's real message under stacked recovery bootstraps — the false

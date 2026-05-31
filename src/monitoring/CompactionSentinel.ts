@@ -35,6 +35,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 
 export type CompactionTrigger = 'PreCompact' | 'watchdog-poll' | 'recovery-hook' | string;
 
@@ -82,6 +83,17 @@ export interface CompactionSentinelDeps {
    * recovered. Return undefined for sessions whose uuid isn't known yet.
    */
   getClaudeSessionId?: (sessionName: string) => string | undefined;
+
+  /**
+   * Resolve a session's framework ('codex-cli' | 'claude-code' | undefined). When it
+   * returns 'codex-cli', recovery-verification reads the newest codex ROLLOUT jsonl
+   * (account-wide growth signal) instead of the Claude transcript. Absent/non-codex →
+   * the unchanged Claude path is used (Claude behavior byte-for-byte preserved).
+   */
+  getSessionFramework?: (sessionName: string) => string | undefined;
+
+  /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
+  codexHome?: string;
 
   /**
    * Override for the JSONL lookup root. Primarily for tests. Defaults to
@@ -423,6 +435,15 @@ export class CompactionSentinel extends EventEmitter {
    * most recently-modified file in the project's jsonl root.
    */
   private readJsonlBaseline(sessionName: string): { path: string; size: number; mtime: number } | null {
+    // Codex parity: a codex session's transcript is the newest rollout JSONL under
+    // $CODEX_HOME/sessions, NOT the Claude projects tree. Compaction-recovery is verified
+    // by post-recovery output, and for codex "the account is producing output again" ==
+    // "the newest rollout grew" (the OpenAI account-wide signal). Only taken for codex
+    // sessions; everything else falls through to the unchanged Claude path (Claude
+    // behavior byte-for-byte preserved). Mirrors the RateLimitSentinel codex fix (#33).
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+      return findNewestRolloutSync(this.deps.codexHome);
+    }
     try {
       const root = this.deps.jsonlRoot
         || path.join(process.env.HOME || '/tmp', '.claude', 'projects',
