@@ -1530,11 +1530,18 @@ export class PostUpdateMigrator {
       'Autonomous Mode Stop Hook',
       'skills/autonomous/hooks/autonomous-stop-hook.sh (codex Stop stdout JSON-safe — emit() to stderr)',
     );
+    // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
+    // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
+    // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so
+    // codex autonomous jobs fell through to the dark Phase-1 codexLoopDriver no-op and never
+    // sustained multi-turn). Bumping the marker re-deploys the FIXED setup to existing agents
+    // (which carry `native-goal/set` but not `IS_CODEX_AGENT`); customized scripts (no stock
+    // `autonomous-state.local.md` fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'native-goal/set',
+      'IS_CODEX_AGENT',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (per-topic + completion-condition + native /goal)',
+      'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
     );
   }
 
