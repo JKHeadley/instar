@@ -2917,6 +2917,27 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
     }
 
+    // AgentWorktreeReaper report (RESPONSIBLE-RESOURCE-USAGE — OS resource hygiene).
+    // Tells the agent the "which stale worktrees can be reclaimed?" read-surface
+    // exists. Without it, an agent asked about worktree disk/sprawl has no grounded
+    // answer. Idempotent via content-sniffing on the route path.
+    if (!content.includes('/worktrees/agent-reaper')) {
+      const section = `
+## Stale-Worktree Reclaim (AgentWorktreeReaper)
+
+CLI-created worktrees under \`~/.instar/agents/<agent>/.worktrees/\` accumulate (each is a full source tree). The AgentWorktreeReaper reclaims ones that are **merged + clean + not-in-use** — for a merged branch the work is in main, so removing the checkout loses nothing (the branch + commits remain). It NEVER touches a worktree with uncommitted changes, an unmerged branch, a live lock, or a running process whose cwd is inside it. Ships **OFF + dry-run** (it deletes on a heuristic).
+
+- See what's reclaimable (and why each is kept): \`curl -H "Authorization: Bearer $AUTH" http://localhost:4040/worktrees/agent-reaper\` → per-worktree verdict (in-use / uncommitted-changes / unmerged / reap-eligible) + the reclaimable count.
+- Review the dry-run report FIRST, then enable in \`.instar/config.json\`: \`{"monitoring": {"agentWorktreeReaper": {"enabled": true, "dryRun": false}}}\`. Tune \`maxReapsPerPass\` (default 20).
+- Pairs with the Spotlight-exclusion marker (fewer worktrees = less disk AND less macOS indexing). Proactive: user asks "why is my disk full of worktrees?" / "clean up old worktrees?" → GET /worktrees/agent-reaper.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Stale-Worktree Reclaim section');
+    } else {
+      result.skipped.push('CLAUDE.md: Stale-Worktree Reclaim section already present');
+    }
+
     // SessionReaper CPU-aware pressure + decision audit (RESPONSIBLE-RESOURCE-USAGE).
     // Tells the agent (a) the reaper now reaps under CPU strain, not only memory,
     // and (b) a silent, reviewable decision trail + endpoint exists. Without this an

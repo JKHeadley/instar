@@ -3075,6 +3075,18 @@ export interface MonitoringConfig {
     coalesceWindowMs?: number;
   };
   /**
+   * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).
+   * Reclaims stale CLI-created worktrees under the agent's `.worktrees/` that are
+   * merged + clean + inactive. Ships OFF + dry-run (deletes on a heuristic); a
+   * dry-run pass + GET /worktrees/agent-reaper report what it WOULD reclaim.
+   */
+  agentWorktreeReaper?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    reapIntervalMs?: number;
+    maxReapsPerPass?: number;
+  };
+  /**
    * Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Watches for sessions
    * the conservative KEEP-rules would protect forever — one that FAKES work, or
    * one stuck `indeterminate` — and raises a SINGLE deduped Attention item for an

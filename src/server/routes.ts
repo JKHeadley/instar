@@ -715,6 +715,9 @@ export interface RouteContext {
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
   reapLog?: import('../monitoring/ReapLog.js').ReapLog | null;
+  /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
+   *  Powers GET /worktrees/agent-reaper observability. */
+  agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
   /** SleepWakeDetector — timer-drift sleep detection with a CPU-starvation guard.
    *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). Null when
    *  not wired (older boot paths / standby) → the route 503s. */
@@ -3900,6 +3903,19 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.sessionReaper.snapshot());
+  });
+
+  // AgentWorktreeReaper (RESPONSIBLE-RESOURCE-USAGE — OS resource hygiene). The
+  // pull-surface answer to "which stale worktrees can be reclaimed, and why is
+  // each kept?": every `.worktrees/` worktree's verdict (active-lock /
+  // uncommitted-changes / not-stale / unmerged / reap-eligible) + the reclaimable
+  // count + whether reaping is armed (enabled, dryRun). Read-only, Bearer-auth.
+  router.get('/worktrees/agent-reaper', (_req, res) => {
+    if (!ctx.agentWorktreeReaper) {
+      res.status(503).json({ error: 'agent worktree reaper unavailable' });
+      return;
+    }
+    res.json(ctx.agentWorktreeReaper.snapshot());
   });
 
   // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4). The pull-surface answer to "why did
