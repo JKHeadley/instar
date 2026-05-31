@@ -1,0 +1,52 @@
+<!-- bump: patch -->
+
+## What Changed — The external-operation safety gate no longer waves through operations it cannot classify
+
+Your agent has a safety gate in front of risky actions on outside services
+(deleting emails, posting messages, changing remote files). It scores each
+operation's risk and decides whether to proceed, log, ask you, or block. The risk
+scorer had a blind spot: if it was handed a value it did not recognize for what the
+operation does, whether it can be undone, or how many items it touches, it quietly
+fell back to "low risk" and let the operation proceed. For a safety gate, the one
+case it cannot classify is exactly the case it should be most careful about.
+
+Now it fails safe. An operation whose type the gate cannot recognize is treated as
+the most dangerous level, so it is surfaced for your approval (or blocked in the
+strictest mode) instead of proceeding. Unrecognized "can it be undone" or "how
+many" values are assumed to be the worst case so the risk is scored
+conservatively. Ordinary reads stay fast and frictionless, and every recognized
+operation behaves exactly as it did before.
+
+## Summary of New Capabilities
+
+- `computeRiskLevel` in the External Operation Gate now fails closed on
+  unrecognized input: an unknown operation mutability classifies as critical
+  (which maps to show-plan / approve, never proceed), and unknown reversibility or
+  scope are pinned to their most dangerous valid value (irreversible / bulk). All
+  valid enum combinations are unchanged. The function is reachable from untyped
+  runtime boundaries (the operations-evaluate route and the external-operation
+  PreToolUse hook), which is why the hardening matters.
+
+## What to Tell Your User
+
+Your agent's safety gate for risky outside actions is now harder to slip past. If
+an operation shows up that the gate cannot recognize, it asks you first instead of
+quietly letting it through. Normal actions are unaffected and there is nothing to
+configure.
+
+## Evidence
+
+- Found by the codex mentee agent during the live mentorship loop, then verified
+  against the actual code: the risk matrix ended in a permissive low-risk
+  fall-through that also caught unrecognized input, so an unclassifiable operation
+  mapped to proceed (fail-open).
+- The fix adds a fail-safe guard: unknown mutability returns critical; unknown
+  reversibility and scope are pinned to irreversible and bulk.
+- Unit tests, `tests/unit/ExternalOperationGate.test.ts` (+5): unknown mutability
+  classifies critical (was low); unknown reversibility and scope fail closed; reads
+  stay low; valid-input classifications are unchanged. The existing matrix tests
+  stay green.
+- Independent adversarial security review returned a verdict of sound, with no
+  valid input reclassified and the chosen severity confirmed correct.
+- A symmetric blind spot in the gate hook (unrecognized action verbs defaulting to
+  read) is being closed in the coupled hook PR, tracked as issue-628.

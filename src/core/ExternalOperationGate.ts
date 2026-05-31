@@ -162,6 +162,24 @@ export function computeRiskLevel(
   reversibility: OperationReversibility,
   scope: OperationScope
 ): RiskLevel {
+  // ── Fail-safe on malformed/unknown input ──────────────────────────────
+  // computeRiskLevel is reachable from UNTYPED runtime boundaries (POST
+  // /operations/evaluate and the external-operation-gate hook), where these
+  // dimensions arrive as arbitrary strings — the TypeScript types are NOT
+  // enforced at runtime. An unrecognized value must NOT fall through to the
+  // permissive `return 'low'` at the bottom: that fails OPEN, letting an
+  // operation we cannot classify bypass the gate. A safety gate fails CLOSED —
+  // an unclassifiable operation is treated as maximally dangerous, and unknown
+  // risk-modifiers are pinned to their most dangerous valid value. (This gate
+  // exists precisely to stop the unclassified-destructive-op case — see the
+  // OpenClaw 200-email-deletion incident in the file header.)
+  const KNOWN_MUTABILITY: readonly OperationMutability[] = ['read', 'write', 'modify', 'delete'];
+  const KNOWN_REVERSIBILITY: readonly OperationReversibility[] = ['reversible', 'partially-reversible', 'irreversible'];
+  const KNOWN_SCOPE: readonly OperationScope[] = ['single', 'batch', 'bulk'];
+  if (!KNOWN_MUTABILITY.includes(mutability)) return 'critical';
+  if (!KNOWN_REVERSIBILITY.includes(reversibility)) reversibility = 'irreversible';
+  if (!KNOWN_SCOPE.includes(scope)) scope = 'bulk';
+
   // Reads are always low risk
   if (mutability === 'read') return 'low';
 

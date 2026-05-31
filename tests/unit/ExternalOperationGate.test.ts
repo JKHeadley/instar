@@ -72,6 +72,43 @@ describe('computeRiskLevel', () => {
   it('single reversible modifies are low risk', () => {
     expect(computeRiskLevel('modify', 'reversible', 'single')).toBe('low');
   });
+
+  // ── Fail-safe on unknown/malformed runtime input ──────────────────────
+  // computeRiskLevel is reachable from UNTYPED HTTP/hook boundaries, so an
+  // unrecognized dimension must fail CLOSED — never fall through to 'low'
+  // (which maps to `proceed` and would bypass the gate). The casts below
+  // model what arrives at runtime despite the TypeScript types.
+  it('unknown mutability is treated as critical (fails closed, not open to low)', () => {
+    // Pre-fix every one of these fell through to `return 'low'` → proceed.
+    expect(computeRiskLevel('execute' as OperationMutability, 'reversible', 'single')).toBe('critical');
+    expect(computeRiskLevel('' as OperationMutability, 'reversible', 'single')).toBe('critical');
+    expect(computeRiskLevel('purge-everything' as OperationMutability, 'reversible', 'single')).toBe('critical');
+    expect(computeRiskLevel(undefined as unknown as OperationMutability, 'reversible', 'single')).toBe('critical');
+  });
+
+  it('unknown reversibility is pinned to irreversible (fails closed)', () => {
+    // write + (unknown→irreversible) + single = medium (was 'low' pre-fix).
+    expect(computeRiskLevel('write', 'maybe' as OperationReversibility, 'single')).toBe('medium');
+    // delete + (unknown→irreversible) + single = high (was 'medium' pre-fix).
+    expect(computeRiskLevel('delete', 'unknown' as OperationReversibility, 'single')).toBe('high');
+  });
+
+  it('unknown scope is pinned to bulk (fails closed)', () => {
+    // write + reversible + (unknown→bulk) = critical (was 'low' pre-fix).
+    expect(computeRiskLevel('write', 'reversible', 'galaxy' as OperationScope)).toBe('critical');
+    expect(computeRiskLevel('modify', 'reversible', '' as OperationScope)).toBe('critical');
+  });
+
+  it('reads stay low even with unknown reversibility/scope (read is inherently safe)', () => {
+    expect(computeRiskLevel('read', 'bogus' as OperationReversibility, 'bogus' as OperationScope)).toBe('low');
+  });
+
+  it('all valid-input classifications are unchanged by the fail-safe guards', () => {
+    expect(computeRiskLevel('write', 'reversible', 'single')).toBe('low');
+    expect(computeRiskLevel('delete', 'irreversible', 'bulk')).toBe('critical');
+    expect(computeRiskLevel('read', 'irreversible', 'bulk')).toBe('low');
+    expect(computeRiskLevel('delete', 'reversible', 'single')).toBe('medium');
+  });
 });
 
 describe('scopeFromCount', () => {
