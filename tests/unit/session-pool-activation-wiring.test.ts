@@ -54,10 +54,11 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 1500);
+    const block = src.slice(idx, idx + 2800);
     // Gated on a non-dark stage + only with Telegram present.
     expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
-    // Bridges to the existing local spawn/resume path for the topic.
+    // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
+    // async IIFE that first fetches the moved topic's history from the router — bug #2).
     expect(block).toContain('spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text');
     // Fire-and-forget + fail-safe (the receipt is already durably ACKed before this).
     expect(block).toContain('owner-side resume failed');

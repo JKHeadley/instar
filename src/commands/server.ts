@@ -64,6 +64,7 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
+import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
@@ -361,6 +362,11 @@ let _sessionPoolStage: () => string = () => 'dark';
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** Resolve the current router (Telegram-owning lease holder)'s base URL, or null if
+ *  this machine IS the router / none is known. Used by the owner-side resume to fetch
+ *  a moved topic's prior history from the router (bug #2). Set in the mesh block where
+ *  the peer-URL resolver + coordinator are in scope. */
+let _resolveRouterUrl: (() => string | null) | null = null;
 /** Multi-Machine Session Pool §L4: per-topic placement pin store ("move this to <nickname>"). */
 let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
@@ -405,6 +411,7 @@ async function spawnSessionForTopic(
   latestMessage?: string,
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
+  precomputedContext?: string,
 ): Promise<string> {
   const msg = latestMessage || 'Session started — send a message to continue.';
 
@@ -423,11 +430,15 @@ async function spawnSessionForTopic(
     }
   }
 
-  let contextContent: string = '';
+  // bug #2: a session MOVED here by the session pool has no local history (this
+  // machine never polled the topic; its TopicMemory has no rows). The router relays
+  // the prior conversation as precomputedContext — use it verbatim and skip the
+  // (empty) local sources, so a moved session continues instead of starting blank.
+  let contextContent: string = precomputedContext ?? '';
 
   // Prefer TopicMemory (SQLite-backed, with summaries) over raw JSONL scan
   let usedFallback = false;
-  if (topicMemory?.isReady()) {
+  if (!contextContent && topicMemory?.isReady()) {
     try {
       contextContent = topicMemory.formatContextForSession(topicId, 50);
     } catch (err) {
@@ -9313,7 +9324,27 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ? String((cmd.payload as { text: unknown }).text)
                 : undefined;
             const sessionName = tg.getSessionForTopic(topicId) ?? `topic-${topicId}`;
-            void spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text, undefined, undefined)
+            // bug #2: fetch the prior conversation from the router (this machine's local
+            // history for the topic is empty) so the moved session continues with context
+            // instead of starting blank. Best-effort — on any failure we spawn without it.
+            void (async (): Promise<string> => {
+              let movedContext: string | undefined;
+              try {
+                const url = _resolveRouterUrl?.() ?? null;
+                if (url) {
+                  const resp = await fetch(`${url}/telegram/topics/${topicId}/messages?limit=50`, {
+                    headers: { 'Authorization': `Bearer ${config.authToken}` },
+                  });
+                  if (resp.ok) {
+                    const j = (await resp.json()) as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[] };
+                    movedContext = formatForwardedTopicContext(j.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
+                  }
+                }
+              } catch {
+                // @silent-fallback-ok — cross-machine context relay is best-effort
+              }
+              return spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text, undefined, undefined, movedContext);
+            })()
               .then((name) => {
                 tg.registerTopicSession(topicId, name, sessionName);
                 console.log(pc.green(`  [session-pool] owner-side resume for forwarded topic ${topicId} → ${name}`));
@@ -9377,6 +9408,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerUrl = (machineId: string): string | null =>
             meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
           _meshSelfId = meshSelfId;
+          _resolveRouterUrl = () => {
+            const h = coordinator.getSyncStatus().leaseHolder;
+            return h && h !== meshSelfId ? peerUrl(h) : null;
+          };
           // This machine participates in the session pool, so a read-only standby may
           // persist the PER-SESSION state of sessions it's handed (the pool's owner-side
           // resume only fires for CAS-confirmed owned sessions, and only past 'dark').
