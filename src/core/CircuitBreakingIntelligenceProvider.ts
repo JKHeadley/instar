@@ -30,7 +30,7 @@ import {
   LlmCircuitOpenError,
   RateLimitError,
   getLlmCircuitBreaker,
-  isRateLimitError,
+  classifyRateLimit,
 } from './LlmCircuitBreaker.js';
 
 export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider {
@@ -40,9 +40,18 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
   ) {}
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
-    const gate = this.breaker.acquire();
+    let gate = this.breaker.acquire();
     if (!gate.allow) {
-      throw new LlmCircuitOpenError(gate.retryAfterMs);
+      // Coherence-critical callers set rateLimitWaitMs: wait (bounded) for the
+      // window to clear instead of failing open immediately. Best-effort callers
+      // omit it — behavior is byte-identical to the instant throw below.
+      const waitMs = options?.rateLimitWaitMs;
+      if (typeof waitMs === 'number' && waitMs > 0) {
+        gate = await this.breaker.acquireOrWait(waitMs);
+      }
+      if (!gate.allow) {
+        throw new LlmCircuitOpenError(gate.retryAfterMs);
+      }
     }
 
     try {
@@ -51,8 +60,11 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (err instanceof RateLimitError || isRateLimitError(message)) {
-        this.breaker.onRateLimited(message);
+      const parsed = classifyRateLimit(message);
+      if (err instanceof RateLimitError || parsed.isLimit) {
+        // Pass the parsed retry-after hint through so the breaker can shorten
+        // the open window when the provider told us when it resets.
+        this.breaker.onRateLimited(message, parsed.retryAfterMs);
         if (err instanceof RateLimitError) throw err;
         throw new RateLimitError(message, err);
       }

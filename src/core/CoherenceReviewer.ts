@@ -90,6 +90,12 @@ export interface ReviewerOptions {
    * intelligence provider will throw at first `review()` call.
    */
   intelligence?: IntelligenceProvider;
+  /**
+   * If set, this reviewer's LLM call waits up to this many ms (bounded) for an
+   * open circuit breaker window to clear before failing open. Set only for
+   * high-stakes reviewers; best-effort reviewers omit it (instant fail-open).
+   */
+  rateLimitWaitMs?: number;
 }
 
 export interface ReviewerHealthMetrics {
@@ -279,6 +285,9 @@ export abstract class CoherenceReviewer {
       model: this.mapModelToTier(this.options.model ?? 'haiku'),
       maxTokens: 200,
       temperature: 0,
+      // High-stakes reviewers wait (bounded) for a rate-limit window to clear
+      // rather than fail open; undefined for best-effort reviewers.
+      rateLimitWaitMs: this.options.rateLimitWaitMs,
     };
     // IntelligenceProvider implementations set their own timeouts; wrap here too.
     return await Promise.race([
