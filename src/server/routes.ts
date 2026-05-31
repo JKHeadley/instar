@@ -4584,6 +4584,59 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.frameworkIssueLedger.observability());
   });
 
+  // Durable write path (§5) — lets an agent (or the mentor loop, or a backfill
+  // script) record an engineering-DISCOVERED framework issue into the ledger,
+  // not just the ones a live mentor tick trips over. Thin wrapper over the
+  // already-validated recordObservation (+ optional status transition for
+  // backfilling an already-fixed issue). bucket/severity/status enums are
+  // validated by the ledger, which throws → 400. New framework strings are
+  // intentionally allowed (onboarding the NEXT framework introduces one).
+  router.post('/framework-issues/observe', (req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+    for (const field of ['framework', 'bucket', 'title', 'dedupKey'] as const) {
+      if (!str(b[field])) {
+        res.status(400).json({ error: `${field} (non-empty string) is required` });
+        return;
+      }
+    }
+    try {
+      const result = ctx.frameworkIssueLedger.recordObservation({
+        framework: b.framework as string,
+        bucket: b.bucket as never, // ledger assertEnum-validates → throws → 400
+        title: b.title as string,
+        severity: str(b.severity) as never,
+        dedupKey: b.dedupKey as string,
+        signature: str(b.signature),
+        evidence: str(b.evidence),
+        observedVersion: str(b.observedVersion),
+        bucketPrimary: str(b.bucketPrimary) as never,
+        relatedSpec: str(b.relatedSpec),
+      });
+      // Optional terminal-status transition in the same call. recordObservation
+      // always creates as 'open'; a backfill of an already-fixed issue passes
+      // status:'fixed' (+ fixedInVersion). wont-fix requires a reason (the
+      // ledger enforces this → 400 if missing).
+      let issue = ctx.frameworkIssueLedger.getIssue(result.issueId);
+      const status = str(b.status);
+      if (status && status !== 'open') {
+        issue =
+          ctx.frameworkIssueLedger.updateIssue(result.issueId, {
+            status: status as never,
+            fixedInVersion: str(b.fixedInVersion),
+            wontFixReason: str(b.wontFixReason),
+          }) ?? issue;
+      }
+      res.json({ ...result, issue });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post('/framework-issues/:id/promote', (req, res) => {
     if (!ctx.frameworkIssueLedger) {
       res.status(503).json({ error: 'framework issue ledger unavailable' });

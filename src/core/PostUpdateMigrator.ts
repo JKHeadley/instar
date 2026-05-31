@@ -2761,22 +2761,30 @@ A durable, bucket-tagged record of behavioral issues observed while onboarding a
 
 - Issues logged for a framework: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues\` (optional \`?framework=X&bucket=...&status=...&limit=N\`)
 - The onboarding playbook (generalizable lessons from PRIOR frameworks, impact-ranked): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/framework-issues/playbook?targetFramework=X"\`
-- Both routes are read-only and return references, not log contents.
+- The two GET routes above are read-only and return references, not log contents.
+- **Log an engineering-discovered issue** (the durable write path): when you find a framework-compat issue by auditing/fixing code — not just what a live mentor tick trips over — record it so it survives and feeds the next-framework playbook: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues/observe -H 'Content-Type: application/json' -d '{"framework":"codex-cli","bucket":"instar-integration-gap","severity":"high","title":"…","dedupKey":"…","evidence":"PR #N","status":"fixed","fixedInVersion":"1.3.x"}'\`. Buckets: \`framework-limitation\` | \`instar-integration-gap\` | \`generic-agent-mistake\` (the first two generalize to the next framework). Idempotent on \`dedupKey\`. **Proactive trigger:** the moment you fix (or decide won't-fix) a framework-compat issue, log it here — Structure-over-Willpower, not memory.
 
 **Autonomous-fix loop ("just be Echo")** — when \`mentor.autonomousFix.enabled\` is true, the mentor heartbeat stops running the observe-and-log pipeline and instead keeps ONE full-tool **Opus** session alive on the manual dogfooding loop: assign the mentee a real task over Telegram, observe the UX + the mentee's internals, FIX whatever is broken as a proper fleet PR (full ship gate), and report. Ships **dark** (off by default). The expensive Opus session only spawns when no loop session is already running (single-instance), budget is OK, and the min-interval has elapsed — so it never idle-burns or spawn-storms. Enable per agent in \`.instar/config.json\` → \`mentor.autonomousFix\`. Status lands in \`GET /mentor/status .lastResult\` (\`reason: 'spawned' | 'loop-active' | 'budget' | …\`).
 `;
       content += '\n' + fwLedgerSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Framework-Onboarding Mentor System issue-ledger awareness section');
-    } else if (!content.includes('Autonomous-fix loop ("just be Echo")')) {
-      // Migration parity: agents that already have the mentor section (shipped
-      // before the autonomous-fix loop) must still learn about the new dark
-      // capability. Append just the autonomousFix paragraph, content-sniffed so
-      // it is idempotent.
-      content +=
-        '\n**Autonomous-fix loop ("just be Echo")** — when `mentor.autonomousFix.enabled` is true, the mentor heartbeat keeps ONE full-tool **Opus** session alive on the manual dogfooding loop (assign the mentee a real task → observe the UX + internals → FIX as a proper fleet PR → report) instead of the observe-and-log pipeline. Ships **dark** (off by default); single-instance + budget + min-interval gated so it never idle-burns. Enable in `.instar/config.json` → `mentor.autonomousFix`; status in `GET /mentor/status .lastResult`.\n';
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added autonomous-fix loop ("just be Echo") awareness paragraph');
+    } else {
+      // Migration parity (independent, idempotent content-sniffs): agents that
+      // already have the mentor section must still learn about each later
+      // addition. Each guard appends only its own paragraph.
+      if (!content.includes('Autonomous-fix loop ("just be Echo")')) {
+        content +=
+          '\n**Autonomous-fix loop ("just be Echo")** — when `mentor.autonomousFix.enabled` is true, the mentor heartbeat keeps ONE full-tool **Opus** session alive on the manual dogfooding loop (assign the mentee a real task → observe the UX + internals → FIX as a proper fleet PR → report) instead of the observe-and-log pipeline. Ships **dark** (off by default); single-instance + budget + min-interval gated so it never idle-burns. Enable in `.instar/config.json` → `mentor.autonomousFix`; status in `GET /mentor/status .lastResult`.\n';
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added autonomous-fix loop ("just be Echo") awareness paragraph');
+      }
+      if (!content.includes('framework-issues/observe')) {
+        content +=
+          `\n**Log an engineering-discovered framework issue** (durable write path) — when you find a framework-compat issue by auditing/fixing code, record it so it feeds the next-framework playbook: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues/observe -H 'Content-Type: application/json' -d '{"framework":"codex-cli","bucket":"instar-integration-gap","severity":"high","title":"…","dedupKey":"…","evidence":"PR #N","status":"fixed","fixedInVersion":"1.3.x"}'\`. Buckets: \`framework-limitation\` | \`instar-integration-gap\` | \`generic-agent-mistake\`. Idempotent on \`dedupKey\`. Proactive: log it the moment you fix (or won't-fix) a framework-compat issue.\n`;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added framework-issues/observe write-path awareness paragraph');
+      }
     }
 
     // Version-Skew Self-Recovery section

@@ -743,7 +743,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | My backup history? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/backups\` |
 | My state change history? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/git/log\` |
 | Other agents on this machine? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/agents\` |
-| Behavioral issues logged while onboarding a framework? / the onboarding playbook? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues\` (read-only) + \`/framework-issues/playbook?targetFramework=X\` — the Framework-Onboarding Mentor System's issue ledger (observability only; never gates) |
+| Behavioral issues logged while onboarding a framework? / the onboarding playbook? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues\` (read-only) + \`/framework-issues/playbook?targetFramework=X\` — the Framework-Onboarding Mentor System's issue ledger (observability only; never gates). Log a discovered issue: \`POST /framework-issues/observe\` {framework,bucket,severity,title,dedupKey,...} |
 | Project architecture? | This file (CLAUDE.md), then project docs |
 
 **Why this matters:** Searching 1000 files to answer a question that a single state file could answer is slower AND less reliable. Broad searches find stale narratives. State files are current. This applies at EVERY level — including sub-agents I spawn. When spawning a research agent, include the relevant state file reference in its prompt so it searches WITH context, not blind.
