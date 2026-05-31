@@ -196,6 +196,26 @@ function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
     candidates.push(path.join(process.env.NVM_BIN, name));
   }
 
+  // nvm version dirs. nvm installs node — and globally-installed CLIs like the
+  // `claude`/`codex` binaries — under ~/.nvm/versions/node/<version>/bin, and the
+  // launchd/login PATH frequently excludes that dir (same reason the asdf shim
+  // search below exists) with NVM_BIN unset outside an nvm-initialized shell. So a
+  // binary that works in the user's terminal is invisible to a server spawned by
+  // launchd. Prefer the RUNNING node's version, then any other installed version
+  // that has the binary. (2026-05-31: an nvm-only machine's session spawn crashed
+  // because claudePath resolved to null — the binary was here but unscanned.)
+  try {
+    const nvmNodeRoot = path.join(home, '.nvm', 'versions', 'node');
+    if (fs.existsSync(nvmNodeRoot)) {
+      candidates.push(path.join(nvmNodeRoot, process.version, 'bin', name));
+      for (const ver of fs.readdirSync(nvmNodeRoot)) {
+        candidates.push(path.join(nvmNodeRoot, ver, 'bin', name));
+      }
+    }
+  } catch {
+    // @silent-fallback-ok — nvm version-dir scan
+  }
+
   // asdf-managed shims. asdf installs CLIs as shims under its data dir, and
   // the launchd/login PATH frequently excludes that dir — so a binary that
   // works in the user's interactive terminal is invisible to instar without
