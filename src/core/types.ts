@@ -2199,6 +2199,19 @@ export interface InstarConfig {
   autonomousSessions?: {
     /** Max concurrent autonomous jobs (default 5). New starts beyond this are refused. */
     maxConcurrent?: number;
+    /**
+     * Codex autonomous-loop driver (codex/Claude parity). When enabled, the standing
+     * codex Stop hook (`autonomous-stop-hook.sh --codex`, installed by installCodexHooks)
+     * feeds the task list back so a `codex exec` session sustains a multi-turn autonomous
+     * run instead of exiting after one turn — the codex analog of Claude's Stop-hook loop.
+     * Ships DARK (default `enabled: false`): while off, the standing hook exits immediately
+     * (no behavior change for any codex session), so this is a pure dark-launch flag.
+     * Rollback = set `enabled: false` (instant, no redeploy). Claude autonomous mode is
+     * unaffected either way (its loop hook is registered separately into settings.json).
+     */
+    codexLoopDriver?: {
+      enabled?: boolean;
+    };
   };
   /** Notification preferences for autonomy events */
   notifications?: NotificationPreferences;

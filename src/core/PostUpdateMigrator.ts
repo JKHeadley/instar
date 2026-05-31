@@ -1440,15 +1440,17 @@ export class PostUpdateMigrator {
       }
     };
     // Marker = the latest capability signature (bumped each time the bundled hook/
-    // setup gains a feature, so prior installs upgrade): now notify-on-stop —
-    // terminal exits (completion/duration/emergency) send a Telegram explaining
-    // why the run stopped (2026-05-27 silent-stalls postmortem, Task 2). The
-    // `notify_terminal_stop` function name is absent from all prior installs.
+    // setup gains a feature, so prior installs upgrade): now the #28 codex
+    // autonomous-loop driver — the shared hook self-gates on `--codex` +
+    // autonomousSessions.codexLoopDriver (var `CODEX_LOOP_ENABLED`), which is absent
+    // from every prior install (incl. the notify-on-stop version). Bumping the marker
+    // re-deploys the bundled hook to stock installs so existing CODEX agents get the
+    // codex-aware hook; customized hooks (no stock fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'notify_terminal_stop',
+      'CODEX_LOOP_ENABLED',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal + notify-on-stop)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (#28 codex autonomous-loop driver — --codex self-gate)',
     );
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
