@@ -149,6 +149,34 @@ export function sleepAuditSink(stateDir: string): SleepAuditSink {
   };
 }
 
+/**
+ * Live-mode `requestSleep` impl (Stage B mechanism): writes
+ * `state/sleep-requested.json` for the ServerSupervisor to honor (it stops the
+ * server). Only ever called by the SleepController in live mode (enabled &&
+ * !dryRun), so a dark / dry-run agent never writes it. TTL-stamped so a stale
+ * request can't sleep a server long after it was queued.
+ */
+export function sleepRequestWriter(stateDir: string, ttlMs = 300_000): (verdict: SleepVerdict) => void {
+  return (verdict: SleepVerdict) => {
+    try {
+      const dir = path.join(stateDir, 'state');
+      fs.mkdirSync(dir, { recursive: true });
+      const now = Date.now();
+      fs.writeFileSync(
+        path.join(dir, 'sleep-requested.json'),
+        JSON.stringify({
+          requestedBy: 'SleepController',
+          reason: verdict.reason,
+          requestedAt: new Date(now).toISOString(),
+          expiresAt: new Date(now + ttlMs).toISOString(),
+        }),
+      );
+    } catch {
+      /* @silent-fallback-ok — supervisor re-checks each tick; a missed write just delays sleep */
+    }
+  };
+}
+
 export interface SleepControllerOptions {
   enabled: boolean;
   /** When true (default), evaluate + audit but NEVER write the sleep-request flag. */

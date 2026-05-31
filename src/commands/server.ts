@@ -8906,7 +8906,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // inbound-message chokepoint (/internal/telegram-forward).
     const { AgentActivityState } = await import('../monitoring/AgentActivityState.js');
     const agentActivityState = new AgentActivityState();
-    const { SleepController, sleepAuditSink } = await import('../monitoring/SleepController.js');
+    const { SleepController, sleepAuditSink, sleepRequestWriter } = await import('../monitoring/SleepController.js');
     const _sleepCfg = config.monitoring?.agentSleep;
     const sleepController = new SleepController(
       {
@@ -8920,14 +8920,18 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Lease guard: only relevant when multi-machine coordination is active.
             leaseActive: coordinator.enabled,
             holdsLease: coordinator.enabled ? coordinator.holdsLease() : false,
-            // In-flight: an inbound message currently being handled. (The relay/forward
-            // in-flight + scheduler-wake signals are wired with the stop mechanism in
-            // the next slice — this slice is dry-run, so it never acts on them.)
+            // In-flight: an inbound message currently being handled. (A fuller
+            // relay/forward-queue in-flight signal + the scheduler next-fire wake are
+            // tracked refinements; nextScheduledJobAt stays null until scheduler-wake
+            // lands, so the scheduled-job guard is conservative-off for now.)
             inflightWork: (currentInboundByTopic?.size ?? 0) > 0,
             nextScheduledJobAt: null,
           };
         },
         audit: sleepAuditSink(config.stateDir),
+        // Live-mode only (enabled && !dryRun): writes state/sleep-requested.json
+        // for the ServerSupervisor to honor. Dark/dry-run never invokes this.
+        requestSleep: sleepRequestWriter(config.stateDir),
       },
       {
         enabled: _sleepCfg?.enabled ?? false,

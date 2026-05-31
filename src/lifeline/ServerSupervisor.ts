@@ -241,6 +241,14 @@ export class ServerSupervisor extends EventEmitter {
   private maintenanceWaitMs = 5 * 60_000; // 5 minutes default (configurable via maintenanceWaitMinutes)
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
 
+  // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
+  // When `slept` is true the server was INTENTIONALLY stopped to save resources —
+  // the health loop must NOT treat it as down or auto-respawn it; it only watches
+  // for a wake-request. Gated upstream by the SleepController, which writes the
+  // sleep-request flag only in live mode (enabled + !dryRun). Always-off here until
+  // a sleep-request flag is honored, so existing crash-recovery behavior is intact.
+  private slept = false;
+
   // Circuit breaker — give up after too many total failures, but retry periodically
   private totalFailures = 0;
   private totalFailureWindowStart = 0;
@@ -362,6 +370,22 @@ export class ServerSupervisor extends EventEmitter {
   /**
    * Stop the server and monitoring.
    */
+  /**
+   * Operator-explicit wake from agent hard-sleep. Clears the `slept` state + the
+   * slept-marker so a manual `/lifeline restart` (or `/restart`) actually brings the
+   * server back up — without this, startHealthChecks() re-reads the marker and the
+   * supervisor immediately re-enters `slept`, leaving an un-monitored server and no
+   * in-band recovery. Distinct from a fleet-watchdog auto-bounce (which intentionally
+   * stays asleep via the boot-marker); this is reached only from an explicit command.
+   */
+  wakeFromSleep(): void {
+    if (this.slept || this.sleptMarkerPresent()) {
+      this.clearSleptMarker();
+      this.slept = false;
+      console.log('[Supervisor] Explicit wake — cleared slept state for operator restart');
+    }
+  }
+
   async stop(): Promise<void> {
     this.stopHealthChecks();
 
@@ -1057,6 +1081,14 @@ export class ServerSupervisor extends EventEmitter {
   private startHealthChecks(): void {
     if (this.healthCheckInterval) return;
 
+    // Agent hard-sleep: if a slept-marker survived from before this supervisor boot,
+    // the server was intentionally asleep — stay asleep (the health loop will only
+    // watch for a wake-request) rather than respawning it as if it had crashed.
+    if (this.sleptMarkerPresent()) {
+      this.slept = true;
+      console.log('[Supervisor] Booted with a slept-marker present — staying asleep until a wake-request');
+    }
+
     // Start SleepWakeDetector to catch short sleeps (10-30s) that the gap-based
     // detection below misses (its 2-minute threshold is too high for brief suspends).
     // On wake, reset failure counters so stale pre-sleep failures don't cascade.
@@ -1098,6 +1130,15 @@ export class ServerSupervisor extends EventEmitter {
         this.wakeTransitionUntil = now + this.wakeTransitionMs;
       }
       this.lastHealthCheckAt = now;
+
+      // Agent hard-sleep: when intentionally slept, the server is down BY DESIGN.
+      // Skip all health/respawn logic and only watch for a wake-request. This is
+      // the single change to the loop's control flow — a pure short-circuit that is
+      // a no-op unless a sleep-request was honored (slept === false otherwise).
+      if (this.slept) {
+        this.checkWakeRequest();
+        return;
+      }
 
       // During startup grace period: probe health optimistically but don't act on failures.
       // This allows `lastHealthy` to update as soon as the server is responsive, so
@@ -1173,6 +1214,8 @@ export class ServerSupervisor extends EventEmitter {
       this.checkRestartRequest();
       // Check for debug restart requests from doctor sessions
       this.checkDebugRestartRequest();
+      // Agent hard-sleep: honor a sleep-request written by the live SleepController
+      this.checkSleepRequest();
     }, 10_000); // Check every 10 seconds
   }
 
@@ -1226,6 +1269,88 @@ export class ServerSupervisor extends EventEmitter {
       }
     }
     return false;
+  }
+
+  // ── Agent hard-sleep: sleep/wake request handling ─────────────────
+  //
+  // Mirrors the restart-requested.json lifecycle. The live SleepController writes
+  // `state/sleep-requested.json` on a would-sleep verdict; this honors it by
+  // STOPPING the server (no respawn) and entering `slept`. The lifeline writes
+  // `state/wake-requested.json` on the next inbound message; checkWakeRequest()
+  // (called only while slept) respawns the server. A `state/slept-marker.json`
+  // records the intentional-sleep so a supervisor reboot — or the fleet watchdog —
+  // recognizes "asleep", not "crashed". Spec: docs/specs/agent-hard-sleep-mechanism.md.
+
+  /** Stop the server tmux session and enter `slept`. Honors sleep-requested.json. */
+  private checkSleepRequest(): void {
+    if (!this.stateDir || this.slept) return;
+    const flagPath = path.join(this.stateDir, 'state', 'sleep-requested.json');
+    try {
+      if (!fs.existsSync(flagPath)) return;
+      let data: { requestedBy?: string; reason?: string; expiresAt?: string } = {};
+      try { data = JSON.parse(fs.readFileSync(flagPath, 'utf-8')); } catch { /* tolerate */ }
+      // Consume the flag BEFORE acting so a malformed/processed request can't loop.
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkSleepRequest' }); } catch { /* ignore */ }
+      if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
+        console.log('[Supervisor] Expired sleep request — ignoring');
+        return;
+      }
+      console.log(`[Supervisor] Sleep requested (${data.reason ?? 'deep-idle'}) — stopping server to save resources`);
+      // Record the intentional sleep BEFORE stopping, so a reboot/watchdog sees it.
+      this.writeSleptMarker(data.reason ?? 'deep-idle');
+      this.slept = true;
+      this.isRunning = false;
+      // Stop the server tmux session WITHOUT respawning (the wake path respawns).
+      if (this.tmuxPath) {
+        try {
+          execFileSync(this.tmuxPath, ['kill-session', '-t', `=${this.serverSessionName}`], { stdio: 'ignore', timeout: 10_000 });
+        } catch { /* @silent-fallback-ok — session may already be gone */ }
+      }
+      this.emit('serverSlept');
+    } catch {
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkSleepRequest:catch' }); } catch { /* ignore */ }
+    }
+  }
+
+  /** Respawn the server on a wake-request. Called from the health loop ONLY while slept. */
+  private checkWakeRequest(): void {
+    if (!this.stateDir || !this.slept) return;
+    const flagPath = path.join(this.stateDir, 'state', 'wake-requested.json');
+    try {
+      if (!fs.existsSync(flagPath)) return;
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkWakeRequest' }); } catch { /* ignore */ }
+      console.log('[Supervisor] Wake requested — respawning server');
+      this.clearSleptMarker();
+      this.slept = false;
+      // Give the fresh server the full startup grace from now (mirrors restart path).
+      this.spawnedAt = Date.now();
+      this.consecutiveFailures = 0;
+      this.restartAttempts = 0;
+      this.spawnServer();
+      this.emit('serverWoke');
+    } catch {
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkWakeRequest:catch' }); } catch { /* ignore */ }
+    }
+  }
+
+  private writeSleptMarker(reason: string): void {
+    if (!this.stateDir) return;
+    try {
+      const dir = path.join(this.stateDir, 'state');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'slept-marker.json'), JSON.stringify({ sleptAt: new Date().toISOString(), reason }));
+    } catch { /* @silent-fallback-ok — marker is best-effort observability */ }
+  }
+
+  private clearSleptMarker(): void {
+    if (!this.stateDir) return;
+    try { SafeFsExecutor.safeUnlinkSync(path.join(this.stateDir, 'state', 'slept-marker.json'), { operation: 'src/lifeline/ServerSupervisor.ts:clearSleptMarker' }); } catch { /* ignore */ }
+  }
+
+  /** True when a slept-marker is on disk — read at boot so a reboot stays asleep. */
+  private sleptMarkerPresent(): boolean {
+    if (!this.stateDir) return false;
+    try { return fs.existsSync(path.join(this.stateDir, 'state', 'slept-marker.json')); } catch { return false; }
   }
 
   // ── Restart request handling ──────────────────────────────────────
