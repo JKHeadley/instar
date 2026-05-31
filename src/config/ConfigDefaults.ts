@@ -151,6 +151,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       autoFeedback: false,
       telegramDigest: false,
       driftCanary: false,
+      driftCanaryDailyCents: 5,
       llmDailyCents: 25,
       llmMaxConcurrent: 1,
       captureContextTurns: 6,
@@ -162,6 +163,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxInjectedPreferencesBytes: 4000,
       preferencesInjectionPriority: 'recency*confidence*dedupeCount',
       maxReopens: 2,
+      maxRoutesPerTick: 5,
+      feedbackPostDelayMs: 7000,
     },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
     // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the

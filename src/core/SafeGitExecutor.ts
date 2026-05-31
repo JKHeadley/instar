@@ -106,6 +106,7 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
   'name-rev',
   'blame',
   'cat-file',
+  'cherry', // read-only: lists +/- patch-equivalence vs an upstream; no mutation
   'grep',
   'shortlog',
   'count-objects',
@@ -155,6 +156,11 @@ export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   'cat-file',
   'merge-base',
   'remote', // shape-checked to list/get-url only; needed by resolveCanonicalRemote
+  // read-tier verbs the AgentWorktreeReaper needs against the source tree to
+  // decide whether a worktree is reclaimable. Both are pure reads (no mutation
+  // possible): `status --porcelain` for cleanliness, `cherry` for merged-detection.
+  'status',
+  'cherry',
 ]);
 
 // ── Env denylist ────────────────────────────────────────────────────
@@ -859,7 +865,7 @@ function isSourceTreeWorktreeManagerInvocation(verb: string, verbArgs: readonly 
     case 'config':
       return isReadOnlyConfigInvocation(verbArgs) || isWorktreeIdentityConfigWrite(verbArgs);
     case 'worktree':
-      return isWorktreeManagerMutation(verbArgs);
+      return isAllowedWorktreeManagerSubcommand(verbArgs);
     default:
       return false;
   }
@@ -870,9 +876,29 @@ function isWorktreeIdentityConfigWrite(verbArgs: readonly string[]): boolean {
   return verbArgs[0] === 'user.name' || verbArgs[0] === 'user.email';
 }
 
-function isWorktreeManagerMutation(verbArgs: readonly string[]): boolean {
+/**
+ * Worktree subcommands the worktree-manager / AgentWorktreeReaper may run against
+ * the instar source tree:
+ *  - `add` / `prune` — the `instar worktree create` lifecycle (unchanged).
+ *  - `list`           — pure read; the reaper enumerates worktrees to evaluate.
+ *  - `remove`         — the reaper reclaims a merged+clean+idle worktree, but ONLY
+ *                       in its SAFE form. `git worktree remove` without `--force`
+ *                       refuses to delete a worktree with uncommitted changes or a
+ *                       lock, so it can never destroy in-flight work. `--force`/`-f`
+ *                       is explicitly denied here — that is the one form that could.
+ */
+function isAllowedWorktreeManagerSubcommand(verbArgs: readonly string[]): boolean {
   const subcommand = verbArgs.find((arg) => !arg.startsWith('-'));
-  return subcommand === 'add' || subcommand === 'prune';
+  if (subcommand === 'add' || subcommand === 'prune' || subcommand === 'list') return true;
+  if (subcommand === 'remove') {
+    // Only the non-forced form. --force can delete a dirty worktree (data loss),
+    // so it must still trip the source-tree guard. Deny ANY force-ish token shape
+    // (`--force`, `--force=1`, `-f`, `-fxyz`) rather than relying on git's own
+    // parser to reject lookalikes — the guard stays self-sufficient even if git's
+    // argument parsing changes. `worktree remove` has no other `-f`-prefixed flag.
+    return !verbArgs.some((arg) => /^--force(=|$)/.test(arg) || /^-f/.test(arg));
+  }
+  return false;
 }
 
 function runSourceTreeChecks(

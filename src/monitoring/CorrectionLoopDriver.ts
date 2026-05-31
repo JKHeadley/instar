@@ -65,14 +65,18 @@ export interface CorrectionLoopDeps {
     needsUser: boolean;
     needsUserReason?: string;
   }) => Promise<{ id: string }>;
-  /** POST the agent's OWN /feedback route. Resolves to true when the route
-   *  accepted (201); false otherwise — including a guard rejection (which is the
-   *  guard doing its job). NEVER FeedbackManager.submit() directly. */
+  /** POST the agent's OWN /feedback route. NEVER FeedbackManager.submit()
+   *  directly. May resolve to either a plain boolean (legacy: true=accepted) or a
+   *  structured {posted, rateLimited} so the driver can distinguish a 429
+   *  (rate-limited — carry the record to the next run) from a guard rejection
+   *  (the guard doing its job — do NOT retry). The route's feedbackLimiter is
+   *  10/min/IP, so a converged batch must serialize + back off (spec §10 Slice-2
+   *  NEW-2). */
   feedbackLoopbackPost: (payload: {
     type: string;
     title: string;
     description: string;
-  }) => Promise<boolean>;
+  }) => Promise<boolean | FeedbackPostResult>;
   /** Write an explicit, gate-passed, policy-keyword-clean preference. */
   recordPreference: (payload: {
     learning: string;
@@ -100,6 +104,29 @@ export interface CorrectionLoopDeps {
   /** Probe whether the loop-written preference entry still exists on disk
    *  (silence ≠ effective; verified requires the application persisted). */
   preferenceStillPresent?: (dedupeKey: string) => boolean;
+  /** Max records routed per route() call (spec §10 Slice-2 NEW-5). Overflow
+   *  stays `open` and is re-evaluated next run. Default 5. */
+  maxRoutesPerTick?: number;
+  /** Delay (ms) inserted between successive loopback /feedback POSTs so a
+   *  converged infra-gap batch serializes under the route's 10/min IP limit
+   *  (spec §10 Slice-2 NEW-2). Default 0 (no delay) — set in production wiring. */
+  feedbackPostDelayMs?: number;
+  /** Injectable sleep (testability) — defaults to a real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Structured audit sink — one line per route/verify decision. Never throws. */
+  audit?: (event: { decision: string; dedupeKey?: string; detail?: string }) => void;
+}
+
+/** Structured loopback-POST result (spec §10 Slice-2 NEW-2). */
+export interface FeedbackPostResult {
+  /** True iff the route accepted (201). */
+  posted: boolean;
+  /** True iff the route returned 429 (rate-limited) — carry to the next run. */
+  rateLimited?: boolean;
+}
+
+function normalizeFeedbackResult(r: boolean | FeedbackPostResult): FeedbackPostResult {
+  return typeof r === 'boolean' ? { posted: r } : r;
 }
 
 export interface RouteResult {
@@ -107,6 +134,12 @@ export interface RouteResult {
   toFeedback: number;
   toPreferences: number;
   toAttention: number;
+  /** Gate-crossing records NOT routed this run (per-tick ceiling OR a 429 cut the
+   *  infra-gap batch short). They stay `open` and re-route next run. */
+  overflow: number;
+  /** True iff a loopback /feedback POST was rate-limited (429) this run, so the
+   *  remaining infra-gap records were carried to the next run. */
+  rateLimited: boolean;
 }
 
 export interface VerifyResult { evaluated: CorrectionRecord[]; }
@@ -120,6 +153,11 @@ export class CorrectionLoopDriver {
 
   private now(): number { return this.deps.now ? this.deps.now() : Date.now(); }
 
+  private sleep(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return this.deps.sleep ? this.deps.sleep(ms) : new Promise((r) => setTimeout(r, ms));
+  }
+
   /**
    * ROUTE step (spec §3.6): for each gate-crossing record, route it by kind:
    *   user-preference + policy-keyword-clean → recordPreference()
@@ -128,13 +166,40 @@ export class CorrectionLoopDriver {
    *   infra-gap (autoFeedback OFF, default)  → tracked Action + draft Initiative (propose-only)
    * Then open a verify window + move the record to acted-on. Idempotent: an
    * insight already past `open` is skipped by the analyzer's status:'open' filter.
+   *
+   * Bounded per run (spec §10 Slice-2):
+   *  - PER-TICK CEILING (NEW-5): at most `maxRoutesPerTick` records route per run.
+   *    Overflow stays `open` (re-routed next run); the overflow count is audited.
+   *  - BATCHED + 429-RETRY (NEW-2): autoFeedback infra-gap POSTs serialize with
+   *    `feedbackPostDelayMs` between them (the route's feedbackLimiter is 10/min/IP);
+   *    on the FIRST 429 the batch stops — remaining infra-gap records stay `open`
+   *    and are carried to the next run (no silent drop).
    */
   async route(): Promise<RouteResult> {
-    const result: RouteResult = { routed: [], toFeedback: 0, toPreferences: 0, toAttention: 0 };
+    const result: RouteResult = { routed: [], toFeedback: 0, toPreferences: 0, toAttention: 0, overflow: 0, rateLimited: false };
     const { crossed } = this.analyzer.analyze();
+    const maxRoutesPerTick = this.deps.maxRoutesPerTick && this.deps.maxRoutesPerTick > 0
+      ? this.deps.maxRoutesPerTick
+      : 5;
 
+    let routedThisTick = 0;
+    let feedbackPostsThisTick = 0;
     for (const verdict of crossed) {
       const rec = verdict.record;
+
+      // PER-TICK CEILING: stop routing once the ceiling is hit; the rest stay
+      // `open` and re-route next run.
+      if (routedThisTick >= maxRoutesPerTick) {
+        result.overflow++;
+        continue;
+      }
+      // After a 429 cut the batch short, every remaining record is overflow too
+      // (carried to the next run) — do not attempt further routing this tick.
+      if (result.rateLimited) {
+        result.overflow++;
+        continue;
+      }
+
       let routedVia: string | null = null;
 
       if (rec.kind === 'user-preference') {
@@ -168,15 +233,28 @@ export class CorrectionLoopDriver {
         }
       } else if (rec.kind === 'infra-gap') {
         if (this.deps.autoFeedback) {
+          // Serialize the batch: delay before every POST after the first so a
+          // converged batch can't trip the route's 10/min IP limit.
+          if (feedbackPostsThisTick > 0) await this.sleep(this.deps.feedbackPostDelayMs ?? 0);
           // Loopback POST through the real route guards (anomaly/quality/length).
           // The description carries ONLY the scrubbed summary, never raw learning.
-          const ok = await this.deps.feedbackLoopbackPost({
+          const raw = await this.deps.feedbackLoopbackPost({
             type: 'improvement',
             title: `Recurring friction: ${rec.scrubbedSummary.slice(0, 120)}`,
             description: rec.scrubbedSummary,
           });
+          feedbackPostsThisTick++;
+          const fb = normalizeFeedbackResult(raw);
+          if (fb.rateLimited) {
+            // 429 — carry THIS record (and the rest) to the next run; do NOT
+            // mark it acted-on (so the analyzer re-routes it). Stop the batch.
+            result.rateLimited = true;
+            result.overflow++;
+            this.deps.audit?.({ decision: 'feedback-429-carry', dedupeKey: rec.dedupeKey });
+            continue;
+          }
           routedVia = 'feedback';
-          if (ok) result.toFeedback++;
+          if (fb.posted) result.toFeedback++;
         } else {
           // Propose-only default: a tracked Action + a draft Initiative; the
           // human posts the feedback. No proposal minted.
@@ -213,7 +291,18 @@ export class CorrectionLoopDriver {
         { status: 'acted-on', routedVia, verifyWindowStart: start, verifyWindowEnd: end },
         rec.version,
       );
-      if (res.ok) result.routed.push(res.record);
+      if (res.ok) {
+        result.routed.push(res.record);
+        routedThisTick++;
+        this.deps.audit?.({ decision: `routed:${routedVia}`, dedupeKey: rec.dedupeKey });
+      }
+    }
+
+    if (result.overflow > 0) {
+      this.deps.audit?.({
+        decision: 'overflow-carried',
+        detail: `${result.overflow} gate-crossing records left open for next run (ceiling ${maxRoutesPerTick}${result.rateLimited ? ', batch cut by 429' : ''})`,
+      });
     }
 
     return result;
@@ -221,13 +310,22 @@ export class CorrectionLoopDriver {
 
   /**
    * VERIFY step (spec §3.7): for each `acted-on` record whose window has elapsed,
-   * decide the outcome keyed on the SAME dedupeKey:
+   * decide the outcome keyed on the SAME dedupeKey. The infra-gap path mirrors the
+   * preference path's recurrence-after watcher with the path-appropriate window
+   * and verdict (spec §10 Slice-2 infra-gap closed-loop verify):
    *   - recurrence-after on the SAME dedupeKey → reopen (capped at maxReopens →
    *     inconclusive). Keying on dedupeKey (not the coarse kind) prevents a
-   *     false-reopen from an unrelated learning in the same regex bucket.
-   *   - SILENCE alone ≠ effective. A preference is `verified` only when (a) the
-   *     dedupeKey did not recur in the window AND (b) the loop-written preference
-   *     entry is still present (not human-deleted as wrong). Otherwise inconclusive.
+   *     false-reopen from an unrelated learning in the same regex bucket. Applies
+   *     to BOTH kinds; infra-gap uses verifyWindowDaysInfraGap (default 14).
+   *   - PREFERENCE silence ≠ effective. `verified` only when (a) the dedupeKey did
+   *     not recur in the window AND (b) the loop-written preference entry is still
+   *     present (not human-deleted as wrong). Otherwise inconclusive.
+   *   - INFRA-GAP silence → `inconclusive`, NOT `verified`. Unlike a preference
+   *     (where silence + persisted application closes the loop locally), the
+   *     infra-gap fix is cross-org — Dawn ships it through Rising Tide. The agent
+   *     cannot prove its /feedback proposal caused the fix, so silence (no
+   *     recurrence, proposal still open) is inconclusive by design — never a
+   *     false "verified" the agent didn't earn.
    */
   runVerification(): VerifyResult {
     const evaluated: CorrectionRecord[] = [];
@@ -242,15 +340,18 @@ export class CorrectionLoopDriver {
       const recurred = this.recurredSince(rec.dedupeKey, windowStartMs);
 
       let next: Parameters<CorrectionLedger['update']>[1];
+      let auditReason: string;
       if (recurred) {
         if (rec.reopenCount >= maxReopens) {
           next = { status: 'inconclusive' };
+          auditReason = `recurred after ${rec.reopenCount} reopens — terminal inconclusive`;
         } else {
           const windowDays = rec.kind === 'user-preference'
             ? (this.deps.verifyWindowDaysPreference ?? 7)
             : (this.deps.verifyWindowDaysInfraGap ?? 14);
           const end = new Date(this.now() + windowDays * 86400_000).toISOString();
           next = { status: 'reopened', reopenCount: rec.reopenCount + 1, verifyWindowEnd: end };
+          auditReason = `recurred — reopened (${rec.reopenCount + 1}/${maxReopens}), watching ${windowDays}d more`;
         }
       } else if (rec.kind === 'user-preference') {
         // Silence ≠ effective. Verified ONLY if the application persisted.
@@ -258,14 +359,22 @@ export class CorrectionLoopDriver {
           ? this.deps.preferenceStillPresent(rec.dedupeKey)
           : false;
         next = persisted ? { status: 'verified' } : { status: 'inconclusive' };
+        auditReason = persisted
+          ? 'no recurrence + preference still on disk — verified'
+          : 'no recurrence but preference removed/absent — inconclusive (silence ≠ effective)';
       } else {
-        // infra-gap fix is cross-org (Dawn ships it). Slice 1 marks silence-only
-        // as inconclusive — the verified correlation lands in Slice 2.
+        // infra-gap fix is cross-org (Dawn ships it). Silence (no recurrence,
+        // proposal still open) is inconclusive — the agent never earns a
+        // "verified" it can't prove it caused.
         next = { status: 'inconclusive' };
+        auditReason = 'infra-gap: no recurrence, fix is cross-org (Dawn) — inconclusive, not verified';
       }
 
       const res = this.ledger.update(rec.id, next, rec.version);
-      if (res.ok) evaluated.push(res.record);
+      if (res.ok) {
+        evaluated.push(res.record);
+        this.deps.audit?.({ decision: `verify:${next.status}`, dedupeKey: rec.dedupeKey, detail: auditReason });
+      }
     }
     return { evaluated };
   }

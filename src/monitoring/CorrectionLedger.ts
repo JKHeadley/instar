@@ -183,6 +183,12 @@ const SCHEMA = [
      detected_at   TEXT NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS idx_corr_dedupe ON correction_occurrences(dedupe_key)`,
+  // Composite index backing the distinctCounts() COUNT(DISTINCT day_bucket)
+  // query (spec §10 Slice-2 NEW-4). The analyzer's restart-proof distinct-day
+  // prong runs `WHERE dedupe_key = ? AND deterministic_weight >= ?` then groups
+  // by day_bucket; (dedupe_key, day_bucket) lets SQLite satisfy the distinct-day
+  // count from the index without scanning the per-key occurrence rows.
+  `CREATE INDEX IF NOT EXISTS idx_corr_dedupe_day ON correction_occurrences(dedupe_key, day_bucket)`,
   // Per-machine monotonic sequence for machine-scoped IDs.
   `CREATE TABLE IF NOT EXISTS correction_seq (
      machine_id TEXT PRIMARY KEY,
@@ -458,6 +464,18 @@ export class CorrectionLedger {
       ? this.db.prepare(`SELECT COUNT(*) c FROM correction_occurrences WHERE dedupe_key = ?`).get(dedupeKey)
       : this.db.prepare(`SELECT COUNT(*) c FROM correction_occurrences`).get();
     return ((row as { c: number } | undefined)?.c) ?? 0;
+  }
+
+  /**
+   * Names of the indexes present on the occurrences table — observability + a
+   * test hook pinning that the distinct-days composite index (spec §10 Slice-2
+   * NEW-4) is actually created. Read-only.
+   */
+  listOccurrenceIndexes(): string[] {
+    const rows = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'correction_occurrences'`)
+      .all() as { name: string }[];
+    return rows.map((r) => r.name).filter((n) => !n.startsWith('sqlite_'));
   }
 
   /** Strip `learning` (raw distilled text) — the ONLY shape allowed over HTTP (spec §3.4). */

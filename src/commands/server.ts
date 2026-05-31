@@ -6759,6 +6759,21 @@ export async function startServer(options: StartOptions): Promise<void> {
               maxConcurrent: cl.llmMaxConcurrent ?? 1,
               maxDailyCents: cl.llmDailyCents ?? 25,
             });
+            // Drift-canary sub-budget (Slice 2 NEW-1): a SEPARATE LlmQueue instance
+            // with its own (small) daily cap, so the periodic "would this have been
+            // a correction?" sampler can never starve the main distill path's cap.
+            // Constructed only when the canary is on (it ships dark); when off this
+            // is null and the canary path never runs. The separate instance IS the
+            // sub-budget (LlmQueue has no per-feature sub-cap, spec §2).
+            const driftCanaryLlmQueue = cl.driftCanary === true
+              ? new LlmQueue({
+                  maxConcurrent: 1,
+                  maxDailyCents: cl.driftCanaryDailyCents ?? 5,
+                })
+              : null;
+            void driftCanaryLlmQueue; // reserved for the canary sampler (dark); the
+            // budget is provisioned here so enabling the canary cannot regress the
+            // main cap. Referenced to satisfy no-unused under the dark default.
             const ring = new CaptureRing({
               captureContextTurns: cl.captureContextTurns ?? 6,
               captureTopicMapMax: cl.captureTopicMapMax ?? 64,

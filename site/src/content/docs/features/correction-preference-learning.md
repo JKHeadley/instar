@@ -33,12 +33,27 @@ A learned preference is not a note the agent has to remember. The `recordPrefere
 
 The recurrence watcher in `CorrectionAnalyzer` then closes the loop: if the same lesson recurs after the preference was written, it reopens; if it goes quiet *and* the written preference is still present, it is marked verified.
 
+The same watcher runs on the infra-gap path with a longer window (14 days vs. 7): if the friction recurs after a `/feedback` proposal, it reopens; but because an infra-gap fix is the upstream project's to ship — the agent cannot prove its own proposal caused the fix — silence is marked *inconclusive*, never a "verified" the agent didn't earn.
+
+## The Preferences dashboard tab
+
+The **Preferences tab** in the dashboard is the calm, human read surface for everything above. It shows, in plain language, the preferences the agent has picked up about you (the same block the session-start hook injects) and the recent corrections it has noticed, each with a short scrubbed summary and its status. The exact words you used are never stored or shown — only the neutral summary. When the feature is off, the tab shows a friendly "not turned on yet" state rather than an error. It is read-only and never blocks or changes a message.
+
 ## API
 
 - `GET /preferences/session-context` — the structured block of active preferences (byte-bounded, priority-ordered); `503` when the feature is off.
-- `GET /corrections` — the deduplicated, scrubbed ledger view (metadata + the neutral summary only; raw text is never served).
+- `GET /corrections` — the deduplicated, scrubbed ledger view (metadata + the neutral summary only; raw text is never served). Paginates with `?limit` (default 100), a `?before=<ISO>` keyset cursor (pass the prior page's `nextBefore`), and a `?since=<ISO>` lower-bound; filter with `?kind` and `?status`.
 - `GET /corrections/:id` — a single ledger record.
-- `POST /corrections/analyze` — run the recurrence analysis on demand (the weekly `correction-analyzer` job does this on a schedule).
+- `POST /corrections/analyze` — run the recurrence analysis on demand (the weekly `correction-analyzer` job does this on a schedule). The response includes `routed.overflow` (gate-crossing records left for the next run by the per-tick ceiling or a rate-limited feedback batch) and `routed.rateLimited`.
+
+## Scalability bounds
+
+The loop is bounded at every step so it can never run away under load:
+
+- **Per-tick add ceiling.** The analyzer routes at most `maxRoutesPerTick` learnings per run (default 5); the rest stay open and route on the next run.
+- **Batched, rate-limit-aware feedback.** When auto-feedback is on, infra-gap proposals serialize with a delay between them and stop on the first rate-limit response, so a converged batch never trips the feedback route's limit or silently drops a learning.
+- **Drift-canary sub-budget.** The drift canary that watches for natural-language phrasing drift gets its own small daily LLM budget (`driftCanaryDailyCents`, default 5), separate from the main distill cap, so it can never starve the main path.
+- **Indexed recurrence query.** A composite index on the occurrence log backs the restart-proof distinct-calendar-days count.
 
 ## Safety & privacy
 

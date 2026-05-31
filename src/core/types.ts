@@ -3170,6 +3170,10 @@ export interface MonitoringConfig {
     telegramDigest?: boolean;
     /** Drift canary that samples un-classified messages through the LLM (Slice 1b). Default false. */
     driftCanary?: boolean;
+    /** Dedicated daily spend cap (cents) for the drift canary's own LLM sub-budget
+     *  (Slice 2 NEW-1) — separate from llmDailyCents so the canary can never
+     *  starve the main distill path. Default 5. */
+    driftCanaryDailyCents?: number;
     /** Per-sentinel LLM daily spend cap in cents (own LlmQueue instance, Slice 1b). */
     llmDailyCents?: number;
     /** Max concurrent LLM distillation calls (Slice 1b). */
@@ -3192,6 +3196,13 @@ export interface MonitoringConfig {
     preferencesInjectionPriority?: string;
     /** Max times a closed-loop verification may reopen the same dedupeKey (Slice 1b). */
     maxReopens?: number;
+    /** Max learnings the analyzer routes per run (Slice 2 NEW-5). Overflow stays
+     *  `open` and re-routes next run. Default 5. */
+    maxRoutesPerTick?: number;
+    /** Delay (ms) between successive loopback /feedback POSTs so a converged
+     *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
+     *  NEW-2). Default 7000. */
+    feedbackPostDelayMs?: number;
   };
   /**
    * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)

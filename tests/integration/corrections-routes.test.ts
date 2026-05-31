@@ -147,6 +147,46 @@ describe('/corrections routes (integration)', () => {
     expect(res.body.nextBefore).toBeTruthy();
   });
 
+  it('pagination: ?before is the keyset cursor — paging walks the full set without overlap', async () => {
+    ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+    for (let i = 0; i < 5; i++) {
+      ledger.record({ kind: 'user-preference', learning: `pref ${i}`, scrubbedSummary: `s${i}`, deterministicWeight: 3, detectedAt: `2026-05-0${i + 1}T10:00:00Z` });
+    }
+    const app = appWith(ctxFor(stateDir, ledger));
+    const page1 = await request(app).get('/corrections?limit=2').set(auth());
+    expect(page1.body.records).toHaveLength(2);
+    const cursor = page1.body.nextBefore;
+    const page2 = await request(app).get(`/corrections?limit=2&before=${encodeURIComponent(cursor)}`).set(auth());
+    expect(page2.status).toBe(200);
+    expect(page2.body.records).toHaveLength(2);
+    // No overlap between pages.
+    const ids1 = page1.body.records.map((r: any) => r.id);
+    const ids2 = page2.body.records.map((r: any) => r.id);
+    expect(ids1.some((id: string) => ids2.includes(id))).toBe(false);
+  });
+
+  it('pagination: ?since lower-bounds detected_at (records older than since excluded)', async () => {
+    ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+    for (let i = 0; i < 5; i++) {
+      ledger.record({ kind: 'user-preference', learning: `pref ${i}`, scrubbedSummary: `s${i}`, deterministicWeight: 3, detectedAt: `2026-05-0${i + 1}T10:00:00Z` });
+    }
+    // since = 2026-05-03 → only 05-03, 05-04, 05-05 remain (3 records).
+    const res = await request(appWith(ctxFor(stateDir, ledger))).get('/corrections?since=2026-05-03T00:00:00Z').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.records).toHaveLength(3);
+    for (const r of res.body.records) {
+      expect(Date.parse(r.detectedAt)).toBeGreaterThanOrEqual(Date.parse('2026-05-03T00:00:00Z'));
+    }
+  });
+
+  it('pagination: a malformed ?since / ?before is tolerated (ignored, never a 500)', async () => {
+    ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+    ledger.record({ kind: 'user-preference', learning: 'p', scrubbedSummary: 's', deterministicWeight: 3 });
+    const res = await request(appWith(ctxFor(stateDir, ledger))).get('/corrections?since=not-a-date&before=garbage').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.records).toHaveLength(1); // both params ignored → full set
+  });
+
   describe('/health does NOT serialize the ephemeral capture ring', () => {
     it('the /health response shape contains no captured turn text', async () => {
       ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });

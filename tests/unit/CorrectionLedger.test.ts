@@ -107,6 +107,26 @@ describe('CorrectionLedger', () => {
     });
   });
 
+  describe('distinct-days composite index (spec §10 Slice-2 NEW-4)', () => {
+    it('creates idx_corr_dedupe_day backing the distinct-day count query', () => {
+      const l = fresh();
+      const indexes = l.listOccurrenceIndexes();
+      expect(indexes).toContain('idx_corr_dedupe_day');
+      // The single-column dedupe index is still present (we add the composite,
+      // never remove the original).
+      expect(indexes).toContain('idx_corr_dedupe');
+    });
+
+    it('distinctCounts still computes correct day counts with the composite index', () => {
+      const l = fresh();
+      l.record({ kind: 'user-preference', learning: 'q', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, detectedAt: '2026-05-10T10:00:00Z' });
+      l.record({ kind: 'user-preference', learning: 'q', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, detectedAt: '2026-05-11T10:00:00Z' });
+      l.record({ kind: 'user-preference', learning: 'q', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, detectedAt: '2026-05-11T20:00:00Z' }); // same day as #2
+      const key = CorrectionLedger.dedupeKey('user-preference', 'q');
+      expect(l.distinctCounts(key, 3).distinctDays).toBe(2);
+    });
+  });
+
   describe('toApiView', () => {
     it('strips the raw learning + sessionId; keeps scrubbed_summary + metadata', () => {
       const l = fresh();

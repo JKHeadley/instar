@@ -4584,6 +4584,59 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.frameworkIssueLedger.observability());
   });
 
+  // Durable write path (§5) — lets an agent (or the mentor loop, or a backfill
+  // script) record an engineering-DISCOVERED framework issue into the ledger,
+  // not just the ones a live mentor tick trips over. Thin wrapper over the
+  // already-validated recordObservation (+ optional status transition for
+  // backfilling an already-fixed issue). bucket/severity/status enums are
+  // validated by the ledger, which throws → 400. New framework strings are
+  // intentionally allowed (onboarding the NEXT framework introduces one).
+  router.post('/framework-issues/observe', (req, res) => {
+    if (!ctx.frameworkIssueLedger) {
+      res.status(503).json({ error: 'framework issue ledger unavailable' });
+      return;
+    }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+    for (const field of ['framework', 'bucket', 'title', 'dedupKey'] as const) {
+      if (!str(b[field])) {
+        res.status(400).json({ error: `${field} (non-empty string) is required` });
+        return;
+      }
+    }
+    try {
+      const result = ctx.frameworkIssueLedger.recordObservation({
+        framework: b.framework as string,
+        bucket: b.bucket as never, // ledger assertEnum-validates → throws → 400
+        title: b.title as string,
+        severity: str(b.severity) as never,
+        dedupKey: b.dedupKey as string,
+        signature: str(b.signature),
+        evidence: str(b.evidence),
+        observedVersion: str(b.observedVersion),
+        bucketPrimary: str(b.bucketPrimary) as never,
+        relatedSpec: str(b.relatedSpec),
+      });
+      // Optional terminal-status transition in the same call. recordObservation
+      // always creates as 'open'; a backfill of an already-fixed issue passes
+      // status:'fixed' (+ fixedInVersion). wont-fix requires a reason (the
+      // ledger enforces this → 400 if missing).
+      let issue = ctx.frameworkIssueLedger.getIssue(result.issueId);
+      const status = str(b.status);
+      if (status && status !== 'open') {
+        issue =
+          ctx.frameworkIssueLedger.updateIssue(result.issueId, {
+            status: status as never,
+            fixedInVersion: str(b.fixedInVersion),
+            wontFixReason: str(b.wontFixReason),
+          }) ?? issue;
+      }
+      res.json({ ...result, issue });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.post('/framework-issues/:id/promote', (req, res) => {
     if (!ctx.frameworkIssueLedger) {
       res.status(503).json({ error: 'framework issue ledger unavailable' });
@@ -10916,8 +10969,13 @@ export function createRoutes(ctx: RouteContext): Router {
   // message; these routes are observability + the agent-diagnosed one-tap.
   //
   //   GET  /corrections          — list deduped records (bearer; 503 when off;
-  //                                 toApiView strips raw `learning`; keyset
-  //                                 pagination via ?before / ?limit / ?kind / ?status)
+  //                                 toApiView strips raw `learning`; pagination:
+  //                                 ?limit (default 100, cap 1000); ?before=<ISO>
+  //                                 is the keyset CURSOR (detected_at < before;
+  //                                 page by passing the prior page's nextBefore);
+  //                                 ?since=<ISO> is a lower-bound (detected_at >=
+  //                                 since); ?kind / ?status filters. Bad ?before /
+  //                                 ?since are tolerated (ignored), never a 500.
   //   GET  /corrections/:id       — one record (toApiView)
   //   POST /corrections           — agent-diagnosed one-tap (requires X-Instar-Request:1)
   //
@@ -10926,14 +10984,16 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/corrections', (req, res) => {
     if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     const limit = req.query.limit ? Math.min(Math.max(1, parseInt(req.query.limit as string, 10) || 100), 1000) : 100;
-    const before = req.query.before ? Date.parse(req.query.before as string) : undefined;
+    const before = typeof req.query.before === 'string' ? Date.parse(req.query.before) : NaN;
+    const since = typeof req.query.since === 'string' ? Date.parse(req.query.since) : NaN;
     const kind = typeof req.query.kind === 'string' && ['infra-gap', 'user-preference', 'noise'].includes(req.query.kind)
       ? (req.query.kind as import('../monitoring/CorrectionLedger.js').CorrectionKind)
       : undefined;
     const status = typeof req.query.status === 'string' ? (req.query.status as import('../monitoring/CorrectionLedger.js').CorrectionStatus) : undefined;
     const records = ctx.correctionLedger.list({
       limit,
-      beforeMs: before && !Number.isNaN(before) ? before : undefined,
+      beforeMs: Number.isNaN(before) ? undefined : before,
+      sinceMs: Number.isNaN(since) ? undefined : since,
       kind,
       status,
     });
@@ -10941,6 +11001,8 @@ export function createRoutes(ctx: RouteContext): Router {
       records: records.map((r) => CorrectionLedger.toApiView(r)),
       count: records.length,
       totalRecords: ctx.correctionLedger.countRecords(),
+      // The keyset cursor for the NEXT page (detected_at < nextBefore). Null when
+      // this page wasn't full (no more rows to fetch).
       nextBefore: records.length === limit ? records[records.length - 1].detectedAt : null,
     });
   });
@@ -11018,7 +11080,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // Loopback POST helpers — bearer-authed to the agent's OWN routes so they
       // traverse the real middleware (feedback anomaly/quality/length guards;
       // attention tone gate). Authorization is never logged.
-      const feedbackLoopbackPost = async (payload: { type: string; title: string; description: string }): Promise<boolean> => {
+      const feedbackLoopbackPost = async (payload: { type: string; title: string; description: string }): Promise<import('../monitoring/CorrectionLoopDriver.js').FeedbackPostResult> => {
         try {
           const resp = await fetch(`http://localhost:${port}/feedback`, {
             method: 'POST',
@@ -11029,8 +11091,11 @@ export function createRoutes(ctx: RouteContext): Router {
             },
             body: JSON.stringify(payload),
           });
-          return resp.status === 201;
-        } catch { return false; }
+          // 429 = rate-limited (the route's 10/min/IP feedbackLimiter) → carry the
+          // record to the next run; any other non-201 is a guard rejection (don't
+          // retry). The driver serializes the batch + stops on the first 429.
+          return { posted: resp.status === 201, rateLimited: resp.status === 429 };
+        } catch { return { posted: false }; }
       };
       const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
         try {
@@ -11063,6 +11128,18 @@ export function createRoutes(ctx: RouteContext): Router {
         verifyWindowDaysPreference: cl?.verifyWindowDaysPreference ?? 7,
         verifyWindowDaysInfraGap: cl?.verifyWindowDaysInfraGap ?? 14,
         maxReopens: cl?.maxReopens ?? 2,
+        // Per-tick add ceiling (NEW-5) + batched-POST delay (NEW-2) — overflow
+        // stays `open` and re-routes next run; the batch serializes under the
+        // /feedback route's 10/min IP limit.
+        maxRoutesPerTick: cl?.maxRoutesPerTick ?? 5,
+        feedbackPostDelayMs: cl?.feedbackPostDelayMs ?? 7000,
+        audit: (event) => {
+          try {
+            const auditPath = path.join(ctx.config.stateDir, 'logs', 'correction-learning-audit.jsonl');
+            fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+            fs.appendFileSync(auditPath, JSON.stringify({ ts: new Date().toISOString(), origin: 'correction-loop', ...event }) + '\n', { mode: 0o600 });
+          } catch { /* @silent-fallback-ok — audit is best-effort */ }
+        },
         preferenceStillPresent: (dedupeKey) =>
           prefs.read().preferences.some((e) => e.dedupeKey === dedupeKey),
       });
@@ -11081,6 +11158,10 @@ export function createRoutes(ctx: RouteContext): Router {
           toFeedback: routed.toFeedback,
           toPreferences: routed.toPreferences,
           toAttention: routed.toAttention,
+          // Gate-crossing records left `open` this run (per-tick ceiling OR a 429
+          // cut the infra-gap batch short) — re-routed next run, never dropped.
+          overflow: routed.overflow,
+          rateLimited: routed.rateLimited,
         },
         verified,
       });

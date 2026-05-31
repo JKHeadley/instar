@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 const NOW = 1_000_000_000_000;
 
@@ -177,5 +178,94 @@ describe('resolveBaseRef', () => {
   it('returns null when no base ref resolves', () => {
     const git: ReadGit = () => { throw new Error('no'); };
     expect(resolveBaseRef(git, '/repo')).toBeNull();
+  });
+});
+
+/**
+ * Integration: the REAL deps (real SafeGitExecutor, real git) against a repo
+ * promoted to an instar source tree — the scenario the fake-git tests above
+ * never exercised, which is exactly why the SourceTreeGuard blocked every reaper
+ * git call in production and it reported 0 reclaimable. This is the regression
+ * guard for that bug: if the guard ever stops permitting the reaper's reads /
+ * non-forced remove against the source tree, these fail.
+ */
+describe('makeAgentWorktreeReaperDeps — real git against an instar source tree', () => {
+  let repo: string;
+  let worktreesDir: string;
+
+  function g(cwd: string, args: string[]) {
+    return SafeGitExecutor.run(args, { cwd, operation: 'tests/unit/agent-worktree-reaper.test.ts:setup' });
+  }
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'awr-repo-'));
+    g(repo, ['init', '-q', '-b', 'main']);
+    g(repo, ['config', 'user.email', 't@t.l']);
+    g(repo, ['config', 'user.name', 'T']);
+    g(repo, ['config', 'commit.gpgsign', 'false']);
+    fs.writeFileSync(path.join(repo, 'README.md'), '#');
+    g(repo, ['add', '-A']);
+    g(repo, ['commit', '-qm', 'init']);
+
+    // Create the worktrees BEFORE promotion (so the `worktree add` itself is not
+    // yet guarded). worktreesDir bounds which worktrees the reaper considers.
+    worktreesDir = path.join(repo, '.worktrees');
+    fs.mkdirSync(worktreesDir);
+    // merged + clean → reclaimable
+    g(repo, ['worktree', 'add', '-q', path.join(worktreesDir, 'merged'), '-b', 'feat-merged', 'HEAD']);
+    // unmerged: a real new commit not in main
+    g(repo, ['worktree', 'add', '-q', path.join(worktreesDir, 'unmerged'), '-b', 'feat-unmerged', 'HEAD']);
+    fs.writeFileSync(path.join(worktreesDir, 'unmerged', 'new.txt'), 'x');
+    g(path.join(worktreesDir, 'unmerged'), ['add', '-A']);
+    g(path.join(worktreesDir, 'unmerged'), ['commit', '-qm', 'ahead']);
+    // dirty: merged branch but uncommitted change
+    g(repo, ['worktree', 'add', '-q', path.join(worktreesDir, 'dirty'), '-b', 'feat-dirty', 'HEAD']);
+    fs.writeFileSync(path.join(worktreesDir, 'dirty', 'wip.txt'), 'uncommitted');
+
+    // Promote repo to an instar source tree — now every reaper git call must go
+    // through the source-tree bypass or it throws.
+    g(repo, ['remote', 'add', 'origin', 'https://github.com/dawn/instar.git']);
+  });
+
+  afterEach(() => {
+    try {
+      const cfgPath = path.join(repo, '.git', 'config');
+      const cfg = fs.readFileSync(cfgPath, 'utf-8').replace(/\[remote "origin"\][\s\S]*?(?=\n\[|$)/g, '');
+      fs.writeFileSync(cfgPath, cfg);
+    } catch { /* tolerate */ }
+    SafeFsExecutor.safeRmSync(repo, { recursive: true, force: true, operation: 'tests/unit/agent-worktree-reaper.test.ts:afterEach' });
+  });
+
+  it('listWorktrees + isClean + isMerged all work against the source tree (no guard error)', () => {
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const list = deps.listWorktrees();
+    // main checkout excluded by `within`; only the three under .worktrees/
+    const byName = Object.fromEntries(list.map((w) => [path.basename(w.path), w]));
+    expect(Object.keys(byName).sort()).toEqual(['dirty', 'merged', 'unmerged']);
+
+    expect(deps.isClean(byName.merged.path)).toBe(true);
+    expect(deps.isClean(byName.dirty.path)).toBe(false);
+
+    expect(deps.isMerged(byName.merged)).toBe(true);
+    expect(deps.isMerged(byName.unmerged)).toBe(false);
+  });
+
+  it('removeWorktree actually reclaims a merged+clean worktree through the guard', () => {
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const mergedPath = path.join(worktreesDir, 'merged');
+    expect(fs.existsSync(mergedPath)).toBe(true);
+    expect(() => deps.removeWorktree(mergedPath)).not.toThrow();
+    expect(fs.existsSync(mergedPath)).toBe(false);
+  });
+
+  it('AgentWorktreeReaper end-to-end with real deps: reaps merged+clean, keeps dirty + unmerged', () => {
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const reaper = new AgentWorktreeReaper(deps, { enabled: true, dryRun: true });
+    const verdicts = Object.fromEntries(
+      deps.listWorktrees().map((w) => [path.basename(w.path), reaper.evaluate(w).verdict]),
+    );
+    expect(verdicts.merged).toBe('reap-eligible');
+    expect(verdicts.dirty).not.toBe('reap-eligible');
+    expect(verdicts.unmerged).not.toBe('reap-eligible');
   });
 });
