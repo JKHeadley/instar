@@ -2979,12 +2979,23 @@ When you correct me the same way repeatedly — "no, plainer", "stop asking me t
 That envelope is deliberate: learned preferences are **signals, not authoritative instructions**. I apply them by default, but a real instruction or a safety rule always wins. The loop is **SIGNAL-ONLY** — it never blocks or rewrites an outbound message.
 
 - See what's currently injected: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences/session-context\` (the byte-bounded, priority-ordered block; \`503\` when the feature is off, \`{ present: false }\` when there are none yet).
-- Ships OFF (\`monitoring.correctionLearning.enabled\`). When off, the route 503s and the session-start hook silently injects nothing.
+- See the distilled correction/preference records the loop has captured: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/corrections\` (deduped, scrubbed records — the raw conversation is NEVER stored or served). The off-by-default weekly \`correction-analyzer\` job drives \`POST /corrections/analyze\` (the 3-pronged recurrence gate + closed-loop tick).
+- Ships OFF (\`monitoring.correctionLearning.enabled\`). When off, the routes 503 and the session-start hook silently injects nothing.
 - **When to use** (PROACTIVE): when the user corrects me repeatedly on the same thing, I acknowledge it, adapt now, and trust the loop to carry it forward — I do NOT promise to "remember" it by willpower across sessions. If preferences are already injected at session start, I honor them by default.
 `;
       content += '\n' + prefsSection;
       patched = true;
-      result.upgraded.push('CLAUDE.md: added Correction & Preference Learning Sentinel awareness (preferences session-context)');
+      result.upgraded.push('CLAUDE.md: added Correction & Preference Learning Sentinel awareness (preferences session-context + /corrections)');
+    } else if (!content.includes('/corrections')) {
+      // Slice 1b backfill for agents that already have the Slice-1a section but
+      // not the /corrections read surface. Content-sniffed on the route path for
+      // idempotency (so it's appended exactly once).
+      const correctionsLine = `
+- The Correction & Preference Learning Sentinel now also records distilled, scrubbed correction/preference patterns. See them: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/corrections\` (deduped, scrubbed — raw conversation is NEVER stored). The off-by-default weekly \`correction-analyzer\` job drives \`POST /corrections/analyze\` (3-pronged recurrence gate + closed-loop tick; routes explicit preferences to the preferences file, infra-gaps to a human-approved /feedback proposal, policy-relaxation to Attention).
+`;
+      content += '\n' + correctionsLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added /corrections read surface awareness (Correction & Preference Learning Slice 1b)');
     } else {
       result.skipped.push('CLAUDE.md: Preferences (Correction & Preference Learning) section already present');
     }

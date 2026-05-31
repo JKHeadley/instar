@@ -48,6 +48,7 @@ import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
+import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -160,6 +161,7 @@ export class AgentServer {
   private failureAttributionEngine: FailureAttributionEngine | null = null;
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
+  private correctionLedger: CorrectionLedger | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -731,6 +733,22 @@ export class AgentServer {
       this.revertDetector = null;
     }
 
+    // Correction & Preference Learning Sentinel (docs/specs/CORRECTION-PREFERENCE-
+    // LEARNING-SENTINEL-SPEC.md) — Slice 1b ledger. Ships OFF; constructed only
+    // when enabled (else the inline /corrections routes 503-stub via the null
+    // ledger). SIGNAL-ONLY — never blocks/rewrites an outbound message. Own
+    // try/catch so a failure here can never cascade into other init.
+    try {
+      if (options.config.monitoring?.correctionLearning?.enabled === true && options.config.stateDir) {
+        this.correctionLedger = new CorrectionLedger({
+          dbPath: path.join(options.config.stateDir, 'correction-ledger.db'),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] correction-learning ledger init failed (non-fatal):', err);
+      this.correctionLedger = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -828,6 +846,7 @@ export class AgentServer {
       mentorRunner: this.mentorRunner,
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
+      correctionLedger: this.correctionLedger,
       sessionReaper: options.sessionReaper ?? null,
       reapLog: options.reapLog ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,

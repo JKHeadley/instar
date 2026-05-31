@@ -6696,6 +6696,100 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         }
 
+        // ── Correction & Preference Learning Sentinel — capture loop (Slice 1b) ─
+        // Hot-path capture → distill → CorrectionLedger. VOID fire-and-forget so
+        // the async distill NEVER blocks delivery and a thrown distill error
+        // NEVER propagates back to the message seam. Constructed ONLY when
+        // monitoring.correctionLearning.enabled (Layer-0 classify is the only
+        // always-on piece; the loop is dark by default). The sentinel owns its
+        // OWN LlmQueue (object opts — the per-sentinel daily cap is real, NOT a
+        // fleet ceiling) so a distill burst can never starve PresenceProxy/Usher.
+        // Spec: docs/specs/CORRECTION-PREFERENCE-LEARNING-SENTINEL-SPEC.md §3.1.
+        if (sharedIntelligence && config.monitoring?.correctionLearning?.enabled === true) {
+          try {
+            const cl = config.monitoring.correctionLearning;
+            const { CorrectionLedger } = await import('../monitoring/CorrectionLedger.js');
+            const { LlmQueue } = await import('../monitoring/LlmQueue.js');
+            const {
+              CaptureRing,
+              captureAndDistill,
+              makeCaptureRateState,
+            } = await import('../monitoring/CorrectionCaptureLoop.js');
+
+            const correctionLedger = new CorrectionLedger({
+              dbPath: path.join(config.stateDir, 'correction-ledger.db'),
+            });
+            // Per-sentinel LlmQueue — object opts (do NOT pass a bare number; that
+            // is the latent PresenceProxy bug §2). Dedicated daily cap.
+            const correctionLlmQueue = new LlmQueue({
+              maxConcurrent: cl.llmMaxConcurrent ?? 1,
+              maxDailyCents: cl.llmDailyCents ?? 25,
+            });
+            const ring = new CaptureRing({
+              captureContextTurns: cl.captureContextTurns ?? 6,
+              captureTopicMapMax: cl.captureTopicMapMax ?? 64,
+              topicTtlMs: (cl.captureTopicTtlMinutes ?? 60) * 60_000,
+            });
+            const rateState = makeCaptureRateState();
+            // Audit sink — one structured line per capture decision. The rollout
+            // evidence filter keys on `correction-loop` in this file.
+            const correctionAuditPath = path.join(config.stateDir, 'logs', 'correction-learning-audit.jsonl');
+            const correctionAudit = (event: { decision: string; topicId: number | null; detail?: string }) => {
+              try {
+                fs.mkdirSync(path.dirname(correctionAuditPath), { recursive: true });
+                fs.appendFileSync(
+                  correctionAuditPath,
+                  JSON.stringify({ ts: new Date().toISOString(), origin: 'correction-loop', ...event }) + '\n',
+                  { mode: 0o600 },
+                );
+              } catch { /* @silent-fallback-ok — audit is best-effort */ }
+            };
+
+            const beforeCorrectionCb = telegram.onMessageLogged;
+            telegram.onMessageLogged = (entry) => {
+              if (beforeCorrectionCb) beforeCorrectionCb(entry);
+              // Layer 0 (SYNC, free) — classify on the seam. No signal → stop at
+              // ~zero cost on the vast majority of messages.
+              const verdict = entry.fromUser && entry.text
+                ? HumanAsDetectorLog.getInstance().classify(entry.text)
+                : null;
+              // Fire-and-forget — capture/distill latency must NEVER reach the
+              // delivery path. A thrown distill error is caught inside.
+              void captureAndDistill(
+                {
+                  ring,
+                  ledger: correctionLedger,
+                  distill: (prompt) =>
+                    correctionLlmQueue.enqueue(
+                      'background',
+                      () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0 }),
+                      0.3,
+                    ),
+                  shouldShed: () => {
+                    const r = quotaTracker?.getRecommendation();
+                    return r === 'critical' || r === 'stop';
+                  },
+                  rateCeiling: { maxPerWindow: cl.distillPerTopicRatePerMinute ?? 8, windowMs: 60_000 },
+                  audit: correctionAudit,
+                },
+                {
+                  topicId: entry.topicId ?? null,
+                  text: entry.text ?? '',
+                  fromUser: !!entry.fromUser,
+                  sessionId: entry.sessionName ?? null,
+                  deterministicWeight: verdict?.deterministicWeight ?? 0,
+                  isLearningSignal: verdict?.learningKind != null,
+                },
+                rateState,
+              );
+            };
+            (globalThis as Record<string, unknown>).__instarCorrectionLearningWired = true;
+            console.log(pc.green('  Correction & Preference Learning Sentinel wired (capture → distill → ledger; dark by default)'));
+          } catch (err) {
+            console.warn('[CorrectionLearning] init failed:', (err as Error).message);
+          }
+        }
+
         presenceProxy.start();
 
         // ── PromiseBeacon ────────────────────────────────────────────────

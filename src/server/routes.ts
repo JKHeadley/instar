@@ -27,6 +27,8 @@ import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
+import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
 import { HumanAsDetectorLog } from '../monitoring/HumanAsDetectorLog.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
@@ -705,6 +707,10 @@ export interface RouteContext {
    *  forensics). Null/absent when the feature is disabled (default) → /failures 503s. */
   failureLedger?: import('../monitoring/FailureLedger.js').FailureLedger | null;
   failureAttributionEngine?: import('../monitoring/FailureAttributionEngine.js').FailureAttributionEngine | null;
+  /** Correction & Preference Learning Sentinel ledger (distilled, scrubbed
+   *  records only). Null/absent when monitoring.correctionLearning.enabled is
+   *  false (default) → /corrections 503s. */
+  correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -10884,6 +10890,187 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
+    }
+  });
+
+  // ── Corrections (Correction & Preference Learning Sentinel, Slice 1b) ──
+  //
+  // Read surface over the CorrectionLedger — distilled, scrubbed correction /
+  // preference records. SIGNAL-ONLY: this loop never blocks or rewrites a
+  // message; these routes are observability + the agent-diagnosed one-tap.
+  //
+  //   GET  /corrections          — list deduped records (bearer; 503 when off;
+  //                                 toApiView strips raw `learning`; keyset
+  //                                 pagination via ?before / ?limit / ?kind / ?status)
+  //   GET  /corrections/:id       — one record (toApiView)
+  //   POST /corrections           — agent-diagnosed one-tap (requires X-Instar-Request:1)
+  //
+  // 503 when the feature is disabled (null ledger). The /corrections API NEVER
+  // serves the raw `learning` text under any condition (CorrectionLedger.toApiView).
+  router.get('/corrections', (req, res) => {
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    const limit = req.query.limit ? Math.min(Math.max(1, parseInt(req.query.limit as string, 10) || 100), 1000) : 100;
+    const before = req.query.before ? Date.parse(req.query.before as string) : undefined;
+    const kind = typeof req.query.kind === 'string' && ['infra-gap', 'user-preference', 'noise'].includes(req.query.kind)
+      ? (req.query.kind as import('../monitoring/CorrectionLedger.js').CorrectionKind)
+      : undefined;
+    const status = typeof req.query.status === 'string' ? (req.query.status as import('../monitoring/CorrectionLedger.js').CorrectionStatus) : undefined;
+    const records = ctx.correctionLedger.list({
+      limit,
+      beforeMs: before && !Number.isNaN(before) ? before : undefined,
+      kind,
+      status,
+    });
+    res.json({
+      records: records.map((r) => CorrectionLedger.toApiView(r)),
+      count: records.length,
+      totalRecords: ctx.correctionLedger.countRecords(),
+      nextBefore: records.length === limit ? records[records.length - 1].detectedAt : null,
+    });
+  });
+
+  router.get('/corrections/:id', (req, res) => {
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    const rec = ctx.correctionLedger.get(req.params.id);
+    if (!rec) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(CorrectionLedger.toApiView(rec));
+  });
+
+  router.post('/corrections', (req, res) => {
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    // Intent marker — paired with the deterministic scrub. NOT a transport boundary.
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'POST /corrections requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    const body = req.body ?? {};
+    const learning = typeof body.learning === 'string' ? body.learning.trim() : '';
+    const kindRaw = typeof body.kind === 'string' ? body.kind : '';
+    if (!learning) { res.status(400).json({ error: 'learning is required' }); return; }
+    if (!['infra-gap', 'user-preference', 'noise'].includes(kindRaw)) {
+      res.status(400).json({ error: 'kind must be one of infra-gap | user-preference | noise' });
+      return;
+    }
+    const kind = kindRaw as import('../monitoring/CorrectionLedger.js').CorrectionKind;
+    const summary = typeof body.scrubbedSummary === 'string' && body.scrubbedSummary.trim()
+      ? body.scrubbedSummary.trim()
+      : learning;
+    // POST-SCRUB at the boundary (defense in depth — the writer scrubs again).
+    const rec = ctx.correctionLedger.record({
+      kind,
+      learning: scrubCorrectionSecrets(learning),
+      scrubbedSummary: scrubCorrectionSecrets(summary),
+      deterministicWeight: typeof body.deterministicWeight === 'number' ? body.deterministicWeight : 3,
+      llmConfidence: typeof body.llmConfidence === 'number' ? body.llmConfidence : 0,
+      topicId: typeof body.topicId === 'number' ? body.topicId : null,
+    });
+    if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    res.status(201).json(CorrectionLedger.toApiView(rec));
+  });
+
+  // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
+  // Sentinel, spec §3.5/§3.6/§3.7). Invoked by the off-by-default
+  // `correction-analyzer` builtin job (Tier-1 supervised). Runs the 3-pronged
+  // recurrence gate, then ROUTES each crossing record by kind:
+  //   user-preference (policy-clean) → recordPreference()
+  //   user-preference (policy-match) → Attention (human disposes)
+  //   infra-gap (autoFeedback OFF, default) → tracked Action + draft Initiative
+  //   infra-gap (autoFeedback ON) → loopback POST /feedback (real route guards)
+  // …then opens a verify window. BY-CONSTRUCTION authority guard: the loop's
+  // injected deps carry NO proposal-minting and NO direct memory-file write.
+  router.post('/corrections/analyze', async (req, res) => {
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    try {
+      const cl = ctx.config.monitoring?.correctionLearning;
+      const { CorrectionAnalyzer } = await import('../monitoring/CorrectionAnalyzer.js');
+      const { CorrectionLoopDriver } = await import('../monitoring/CorrectionLoopDriver.js');
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+
+      const analyzer = new CorrectionAnalyzer(ctx.correctionLedger, {
+        minSupport: cl?.minSupport ?? 4,
+        minDistinctDaysInfraGap: cl?.minDistinctDaysInfraGap ?? 3,
+        minDistinctDaysPreference: cl?.minDistinctDaysPreference ?? 2,
+        minDistinctTopicsPreference: cl?.minDistinctTopicsPreference ?? 2,
+      });
+
+      const prefs = new PreferencesManager(ctx.config.stateDir);
+      const port = ctx.config.port;
+      const authToken = ctx.config.authToken;
+      const evo = ctx.evolution as { addAction?: (o: never) => { id: string } } | null;
+      const tracker = ctx.initiativeTracker;
+
+      // Loopback POST helpers — bearer-authed to the agent's OWN routes so they
+      // traverse the real middleware (feedback anomaly/quality/length guards;
+      // attention tone gate). Authorization is never logged.
+      const feedbackLoopbackPost = async (payload: { type: string; title: string; description: string }): Promise<boolean> => {
+        try {
+          const resp = await fetch(`http://localhost:${port}/feedback`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+              'X-Instar-Origin': 'correction-loop',
+            },
+            body: JSON.stringify(payload),
+          });
+          return resp.status === 201;
+        } catch { return false; }
+      };
+      const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
+        try {
+          const resp = await fetch(`http://localhost:${port}/attention`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+              'X-Instar-Origin': 'correction-loop',
+            },
+            body: JSON.stringify({ source: 'correction-loop', body: item.summary, ...item }),
+          });
+          return resp.status === 201;
+        } catch { return false; }
+      };
+
+      const driver = new CorrectionLoopDriver(ctx.correctionLedger, analyzer, {
+        addAction: (o) => (evo?.addAction ? evo.addAction(o as never) : { id: 'no-evolution' }),
+        createInitiative: async (i) => {
+          if (tracker?.create) {
+            const created = await tracker.create(i as never);
+            return { id: created.id };
+          }
+          return { id: i.id };
+        },
+        feedbackLoopbackPost,
+        recordPreference: (p) => { prefs.recordPreference(p); },
+        attentionRoute,
+        autoFeedback: cl?.autoFeedback === true,
+        verifyWindowDaysPreference: cl?.verifyWindowDaysPreference ?? 7,
+        verifyWindowDaysInfraGap: cl?.verifyWindowDaysInfraGap ?? 14,
+        maxReopens: cl?.maxReopens ?? 2,
+        preferenceStillPresent: (dedupeKey) =>
+          prefs.read().preferences.some((e) => e.dedupeKey === dedupeKey),
+      });
+
+      const analysis = analyzer.analyze();
+      const routed = await driver.route();
+      const verified = driver.runVerification().evaluated.length;
+      res.json({
+        analysis: {
+          considered: analysis.considered,
+          crossed: analysis.crossed.length,
+          belowThreshold: analysis.belowThreshold,
+        },
+        routed: {
+          total: routed.routed.length,
+          toFeedback: routed.toFeedback,
+          toPreferences: routed.toPreferences,
+          toAttention: routed.toAttention,
+        },
+        verified,
+      });
+    } catch (err) {
+      // Fail-open: the analyzer never crashes the caller (job).
+      res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
     }
   });
 

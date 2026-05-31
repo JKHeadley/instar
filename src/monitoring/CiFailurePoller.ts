@@ -24,6 +24,11 @@
  */
 import { execFileSync } from 'node:child_process';
 import type { FailureLedger, FailureCategory } from './FailureLedger.js';
+// scrubSecrets moved to a shared module (spec §3.3 — the Correction & Preference
+// Learning Sentinel applies the SAME pass on both sides of its LLM hop). Still
+// re-exported here so the poller's existing importers are unchanged.
+import { scrubSecrets } from './scrubSecrets.js';
+export { scrubSecrets } from './scrubSecrets.js';
 
 /** What the poller needs to know about a mapped initiative (a subset of Initiative). */
 export interface CiInitiativeRef {
@@ -184,15 +189,3 @@ export class CiFailurePoller {
   }
 }
 
-/**
- * Best-effort secret scrub before a value is stored as detail.full (spec §5).
- * Redacts common token shapes; detail.full never crosses HTTP, but it is written
- * to logs + sqlite, so this keeps obvious secrets out of that internal zone.
- */
-export function scrubSecrets(text: string): string {
-  return String(text)
-    .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g, 'gh***_REDACTED')
-    .replace(/\b(sk|pk|rk)-[A-Za-z0-9]{16,}/g, '$1-REDACTED')
-    .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b/g, 'JWT_REDACTED')
-    .replace(/((?:token|secret|password|api[_-]?key)["'=:\s]+)[A-Za-z0-9._-]{12,}/gi, '$1REDACTED');
-}

@@ -92,6 +92,7 @@ export default defineConfig({
             { label: 'Privacy Routing', slug: 'features/privacy-routing' },
             { label: 'Self-Healing Remediator', slug: 'features/remediator' },
             { label: 'Task Flows', slug: 'features/task-flows' },
+            { label: 'Correction & Preference Learning', slug: 'features/correction-preference-learning' },
           ],
         },
         {
