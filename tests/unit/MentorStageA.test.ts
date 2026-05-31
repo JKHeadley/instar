@@ -164,7 +164,9 @@ describe('onboardingAgenda — active task-driving in the Stage-A prompt', () =>
     expect(ctx).toContain('Verify the Secret Drop flow end to end');
     expect(ctx).toContain('Exercise the Playbook add/search');
     expect(ctx).toMatch(/assign-next/);
-    expect(ctx).toMatch(/Only choose observe-only if they are mid-task or the/);
+    expect(ctx).toMatch(/choose observe-only if they are mid-task/);
+    // No coverage list given → the simple "next agenda item" steering, no "Recently driven".
+    expect(ctx).not.toContain('Recently driven');
   });
 
   it('counts agenda items as surface-legitimate (assigning one is NOT a leak)', () => {
@@ -301,5 +303,58 @@ describe('parseMenteeReplies — defensive JSONL parsing for the surface', () =>
 
   it('never throws on empty input', () => {
     expect(parseMenteeReplies('')).toEqual([]);
+  });
+});
+
+describe('agenda coverage — stop re-cycling already-driven items', () => {
+  const AGENDA = [
+    'Verify the Project Map (GET /project-map?format=compact) reflects reality',
+    'Verify the Reap-Log (GET /sessions/reap-log) entries normalize',
+    'Verify the Codex usage reader (GET /codex/usage) windows parse',
+  ];
+  it('buildConversationSurface flags agenda items present in recent mentor-sent as recentlyDriven', () => {
+    const surface = buildConversationSurface({
+      framework: 'codex-cli',
+      onboardingAgenda: AGENDA,
+      mentorSent: [
+        { ts: 1000, message: 'Next task: Verify the Project Map — does it reflect reality?' },
+        { ts: 2000, message: 'Next task: Verify the Reap-Log — do entries normalize?' },
+      ],
+      menteeReplies: [{ ts: 1500, message: 'done, looks right' }],
+      nowMs: 3000,
+    });
+    expect(surface.recentlyDrivenAgenda).toContain(AGENDA[0]); // Project Map — driven
+    expect(surface.recentlyDrivenAgenda).toContain(AGENDA[1]); // Reap-Log — driven
+    expect(surface.recentlyDrivenAgenda).not.toContain(AGENDA[2]); // Codex usage — NOT driven
+  });
+  it('buildStageAContext lists recently-driven items + instructs to prefer fresh ones', () => {
+    const ctx = buildStageAContext({
+      framework: 'codex-cli',
+      threadlineHistory: 'Echo: hi\nCodey: done',
+      onboardingAgenda: AGENDA,
+      recentlyDrivenAgenda: [AGENDA[0], AGENDA[1]],
+    });
+    expect(ctx).toContain('Recently driven');
+    expect(ctx).toMatch(/NOT in the "Recently driven"/);
+    expect(ctx).toMatch(/Do NOT re-assign a recently-driven/);
+    expect(ctx).toContain('Verify the Project Map'); // shown as driven
+  });
+  it('when ALL agenda items are recently driven, the prompt steers to observe-only', () => {
+    const ctx = buildStageAContext({
+      framework: 'codex-cli',
+      threadlineHistory: 'Echo: hi\nCodey: done',
+      onboardingAgenda: AGENDA,
+      recentlyDrivenAgenda: [...AGENDA],
+    });
+    expect(ctx).toMatch(/which is the case now/);
+    expect(ctx).toMatch(/observe-only/);
+  });
+  it('omits the recently-driven block when nothing has been driven (unchanged behaviour)', () => {
+    const ctx = buildStageAContext({
+      framework: 'codex-cli',
+      threadlineHistory: 'Echo: hi',
+      onboardingAgenda: AGENDA,
+    });
+    expect(ctx).not.toContain('Recently driven');
   });
 });
