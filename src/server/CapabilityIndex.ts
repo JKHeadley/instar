@@ -554,6 +554,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'correctionLearning',
+    prefixes: ['/preferences'],
+    description: 'Correction & Preference Learning Sentinel (Slice 1a read-surface) — serves auto-learned user preferences as a session-start block. SIGNAL-ONLY; never blocks/rewrites a message. Ships OFF (monitoring.correctionLearning.enabled).',
+    build: ({ ctx }) => ({
+      enabled: ctx.config.monitoring?.correctionLearning?.enabled === true,
+      endpoints: [
+        'GET /preferences/session-context — structured block of active learned preferences (503 when disabled; { present:false } when none)',
+      ],
+      hint: 'Ships OFF; when disabled the route 503s. The session-start hook fetches this on every boot and injects the <auto-learned-preference> block.',
+    }),
+  },
+  {
     key: 'skipLedger',
     prefixes: ['/skip-ledger'],
     description: 'Skip-ledger — workload-aware idempotency',

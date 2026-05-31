@@ -30,6 +30,14 @@ set -uo pipefail   # NOTE: -e intentionally omitted; field lookups for optional
 # Read hook input from stdin
 HOOK_INPUT=$(cat)
 
+# ── Framework arg: --codex marks the codex (vs Claude) registration of this shared
+# hook (installCodexHooks adds it to .codex/hooks.json as `… --codex`). Claude invokes
+# the hook with NO args, so IS_CODEX stays 0 and the entire Claude path below is
+# byte-for-byte unchanged. Under codex it lets us (a) anchor via this script's own path
+# (codex doesn't set CLAUDE_PROJECT_DIR) and (b) self-gate on the codexLoopDriver flag. ──
+IS_CODEX=0
+for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
+
 # ── Anchor to the agent home, NOT the session's CWD ───────────────────
 # All state paths below are relative (.instar/autonomous/<topic>.local.md, the
 # registry, the legacy file). The Stop hook inherits the session's working
@@ -45,6 +53,34 @@ HOOK_INPUT=$(cat)
 # when unset (e.g. an isolated test harness) we stay in the caller's CWD.
 if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]] && [[ -d "${CLAUDE_PROJECT_DIR}/.instar" ]]; then
   cd "$CLAUDE_PROJECT_DIR" || true
+elif [[ "$IS_CODEX" == "1" ]]; then
+  # Codex doesn't set CLAUDE_PROJECT_DIR. Derive the agent home from THIS script's own
+  # absolute path — installed at <home>/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh
+  # — so the relative state paths resolve regardless of the codex session's CWD (the same
+  # worktree-strand class the Claude anchor above guards against).
+  _SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  _AH="$(cd "${_SD}/../../../.." 2>/dev/null && pwd)"
+  if [[ -n "${_AH:-}" ]] && [[ -d "${_AH}/.instar" ]]; then cd "$_AH" || true; fi
+fi
+
+# ── Codex dark-launch gate ────────────────────────────────────────────
+# The codex loop driver ships DARK: when invoked from codex, only proceed if
+# autonomousSessions.codexLoopDriver.enabled is true. Otherwise approve (exit 0) so a
+# normal codex stop is unaffected — this is the instant-rollback flag (flip it off and
+# the standing hook is a no-op again, no redeploy). Claude (IS_CODEX=0) skips this.
+if [[ "$IS_CODEX" == "1" ]]; then
+  CODEX_LOOP_ENABLED=$(python3 -c "
+import json
+try:
+    c = json.load(open('.instar/config.json'))
+    a = (c.get('autonomousSessions') or {}).get('codexLoopDriver') or {}
+    print('1' if a.get('enabled') else '0')
+except Exception:
+    print('0')
+" 2>/dev/null || echo "0")
+  if [[ "$CODEX_LOOP_ENABLED" != "1" ]]; then
+    exit 0
+  fi
 fi
 
 REGISTRY_FILE=".instar/topic-session-registry.json"

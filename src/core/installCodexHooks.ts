@@ -36,6 +36,13 @@ import path from 'node:path';
 
 /** Marker that identifies an instar-owned hook command (for merge-safe replace). */
 export const INSTAR_HOOK_PATH_MARKER = '.instar/hooks/instar/';
+/**
+ * The autonomous-loop driver hook lives in the autonomous skill, not under
+ * `.instar/hooks/instar/`, so it needs its own ownership marker — used both to build
+ * its command path and to let groupIsInstarOwned() recognize (and replace, never
+ * duplicate) the autonomous Stop group on every re-install.
+ */
+export const CODEX_AUTONOMOUS_HOOK_MARKER = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
 
 interface CodexHookHandler {
   type: 'command';
@@ -64,6 +71,15 @@ export function buildInstarCodexHookGroups(
     type: 'command',
     command: `bash ${path.join(projectDir, INSTAR_HOOK_PATH_MARKER, script)}`,
     timeout: 5000,
+  });
+  // The autonomous-loop driver lives in the autonomous SKILL (not .instar/hooks/instar),
+  // so it has its own path constant. `--codex` tells the shared hook it was invoked from
+  // codex (vs Claude's settings.json registration) so it can self-gate on the
+  // autonomousSessions.codexLoopDriver flag (DARK by default → exits immediately).
+  const autonomousLoopHook = (): CodexHookHandler => ({
+    type: 'command',
+    command: `bash ${path.join(projectDir, CODEX_AUTONOMOUS_HOOK_MARKER)} --codex`,
+    timeout: 10000,
   });
 
   return {
@@ -100,8 +116,18 @@ export function buildInstarCodexHookGroups(
     // semantics as Claude, NOT a hard termination. scope-coherence defaults to
     // `approve` and self-throttles (depth threshold + 30-min cooldown), so it
     // can't loop an autonomous Codex run.
+    // End-of-turn chain: the standing review trio, then the autonomous-loop driver as
+    // the LAST hook IN THE SAME group (slot stop:0:4) — NOT a separate group. A separate
+    // group would emit a stop:1:0 arm slot that codex may never render/trust, which would
+    // permanently break armCodexHooks's idempotency (recurring codex-TUI arm spawns on
+    // every update, even while the driver is dark). Keeping it in group 0 means it's
+    // armed/trusted/fired alongside the trio it already runs. The driver self-gates: with
+    // codexLoopDriver disabled (default) it exits immediately, so it's a no-op until the
+    // flag is flipped on. (Within-group block precedence vs the trio is verified live
+    // before enabling — see the spec's Phase 5; worst case the session still continues
+    // via the unjustified-stop router, never strands.)
     Stop: [
-      { matcher: '', hooks: [node('stop-gate-router.js'), { ...node('response-review.js'), timeout: 10000 }, node('claim-intercept-response.js'), node('scope-coherence-checkpoint.js')] },
+      { matcher: '', hooks: [node('stop-gate-router.js'), { ...node('response-review.js'), timeout: 10000 }, node('claim-intercept-response.js'), node('scope-coherence-checkpoint.js'), autonomousLoopHook()] },
     ],
     // Identity/context injection.
     SessionStart: [
@@ -115,7 +141,10 @@ export function buildInstarCodexHookGroups(
 
 function groupIsInstarOwned(group: CodexHookGroup): boolean {
   return (group.hooks ?? []).some(
-    (h) => typeof h.command === 'string' && h.command.includes(INSTAR_HOOK_PATH_MARKER),
+    (h) =>
+      typeof h.command === 'string' &&
+      (h.command.includes(INSTAR_HOOK_PATH_MARKER) ||
+        h.command.includes(CODEX_AUTONOMOUS_HOOK_MARKER)),
   );
 }
 
