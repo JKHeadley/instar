@@ -41,6 +41,16 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      - name: Assemble release-note fragments
+        # Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md
+        # so concurrent PRs never collide on a single shared NEXT.md. This pre-step
+        # folds every fragment (+ any legacy upgrades/NEXT.md) into upgrades/NEXT.md
+        # BEFORE the existing pipeline runs — everything downstream is UNCHANGED.
+        # No fragments AND no legacy NEXT.md → it does nothing and the next step's
+        # skip logic fires exactly as before. A malformed fragment exits non-zero
+        # and fails the run loudly (better than shipping a broken guide).
+        run: node scripts/assemble-next-md.mjs
+
       - name: Check if NEXT.md has content to publish
         id: guide-check
         run: |
@@ -159,6 +169,13 @@ jobs:
             echo "Renamed upgrades/NEXT.md → upgrades/${{ steps.bump.outputs.version }}.md"
           else
             echo "No upgrades/NEXT.md found — check-upgrade-guide will enforce"
+          fi
+          # Consume the per-PR fragments now that their content has been folded
+          # into the version-specific guide. The commit step's `git add upgrades/`
+          # stages these deletions, so released fragments don't accumulate.
+          if ls upgrades/next/*.md >/dev/null 2>&1; then
+            rm -f upgrades/next/*.md
+            echo "Removed consumed release-note fragments from upgrades/next/"
           fi
 
       - name: Check upgrade guide
