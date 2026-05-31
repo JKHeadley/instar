@@ -1,0 +1,46 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Fixed a bug in the auto-update restart gate that kept agents running a stale
+version far longer than intended. `UpdateGate` decides whether the box is "idle
+enough" to restart onto a freshly-downloaded update by checking each running
+session's health (`healthy` blocks; `idle`/`dead` don't). It looked that health
+up by the session's **display name** while the health map is keyed by the **tmux
+session name** (slug). The lookup always missed, so every interactive session was
+conservatively treated as active — which made the idle/dead exclusion dead code
+and meant the restart-when-idle path never fired while any session existed.
+
+The gate now looks up health by `session.tmuxSession` (the key the health map
+actually uses), falling back to the display name. Idle/dead sessions correctly
+stop blocking restarts; genuinely-active (`healthy`) sessions still block, so live
+work is never interrupted.
+
+## What to Tell Your User
+
+Nothing required — this is invisible robustness. If they noticed their agent
+"staying on an old version most of the day and only catching up overnight," or
+the agent reporting more active sessions than seemed real, this is the fix:
+updates now activate promptly when the box is genuinely idle.
+
+## Summary of New Capabilities
+
+- Auto-update restarts activate promptly on a genuinely-idle box instead of
+  waiting for the overnight restart window (completes the restart-when-idle
+  intent).
+- More accurate "active session" accounting in the restart gate (idle sessions
+  no longer inflate the blocker count).
+
+## Evidence
+
+- Root cause proven from live state: `auto-updater.json.restartDeferral.currentBlockers`
+  held display names (`"Codey Collaboration"`, …) while `topic-session-registry.json`
+  keyed the same sessions by slug (`"echo-codey-collaboration"`, …) — a guaranteed
+  lookup miss.
+- `tests/unit/UpdateGate.test.ts`: +5 tests using the production key shape; the
+  3 status-discriminating ones were confirmed RED pre-fix, GREEN post-fix.
+- `npx vitest run tests/unit/UpdateGate.test.ts tests/unit/AutoUpdater.test.ts` →
+  29 passed. `npm run lint` clean. `tsc --noEmit` clean.
+- Spec: `docs/specs/UPDATE-GATE-HEALTH-KEY-FIX-SPEC.md` (+ ELI16 companion).
