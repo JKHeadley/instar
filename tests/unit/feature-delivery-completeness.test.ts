@@ -226,6 +226,7 @@ describe('Feature Delivery Completeness', () => {
       'Autonomous-fix loop ("just be Echo")',             // mentor.autonomousFix dark dogfooding-loop awareness: developer-layer operational knowledge added via migrator only (like Framework-Onboarding Mentor System), gated off by default — no new-agent template/shadow parity required
       'Multi-Machine Session Pool (active-active',         // multi-machine session-pool awareness: ships DARK (multiMachine.sessionPool.stage default 'dark'), no-op on a single-machine agent; discoverable via GET /pool + GET /capabilities — operational/dark capability, migrator-tracked like ContextWedgeSentinel/Topic-Flood Guard
       'Correction & Preference Learning Sentinel',         // the content-sniff marker migrateClaudeMd uses for the "Preferences I've learned about you" section (tracked as a featureSection above); this is the alternate-phrase check, like '/release-readiness' for Release Readiness
+      '/corrections',                                      // Slice 1b backfill: the migrateClaudeMd `else if (!content.includes('/corrections'))` branch appends the /corrections read-surface line to agents that already have the Slice-1a "Preferences I've learned about you" section — a sub-line of that tracked featureSection, not a separate capability section (like '/release-readiness' / '/codex/usage')
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {
