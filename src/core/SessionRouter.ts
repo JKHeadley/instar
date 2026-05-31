@@ -58,6 +58,31 @@ export interface RouteOutcome {
   acked: boolean;
 }
 
+/**
+ * Did this route() outcome place/forward the session onto ANOTHER machine — i.e.
+ * the inbound dispatch caller must NOT also handle it locally?
+ *
+ * `'forwarded'`/`'duplicate'` always mean delivered to a remote owner. A fresh
+ * placement on a remote machine returns `'spawned'` (self-placement returns
+ * `'handled-locally'`, never `'spawned'`), and owner-dead re-placement returns
+ * `'owner-dead-replaced'` for EITHER self or remote — so those two are remote only
+ * when the resolved owner is not us. Everything else ('handled-locally', a
+ * self 'owner-dead-replaced', 'queued', 'placement-blocked') is local/no-op and
+ * falls through to local dispatch.
+ *
+ * Pure + caller-agnostic so the inbound dispatch decision is unit-testable. Before
+ * this, the caller only treated 'forwarded'/'duplicate' as remote, so a just-moved
+ * topic was spawned on the target AND injected into the stale local session
+ * (double-dispatch — the bug the first live transfer test surfaced, 2026-05-31).
+ */
+export function isRemotelyHandled(outcome: RouteOutcome, selfMachineId: string | null): boolean {
+  if (outcome.action === 'forwarded' || outcome.action === 'duplicate') return true;
+  const remoteOwner = outcome.owner != null && outcome.owner !== selfMachineId;
+  if (outcome.action === 'spawned' && remoteOwner) return true;
+  if (outcome.action === 'owner-dead-replaced' && remoteOwner) return true;
+  return false;
+}
+
 export interface SessionRouterConfig {
   deliverMessageMaxRetries: number;
   deliverMessageRetryBackoffStartMs: number;

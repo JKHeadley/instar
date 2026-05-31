@@ -6,7 +6,7 @@
  * in-order / one-in-flight serialization guarantee.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { SessionRouter, type SessionRouterDeps, type OwnershipView, type DeliverAck, type InboundMessage } from '../../src/core/SessionRouter.js';
+import { SessionRouter, isRemotelyHandled, type SessionRouterDeps, type OwnershipView, type DeliverAck, type InboundMessage, type RouteOutcome } from '../../src/core/SessionRouter.js';
 import { PlacementExecutor } from '../../src/core/PlacementExecutor.js';
 import type { MachineCapacity } from '../../src/core/types.js';
 
@@ -213,5 +213,42 @@ describe('SessionRouter.dispatch (§L4)', () => {
     const { router } = makeRouter({ resolveOwnership: () => ({ owner: SELF, epoch: 1, status: 'active' }), handleLocally });
     await Promise.all([router.route(msg({ sessionKey: 'a' })), router.route(msg({ sessionKey: 'b' }))]);
     expect(order.sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('isRemotelyHandled (inbound dispatch short-circuit — bug #8)', () => {
+  const oc = (action: RouteOutcome['action'], owner?: string | null): RouteOutcome => ({ action, owner, acked: true });
+
+  it('forwarded / duplicate are always remote (delivered to owner)', () => {
+    expect(isRemotelyHandled(oc('forwarded', 'm_other'), SELF)).toBe(true);
+    expect(isRemotelyHandled(oc('duplicate', 'm_other'), SELF)).toBe(true);
+    // owner-agnostic: forwarded means it went to whoever owns it
+    expect(isRemotelyHandled(oc('forwarded', null), SELF)).toBe(true);
+  });
+
+  it('spawned on a REMOTE machine short-circuits (the bug #8 case: was double-dispatched)', () => {
+    expect(isRemotelyHandled(oc('spawned', 'm_mini'), SELF)).toBe(true);
+  });
+
+  it('spawned on SELF does NOT short-circuit (handled locally below)', () => {
+    // (placeAndClaim actually returns 'handled-locally' for self, but defend the contract)
+    expect(isRemotelyHandled(oc('spawned', SELF), SELF)).toBe(false);
+  });
+
+  it('owner-dead-replaced short-circuits only when the new owner is remote', () => {
+    expect(isRemotelyHandled(oc('owner-dead-replaced', 'm_mini'), SELF)).toBe(true);
+    expect(isRemotelyHandled(oc('owner-dead-replaced', SELF), SELF)).toBe(false);
+  });
+
+  it('local / no-op outcomes fall through to local dispatch', () => {
+    expect(isRemotelyHandled(oc('handled-locally', SELF), SELF)).toBe(false);
+    expect(isRemotelyHandled(oc('queued'), SELF)).toBe(false);
+    expect(isRemotelyHandled(oc('placement-blocked'), SELF)).toBe(false);
+  });
+
+  it('a null selfMachineId treats any concrete owner as remote (fail-safe: do not double-dispatch)', () => {
+    expect(isRemotelyHandled(oc('spawned', 'm_mini'), null)).toBe(true);
+    // self unknown + owner unknown → not provably remote → fall through (local)
+    expect(isRemotelyHandled(oc('spawned', null), null)).toBe(false);
   });
 });

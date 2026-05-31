@@ -62,6 +62,7 @@ import { SessionMonitor } from '../monitoring/SessionMonitor.js';
 import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
@@ -355,6 +356,10 @@ let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null =
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+/** This machine's mesh id — lets the inbound dispatch tell a REMOTE placement
+ *  (forward/spawn on another machine → must NOT also dispatch locally) from a
+ *  self placement. Set once in startServer()'s mesh block. */
+let _meshSelfId: string | null = null;
 /** Multi-Machine Session Pool §L4: per-topic placement pin store ("move this to <nickname>"). */
 let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
@@ -1352,11 +1357,20 @@ function wireTelegramRouting(
           payload: text,
           topicMetadata: _topicPinStore?.asTopicMetadata(String(topicId)),
         });
-        if (outcome.action === 'forwarded' || outcome.action === 'duplicate') {
+        // Routing-decision observability — the live transfer path is otherwise a black
+        // box (the recognizer logs its pin, but route()'s actual placement/forward
+        // decision was invisible; that hid the bug below from the first live test).
+        console.log(`[session-pool] route topic ${topicId} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'}`);
+        // Short-circuit local dispatch whenever the session ended up on ANOTHER machine
+        // (forward/duplicate, OR a fresh remote 'spawned'/'owner-dead-replaced'). Before
+        // this, only 'forwarded'/'duplicate' were caught, so a just-moved topic was
+        // spawned on the target AND injected into the stale local session
+        // (double-dispatch — the bug the first live transfer test surfaced, 2026-05-31).
+        if (isRemotelyHandled(outcome, _meshSelfId)) {
           console.log(`[session-pool] topic ${topicId} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
           return;
         }
-        // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced' / 'queued' /
+        // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced'(self) / 'queued' /
         // 'placement-blocked' → fall through to the existing local dispatch below.
       } catch (err) {
         console.warn(`[session-pool] route error for topic ${topicId} — falling back to local dispatch: ${err instanceof Error ? err.message : String(err)}`);
@@ -9361,6 +9375,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           const peerUrl = (machineId: string): string | null =>
             meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
+          _meshSelfId = meshSelfId;
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(),

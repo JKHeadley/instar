@@ -25,12 +25,14 @@ describe('Session Pool activation wiring (§L4)', () => {
 
   it('the interception FAILS SAFE — any route error falls back to local dispatch', () => {
     const idx = src.indexOf("_sessionRouter && _sessionPoolStage() !== 'dark'");
-    const block = src.slice(idx, idx + 1200);
+    const block = src.slice(idx, idx + 2200);
     expect(block).toContain('try {');
     expect(block).toContain('await _sessionRouter.route(');
     expect(block).toContain('falling back to local dispatch');
     // Only a remote-handled outcome short-circuits; everything else falls through.
-    expect(block).toContain("outcome.action === 'forwarded' || outcome.action === 'duplicate'");
+    // (bug #8: remote 'spawned'/'owner-dead-replaced' must short-circuit too — the
+    // decision is the pure isRemotelyHandled() helper, unit-tested in SessionRouter.test.ts.)
+    expect(block).toContain('isRemotelyHandled(outcome, _meshSelfId)');
   });
 
   it('the SessionRouter is constructed with the real registry/ownership/placement + outbound mesh client', () => {
