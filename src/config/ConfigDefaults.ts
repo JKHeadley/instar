@@ -158,6 +158,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // ConfigDefaults.deepMerge + applyDefaults add-missing recursion).
     correctionLearning: {
       enabled: false,
+      // Self-Violation Signal extension (ships DARK). Even when correctionLearning
+      // is enabled, the outbound self-violation observe-only hook stays inert
+      // unless this sub-flag is ALSO true. SIGNAL-ONLY — never blocks a message.
+      selfViolationSignal: false,
       minSupport: 4,
       minDistinctDaysInfraGap: 3,
       minDistinctDaysPreference: 2,

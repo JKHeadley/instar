@@ -3171,6 +3171,16 @@ export interface MonitoringConfig {
   correctionLearning?: {
     /** Master kill switch (default: false). Gates the loop AND the read route. */
     enabled: boolean;
+    /**
+     * Self-Violation Signal extension (default: false). Ships DARK behind BOTH
+     * `enabled` AND this sub-flag. When true, the outbound message seam runs an
+     * OBSERVE-ONLY check: a finalized agent message that contradicts a stored
+     * preference (one carrying a `violationPattern`) is recorded as a
+     * self-violation in the CorrectionLedger, reinforcing that preference's
+     * recurrence/salience. SIGNAL-ONLY — never blocks, delays, or rewrites the
+     * message; on any error the message sends normally and the detector no-ops.
+     */
+    selfViolationSignal?: boolean;
     /** Min total occurrences before a learning crosses the recurrence gate (Slice 1b). */
     minSupport?: number;
     /** Distinct calendar days required for an infra-gap learning (Slice 1b, restart-proof). */
