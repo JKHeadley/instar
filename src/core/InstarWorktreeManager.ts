@@ -592,11 +592,38 @@ function ensureWorktreesDir(worktreesDir: string): void {
   if (fs.existsSync(worktreesDir)) {
     // Re-assert 0700 every call to recover from drift.
     fs.chmodSync(worktreesDir, 0o700);
-    return;
+  } else {
+    fs.mkdirSync(worktreesDir, { recursive: true, mode: 0o700 });
+    // mkdirSync's `mode` is masked by umask — re-apply explicitly.
+    fs.chmodSync(worktreesDir, 0o700);
   }
-  fs.mkdirSync(worktreesDir, { recursive: true, mode: 0o700 });
-  // mkdirSync's `mode` is masked by umask — re-apply explicitly.
-  fs.chmodSync(worktreesDir, 0o700);
+  ensureWorktreeSpotlightExclusion(worktreesDir);
+}
+
+/**
+ * Drop a `.metadata_never_index` marker at the `.worktrees/` container root so
+ * macOS Spotlight (mds_stores) + mediaanalysisd skip indexing every worktree
+ * beneath it. Worktrees are throwaway full source trees; re-indexing dozens of
+ * them is a top OS-level CPU consumer (measured: mediaanalysisd ~80% CPU under a
+ * ~120-worktree backlog). The marker is honored recursively for the whole
+ * subtree, lives at the container (not inside any worktree, so no git noise),
+ * is a harmless no-op on non-macOS, and is idempotent. Returns true if it
+ * created the marker, false if it already existed or could not be written.
+ *
+ * Part of the Responsible Resource Usage standard — OS resource hygiene.
+ */
+export function ensureWorktreeSpotlightExclusion(worktreesDir: string): boolean {
+  const marker = path.join(worktreesDir, '.metadata_never_index');
+  try {
+    if (fs.existsSync(marker)) return false;
+    fs.writeFileSync(marker, '');
+    return true;
+  } catch {
+    // @silent-fallback-ok — a best-effort OS indexing hint. Failure to write it
+    // just means Spotlight keeps indexing (the prior behavior); it must never
+    // block worktree creation or a migration pass.
+    return false;
+  }
 }
 
 // ── Audit ledger ─────────────────────────────────────────────────────────
