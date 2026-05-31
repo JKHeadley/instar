@@ -219,7 +219,17 @@ export class UpdateGate {
         continue;
       }
 
-      const h = healthMap.get(session.name);
+      // Health is keyed by the tmux session name (the slug SessionMonitor
+      // tracks, e.g. "echo-codey-collaboration"), NOT the human-facing display
+      // name (e.g. "Codey Collaboration"). Look up by tmuxSession first, then
+      // fall back to name. Without the tmuxSession key, every interactive
+      // session misses the health map and hits the conservative "treat as
+      // active" default below — which silently turned the idle/dead exclusion
+      // into dead code and meant restart-when-idle (#41) never fired while ANY
+      // session existed (the day-long version-lag root cause).
+      const h =
+        (session.tmuxSession ? healthMap.get(session.tmuxSession) : undefined) ??
+        healthMap.get(session.name);
       if (!h) {
         // No health data — be conservative, treat as active
         activeSessions.push(session.name);

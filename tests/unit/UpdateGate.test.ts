@@ -114,4 +114,78 @@ describe('UpdateGate', () => {
       expect(status.finalWarningSent).toBe(false);
     });
   });
+
+  // #47 regression — in production SessionMonitor keys health by the tmux
+  // session name (slug, e.g. "echo-codey-collaboration"), while listRunningSessions
+  // returns the human-facing display name ("Codey Collaboration"). The gate must
+  // join them via session.tmuxSession. Before the fix it looked up by session.name,
+  // always missed, and fell into the conservative "treat as active" default — so
+  // EVERY interactive session blocked regardless of idle status, and the
+  // restart-when-idle bypass (#41) never fired. These fixtures use the REAL
+  // production key shape (health keyed by slug ≠ display name).
+  describe('health key shape — tmuxSession (slug) vs display name (#47)', () => {
+    const idleSlugKeyedMonitor = {
+      getStatus: () => ({
+        sessionHealth: [
+          { sessionName: 'echo-codey-collaboration', topicId: 13435, status: 'idle' as const, idleMinutes: 120 },
+        ],
+      }),
+    };
+    const displayNameManager = {
+      listRunningSessions: () => [{ name: 'Codey Collaboration', tmuxSession: 'echo-codey-collaboration' }],
+      hasActiveProcesses: () => false,
+    };
+
+    it('does NOT block an IDLE session when health is keyed by tmuxSession slug (was the dead-code bug)', () => {
+      const gate = new UpdateGate();
+      // Pre-fix: lookup by display name missed → conservative-active → ['Codey Collaboration'].
+      expect(gate.getBlockingSessions(displayNameManager, idleSlugKeyedMonitor)).toEqual([]);
+    });
+
+    it('canRestart ALLOWS the restart when the only session is idle (slug-keyed health)', () => {
+      const gate = new UpdateGate();
+      const result = gate.canRestart(displayNameManager, idleSlugKeyedMonitor);
+      expect(result.allowed).toBe(true);
+      expect(gate.getStatus().blockingSessions).toEqual([]);
+    });
+
+    it('still BLOCKS a HEALTHY session keyed by tmuxSession slug (active work stays protected)', () => {
+      const gate = new UpdateGate();
+      const healthyMonitor = {
+        getStatus: () => ({
+          sessionHealth: [
+            { sessionName: 'echo-codey-collaboration', topicId: 13435, status: 'healthy' as const, idleMinutes: 0 },
+          ],
+        }),
+      };
+      expect(gate.getBlockingSessions(displayNameManager, healthyMonitor)).toEqual(['Codey Collaboration']);
+    });
+
+    it('does NOT block a DEAD session keyed by tmuxSession slug', () => {
+      const gate = new UpdateGate();
+      const deadMonitor = {
+        getStatus: () => ({
+          sessionHealth: [
+            { sessionName: 'echo-codey-collaboration', topicId: 13435, status: 'dead' as const, idleMinutes: 999 },
+          ],
+        }),
+      };
+      expect(gate.getBlockingSessions(displayNameManager, deadMonitor)).toEqual([]);
+    });
+
+    it('falls back to display-name health key when tmuxSession has no slug-keyed entry (back-compat)', () => {
+      // Older/test fixtures key health by session.name; the fallback must still find it.
+      const gate = new UpdateGate();
+      const nameKeyedMonitor = {
+        getStatus: () => ({
+          sessionHealth: [{ sessionName: 'topic-458', topicId: 458, status: 'idle' as const, idleMinutes: 30 }],
+        }),
+      };
+      const mgr = {
+        listRunningSessions: () => [{ name: 'topic-458', tmuxSession: 'instar-topic-458' }],
+        hasActiveProcesses: () => false,
+      };
+      expect(gate.getBlockingSessions(mgr, nameKeyedMonitor)).toEqual([]); // idle via name-key fallback
+    });
+  });
 });
