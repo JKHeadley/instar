@@ -623,6 +623,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Returns \`{ available, usage: { primary, secondary, model, planType, rateLimitReachedType } }\` where each window has \`usedPercent\`, \`remainingPercent\`, \`windowMinutes\`, \`resetsAt\`/\`resetsAtIso\`, \`resetsInSeconds\`. \`available:false\` means no codex session data on disk yet (e.g. a pure-Claude agent).
 - **When to use**: when asked "how much codex usage is left?" / "am I near the limit?", before scheduling heavy codex work, or to drive a model-swap when a window is exhausted (\`rateLimitReachedType\` is non-null, or \`secondary.remainingPercent\` is low).
 
+**Per-Feature LLM Metrics** — See what each of your LLM-driven gates/sentinels actually costs and how often it fires, so tuning them is evidence-based (which to thin, which to strengthen). Read-only observability (like token usage) — it never gates anything.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
+- Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
+- **When to use**: when asked "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate — read the numbers instead of guessing. (Spec: \`docs/specs/llm-feature-metrics-spec.md\`.)
+
 **Git Sync** — Automatic version-control and multi-machine synchronization of your state.
 - **How it works**: The \`git-sync\` job runs hourly, commits local changes, pulls remote changes, and pushes — all automatically. It uses a gate script to skip when nothing has changed (zero-token cost).
 - **Project-bound agents**: Your state (\`.instar/\`) lives inside the parent project's git repo. The git-sync job uses this repo directly — no separate repo needed. Just make sure the parent repo has a remote configured (\`git remote -v\`).

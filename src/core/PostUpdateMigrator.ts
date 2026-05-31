@@ -2762,6 +2762,24 @@ Check where codex account usage sits without the interactive TUI. The codex CLI 
       result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
     }
 
+    // llm-feature-metrics (Agent Awareness + Migration Parity): existing agents
+    // must learn they can read per-gate/sentinel cost + hit-rate over HTTP to
+    // tune their LLM checks. Content-sniff on the route marker (also emitted by
+    // the template, so a freshly-initialized agent is never double-patched).
+    if (!content.includes('/metrics/features')) {
+      const metricsSection = `
+### Per-Feature LLM Metrics (\`/metrics/features\`)
+
+See what each LLM-driven gate/sentinel actually costs and how often it fires, so tuning them is evidence-based (which to thin, which to strengthen). Read-only observability (like token usage) — it never gates anything.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
+- Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
+- **When to use**: "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate. Spec: \`docs/specs/llm-feature-metrics-spec.md\`.
+`;
+      content += '\n' + metricsSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Per-Feature LLM Metrics (/metrics/features) awareness (llm-feature-metrics)');
+    }
+
     // update-message-topic-routing §Fix 3 — existing agents need to learn that
     // self-broadcast about ships/restarts/updates must route through the
     // post-update channel (lands in the Agent Updates topic), not the active
