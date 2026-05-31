@@ -1066,7 +1066,14 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     let result: { message_id: number };
-    if (!this.config.token && this.outboundRelay) {
+    // A pool standby's bot token is externalized and arrives UNRESOLVED as a non-string
+    // placeholder (e.g. `{ secret: true }`), not null — which is truthy, so the old
+    // `!this.config.token` check thought a token existed and attempted a doomed direct API
+    // send (the moved session's reply 200'd internally but never reached Telegram). The only
+    // usable token is a non-empty string; anything else (placeholder/null/empty) means
+    // "no usable token" → relay through the Telegram-owning router (bug #7).
+    const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
+    if (!hasUsableBotToken && this.outboundRelay) {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
