@@ -5794,14 +5794,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     // so a codex session throttled by OpenAI is invisible to them. This poll reads the
     // codex account usage; when codex itself flags a rate-limit hit
     // (rateLimitReachedType), it reports each running codex session into the sentinel
-    // (deduped — report() no-ops while a recovery is active). The recovery then keeps the
+    // (deduped — report() no-ops while a recovery is active). The recovery keeps the
     // session alive and verifies via the newest codex rollout's growth (the codex-aware
-    // readJsonlBaseline / getSessionFramework dep above). The OpenAI limit is
-    // account-wide, so every running codex session is throttled; the recovery's
-    // growth-check finalizes any that aren't actually stuck. Ships DARK
-    // (rlsCfg.codexUsageDetection, default off) — live-verify on a real throttled codex
-    // session before enabling; rollback = set it false. Best-effort + non-blocking.
-    if ((rlsCfg as { codexUsageDetection?: boolean }).codexUsageDetection === true) {
+    // readJsonlBaseline / getSessionFramework dep above).
+    //
+    // KNOWN LIMITATION — must-fix BEFORE enabling (2nd-pass review): the OpenAI limit is
+    // account-wide and recovery-verification watches the ACCOUNT's newest rollout, not a
+    // specific session's. Correct for ONE codex session (today's reality), but with ≥2
+    // concurrent throttled codex sessions, one session's resumed output grows the shared
+    // newest rollout and would recover ALL reported sessions — including a sibling that
+    // is genuinely still stuck (a false recovery). Safe while DARK + single-session; do
+    // NOT flip codexUsageDetection on a host that runs ≥2 concurrent codex sessions until
+    // this is per-session (track the session's own rollout) or redefined as account-level
+    // with per-session re-probe. Ships DARK (default off); rollback = set it false.
+    // Best-effort + non-blocking.
+    if (rlsCfg.codexUsageDetection === true) {
       const codexRateLimitPoll = setInterval(() => {
         void (async () => {
           try {
