@@ -38,6 +38,18 @@ HOOK_INPUT=$(cat)
 IS_CODEX=0
 for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
 
+# hook-capability: codex-stdout-json-safe — see emit() below (migration marker; bumped so
+# existing #28 installs re-deploy this fixed hook even though they already have CODEX_LOOP_ENABLED).
+# emit — human-facing approve/status text. In codex mode the Stop hook's STDOUT must be
+# ONLY valid decision-JSON (the `{"decision":"block",...}` case far below) or empty:
+# codex rejects ANY other stdout as "invalid stop hook JSON output" and reports the stop
+# hook as FAILED (observed live 2026-05-31 — a completion-promise approve echoed plain
+# text to stdout, so codex logged "Stop hook (failed)" on every terminal stop with the
+# loop flag on). So in codex mode these messages go to STDERR; Claude keeps them on
+# STDOUT (unchanged — Claude surfaces approve-path stdout to the user). The block-decision
+# JSON is printed directly (never via emit), so it always reaches stdout.
+emit() { if [[ "$IS_CODEX" == "1" ]]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; }
+
 # ── Anchor to the agent home, NOT the session's CWD ───────────────────
 # All state paths below are relative (.instar/autonomous/<topic>.local.md, the
 # registry, the legacy file). The Stop hook inherits the session's working
@@ -359,8 +371,8 @@ if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
     NOW_EPOCH=$(date +%s)
     ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
     if [[ $ELAPSED -ge $DURATION_SECONDS ]]; then
-      echo "⏰ Autonomous mode: Duration expired ($ELAPSED seconds elapsed)."
-      echo "   Session is free to exit."
+      emit "⏰ Autonomous mode: Duration expired ($ELAPSED seconds elapsed)."
+      emit "   Session is free to exit."
       notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" just hit its time limit and stopped. Ask me and I'll pick up where I left off."
       rm -f "$STATE_FILE"
       exit 0
@@ -374,7 +386,7 @@ fi
 
 # Emergency stop (global — halts every autonomous job on its next fire)
 if [[ -f ".instar/autonomous-emergency-stop" ]]; then
-  echo "🛑 Autonomous mode: Emergency stop detected."
+  emit "🛑 Autonomous mode: Emergency stop detected."
   notify_terminal_stop "🛑 My autonomous run on \"$(goal_snippet)\" was stopped (emergency stop)."
   rm -f "$STATE_FILE"
   # NOTE: the emergency flag is left in place so OTHER topics' hooks also see it
@@ -405,7 +417,7 @@ if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TR
     EVAL_REASON=$(printf '%s' "$EVAL_RESP" | jq -r '.reason // empty' 2>/dev/null || echo "")
   fi
   if [[ "$EVAL_MET" == "true" ]]; then
-    echo "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+    emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
     notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
     rm -f "$STATE_FILE"
     exit 0
@@ -423,8 +435,8 @@ if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
     if [[ -n "$COMPLETION_PROMISE" ]] && [[ "$COMPLETION_PROMISE" != "null" ]]; then
       PROMISE_TEXT=$(printf '%s' "$LAST_OUTPUT" | perl -0777 -pe 's/.*?<promise>(.*?)<\/promise>.*/$1/s; s/^\s+|\s+$//g; s/\s+/ /g' 2>/dev/null || echo "")
       if [[ -n "$PROMISE_TEXT" ]] && [[ "$PROMISE_TEXT" = "$COMPLETION_PROMISE" ]]; then
-        echo "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
-        echo "   Session is free to exit. Good work!"
+        emit "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
+        emit "   Session is free to exit. Good work!"
         notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — all the work is done."
         rm -f "$STATE_FILE"
         exit 0
