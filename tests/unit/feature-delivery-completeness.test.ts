@@ -214,6 +214,7 @@ describe('Feature Delivery Completeness', () => {
       'sentinelTelegramEscalation',                       // silently-stopped sentinel delivery gate
       'Sentinel Notifications (silently-stopped trio)',   // alternate heading phrase
       'Cross-Agent Communication Discipline (anti-confabulation)', // migrator-only behavioral guard, no template parity
+      'Close the Loop (Untracked = Abandoned)', // core operating PRINCIPLE (constitution: docs/STANDARDS-REGISTRY.md), like Structure>Willpower / Deferral=Deletion — mirrored in the template's Core Principles but NOT a user-invokable capability, so no shadow-capability markers[] parity required
       'The "Threadline" hub topic — notifications',       // CMT-519 migrator-only notification-routing guidance, no template parity
       'Cross-Machine Seamlessness (one agent, many machines)', // operational self-heal/handoff awareness (like Version-Skew); not a user-invokable capability
       'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
