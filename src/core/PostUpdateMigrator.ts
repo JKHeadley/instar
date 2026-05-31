@@ -8208,6 +8208,37 @@ if (!reviewEnabled) {
   if (input.stop_hook_active) { exitOpen(); return; }
   const sessionId = String(input.session_id || input.sessionId || process.env.INSTAR_SESSION_ID || 'unknown');
 
+  // ── Stated-continuation guard (mode-INDEPENDENT). ───────────────────────────
+  // Catches the specific silent-stall pattern that shadow mode lets through: the
+  // agent's FINAL message tells the user it is about to act this turn ("I'll
+  // build X now", "starting now", "next phase: ship ...") and then the turn ENDS
+  // without doing it. Blocks ONCE (the stop_hook_active guard above prevents a
+  // loop) regardless of the gate's shadow/enforce mode — shadow is exactly when
+  // these stalls slip through (telemetry only). The re-feed allows a clean exit:
+  // do the work, OR send the user one honest message that you are stopping and
+  // why. Pure substring matching (no regex-escape hazards in this template).
+  (function statedContinuationGuard() {
+    const lc = String(input.last_assistant_message || '').toLowerCase();
+    if (lc.length < 8) return;
+    function hasAny(arr) { for (let i = 0; i < arr.length; i++) { if (lc.indexOf(arr[i]) !== -1) return arr[i]; } return null; }
+    const commit = hasAny([
+      "i'm going to", 'i am going to', "i'll ", 'i will ', 'about to ', 'gonna ',
+      'next phase', 'next step', 'next up', 'next round', 'kicking off',
+      'getting started', 'starting now', 'on it', "i'll build", "i'll ship",
+      "i'll continue", "i'll finish", "i'll fix", "i'll start", "i'll do",
+    ]);
+    const imminent = hasAny([
+      ' now', 'right now', 'immediately', 'starting now', 'next phase',
+      'next step', 'next up', 'this turn', 'this session', 'then i',
+    ]);
+    if (!commit || !imminent) return;
+    process.stdout.write(JSON.stringify({
+      decision: 'block',
+      reason: 'STOP-GATE (stated-continuation): your final message tells the user you are about to act ("' + commit + '" / "' + imminent + '") but you are ending the turn without doing it. Do NOT give the impression you are continuing and then stall silently. Either (a) actually do that work now, or (b) if you are genuinely blocked, finished, or need the user, send ONE short honest message saying you are stopping and exactly why — then you may stop. This guard fires once.',
+    }));
+    process.exit(2);
+  })();
+
   try {
     const hot = await getJson('/internal/stop-gate/hot-path?session=' + encodeURIComponent(sessionId), 1500);
     if (!hot || hot.killSwitch || hot.mode === 'off' || hot.compactionInFlight) { exitOpen(); return; }
