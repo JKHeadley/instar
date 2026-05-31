@@ -131,6 +131,20 @@ describe('Framework-issues routes (integration)', () => {
       const res = await request(appWith(ledger)).get('/framework-issues/playbook?targetFramework=cursor');
       expect(res.body.playbook).toHaveLength(0);
     });
+
+    it('end-to-end (§13.6): observing a FIXED generalizable issue auto-seeds the next framework\'s playbook — no manual promote', async () => {
+      const app = appWith(ledger);
+      // The exact write path engineering uses: POST observe with a terminal status.
+      const obs = await request(app)
+        .post('/framework-issues/observe')
+        .send({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'jsonlExists was claude-only', dedupKey: 'k1', severity: 'high', status: 'fixed', fixedInVersion: '1.3.x', evidence: 'PR #N' });
+      expect(obs.status).toBe(200);
+      expect(obs.body.issue.playbookStatus).toBe('candidate'); // auto-suggested on the fixed transition
+      // …and it now surfaces in cursor's onboarding playbook with no promote call.
+      const pb = await request(app).get('/framework-issues/playbook?targetFramework=cursor');
+      expect(pb.status).toBe(200);
+      expect(pb.body.playbook.map((i: { dedupKey: string }) => i.dedupKey)).toContain('k1');
+    });
   });
 
   describe('GET /framework-issues/observability (§15)', () => {

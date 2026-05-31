@@ -8,11 +8,15 @@
  * redaction, retention pruning, and playbook cross-framework semantics.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   FrameworkIssueLedger,
   clampLimit,
   scanForSecret,
 } from '../../src/monitoring/FrameworkIssueLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let ledger: FrameworkIssueLedger;
 let clock: number;
@@ -182,6 +186,110 @@ describe('playbook — cross-framework, ranked (§13.6)', () => {
   it('excludes the target framework\'s OWN issues (playbook is prior-frameworks only)', () => {
     const pb = ledger.playbook({ targetFramework: 'codex-cli' });
     expect(pb).toHaveLength(0); // codex's own lessons are not its own playbook
+  });
+});
+
+describe('none→candidate auto-suggest on terminal resolution (§13.6)', () => {
+  it('promotes a generalizable issue to candidate when it is fixed', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'A', dedupKey: 'k1' });
+    expect(ledger.getIssue(r.issueId)!.playbookStatus).toBe('none');
+    const updated = ledger.updateIssue(r.issueId, { status: 'fixed', fixedInVersion: '1.4.0' });
+    expect(updated!.status).toBe('fixed');
+    expect(updated!.playbookStatus).toBe('candidate');
+  });
+
+  it('promotes a generalizable issue to candidate when it is wont-fixed', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'k1' });
+    const updated = ledger.updateIssue(r.issueId, { status: 'wont-fix', wontFixReason: 'upstream capability gap, tracked' });
+    expect(updated!.playbookStatus).toBe('candidate');
+  });
+
+  it('does NOT promote a non-generalizable (generic-agent-mistake) issue', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'generic-agent-mistake', title: 'A', dedupKey: 'k1' });
+    const updated = ledger.updateIssue(r.issueId, { status: 'fixed' });
+    expect(updated!.playbookStatus).toBe('none');
+  });
+
+  it('does NOT promote on a non-terminal transition (spec\'d / still open)', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'k1' });
+    expect(ledger.updateIssue(r.issueId, { status: "spec'd" })!.playbookStatus).toBe('none');
+    expect(ledger.getIssue(r.issueId)!.playbookStatus).toBe('none'); // still not terminal
+  });
+
+  it('respects an explicit caller playbookStatus (no auto-override)', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'framework-limitation', title: 'A', dedupKey: 'k1' });
+    // Explicit 'none' alongside a terminal status simulates a pre-fix ledger row.
+    const updated = ledger.updateIssue(r.issueId, { status: 'fixed', playbookStatus: 'none' });
+    expect(updated!.playbookStatus).toBe('none');
+  });
+
+  it('never downgrades an already-extracted issue', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'A', dedupKey: 'k1' });
+    ledger.updateIssue(r.issueId, { playbookStatus: 'extracted' });
+    const updated = ledger.updateIssue(r.issueId, { status: 'fixed' });
+    expect(updated!.playbookStatus).toBe('extracted');
+  });
+
+  it('end-to-end: a fixed generalizable issue surfaces in the NEXT framework\'s playbook', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'lesson', dedupKey: 'k1', severity: 'high' });
+    ledger.updateIssue(r.issueId, { status: 'fixed', fixedInVersion: '1.4.0' });
+    const pb = ledger.playbook({ targetFramework: 'cursor' });
+    expect(pb.map((i) => i.dedupKey)).toContain('k1');
+  });
+});
+
+describe('backfillPlaybookCandidates — seed pre-existing terminal lessons (§13.6)', () => {
+  // Build a row stuck at 'none' despite being terminal+generalizable, exactly
+  // like a ledger resolved before the auto-suggestion existed.
+  function stuckRow(dedupKey: string, bucket: 'framework-limitation' | 'instar-integration-gap' | 'generic-agent-mistake', status: "fixed" | "wont-fix" | "spec'd" | 'open') {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket, title: dedupKey, dedupKey });
+    if (status !== 'open') {
+      ledger.updateIssue(r.issueId, { status, playbookStatus: 'none', wontFixReason: status === 'wont-fix' ? 'tracked' : undefined });
+    }
+    return r.issueId;
+  }
+
+  it('promotes eligible (terminal + generalizable) rows and is idempotent', () => {
+    const fixedGen = stuckRow('a', 'instar-integration-gap', 'fixed');
+    const wontGen = stuckRow('b', 'framework-limitation', 'wont-fix');
+    const openGen = stuckRow('c', 'framework-limitation', 'open'); // not terminal
+    const specGen = stuckRow('d', 'framework-limitation', "spec'd"); // not terminal
+    const fixedNonGen = stuckRow('e', 'generic-agent-mistake', 'fixed'); // not generalizable
+
+    const n = ledger.backfillPlaybookCandidates();
+    expect(n).toBe(2);
+    expect(ledger.getIssue(fixedGen)!.playbookStatus).toBe('candidate');
+    expect(ledger.getIssue(wontGen)!.playbookStatus).toBe('candidate');
+    expect(ledger.getIssue(openGen)!.playbookStatus).toBe('none');
+    expect(ledger.getIssue(specGen)!.playbookStatus).toBe('none');
+    expect(ledger.getIssue(fixedNonGen)!.playbookStatus).toBe('none');
+
+    // Second call finds nothing (self-limiting).
+    expect(ledger.backfillPlaybookCandidates()).toBe(0);
+  });
+
+  it('never downgrades an extracted row', () => {
+    const r = ledger.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'x', dedupKey: 'x' });
+    ledger.updateIssue(r.issueId, { status: 'fixed', playbookStatus: 'extracted' });
+    ledger.backfillPlaybookCandidates();
+    expect(ledger.getIssue(r.issueId)!.playbookStatus).toBe('extracted');
+  });
+
+  it('runs on construction so an existing ledger self-seeds on boot', () => {
+    // Seed a stuck row, then re-open the SAME on-disk db with a new ledger:
+    // the constructor backfill must promote it without any explicit call.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwledger-'));
+    const dbPath = path.join(dir, 'ledger.db');
+    const first = new FrameworkIssueLedger({ dbPath, now: () => clock });
+    const id = first.recordObservation({ framework: 'codex-cli', bucket: 'instar-integration-gap', title: 'seed', dedupKey: 'seed' }).issueId;
+    first.updateIssue(id, { status: 'fixed', playbookStatus: 'none' }); // stuck at none
+    expect(first.getIssue(id)!.playbookStatus).toBe('none');
+    first.close();
+
+    const second = new FrameworkIssueLedger({ dbPath, now: () => clock });
+    expect(second.getIssue(id)!.playbookStatus).toBe('candidate'); // seeded on construction
+    second.close();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/FrameworkIssueLedger.test.ts:backfill-on-construction' });
   });
 });
 
