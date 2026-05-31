@@ -2636,6 +2636,7 @@
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+          <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
           <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
         </nav>
       </div>
@@ -3147,6 +3148,26 @@
         <summary class="ph-detail-summary">More detail</summary>
         <div id="phDetail" class="ph-detail-body"></div>
       </details>
+    </div>
+
+    <!-- preferences-learning tab (Correction & Preference Learning Sentinel §10 Slice-2) -->
+    <div id="preferencesLearningPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Preferences</h2>
+        <div id="plStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">When you correct me the same way a few times — "no, plainer", "stop asking me that", "lead with the one action" — I save it as a preference and load it at the start of every conversation, so I follow it without you having to remind me. This is a quiet record of what I've picked up. It never blocks or changes a message — these are signals, not rules.</p>
+      <div id="plHeadline" class="ph-headline-wrap" aria-live="polite"></div>
+      <section class="ph-section">
+        <h3 class="ph-h">Preferences I've picked up about you</h3>
+        <p class="ph-h-sub">The ones I load at the start of every conversation. Real instructions and safety always win over these.</p>
+        <div id="plPreferences"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Corrections I've noticed lately</h3>
+        <p class="ph-h-sub">Patterns I've distilled from moments you corrected me. The exact words are never stored — just a short, scrubbed summary.</p>
+        <div id="plCorrections"></div>
+      </section>
     </div>
 
     <!-- machines tab (Multi-Machine Session Pool §L2) -->
@@ -4402,6 +4423,13 @@
         display: ['flex'],
         onActivate: () => { if (typeof startProcessHealth === 'function') startProcessHealth(); },
         onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
+      },
+      {
+        id: 'preferences-learning',
+        panels: ['preferencesLearningPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startPreferencesLearning === 'function') startPreferencesLearning(); },
+        onDeactivate: () => { if (typeof stopPreferencesLearning === 'function') stopPreferencesLearning(); },
       },
       {
         id: 'machines',
@@ -8244,16 +8272,50 @@
       if (__phController) __phController.stop();
     }
 
+    // ── Preferences tab (Correction & Preference Learning Sentinel §10 Slice-2) ──
+    // Same lazy dynamic-import pattern as Process Health: the controller lives in
+    // this (classic) scope so it can read `token`; the module ships the pure
+    // renderers + the polling controller.
+    let __plController = null;
+    let __plModule = null;
+    async function startPreferencesLearning() {
+      if (!__plModule) {
+        try { __plModule = await import('/dashboard/preferences-learning.js'); }
+        catch (e) { console.error('[preferences-learning] module load failed', e); return; }
+      }
+      if (!__plController) {
+        const els = {
+          headline: document.getElementById('plHeadline'),
+          preferences: document.getElementById('plPreferences'),
+          corrections: document.getElementById('plCorrections'),
+          stamp: document.getElementById('plStamp'),
+        };
+        // Raw fetch (NOT apiFetch) so the controller sees 503 itself.
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+          signal: opts.signal,
+        });
+        __plController = __plModule.createController({ doc: document, els, fetchImpl });
+      }
+      __plController.start();
+    }
+    function stopPreferencesLearning() {
+      if (__plController) __plController.stop();
+    }
+
     // Handle tab visibility — close SSE when tab is backgrounded
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         disconnectJobsSSE();
         if (currentTab === 'process-health') stopProcessHealth();
+        if (currentTab === 'preferences-learning') stopPreferencesLearning();
       } else if (currentTab === 'jobs') {
         connectJobsSSE();
         loadJobs(); // Resync on return
       } else if (currentTab === 'process-health') {
         startProcessHealth(); // resume on return: one immediate refresh + re-arm
+      } else if (currentTab === 'preferences-learning') {
+        startPreferencesLearning(); // resume on return
       }
       // Always refresh vital signs on tab focus
       if (!document.hidden) pollVitalSigns();
