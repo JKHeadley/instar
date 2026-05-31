@@ -1,0 +1,50 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+
+## What Changed
+
+Release notes are now authored as per-PR **fragments** instead of a single shared
+`upgrades/NEXT.md`. Each PR drops its release note at `upgrades/next/<slug>.md`,
+touching a distinct file, so two concurrent PRs never collide on the release
+notes — the bottleneck that made many-agent merges un-landable in real time.
+
+A new pure script, `scripts/assemble-next-md.mjs`, folds every fragment (sorted
+deterministically by filename) — plus any legacy `upgrades/NEXT.md`, for backward
+compatibility — into a single `upgrades/NEXT.md`, merging by section: one What
+Changed, one What to Tell Your User, one Summary of New Capabilities, one Evidence,
+each being the concatenation of that section across all inputs. Non-canonical
+sections are preserved and appended. The emitted bump directive is the highest tier
+among the fragments (major beats minor beats patch); it is a documentation hint only
+— the real release tier still comes from `.instar/release-tier.json`, which is
+untouched.
+
+The publish workflow gains ONE new step, "Assemble release-note fragments", placed
+immediately before the existing "Check if NEXT.md has content to publish" step.
+Everything downstream — the tier gate, version resolution, the rename, the upgrade
+guide check, publish, and commit — is unchanged. With no fragments and no legacy
+NEXT.md, the assemble step does nothing and the existing skip logic fires exactly as
+before, so the no-fragments path reproduces current behavior byte-for-byte. After a
+release is cut, consumed fragments are deleted (`rm -f upgrades/next/*.md`) and the
+existing commit step stages the deletions. The pre-push gate is now fragment-aware:
+it validates the assembled result in-memory (never writing NEXT.md to disk during
+pre-push), so a PR that ships only a fragment passes the same section and content
+checks the publish gate enforces, and a malformed fragment fails the push loudly.
+`upgrades/NEXT.md` remains fully supported as a legacy, backward-compatible path.
+
+## What to Tell Your User
+
+Behind the scenes, the way I prepare release notes got a lot more robust. Each
+change now writes its own small note in its own file, instead of every change
+fighting over one shared notes file. That means when several updates are being
+prepared at the same time, they no longer block each other, so improvements reach
+you faster and with less risk of a release getting stuck. Nothing changes about how
+I talk to you — this is purely a smoother release pipeline on my side.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Per-PR release-note fragments | Write `upgrades/next/<slug>.md` (one file per change) |
+| Fragment assembler | `node scripts/assemble-next-md.mjs` (runs automatically in publish) |
+| Legacy NEXT.md | Still supported — folded in for backward compatibility |
