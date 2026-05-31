@@ -623,26 +623,42 @@ export class AutoUpdater {
 
     // Restart window gate — defer restart until the configured window unless bypassed.
     // Updates are already downloaded; only the restart is held.
+    //
+    // Restart-when-idle (#41): the window exists to avoid disrupting ACTIVE
+    // work. If the box is idle (no active sessions to protect), deferring just
+    // strands the agent on a stale version for hours for no benefit — an idle
+    // restart is invisible (it is exactly what the in-window silent-restart
+    // path already does). So only defer to the window when active sessions are
+    // present; when idle, fall through and restart now. The probe is pure
+    // (getBlockingSessions) — it does NOT start the deferral clock.
     if (!bypassWindow && !this.isInRestartWindow()) {
-      const waitMs = this.msUntilRestartWindow();
-      const waitH = Math.round(waitMs / 3600_000 * 10) / 10;
-      console.log(`[AutoUpdater] Outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}). Deferring restart for v${newVersion} (~${waitH}h)`);
-      this.recordRestartDeferral({
-        targetVersion: newVersion,
-        reason: `outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end})`,
-        currentBlockers: [],
-        nextRetryAt: new Date(Date.now() + waitMs).toISOString(),
-      });
+      const blockers = this.sessionManager
+        ? this.gate.getBlockingSessions(this.sessionManager, this.sessionMonitor)
+        : [];
+      if (blockers.length > 0) {
+        const waitMs = this.msUntilRestartWindow();
+        const waitH = Math.round(waitMs / 3600_000 * 10) / 10;
+        console.log(`[AutoUpdater] Outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}) with ${blockers.length} active session(s). Deferring restart for v${newVersion} (~${waitH}h)`);
+        this.recordRestartDeferral({
+          targetVersion: newVersion,
+          reason: `outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}); ${blockers.length} active session(s)`,
+          currentBlockers: blockers,
+          nextRetryAt: new Date(Date.now() + waitMs).toISOString(),
+        });
 
-      // Schedule a retry at the window start
-      if (this.deferralTimer) clearTimeout(this.deferralTimer);
-      this.deferralTimer = setTimeout(() => {
-        this.deferralTimer = null;
-        console.log(`[AutoUpdater] Restart window reached — attempting restart for v${newVersion}`);
-        this.gatedRestart(newVersion, false);
-      }, waitMs);
-      this.deferralTimer.unref();
-      return;
+        // Schedule a retry at the window start
+        if (this.deferralTimer) clearTimeout(this.deferralTimer);
+        this.deferralTimer = setTimeout(() => {
+          this.deferralTimer = null;
+          console.log(`[AutoUpdater] Restart window reached — attempting restart for v${newVersion}`);
+          this.gatedRestart(newVersion, false);
+        }, waitMs);
+        this.deferralTimer.unref();
+        return;
+      }
+      // Idle (no active sessions) — the window has nothing to protect; fall
+      // through to the session gate / silent-restart path and restart now.
+      console.log(`[AutoUpdater] Outside restart window but idle (no active sessions) — restarting now for v${newVersion}`);
     }
 
     // If no session manager is wired, skip gating — silent restart

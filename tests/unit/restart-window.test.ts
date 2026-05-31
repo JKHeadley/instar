@@ -194,7 +194,7 @@ describe('Restart window', () => {
     expect(requestSpy).toHaveBeenCalledWith('0.9.9');
   });
 
-  it('gatedRestart without bypass defers when outside window', async () => {
+  it('gatedRestart without bypass defers when outside window AND an active session is present', async () => {
     // Set time to 2 PM — outside window
     vi.setSystemTime(new Date('2026-03-27T14:00:00'));
 
@@ -205,11 +205,43 @@ describe('Restart window', () => {
       { restartWindow: { start: '02:00', end: '05:00' } },
     );
 
+    // Restart-when-idle (#41): deferral to the window now only happens when
+    // there's active work to protect. Wire an active session so the gate sees
+    // a blocker and defers (the original intent of this test).
+    (au as any).setSessionDeps(
+      { listRunningSessions: () => [{ name: 'topic-1', tmuxSession: 'instar-topic-1' }] },
+      null,
+    );
+
     const requestSpy = vi.spyOn(au as any, 'requestRestart').mockImplementation(() => {});
 
     await (au as any).gatedRestart('0.9.9', false);
 
-    // Should NOT have called requestRestart — deferred to window
+    // Should NOT have called requestRestart — deferred to window (active session)
     expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  it('gatedRestart restarts immediately when outside window but the box is IDLE (#41 restart-when-idle)', async () => {
+    // Use real timers — gatedRestart has internal awaits on the restart path.
+    vi.useRealTimers();
+
+    const au = new AutoUpdater(
+      createMockUpdateChecker(),
+      createMockState(),
+      dir,
+      { restartWindow: { start: '02:00', end: '05:00' } },
+    );
+
+    // Outside the window…
+    vi.spyOn(au as any, 'isInRestartWindow').mockReturnValue(false);
+    // …but no active sessions to protect → the window has nothing to guard.
+    (au as any).setSessionDeps({ listRunningSessions: () => [] }, null);
+
+    const requestSpy = vi.spyOn(au as any, 'requestRestart').mockImplementation(() => {});
+
+    await (au as any).gatedRestart('0.9.9', false);
+
+    // Restart should proceed now — NOT deferred to the window — because idle.
+    expect(requestSpy).toHaveBeenCalledWith('0.9.9');
   });
 });
