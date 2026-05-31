@@ -229,6 +229,7 @@ export class PostUpdateMigrator {
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
     this.migrateWorktreeSpotlightExclusion(result);
+    this.migrateNodeModulesSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -720,6 +721,38 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`worktree-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * OS resource hygiene (Responsible Resource Usage standard): exclude the agent's
+   * node_modules trees from macOS Spotlight. The worktree exclusion above covers
+   * `.worktrees/`, but the bigger churning set was never excluded — each agent home
+   * carries a full `node_modules/` (~1.3GB / ~25k files measured) AND a
+   * `.instar/shadow-install/node_modules/` (~600MB), re-indexed by Spotlight /
+   * mediaanalysisd on every `npm ci` and every shadow-install update. Across a
+   * ~10-agent fleet that is ~20GB of un-excluded node_modules — a top OS-level CPU
+   * consumer (measured: Metadata.framework ~62% CPU). node_modules never need
+   * Spotlight indexing, so the marker is unambiguously safe; it is honored
+   * recursively, harmless on non-macOS, and idempotent. Reuses the generic
+   * marker-dropper. (`ensureWorktreeSpotlightExclusion` is dir-agnostic.)
+   */
+  private migrateNodeModulesSpotlightExclusion(result: MigrationResult): void {
+    const agentHome = path.dirname(this.config.stateDir);
+    const dirs = [
+      path.join(agentHome, 'node_modules'),
+      path.join(this.config.stateDir, 'shadow-install', 'node_modules'),
+    ];
+    for (const dir of dirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        if (ensureWorktreeSpotlightExclusion(dir)) {
+          const rel = path.relative(agentHome, dir) || dir;
+          result.upgraded.push(`node-modules-spotlight-exclusion: dropped .metadata_never_index at ${rel} (excludes node_modules from Spotlight indexing)`);
+        }
+      } catch (err) {
+        result.errors.push(`node-modules-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
