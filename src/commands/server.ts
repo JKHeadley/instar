@@ -9469,6 +9469,33 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
 
+          // bug #7: tokenless-standby outbound Telegram relay. TelegramAdapter.sendToTopic
+          // only invokes this when the adapter has NO bot token (a pool standby serving a
+          // session moved to it); a token-holding router never calls it. It relays the send
+          // to the Telegram-OWNING lease holder's /telegram/reply, so a moved session's
+          // replies reach the user without the standby ever sending on the shared bot
+          // (preserving the single-Telegram-owner invariant — the 409-conflict guard).
+          if (telegram) {
+            telegram.outboundRelay = async (topicId, text, opts) => {
+              const holder = coordinator.getSyncStatus().leaseHolder;
+              if (!holder || holder === meshSelfId) return null; // we ARE the owner, or none known
+              const url = peerUrl(holder);
+              if (!url) return null;
+              try {
+                const resp = await fetch(`${url}/telegram/reply/${topicId}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
+                  body: JSON.stringify({ text, ...(opts?.silent ? { silent: true } : {}) }),
+                });
+                if (!resp.ok) return null;
+                const j = (await resp.json().catch(() => ({}))) as { messageId?: number };
+                return { messageId: j.messageId ?? 0, topicId };
+              } catch {
+                return null; // relay unreachable → sendToTopic surfaces the failure
+              }
+            };
+          }
+
           // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"
           // trigger. The recognizer + planner are pure units; this wires them to the
           // pin store + ownership so a recognized command pins the topic to the named

@@ -453,6 +453,17 @@ export class TelegramAdapter implements MessagingAdapter {
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
   public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number }) => void) | null = null;
+  /**
+   * Outbound relay for a TOKENLESS standby (bug #7). When this adapter has no bot
+   * token — a multi-machine pool standby serving a session moved to it — it cannot
+   * call the Telegram API directly. If this is wired, sendToTopic routes the send
+   * through it (the server wires it to POST the Telegram-OWNING router's
+   * /telegram/reply/:topicId), so a moved session's replies reach the user without
+   * the standby ever polling/sending on the shared bot (preserving the single-owner
+   * invariant that avoids the 409-poller-conflict incident). Returns the sent
+   * message's SendResult, or null if the relay could not deliver.
+   */
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean }) => Promise<SendResult | null>) | null = null;
 
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
@@ -1055,10 +1066,21 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     let result: { message_id: number };
-    try {
-      result = await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' }) as { message_id: number };
-    } catch {
-      result = await this.apiCall('sendMessage', params) as { message_id: number };
+    if (!this.config.token && this.outboundRelay) {
+      // Tokenless standby (bug #7): relay the send through the Telegram-owning router
+      // instead of calling the API with no token. The rest of this method's bookkeeping
+      // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
+      const relayed = await this.outboundRelay(topicId, text, { silent: options?.silent });
+      if (!relayed) {
+        throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
+      }
+      result = { message_id: relayed.messageId };
+    } else {
+      try {
+        result = await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' }) as { message_id: number };
+      } catch {
+        result = await this.apiCall('sendMessage', params) as { message_id: number };
+      }
     }
 
     // Log outbound messages too
