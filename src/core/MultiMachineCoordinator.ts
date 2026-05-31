@@ -117,6 +117,23 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** Whether this machine is the awake (primary) machine. */
   get isAwake(): boolean { return this._role === 'awake'; }
 
+  /**
+   * A SILENT standby (telegramPolling:false — the operator explicitly muted this
+   * machine so it never owns the Telegram poll) is LEASE-OBSERVE-ONLY: it never
+   * acquires/renews its own lease, it only observes the primary's broadcast and
+   * resolves leaseHolder to the primary. Rationale: the git-less LocalLeaseStore
+   * has no shared compare-and-swap, so a standby that acquires its own lease at
+   * boot (before it has observed the primary's broadcast) leapfrogs epochs with
+   * the primary and never adopts it as holder — leaving the standby unable to
+   * authenticate the primary's router-only MeshRpc commands (the 2026-05-31
+   * cross-machine-transfer split-brain). A muted standby auto-grabbing the awake
+   * role would also be incoherent (awake yet not serving Telegram). Failover for
+   * such a machine is a deliberate un-mute (telegramPolling → true), not auto.
+   */
+  get isLeaseObserveOnly(): boolean {
+    return this.config.multiMachine?.telegramPolling === false;
+  }
+
   /** The coordination mode (default: 'primary-standby'). */
   get coordinationMode(): CoordinationMode {
     return this.config.multiMachine?.coordinationMode ?? 'primary-standby';
@@ -453,6 +470,11 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   async initializeLease(): Promise<void> {
     if (!this.leaseCoordinator) return;
+    if (this.isLeaseObserveOnly) {
+      // Silent standby: do NOT acquire — only observe the primary's lease.
+      this.reconcileRoleToLease('lease-init-observe-only');
+      return;
+    }
     await this.leaseCoordinator.acquireIfEligible();
     this.reconcileRoleToLease('lease-init');
   }
@@ -479,12 +501,17 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this.leaseCoordinator || this.leaseTicking) return;
     this.leaseTicking = true;
     try {
-      if (this.leaseCoordinator.holdsLease()) {
+      if (this.isLeaseObserveOnly) {
+        // Silent standby: never acquire/renew — just reconcile role to the
+        // observed holder (effectiveView folds the primary's broadcast lease).
+        this.reconcileRoleToLease('lease-tick-observe-only');
+      } else if (this.leaseCoordinator.holdsLease()) {
         await this.leaseCoordinator.renew();
+        this.reconcileRoleToLease('lease-tick');
       } else {
         await this.leaseCoordinator.acquireIfEligible();
+        this.reconcileRoleToLease('lease-tick');
       }
-      this.reconcileRoleToLease('lease-tick');
     } catch {
       // @silent-fallback-ok — a tick failure is retried next interval
     } finally {
