@@ -57,7 +57,29 @@ export type HumanDetectorCategory =
   | 'contradiction'           // "but you just said", "that contradicts"
   | 'source-of-truth-drift'   // "the record says X but you said Y"
   | 'repeat-ask'              // "I already told you", "again?"
-  | 'meta-failure';           // "why didn't the system catch this"
+  | 'meta-failure'            // "why didn't the system catch this"
+  // ── Correction & Preference Learning Sentinel (Slice 1b) — additive,
+  // distinctly-tagged signal families (spec §3.2). These are NOT
+  // guardian-failure categories: they feed the correction loop, and are
+  // EXCLUDED from summarizeByLayer() so they cannot pollute the heat map's
+  // precision contract. The `entry.fromUser` gate remains the self-feed guard.
+  | 'preference'              // "I prefer / from now on / please always / don't use"
+  | 'frustration';            // "again?", "you keep", "every time", "stop asking me"
+
+/**
+ * Categories that feed the Correction & Preference Learning Sentinel rather
+ * than the guardian-failure heat map. They are tagged here (single source of
+ * truth) and excluded from {@link HumanAsDetectorLog.summarizeByLayer}. The
+ * correction loop keys on these to decide whether a message is a learning
+ * candidate. Spec §3.2.
+ */
+export const LEARNING_ONLY_CATEGORIES: ReadonlySet<HumanDetectorCategory> = new Set<HumanDetectorCategory>([
+  'preference',
+  'frustration',
+]);
+
+/** Suspected-layer sentinel value for learning-only signals (never a real guardian). */
+const LEARNING_ONLY_LAYER = 'n/a (correction-learning signal — not a guardian failure)';
 
 interface SignalRule {
   /** Regex tested against the lowercased message text */
@@ -84,7 +106,34 @@ const SIGNAL_RULES: SignalRule[] = [
   { pattern: /\bwhy (didn'?t|did no|wasn'?t).*(catch|caught|detect|flag|notice)\b/, category: 'meta-failure', suspectedLayer: 'guardian coverage (no owner)', weight: 3, label: 'why not caught' },
   { pattern: /\bactually,?\s/, category: 'factual-correction', suspectedLayer: 'CoherenceGate / output-sanity', weight: 1, label: 'actually,' },
   { pattern: /\bthat'?s not (what|how)\b/, category: 'factual-correction', suspectedLayer: 'CoherenceGate / output-sanity', weight: 2, label: "that's not what/how" },
+
+  // ── Correction & Preference Learning Sentinel (Slice 1b, spec §3.2) ──
+  // Distinctly-tagged signal families. suspectedLayer is the LEARNING_ONLY
+  // sentinel so summarizeByLayer() (the guardian-failure heat map) excludes
+  // them. Strong (weight ≥3) phrasings cross the deterministic-provenance
+  // threshold the analyzer keys on; weak ones still surface to the loop but
+  // never alone admit a record to the recurrence gate.
+  // preference family:
+  { pattern: /\bfrom now on\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'from now on' },
+  { pattern: /\b(please )?always\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: 'always' },
+  // "i prefer", "i'd rather", "i would rather" — note "i'd" has no space.
+  { pattern: /\b(i prefer|i'?d rather|i would rather)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'I prefer / I’d rather' },
+  { pattern: /\bdon'?t (use|ask|do|send|give)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: "don't X" },
+  { pattern: /\b(please )?(just )?keep it\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: 'keep it' },
+  { pattern: /\bno (need to|more)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 1, label: 'no need to / no more' },
+  // frustration family — "you keep" requires a following gerund/verb so a
+  // benign "you keep it plain" is NOT misread as frustration.
+  { pattern: /\byou keep (asking|doing|saying|telling|sending|giving|making|getting|\w+ing)\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'you keep …ing' },
+  { pattern: /\bevery (time|session)\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'every time/session' },
+  { pattern: /\bi keep having to\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'I keep having to' },
+  { pattern: /\bstop asking me\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'stop asking me' },
+  { pattern: /\bagain\?(\s|$)/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: 'again?' },
 ];
+
+/** Deterministic-weight at/above which a learning signal is "full confidence"
+ *  for the analyzer's code-determined provenance filter (spec §3.5). A lone
+ *  weak rule (weight < this) surfaces but never alone admits a record. */
+export const LEARNING_DETERMINISTIC_THRESHOLD = 3;
 
 const PREVIEW_MAX = 220;
 
@@ -129,6 +178,13 @@ export class HumanAsDetectorLog {
     suspectedFailedLayer: string;
     confidence: 'low' | 'medium' | 'high';
     matchedSignals: string[];
+    /** Total Layer-0 weight — the CODE-determined provenance the correction
+     *  analyzer keys on (spec §3.5). Stable across phrasings of the same rule. */
+    deterministicWeight: number;
+    /** When the top signal is a learning-only family (preference|frustration),
+     *  this is that category; null otherwise. The correction loop reads this to
+     *  decide whether a message is a learning candidate (spec §3.2). */
+    learningKind: 'preference' | 'frustration' | null;
   } | null {
     if (!text || typeof text !== 'string') return null;
     const lower = text.toLowerCase();
@@ -149,11 +205,16 @@ export class HumanAsDetectorLog {
     const confidence: 'low' | 'medium' | 'high' =
       totalWeight >= 5 ? 'high' : totalWeight >= 3 ? 'medium' : 'low';
 
+    const learningKind: 'preference' | 'frustration' | null =
+      top.category === 'preference' || top.category === 'frustration' ? top.category : null;
+
     return {
       category: top.category,
       suspectedFailedLayer: top.suspectedLayer,
       confidence,
       matchedSignals: matched.map((r) => r.label),
+      deterministicWeight: totalWeight,
+      learningKind,
     };
   }
 
@@ -207,6 +268,31 @@ export class HumanAsDetectorLog {
     return [...this.recent];
   }
 
+  // ── Drift canary (spec §3.2) ───────────────────────────────────────
+  // A small in-memory counter: when the correction loop's drift canary samples
+  // an UN-classified message through the LLM and the LLM thinks it WAS a
+  // correction, that is a regex-recall miss — recorded here so the broadened
+  // Layer-0 rule set's recall drift is observable over time without persisting
+  // any raw text. Metadata-only; never serialized into /health by default.
+  private driftSampled = 0;
+  private driftMismatches = 0;
+
+  /** Record one drift-canary sample outcome. `mismatch` = the LLM judged the
+   *  un-classified message to actually be a correction (a regex miss). */
+  recordDriftSample(mismatch: boolean): void {
+    this.driftSampled += 1;
+    if (mismatch) this.driftMismatches += 1;
+  }
+
+  /** Drift-canary counters (sampled / mismatches / miss-rate). Read-only. */
+  getDriftCanary(): { sampled: number; mismatches: number; missRate: number } {
+    return {
+      sampled: this.driftSampled,
+      mismatches: this.driftMismatches,
+      missRate: this.driftSampled > 0 ? this.driftMismatches / this.driftSampled : 0,
+    };
+  }
+
   /**
    * Summarize signals grouped by suspected failed layer — the heat map of
    * "where the human is doing the system's job."
@@ -214,6 +300,11 @@ export class HumanAsDetectorLog {
   summarizeByLayer(): Array<{ layer: string; count: number; categories: string[] }> {
     const byLayer = new Map<string, { count: number; categories: Set<string> }>();
     for (const s of this.recent) {
+      // Correction & Preference Learning Sentinel (spec §3.2): preference /
+      // frustration signals feed the correction loop, NOT the guardian-failure
+      // heat map. Excluding them here keeps the heat map's precision contract
+      // intact (a unit test pins that they don't change these counts).
+      if (LEARNING_ONLY_CATEGORIES.has(s.category)) continue;
       const entry = byLayer.get(s.suspectedFailedLayer) ?? { count: 0, categories: new Set<string>() };
       entry.count++;
       entry.categories.add(s.category);
