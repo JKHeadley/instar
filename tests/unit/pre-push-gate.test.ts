@@ -63,6 +63,16 @@ describe('Pre-push gate script', () => {
     const content = fs.readFileSync(gatePath, 'utf-8');
     expect(content).toContain('Did you forget to bump the version');
   });
+
+  it('errors when src/ changed but no release-note fragment was added (#23)', () => {
+    const content = fs.readFileSync(gatePath, 'utf-8');
+    // The guard mirrors the src→tests check: it inspects the branch diff for a
+    // src/ change with no upgrades/next/<slug>.md (or NEXT.md) fragment — which
+    // would make publish.yml silently skip the release.
+    expect(content).toContain('no release-note fragment was added');
+    expect(content).toContain('SILENTLY SKIPS');
+    expect(content).toContain("f.startsWith('upgrades/next/')");
+  });
 });
 
 // ── Integration: malformed NEXT.md rejection ─────────────────────────

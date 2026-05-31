@@ -1,0 +1,35 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Closed a silent-release-skip gap in the dev/release tooling. The post-merge
+publish workflow skips publishing when a change carries no release-note fragment
+— which is correct when nothing needs releasing, but meant a real code change
+could merge with no release note and then never ship, with no signal anywhere.
+The pre-push gate now catches this: if source files changed but no release-note
+fragment is included, the push is rejected with a clear message instead of
+sailing through to a silent no-release. It mirrors the existing "you changed code
+but added no tests" check, never trips on the routine release-cut commit, and
+respects the same work-in-progress bypass.
+
+## What to Tell Your User
+
+Nothing required — this is invisible developer-tooling robustness. It prevents a
+fix from quietly merging without ever being released.
+
+## Summary of New Capabilities
+
+- The pre-push gate now blocks a source change that has no accompanying
+  release-note fragment, so fixes can no longer merge and then silently fail to
+  publish.
+
+## Evidence
+
+- Root cause: publish.yml sets skip when there is no fragment and no NEXT.md, so a
+  source change with neither merges but never releases (the lived #23 failure).
+- New guard in the pre-push gate mirrors the existing source-changed-without-tests
+  check; never trips on the release-cut commit (touches upgrades, not source).
+- tests/unit/pre-push-gate.test.ts: +1 test; all 14 pass. Lint + type-check clean.
+- Spec: docs/specs/PRE-PUSH-RELEASE-FRAGMENT-GUARD-SPEC.md (+ ELI16 companion).

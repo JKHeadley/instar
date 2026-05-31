@@ -165,6 +165,27 @@ try {
       (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
     );
   }
+
+  // ── 3b. Release-fragment gate (#23: src change without a release note) ─
+  // A shippable src/ change MUST carry a release-note fragment. publish.yml
+  // SILENTLY skips the release when there is no upgrades/next/<slug>.md fragment
+  // (and no upgrades/NEXT.md) — so the fix merges but never ships, with no
+  // signal. Mirror of the src→tests check above. The "chore: release" cut commit
+  // touches upgrades/ but not src/, so it never trips this. Bypass genuine WIP
+  // with INSTAR_PRE_PUSH_SKIP=1.
+  const fragmentChanges = changedFiles.filter(f =>
+    f.startsWith('upgrades/next/') || f === 'upgrades/NEXT.md'
+  );
+  if (srcChanges.length > 0 && fragmentChanges.length === 0) {
+    errors.push(
+      `${srcChanges.length} source file(s) changed but no release-note fragment was added. ` +
+      `Without upgrades/next/<slug>.md (or upgrades/NEXT.md), publish.yml SILENTLY SKIPS the ` +
+      `release — your change would merge but never ship. Add a fragment describing the change:\n` +
+      srcChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
+      (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
+    );
+  }
+
   // ── 4. Adapter contract test gate ─────────────────────────────────────
   // If messaging adapter source files changed, require contract test evidence.
   // This prevents shipping integration code verified only by mocked unit tests.
