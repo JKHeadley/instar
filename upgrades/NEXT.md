@@ -1,101 +1,62 @@
+---
+review-convergence: complete
+approved: true
+approved-by: echo (standing 12h deploy mandate, topic 13435; codex audit parity-coverage + correction-learning self-violation signal)
+---
+
 # Upgrade Guide — vNEXT
 
 <!-- bump: minor -->
 
 ## What Changed
 
-**Foundation for agent hard-sleep: the SleepController decision layer (dark).** The
-deepest lever of the Responsible Resource Usage work is letting a deeply-idle agent
-drop its server to near-zero footprint and wake instantly on the next message. That
-mechanism is risky, so this change ships the SAFE half first: the part that decides
-"is it actually safe for this idle agent to sleep right now?" — and nothing else.
+**codex adapter observability readers now have conformance coverage.** The
+provider-adapter conformance harness only exercised the OneShotCompletion primitive, and
+only against the two Anthropic adapters. The codex adapter shipped conversation-log readers and
+a session-resume index, but no test exercised them — so a codex adapter that declared one of
+those capabilities while wiring no implementation (or drifting a method shape) would have passed
+CI. This adds a contract-shape conformance suite that runs the SAME assertions against BOTH the
+Anthropic and codex adapters for all three observability read primitives.
 
-The new SleepController returns one of four verdicts — awake, idle-shallow,
-keep-awake, or would-sleep — and applies every safety guard before it will ever say
-would-sleep: it refuses if this machine currently holds the multi-machine serving
-lease, if there is work in flight, or if a scheduled job is about to fire. Each
-guard names itself in the reason. It ships OFF by default and, even when enabled,
-runs in dry-run: it only records its decision to a log and serves it at a status
-endpoint. It has no power to stop a server — that mechanism is a separate slice,
-built only once this decision layer has been watched behaving correctly on a real
-idle agent.
-
-**Self-Violation Signal: a stored preference that gets violated becomes a learning
-signal (dark).** This extends the Correction & Preference Learning Sentinel. A
-learned preference (for example, "don't defer work to a fresh session" or "never
-ask the user to edit files") can now carry an optional self-violation pattern. When
-the agent sends an outbound message that contradicts that pattern, the contradiction
-is recorded as a self-violation in the correction ledger, which reinforces that
-preference's recurrence so it surfaces more prominently the next session.
-
-The detector is strictly OBSERVE-ONLY. It runs after the message text is finalized,
-as a fire-and-forget branch that is structurally independent of the outbound message
-gate. It cannot block, delay, rewrite, or alter the message in any way, and on any
-internal error it silently no-ops and the message sends normally. It ships dark
-behind both the master correction-learning flag and a new self-violation sub-flag,
-and a preference without a self-violation pattern is never checked (fully backward
-compatible with existing preference files).
-
-## What to Tell Your User
-
-Nothing to configure, and nothing changes in how your agent behaves. This is the
-groundwork for a future ability where a completely idle agent can quiet down to save
-your machine's resources and wake the instant you message it. For now it only
-watches and decides — it never actually sleeps anything — so it is safe and
-invisible. You can see what it would decide at the sleep status endpoint.
-
-Separately, your agent can now learn from its own slips. When you teach it a
-preference and it later contradicts that preference in a message to you, it quietly
-notes that slip so the preference comes back stronger next time, instead of the
-lesson silently fading. This only ever observes and records — it never changes,
-delays, or holds back a message to you, and it is turned off by default until you
-opt in.
+**A stored preference that gets violated now becomes a learning signal (dark).** This extends the
+Correction & Preference Learning Sentinel. A learned preference (for example, "don't defer work
+to a fresh session" or "never ask the user to edit files") can now carry an optional
+self-violation pattern. When the agent emits an outbound message that contradicts such a
+preference, that is recorded as a self-violation in the correction ledger, which reinforces the
+preference's recurrence so it surfaces more prominently the next session. It is signal-only: the
+detector observes the finalized message and records — it can never block, delay, or rewrite a
+message — and it is fail-open and dark (gated behind both the master correction-learning flag and
+a new self-violation sub-flag). A preference without a self-violation pattern is never checked,
+so existing preference files are fully backward compatible.
 
 ## Summary of New Capabilities
 
-- New SleepController decides whether a deeply-idle agent may hard-sleep, with
-  safety guards for held multi-machine lease, in-flight work, and imminent
-  scheduled jobs. Pure, exhaustively unit-tested on both sides of every boundary.
-- New shared AgentActivityState idle signal, bumped at the inbound-message
-  chokepoint so a genuinely-messaged agent never sleeps.
-- GET /sleep exposes the live verdict, reason, thresholds, and whether sleep is
-  armed. Read-only, Bearer-auth, 503-stub when disabled.
-- Decision transitions audited to logs/agent-sleep-events.jsonl (low-noise).
-- Config monitoring.agentSleep — OFF + dry-run by default.
-- New SelfViolationDetector: a pure, deterministic, precision-biased, never-throwing
-  check that returns which stored preferences an outbound message contradicts. A
-  lone/weak match never fires; an unparseable pattern is a no-check.
-- PreferenceEntry now carries an optional violationPattern field (regex or keyword
-  set). Absent ≡ never self-violation-checked — fully back-compatible.
-- The outbound message seam records a matched self-violation in the CorrectionLedger
-  as a recurrence-reinforcing user-preference occurrence. OBSERVE-ONLY: it never
-  blocks, delays, or alters the message, and fails open on any error.
-- Config monitoring.correctionLearning.selfViolationSignal — OFF by default; gated
-  behind the master correctionLearning.enabled flag.
+- New `tests/integration/conformance/observabilityReaders.conformance.test.ts` asserts, for the
+  `anthropic-headless` and `openai-codex` adapters: each declares the ConversationLogReader /
+  ConversationLogTailer / SessionResumeIndex capability, returns a primitive carrying the
+  matching capability marker, and exposes the interface methods as callables (18 cases).
+- New `src/monitoring/SelfViolationDetector.ts` — pure, deterministic `detectSelfViolation`;
+  precision-biased (a lone weak keyword never fires), never throws.
+- `PreferencesManager` preference records gain an optional `violationPattern` (regex or keyword
+  grammar); fully backward compatible.
+- Observe-only outbound hook in `checkOutboundMessage` records self-violations to the
+  `CorrectionLedger`; structurally independent of the tone-gate verdict and the message itself.
+- New `monitoring.correctionLearning.selfViolationSignal` config flag (default false).
+
+## What to Tell Your User
+
+Two changes, both safe. First, internal test coverage that makes the codex and future non-Claude
+adapters safer to evolve — nothing user-facing. Second, the correction-learning system can now
+notice when the agent's own outgoing message contradicts a preference it has already learned
+about you, and quietly use that as a signal to remember the preference more strongly next time.
+It only ever observes and records — it never blocks, delays, or changes a message — and it stays
+off until explicitly turned on.
 
 ## Evidence
 
-- `tests/unit/SleepController.test.ts` — both sides of every guard boundary
-  (grace, deep-idle, lease, in-flight, scheduled-job), exact-threshold boundaries,
-  most-recent-of-inbound-vs-activity, dry-run-never-acts, once-per-episode latching,
-  transition-only audit, plus AgentActivityState.
-- `tests/integration/sleep-controller-routes.test.ts` — GET /sleep returns 503
-  unwired and 200 with the live verdict + thresholds when wired (feature is alive),
-  and surfaces the blocking guard reason.
-- Side-effects: `upgrades/side-effects/agent-hard-sleep-controller.md`.
-- `tests/unit/SelfViolationDetector.test.ts` — 17 tests: violating→detected,
-  clean→not, lone-weak-never-fires, absent-pattern→skip, never-throws (bad regex /
-  null args / malformed list), regex + keyword grammars, and PreferencesManager
-  violationPattern round-trip + legacy-file back-compat.
-- `tests/unit/self-violation-wiring-integrity.test.ts` — 5 tests: the outbound
-  seam delivers the message UNCHANGED (byte-for-byte) whether or not a violation is
-  detected, dark when the sub-flag is off, fail-open with no preferences, and 503
-  when the feature is fully off.
-- `tests/integration/self-violation-signal.test.ts` — 5 tests: the recording path
-  (a self-violation lands as a user-preference correction; a repeat collapses to one
-  record with occurrenceCount incremented), gated on both sides, and raw
-  preference text never serves over HTTP.
-- `tests/e2e/self-violation-signal-lifecycle.test.ts` — 3 tests: feature alive on
-  the production boot path (contradicting message delivers AND records), dark by
-  default, raw preference text never persists to the wire.
-- Side-effects: `upgrades/side-effects/correction-self-violation-signal.md`.
+- `npx vitest run tests/integration/conformance/observabilityReaders.conformance.test.ts` → 18 passed.
+- `SelfViolationDetector` unit (17), self-violation wiring-integrity (5, asserts the outbound
+  message passes through byte-for-byte unchanged and the detector fail-opens), integration (5),
+  and E2E lifecycle (3) — all passed; `npm run build` / `npm run lint` / `docs-coverage` clean.
+- Closes the parity-coverage gap logged in the framework-issue ledger
+  (dedupKey `codex-adapter-readers-no-conformance-coverage`).
