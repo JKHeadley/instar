@@ -118,31 +118,8 @@ export class UpdateGate {
       return { allowed: true };
     }
 
-    // Check session health if monitor is available
-    const health = sessionMonitor?.getStatus().sessionHealth ?? [];
-    const healthMap = new Map(health.map(h => [h.sessionName, h]));
-
-    const activeSessions: string[] = [];
-    const unresponsiveSessions: string[] = [];
-    const nonBlockingJobSessions: string[] = [];
-
-    for (const session of sessions) {
-      if (this.isSafeIdleJobSession(session, sessionManager)) {
-        nonBlockingJobSessions.push(session.name);
-        continue;
-      }
-
-      const h = healthMap.get(session.name);
-      if (!h) {
-        // No health data — be conservative, treat as active
-        activeSessions.push(session.name);
-      } else if (h.status === 'healthy') {
-        activeSessions.push(session.name);
-      } else if (h.status === 'unresponsive') {
-        unresponsiveSessions.push(session.name);
-      }
-      // 'idle' and 'dead' sessions don't block
-    }
+    const { activeSessions, unresponsiveSessions, nonBlockingJobSessions } =
+      this.classifyRunningSessions(sessions, sessionManager, sessionMonitor);
 
     // No active sessions → restart (idle/dead/unresponsive don't block)
     if (activeSessions.length === 0) {
@@ -194,6 +171,67 @@ export class UpdateGate {
       unresponsiveSessions: unresponsiveSessions.length > 0 ? unresponsiveSessions : undefined,
       nonBlockingJobSessions: nonBlockingJobSessions.length > 0 ? nonBlockingJobSessions : undefined,
     };
+  }
+
+  /**
+   * Pure, side-effect-free probe: the names of active (healthy, non-job)
+   * sessions that would block a restart right now.
+   *
+   * Unlike {@link canRestart}, this does NOT start or continue the deferral
+   * clock, set warning flags, or call reset() — it is a read-only check for
+   * callers that need "is the box idle?" without perturbing deferral state.
+   * The restart-window gate uses it to skip the window wait when nothing is
+   * active (an idle restart is invisible, so there is nothing for the window
+   * to protect). Returns [] when there are no running sessions.
+   */
+  getBlockingSessions(
+    sessionManager: SessionManagerLike,
+    sessionMonitor?: SessionMonitorLike | null,
+  ): string[] {
+    const sessions = sessionManager.listRunningSessions();
+    if (sessions.length === 0) return [];
+    return this.classifyRunningSessions(sessions, sessionManager, sessionMonitor).activeSessions;
+  }
+
+  /**
+   * Classify running sessions into active (blocking), unresponsive, and
+   * non-blocking idle job sessions. Pure — no instance-state mutation. Shared
+   * by {@link canRestart} (which then does deferral bookkeeping on the result)
+   * and {@link getBlockingSessions} (read-only) so the classification can never
+   * drift between the gating decision and the idle probe.
+   */
+  private classifyRunningSessions(
+    sessions: SessionInfo[],
+    sessionManager: SessionManagerLike,
+    sessionMonitor?: SessionMonitorLike | null,
+  ): { activeSessions: string[]; unresponsiveSessions: string[]; nonBlockingJobSessions: string[] } {
+    // Check session health if monitor is available
+    const health = sessionMonitor?.getStatus().sessionHealth ?? [];
+    const healthMap = new Map(health.map(h => [h.sessionName, h]));
+
+    const activeSessions: string[] = [];
+    const unresponsiveSessions: string[] = [];
+    const nonBlockingJobSessions: string[] = [];
+
+    for (const session of sessions) {
+      if (this.isSafeIdleJobSession(session, sessionManager)) {
+        nonBlockingJobSessions.push(session.name);
+        continue;
+      }
+
+      const h = healthMap.get(session.name);
+      if (!h) {
+        // No health data — be conservative, treat as active
+        activeSessions.push(session.name);
+      } else if (h.status === 'healthy') {
+        activeSessions.push(session.name);
+      } else if (h.status === 'unresponsive') {
+        unresponsiveSessions.push(session.name);
+      }
+      // 'idle' and 'dead' sessions don't block
+    }
+
+    return { activeSessions, unresponsiveSessions, nonBlockingJobSessions };
   }
 
   private isSafeIdleJobSession(session: SessionInfo, sessionManager: SessionManagerLike): boolean {
