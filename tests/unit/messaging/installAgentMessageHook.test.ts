@@ -81,6 +81,44 @@ describe('buildAgentMessageHook — closure end-to-end', () => {
     expect(store.hasProcessed('r1')).toBe(true); // idempotency anchor recorded
   });
 
+  it('ACCEPT-BOUNDARY: a slow role-handler does NOT block the response — returns {handled:true} immediately, runs in background', async () => {
+    // The mentee mentor-message handler spawns a session + bounded-waits MINUTES,
+    // replying out via a separate a2a message. Awaiting it here made the caller's
+    // /a2a/inbox POST time out (~10s) and log a FALSE "delivery failed". The hook
+    // must respond accepted immediately and run the handler in the background.
+    let started = false;
+    let finished = false;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    const slowHandler: RoleHandler = async () => { started = true; await held; finished = true; };
+    const handlers = new Map<string, RoleHandler>([['mentor-reply', slowHandler]]);
+    const hook = buildAgentMessageHook({ config: cfg(), ledger, processedIds: store, roleHandlers: handlers });
+
+    // If the hook AWAITED the handler (the bug), this would HANG on `held`.
+    const r = await hook(input(marker()));
+    expect(r).toEqual({ handled: true });
+    expect(store.hasProcessed('r1')).toBe(true); // id marked before the async handler
+
+    await new Promise((res) => setImmediate(res)); // let the background handler start
+    expect(started).toBe(true);
+    expect(finished).toBe(false); // started but NOT awaited to completion
+
+    release();
+    await new Promise((res) => setImmediate(res));
+    expect(finished).toBe(true); // completed in the background
+  });
+
+  it('ACCEPT-BOUNDARY: a background handler rejection still yields {handled:true} (error caught async)', async () => {
+    const boomHandler: RoleHandler = async () => { throw new Error('handler boom'); };
+    const handlers = new Map<string, RoleHandler>([['mentor-reply', boomHandler]]);
+    const hook = buildAgentMessageHook({ config: cfg(), ledger, processedIds: store, roleHandlers: handlers });
+
+    const r = await hook(input(marker()));
+    expect(r).toEqual({ handled: true });
+    expect(store.hasProcessed('r1')).toBe(true);
+    await new Promise((res) => setImmediate(res)); // let the async .catch fire (no unhandled rejection)
+  });
+
   it('IDEMPOTENCY: a re-delivered marker (same id) is dropped without calling the handler', async () => {
     const handlers = new Map<string, RoleHandler>([['mentor-reply', recordingHandler]]);
     const hook = buildAgentMessageHook({ config: cfg(), ledger, processedIds: store, roleHandlers: handlers });
@@ -120,6 +158,9 @@ describe('buildAgentMessageHook — closure end-to-end', () => {
     const r = await hook(input(marker({ id: 'e1', corr: 'e1' })));
     expect(r).toEqual({ handled: true });
     expect(store.hasProcessed('e1')).toBe(true); // marked even though handler failed
+    // Accept-boundary: the handler now runs in the background, so its failure is
+    // logged on a later microtask — tick before asserting the error was logged.
+    await new Promise((res) => setImmediate(res));
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
   });

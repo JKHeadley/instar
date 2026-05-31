@@ -116,15 +116,26 @@ export function buildAgentMessageHook(deps: InstallAgentMessageHookDeps): AgentM
       telegramSenderChatId: input.senderChatId,
       topicId: input.topicId,
     });
-    try {
-      await handler(msg, { topicId: input.topicId, senderBotId: input.senderBotId });
-    } catch (err) {
-      // A role-handler failure is recorded but doesn't un-mark the id (we still treat
-      // the message as processed; retrying would just re-fail). Stage-B forensics can see
-      // the routed row + the absence of a downstream effect.
-      // eslint-disable-next-line no-console
-      console.error(`[a2a] role-handler "${msg.role}" failed:`, err instanceof Error ? err.message : String(err));
-    }
+    // Accept-boundary (the #581 / #3 class — this is the THIRD a2a path): a role
+    // handler (e.g. the mentee mentor-message handler) SPAWNS a session and
+    // bounded-waits for the reply — that can take MINUTES — and delivers its
+    // reply OUT via a separate a2a message, not this HTTP response. AWAITING it
+    // here meant the caller's /a2a/inbox POST waited the full handler, so the
+    // sender's ~10s `AbortSignal.timeout` fired and logged a FALSE "local-inbox
+    // delivery attempt failed" (the message was in fact accepted — its id is
+    // marked processed above — and the reply will arrive on its own channel).
+    // Respond ACCEPTED immediately and run the handler in the background. The
+    // idempotency mark above still dedups any retry; a handler failure is caught
+    // + logged async (it can't reject a response that already returned).
+    void Promise.resolve()
+      .then(() => handler(msg, { topicId: input.topicId, senderBotId: input.senderBotId }))
+      .catch((err) => {
+        // A role-handler failure is recorded but doesn't un-mark the id (we still
+        // treat the message as processed; retrying would just re-fail). Stage-B
+        // forensics can see the routed row + the absence of a downstream effect.
+        // eslint-disable-next-line no-console
+        console.error(`[a2a] role-handler "${msg.role}" failed:`, err instanceof Error ? err.message : String(err));
+      });
     return { handled: true };
   };
 }
