@@ -17,6 +17,7 @@ import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
+import { isNonFatalUncaught } from '../core/uncaughtExceptionPolicy.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
@@ -9975,17 +9976,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the "mutex lock failed" error on next start. This doesn't prevent the crash,
     // but ensures the next boot is clean.
     process.on('uncaughtException', (err) => {
-      // Non-fatal HTTP errors — log and continue, don't crash the server.
-      // "Cannot set headers" is a double-response race condition (common during
-      // tunnel reconnect storms). The affected request is already handled; the
-      // server can keep serving new requests.
-      const nonFatalPatterns = [
-        'Cannot set headers after they are sent',
-        'write after end',
-        'ERR_HTTP_HEADERS_SENT',
-        'ERR_STREAM_WRITE_AFTER_END',
-      ];
-      if (nonFatalPatterns.some(p => err.message?.includes(p))) {
+      // Isolated, recoverable uncaught exceptions — log and continue, don't
+      // crash the server (which would close its databases + drop in-flight
+      // work). See isNonFatalUncaught for the allowlist + rationale (HTTP
+      // double-response races, Slack Socket Mode reconnect races).
+      if (isNonFatalUncaught(err)) {
         console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}`);
         return; // Don't crash — the server is fine
       }

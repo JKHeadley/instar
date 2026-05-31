@@ -88,3 +88,27 @@ describe('SleepWake Slack reconnection', () => {
     expect(serverSource).toMatch(/slackAdapter[\s\S]*?reconnect[\s\S]*?catch/);
   });
 });
+
+describe('Ack send guard against a mid-reconnect socket (#43 — no whole-agent crash)', () => {
+  it('guards the event ack on socket readyState === OPEN', () => {
+    // The "must ack within 3s" send previously called this.ws?.send() with only
+    // a null check — during a reconnect race the socket can be CONNECTING/CLOSING,
+    // and the unguarded send threw "Sent before connected" → uncaught → FATAL.
+    expect(socketClientSource).toMatch(
+      /envelope\.envelope_id[\s\S]*?this\.ws\.readyState === WebSocket\.OPEN[\s\S]*?this\.ws\.send\(/,
+    );
+  });
+
+  it('wraps the ack send in try/catch (state can change between check and send)', () => {
+    expect(socketClientSource).toMatch(
+      /this\.ws\.readyState === WebSocket\.OPEN\) \{[\s\S]*?try \{[\s\S]*?this\.ws\.send\([\s\S]*?\} catch/,
+    );
+  });
+
+  it('server routes uncaught exceptions through the isNonFatalUncaught policy (defense-in-depth)', () => {
+    // The recoverable-error allowlist (HTTP races + the Slack WS race) is now a
+    // testable module, used by the process-level handler instead of an inline list.
+    expect(serverSource).toContain("import { isNonFatalUncaught } from '../core/uncaughtExceptionPolicy.js'");
+    expect(serverSource).toMatch(/if \(isNonFatalUncaught\(err\)\) \{[\s\S]*?return;/);
+  });
+});

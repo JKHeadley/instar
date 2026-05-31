@@ -188,9 +188,22 @@ export class SocketModeClient {
       return;
     }
 
-    // Acknowledge immediately (must be within 3 seconds)
-    if (envelope.envelope_id) {
-      this.ws?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+    // Acknowledge immediately (must be within 3 seconds). Guard the send:
+    // during a reconnect race the socket can be mid-transition (CONNECTING /
+    // CLOSING), and an unguarded ws.send() on a non-OPEN socket throws — which,
+    // uncaught in this async message handler, crashed the whole server (the
+    // observed "Sent before connected" FATAL after a sleep/wake reconnect).
+    // Mirror queueOutbound's readyState guard + the liveness-probe try/catch.
+    if (envelope.envelope_id && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+      } catch (err) {
+        // Socket changed state between the check and the send (rare race) —
+        // log and move on; Slack will redeliver the unacked event.
+        console.warn(
+          `[slack-socket] Ack send failed (socket mid-transition): ${(err as Error).message}`,
+        );
+      }
     }
 
     // Process event with exception guard (post-ack — Slack won't redeliver)
