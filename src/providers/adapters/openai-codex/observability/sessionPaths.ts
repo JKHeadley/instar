@@ -101,6 +101,58 @@ async function walkForUuid(root: string, uuid: string): Promise<string | null> {
 // "yesterday" but is still the most recently active) is not missed.
 const MIN_PARTITIONS_SCANNED = 2;
 
+/**
+ * Find the single newest codex rollout file SYNCHRONOUSLY → `{ path, size, mtime }`
+ * (or null when none / not a codex tree). Used by the RateLimitSentinel's codex
+ * recovery-verification, whose callers (`report()` is sync) need a sync read.
+ *
+ * Rationale: the OpenAI rate limit is ACCOUNT-WIDE, so "did the throttle clear?" ==
+ * "is the codex account producing output again?" == "did the newest rollout grow?".
+ * The sentinel compares this against the captured baseline size; the existing verify()
+ * already handles the newest-file CHANGING between baseline and check (it only counts a
+ * size INCREASE, and refreshes the baseline to the current newest each cycle).
+ *
+ * Perf-safe (same concern as listAllRollouts — a busy account has tens of thousands of
+ * rollouts): walk YYYY/MM/DD newest-first, take the newest rollout BY FILENAME (the
+ * embedded ISO-ish timestamp makes a lexicographic sort chronological — no stat needed)
+ * in the newest non-empty day partition, and `statSync` ONLY that one file. The recovery
+ * check runs rarely (only during an active codex throttle recovery), so a single stat is
+ * ample. A long-running session with an older filename but a newer mtime is the only
+ * miss, and the account-wide signal still catches its growth via whatever rollout IS
+ * newest-by-filename in the same window.
+ */
+export function findNewestRolloutSync(
+  codexHome?: string,
+): { path: string; size: number; mtime: number } | null {
+  const root = path.join(codexHomeFromConfig(codexHome), 'sessions');
+  const readDesc = (dir: string, re: RegExp): string[] => {
+    try {
+      return readdirSync(dir).filter((e) => re.test(e)).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  for (const y of readDesc(root, /^\d{4}$/)) {
+    const yPath = path.join(root, y);
+    for (const m of readDesc(yPath, /^\d{2}$/)) {
+      const mPath = path.join(yPath, m);
+      for (const d of readDesc(mPath, /^\d{2}$/)) {
+        const dPath = path.join(mPath, d);
+        const rollouts = readDesc(dPath, /^rollout-.*\.jsonl$/); // newest-created first
+        if (rollouts.length === 0) continue;
+        try {
+          const full = path.join(dPath, rollouts[0]);
+          const st = statSync(full);
+          if (st.isFile()) return { path: full, size: st.size, mtime: st.mtimeMs };
+        } catch {
+          // unreadable newest in this partition — fall through to older partitions
+        }
+      }
+    }
+  }
+  return null;
+}
+
 // `stat` only this multiple of `limit` candidate files — the newest by the
 // timestamp embedded in their filename — to resolve the authoritative
 // newest-by-mtime. A long-running session (older filename, newer mtime) is still

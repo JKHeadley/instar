@@ -5751,6 +5751,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         notifyFn: rateLimitNotify,
         projectDir: config.projectDir,
         getClaudeSessionId: getClaudeSessionIdForName,
+        // #33 codex parity: for codex sessions, recovery-verification reads the newest
+        // codex rollout (account-wide throttle → newest-rollout growth = cleared) and
+        // the user-facing messages use OpenAI wording.
+        getSessionFramework: (name) =>
+          sessionManager.listRunningSessions().find((s) => s.tmuxSession === name)?.framework,
       },
       rlsCfg,
     );
@@ -5785,6 +5790,47 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('apiErrorAtIdle', (sessionName: string) => {
       rateLimitSentinel.report(sessionName, 'idle-error', { errorClass: 'transient-api' });
     });
+    // #33 codex parity: the two triggers above read CLAUDE panes / claude-PID watchdog,
+    // so a codex session throttled by OpenAI is invisible to them. This poll reads the
+    // codex account usage; when codex itself flags a rate-limit hit
+    // (rateLimitReachedType), it reports each running codex session into the sentinel
+    // (deduped — report() no-ops while a recovery is active). The recovery keeps the
+    // session alive and verifies via the newest codex rollout's growth (the codex-aware
+    // readJsonlBaseline / getSessionFramework dep above).
+    //
+    // KNOWN LIMITATION — must-fix BEFORE enabling (2nd-pass review): the OpenAI limit is
+    // account-wide and recovery-verification watches the ACCOUNT's newest rollout, not a
+    // specific session's. Correct for ONE codex session (today's reality), but with ≥2
+    // concurrent throttled codex sessions, one session's resumed output grows the shared
+    // newest rollout and would recover ALL reported sessions — including a sibling that
+    // is genuinely still stuck (a false recovery). Safe while DARK + single-session; do
+    // NOT flip codexUsageDetection on a host that runs ≥2 concurrent codex sessions until
+    // this is per-session (track the session's own rollout) or redefined as account-level
+    // with per-session re-probe. Ships DARK (default off); rollback = set it false.
+    // Best-effort + non-blocking.
+    if (rlsCfg.codexUsageDetection === true) {
+      const codexRateLimitPoll = setInterval(() => {
+        void (async () => {
+          try {
+            const codexSessions = sessionManager
+              .listRunningSessions()
+              .filter((s) => s.framework === 'codex-cli');
+            if (codexSessions.length === 0) return;
+            const { readLatestCodexUsage } = await import(
+              '../providers/adapters/openai-codex/observability/codexRateLimitReader.js'
+            );
+            const usage = await readLatestCodexUsage();
+            if (!usage || !usage.rateLimitReachedType) return;
+            for (const s of codexSessions) {
+              rateLimitSentinel.report(s.tmuxSession, 'codex-usage-poll', { errorClass: 'throttle' });
+            }
+          } catch {
+            /* @silent-fallback-ok best-effort codex-throttle detection; never crash the poll */
+          }
+        })();
+      }, 60_000);
+      codexRateLimitPoll.unref?.();
+    }
     // Observability: every RateLimitSentinel lifecycle transition → the shared
     // sentinel-events.jsonl audit trail, so a throttle recovery is never
     // invisible (the 2026-05-30 ask: "instrument so we can SEE it working").

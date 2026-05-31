@@ -2929,6 +2929,12 @@ export interface MonitoringConfig {
   rateLimitSentinel?: {
     /** Master kill switch (default: true). false → pre-feature behavior. */
     enabled: boolean;
+    /**
+     * #33 codex parity: enable the codex account-usage detection poll so a throttled
+     * codex session gets the same backoff→verify→recover lifecycle Claude sessions get.
+     * Ships DARK (default false). Rollback = set false.
+     */
+    codexUsageDetection?: boolean;
     /** Escalating wait (ms) before each re-engagement attempt. Last value repeats. */
     backoffScheduleMs?: number[];
     /** Max re-engagement attempts before escalating (default: 6). */
