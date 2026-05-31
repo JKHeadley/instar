@@ -3043,6 +3043,21 @@ That envelope is deliberate: learned preferences are **signals, not authoritativ
       result.upgraded.push('CLAUDE.md: added Preferences dashboard tab awareness (Correction & Preference Learning Slice 2)');
     }
 
+    // Self-Violation Signal backfill — existing agents that already have the
+    // Correction & Preference Learning section must also learn that a stored
+    // preference can carry a self-violation pattern that turns a contradicting
+    // outbound message into a recurrence-reinforcing learning signal. OBSERVE-ONLY
+    // (never blocks/rewrites). Content-sniffed on a distinctive marker for
+    // idempotency; only appended when the parent section exists.
+    if (content.includes('Correction & Preference Learning Sentinel') && !content.includes('Self-Violation Signal')) {
+      const selfViolationLine = `
+- **Self-Violation Signal** (sub-feature, ships OFF behind \`monitoring.correctionLearning.selfViolationSignal\`): a learned preference may carry an optional self-violation pattern. When set, the moment I SEND an outbound message that contradicts that preference, the contradiction is recorded as a self-violation in \`/corrections\`, reinforcing that preference's recurrence so it surfaces more prominently next session. This is OBSERVE-ONLY — it NEVER blocks, delays, or rewrites the message; the message always sends. A stored-but-violated preference no longer evaporates; it becomes a learning signal.
+`;
+      content += '\n' + selfViolationLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Self-Violation Signal awareness (Correction & Preference Learning extension)');
+    }
+
     const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;
 
     // Self-Discovery section
