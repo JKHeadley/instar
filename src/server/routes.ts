@@ -10916,8 +10916,13 @@ export function createRoutes(ctx: RouteContext): Router {
   // message; these routes are observability + the agent-diagnosed one-tap.
   //
   //   GET  /corrections          — list deduped records (bearer; 503 when off;
-  //                                 toApiView strips raw `learning`; keyset
-  //                                 pagination via ?before / ?limit / ?kind / ?status)
+  //                                 toApiView strips raw `learning`; pagination:
+  //                                 ?limit (default 100, cap 1000); ?before=<ISO>
+  //                                 is the keyset CURSOR (detected_at < before;
+  //                                 page by passing the prior page's nextBefore);
+  //                                 ?since=<ISO> is a lower-bound (detected_at >=
+  //                                 since); ?kind / ?status filters. Bad ?before /
+  //                                 ?since are tolerated (ignored), never a 500.
   //   GET  /corrections/:id       — one record (toApiView)
   //   POST /corrections           — agent-diagnosed one-tap (requires X-Instar-Request:1)
   //
@@ -10926,14 +10931,16 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/corrections', (req, res) => {
     if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     const limit = req.query.limit ? Math.min(Math.max(1, parseInt(req.query.limit as string, 10) || 100), 1000) : 100;
-    const before = req.query.before ? Date.parse(req.query.before as string) : undefined;
+    const before = typeof req.query.before === 'string' ? Date.parse(req.query.before) : NaN;
+    const since = typeof req.query.since === 'string' ? Date.parse(req.query.since) : NaN;
     const kind = typeof req.query.kind === 'string' && ['infra-gap', 'user-preference', 'noise'].includes(req.query.kind)
       ? (req.query.kind as import('../monitoring/CorrectionLedger.js').CorrectionKind)
       : undefined;
     const status = typeof req.query.status === 'string' ? (req.query.status as import('../monitoring/CorrectionLedger.js').CorrectionStatus) : undefined;
     const records = ctx.correctionLedger.list({
       limit,
-      beforeMs: before && !Number.isNaN(before) ? before : undefined,
+      beforeMs: Number.isNaN(before) ? undefined : before,
+      sinceMs: Number.isNaN(since) ? undefined : since,
       kind,
       status,
     });
@@ -10941,6 +10948,8 @@ export function createRoutes(ctx: RouteContext): Router {
       records: records.map((r) => CorrectionLedger.toApiView(r)),
       count: records.length,
       totalRecords: ctx.correctionLedger.countRecords(),
+      // The keyset cursor for the NEXT page (detected_at < nextBefore). Null when
+      // this page wasn't full (no more rows to fetch).
       nextBefore: records.length === limit ? records[records.length - 1].detectedAt : null,
     });
   });
