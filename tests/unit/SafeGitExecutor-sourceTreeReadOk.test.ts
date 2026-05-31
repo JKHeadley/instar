@@ -125,6 +125,9 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     expect(SOURCE_TREE_READ_TIER_VERBS.has('rm')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('branch')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('tag')).toBe(false);
+    // Read-tier verbs the AgentWorktreeReaper needs (pure reads, no mutation):
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('status')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('cherry')).toBe(true);
     // Bounded — adding to this set requires a spec edit + side-effects review.
     expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(10);
   });
@@ -166,6 +169,90 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     expect(() => SafeGitExecutor.run(
       ['add', '-A'],
       { cwd: srcTree, operation: 't:add-still-blocked', sourceTreeWorktreeManagerOk: true },
+    )).toThrow(SourceTreeGuardError);
+  });
+
+  // ── AgentWorktreeReaper source-tree read/remove bypass ──────────────
+  // The reaper runs against the agent home (which IS a source tree): it needs
+  // `status --porcelain` (cleanliness), `cherry` (merged-detection), `worktree
+  // list` (enumeration), and `worktree remove` (reclaim, non-forced only).
+
+  it('status --porcelain on a source tree: blocked by default, allowed with sourceTreeReadOk', () => {
+    expect(() => SafeGitExecutor.run(
+      ['status', '--porcelain'],
+      { cwd: srcTree, operation: 't:status-default' },
+    )).toThrow(SourceTreeGuardError);
+    expect(() => SafeGitExecutor.run(
+      ['status', '--porcelain'],
+      { cwd: srcTree, operation: 't:status-allowed', sourceTreeReadOk: true },
+    )).not.toThrow();
+  });
+
+  it('cherry on a source tree: blocked by default, allowed with sourceTreeReadOk', () => {
+    expect(() => SafeGitExecutor.run(
+      ['cherry', 'main', 'HEAD'],
+      { cwd: srcTree, operation: 't:cherry-default' },
+    )).toThrow(SourceTreeGuardError);
+    expect(() => SafeGitExecutor.run(
+      ['cherry', 'main', 'HEAD'],
+      { cwd: srcTree, operation: 't:cherry-allowed', sourceTreeReadOk: true },
+    )).not.toThrow();
+  });
+
+  it('worktree list on a source tree: blocked by default, allowed with sourceTreeWorktreeManagerOk', () => {
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'list', '--porcelain'],
+      { cwd: srcTree, operation: 't:wt-list-default' },
+    )).toThrow(SourceTreeGuardError);
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'list', '--porcelain'],
+      { cwd: srcTree, operation: 't:wt-list-allowed', sourceTreeWorktreeManagerOk: true },
+    )).not.toThrow();
+  });
+
+  it('worktree remove (non-forced) on a source tree is allowed with the flag and actually removes', () => {
+    const wtPath = fs.mkdtempSync(path.join(os.tmpdir(), 'sgx-wt-')) + '-checkout';
+    // add (manager op — needs the flag) then remove (reaper op — needs the flag)
+    SafeGitExecutor.run(
+      ['worktree', 'add', '--detach', wtPath, 'HEAD'],
+      { cwd: srcTree, operation: 't:wt-add', sourceTreeWorktreeManagerOk: true },
+    );
+    expect(fs.existsSync(wtPath)).toBe(true);
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'remove', wtPath],
+      { cwd: srcTree, operation: 't:wt-remove-allowed', sourceTreeWorktreeManagerOk: true },
+    )).not.toThrow();
+    expect(fs.existsSync(wtPath)).toBe(false);
+  });
+
+  it('worktree remove --force is STILL blocked even with the flag (could delete a dirty worktree)', () => {
+    // The guard fires before git runs, so a non-existent path still proves the block.
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'remove', '--force', '/tmp/does-not-matter'],
+      { cwd: srcTree, operation: 't:wt-remove-force', sourceTreeWorktreeManagerOk: true },
+    )).toThrow(SourceTreeGuardError);
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'remove', '-f', '/tmp/does-not-matter'],
+      { cwd: srcTree, operation: 't:wt-remove-force-short', sourceTreeWorktreeManagerOk: true },
+    )).toThrow(SourceTreeGuardError);
+    // Self-sufficient denial — force LOOKALIKES are blocked too, not left to git's
+    // parser: `--force=1`, `-fxyz`, and `--force` before the subcommand.
+    for (const variant of [
+      ['worktree', 'remove', '--force=1', '/tmp/x'],
+      ['worktree', 'remove', '-fq', '/tmp/x'],
+      ['worktree', '--force', 'remove', '/tmp/x'],
+    ]) {
+      expect(() => SafeGitExecutor.run(
+        variant,
+        { cwd: srcTree, operation: 't:wt-remove-force-lookalike', sourceTreeWorktreeManagerOk: true },
+      )).toThrow(SourceTreeGuardError);
+    }
+  });
+
+  it('sourceTreeReadOk does NOT enable worktree remove (read flag ≠ mutation authority)', () => {
+    expect(() => SafeGitExecutor.run(
+      ['worktree', 'remove', '/tmp/whatever'],
+      { cwd: srcTree, operation: 't:wt-remove-readflag', sourceTreeReadOk: true },
     )).toThrow(SourceTreeGuardError);
   });
 });

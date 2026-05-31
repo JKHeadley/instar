@@ -17,7 +17,18 @@ import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReape
 export type ReadGit = (args: string[], cwd: string) => string;
 
 const defaultReadGit: ReadGit = (args, cwd) =>
-  SafeGitExecutor.readSync(args, { cwd, encoding: 'utf-8', timeout: 30_000, operation: 'src/monitoring/agentWorktreeGit.ts' });
+  SafeGitExecutor.readSync(args, {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 30_000,
+    operation: 'src/monitoring/agentWorktreeGit.ts',
+    // The agent home IS a checkout of the instar source tree, so every read the
+    // reaper makes (worktree list, status, cherry, rev-parse) trips the
+    // SourceTreeGuard without these. readSync still rejects any destructive shape,
+    // so the flags only widen the SOURCE-TREE bypass for genuine reads.
+    sourceTreeReadOk: true,
+    sourceTreeWorktreeManagerOk: true,
+  });
 
 /**
  * Resolve the canonical default branch ref that exists locally, preferring the
@@ -165,9 +176,14 @@ export function makeAgentWorktreeReaperDeps(opts: {
     },
 
     removeWorktree: (p: string): void => {
+      // Deliberately NOT --force: the non-forced form refuses to remove a worktree
+      // with uncommitted changes or a lock, so it can never destroy in-flight work.
+      // The SourceTreeGuard mirrors this — it allows `worktree remove` against the
+      // source tree only without --force (see isAllowedWorktreeManagerSubcommand).
       SafeGitExecutor.execSync(['-C', repo, 'worktree', 'remove', p], {
         timeout: 60_000,
         operation: 'src/monitoring/agentWorktreeGit.ts:removeWorktree',
+        sourceTreeWorktreeManagerOk: true,
       });
     },
 
