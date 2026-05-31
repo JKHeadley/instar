@@ -29,6 +29,7 @@ function makeDeps(over: Partial<MentorTickDeps> = {}): { deps: MentorTickDeps; c
     surface: { framework: 'codex-cli', threadlineHistory: 'how is it going?' },
     safeWindowOpen: true,
     budgetOk: true,
+    llmAvailable: true,
     spawnStageA: vi.fn(async () => 'Nice progress — ready for the next one?'),
     runStageBForensics: vi.fn(async () => []),
     capture,
@@ -56,6 +57,21 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(deps.spawnStageA).not.toHaveBeenCalled();
     expect(deps.runStageBForensics).not.toHaveBeenCalled();
     expect(captures).toHaveLength(0); // no contact, no capture
+  });
+
+  it('skips the tick when the LLM circuit is open (rate-limited) BEFORE any spend/spawn — does not re-trip the circuit', async () => {
+    const { deps } = makeDeps({ llmAvailable: false, canaryCheck: () => true });
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(false);
+    expect(r.reason).toBe('llm-rate-limited');
+    expect(deps.spawnStageA).not.toHaveBeenCalled();
+    expect(deps.runStageBForensics).not.toHaveBeenCalled();
+  });
+
+  it('budget is checked BEFORE the llm-rate-limit gate (order)', async () => {
+    const { deps } = makeDeps({ budgetOk: false, llmAvailable: false, canaryCheck: () => true });
+    const r = await runMentorTick(deps);
+    expect(r.reason).toBe('budget'); // budget wins the tie
   });
 
   it('skips when the safe window is closed (durable-state gate, §12 Q3)', async () => {

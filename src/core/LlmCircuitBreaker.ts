@@ -278,6 +278,18 @@ export function configureLlmCircuitBreaker(opts: { openMs?: number; enabled?: bo
   getLlmCircuitBreaker().configure(opts);
 }
 
+/**
+ * Read-only convenience: is the shared LLM circuit currently AVAILABLE for new
+ * LLM-backed work? True when the breaker is disabled, or its state is 'closed'.
+ * False when 'open' or 'half-open' (the provider is rate-limited / probing).
+ * Non-mutating — unlike the admission check, it does NOT consume a half-open
+ * probe slot, so callers can use it as a pure gate (e.g. the mentor tick backing
+ * off rather than re-tripping the circuit). */
+export function llmCircuitAvailable(): boolean {
+  const s = getLlmCircuitBreaker().status();
+  return !s.enabled || s.state === 'closed';
+}
+
 /** Test-only: drop the singleton so a fresh one is built next access. */
 export function __resetLlmCircuitBreakerSingleton(): void {
   _singleton = null;

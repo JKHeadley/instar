@@ -13,6 +13,7 @@
  * Ships dormant: `mentor.enabled=false` / `mentor.mode='off'` by default (§16).
  */
 import { runMentorTick, type MentorTickResult, type MentorMode } from './MentorOnboardingTick.js';
+import { llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import {
   runAutonomousGuardian,
   type AutonomousGuardianReason,
@@ -264,6 +265,7 @@ export class MentorOnboardingRunner {
       // Safe window = mentee at rest AND the min-interval floor elapsed (§12 Q3).
       safeWindowOpen: !this.services.isMenteeBusy() && this.services.minIntervalElapsed(),
       budgetOk: this.services.budgetOk(),
+      llmAvailable: llmCircuitAvailable(),
       spawnStageA: this.services.spawnStageA,
       runStageBForensics: () => this.services.runStageBForensics(framework),
       capture: this.services.capture,

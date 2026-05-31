@@ -42,6 +42,11 @@ export interface MentorTickDeps {
   safeWindowOpen: boolean;
   /** Fail-closed budget gate (the GET /autonomous/can-start precedent). */
   budgetOk: boolean;
+  /** LLM-availability gate: false when the shared LlmCircuitBreaker is open/half-open
+   *  (the provider is rate-limited). The tick's Stage A (spawn) and Stage B (`claude -p`
+   *  forensics) are both LLM-backed, so running while rate-limited just fails and
+   *  RE-TRIPS the circuit (which pauses ALL LLM-backed work). Skip instead. */
+  llmAvailable: boolean;
   /** Spawn Stage A (empty tool grant) and return its transcript. Injected so the
    *  pure tick has no SessionManager/tmux dependency. */
   spawnStageA: (prompt: string) => Promise<string>;
@@ -68,6 +73,7 @@ export interface MentorTickDeps {
 export type MentorTickReason =
   | 'canary-failed'
   | 'budget'
+  | 'llm-rate-limited'
   | 'unsafe-window'
   | 'stage-a-failed'
   | 'ran';
@@ -123,6 +129,11 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
 
   // 2. Budget gate — fail-closed BEFORE any spend or contact (§6).
   if (!deps.budgetOk) return { ran: false, reason: 'budget' };
+
+  // 2b. LLM rate-limit gate — when the shared provider circuit is open, the
+  // tick's Stage A + Stage B are LLM-backed and would just fail and RE-TRIP the
+  // circuit (re-pausing all LLM work ~900s). Back off; we'll run when it closes.
+  if (!deps.llmAvailable) return { ran: false, reason: 'llm-rate-limited' };
 
   // 3. Safe-window — only act at a durable mentee state transition (§12 Q3).
   if (!deps.safeWindowOpen) return { ran: false, reason: 'unsafe-window' };
