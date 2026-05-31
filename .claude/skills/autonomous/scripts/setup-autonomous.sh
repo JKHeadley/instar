@@ -211,6 +211,16 @@ if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$REPORT_TOPIC" ]]; then
       NATIVE_GOAL_OK="true"
     fi
   fi
+  # Codex agents have their OWN native /goal loop — the Claude Code version gate above does
+  # not apply (`claude --version` is empty for a codex agent), which previously left codex
+  # autonomous jobs in Phase-1 (the dark codexLoopDriver, a no-op) so they never sustained
+  # multi-turn. Detect a codex agent via config enabledFrameworks and enable native /goal
+  # delegation so codex autonomous mode auto-sustains multi-turn via /goal — parity with
+  # Claude's stop-hook auto-sustain. (Proven: codex /goal sustains 1→2→3 across turns.)
+  if [[ "$NATIVE_GOAL_OK" != "true" ]]; then
+    IS_CODEX_AGENT=$(python3 -c "import json;print('1' if 'codex-cli' in (json.load(open('.instar/config.json')).get('enabledFrameworks') or []) else '0')" 2>/dev/null || echo "0")
+    [[ "$IS_CODEX_AGENT" == "1" ]] && NATIVE_GOAL_OK="true"
+  fi
   if [[ "$NATIVE_GOAL_OK" == "true" ]]; then
     NG_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
     NG_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")

@@ -22,6 +22,8 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+// @ts-expect-error — .mjs script, no type declarations; runtime import is fine under vitest
+import { assembleNextMd, gatherFragmentInputs } from '../../scripts/assemble-next-md.mjs';
 
 const srcDir = path.join(process.cwd(), 'src');
 const initSource = fs.readFileSync(path.join(srcDir, 'commands/init.ts'), 'utf-8');
@@ -245,17 +247,41 @@ describe('Feature Delivery Completeness', () => {
 
   describe('Upgrade guide lifecycle', () => {
     const upgradesDir = path.join(process.cwd(), 'upgrades');
+    const fragmentsDir = path.join(upgradesDir, 'next');
     const nextGuidePath = path.join(upgradesDir, 'NEXT.md');
 
-    it('NEXT.md template exists', () => {
-      expect(fs.existsSync(nextGuidePath)).toBe(true);
+    // Release notes are authored as per-PR FRAGMENTS (upgrades/next/<slug>.md)
+    // so concurrent PRs never collide on a single shared NEXT.md. A legacy
+    // upgrades/NEXT.md remains supported (backward compat). "In-flight release
+    // notes exist" therefore means: at least one fragment OR a legacy NEXT.md.
+    // Between a release cut and the next PR, neither may be present — that is a
+    // valid (notes-already-consumed) state, so the existence assertion only
+    // fires when we'd otherwise expect in-flight notes.
+    const hasFragments =
+      fs.existsSync(fragmentsDir) &&
+      fs.readdirSync(fragmentsDir).some((f) => f.endsWith('.md'));
+    const hasLegacyNext = fs.existsSync(nextGuidePath);
+
+    it('release-note source exists as fragments or a legacy NEXT.md (or notes were just consumed)', () => {
+      // At least one delivery surface must be wired: in-flight notes (fragments
+      // / NEXT.md) OR a shipped versioned guide. A repo with neither has no
+      // release-note machinery at all.
+      const versionedGuides = fs
+        .readdirSync(upgradesDir)
+        .filter((f) => /^\d+\.\d+\.\d+\.md$/.test(f));
+      expect(hasFragments || hasLegacyNext || versionedGuides.length > 0).toBe(true);
     });
 
-    it('NEXT.md has required section headers', () => {
-      const content = fs.readFileSync(nextGuidePath, 'utf-8');
-      expect(content).toContain('## What Changed');
-      expect(content).toContain('## What to Tell Your User');
-      expect(content).toContain('## Summary of New Capabilities');
+    it('in-flight release notes (assembled fragments + NEXT.md) carry required sections', () => {
+      if (!hasFragments && !hasLegacyNext) {
+        // No in-flight notes (post-release-cut, pre-next-PR). Nothing to assert.
+        return;
+      }
+      const { inputs } = gatherFragmentInputs(upgradesDir);
+      const assembled = assembleNextMd(inputs);
+      expect(assembled).toContain('## What Changed');
+      expect(assembled).toContain('## What to Tell Your User');
+      expect(assembled).toContain('## Summary of New Capabilities');
     });
 
     it('at least one versioned upgrade guide exists (proof of delivery)', () => {

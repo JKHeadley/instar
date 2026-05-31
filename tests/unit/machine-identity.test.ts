@@ -310,6 +310,51 @@ describe('MachineIdentityManager', () => {
     });
   });
 
+  describe('loadSigningKey (legacy fallback)', () => {
+    it('falls back to signing-private.pem when the canonical signing-key.pem is absent', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.signingKeyPath;
+      const key = fs.readFileSync(canonical, 'utf-8');
+      // Simulate a machine keyed under the pre-canonical-rename name: only the
+      // legacy 'signing-private.pem' exists. (2026-05-31: such a machine threw
+      // ENOENT here, aborting its whole lease-coordinator setup.)
+      const legacy = path.join(path.dirname(canonical), 'signing-private.pem');
+      fs.renameSync(canonical, legacy);
+      expect(fs.existsSync(canonical)).toBe(false);
+      expect(manager.loadSigningKey()).toBe(key);
+    });
+
+    it('still throws when neither the canonical nor the legacy key exists', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.signingKeyPath;
+      // Move it to a name that is neither canonical nor the legacy fallback.
+      fs.renameSync(canonical, canonical + '.gone');
+      expect(() => manager.loadSigningKey()).toThrow();
+    });
+  });
+
+  describe('loadEncryptionKey (legacy fallback)', () => {
+    it('falls back to encryption-private.pem when the canonical encryption-key.pem is absent', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.encryptionKeyPath;
+      const key = fs.readFileSync(canonical, 'utf-8');
+      // The mesh transport loads the encryption key too; a legacy-keyed machine
+      // (2026-05-31: the mini) had only 'encryption-private.pem', so the canonical
+      // read threw ENOENT and the transport setup could not fully initialize.
+      const legacy = path.join(path.dirname(canonical), 'encryption-private.pem');
+      fs.renameSync(canonical, legacy);
+      expect(fs.existsSync(canonical)).toBe(false);
+      expect(manager.loadEncryptionKey()).toBe(key);
+    });
+
+    it('still throws when neither the canonical nor the legacy key exists', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.encryptionKeyPath;
+      fs.renameSync(canonical, canonical + '.gone');
+      expect(() => manager.loadEncryptionKey()).toThrow();
+    });
+  });
+
   describe('loadIdentity', () => {
     it('loads a previously generated identity', async () => {
       const original = await manager.generateIdentity();

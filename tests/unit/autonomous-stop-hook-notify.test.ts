@@ -175,10 +175,12 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
 
   it('uses the latest-capability marker for the autonomous-stop-hook migration', () => {
     // The marker is bumped each time the bundled hook gains a feature, so prior installs
-    // re-deploy. It advanced from `notify_terminal_stop` → `CODEX_LOOP_ENABLED` when the
-    // #28 codex autonomous-loop driver landed (the bundled hook still contains
-    // notify_terminal_stop — asserted above — so that capability is not lost on upgrade).
+    // re-deploy. It advanced `notify_terminal_stop` → `CODEX_LOOP_ENABLED` (#28 codex
+    // autonomous-loop driver) → `codex-stdout-json-safe` (the codex Stop hook must keep
+    // stdout JSON-only; the prior marker is already present in #28 installs so it would
+    // wrongly skip them). The bundled hook still contains notify_terminal_stop — asserted
+    // above — so that capability is not lost on upgrade.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'PostUpdateMigrator.ts'), 'utf8');
-    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'CODEX_LOOP_ENABLED'/);
+    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'codex-stdout-json-safe'/);
   });
 });

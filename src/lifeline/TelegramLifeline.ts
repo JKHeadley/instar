@@ -60,6 +60,7 @@ import { writeStartupMarker } from './startupMarker.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
+import { writeWakeRequestIfSlept } from './agentSleepWake.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
 import {
@@ -993,6 +994,14 @@ export class TelegramLifeline {
   }
 
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    // Agent hard-sleep wake trigger. ANY inbound update is user activity — so write
+    // the wake-request FIRST, before the supervisor.healthy gate below. A slept
+    // server is NOT healthy, so without this the message would take the "server
+    // down → queue" path and never wake the server (the brick the review caught).
+    // No-op unless a slept-marker is present; the message then replays via the
+    // existing queue once the respawned server is healthy.
+    this.requestWakeIfSlept();
+
     // Forward callback queries (inline keyboard button presses) to the server
     // These come from Prompt Gate relay buttons — the server handles the response injection
     if (update.callback_query) {
@@ -1324,6 +1333,19 @@ export class TelegramLifeline {
   /** Full semver of this lifeline, read once at construction. */
   private readonly lifelineVersion = getInstarVersion();
 
+  /**
+   * Agent hard-sleep wake trigger. When the ServerSupervisor has intentionally
+   * slept the server (a `state/slept-marker.json` is present), write
+   * `state/wake-requested.json` so the supervisor respawns it. Idempotent + cheap:
+   * the supervisor consumes the flag and removes the marker on wake, so steady-state
+   * (awake) this is a single `existsSync` no-op per forward.
+   */
+  private requestWakeIfSlept(): void {
+    if (writeWakeRequestIfSlept(this.projectConfig.stateDir, new Date().toISOString())) {
+      console.log('[Lifeline] Server is asleep — wrote wake-request; message will replay once it boots');
+    }
+  }
+
   private async forwardToServer(
     topicId: number,
     text: string,
@@ -1652,6 +1674,7 @@ export class TelegramLifeline {
 
     if (cmd === '/lifeline restart') {
       await this.sendToTopic(topicId, 'Restarting server...');
+      this.supervisor.wakeFromSleep(); // explicit restart clears any hard-sleep state
       this.supervisor.resetCircuitBreaker();
       await this.supervisor.stop();
       const started = await this.supervisor.start();
@@ -1660,6 +1683,7 @@ export class TelegramLifeline {
     }
 
     if (cmd === '/lifeline reset') {
+      this.supervisor.wakeFromSleep(); // explicit reset clears any hard-sleep state
       this.supervisor.resetCircuitBreaker();
       await this.sendToTopic(topicId, 'Circuit breaker reset. Restarting server...');
       await this.supervisor.stop();

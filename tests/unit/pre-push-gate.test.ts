@@ -98,7 +98,7 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
     // script would still see the production __dirname and walk the production
     // tree — making the integration test sensitive to unrelated changes in
     // the rest of the repo. Copying isolates the test to its scratch dir.
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(
         path.join(ROOT, 'scripts', file),
         path.join(scratch, 'scripts', file),
@@ -252,5 +252,123 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
 
     const { status } = runGate();
     expect(status).toBe(0);
+  });
+});
+
+// ── Integration: fragment-aware validation ───────────────────────────
+//
+// Release notes are now authored as per-PR fragments (upgrades/next/<slug>.md)
+// so concurrent PRs never collide on a shared NEXT.md. The pre-push gate must
+// validate the ASSEMBLED result so a PR that ships ONLY a fragment (no NEXT.md)
+// still passes the same section/content checks. It must also reject a malformed
+// fragment loudly, and must NOT write a generated NEXT.md to disk.
+
+describe('Pre-push gate integration — release-note fragments', () => {
+  let scratch: string;
+
+  beforeEach(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'prepush-frag-'));
+    fs.mkdirSync(path.join(scratch, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'next'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'side-effects'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(scratch, 'package.json'),
+      JSON.stringify({ name: 'instar-test', version: '0.28.999' }),
+    );
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+      fs.copyFileSync(path.join(ROOT, 'scripts', file), path.join(scratch, 'scripts', file));
+    }
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(scratch, { recursive: true, force: true, operation: 'tests/unit/pre-push-gate.test.ts:afterEach' });
+  });
+
+  function runGate(): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync(process.execPath, [path.join(scratch, 'scripts', 'pre-push-gate.js')], {
+      cwd: scratch,
+      encoding: 'utf-8',
+      env: { ...process.env, CI: '', NODE_ENV: 'test' },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  it('ACCEPTS a fragment-only push (no NEXT.md) and writes no NEXT.md', () => {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'side-effects', 'frag-artifact.md'),
+      '# Side-Effects Review (test scratch)\n\nMinimal placeholder.\n',
+    );
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'my-feature.md'),
+      [
+        '# Upgrade Guide — vNEXT',
+        '',
+        '<!-- bump: minor -->',
+        '',
+        '## What Changed',
+        '',
+        'A small improvement to the agent infrastructure.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent picked up a small tune-up. Nothing changes about how it talks to you.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Tune-up | automatic |',
+        '',
+      ].join('\n'),
+    );
+
+    const { status } = runGate();
+    expect(status).toBe(0);
+    // The gate assembles in-memory only — it must NOT leave a NEXT.md on disk.
+    expect(fs.existsSync(path.join(scratch, 'upgrades', 'NEXT.md'))).toBe(false);
+    // The fragment itself is untouched.
+    expect(fs.existsSync(path.join(scratch, 'upgrades', 'next', 'my-feature.md'))).toBe(true);
+  });
+
+  it('REJECTS a fragment-only push when WTTYU has inline code (validates assembled result)', () => {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'bad-wttyu.md'),
+      [
+        '# Upgrade Guide — vNEXT',
+        '',
+        '<!-- bump: patch -->',
+        '',
+        '## What Changed',
+        '',
+        'A general improvement.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent now reads from `~/.instar/config.json` automatically.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Auto-config | automatic |',
+        '',
+      ].join('\n'),
+    );
+
+    const { status, stdout } = runGate();
+    expect(status).not.toBe(0);
+    expect(stdout).toContain('contains inline code');
+  });
+
+  it('REJECTS a malformed fragment (no "## " section) loudly', () => {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'broken.md'),
+      'just some prose with no section headings at all',
+    );
+
+    const { status, stdout } = runGate();
+    expect(status).not.toBe(0);
+    expect(stdout).toContain('Release-note fragments are malformed');
   });
 });

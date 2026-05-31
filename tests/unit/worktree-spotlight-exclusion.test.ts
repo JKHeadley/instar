@@ -101,3 +101,44 @@ describe('PostUpdateMigrator.migrateWorktreeSpotlightExclusion', () => {
     expect(result2.skipped.some((s) => s.includes('worktree-spotlight-exclusion: marker already present'))).toBe(true);
   });
 });
+
+describe('PostUpdateMigrator.migrateNodeModulesSpotlightExclusion', () => {
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nm-spotlight-mig-'));
+    setHome(tmpHome);
+    originalAuditDir = process.env.INSTAR_AUDIT_LOG_DIR;
+    process.env.INSTAR_AUDIT_LOG_DIR = path.join(tmpHome, 'audit');
+  });
+  afterEach(() => {
+    if (originalAuditDir === undefined) delete process.env.INSTAR_AUDIT_LOG_DIR;
+    else process.env.INSTAR_AUDIT_LOG_DIR = originalAuditDir;
+    restoreHome();
+    SafeFsExecutor.safeRmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100, operation: OP });
+  });
+
+  it('drops the marker into agent-home node_modules AND shadow-install on update', () => {
+    const { agentHome, stateDir } = setupAgentHome('echo-nm');
+    fs.mkdirSync(path.join(agentHome, 'node_modules'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'shadow-install', 'node_modules'), { recursive: true });
+    const result = makeMigrator(stateDir).migrate();
+    expect(result.upgraded.some((s) => s.includes('node-modules-spotlight-exclusion'))).toBe(true);
+    expect(fs.existsSync(path.join(agentHome, 'node_modules', '.metadata_never_index'))).toBe(true);
+    expect(fs.existsSync(path.join(stateDir, 'shadow-install', 'node_modules', '.metadata_never_index'))).toBe(true);
+  });
+
+  it('skips missing node_modules dirs without error (no node_modules present)', () => {
+    const { stateDir } = setupAgentHome('echo-nm-none');
+    const result = makeMigrator(stateDir).migrate();
+    expect(result.errors).toEqual([]);
+    expect(result.upgraded.some((s) => s.includes('node-modules-spotlight-exclusion'))).toBe(false);
+  });
+
+  it('is idempotent — second run does not re-report the exclusion', () => {
+    const { agentHome, stateDir } = setupAgentHome('echo-nm-idem');
+    fs.mkdirSync(path.join(agentHome, 'node_modules'), { recursive: true });
+    makeMigrator(stateDir).migrate();
+    const result2 = makeMigrator(stateDir).migrate();
+    expect(result2.errors).toEqual([]);
+    expect(result2.upgraded.some((s) => s.includes('node-modules-spotlight-exclusion'))).toBe(false);
+  });
+});

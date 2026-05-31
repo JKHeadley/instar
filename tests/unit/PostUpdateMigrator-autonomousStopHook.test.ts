@@ -53,6 +53,17 @@ active: true
 EOF
 `;
 
+// A prior-version setup that ALREADY has native /goal (the prior marker 'native-goal/set')
+// but NOT the codex native-/goal auto-wire ('IS_CODEX_AGENT'). Carries the stock fingerprint
+// ('autonomous-state.local.md'). Under the old marker this would be SKIPPED as current; after
+// the marker bump it must be re-deployed so codex agents get native /goal auto-delegation.
+const PRIOR_NATIVE_GOAL_SETUP = `#!/bin/bash
+# setup-autonomous.sh — legacy fallback is .instar/autonomous-state.local.md
+STATE_PATH=".instar/autonomous/\${REPORT_TOPIC}.local.md"
+# native /goal delegation (Claude only, gated on claude --version)
+curl -s --data-binary @- "http://localhost:4040/autonomous/native-goal/set" >/dev/null 2>&1
+`;
+
 function deploySetup(projectDir: string, content: string): string {
   const dst = path.join(projectDir, SETUP_REL);
   fs.mkdirSync(path.dirname(dst), { recursive: true });
@@ -165,6 +176,24 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
 
     const updated = fs.readFileSync(dst, 'utf8');
     expect(updated).toContain('STATE_PATH=".instar/autonomous/'); // per-topic path
+    expect(result.upgraded.some(u => u.includes('setup-autonomous.sh'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('re-deploys a prior native-/goal setup so codex agents get native /goal auto-wire (#40 marker bump)', () => {
+    // Prior version carries the old marker `native-goal/set` (Claude-only native /goal) but
+    // not `IS_CODEX_AGENT` — under the old marker it would be wrongly skipped as current.
+    const dst = deploySetup(projectDir, PRIOR_NATIVE_GOAL_SETUP);
+    const before = fs.readFileSync(dst, 'utf8');
+    expect(before).toContain('native-goal/set');
+    expect(before).not.toContain('IS_CODEX_AGENT');
+
+    const result = runMigration(newMigrator(projectDir));
+
+    const updated = fs.readFileSync(dst, 'utf8');
+    expect(updated).toContain('IS_CODEX_AGENT');           // codex native /goal auto-wire present
+    expect(updated).toContain("'codex-cli' in");            // detects codex via enabledFrameworks
+    expect((fs.statSync(dst).mode & 0o111)).not.toBe(0);    // executable
     expect(result.upgraded.some(u => u.includes('setup-autonomous.sh'))).toBe(true);
     expect(result.errors).toEqual([]);
   });

@@ -229,6 +229,7 @@ export class PostUpdateMigrator {
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
     this.migrateWorktreeSpotlightExclusion(result);
+    this.migrateNodeModulesSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -269,14 +270,23 @@ export class PostUpdateMigrator {
       result.errors.push(`boot-wrapper ABI-check read: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    // Marker string emitted by the new selfHealNodeSymlink ABI branch.
-    if (content.includes('cannot load better-sqlite3 (ABI drift)')) {
+    // Marker strings the current boot wrapper must contain to be considered
+    // up-to-date. Both are required:
+    //  - 'cannot load better-sqlite3 (ABI drift)' — the ABI-check self-heal branch.
+    //  - 'version-managed node candidates' — the asdf/nvm `which node` candidate
+    //    discovery (instar-codey node-25/ABI-141 deadlock fix). An install that has
+    //    the ABI check but NOT this marker (e.g. instar-codey) self-heals FORWARD to
+    //    the wrong ABI and cannot recover — it must be regenerated.
+    if (
+      content.includes('cannot load better-sqlite3 (ABI drift)') &&
+      content.includes('version-managed node candidates')
+    ) {
       result.skipped.push('boot-wrapper ABI-check: already current');
       return;
     }
     try {
       installBootWrapper(this.config.projectDir);
-      result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal');
+      result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -720,6 +730,38 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`worktree-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * OS resource hygiene (Responsible Resource Usage standard): exclude the agent's
+   * node_modules trees from macOS Spotlight. The worktree exclusion above covers
+   * `.worktrees/`, but the bigger churning set was never excluded — each agent home
+   * carries a full `node_modules/` (~1.3GB / ~25k files measured) AND a
+   * `.instar/shadow-install/node_modules/` (~600MB), re-indexed by Spotlight /
+   * mediaanalysisd on every `npm ci` and every shadow-install update. Across a
+   * ~10-agent fleet that is ~20GB of un-excluded node_modules — a top OS-level CPU
+   * consumer (measured: Metadata.framework ~62% CPU). node_modules never need
+   * Spotlight indexing, so the marker is unambiguously safe; it is honored
+   * recursively, harmless on non-macOS, and idempotent. Reuses the generic
+   * marker-dropper. (`ensureWorktreeSpotlightExclusion` is dir-agnostic.)
+   */
+  private migrateNodeModulesSpotlightExclusion(result: MigrationResult): void {
+    const agentHome = path.dirname(this.config.stateDir);
+    const dirs = [
+      path.join(agentHome, 'node_modules'),
+      path.join(this.config.stateDir, 'shadow-install', 'node_modules'),
+    ];
+    for (const dir of dirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        if (ensureWorktreeSpotlightExclusion(dir)) {
+          const rel = path.relative(agentHome, dir) || dir;
+          result.upgraded.push(`node-modules-spotlight-exclusion: dropped .metadata_never_index at ${rel} (excludes node_modules from Spotlight indexing)`);
+        }
+      } catch (err) {
+        result.errors.push(`node-modules-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
@@ -1475,23 +1517,31 @@ export class PostUpdateMigrator {
       }
     };
     // Marker = the latest capability signature (bumped each time the bundled hook/
-    // setup gains a feature, so prior installs upgrade): now the #28 codex
-    // autonomous-loop driver — the shared hook self-gates on `--codex` +
-    // autonomousSessions.codexLoopDriver (var `CODEX_LOOP_ENABLED`), which is absent
-    // from every prior install (incl. the notify-on-stop version). Bumping the marker
-    // re-deploys the bundled hook to stock installs so existing CODEX agents get the
-    // codex-aware hook; customized hooks (no stock fingerprint) are still left untouched.
+    // setup gains a feature, so prior installs upgrade): now `codex-stdout-json-safe` —
+    // the codex Stop hook must keep STDOUT JSON-only (emit() routes approve/status text
+    // to stderr in codex mode), fixing the live 2026-05-31 "invalid stop hook JSON output"
+    // failure. This marker is ABSENT from prior #28 installs (which already carry
+    // CODEX_LOOP_ENABLED — using that as the marker would wrongly skip them), so bumping
+    // to it re-deploys the FIXED hook to every existing codex agent; customized hooks (no
+    // stock fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'CODEX_LOOP_ENABLED',
+      'codex-stdout-json-safe',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (#28 codex autonomous-loop driver — --codex self-gate)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (codex Stop stdout JSON-safe — emit() to stderr)',
     );
+    // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
+    // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
+    // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so
+    // codex autonomous jobs fell through to the dark Phase-1 codexLoopDriver no-op and never
+    // sustained multi-turn). Bumping the marker re-deploys the FIXED setup to existing agents
+    // (which carry `native-goal/set` but not `IS_CODEX_AGENT`); customized scripts (no stock
+    // `autonomous-state.local.md` fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'native-goal/set',
+      'IS_CODEX_AGENT',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (per-topic + completion-condition + native /goal)',
+      'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
     );
   }
 
@@ -7526,14 +7576,17 @@ function fetchActiveJob() {
   } catch { process.exit(0); }
 
   try {
-    // Re-entry guard: if this Stop is a correction continuation (stop_hook_active),
-    // approve immediately — never re-block a continuation. Without this, a block →
-    // continue → still-deep → block loop could wedge an autonomous session (the cooldown
-    // mitigates but does not strictly prevent it). Mirrors claim-intercept-response.
+    // ALLOW = empty stdout + exit 0. We deliberately do NOT emit
+    // {decision:'approve'} on the allow paths: codex's Stop-hook contract treats
+    // any non-empty stdout that isn't a recognized block decision as invalid
+    // ('hook returned invalid stop hook JSON output'), so an explicit approve-JSON
+    // breaks every codex session completion. Claude treats empty == approve, so
+    // emitting nothing is byte-equivalent there. Only the BLOCK path writes JSON
+    // (codex accepts {decision:'block',...}). Sibling of #604 (autonomous-stop-hook).
     let _input = {};
     try { _input = JSON.parse(data); } catch {}
     if (_input && _input.stop_hook_active) {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
+      // Re-entry guard: never re-block a correction continuation. (allow = empty)
       process.exit(0);
       return;
     }
@@ -7541,7 +7594,6 @@ function fetchActiveJob() {
     // Never block headless/job sessions — no human to dismiss the block.
     // INSTAR_SESSION_ID is set for all server-spawned sessions.
     if (process.env.INSTAR_SESSION_ID && !process.env.TERM_PROGRAM) {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       process.exit(0);
       return;
     }
@@ -7551,7 +7603,6 @@ function fetchActiveJob() {
     const depth = state.implementationDepth || 0;
 
     if (depth < DEPTH_THRESHOLD) {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       process.exit(0);
       return;
     }
@@ -7560,7 +7611,6 @@ function fetchActiveJob() {
     if (state.lastCheckpointPrompt) {
       const elapsed = now - new Date(state.lastCheckpointPrompt).getTime();
       if (elapsed < COOLDOWN_MS) {
-        process.stdout.write(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
         return;
       }
@@ -7570,7 +7620,6 @@ function fetchActiveJob() {
     if (state.sessionStart) {
       const age = now - new Date(state.sessionStart).getTime();
       if (age < MIN_AGE_MS) {
-        process.stdout.write(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
         return;
       }
@@ -7622,7 +7671,7 @@ function fetchActiveJob() {
 
     process.stdout.write(JSON.stringify({ decision: 'block', reason: reason }));
   } catch {
-    process.stdout.write(JSON.stringify({ decision: 'approve' }));
+    // On any error, allow (empty stdout) — never emit approve-JSON (codex-unsafe).
   }
   process.exit(0);
 })();

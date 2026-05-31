@@ -189,3 +189,27 @@ describe('AgentActivityState', () => {
     expect(a.snapshot()).toEqual({ lastInboundAt: NOW - 1000, lastActivityAt: NOW });
   });
 });
+
+import { sleepRequestWriter } from '../../src/monitoring/SleepController.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+describe('sleepRequestWriter', () => {
+  it('writes a TTL-stamped sleep-requested.json the supervisor can consume', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sleep-req-'));
+    try {
+      const write = sleepRequestWriter(dir, 60_000);
+      write({ decision: 'would-sleep', reason: 'deep-idle 30m', idleForMs: 1_800_000 });
+      const p = path.join(dir, 'state', 'sleep-requested.json');
+      expect(fs.existsSync(p)).toBe(true);
+      const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      expect(data.requestedBy).toBe('SleepController');
+      expect(data.reason).toMatch(/deep-idle/);
+      expect(new Date(data.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test-cleanup' });
+    }
+  });
+});
