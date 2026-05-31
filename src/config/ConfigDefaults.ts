@@ -92,6 +92,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: true,
       coalesceWindowMs: 60_000,
     },
+    // AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).
+    // Reclaims stale CLI-created worktrees under .worktrees/ that are merged +
+    // clean + inactive. Ships OFF + dry-run (it deletes worktrees on a heuristic);
+    // review a dry-run pass (GET /worktrees/agent-reaper) before enabling.
+    agentWorktreeReaper: {
+      enabled: false,
+      dryRun: true,
+      reapIntervalMs: 86_400_000,
+      maxReapsPerPass: 20,
+    },
     // Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Default ON, signal-
     // only: raises ONE deduped Attention item (never auto-kills) when a session is
     // KEPT forever despite faking work, or is stuck indeterminate. The escalation

@@ -365,6 +365,9 @@ export class AgentServer {
     /** SessionReaper — pressure-aware idle-session reaper (off/dry-run by
      *  default). Powers GET /sessions/reaper. */
     sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper;
+    /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
+     *  GET /worktrees/agent-reaper. */
+    agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     /** ReapLog — durable audit of every reap + skipped-reap (UNIFIED-SESSION-LIFECYCLE
      *  §P4). Powers GET /sessions/reap-log. */
     reapLog?: import('../monitoring/ReapLog.js').ReapLog;
@@ -848,6 +851,7 @@ export class AgentServer {
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
       sessionReaper: options.sessionReaper ?? null,
+      agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       reapLog: options.reapLog ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
