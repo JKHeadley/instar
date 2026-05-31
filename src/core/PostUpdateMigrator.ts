@@ -7554,14 +7554,17 @@ function fetchActiveJob() {
   } catch { process.exit(0); }
 
   try {
-    // Re-entry guard: if this Stop is a correction continuation (stop_hook_active),
-    // approve immediately — never re-block a continuation. Without this, a block →
-    // continue → still-deep → block loop could wedge an autonomous session (the cooldown
-    // mitigates but does not strictly prevent it). Mirrors claim-intercept-response.
+    // ALLOW = empty stdout + exit 0. We deliberately do NOT emit
+    // {decision:'approve'} on the allow paths: codex's Stop-hook contract treats
+    // any non-empty stdout that isn't a recognized block decision as invalid
+    // ('hook returned invalid stop hook JSON output'), so an explicit approve-JSON
+    // breaks every codex session completion. Claude treats empty == approve, so
+    // emitting nothing is byte-equivalent there. Only the BLOCK path writes JSON
+    // (codex accepts {decision:'block',...}). Sibling of #604 (autonomous-stop-hook).
     let _input = {};
     try { _input = JSON.parse(data); } catch {}
     if (_input && _input.stop_hook_active) {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
+      // Re-entry guard: never re-block a correction continuation. (allow = empty)
       process.exit(0);
       return;
     }
@@ -7569,7 +7572,6 @@ function fetchActiveJob() {
     // Never block headless/job sessions — no human to dismiss the block.
     // INSTAR_SESSION_ID is set for all server-spawned sessions.
     if (process.env.INSTAR_SESSION_ID && !process.env.TERM_PROGRAM) {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       process.exit(0);
       return;
     }
@@ -7579,7 +7581,6 @@ function fetchActiveJob() {
     const depth = state.implementationDepth || 0;
 
     if (depth < DEPTH_THRESHOLD) {
-      process.stdout.write(JSON.stringify({ decision: 'approve' }));
       process.exit(0);
       return;
     }
@@ -7588,7 +7589,6 @@ function fetchActiveJob() {
     if (state.lastCheckpointPrompt) {
       const elapsed = now - new Date(state.lastCheckpointPrompt).getTime();
       if (elapsed < COOLDOWN_MS) {
-        process.stdout.write(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
         return;
       }
@@ -7598,7 +7598,6 @@ function fetchActiveJob() {
     if (state.sessionStart) {
       const age = now - new Date(state.sessionStart).getTime();
       if (age < MIN_AGE_MS) {
-        process.stdout.write(JSON.stringify({ decision: 'approve' }));
         process.exit(0);
         return;
       }
@@ -7650,7 +7649,7 @@ function fetchActiveJob() {
 
     process.stdout.write(JSON.stringify({ decision: 'block', reason: reason }));
   } catch {
-    process.stdout.write(JSON.stringify({ decision: 'approve' }));
+    // On any error, allow (empty stdout) — never emit approve-JSON (codex-unsafe).
   }
   process.exit(0);
 })();
