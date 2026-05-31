@@ -14,11 +14,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
+import { assembleNextMd, gatherFragmentInputs } from './assemble-next-md.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const upgradesDir = path.join(ROOT, 'upgrades');
-const nextPath = path.join(ROOT, 'upgrades', 'NEXT.md');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
 const version = pkg.version;
 
@@ -34,38 +34,66 @@ const REQUIRED_SECTIONS = [
 let errors = [];
 let warnings = [];
 
-// ── 1. NEXT.md validation ─────────────────────────────────────────────
+// ── 1. Release-note validation (fragment-aware) ───────────────────────
+//
+// Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md
+// (so concurrent PRs never collide on a single shared NEXT.md). The pre-push
+// gate validates the ASSEMBLED result — fragments folded together with any
+// legacy upgrades/NEXT.md — so a PR that ships only a fragment passes the same
+// section/content checks the publish gate enforces. We assemble in-memory and
+// NEVER write NEXT.md to disk here: the PR keeps its fragment, not a generated
+// guide. publish.yml runs the real assemble step before publishing.
 
 const versionedGuidePath = path.join(upgradesDir, `${version}.md`);
 const versionedGuideExists = fs.existsSync(versionedGuidePath);
-const nextExists = fs.existsSync(nextPath);
 
-// Pick the active guide for this push. NEXT.md wins if present (in-flight
-// release notes); fall back to the versioned guide once NEXT.md has been
-// renamed during a publish.
-const activeGuidePath = nextExists
-  ? nextPath
-  : (versionedGuideExists ? versionedGuidePath : null);
-const activeGuideLabel = nextExists
-  ? 'NEXT.md'
+// Assemble fragments + legacy NEXT.md in-memory.
+let assembledContent = null;
+let assembleError = null;
+{
+  const { inputs } = gatherFragmentInputs(upgradesDir);
+  if (inputs.length > 0) {
+    try {
+      assembledContent = assembleNextMd(inputs);
+    } catch (err) {
+      assembleError = err instanceof Error ? err.message : String(err);
+    }
+  }
+}
+
+// The active guide for validation: the assembled fragments/NEXT.md (in-flight
+// release notes) win when present; otherwise fall back to the versioned guide
+// (post-release-cut state, when NEXT.md has been renamed and no new fragment is
+// staged yet).
+const activeGuideLabel = assembledContent !== null
+  ? 'assembled release notes (upgrades/next/*.md + NEXT.md)'
   : (versionedGuideExists ? `${version}.md` : null);
 
-if (activeGuidePath && activeGuideLabel) {
-  const content = fs.readFileSync(activeGuidePath, 'utf-8');
-
+if (assembleError) {
+  // A malformed fragment must fail the push loudly — the same loud failure the
+  // publish workflow would hit.
+  errors.push(`Release-note fragments are malformed: ${assembleError}`);
+} else if (assembledContent !== null) {
   // Run the shared validator (same checks as check-upgrade-guide.js at publish
   // time). This catches the publish-blocker bugs that previously slipped past
   // pre-push: inline code / fenced blocks / camelCase config keys in "What to
   // Tell Your User", and missing "## Evidence" when "What Changed" claims a fix.
   // Before this gate, those defects only surfaced as silently-dropped publish
   // runs on main — agents never received the merged code.
-  const validatorIssues = validateGuideContent(content);
+  const validatorIssues = validateGuideContent(assembledContent);
   for (const issue of validatorIssues) {
     errors.push(`${activeGuideLabel}: ${issue}`);
   }
+} else if (versionedGuideExists) {
+  const content = fs.readFileSync(versionedGuidePath, 'utf-8');
+  const validatorIssues = validateGuideContent(content);
+  for (const issue of validatorIssues) {
+    errors.push(`${version}.md: ${issue}`);
+  }
 } else {
   errors.push(
-    `No upgrade guide found. Create upgrades/NEXT.md with sections: ${REQUIRED_SECTIONS.join(', ')}`
+    `No upgrade guide found. Create a release-note fragment ` +
+    `upgrades/next/<slug>.md (or legacy upgrades/NEXT.md) with sections: ${REQUIRED_SECTIONS.join(', ')}`
   );
 }
 
@@ -221,14 +249,16 @@ if (!process.env.CI) {
     /\bnew\b/i,
   ];
 
-  // When NEXT.md exists, it represents the *next* shipment being prepared in
-  // this push — prefer it over the (frozen) versioned guide, which describes
-  // the already-released version and isn't what this PR is changing. This is
-  // the post-release-cut + new-PR state: both files coexist, but only NEXT.md
-  // is in flight. Falls back to the versioned guide when no NEXT.md is staged.
-  const guidePath = nextExists ? nextPath : (versionedGuideExists ? versionedGuidePath : null);
-  if (guidePath && fs.existsSync(guidePath)) {
-    const guideContent = fs.readFileSync(guidePath, 'utf-8');
+  // The in-flight release notes (assembled fragments + legacy NEXT.md) represent
+  // the *next* shipment being prepared in this push — prefer them over the
+  // (frozen) versioned guide, which describes the already-released version and
+  // isn't what this PR is changing. Falls back to the versioned guide when no
+  // fragment / NEXT.md is staged (post-release-cut state).
+  const inFlight = assembledContent !== null;
+  const guideContent = inFlight
+    ? assembledContent
+    : (versionedGuideExists ? fs.readFileSync(versionedGuidePath, 'utf-8') : null);
+  if (guideContent !== null) {
     // Extract "## What Changed" section
     const whatChangedMatch = guideContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
     const whatChanged = whatChangedMatch ? whatChangedMatch[1] : '';
@@ -237,10 +267,10 @@ if (!process.env.CI) {
 
     if (qualifies) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
-      // If NEXT.md is the active guide, any fresh artifact (last 24h) counts —
-      // the versioned-filename requirement only applies when a versioned guide
-      // is being validated without an in-flight NEXT.md.
-      const artifactName = (!nextExists && versionedGuideExists) ? `${version}.md` : null;
+      // When in-flight notes (fragments/NEXT.md) drive the push, any fresh
+      // artifact (last 24h) counts — the versioned-filename requirement only
+      // applies when a versioned guide is being validated without in-flight notes.
+      const artifactName = (!inFlight && versionedGuideExists) ? `${version}.md` : null;
       let artifactFound = false;
 
       if (fs.existsSync(sideEffectsDir)) {
@@ -248,9 +278,9 @@ if (!process.env.CI) {
         if (artifactName) {
           artifactFound = files.includes(artifactName);
         } else {
-          // For NEXT.md, any fresh artifact from the last 24h counts.
-          // The expectation is that during release cut, NEXT.md -> <version>.md
-          // rename will pair with the artifact rename as well.
+          // For in-flight notes (fragments/NEXT.md), any fresh artifact from the
+          // last 24h counts. The expectation is that during release cut, the
+          // fragment/NEXT.md -> <version>.md rename pairs with an artifact rename.
           const recent = files.filter((f) => {
             const stat = fs.statSync(path.join(sideEffectsDir, f));
             return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
