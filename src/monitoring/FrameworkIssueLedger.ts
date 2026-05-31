@@ -312,6 +312,15 @@ export class FrameworkIssueLedger {
         if (!/duplicate column name/i.test((err as Error).message || '')) throw err;
       }
     }
+    // §13.6: seed none→candidate for generalizable issues that were resolved
+    // before the auto-suggestion existed (idempotent + self-limiting — matches
+    // nothing after the first run). A backfill failure must never block ledger
+    // construction (read-mostly infra); the next boot simply retries.
+    try {
+      this.backfillPlaybookCandidates();
+    } catch {
+      /* non-fatal: ledger remains usable; backfill retries next construction */
+    }
   }
 
   /** Stable list of frameworks the ledger has seen — for the route allowlist (spec §5/§17). */
@@ -481,7 +490,7 @@ export class FrameworkIssueLedger {
 
       const status = patch.status ? assertEnum(patch.status, ISSUE_STATUSES, 'status') : (cur.status as IssueStatus);
       const bucket = patch.bucket ? assertEnum(patch.bucket, ISSUE_BUCKETS, 'bucket') : (cur.bucket as IssueBucket);
-      const playbookStatus = patch.playbookStatus
+      let playbookStatus = patch.playbookStatus
         ? assertEnum(patch.playbookStatus, PLAYBOOK_STATUSES, 'playbookStatus')
         : (cur.playbook_status as PlaybookStatus);
       const bucketPrimary =
@@ -495,6 +504,24 @@ export class FrameworkIssueLedger {
 
       if (status === 'wont-fix' && !wontFixReason) {
         throw new Error('FrameworkIssueLedger: wont-fix requires a wontFixReason (spec §13.7)');
+      }
+
+      // §13.6 auto-suggest: when a generalizable issue reaches a terminal-resolved
+      // state (fixed | wont-fix) its lesson is fully formed and should feed the
+      // NEXT framework's onboarding playbook — so promote none→candidate in the
+      // same write. Without this the playbook stays permanently empty: lessons are
+      // logged but never surface (every issue sits at 'none', and nothing else
+      // auto-suggests candidates). Only none→candidate is automated here; the
+      // candidate→extracted step still requires a non-Echo attestation via
+      // promotePlaybook(). Never downgrades (acts only on 'none'); skipped when the
+      // caller set playbookStatus explicitly.
+      if (
+        patch.playbookStatus === undefined &&
+        playbookStatus === 'none' &&
+        (status === 'fixed' || status === 'wont-fix') &&
+        GENERALIZABLE_BUCKETS.has(bucket)
+      ) {
+        playbookStatus = 'candidate';
       }
 
       this.db
@@ -555,6 +582,31 @@ export class FrameworkIssueLedger {
       return this.getIssue(issueId);
     });
     return txn();
+  }
+
+  /**
+   * Idempotent backfill of the §13.6 none→candidate auto-suggestion for issues
+   * that were already terminal-resolved (fixed | wont-fix) and generalizable
+   * BEFORE that auto-suggestion existed — their lessons were logged but stuck at
+   * 'none', so the onboarding playbook never surfaced them. Promotes every such
+   * row to 'candidate'; never touches candidate/extracted/superseded rows; never
+   * promotes non-generalizable or non-terminal issues. Self-limiting (the WHERE
+   * clause matches nothing after the first run) so it is safe to call on every
+   * boot — which is how existing ledgers across the fleet pick up the seeding
+   * without a dedicated PostUpdateMigrator entry. Returns the rows promoted.
+   * candidate→extracted still requires a non-Echo attestation (promotePlaybook);
+   * this only seeds candidates.
+   */
+  backfillPlaybookCandidates(): number {
+    const res = this.db
+      .prepare(
+        `UPDATE framework_issues SET playbook_status = 'candidate', updated_at = @ts
+           WHERE playbook_status = 'none'
+             AND status IN ('fixed', 'wont-fix')
+             AND bucket IN ('framework-limitation', 'instar-integration-gap')`,
+      )
+      .run({ ts: this.now() });
+    return res.changes;
   }
 
   /** Bucket-distribution telemetry (spec §15) — surfaces attribution skew (a
