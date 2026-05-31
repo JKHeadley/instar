@@ -11027,7 +11027,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // Loopback POST helpers — bearer-authed to the agent's OWN routes so they
       // traverse the real middleware (feedback anomaly/quality/length guards;
       // attention tone gate). Authorization is never logged.
-      const feedbackLoopbackPost = async (payload: { type: string; title: string; description: string }): Promise<boolean> => {
+      const feedbackLoopbackPost = async (payload: { type: string; title: string; description: string }): Promise<import('../monitoring/CorrectionLoopDriver.js').FeedbackPostResult> => {
         try {
           const resp = await fetch(`http://localhost:${port}/feedback`, {
             method: 'POST',
@@ -11038,8 +11038,11 @@ export function createRoutes(ctx: RouteContext): Router {
             },
             body: JSON.stringify(payload),
           });
-          return resp.status === 201;
-        } catch { return false; }
+          // 429 = rate-limited (the route's 10/min/IP feedbackLimiter) → carry the
+          // record to the next run; any other non-201 is a guard rejection (don't
+          // retry). The driver serializes the batch + stops on the first 429.
+          return { posted: resp.status === 201, rateLimited: resp.status === 429 };
+        } catch { return { posted: false }; }
       };
       const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
         try {
@@ -11072,6 +11075,18 @@ export function createRoutes(ctx: RouteContext): Router {
         verifyWindowDaysPreference: cl?.verifyWindowDaysPreference ?? 7,
         verifyWindowDaysInfraGap: cl?.verifyWindowDaysInfraGap ?? 14,
         maxReopens: cl?.maxReopens ?? 2,
+        // Per-tick add ceiling (NEW-5) + batched-POST delay (NEW-2) — overflow
+        // stays `open` and re-routes next run; the batch serializes under the
+        // /feedback route's 10/min IP limit.
+        maxRoutesPerTick: cl?.maxRoutesPerTick ?? 5,
+        feedbackPostDelayMs: cl?.feedbackPostDelayMs ?? 7000,
+        audit: (event) => {
+          try {
+            const auditPath = path.join(ctx.config.stateDir, 'logs', 'correction-learning-audit.jsonl');
+            fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+            fs.appendFileSync(auditPath, JSON.stringify({ ts: new Date().toISOString(), origin: 'correction-loop', ...event }) + '\n', { mode: 0o600 });
+          } catch { /* @silent-fallback-ok — audit is best-effort */ }
+        },
         preferenceStillPresent: (dedupeKey) =>
           prefs.read().preferences.some((e) => e.dedupeKey === dedupeKey),
       });
@@ -11090,6 +11105,10 @@ export function createRoutes(ctx: RouteContext): Router {
           toFeedback: routed.toFeedback,
           toPreferences: routed.toPreferences,
           toAttention: routed.toAttention,
+          // Gate-crossing records left `open` this run (per-tick ceiling OR a 429
+          // cut the infra-gap batch short) — re-routed next run, never dropped.
+          overflow: routed.overflow,
+          rateLimited: routed.rateLimited,
         },
         verified,
       });
