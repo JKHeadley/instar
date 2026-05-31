@@ -81,4 +81,19 @@ describe('RateLimitSentinel — codex recovery via newest rollout (#33)', () => 
     expect(events.some((e) => e.type === 'rate-limit:recovered')).toBe(false);
     expect(events.some((e) => e.type === 'rate-limit:escalated')).toBe(true);
   });
+
+  it('vendor wording: codex throttle notices say OpenAI / status.openai.com, never Anthropic', async () => {
+    codex.write(100);
+    buildCodex();
+    sentinel.report('codey-1', 'codex-usage-poll', { errorClass: 'throttle' });
+    await vi.advanceTimersByTimeAsync(0);
+    const first = String(notifyFn.mock.calls[0]?.[1] ?? '');
+    expect(first).toMatch(/OpenAI/);
+    expect(first).not.toMatch(/Anthropic/);
+    // run to escalation → the status-URL message
+    await vi.advanceTimersByTimeAsync(40 * 60_000);
+    const allMsgs = notifyFn.mock.calls.map((c: any[]) => String(c[1])).join(' || ');
+    expect(allMsgs).toMatch(/status\.openai\.com/);
+    expect(allMsgs).not.toMatch(/status\.claude\.com/);
+  });
 });
