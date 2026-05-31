@@ -480,15 +480,17 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 
 ---
 
-### L10. Release notes in same PR
+### L10. Release notes in same PR — write a FRAGMENT, not the shared NEXT.md
 
-**Lesson:** Every behavior-changing instar PR must fill `upgrades/NEXT.md` in the SAME commit. Required by the release-cut gate.
+**Lesson:** Every behavior-changing instar PR must ship its release note in the SAME commit. Author it as a per-PR **fragment** at `upgrades/next/<slug>.md` — NOT by editing the shared `upgrades/NEXT.md`. The fragment carries the same sections (`## What Changed`, `## What to Tell Your User`, `## Summary of New Capabilities`, optional `## Evidence`) and a `<!-- bump: patch|minor|major -->` hint. Two PRs touch different fragment files, so they never collide on the release notes — which is exactly the bottleneck that made concurrent merges un-landable when every PR rewrote the one shared NEXT.md.
 
-**Source:** `.instar/memory/feedback_release_notes_in_same_pr.md`.
+**Why fragments:** the publish pipeline now runs `scripts/assemble-next-md.mjs` as a pre-step that folds every `upgrades/next/*.md` (deterministic filename order) — plus any legacy `upgrades/NEXT.md` — into a single `upgrades/NEXT.md` by section, then the unchanged downstream pipeline renames it to `upgrades/<version>.md` and deletes the consumed fragments. The assembled bump directive is the MAX tier across fragments; the REAL release tier is still `.instar/release-tier.json`.
 
-**Infrastructure built:** Pre-push gate checks NEXT.md presence + structure.
+**Source:** `.instar/memory/feedback_release_notes_in_same_pr.md`; per-PR fragment system (`scripts/assemble-next-md.mjs`).
 
-**Design-pipeline application:** The NEXT.md content is what the user sees on update. Lead with "What to Tell Your User" — single conversational sentence, no jargon, no code snippets.
+**Infrastructure built:** Pre-push gate is fragment-aware — it assembles fragments + any legacy NEXT.md in-memory and validates that result (presence + structure + content), so a fragment-only PR passes the same checks. `upgrades/NEXT.md` remains fully supported as a legacy / backward-compat path (a hand-authored NEXT.md is folded in), but new PRs should write fragments.
+
+**Design-pipeline application:** The assembled content is what the user sees on update. Lead each fragment's "What to Tell Your User" with a single conversational sentence — no jargon, no code snippets, no backticks (the validator rejects inline code / camelCase config keys in that section).
 
 ---
 
