@@ -3093,6 +3093,21 @@ export interface MonitoringConfig {
     maxReapsPerPass?: number;
   };
   /**
+   * Agent hard-sleep — SleepController decision foundation (RESPONSIBLE-RESOURCE-
+   * USAGE, Stage B; docs/specs/agent-hard-sleep-controller.md). Decides whether a
+   * deeply-idle agent may drop its server to near-zero footprint, with safety
+   * guards (held lease / in-flight / imminent job). Ships OFF + dry-run: observes
+   * + audits, never stops a server. GET /sleep exposes the live verdict.
+   */
+  agentSleep?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    tickIntervalSec?: number;
+    idleGraceMs?: number;
+    deepIdleMs?: number;
+    wakeLeadMs?: number;
+  };
+  /**
    * Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Watches for sessions
    * the conservative KEEP-rules would protect forever — one that FAKES work, or
    * one stuck `indeterminate` — and raises a SINGLE deduped Attention item for an

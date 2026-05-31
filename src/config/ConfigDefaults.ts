@@ -102,6 +102,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       reapIntervalMs: 86_400_000,
       maxReapsPerPass: 20,
     },
+    // Agent hard-sleep — SleepController decision foundation (Stage B, slice 1;
+    // docs/specs/agent-hard-sleep-controller.md). Decides "is it safe for this
+    // idle agent to drop its server to near-zero footprint?" with every safety
+    // guard (held lease / in-flight work / imminent scheduled job). Ships OFF +
+    // dry-run: observes + audits to logs/agent-sleep-events.jsonl, never stops a
+    // server. The mechanism (supervisor stop + lifeline respawn) is a later slice.
+    agentSleep: {
+      enabled: false,
+      dryRun: true,
+      tickIntervalSec: 60,
+      idleGraceMs: 120_000,
+      deepIdleMs: 900_000,
+      wakeLeadMs: 120_000,
+    },
     // Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5). Default ON, signal-
     // only: raises ONE deduped Attention item (never auto-kills) when a session is
     // KEPT forever despite faking work, or is stuck indeterminate. The escalation

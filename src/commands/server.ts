@@ -8897,6 +8897,58 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
+    // ── Agent hard-sleep — SleepController (RESPONSIBLE-RESOURCE-USAGE, Stage B) ──
+    // Decides "is it safe for this idle agent to drop to near-zero footprint?" with
+    // every safety guard. Ships OFF + dry-run: observes + audits to
+    // logs/agent-sleep-events.jsonl, never stops a server. The mechanism
+    // (supervisor stop + lifeline respawn) is a later slice. GET /sleep exposes the
+    // live verdict. The shared idle signal (AgentActivityState) is bumped at the
+    // inbound-message chokepoint (/internal/telegram-forward).
+    const { AgentActivityState } = await import('../monitoring/AgentActivityState.js');
+    const agentActivityState = new AgentActivityState();
+    const { SleepController, sleepAuditSink } = await import('../monitoring/SleepController.js');
+    const _sleepCfg = config.monitoring?.agentSleep;
+    const sleepController = new SleepController(
+      {
+        sample: () => {
+          const act = agentActivityState.snapshot();
+          return {
+            now: Date.now(),
+            runningSessions: sessionManager.listRunningSessions().length,
+            lastInboundAt: act.lastInboundAt,
+            lastActivityAt: act.lastActivityAt,
+            // Lease guard: only relevant when multi-machine coordination is active.
+            leaseActive: coordinator.enabled,
+            holdsLease: coordinator.enabled ? coordinator.holdsLease() : false,
+            // In-flight: an inbound message currently being handled. (The relay/forward
+            // in-flight + scheduler-wake signals are wired with the stop mechanism in
+            // the next slice — this slice is dry-run, so it never acts on them.)
+            inflightWork: (currentInboundByTopic?.size ?? 0) > 0,
+            nextScheduledJobAt: null,
+          };
+        },
+        audit: sleepAuditSink(config.stateDir),
+      },
+      {
+        enabled: _sleepCfg?.enabled ?? false,
+        dryRun: _sleepCfg?.dryRun ?? true,
+        tickIntervalMs: (_sleepCfg?.tickIntervalSec ?? 60) * 1000,
+        thresholds: {
+          idleGraceMs: _sleepCfg?.idleGraceMs ?? 120_000,
+          deepIdleMs: _sleepCfg?.deepIdleMs ?? 900_000,
+          wakeLeadMs: _sleepCfg?.wakeLeadMs ?? 120_000,
+        },
+      },
+    );
+    sleepController.start();
+    if (_sleepCfg?.enabled) {
+      console.log(pc.green(
+        _sleepCfg.dryRun === false
+          ? '  SleepController enabled (agent hard-sleep — LIVE decision)'
+          : '  SleepController enabled (agent hard-sleep — dry-run, observe only)',
+      ));
+    }
+
     // ── Unkillability backstop (UNIFIED-SESSION-LIFECYCLE §P5) ───────────────
     // Signal-only: raises ONE deduped Attention item (never auto-kills) when a
     // session is KEPT forever despite faking work, or is stuck indeterminate.
@@ -9485,7 +9537,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

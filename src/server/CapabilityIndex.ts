@@ -867,6 +867,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'build', reason: 'operator-only build endpoint' },
   { prefix: 'sessions', reason: 'operator/dashboard-only session listing (no agent-facing API)' },
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
+  { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
   { prefix: 'ci', reason: 'operator-only CI status surface' },
   { prefix: 'session', reason: 'single-session context surfaced via topicMemory endpoints' },
   { prefix: 'identity', reason: 'identity files surfaced via the top-level `identity` field of the response' },

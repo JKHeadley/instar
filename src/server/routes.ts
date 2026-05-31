@@ -718,6 +718,10 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
+  sleepController?: import('../monitoring/SleepController.js').SleepController | null;
+  /** AgentActivityState — shared idle signal; bumped at the inbound chokepoint. */
+  agentActivityState?: import('../monitoring/AgentActivityState.js').AgentActivityState | null;
   /** SleepWakeDetector — timer-drift sleep detection with a CPU-starvation guard.
    *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). Null when
    *  not wired (older boot paths / standby) → the route 503s. */
@@ -3916,6 +3920,19 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.agentWorktreeReaper.snapshot());
+  });
+
+  // SleepController (RESPONSIBLE-RESOURCE-USAGE — agent hard-sleep, Stage B). The
+  // pull-surface answer to "would this idle agent sleep right now, and if not,
+  // which guard is holding it awake?": the live verdict (awake / idle-shallow /
+  // keep-awake / would-sleep) + reason + thresholds + whether sleep is armed
+  // (enabled, dryRun). Read-only, Bearer-auth. Dry-run by default — never acts.
+  router.get('/sleep', (_req, res) => {
+    if (!ctx.sleepController) {
+      res.status(503).json({ error: 'sleep controller unavailable' });
+      return;
+    }
+    res.json(ctx.sleepController.snapshot());
   });
 
   // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4). The pull-surface answer to "why did
@@ -9290,6 +9307,11 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ ok: false, reason: 'server-boot-incomplete', retryAfterMs: 1000 });
       return;
     }
+
+    // Agent hard-sleep idle signal: a real inbound message is genuine activity
+    // (handshake-only pings without text are not). Bumps lastInbound so the
+    // SleepController never sleeps an agent that's actively being messaged.
+    if (text) ctx.agentActivityState?.markInbound(Date.now());
 
     // Version-handshake (only when lifelineVersion field is present AND
     // auth is configured — dev-mode with empty authToken skips the handshake

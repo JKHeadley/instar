@@ -368,6 +368,10 @@ export class AgentServer {
     /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
+    /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
+    sleepController?: import('../monitoring/SleepController.js').SleepController;
+    /** AgentActivityState — shared idle signal bumped at the inbound chokepoint. */
+    agentActivityState?: import('../monitoring/AgentActivityState.js').AgentActivityState;
     /** ReapLog — durable audit of every reap + skipped-reap (UNIFIED-SESSION-LIFECYCLE
      *  §P4). Powers GET /sessions/reap-log. */
     reapLog?: import('../monitoring/ReapLog.js').ReapLog;
@@ -852,6 +856,8 @@ export class AgentServer {
       correctionLedger: this.correctionLedger,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
+      sleepController: options.sleepController ?? null,
+      agentActivityState: options.agentActivityState ?? null,
       reapLog: options.reapLog ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
